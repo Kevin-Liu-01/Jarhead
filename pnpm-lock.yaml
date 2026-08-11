@@ -23,6 +23,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:packages/core
+      '@jarvis/ears':
+        specifier: workspace:*
+        version: link:packages/ears
       '@jarvis/voice':
         specifier: workspace:*
         version: link:packages/voice
@@ -77,6 +80,15 @@ importers:
         version: link:../wiki-bridge
 
   packages/core: {}
+
+  packages/ears:
+    dependencies:
+      '@jarvis/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jarvis/voice':
+        specifier: workspace:*
+        version: link:../voice
 
   packages/voice:
     dependencies:

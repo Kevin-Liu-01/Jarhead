@@ -21,7 +21,8 @@
     "@jarvis/voice": "workspace:*",
     "@jarvis/answers": "workspace:*",
     "@jarvis/agent": "workspace:*",
-    "@jarvis/automations": "workspace:*"
+    "@jarvis/automations": "workspace:*",
+    "@jarvis/ears": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

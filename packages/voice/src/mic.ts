@@ -32,6 +32,15 @@ export interface MicOptions {
    * machine. A hang is a much worse failure than a clear message.
    */
   readonly startupTimeoutMs: number;
+  /**
+   * Give up if the user never actually says anything.
+   *
+   * Distinct from `startupTimeoutMs`: audio IS flowing, it is just all room
+   * tone. Without this the recording runs the full `maxSeconds` every time
+   * someone taps the key and changes their mind — observed as a 6.7s wait on a
+   * recording containing no speech at all.
+   */
+  readonly noSpeechTimeoutMs: number;
 }
 
 export const DEFAULT_MIC: MicOptions = {
@@ -40,13 +49,14 @@ export const DEFAULT_MIC: MicOptions = {
   thresholdDb: -34,
   maxSeconds: 20,
   startupTimeoutMs: 4000,
+  noSpeechTimeoutMs: 6000,
 };
 
 export interface Recording {
   readonly path: string;
   /** ms from process start to endpoint decision. */
   readonly durationMs: number;
-  readonly endedBy: "silence" | "max-duration" | "manual";
+  readonly endedBy: "silence" | "max-duration" | "manual" | "no-speech";
 }
 
 export class MicPermissionError extends Error {
@@ -116,6 +126,7 @@ export function recordUntilSilence(
   ]);
 
   let endedBy: Recording["endedBy"] = "max-duration";
+  let audioFlowing = false;
   let heardSpeech = false;
   let stderr = "";
   let settled = false;
@@ -130,7 +141,7 @@ export function recordUntilSilence(
     // If no audio has flowed by now, we are almost certainly blocked on a TCC
     // prompt that will never appear. Kill it and say so.
     const startupGuard = setTimeout(() => {
-      if (heardSpeech || settled) return;
+      if (audioFlowing || settled) return;
       settled = true;
       ff.kill("SIGKILL");
       reject(
@@ -140,19 +151,33 @@ export function recordUntilSilence(
       );
     }, opts.startupTimeoutMs);
 
-    const clearGuard = (): void => clearTimeout(startupGuard);
+    // Audio is flowing but nobody is talking. End it rather than burning maxSeconds.
+    const speechGuard = setTimeout(() => {
+      if (heardSpeech || settled) return;
+      endedBy = "no-speech";
+      ff.kill("SIGINT");
+    }, opts.noSpeechTimeoutMs);
+
+    const clearGuard = (): void => {
+      clearTimeout(startupGuard);
+      clearTimeout(speechGuard);
+    };
 
     ff.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       stderr += text;
 
-      // silence_end means a silent stretch just finished -> speech resumed.
-      if (text.includes("silence_end")) heardSpeech = true;
+      // size= progress lines mean audio is reaching us. That is NOT speech —
+      // conflating the two made every silent recording run to max duration.
+      if (!audioFlowing && /size=\s*\d+/.test(text)) {
+        audioFlowing = true;
+        clearTimeout(startupGuard);
+      }
 
-      // ffmpeg reports size= progress lines once audio is actually flowing.
-      if (!heardSpeech && /size=\s*\d+/.test(text)) {
+      // silence_end is the real speech signal: a silent stretch just ended.
+      if (!heardSpeech && text.includes("silence_end")) {
         heardSpeech = true;
-        clearGuard();
+        clearTimeout(speechGuard);
         onSpeechStart?.();
       }
 
@@ -172,7 +197,7 @@ export function recordUntilSilence(
       clearGuard();
       if (settled) return; // the startup guard already rejected
       settled = true;
-      if (/Operation not permitted|Input\/output error|abort\(\)/i.test(stderr) && !heardSpeech) {
+      if (/Operation not permitted|Input\/output error|abort\(\)/i.test(stderr) && !audioFlowing) {
         reject(new MicPermissionError(stderr.trim().split("\n").slice(-1)[0] ?? "unknown"));
         return;
       }
