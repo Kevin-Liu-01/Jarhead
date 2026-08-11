@@ -46,11 +46,65 @@ export interface StreamResult {
   readonly outputTokens: number;
 }
 
+/** Vision costs tokens per tile, so screen frames go to a cheap-but-capable tier. */
+export const VISION_MODEL = "claude-haiku-4-5-20251001";
+
 export class Brain {
   private readonly client: Anthropic;
 
   constructor(apiKey: string, private readonly model: string = VOICE_MODEL) {
     this.client = new Anthropic({ apiKey });
+  }
+
+  /**
+   * Answer about an image — a screen frame, in practice.
+   *
+   * Streams like the text path so the answer starts being spoken before the
+   * model has finished looking. Screenshots must be downscaled before they get
+   * here: a retina frame is 3456px wide and costs a pile of tiles for detail
+   * nobody asks about.
+   */
+  async streamAboutImage(
+    prompt: string,
+    image: { readonly base64: string; readonly mediaType: "image/png" | "image/jpeg" },
+    opts: StreamOptions,
+  ): Promise<StreamResult> {
+    const startedAt = Date.now();
+    let ttftMs = 0;
+    let text = "";
+
+    const stream = this.client.messages.stream({
+      model: this.model,
+      max_tokens: opts.maxTokens ?? 400,
+      system: opts.system ?? SPOKEN_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.base64 } },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+    });
+
+    stream.on("text", (delta: string) => {
+      if (ttftMs === 0) {
+        ttftMs = Date.now() - startedAt;
+        opts.onFirstToken?.(ttftMs);
+      }
+      text += delta;
+      opts.onToken(delta);
+    });
+
+    const final = await stream.finalMessage();
+    return {
+      text,
+      ttftMs,
+      totalMs: Date.now() - startedAt,
+      inputTokens: final.usage.input_tokens,
+      outputTokens: final.usage.output_tokens,
+    };
   }
 
   async stream(prompt: string, opts: StreamOptions): Promise<StreamResult> {

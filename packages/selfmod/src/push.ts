@@ -16,6 +16,25 @@ import { git, readMarker, runGit, PROTECTED_BRANCHES } from "./worktree.ts";
  * there is no way to smuggle in `--force` or a leading `+`.
  */
 
+/**
+ * Refuse a remote that git would read as an option.
+ *
+ * The remote lands as `git push`'s first positional argument, and git has no
+ * `--` separator there, so a value like `--receive-pack=...` would execute. Only
+ * the leading dash is dangerous: named remotes, local paths, and ssh/https URLs
+ * are all legitimate and must keep working.
+ */
+export function assertRemoteName(remote: string): void {
+  const value = remote.trim();
+  if (value.length === 0) throw new Error("refusing to push: remote is empty");
+  if (value.startsWith("-")) {
+    throw new Error(
+      `refusing to push to remote ${JSON.stringify(remote)}: ` +
+        `a leading dash would be parsed as a git option, not a destination`,
+    );
+  }
+}
+
 export class PushRefusedError extends Error {
   constructor(reason: string) {
     super(`push refused: ${reason}`);
@@ -104,6 +123,9 @@ export async function commitAndPush(
     commitSha = await git(["rev-parse", "HEAD"], proposal.worktreePath);
   }
 
+  // A caller-supplied remote lands as git's first positional argument, so a
+  // value like "--exec=..." or "--receive-pack=..." would be read as a flag.
+  assertRemoteName(remote);
   await git(["push", remote, `HEAD:refs/heads/${proposal.branch}`], proposal.worktreePath);
 
   return {

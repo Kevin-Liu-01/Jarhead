@@ -14,6 +14,13 @@
     "@jarvis/core": "workspace:*",
     "@jarvis/voice": "workspace:*",
     "@jarvis/wiki-bridge": "workspace:*",
-    "@jarvis/automations": "workspace:*"
+    "@jarvis/automations": "workspace:*",
+    "@jarvis/computer": "workspace:*",
+    "@jarvis/browser": "workspace:*",
+    "@jarvis/ears": "workspace:*",
+    "@jarvis/ack": "workspace:*",
+    "@jarvis/daemon": "workspace:*",
+    "@jarvis/selfmod": "workspace:*",
+    "@jarvis/overlay": "workspace:*"
   }
 }

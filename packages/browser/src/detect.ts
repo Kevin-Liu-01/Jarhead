@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 /**
@@ -26,7 +26,12 @@ export function hasBinary(name: string, pathVar: string | undefined = process.en
   for (const dir of pathVar.split(delimiter)) {
     if (!dir) continue;
     try {
-      accessSync(join(dir, name), constants.X_OK);
+      const candidate = join(dir, name);
+      accessSync(candidate, constants.X_OK);
+      // X_OK is satisfied by directories too — a directory named `playwright`
+      // on PATH would otherwise report the tool as installed, and the failure
+      // would surface much later as a confusing exec error.
+      if (!statSync(candidate).isFile()) continue;
       return true;
     } catch {
       // Not in this dir; keep walking.

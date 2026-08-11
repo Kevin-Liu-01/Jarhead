@@ -65,15 +65,36 @@ importers:
 
   packages/agent:
     dependencies:
+      '@jarvis/ack':
+        specifier: workspace:*
+        version: link:../ack
       '@jarvis/answers':
         specifier: workspace:*
         version: link:../answers
       '@jarvis/automations':
         specifier: workspace:*
         version: link:../automations
+      '@jarvis/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@jarvis/computer':
+        specifier: workspace:*
+        version: link:../computer
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/daemon':
+        specifier: workspace:*
+        version: link:../daemon
+      '@jarvis/ears':
+        specifier: workspace:*
+        version: link:../ears
+      '@jarvis/overlay':
+        specifier: workspace:*
+        version: link:../overlay
+      '@jarvis/selfmod':
+        specifier: workspace:*
+        version: link:../selfmod
       '@jarvis/voice':
         specifier: workspace:*
         version: link:../voice

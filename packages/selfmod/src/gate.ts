@@ -37,10 +37,28 @@ export interface GateResult {
  * will never finish is a worse failure than a red gate, and a wedged test
  * runner would otherwise park the whole proposal pipeline forever.
  */
+/** Kill the whole process group, falling back to the single pid. */
+function killTree(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 export function defaultRunner(timeoutMs = 10 * 60 * 1000): CommandRunner {
   return (command, args, cwd) =>
     new Promise((resolvePromise) => {
-      const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      // detached puts the wrapper in its own process group so the timeout can
+      // kill the whole tree. `pnpm run check` is only a launcher — SIGKILL on it
+      // alone leaves tsc and tsx running, holding the pipes and burning CPU long
+      // after the gate reported a timeout.
+      const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -48,7 +66,7 @@ export function defaultRunner(timeoutMs = 10 * 60 * 1000): CommandRunner {
       const guard = setTimeout(() => {
         if (settled) return;
         settled = true;
-        child.kill("SIGKILL");
+        killTree(child.pid);
         resolvePromise({ code: 124, stdout, stderr: `${stderr}\n[gate] killed after ${timeoutMs}ms without finishing` });
       }, timeoutMs);
 

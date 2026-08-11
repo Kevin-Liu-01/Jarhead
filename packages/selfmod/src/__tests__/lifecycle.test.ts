@@ -192,3 +192,17 @@ test("an expired receipt cannot push", async () => {
     PushRefusedError,
   );
 });
+
+test("a flag-shaped remote is refused, but real remotes are not", async () => {
+  const { assertRemoteName } = await import("../push.ts");
+  // The remote is git push's first positional argument and git offers no `--`
+  // separator there, so an option-shaped value would execute.
+  assert.throws(() => assertRemoteName("--receive-pack=/bin/sh"), /leading dash/);
+  assert.throws(() => assertRemoteName("-o"), /leading dash/);
+  assert.throws(() => assertRemoteName("   "), /empty/);
+  // Everything git legitimately accepts as a destination must still work.
+  assert.doesNotThrow(() => assertRemoteName("origin"));
+  assert.doesNotThrow(() => assertRemoteName("/var/folders/tmp/jarvis-remote-AbC"));
+  assert.doesNotThrow(() => assertRemoteName("git@github.com:Kevin-Liu-01/jarvis.git"));
+  assert.doesNotThrow(() => assertRemoteName("https://github.com/Kevin-Liu-01/jarvis.git"));
+});

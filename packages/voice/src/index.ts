@@ -7,5 +7,5 @@ export type { Transcriber, TranscriptionResult } from "./stt.ts";
 export { Speaker, SentenceSplitter, prewarm } from "./tts.ts";
 export type { TtsOptions, SpokenSentence } from "./tts.ts";
 
-export { Brain, VOICE_MODEL, SPOKEN_SYSTEM_PROMPT } from "./llm.ts";
+export { Brain, VOICE_MODEL, VISION_MODEL, SPOKEN_SYSTEM_PROMPT } from "./llm.ts";
 export type { StreamOptions, StreamResult } from "./llm.ts";

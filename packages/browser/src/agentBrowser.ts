@@ -271,9 +271,25 @@ function runCli(binary: string, args: readonly string[], timeoutMs: number): Pro
     let timedOut = false;
     let spawnError: string | undefined;
 
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      clearTimeout(reaper);
+      resolve({ stdout, stderr, timedOut, spawnError });
+    };
+
+    // SIGKILL kills the child, but Node withholds 'close' until every pipe end
+    // is released — and agent-browser spawns a browser that inherits them. So a
+    // killed process could still never settle. Force it shortly after.
+    let reaper: NodeJS.Timeout | undefined;
     const guard = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reaper = setTimeout(finish, 500);
     }, timeoutMs);
 
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
@@ -281,11 +297,8 @@ function runCli(binary: string, args: readonly string[], timeoutMs: number): Pro
     child.on("error", (e) => {
       spawnError = e.message;
     });
-    // Node emits 'close' even after a spawn 'error', so this always settles.
-    child.on("close", () => {
-      clearTimeout(guard);
-      resolve({ stdout, stderr, timedOut, spawnError });
-    });
+    // Node emits 'close' even after a spawn 'error', so the happy path settles here.
+    child.on("close", finish);
   });
 }
 

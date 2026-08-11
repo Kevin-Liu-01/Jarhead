@@ -4,10 +4,19 @@ import { classify, isAllowed, CONFIRM_LEVELS, type ComputerAction } from "../pol
 
 const level = (action: ComputerAction): string => classify(action).level;
 
-test("read-only actions are always allowed, even in scary apps", () => {
+test("genuinely read-only actions are always allowed, even in scary apps", () => {
   assert.equal(level({ kind: "screenshot" }), "always-allowed");
   assert.equal(level({ kind: "ax-query", app: "Google Chrome" }), "always-allowed");
-  assert.equal(level({ kind: "read-selection", app: "Safari" }), "always-allowed");
+  assert.equal(level({ kind: "read-selection-ax", app: "Safari" }), "always-allowed");
+});
+
+test("reading the selection via the clipboard is not side-effect free", () => {
+  // This asserted always-allowed and was wrong: select.ts falls back to
+  // synthesizing Cmd+C and round-tripping the clipboard, and the caller cannot
+  // know in advance which path it will take. Calling that read-only was a
+  // fail-open classification of an action with real side effects.
+  assert.equal(level({ kind: "read-selection", app: "Safari" }), "pre-approvable");
+  assert.equal(level({ kind: "read-selection-clipboard", app: "Safari" }), "pre-approvable");
 });
 
 test("a click in the already-focused window is pre-approvable", () => {

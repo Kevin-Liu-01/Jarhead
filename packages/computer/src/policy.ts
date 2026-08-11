@@ -28,7 +28,15 @@ export interface Classification {
   readonly reason: string;
 }
 
-const READ_ONLY_KINDS: ReadonlySet<string> = new Set(["screenshot", "ax-query", "read-selection"]);
+// "read-selection" is NOT in here. Reading the AX selection is pure, but the
+// clipboard fallback synthesizes Cmd+C and overwrites the clipboard, and the
+// caller does not know in advance which path select.ts will take. Classifying
+// the whole operation read-only was a fail-open bug: an action with real side
+// effects was returning always-allowed.
+const READ_ONLY_KINDS: ReadonlySet<string> = new Set(["screenshot", "ax-query", "read-selection-ax"]);
+
+// Reads the selection but may press Cmd+C and round-trip the clipboard.
+const CLIPBOARD_KINDS: ReadonlySet<string> = new Set(["read-selection", "read-selection-clipboard"]);
 const POINTER_KINDS: ReadonlySet<string> = new Set([
   "move",
   "click",
@@ -56,7 +64,11 @@ export function classify(action: ComputerAction): Classification {
   const app = action.app ?? "";
   const target = action.target ?? "";
   const known =
-    READ_ONLY_KINDS.has(kind) || POINTER_KINDS.has(kind) || TYPING_KINDS.has(kind) || HAND_OFF_KINDS.has(kind);
+    READ_ONLY_KINDS.has(kind) ||
+    CLIPBOARD_KINDS.has(kind) ||
+    POINTER_KINDS.has(kind) ||
+    TYPING_KINDS.has(kind) ||
+    HAND_OFF_KINDS.has(kind);
 
   if (!known) {
     return {
@@ -67,6 +79,13 @@ export function classify(action: ComputerAction): Classification {
 
   if (READ_ONLY_KINDS.has(kind)) {
     return { level: "always-allowed", reason: `${kind} is read-only; it observes the screen without side effects` };
+  }
+
+  if (CLIPBOARD_KINDS.has(kind)) {
+    return {
+      level: "pre-approvable",
+      reason: `${kind} may synthesize Cmd+C and round-trip the clipboard, so it is not side-effect free`,
+    };
   }
 
   // Hand-off outranks everything with side effects: a pre-approvable click

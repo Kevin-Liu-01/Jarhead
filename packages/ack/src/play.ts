@@ -13,6 +13,9 @@ import { existsSync } from "node:fs";
  * device *capture*. Playback is not TCC-gated, so ffplay either plays or exits.
  */
 
+/** Generous: covers the longest ack plus process startup, far short of a stall. */
+export const WATCHDOG_MS = 15_000;
+
 export interface PlaybackResult {
   readonly ok: boolean;
   readonly ms: number;
@@ -45,11 +48,26 @@ export function playFile(path: string): PlaybackHandle {
   );
 
   let stopped = false;
+  // An ack is a two-second clip. If ffplay has not finished well past that, it
+  // has wedged (CoreAudio device changes do this), and a hung ack would block a
+  // turn that is supposed to feel instant. Kill it and move on.
   const done = new Promise<PlaybackResult>((resolve) => {
-    ff.on("error", (e) => resolve({ ok: false, ms: Date.now() - startedAt, error: e.message }));
+    let settled = false;
+    const finish = (r: PlaybackResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      resolve(r);
+    };
+    const watchdog = setTimeout(() => {
+      ff.kill("SIGKILL");
+      finish({ ok: false, ms: Date.now() - startedAt, error: `playback exceeded ${WATCHDOG_MS}ms; killed` });
+    }, WATCHDOG_MS);
+
+    ff.on("error", (e) => finish({ ok: false, ms: Date.now() - startedAt, error: e.message }));
     ff.on("close", (code) => {
       const ok = stopped || code === 0;
-      resolve({ ok, ms: Date.now() - startedAt, error: ok ? undefined : `ffplay exited ${code}` });
+      finish({ ok, ms: Date.now() - startedAt, error: ok ? undefined : `ffplay exited ${code}` });
     });
   });
 

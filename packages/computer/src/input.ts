@@ -1,4 +1,4 @@
-import { run } from "./exec.ts";
+import { run, RunTimeoutError } from "./exec.ts";
 import {
   AxPermissionError,
   escapeAppleScriptString,
@@ -350,6 +350,15 @@ export async function pressElement(element: AxElement): Promise<PressOutcome> {
   } catch (e) {
     // A coordinate click needs the same grant; retrying would just fail slower.
     if (e instanceof AxPermissionError) throw e;
+    // A timeout means we stopped waiting, NOT that the press did not land.
+    // Falling through to a coordinate click here can press the same button
+    // twice — send a message, buy a thing, delete a thing, twice. Refuse.
+    if (e instanceof RunTimeoutError) {
+      throw new Error(
+        `pressing ${JSON.stringify(element.title || element.role)} timed out; ` +
+          `not retrying by coordinates because the first press may have landed`,
+      );
+    }
     if (element.position !== undefined && element.size !== undefined) {
       await click(element.position.x + element.size.w / 2, element.position.y + element.size.h / 2);
       return { via: "coordinates" };

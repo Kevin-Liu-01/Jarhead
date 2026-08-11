@@ -20,10 +20,16 @@ import {
   registryPathFor,
   shouldOffer,
 } from "@jarvis/automations";
+import { Brain } from "@jarvis/voice";
 import { makeDeps, runTurn } from "./turn.ts";
 import { Timeline } from "./timeline.ts";
 import { LineReader } from "./lines.ts";
 import { checkAll, openSettings } from "./permissions.ts";
+import { lookAtScreen } from "./eyes.ts";
+import { pointAt } from "./pointing.ts";
+import { axAvailable, classify, frontmostApp } from "@jarvis/computer";
+import { research } from "@jarvis/browser";
+import { ipcRequest } from "@jarvis/daemon";
 
 const HELP = `
 jarvis — local voice assistant
@@ -34,6 +40,10 @@ jarvis — local voice assistant
   pnpm jarvis voices          list ElevenLabs voices and pick one
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
+  pnpm jarvis see "..."       look at the screen and answer out loud
+  pnpm jarvis point "..."     find a UI element by name and fly the cursor to it
+  pnpm jarvis web "..."       research on the web, then answer out loud
+  pnpm jarvis daemon [sub]    status | runs | tick | stop  (needs pnpm jarvisd)
   pnpm jarvis permissions     check the macOS grants (--open to fix them)
   pnpm jarvis automations     list automations you created by voice
   pnpm jarvis bench [rounds]  measure per-stage latency across the answer types
@@ -47,6 +57,18 @@ flags
 function flag(name: string): boolean {
   return process.argv.includes(`--${name}`);
 }
+
+/** A Speaker-shaped no-op for --silent runs and for benchmarks. */
+const silentSpeaker = (): never =>
+  ({
+    say: () => undefined,
+    idle: async () => undefined,
+    stop: () => undefined,
+    spoken: [],
+    firstAudioMs: undefined,
+    firstAudioAt: undefined,
+    charactersSpoken: 0,
+  }) as never;
 
 async function pickVoice(): Promise<void> {
   const cfg = readConfig();
@@ -176,6 +198,92 @@ async function permissions(open: boolean): Promise<void> {
     console.log("\n  opened the settings pane(s).\n");
   } else {
     console.log("\n  run `pnpm jarvis permissions --open` to jump straight there.\n");
+  }
+}
+
+
+/** "look at my screen and ..." — capture, downscale, ask, speak while looking. */
+async function see(question: string): Promise<void> {
+  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker } : {});
+  const timeline = new Timeline();
+  const r = await lookAtScreen(question || "what am I looking at?", deps, timeline);
+  console.log(`\n  jarvis: ${r.answer.trim()}\n`);
+  if (!flag("quiet")) {
+    console.log(timeline.render(r.firstAudioMs));
+    console.log(`\n    sent: ${r.sentPath}\n`);
+  }
+}
+
+/**
+ * Point at something by name.
+ *
+ * AX-first: a real element frame is exact and survives layout shifts. When the
+ * tree is empty or too slow — most of Kevin's desktop is Chromium — say so
+ * rather than guessing coordinates from a screenshot and mis-clicking.
+ */
+async function point(description: string): Promise<void> {
+  const ax = await axAvailable();
+  if (ax.status !== "ok") {
+    console.error(`\n  accessibility unavailable: ${ax.detail}`);
+    console.error(`  run: pnpm jarvis permissions --open\n`);
+    process.exit(1);
+  }
+
+  const cfg = readConfig();
+  if (!cfg.anthropicApiKey) {
+    console.error("ANTHROPIC_API_KEY is not set.");
+    process.exit(1);
+  }
+
+  const app = await frontmostApp();
+  console.log(`\n  frontmost: ${app.name}`);
+
+  const outcome = await pointAt(description, new Brain(cfg.anthropicApiKey));
+  console.log(`  accessibility: ${outcome.axMs}ms${outcome.visionMs === undefined ? "" : `, vision: ${outcome.visionMs}ms`}`);
+
+  if (!outcome.target) {
+    console.log(`\n  could not locate ${JSON.stringify(description || "anything obvious")}`);
+    if (outcome.degraded) console.log(`  ${outcome.degraded}`);
+    console.log("");
+    return;
+  }
+
+  const t = outcome.target;
+  console.log(`\n  found via ${t.via}: ${JSON.stringify(t.label)}`);
+  if (t.note) console.log(`  ${t.note}`);
+  console.log(`  cursor moved to ${Math.round(t.x)},${Math.round(t.y)}`);
+
+  const decision = classify({ kind: "click", target: t.label });
+  console.log(`  policy: ${decision.level} — did not click\n`);
+}
+
+/** Web research, spoken. The plain-fetch path unless a page needs a browser. */
+async function web(question: string): Promise<void> {
+  const started = Date.now();
+  const r = await research(question, { maxPages: 3 });
+  console.log(`\n  ${r.sources.length} source(s) in ${Date.now() - started}ms${r.degraded ? ` (${r.degraded})` : ""}`);
+  for (const src of r.sources) console.log(`    - ${src.title ?? "(untitled)"}  ${src.url}`);
+
+  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker } : {});
+  const outcome = await runTurn(`${question}\n\nWeb research:\n${r.context}`, deps);
+  printOutcome(outcome, flag("quiet"));
+}
+
+/** Talk to a running jarvisd. */
+async function daemonCmd(sub: string | undefined): Promise<void> {
+  const cfg = readConfig();
+  const cmd = sub ?? "status";
+  if (!["status", "runs", "tick", "stop"].includes(cmd)) {
+    console.error(`unknown daemon subcommand: ${cmd} (status|runs|tick|stop)`);
+    process.exit(1);
+  }
+  try {
+    const res = await ipcRequest(cfg.socketPath, cmd === "runs" ? { cmd: "runs", limit: 5 } : ({ cmd } as never));
+    console.log(`\n${JSON.stringify(res.ok ? res.result : res, null, 2)}\n`);
+  } catch (e) {
+    console.error(`\n  jarvisd is not answering on ${cfg.socketPath}`);
+    console.error(`  start it with \`pnpm jarvisd\`  (${(e as Error).message})\n`);
+    process.exit(1);
   }
 }
 
@@ -452,6 +560,22 @@ switch (command) {
     break;
   case "warm":
     await warm();
+    break;
+  case "see":
+    await see(rest.join(" "));
+    break;
+  case "point":
+    await point(rest.join(" "));
+    break;
+  case "web":
+    if (rest.length === 0) {
+      console.error('usage: pnpm jarvis web "what is the raft consensus algorithm"');
+      process.exit(1);
+    }
+    await web(rest.join(" "));
+    break;
+  case "daemon":
+    await daemonCmd(rest[0]);
     break;
   case "permissions":
     await permissions(flag("open"));

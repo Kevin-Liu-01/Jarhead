@@ -37,15 +37,51 @@ export interface GitResult {
   readonly stderr: string;
 }
 
-export function runGit(args: readonly string[], cwd: string): Promise<GitResult> {
+/**
+ * Every git call in this package goes through here, including `push`.
+ *
+ * Two guards, both because git is happy to wait forever: without
+ * GIT_TERMINAL_PROMPT=0 and ssh BatchMode, a missing credential turns into an
+ * invisible prompt on a stdin we never write to, and the promise never settles.
+ * A self-modifying agent hanging silently mid-push is the worst version of this.
+ */
+export const GIT_TIMEOUT_MS = 120_000;
+
+export function runGit(args: readonly string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   return new Promise((resolvePromise, reject) => {
-    const p = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("git", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: "",
+        SSH_ASKPASS: "",
+        GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
+      },
+    });
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      p.kill("SIGKILL");
+      reject(new Error(`git ${args[0] ?? ""} exceeded ${timeoutMs}ms and was killed`));
+    }, timeoutMs);
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
     const out: Buffer[] = [];
     let err = "";
     p.stdout.on("data", (d: Buffer) => out.push(d));
     p.stderr.on("data", (d: Buffer) => (err += d.toString()));
-    p.on("error", (e) => reject(new Error(`git failed to spawn: ${e.message}`)));
-    p.on("close", (code) => resolvePromise({ code: code ?? 1, stdout: Buffer.concat(out), stderr: err }));
+    p.on("error", (e) => finish(() => reject(new Error(`git failed to spawn: ${e.message}`))));
+    p.on("close", (code) =>
+      finish(() => resolvePromise({ code: code ?? 1, stdout: Buffer.concat(out), stderr: err })),
+    );
   });
 }
 
