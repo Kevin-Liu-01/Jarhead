@@ -30,6 +30,7 @@ import { pointAt } from "./pointing.ts";
 import { axAvailable, classify, frontmostApp } from "@jarvis/computer";
 import { research } from "@jarvis/browser";
 import { ipcRequest } from "@jarvis/daemon";
+import { ensureEarcon, playFile } from "@jarvis/ack";
 
 const HELP = `
 jarvis — local voice assistant
@@ -40,6 +41,7 @@ jarvis — local voice assistant
   pnpm jarvis voices          list ElevenLabs voices and pick one
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
+  pnpm jarvis listen          record one utterance, answer, exit (what the app uses)
   pnpm jarvis see "..."       look at the screen and answer out loud
   pnpm jarvis point "..."     find a UI element by name and fly the cursor to it
   pnpm jarvis web "..."       research on the web, then answer out loud
@@ -505,6 +507,57 @@ async function bench(rounds: number, withAudio: boolean): Promise<void> {
   console.log("");
 }
 
+/**
+ * One spoken turn: record, transcribe, answer, speak, exit.
+ *
+ * Separate from the interactive loop because the Dock app drives this — the app
+ * owns the hotkey and the "am I already busy" state, so a long-lived REPL here
+ * would just be a second thing to keep in sync.
+ */
+async function listenOnce(): Promise<void> {
+  const cfg = readConfig();
+  const openAiKey = process.env["OPENAI_API_KEY"];
+  if (!cfg.anthropicApiKey || !openAiKey) {
+    console.error("listen needs ANTHROPIC_API_KEY and OPENAI_API_KEY");
+    process.exit(1);
+  }
+
+  const deps = makeDeps({ transcriber: new OpenAiTranscriber(openAiKey) });
+  const timeline = new Timeline();
+
+  let earcon: { stop: () => void } | undefined;
+  try {
+    earcon = playFile(await ensureEarcon(cfg.stateDir, "listening"));
+  } catch {
+    // No earcon is a worse experience, not a broken one.
+  }
+
+  const { done } = recordUntilSilence(DEFAULT_MIC, () => timeline.mark("wake", "mic hot"));
+
+  let recording;
+  try {
+    recording = await done;
+  } catch (e) {
+    earcon?.stop();
+    console.error(`\n  ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+  earcon?.stop();
+  timeline.mark("endpoint", recording.endedBy);
+
+  const heard = await deps.transcriber.transcribe(recording.path);
+  timeline.mark("stt", heard.engine);
+
+  if (!heard.text) {
+    console.log("  (heard nothing)");
+    return;
+  }
+  console.log(`  you: ${heard.text}`);
+
+  const outcome = await runTurn(heard.text, deps, timeline);
+  printOutcome(outcome, flag("quiet"));
+}
+
 async function warm(): Promise<void> {
   useCacheDir(readConfig().stateDir);
   const started = Date.now();
@@ -538,6 +591,9 @@ switch (command) {
     break;
   case "warm":
     await warm();
+    break;
+  case "listen":
+    await listenOnce();
     break;
   case "see":
     await see(rest.join(" "));

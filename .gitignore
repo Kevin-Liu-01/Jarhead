@@ -17,3 +17,6 @@ coverage/
 *.pem
 *.p12
 secrets/
+build/Jarvis.app/
+build/app-src/
+build/Jarvis.iconset/

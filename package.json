@@ -14,7 +14,9 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
     "jarvis": "tsx packages/agent/src/main.ts",
     "jarvisd": "tsx packages/daemon/src/main.ts",
-    "overlay": "electron packages/overlay/src/electron-entry.cjs"
+    "overlay": "electron packages/overlay/src/electron-entry.cjs",
+    "build:icon": "tsx scripts/make-icon.ts",
+    "build:app": "tsx scripts/make-icon.ts && tsx scripts/build-app.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",

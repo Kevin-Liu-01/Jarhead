@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,13 +59,48 @@ export interface Recording {
   readonly endedBy: "silence" | "max-duration" | "manual" | "no-speech";
 }
 
+/**
+ * No audio arrived. Two very different causes, and guessing wrong wastes real time.
+ *
+ * A missing TCC grant and a mic already held by another process look identical
+ * from here: ffmpeg simply produces nothing and never errors. This blamed
+ * permissions unconditionally, which sent me to System Settings while the actual
+ * culprit was a stray ffmpeg from an earlier test still holding the device —
+ * for hours. So we look for the other holder before accusing the grant.
+ */
 export class MicPermissionError extends Error {
-  constructor(detail: string) {
-    super(
-      `Microphone access denied. Grant it in System Settings → Privacy & Security → Microphone ` +
-        `for your terminal, then retry. (ffmpeg: ${detail})`,
-    );
+  constructor(detail: string, holders: readonly string[] = []) {
+    const cause =
+      holders.length > 0
+        ? `The microphone is already in use by:\n  ${holders.join("\n  ")}\n` +
+          `Stop it (kill ${holders[0]?.split(/\s+/)[0] ?? "<pid>"}) and retry.`
+        : `Microphone access denied. Grant it in System Settings → Privacy & Security → ` +
+          `Microphone for your terminal, then retry.`;
+    super(`${cause} (ffmpeg: ${detail})`);
     this.name = "MicPermissionError";
+  }
+}
+
+/**
+ * Other processes plausibly holding an audio input device.
+ *
+ * Best-effort and synchronous: this only runs on the failure path, where a few
+ * milliseconds do not matter and a wrong-but-plausible hint still beats a
+ * confidently wrong one.
+ */
+export function audioDeviceHolders(): readonly string[] {
+  try {
+    const out = execFileSync("/usr/bin/pgrep", ["-fl", "avfoundation"], {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.includes("pgrep"))
+      .map((l) => l.slice(0, 120));
+  } catch {
+    return [];
   }
 }
 
@@ -146,7 +181,8 @@ export function recordUntilSilence(
       ff.kill("SIGKILL");
       reject(
         new MicPermissionError(
-          `no audio after ${opts.startupTimeoutMs}ms — ffmpeg is waiting on a permission prompt that never arrived`,
+          `no audio after ${opts.startupTimeoutMs}ms`,
+          audioDeviceHolders().filter((h) => !h.includes(String(ff.pid))),
         ),
       );
     }, opts.startupTimeoutMs);
@@ -198,7 +234,7 @@ export function recordUntilSilence(
       if (settled) return; // the startup guard already rejected
       settled = true;
       if (/Operation not permitted|Input\/output error|abort\(\)/i.test(stderr) && !audioFlowing) {
-        reject(new MicPermissionError(stderr.trim().split("\n").slice(-1)[0] ?? "unknown"));
+        reject(new MicPermissionError(stderr.trim().split("\n").slice(-1)[0] ?? "unknown", audioDeviceHolders()));
         return;
       }
       resolve({ path, durationMs: Date.now() - startedAt, endedBy });
