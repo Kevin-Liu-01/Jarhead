@@ -22,7 +22,9 @@
     "@jarvis/answers": "workspace:*",
     "@jarvis/agent": "workspace:*",
     "@jarvis/automations": "workspace:*",
-    "@jarvis/ears": "workspace:*"
+    "@jarvis/ears": "workspace:*",
+    "@jarvis/daemon": "workspace:*",
+    "@jarvis/ack": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
