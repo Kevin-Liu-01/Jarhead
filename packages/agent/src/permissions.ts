@@ -58,34 +58,61 @@ async function checkScreen(): Promise<PermissionCheck> {
 }
 
 /**
- * Accessibility. cliclick prints an explicit warning when privileges are
- * missing, which is more reliable than trying to detect a failed click.
+ * Accessibility. One grant covers two different needs — reading the UI tree via
+ * System Events, and synthesizing input via cliclick — so both are probed.
+ *
+ * The System Events probe deliberately queries a window's UI elements rather
+ * than the process list. Listing processes succeeds WITHOUT the grant, which
+ * makes it a useless signal and an easy way to convince yourself accessibility
+ * works when it does not. Real element access fails with -25211 / -1719.
  */
 async function checkAccessibility(): Promise<PermissionCheck> {
   const base = {
     id: "accessibility",
     label: "Accessibility",
-    unlocks: "moving the cursor, clicking, typing on your behalf",
+    unlocks: "reading the UI tree, moving the cursor, clicking, typing",
     settingsUrl: `${PANE}?Privacy_Accessibility`,
   } as const;
 
+  const script =
+    'tell application "System Events" to tell (first process whose frontmost is true) to return count of windows';
+
+  let axReads = false;
+  let axDetail = "";
   try {
-    const { stdout, stderr } = await run("cliclick", ["p"], { timeout: 6000 });
-    const text = `${stdout}${stderr}`;
-    if (/Accessibility privileges not enabled/i.test(text)) {
-      return { ...base, state: "denied", detail: "cliclick reports no privileges" };
-    }
-    return { ...base, state: "granted", detail: `cursor at ${stdout.trim() || "unknown"}` };
+    await run("osascript", ["-e", script], { timeout: 6000 });
+    axReads = true;
   } catch (e) {
     const text = `${(e as { stderr?: string }).stderr ?? ""}${(e as Error).message}`;
-    if (/not found|ENOENT/i.test(text)) {
-      return { ...base, state: "unknown", detail: "cliclick not installed — brew install cliclick" };
-    }
-    if (/Accessibility privileges not enabled/i.test(text)) {
-      return { ...base, state: "denied", detail: "cliclick reports no privileges" };
-    }
-    return { ...base, state: "unknown", detail: text.split("\n")[0]?.slice(0, 90) ?? "probe failed" };
+    axDetail = /assistive access|-25211|-1719/i.test(text)
+      ? "System Events denied assistive access"
+      : (text.split("\n")[0]?.slice(0, 60) ?? "osascript failed");
   }
+
+  let canClick = false;
+  let clickDetail = "";
+  try {
+    const { stdout, stderr } = await run("cliclick", ["p"], { timeout: 6000 });
+    canClick = !/Accessibility privileges not enabled/i.test(`${stdout}${stderr}`);
+    if (!canClick) clickDetail = "cliclick has no privileges";
+  } catch (e) {
+    const text = `${(e as { stderr?: string }).stderr ?? ""}${(e as Error).message}`;
+    clickDetail = /not found|ENOENT/i.test(text)
+      ? "cliclick not installed (brew install cliclick)"
+      : "cliclick has no privileges";
+  }
+
+  if (axReads && canClick) {
+    return { ...base, state: "granted", detail: "reads the UI tree and can click" };
+  }
+  if (!axReads && !canClick) {
+    return { ...base, state: "denied", detail: axDetail || clickDetail };
+  }
+  return {
+    ...base,
+    state: "denied",
+    detail: axReads ? `tree ok, but ${clickDetail}` : `clicking ok, but ${axDetail}`,
+  };
 }
 
 /**

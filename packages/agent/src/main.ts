@@ -23,6 +23,7 @@ import {
 import { makeDeps, runTurn } from "./turn.ts";
 import { Timeline } from "./timeline.ts";
 import { LineReader } from "./lines.ts";
+import { checkAll, openSettings } from "./permissions.ts";
 
 const HELP = `
 jarvis — local voice assistant
@@ -33,6 +34,7 @@ jarvis — local voice assistant
   pnpm jarvis voices          list ElevenLabs voices and pick one
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
+  pnpm jarvis permissions     check the macOS grants (--open to fix them)
   pnpm jarvis automations     list automations you created by voice
   pnpm jarvis bench [rounds]  measure per-stage latency across the answer types
 
@@ -139,6 +141,41 @@ async function maybeOfferRecurring(
   } catch (e) {
     await speak(deps, "that failed validation, so I didn't save it.");
     console.error(`  ${(e as Error).message}\n`);
+  }
+}
+
+/**
+ * Report the macOS grants Jarvis needs, and offer to open the right pane.
+ *
+ * Worth its own command because every one of these fails silently or weirdly:
+ * ffmpeg hangs without Microphone, screencapture prints a cryptic line without
+ * Screen Recording, and System Events happily lists processes without
+ * Accessibility while refusing every useful query.
+ */
+async function permissions(open: boolean): Promise<void> {
+  const checks = await checkAll();
+  const icon = { granted: "\u2714", denied: "\u2718", unknown: "!" } as const;
+
+  console.log("\n  macOS permissions\n");
+  for (const c of checks) {
+    console.log(`    ${icon[c.state]} ${c.label.padEnd(18)} ${c.detail}`);
+    console.log(`      ${c.unlocks}`);
+  }
+
+  const missing = checks.filter((c) => c.state !== "granted");
+  if (missing.length === 0) {
+    console.log("\n  all set.\n");
+    return;
+  }
+
+  console.log("\n  grant these in System Settings \u2192 Privacy & Security:");
+  for (const m of missing) console.log(`    \u00b7 ${m.label}`);
+
+  if (open) {
+    for (const m of missing) await openSettings(m);
+    console.log("\n  opened the settings pane(s).\n");
+  } else {
+    console.log("\n  run `pnpm jarvis permissions --open` to jump straight there.\n");
   }
 }
 
@@ -415,6 +452,9 @@ switch (command) {
     break;
   case "warm":
     await warm();
+    break;
+  case "permissions":
+    await permissions(flag("open"));
     break;
   case "automations":
     listAutomations();
