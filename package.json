@@ -13,26 +13,28 @@
     "test": "tsx --test packages/*/src/__tests__/*.test.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
     "jarvis": "tsx packages/agent/src/main.ts",
-    "jarvisd": "tsx packages/daemon/src/main.ts"
+    "jarvisd": "tsx packages/daemon/src/main.ts",
+    "overlay": "electron packages/overlay/src/electron-entry.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
-    "@jarvis/core": "workspace:*",
-    "@jarvis/wiki-bridge": "workspace:*",
-    "@jarvis/voice": "workspace:*",
-    "@jarvis/answers": "workspace:*",
-    "@jarvis/agent": "workspace:*",
-    "@jarvis/automations": "workspace:*",
-    "@jarvis/ears": "workspace:*",
-    "@jarvis/daemon": "workspace:*",
     "@jarvis/ack": "workspace:*",
+    "@jarvis/agent": "workspace:*",
+    "@jarvis/answers": "workspace:*",
+    "@jarvis/automations": "workspace:*",
     "@jarvis/browser": "workspace:*",
+    "@jarvis/computer": "workspace:*",
+    "@jarvis/core": "workspace:*",
+    "@jarvis/daemon": "workspace:*",
+    "@jarvis/ears": "workspace:*",
     "@jarvis/overlay": "workspace:*",
     "@jarvis/selfmod": "workspace:*",
-    "@jarvis/computer": "workspace:*"
+    "@jarvis/voice": "workspace:*",
+    "@jarvis/wiki-bridge": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "electron": "^43.3.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

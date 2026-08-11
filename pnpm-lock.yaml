@@ -54,6 +54,9 @@ importers:
       '@types/node':
         specifier: ^24.10.1
         version: 24.13.3
+      electron:
+        specifier: ^43.3.0
+        version: 43.3.0
       tsx:
         specifier: ^4.20.6
         version: 4.23.12

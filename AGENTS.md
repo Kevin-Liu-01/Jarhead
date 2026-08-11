@@ -37,32 +37,44 @@ pnpm run test
 pnpm run check       # all three
 ```
 
-## State — M0 done
+## State
 
-Working and measured: streaming TTS out, three answer sources (Hacker News, the
-wiki's brief projection, BM25 memory search), intent routing, the
-"make it recurring" loop with contract-validated registrations, and a latency
-benchmark. 29 tests pass; typecheck and doctor are clean.
+Working and verified live: voice out, voice in, three answer sources, web research,
+the "make it recurring" loop, `jarvisd` actually running those automations
+(bucket-idempotent, re-tick returns []), screen vision, accessibility-first
+pointing with a vision fallback, and the Electron overlay driven over IPC.
 
-Blocked: the microphone. Code is written but macOS has not granted the TCC
-prompt to the terminal, and ffmpeg hangs rather than erroring — hence the
-4s startup guard in `packages/voice/src/mic.ts`.
+Built and tested but not wired into the turn loop: `@jarvis/ack` (the latency
+fix). Built and tested but never run for real: `@jarvis/selfmod`.
 
-Not built: screen capture, pointing/clicking, browser automation, the resident
-daemon that ticks automations, self-modification. M1–M5.
-
-Measured on this hardware (`pnpm jarvis bench`, 15 turns): first audio p50
-1239ms / p95 1866ms. Over the 1s target; LLM TTFT (p50 572ms) dominates.
+230 tests. `pnpm run check` is clean. Measured first-audio p50 1239ms / p95
+1866ms — over the 1s target, LLM TTFT dominates.
 
 ## Things that cost real time to learn
 
-- `qmd search --format files` does not return paths. Rows are
-  `#colour,score,qmd://collection/path.md,"description"`. The wiki's
-  `localSearch` passes them through verbatim.
-- The `wiki-rebuild-private` collection is rooted at `<wikiRoot>/wiki`, not the
-  repo root.
-- briefd writes to `generated/runtime/brief`, and the newest projection on this
-  machine is months stale — narration must say so.
-- readline drops piped lines when no question is pending, which silently ate
-  every scripted run. Hence `packages/agent/src/lines.ts`.
-- ffmpeg does not error without the Microphone grant; it hangs forever.
+- ffmpeg **hangs forever** without the Microphone grant; it never errors. Every
+  AV subprocess needs a startup timeout.
+- `size=` in ffmpeg stderr means audio is flowing, NOT that someone spoke.
+  `silence_end` is the speech signal. Conflating them ran every silent recording
+  to its max duration.
+- STT echoes its own priming prompt back as a transcript on silence. Gate on
+  energy before spending the call, and reject prompt-shaped replies.
+- **cliclick reads a leading sign as RELATIVE.** `m:1000,-500` means "y minus
+  500". Kevin's displays sit above the primary one (menu bar at y=-2160), so
+  negative absolute coordinates are normal here — this silently walked the cursor
+  to y=-379279. Anything negative goes through CGEvent.
+- System Events lists processes WITHOUT the Accessibility grant but refuses every
+  useful query, so probing the process list proves nothing.
+- Chromium AX trees are effectively unreadable: Claude times out at 6s, Chrome
+  needs 4.3s for 104 mostly-untitled elements. Fetch properties in bulk (one
+  Apple Event per sibling list), cap hard, and treat a timeout as an ordinary
+  empty result rather than an error.
+- `qmd search --format files` returns CSV rows, not paths. The collection is
+  rooted at `<wiki>/wiki`, not the repo root.
+- briefd writes to `generated/runtime/brief`; the newest projection is months stale.
+- Node readline silently drops piped lines when no question is pending.
+- Electron's `setIgnoreMouseEvents` forward option is Windows-only.
+- `pnpm run check` is a wrapper — SIGKILL on it orphans tsc/tsx. Spawn detached
+  and kill the process group.
+- A timeout is not evidence an action did not happen. `pressElement` must not
+  retry by coordinates after an AX press times out, or it presses twice.
