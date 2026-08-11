@@ -183,7 +183,20 @@ export interface DisposeOptions {
   readonly force?: boolean;
 }
 
-export async function disposeWorktree(path: string, opts: DisposeOptions = {}): Promise<void> {
+/**
+ * Accepts either the path or the Worktree that createWorktree returned.
+ *
+ * The asymmetry was a real trap: createWorktree hands back an object, so
+ * `disposeWorktree(wt)` is the obvious call and it failed deep inside
+ * path.resolve with an unhelpful ERR_INVALID_ARG_TYPE. Cleanup code usually
+ * lives in a finally block, where a surprise throw loses the worktree AND masks
+ * whatever the original error was.
+ */
+export async function disposeWorktree(
+  target: string | Pick<Worktree, "path">,
+  opts: DisposeOptions = {},
+): Promise<void> {
+  const path = typeof target === "string" ? target : target.path;
   const p = resolve(path);
   const marker = readMarker(p);
 

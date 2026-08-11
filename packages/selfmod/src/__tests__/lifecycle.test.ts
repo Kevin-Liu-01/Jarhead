@@ -206,3 +206,11 @@ test("a flag-shaped remote is refused, but real remotes are not", async () => {
   assert.doesNotThrow(() => assertRemoteName("git@github.com:Kevin-Liu-01/jarvis.git"));
   assert.doesNotThrow(() => assertRemoteName("https://github.com/Kevin-Liu-01/jarvis.git"));
 });
+
+test("disposeWorktree accepts the object createWorktree returned, not just a path", async () => {
+  const { createWorktree, disposeWorktree } = await import("../worktree.ts");
+  const wt = await createWorktree(`jarvis/dispose-shape-${Date.now()}`);
+  // The asymmetry is a trap: cleanup lives in a finally block, so a surprise
+  // throw here would leak the worktree and hide the original error.
+  await assert.doesNotReject(() => disposeWorktree(wt, { force: true }));
+});
