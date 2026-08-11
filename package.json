@@ -28,7 +28,8 @@
     "@jarvis/ack": "workspace:*",
     "@jarvis/browser": "workspace:*",
     "@jarvis/overlay": "workspace:*",
-    "@jarvis/selfmod": "workspace:*"
+    "@jarvis/selfmod": "workspace:*",
+    "@jarvis/computer": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

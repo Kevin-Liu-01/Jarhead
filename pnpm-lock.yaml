@@ -26,6 +26,9 @@ importers:
       '@jarvis/browser':
         specifier: workspace:*
         version: link:packages/browser
+      '@jarvis/computer':
+        specifier: workspace:*
+        version: link:packages/computer
       '@jarvis/core':
         specifier: workspace:*
         version: link:packages/core
@@ -97,6 +100,8 @@ importers:
         version: link:../wiki-bridge
 
   packages/browser: {}
+
+  packages/computer: {}
 
   packages/core: {}
 
