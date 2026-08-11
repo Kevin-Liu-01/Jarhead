@@ -22,6 +22,7 @@ built on Kevin's brain at `~/repos/kevin-wiki-rebuild`.
 | Looks at your screen | ✅ capture → downscale → vision, speaks while looking |
 | Points at things | ✅ accessibility-first, vision fallback, real cursor glide |
 | Overlay buddy | ✅ Electron, transparent, always-on-top, IPC-driven |
+| Masks latency with acks | ✅ perceived 9ms p50, wired into every turn |
 | Rewrites its own code | ⚠️ built and tested; never run against this repo for real |
 | Wake word ("hey jarvis") | ⚠️ matches on transcript, not a always-on detector — see below |
 
@@ -68,13 +69,21 @@ From `pnpm jarvis bench`, real numbers on this machine, not the plan's estimates
 
 | stage | p50 | p95 |
 |---|---|---|
-| route (intent + context) | 0ms | 325ms |
-| LLM time-to-first-token | 572ms | 1359ms |
-| **first audio out** | **1239ms** | **1866ms** |
+| **perceived — the ack** | **9ms** | **16ms** |
+| route (context gathering) | 4ms | 712ms |
+| LLM time-to-first-token | 651ms | 1611ms |
+| first speakable chunk | 1035ms | 2477ms |
+| real answer audio | 1330ms | 2724ms |
 
-Over the 1s target; LLM TTFT dominates. `@jarvis/ack` exists to hide it — a
-pre-synthesized acknowledgement plays in ~120ms while the real answer generates —
-but it is not yet wired into the turn loop. That's the next latency win.
+The real answer is still over the 1s target and LLM TTFT still dominates it. What
+changed is what Kevin experiences: a pre-synthesized acknowledgement plays in
+**9ms**, because it is already on disk and touches no network. The plan hoped for
+a 150–250ms perceived floor.
+
+The ack is chosen from the intent, which is a pure keyword match, deliberately
+*before* context gathering. Keying it on the route instead put the ack at 1153ms —
+after a 1103ms qmd search had already elapsed — which masked almost nothing.
+Greetings get no ack: the real answer is shorter than the ack would be.
 
 Three things already bought real time and are worth not regressing:
 
@@ -193,7 +202,6 @@ What is deliberately *not* bridged, and why, is in `packages/wiki-bridge/src/ind
   needs to be both see-through and interactive at once.
 - **Screenshots go to the API.** `see` and the vision fallback upload a frame of
   your screen. Whatever is on it goes too.
-- **The ack bank is built but unwired**, so first-audio latency is still LLM-bound.
 - **Semantic search is unusable here** (qmd vsearch: ~7s + a Metal compile error),
   so memory answers are BM25 over a manually-indexed collection.
 

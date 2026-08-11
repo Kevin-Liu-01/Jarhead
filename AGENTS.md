@@ -44,11 +44,11 @@ the "make it recurring" loop, `jarvisd` actually running those automations
 (bucket-idempotent, re-tick returns []), screen vision, accessibility-first
 pointing with a vision fallback, and the Electron overlay driven over IPC.
 
-Built and tested but not wired into the turn loop: `@jarvis/ack` (the latency
-fix). Built and tested but never run for real: `@jarvis/selfmod`.
+Built and tested but never run for real: `@jarvis/selfmod`.
 
-230 tests. `pnpm run check` is clean. Measured first-audio p50 1239ms / p95
-1866ms — over the 1s target, LLM TTFT dominates.
+230 tests. `pnpm run check` is clean. Measured: perceived (ack) p50 9ms, real
+answer audio p50 1330ms. The real answer is still LLM-TTFT-bound; the ack is what
+makes it feel instant.
 
 ## Things that cost real time to learn
 
@@ -76,5 +76,8 @@ fix). Built and tested but never run for real: `@jarvis/selfmod`.
 - Electron's `setIgnoreMouseEvents` forward option is Windows-only.
 - `pnpm run check` is a wrapper — SIGKILL on it orphans tsc/tsx. Spawn detached
   and kill the process group.
+- The ack must be chosen from INTENT (a pure keyword match) before context
+  gathering, not from the route source afterwards. Keying it on the route put the
+  ack at 1153ms, after a 1103ms qmd search — masking nothing.
 - A timeout is not evidence an action did not happen. `pressElement` must not
   retry by coordinates after an AX press times out, or it presses twice.

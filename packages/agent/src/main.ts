@@ -59,6 +59,8 @@ function flag(name: string): boolean {
 }
 
 /** A Speaker-shaped no-op for --silent runs and for benchmarks. */
+const silentDeps = { ackBank: undefined } as const;
+
 const silentSpeaker = (): never =>
   ({
     say: () => undefined,
@@ -204,7 +206,7 @@ async function permissions(open: boolean): Promise<void> {
 
 /** "look at my screen and ..." — capture, downscale, ask, speak while looking. */
 async function see(question: string): Promise<void> {
-  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker } : {});
+  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker, ...silentDeps } : {});
   const timeline = new Timeline();
   const r = await lookAtScreen(question || "what am I looking at?", deps, timeline);
   console.log(`\n  jarvis: ${r.answer.trim()}\n`);
@@ -264,7 +266,7 @@ async function web(question: string): Promise<void> {
   console.log(`\n  ${r.sources.length} source(s) in ${Date.now() - started}ms${r.degraded ? ` (${r.degraded})` : ""}`);
   for (const src of r.sources) console.log(`    - ${src.title ?? "(untitled)"}  ${src.url}`);
 
-  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker } : {});
+  const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker, ...silentDeps } : {});
   const outcome = await runTurn(`${question}\n\nWeb research:\n${r.context}`, deps);
   printOutcome(outcome, flag("quiet"));
 }
@@ -306,6 +308,9 @@ function printOutcome(outcome: Awaited<ReturnType<typeof runTurn>>, quiet: boole
   console.log(`\n  jarvis: ${outcome.answer.trim()}\n`);
   if (!quiet) {
     console.log(outcome.timeline.render(outcome.firstAudioMs));
+    if (outcome.perceivedMs !== undefined) {
+      console.log(`    ${"→ perceived (ack)".padEnd(18)}  ${String(outcome.perceivedMs).padStart(5)}ms`);
+    }
     console.log("");
   }
 }
@@ -317,22 +322,7 @@ async function oneShot(question: string): Promise<void> {
   // so it is off the critical path entirely.
   if (!silent && cfg.elevenLabsApiKey) void prewarm(cfg.elevenLabsApiKey);
 
-  const deps = makeDeps(
-    silent
-      ? {
-          makeSpeaker: () =>
-            ({
-              say: () => undefined,
-              idle: async () => undefined,
-              stop: () => undefined,
-              spoken: [],
-              firstAudioMs: undefined,
-              firstAudioAt: undefined,
-              charactersSpoken: 0,
-            }) as never,
-        }
-      : {},
-  );
+  const deps = makeDeps(silent ? { makeSpeaker: silentSpeaker, ...silentDeps } : {});
   const outcome = await runTurn(question, deps);
   printOutcome(outcome, flag("quiet"));
 }
@@ -452,26 +442,12 @@ function percentile(sorted: readonly number[], p: number): number {
  */
 async function bench(rounds: number, withAudio: boolean): Promise<void> {
   useCacheDir(readConfig().stateDir);
-  const deps = makeDeps(
-    withAudio
-      ? {}
-      : {
-          makeSpeaker: () =>
-            ({
-              say: () => undefined,
-              idle: async () => undefined,
-              stop: () => undefined,
-              spoken: [],
-              firstAudioMs: undefined,
-              firstAudioAt: undefined,
-              charactersSpoken: 0,
-            }) as never,
-        },
-  );
+  const deps = makeDeps(withAudio ? {} : { makeSpeaker: silentSpeaker, ...silentDeps });
 
   const byStage = new Map<string, number[]>();
   const firstChunk: number[] = [];
   const firstAudio: number[] = [];
+  const perceived: number[] = [];
   let failures = 0;
 
   const total = rounds * BENCH_UTTERANCES.length;
@@ -489,6 +465,7 @@ async function bench(rounds: number, withAudio: boolean): Promise<void> {
         const fs = outcome.timeline.at("first_sentence");
         if (fs !== undefined) firstChunk.push(fs);
         if (outcome.firstAudioMs !== undefined) firstAudio.push(outcome.firstAudioMs);
+        if (outcome.perceivedMs !== undefined) perceived.push(outcome.perceivedMs);
         process.stdout.write(".");
       } catch (e) {
         failures++;
@@ -511,6 +488,7 @@ async function bench(rounds: number, withAudio: boolean): Promise<void> {
   }
 
   for (const [label, values] of [
+    ["→ perceived (ack)", perceived],
     ["→ first chunk ready", firstChunk],
     ["→ first audio", firstAudio],
   ] as const) {
