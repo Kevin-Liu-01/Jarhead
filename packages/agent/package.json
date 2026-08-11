@@ -1,0 +1,19 @@
+{
+  "name": "@jarvis/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "jarvis": "./src/main.ts"
+  },
+  "dependencies": {
+    "@jarvis/answers": "workspace:*",
+    "@jarvis/core": "workspace:*",
+    "@jarvis/voice": "workspace:*",
+    "@jarvis/wiki-bridge": "workspace:*",
+    "@jarvis/automations": "workspace:*"
+  }
+}

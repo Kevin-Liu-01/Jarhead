@@ -1,0 +1,184 @@
+import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Mic capture via ffmpeg + avfoundation, with silence-based endpointing.
+ *
+ * Not the final design — M1 replaces this with Silero VAD + a semantic
+ * endpointer, which the DECISION doc measures as 350–650ms faster than naive
+ * silence detection. This exists so M0 can capture real speech today without
+ * a native helper or a `brew install sox`.
+ *
+ * Requires the Microphone TCC grant for whatever process tree runs ffmpeg.
+ */
+
+export interface MicOptions {
+  /** avfoundation audio device index. See `listInputDevices()`. */
+  readonly device: number;
+  /** Stop after this much trailing silence, in seconds. */
+  readonly silenceSeconds: number;
+  /** Silence threshold in dB. Quieter than this counts as silence. */
+  readonly thresholdDb: number;
+  /** Hard cap so a stuck mic can't record forever. */
+  readonly maxSeconds: number;
+  /**
+   * Abort if no audio flows within this long.
+   *
+   * Without this the process hangs indefinitely: when the Microphone TCC grant
+   * is missing and no GUI prompt can reach the process (a sandboxed or headless
+   * shell), ffmpeg neither errors nor exits — it just waits. Verified on this
+   * machine. A hang is a much worse failure than a clear message.
+   */
+  readonly startupTimeoutMs: number;
+}
+
+export const DEFAULT_MIC: MicOptions = {
+  device: 1,
+  silenceSeconds: 1.2,
+  thresholdDb: -34,
+  maxSeconds: 20,
+  startupTimeoutMs: 4000,
+};
+
+export interface Recording {
+  readonly path: string;
+  /** ms from process start to endpoint decision. */
+  readonly durationMs: number;
+  readonly endedBy: "silence" | "max-duration" | "manual";
+}
+
+export class MicPermissionError extends Error {
+  constructor(detail: string) {
+    super(
+      `Microphone access denied. Grant it in System Settings → Privacy & Security → Microphone ` +
+        `for your terminal, then retry. (ffmpeg: ${detail})`,
+    );
+    this.name = "MicPermissionError";
+  }
+}
+
+/** Parses ffmpeg's avfoundation device listing. Returns [index, name] pairs. */
+export async function listInputDevices(): Promise<ReadonlyArray<{ index: number; name: string }>> {
+  const stderr = await new Promise<string>((resolve) => {
+    const p = spawn("ffmpeg", ["-f", "avfoundation", "-list_devices", "true", "-i", ""]);
+    let buf = "";
+    p.stderr.on("data", (d: Buffer) => (buf += d.toString()));
+    p.on("close", () => resolve(buf));
+    p.on("error", () => resolve(buf));
+  });
+
+  const out: Array<{ index: number; name: string }> = [];
+  let inAudio = false;
+  for (const line of stderr.split("\n")) {
+    if (line.includes("AVFoundation audio devices")) {
+      inAudio = true;
+      continue;
+    }
+    if (line.includes("AVFoundation video devices")) {
+      inAudio = false;
+      continue;
+    }
+    if (!inAudio) continue;
+    const m = /\[(\d+)\]\s+(.+?)\s*$/.exec(line);
+    if (m?.[1] && m[2]) out.push({ index: Number(m[1]), name: m[2] });
+  }
+  return out;
+}
+
+/**
+ * Record until the speaker stops talking.
+ *
+ * ffmpeg's `silencedetect` filter only logs; it won't terminate the capture.
+ * So we watch stderr and kill ffmpeg ourselves once silence has persisted past
+ * the threshold *and* we've heard actual speech first — otherwise it would end
+ * the recording during the pause before the user starts.
+ */
+export function recordUntilSilence(
+  opts: MicOptions = DEFAULT_MIC,
+  onSpeechStart?: () => void,
+): { done: Promise<Recording>; stop: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "jarvis-mic-"));
+  const path = join(dir, "utterance.wav");
+  const startedAt = Date.now();
+
+  const ff = spawn("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "info",
+    "-f", "avfoundation",
+    "-i", `:${opts.device}`,
+    "-ac", "1",
+    "-ar", "16000",
+    "-af", `silencedetect=noise=${opts.thresholdDb}dB:d=${opts.silenceSeconds}`,
+    "-t", String(opts.maxSeconds),
+    "-y", path,
+  ]);
+
+  let endedBy: Recording["endedBy"] = "max-duration";
+  let heardSpeech = false;
+  let stderr = "";
+  let settled = false;
+
+  const stop = (): void => {
+    if (settled) return;
+    endedBy = "manual";
+    ff.kill("SIGINT");
+  };
+
+  const done = new Promise<Recording>((resolve, reject) => {
+    // If no audio has flowed by now, we are almost certainly blocked on a TCC
+    // prompt that will never appear. Kill it and say so.
+    const startupGuard = setTimeout(() => {
+      if (heardSpeech || settled) return;
+      settled = true;
+      ff.kill("SIGKILL");
+      reject(
+        new MicPermissionError(
+          `no audio after ${opts.startupTimeoutMs}ms — ffmpeg is waiting on a permission prompt that never arrived`,
+        ),
+      );
+    }, opts.startupTimeoutMs);
+
+    const clearGuard = (): void => clearTimeout(startupGuard);
+
+    ff.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      stderr += text;
+
+      // silence_end means a silent stretch just finished -> speech resumed.
+      if (text.includes("silence_end")) heardSpeech = true;
+
+      // ffmpeg reports size= progress lines once audio is actually flowing.
+      if (!heardSpeech && /size=\s*\d+/.test(text)) {
+        heardSpeech = true;
+        clearGuard();
+        onSpeechStart?.();
+      }
+
+      if (heardSpeech && text.includes("silence_start")) {
+        endedBy = "silence";
+        // Let the tail of the silence window land in the file, then cut.
+        setTimeout(() => ff.kill("SIGINT"), 120);
+      }
+    });
+
+    ff.on("error", (e) => {
+      clearGuard();
+      reject(new Error(`ffmpeg failed to spawn: ${e.message}`));
+    });
+
+    ff.on("close", () => {
+      clearGuard();
+      if (settled) return; // the startup guard already rejected
+      settled = true;
+      if (/Operation not permitted|Input\/output error|abort\(\)/i.test(stderr) && !heardSpeech) {
+        reject(new MicPermissionError(stderr.trim().split("\n").slice(-1)[0] ?? "unknown"));
+        return;
+      }
+      resolve({ path, durationMs: Date.now() - startedAt, endedBy });
+    });
+  });
+
+  return { done, stop };
+}
