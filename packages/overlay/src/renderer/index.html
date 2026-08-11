@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- No remote content, ever: this window floats above everything Kevin does. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'"
+    />
+    <link rel="stylesheet" href="overlay.css" />
+    <title>jarvis</title>
+  </head>
+  <body>
+    <main id="buddy" class="state-idle">
+      <div id="bubble" hidden></div>
+      <div id="core">
+        <span id="glyph"></span>
+        <div id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div id="tip"></div>
+    </main>
+    <script src="overlay.js"></script>
+  </body>
+</html>

@@ -1,0 +1,172 @@
+/*
+ * Idle must cost nothing. Every persistent animation in this file is
+ * transform/box-shadow only, so it runs on the compositor and the renderer
+ * main thread stays asleep between commands. The only JS-driven animation is
+ * the thinking spinner (12.5 fps setInterval, alive only in that state) — see
+ * overlay.js.
+ */
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  font:
+    13px/1.45 -apple-system,
+    "SF Pro Text",
+    sans-serif;
+}
+
+#buddy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 12px;
+}
+
+#core {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #7dd3fc, #2563eb 72%);
+  box-shadow: 0 0 24px rgba(56, 132, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+/* idle — slow breathing */
+.state-idle #core {
+  animation: breathe 4s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+/* listening — pulsing */
+.state-listening #core {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 16px rgba(56, 132, 255, 0.35);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 0 40px rgba(125, 211, 252, 0.75);
+  }
+}
+
+/* thinking — braille spinner, the wiki's loading vocabulary */
+#glyph {
+  display: none;
+  color: #f8fafc;
+  font-size: 28px;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.state-thinking #glyph {
+  display: block;
+}
+
+/* speaking — waveform */
+#wave {
+  display: none;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+}
+#wave i {
+  width: 4px;
+  height: 22px;
+  border-radius: 2px;
+  background: #f8fafc;
+}
+.state-speaking #wave {
+  display: flex;
+}
+.state-speaking #wave i {
+  animation: bar 900ms ease-in-out infinite;
+}
+.state-speaking #wave i:nth-child(2) {
+  animation-delay: 130ms;
+}
+.state-speaking #wave i:nth-child(3) {
+  animation-delay: 260ms;
+}
+.state-speaking #wave i:nth-child(4) {
+  animation-delay: 390ms;
+}
+.state-speaking #wave i:nth-child(5) {
+  animation-delay: 520ms;
+}
+@keyframes bar {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* pointing — a tip under the core; the window's anchor pixel is this point */
+#tip {
+  display: none;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 14px solid #2563eb;
+  margin-top: -2px;
+  filter: drop-shadow(0 0 6px rgba(56, 132, 255, 0.5));
+}
+.state-pointing #tip {
+  display: block;
+}
+
+/* speech bubble */
+#bubble {
+  position: absolute;
+  bottom: 104px;
+  max-width: 248px;
+  background: rgba(17, 22, 31, 0.92);
+  color: #f8fafc;
+  padding: 8px 12px;
+  border-radius: 12px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+#bubble[hidden] {
+  display: none;
+}
+
+/*
+ * Interactive mode. The core becomes a drag handle — a frameless window has
+ * no title bar, so -webkit-app-region is the only way to make it grabbable —
+ * and the ring makes the mode visible, because with click-through being
+ * all-or-nothing on macOS, Kevin needs to see which mode he is in.
+ */
+body.interactive #core {
+  -webkit-app-region: drag;
+  cursor: grab;
+  outline: 2px solid rgba(125, 211, 252, 0.9);
+  outline-offset: 3px;
+}

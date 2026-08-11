@@ -23,6 +23,9 @@ importers:
       '@jarvis/automations':
         specifier: workspace:*
         version: link:packages/automations
+      '@jarvis/browser':
+        specifier: workspace:*
+        version: link:packages/browser
       '@jarvis/core':
         specifier: workspace:*
         version: link:packages/core
@@ -32,6 +35,12 @@ importers:
       '@jarvis/ears':
         specifier: workspace:*
         version: link:packages/ears
+      '@jarvis/overlay':
+        specifier: workspace:*
+        version: link:packages/overlay
+      '@jarvis/selfmod':
+        specifier: workspace:*
+        version: link:packages/selfmod
       '@jarvis/voice':
         specifier: workspace:*
         version: link:packages/voice

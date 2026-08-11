@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test packages/*/src/__tests__/*.test.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
-    "jarvis": "tsx packages/agent/src/main.ts"
+    "jarvis": "tsx packages/agent/src/main.ts",
+    "jarvisd": "tsx packages/daemon/src/main.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
@@ -24,7 +25,10 @@
     "@jarvis/automations": "workspace:*",
     "@jarvis/ears": "workspace:*",
     "@jarvis/daemon": "workspace:*",
-    "@jarvis/ack": "workspace:*"
+    "@jarvis/ack": "workspace:*",
+    "@jarvis/browser": "workspace:*",
+    "@jarvis/overlay": "workspace:*",
+    "@jarvis/selfmod": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
