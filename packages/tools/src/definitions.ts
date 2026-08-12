@@ -19,7 +19,10 @@
  * lockstep: every name here must dispatch in executor.ts, and vice versa.
  */
 
+export const CURSOR_TOOL = "cursor_position" as const;
+
 export const TOOL_NAMES = [
+  "cursor_position",
   "look_at_screen",
   "find_on_screen",
   "point_at",
@@ -57,6 +60,16 @@ export interface ToolDefinition {
 const COORD_NOTE = "May be negative: a display sits above the primary one.";
 
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+  {
+    name: "cursor_position",
+    description:
+      "Where the mouse pointer is right now, in global screen coordinates. " +
+      "Instant (~30ms) and exact — it reads the system pointer rather than looking at a picture. " +
+      "Always use this instead of look_at_screen or find_on_screen when the question is about the " +
+      "cursor itself: a screenshot may not even contain the pointer, and estimating its position " +
+      "from an image is both slower and wrong.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
   {
     name: "look_at_screen",
     description:

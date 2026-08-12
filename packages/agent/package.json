@@ -22,6 +22,8 @@
     "@jarvis/daemon": "workspace:*",
     "@jarvis/selfmod": "workspace:*",
     "@jarvis/overlay": "workspace:*",
-    "@jarvis/live": "workspace:*"
+    "@jarvis/live": "workspace:*",
+    "@jarvis/annotate": "workspace:*",
+    "@jarvis/tools": "workspace:*"
   }
 }

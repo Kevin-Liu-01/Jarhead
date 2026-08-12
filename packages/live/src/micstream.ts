@@ -16,12 +16,24 @@ import { SAMPLE_RATE } from "./transcribe.ts";
  */
 
 export interface MicStreamOptions {
-  readonly device: number;
+  /**
+   * avfoundation device spec, WITHOUT the leading colon.
+   *
+   * "default" rather than an index on purpose. Indices are positional and shift
+   * whenever an audio device appears or disappears — when Kevin's AirPods
+   * disconnected, the built-in microphone moved from 1 to 0 and every capture
+   * started failing with a bare "Input/output error". "default" follows whatever
+   * macOS considers the current input, which is what Kevin means anyway.
+   */
+  readonly device: string;
   /** A missing Microphone grant makes ffmpeg hang rather than fail. */
   readonly startupTimeoutMs: number;
 }
 
-export const DEFAULT_MIC_STREAM: MicStreamOptions = { device: 1, startupTimeoutMs: 4000 };
+export const DEFAULT_MIC_STREAM: MicStreamOptions = {
+  device: process.env["JARVIS_MIC_DEVICE"] ?? "default",
+  startupTimeoutMs: 4000,
+};
 
 export class MicUnavailableError extends Error {
   constructor(detail: string) {

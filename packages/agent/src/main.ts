@@ -32,6 +32,7 @@ import { research } from "@jarvis/browser";
 import { ipcRequest } from "@jarvis/daemon";
 import { ensureEarcon, playFile } from "@jarvis/ack";
 import { LiveConversation } from "@jarvis/live";
+import { act, speakerNarrator } from "./act.ts";
 
 const HELP = `
 jarvis — local voice assistant
@@ -42,6 +43,7 @@ jarvis — local voice assistant
   pnpm jarvis voices          list ElevenLabs voices and pick one
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
+  pnpm jarvis do "..."        look at the screen and show you — points, draws, narrates
   pnpm jarvis live            always-on conversation: instant answers, interruptible
   pnpm jarvis listen          record one utterance, answer, exit (what the app uses)
   pnpm jarvis see "..."       look at the screen and answer out loud
@@ -581,6 +583,17 @@ async function live(): Promise<void> {
     config: cfg,
     openAiKey,
     log: (line) => console.log(`  · ${line}`),
+    // Injected rather than imported by @jarvis/live, which would be a cycle.
+    act: (request, io) =>
+      act(request, {
+        anthropicApiKey: cfg.anthropicApiKey!,
+        speak: async (s: string) => {
+          console.log(`  jarvis: ${s}`);
+          await io.speak(s);
+        },
+        signal: io.signal,
+        log: (line) => console.log(`  · ${line}`),
+      }).then(() => undefined),
   });
 
   const PHASE: Record<string, string> = {
@@ -616,6 +629,40 @@ async function live(): Promise<void> {
   });
 }
 
+/**
+ * "Do this on my screen." Generic: no app knows it is being driven.
+ */
+async function doAct(request: string): Promise<void> {
+  const cfg = readConfig();
+  if (!cfg.anthropicApiKey) {
+    console.error("ACT needs ANTHROPIC_API_KEY");
+    process.exit(1);
+  }
+
+  const silent = flag("silent");
+  const deps = makeDeps(silent ? { makeSpeaker: silentSpeaker, ...silentDeps } : {});
+  // One place prints, one place speaks. Wrapping a narrator that already printed
+  // meant every sentence appeared twice.
+  const utter = silent ? async (): Promise<void> => undefined : speakerNarrator(() => deps.makeSpeaker());
+
+  const started = Date.now();
+  const outcome = await act(request, {
+    anthropicApiKey: cfg.anthropicApiKey,
+    speak: async (s: string) => {
+      console.log(`  jarvis: ${s}`);
+      await utter(s);
+    },
+    log: (line) => console.log(`  · ${line}`),
+  });
+
+  console.log(`\n  ${outcome.stopped} after ${outcome.steps} step(s), ${Date.now() - started}ms`);
+  if (outcome.error) console.log(`  error: ${outcome.error}`);
+  for (const x of outcome.transcript) {
+    for (const r of x.results) console.log(`    ${r.ok ? "ok " : "err"} ${r.name}: ${r.detail.slice(0, 90)}`);
+  }
+  console.log("");
+}
+
 async function warm(): Promise<void> {
   useCacheDir(readConfig().stateDir);
   const started = Date.now();
@@ -649,6 +696,13 @@ switch (command) {
     break;
   case "warm":
     await warm();
+    break;
+  case "do":
+    if (rest.length === 0) {
+      console.error('usage: pnpm jarvis do "find my cursor"');
+      process.exit(1);
+    }
+    await doAct(rest.join(" "));
     break;
   case "live":
     await live();

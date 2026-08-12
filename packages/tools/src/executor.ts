@@ -44,6 +44,8 @@ export interface ElementFinder {
 export interface Cursor {
   moveTo(x: number, y: number, durationMs: number): Promise<void>;
   clickAt(x: number, y: number): Promise<void>;
+  /** Exact pointer location. Deterministic, unlike anything read off a screenshot. */
+  position(): Promise<{ readonly x: number; readonly y: number }>;
 }
 
 export interface Annotator {
@@ -224,6 +226,18 @@ const HANDLERS = {
 
   list_windows: async (_input, deps) => {
     return { windows: await deps.windows.list() };
+  },
+
+  /**
+   * The deterministic answer to "where is my cursor".
+   *
+   * Worth its own tool rather than folding into look_at_screen: a screenshot may
+   * not contain the pointer at all (screencapture omits it without -C), so vision
+   * would confidently report it missing. This reads the system pointer.
+   */
+  cursor_position: async (_input, deps) => {
+    const p = await deps.cursor.position();
+    return { x: p.x, y: p.y };
   },
 } as const satisfies Record<(typeof TOOL_NAMES)[number], Handler>;
 

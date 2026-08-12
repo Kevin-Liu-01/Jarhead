@@ -80,6 +80,9 @@ importers:
       '@jarvis/ack':
         specifier: workspace:*
         version: link:../ack
+      '@jarvis/annotate':
+        specifier: workspace:*
+        version: link:../annotate
       '@jarvis/answers':
         specifier: workspace:*
         version: link:../answers
@@ -110,6 +113,9 @@ importers:
       '@jarvis/selfmod':
         specifier: workspace:*
         version: link:../selfmod
+      '@jarvis/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@jarvis/voice':
         specifier: workspace:*
         version: link:../voice

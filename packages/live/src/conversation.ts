@@ -6,6 +6,7 @@ import { AckBank, playFile, shouldAck, type PlaybackHandle } from "@jarvis/ack";
 import { judgeEcho, isRealInterruption } from "./echo.ts";
 import { openMicStream, DEFAULT_MIC_STREAM, type MicStreamOptions } from "./micstream.ts";
 import { RealtimeTranscriber } from "./transcribe.ts";
+import { wantsAction } from "./intent.ts";
 
 /**
  * Full-duplex conversation: always listening, answers the moment you stop, and
@@ -38,7 +39,21 @@ export interface ConversationOptions {
   readonly mic?: MicStreamOptions;
   /** Injected in tests so no audio device or network is required. */
   readonly makeSpeaker?: () => Speaker;
+  /**
+   * Runs an on-screen action, narrating as it goes.
+   *
+   * Injected rather than imported because the implementation lives in
+   * @jarvis/agent, which already depends on this package — importing it back
+   * would be a cycle. Absent, everything falls through to a spoken answer.
+   */
+  readonly act?: (request: string, io: ActIO) => Promise<void>;
   readonly log?: (line: string) => void;
+}
+
+export interface ActIO {
+  /** Speaks one sentence and resolves when its audio finishes. */
+  readonly speak: (sentence: string) => Promise<void>;
+  readonly signal: AbortSignal;
 }
 
 export interface Conversation extends EventEmitter {
@@ -206,6 +221,41 @@ export class LiveConversation extends EventEmitter {
     }
   }
 
+  /**
+   * Show something on screen instead of talking about it.
+   *
+   * Shares the turn machinery so an interruption cuts a demonstration off the
+   * same way it cuts a sentence off — the abort signal is the same one.
+   */
+  private async performAction(utterance: string, id: number, abort: AbortController): Promise<void> {
+    const speaker = this.opts.makeSpeaker ? this.opts.makeSpeaker() : this.defaultSpeaker();
+    this.speaker = speaker;
+    this.setPhase("speaking");
+    this.ack?.stop();
+
+    try {
+      await this.opts.act?.(utterance, {
+        speak: async (sentence: string) => {
+          if (abort.signal.aborted) return;
+          // Kept current so echo rejection can tell Kevin's voice from this one.
+          this.speaking = sentence;
+          const s = this.opts.makeSpeaker ? this.opts.makeSpeaker() : this.defaultSpeaker();
+          this.speaker = s;
+          s.say(sentence);
+          await s.idle();
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      if (id === this.turnId) {
+        this.speaking = undefined;
+        this.speaker = undefined;
+        this.abort = undefined;
+        this.setPhase("listening");
+      }
+    }
+  }
+
   private async answer(utterance: string): Promise<void> {
     const id = ++this.turnId;
     // Measured from the endpoint, not from now: the endpoint is when Kevin
@@ -219,6 +269,17 @@ export class LiveConversation extends EventEmitter {
     if (!shouldAck(intent, 1200, 500).ack) {
       this.ack?.stop();
       this.ack = undefined;
+    }
+
+    // Route to the act loop before doing any answer work: gathering wiki context
+    // for "point at the send button" would be wasted effort.
+    const verdict = wantsAction(utterance);
+    if (verdict.act && this.opts.act) {
+      this.log(`acting: ${verdict.reason}`);
+      const abort = new AbortController();
+      this.abort = abort;
+      await this.performAction(utterance, id, abort);
+      return;
     }
 
     const routed = await route(utterance, { wikiRoot: this.opts.config.kevinWikiRoot });

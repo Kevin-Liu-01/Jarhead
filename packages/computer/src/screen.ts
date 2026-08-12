@@ -54,11 +54,11 @@ async function capture(args: readonly string[], timeoutMs: number): Promise<Capt
 
 /** Full display. `-x` suppresses the shutter sound so captures stay silent during a voice turn. */
 export async function captureScreen(opts: CaptureOptions = {}): Promise<Capture> {
-  return capture(["-x", "-t", "png"], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
+  return capture(["-x", "-C", "-t", "png"], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
 }
 
 export async function captureRegion(region: Region, opts: CaptureOptions = {}): Promise<Capture> {
-  return capture(["-x", "-t", "png", "-R", buildRegionArg(region)], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
+  return capture(["-x", "-C", "-t", "png", "-R", buildRegionArg(region)], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
 }
 
 /** `windowId` is a CGWindowID, e.g. from a CGWindowList dump — not an AX path. */
@@ -66,7 +66,7 @@ export async function captureWindow(windowId: number, opts: CaptureOptions = {})
   if (!Number.isInteger(windowId) || windowId <= 0) {
     throw new Error(`windowId must be a positive integer CGWindowID, got ${windowId}`);
   }
-  return capture(["-x", "-t", "png", "-l", String(windowId)], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
+  return capture(["-x", "-C", "-t", "png", "-l", String(windowId)], opts.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS);
 }
 
 export function buildRegionArg(region: Region): string {

@@ -15,8 +15,13 @@ import { join } from "node:path";
  */
 
 export interface MicOptions {
-  /** avfoundation audio device index. See `listInputDevices()`. */
-  readonly device: number;
+  /**
+   * avfoundation device spec without the leading colon.
+   *
+   * "default" not an index: indices shift when audio devices come and go, and
+   * an AirPods disconnect silently moved the built-in mic from 1 to 0.
+   */
+  readonly device: number | string;
   /** Stop after this much trailing silence, in seconds. */
   readonly silenceSeconds: number;
   /** Silence threshold in dB. Quieter than this counts as silence. */
@@ -44,7 +49,7 @@ export interface MicOptions {
 }
 
 export const DEFAULT_MIC: MicOptions = {
-  device: 1,
+  device: process.env["JARVIS_MIC_DEVICE"] ?? "default",
   silenceSeconds: 1.2,
   thresholdDb: -34,
   maxSeconds: 20,

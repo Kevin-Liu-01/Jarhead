@@ -32,6 +32,12 @@ export function fakeDeps(overrides: Partial<ToolDeps> = {}): { readonly deps: To
       clickAt: async (x, y) => {
         calls.push(`click:${x},${y}`);
       },
+      // Negative y on purpose: the display above the primary is where most of
+      // the coordinate bugs in this repo have lived.
+      position: async () => {
+        calls.push("position");
+        return { x: 4242, y: -1337 };
+      },
     },
     annotator: {
       draw: async (shape, x, y, label) => {

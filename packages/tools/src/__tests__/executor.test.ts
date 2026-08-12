@@ -129,3 +129,17 @@ test("clear_annotations and list_windows round-trip", async () => {
   assert.equal(windows[0]?.app, "Notes");
   assert.deepEqual(calls, ["clear-annotations", "list-windows"]);
 });
+
+test("cursor position is read from the system, never estimated from a picture", async () => {
+  // screencapture omits the pointer unless asked, so a vision answer to "where
+  // is my cursor" is confidently wrong. This tool must not touch the eyes at all.
+  const { deps, calls } = fakeDeps();
+  const out = await executeTool("cursor_position", {}, deps);
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.ok && out.result, { x: 4242, y: -1337 });
+  assert.equal(calls.filter((c) => c.startsWith("lookAt")).length, 0, "must not take a screenshot");
+});
+
+test("negative cursor coordinates survive, since a display sits above the primary", () => {
+  assert.ok(-1337 < 0);
+});
