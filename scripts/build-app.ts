@@ -105,10 +105,14 @@ function pickIdentity(): string | undefined {
   try {
     const out = execFileSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
     const names = [...out.matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
+    // Preference order is about distribution, not about whether grants stick:
+    // ANY stable identity keeps TCC happy across rebuilds, including a
+    // self-signed one. Developer ID is only needed to run on other machines.
     return (
       names.find((n) => n.startsWith("Developer ID Application")) ??
       names.find((n) => n.startsWith("Apple Development")) ??
-      names.find((n) => n.startsWith("Apple Distribution"))
+      names.find((n) => n.startsWith("Apple Distribution")) ??
+      names[0]
     );
   } catch {
     return undefined;

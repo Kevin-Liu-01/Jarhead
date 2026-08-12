@@ -10,15 +10,9 @@
     <link rel="stylesheet" href="overlay.css" />
     <title>jarvis</title>
   </head>
-  <body>
-    <main id="buddy" class="state-idle">
-      <div id="bubble" hidden></div>
-      <div id="core">
-        <span id="glyph"></span>
-        <div id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-      </div>
-      <div id="tip"></div>
-    </main>
+  <body data-state="idle" data-bubble="right" data-vbubble="below" data-edges="none">
+    <pre id="blob" aria-label="Jarvis"></pre>
+    <div id="bubble" hidden></div>
     <script src="overlay.js"></script>
   </body>
 </html>

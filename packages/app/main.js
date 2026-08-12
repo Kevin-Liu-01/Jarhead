@@ -14,10 +14,11 @@
  * which is why Info.plist carries real usage strings.
  */
 
-const { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, screen, shell, dialog } = require("electron");
+const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell, dialog } = require("electron");
 const { spawn } = require("node:child_process");
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { join } = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { homedir } = require("node:os");
 
 const REPO = require("./repo-path.json").repo;
@@ -80,6 +81,7 @@ function onSomeDisplay(pos) {
 let tray;
 let overlayWindow;
 let daemon;
+let overlayServer;
 let busy = false;
 
 /** Everything the app runs goes through here so one missing repo is one message. */
@@ -111,6 +113,45 @@ function runAgent(args, { onLine } = {}) {
   });
 }
 
+/**
+ * Which display edges the buddy is currently touching.
+ *
+ * Sent to the renderer so the blob can lean away from them and open its bubble
+ * into free space. Computed here rather than in the renderer because only the
+ * main process knows the display geometry — and these displays sit at negative
+ * coordinates, so nothing about it can be assumed.
+ */
+const EDGE_SLOP = 40;
+
+function nearEdges() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return [];
+  const b = overlayWindow.getBounds();
+  const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 }).workArea;
+  const edges = [];
+  if (b.x - area.x <= EDGE_SLOP) edges.push("left");
+  if (area.x + area.width - (b.x + b.width) <= EDGE_SLOP) edges.push("right");
+  if (b.y - area.y <= EDGE_SLOP) edges.push("top");
+  if (area.y + area.height - (b.y + b.height) <= EDGE_SLOP) edges.push("bottom");
+  return edges;
+}
+
+function pushEdges() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.webContents.send("overlay:command", { kind: "edges", edges: nearEdges() });
+}
+
+function setBuddyState(state) {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("overlay:command", { kind: "state", state });
+  }
+}
+
+function buddySay(text) {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("overlay:command", { kind: "say", text });
+  }
+}
+
 function setTrayState(state) {
   if (!tray) return;
   const label = { idle: "Jarvis", listening: "Jarvis — listening", thinking: "Jarvis — thinking" }[state] ?? "Jarvis";
@@ -125,11 +166,27 @@ async function speakTurn(args, stateLabel) {
   if (busy) return;
   busy = true;
   setTrayState(stateLabel);
+  setBuddyState(stateLabel === "listening" ? "listening" : "thinking");
+  refreshMenus();
   try {
-    await runAgent(args);
+    // Surface the answer in the bubble so a tap-to-talk turn has a visible
+    // result even when Kevin is looking at the buddy rather than a terminal.
+    let spoken;
+    await runAgent(args, {
+      onLine: (line) => {
+        const m = /^\s*jarvis:\s*(.+)$/.exec(line);
+        if (m && m[1]) {
+          spoken = m[1];
+          setBuddyState("speaking");
+        }
+      },
+    });
+    if (spoken) buddySay(spoken);
   } finally {
     busy = false;
     setTrayState("idle");
+    setBuddyState("idle");
+    refreshMenus();
   }
 }
 
@@ -162,8 +219,8 @@ function buildMenu() {
       click: () => toggleOverlay(),
     },
     {
-      label: buddyDraggable ? "Lock buddy (click-through)" : "Move buddy…",
-      click: () => setBuddyDraggable(!buddyDraggable),
+      label: ghost ? "Make buddy clickable" : "Ghost mode (click-through)",
+      click: () => setGhost(!ghost),
     },
     { label: "Reset buddy position", click: () => resetBuddyPosition() },
     { type: "separator" },
@@ -178,6 +235,19 @@ function refreshMenus() {
   if (process.platform === "darwin" && app.dock) app.dock.setMenu(menu);
 }
 
+/**
+ * Ghost mode: click-through, so the buddy cannot intercept a click meant for
+ * whatever is beneath it. Off by default — see createOverlay.
+ */
+let ghost = false;
+
+function setGhost(on) {
+  if (!overlayWindow) return;
+  ghost = on;
+  overlayWindow.setIgnoreMouseEvents(on, { forward: true });
+  refreshMenus();
+}
+
 let buddyDraggable = false;
 
 /**
@@ -190,8 +260,10 @@ let buddyDraggable = false;
 function setBuddyDraggable(draggable) {
   if (!overlayWindow) return;
   buddyDraggable = draggable;
-  overlayWindow.setIgnoreMouseEvents(!draggable, { forward: true });
-  overlayWindow.setFocusable(draggable);
+  // The renderer turns #core into a -webkit-app-region drag handle and rings it,
+  // so the mode is visible. Dragging and tapping cannot coexist on one element.
+  overlayWindow.webContents.send("overlay:command", { kind: "interactive", interactive: draggable });
+  if (draggable) setGhost(false);
   refreshMenus();
 }
 
@@ -200,6 +272,7 @@ function resetBuddyPosition() {
   const pos = defaultPosition();
   overlayWindow.setPosition(pos.x, pos.y, false);
   savePosition(pos.x, pos.y);
+  pushEdges();
 }
 
 function toggleOverlay() {
@@ -226,7 +299,11 @@ function createOverlay() {
     skipTaskbar: true,
     focusable: false,
     alwaysOnTop: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: join(REPO, "packages", "overlay", "src", "renderer", "preload.cjs"),
+    },
   });
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -235,18 +312,90 @@ function createOverlay() {
   // vision path hides this window around each screenshot instead; see
   // packages/agent/src/capture.ts.
   overlayWindow.setContentProtection(false);
-  // forward:true is a Windows-only option; on macOS this is all-or-nothing,
-  // which is the concrete limitation that argues for a native shell later.
-  overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  // Clickable by DEFAULT, which is the opposite of what this used to do.
+  // Click-through matters for a full-screen overlay; this is a 220px buddy in a
+  // corner, and making it a ghost meant the only thing Kevin could do with it
+  // was look at it. Ghost mode is now the deliberate opt-in, via the menu.
+
+  overlayWindow.on("show", () => overlayWindow.webContents.send("overlay:command", { kind: "visible", visible: true }));
+  overlayWindow.on("hide", () => overlayWindow.webContents.send("overlay:command", { kind: "visible", visible: false }));
 
   overlayWindow.on("moved", () => {
     const [x, y] = overlayWindow.getPosition();
     savePosition(x, y);
+    pushEdges();
+  });
+
+  // Orientation depends on display geometry, which changes when a monitor is
+  // plugged in or the arrangement is edited.
+  screen.on("display-metrics-changed", pushEdges);
+  screen.on("display-added", pushEdges);
+  screen.on("display-removed", pushEdges);
+
+  overlayWindow.webContents.on("did-finish-load", pushEdges);
+
+  // Renderer failures are otherwise completely silent: the buddy still paints,
+  // it just stops responding, which reads as "the click did nothing".
+  overlayWindow.webContents.on("console-message", (_e, level, message, line, source) => {
+    if (level >= 2) console.error(`overlay[${source}:${line}] ${message}`);
+  });
+  overlayWindow.webContents.on("preload-error", (_e, path, error) => {
+    console.error(`overlay preload failed (${path}): ${error.message}`);
+  });
+  overlayWindow.webContents.on("did-fail-load", (_e, code, desc) => {
+    console.error(`overlay failed to load (${code}): ${desc}`);
   });
 
   const renderer = join(REPO, "packages", "overlay", "src", "renderer", "index.html");
   if (existsSync(renderer)) void overlayWindow.loadFile(renderer);
   else void overlayWindow.loadURL("data:text/html,<body style='background:transparent'></body>");
+}
+
+/**
+ * Expose the overlay on a unix socket.
+ *
+ * Without this the buddy is only reachable from inside this process, so the
+ * CLI's withOverlayHidden() silently no-ops and the vision path photographs the
+ * buddy after all. That was not caught earlier because the buddy happened to be
+ * on a different display from the one screencapture grabs.
+ *
+ * The server is loaded through tsx from the repo, so the .app does not have to
+ * carry the overlay package.
+ */
+async function startOverlayServer() {
+  try {
+    // createRequire rooted in the repo: tsx lives under pnpm's content-addressed
+    // store, so a literal node_modules/tsx path does not exist. Resolving from
+    // the repo's package.json follows the symlinks pnpm actually created.
+    const { createRequire } = require("node:module");
+    const repoRequire = createRequire(join(REPO, "package.json"));
+    repoRequire("tsx/esm/api").register();
+    const { OverlayServer } = await import(pathToFileURL(repoRequire.resolve("@jarvis/overlay")).href);
+
+    overlayServer = new OverlayServer({
+      setState: (state) => setBuddyState(state),
+      flyTo: (x, y) => {
+        if (overlayWindow && !overlayWindow.isDestroyed()) {
+          overlayWindow.setPosition(Math.round(x), Math.round(y), true);
+          setBuddyState("pointing");
+          pushEdges();
+        }
+      },
+      say: (text, ttlMs) => {
+        if (overlayWindow && !overlayWindow.isDestroyed()) {
+          overlayWindow.webContents.send("overlay:command", { kind: "say", text, ttlMs });
+        }
+      },
+      hide: () => overlayWindow && overlayWindow.hide(),
+      show: () => overlayWindow && overlayWindow.showInactive(),
+      setInteractive: (interactive) => setBuddyDraggable(interactive),
+    });
+    await overlayServer.listen();
+    console.log("overlay: socket listening");
+  } catch (e) {
+    console.error(`overlay: socket unavailable (${e.message}) — screenshots may include the buddy`);
+  }
 }
 
 function startDaemon() {
@@ -268,8 +417,45 @@ app.whenReady().then(() => {
   setTrayState("idle");
 
   createOverlay();
+  void startOverlayServer();
   startDaemon();
   refreshMenus();
+
+  ipcMain.on("overlay:ready", () => console.log("overlay: renderer bridge ready"));
+
+  /**
+   * Free dragging, implemented by hand.
+   *
+   * -webkit-app-region: drag would be less code but it swallows every mouse
+   * event before the page sees it, so click-to-talk would stop working. Moving
+   * the window ourselves keeps both: drag past a few pixels and it moves, let
+   * go without moving and it is a tap.
+   */
+  let dragOrigin;
+  ipcMain.on("overlay:dragstart", (_e, p) => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const [wx, wy] = overlayWindow.getPosition();
+    dragOrigin = { wx, wy, sx: p.screenX, sy: p.screenY };
+  });
+  ipcMain.on("overlay:dragmove", (_e, p) => {
+    if (!dragOrigin || !overlayWindow || overlayWindow.isDestroyed()) return;
+    overlayWindow.setPosition(
+      Math.round(dragOrigin.wx + (p.screenX - dragOrigin.sx)),
+      Math.round(dragOrigin.wy + (p.screenY - dragOrigin.sy)),
+      false,
+    );
+  });
+  ipcMain.on("overlay:dragend", () => {
+    dragOrigin = undefined;
+    if (!overlayWindow || overlayWindow.isDestroyed()) return;
+    const [x, y] = overlayWindow.getPosition();
+    savePosition(x, y);
+    pushEdges();
+  });
+  ipcMain.on("overlay:tap", () => {
+    console.log("overlay: tap");
+    void speakTurn(["listen"], "listening");
+  });
 
   globalShortcut.register("Alt+Space", () => void speakTurn(["listen"], "listening"));
 
@@ -284,5 +470,6 @@ app.on("window-all-closed", () => undefined);
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  if (overlayServer) void overlayServer.close();
   if (daemon && !daemon.killed) daemon.kill("SIGTERM");
 });
