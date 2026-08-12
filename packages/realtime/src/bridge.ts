@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { detect } from "@jarvis/ears";
+import { detect, RecentSpeech } from "@jarvis/ears";
 import { PcmPlayer } from "./playback.ts";
 import { RealtimeSession, SAMPLE_RATE, type RealtimeTool, type ToolCall } from "./session.ts";
 
@@ -13,7 +13,12 @@ import { RealtimeSession, SAMPLE_RATE, type RealtimeTool, type ToolCall } from "
  * speech separately and keep their timing coherent.
  */
 
-export type Phase = "idle" | "listening" | "thinking" | "speaking";
+/**
+ * `awake` is separate from `listening` on purpose: the microphone is always open,
+ * so "listening" is the resting state and says nothing about whether Jarhead is
+ * paying attention to Kevin specifically. Waking is what earns the brighter blue.
+ */
+export type Phase = "idle" | "listening" | "awake" | "thinking" | "speaking";
 
 export interface BridgeOptions {
   readonly apiKey: string;
@@ -50,6 +55,8 @@ export class RealtimeBridge extends EventEmitter {
   private endpointAt = 0;
   private saying = "";
   private interrupted = false;
+  /** A rolling minute of the room, for requests that point at something already said. */
+  private readonly recent = new RecentSpeech();
 
   constructor(private readonly opts: BridgeOptions) {
     super();
@@ -91,6 +98,9 @@ export class RealtimeBridge extends EventEmitter {
     });
 
     this.session.on("heard", (transcript: string) => {
+      // Everything is remembered, addressed or not — that is the point. Nothing
+      // leaves the machine unless a turn actually wakes.
+      this.recent.add(transcript);
       this.emit("heard", transcript);
       this.gate(transcript);
     });
@@ -144,7 +154,26 @@ export class RealtimeBridge extends EventEmitter {
       this.awakeUntil = Date.now() + (this.opts.followUpMs ?? 0);
       this.log(`woke on "${match.matched}"`);
       this.emit("woke", match.command);
+      // Brighten the moment the name lands, before any model work starts. This
+      // is the acknowledgement Kevin was missing when he said the name and
+      // nothing happened.
+      this.setPhase("awake");
       this.setPhase("thinking");
+
+      // "you got that jarhead?" — the thing he means was said before he said the
+      // name, possibly to someone else. Attach the window only when the request
+      // actually leans on it, so a self-contained question stays cheap and does
+      // not drag unrelated room chatter into the answer.
+      if (RecentSpeech.needsContext(match.command)) {
+        const heardBefore = this.recent.context();
+        if (heardBefore) {
+          this.session.sendText(
+            `Recently overheard in the room (for reference only — Kevin may be pointing at one of these):\n${heardBefore}`,
+          );
+          this.log("attached recent speech as context");
+        }
+      }
+
       this.session.respond();
       return;
     }

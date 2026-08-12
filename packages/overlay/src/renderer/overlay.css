@@ -59,36 +59,47 @@ body {
 }
 
 /*
- * States. Each is a colour plus a glow radius, so the buddy reads at a glance
- * from across the desk even though the glyphs are tiny.
+ * Activity reads as BRIGHTNESS along one hue.
+ *
+ * Asleep it is a dim, desaturated blue that disappears into the desktop on
+ * purpose — it is not doing anything and should not draw the eye. Waking lifts
+ * it to a bright cyan, and "alert" (Kevin clicked it, or asked it to pay
+ * attention) is brighter still. Reading the state should not require reading a
+ * label, and a hue change would say "different thing" where brightness says
+ * "same thing, more of it".
+ *
+ * Thinking and speaking step off the blue ramp deliberately: those are kinds of
+ * activity rather than amounts, and they need to be distinguishable at a glance
+ * from simply listening harder.
  */
 body[data-state="idle"] #blob {
-  color: rgb(150, 185, 255);
-  text-shadow: 0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 7px rgba(80, 130, 255, 0.55);
+  color: rgb(58, 96, 168);
+  text-shadow:
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 5px rgba(48, 88, 170, 0.35);
 }
 
 body[data-state="listening"] #blob {
   color: rgb(125, 211, 252);
   text-shadow:
-    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 9px rgba(56, 189, 248, 0.85), 0 0 20px rgba(56, 189, 248, 0.4);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(56, 189, 248, 0.9), 0 0 22px rgba(56, 189, 248, 0.45);
 }
 
 body[data-state="thinking"] #blob {
-  color: rgb(196, 181, 253);
+  color: rgb(167, 180, 252);
   text-shadow:
-    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 9px rgba(167, 139, 250, 0.8), 0 0 22px rgba(139, 92, 246, 0.4);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(129, 140, 248, 0.85), 0 0 24px rgba(99, 102, 241, 0.45);
 }
 
 body[data-state="speaking"] #blob {
   color: rgb(134, 239, 172);
   text-shadow:
-    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(74, 222, 128, 0.85), 0 0 24px rgba(34, 197, 94, 0.45);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 11px rgba(74, 222, 128, 0.85), 0 0 26px rgba(34, 197, 94, 0.45);
 }
 
 body[data-state="pointing"] #blob {
   color: rgb(253, 224, 71);
   text-shadow:
-    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(250, 204, 21, 0.85), 0 0 22px rgba(234, 179, 8, 0.45);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 11px rgba(250, 204, 21, 0.85), 0 0 24px rgba(234, 179, 8, 0.45);
 }
 
 /*
@@ -191,4 +202,11 @@ body.dragging::after {
   #blob {
     transition: none;
   }
+}
+
+
+body[data-state="alert"] #blob {
+  color: rgb(186, 230, 253);
+  text-shadow:
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 13px rgba(125, 211, 252, 1), 0 0 30px rgba(56, 189, 248, 0.6);
 }

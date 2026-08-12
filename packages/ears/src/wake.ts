@@ -75,20 +75,40 @@ function normalize(text: string): string {
 }
 
 /**
- * Look for the wake phrase near the START of the utterance only.
+ * Words that may precede a leading vocative without making it a mention.
  *
- * Scanning the whole string would fire on "I was telling Sarah about jarhead
- * yesterday", which is exactly the false accept that makes an always-on
- * assistant intolerable.
+ * "hey jarhead" and "so, jarhead" are address; "the thing about jarhead" is not.
+ * What separates them is that everything before a real vocative is filler.
  */
-export function detect(transcript: string, leadingWords = 4): WakeMatch {
+const LEAD_IN = new Set([...GREETINGS, "so", "um", "uh", "well", "alright", "right", "and", "but"]);
+
+/** Tags that may trail a vocative without making it a mention. */
+const TRAIL_TAG = new Set(["please", "thanks", "thank", "you", "buddy", "man", "dude", "ok", "okay", "yeah"]);
+
+/**
+ * Is Kevin talking TO Jarhead, or ABOUT it?
+ *
+ * English marks direct address by position: a vocative sits at a clause
+ * boundary, at the start ("jarhead, what's up") or the end ("what's up
+ * jarhead", "you got that jarhead?"). A name buried mid-sentence is a mention —
+ * "I was telling Sarah about jarhead yesterday and she laughed".
+ *
+ * The previous rule demanded the name in the first four words AND either a
+ * recognised greeting before it or a command after it. That missed every
+ * trailing vocative Kevin actually used: "whats up jarhead" has no greeting
+ * ("whats up" is not in the list) and nothing after the name, so it scored as a
+ * mention and was ignored. Three separate attempts of his went unanswered.
+ *
+ * Position is a cheaper and truer signal than a greeting whitelist, and it
+ * needs no model call.
+ */
+export function detect(transcript: string): WakeMatch {
   const normalized = normalize(transcript);
   if (!normalized) return NO_MATCH;
 
   const words = normalized.split(" ");
-  const limit = Math.min(words.length, leadingWords);
 
-  for (let i = 0; i < limit; i++) {
+  for (let i = 0; i < words.length; i++) {
     const word = words[i];
     if (word === undefined) continue;
 
@@ -99,18 +119,35 @@ export function detect(transcript: string, leadingWords = 4): WakeMatch {
 
     const consumed = pair ? i + 2 : i + 1;
     const before = words.slice(0, i);
-    const after = words.slice(consumed).join(" ").trim();
+    const after = words.slice(consumed);
 
-    // A bare name with no greeting and no command is ambiguous — someone talking
-    // ABOUT it rather than TO it. Require a greeting before or a command after.
+    // A vocative sits at a clause edge: everything before it is filler, or
+    // everything after it is a tag. Anything else is the name being discussed.
+    // Distance-from-the-edge was too loose — "the thing about jarhead is..."
+    // put the name at index 3 and read as address.
+    const leadingVocative = before.every((w) => LEAD_IN.has(w));
+    const trailingVocative = after.every((w) => TRAIL_TAG.has(w));
+    if (!leadingVocative && !trailingVocative) return NO_MATCH;
+
+    // A name on its own, with nothing either side, is someone saying the word —
+    // unless a greeting precedes it, which makes it a hail.
     const hasGreeting = before.length > 0 && before.every((w) => GREETINGS.has(w));
-    if (!hasGreeting && after.length === 0) return NO_MATCH;
+    if (before.length === 0 && after.length === 0 && !hasGreeting) return NO_MATCH;
+
+    // What Kevin actually asked for. A trailing vocative leaves the request in
+    // front of the name ("whats up jarhead" -> "whats up"), so the command is
+    // whichever side is not empty.
+    const trailing = after.filter((w) => !TRAIL_TAG.has(w)).join(" ").trim();
+    const leading = before.filter((w) => !LEAD_IN.has(w)).join(" ").trim();
+    // A trailing vocative leaves the request in FRONT of the name
+    // ("whats up jarhead" -> "whats up"), so take whichever side has content.
+    const command = trailing || leading;
 
     return {
       woke: true,
-      command: after,
+      command,
       matched: pair ? pair.join(" ") : single,
-      bare: after.length === 0,
+      bare: command.length === 0,
     };
   }
 

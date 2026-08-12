@@ -120,6 +120,9 @@
     thinking: { amp: 0.36, speed: 2.3, churn: 2.6, pull: 0.12 },
     speaking: { amp: 0.5, speed: 3.0, churn: 3.2, pull: 0.14 },
     pointing: { amp: 0.24, speed: 1.0, churn: 0.8, pull: 0.55 },
+    // Clicked, or told to pay attention: tighter and faster than listening, so
+    // "I am waiting on you specifically" looks different from "I am awake".
+    alert: { amp: 0.5, speed: 2.2, churn: 2.0, pull: 0.18 },
   };
 
   /**

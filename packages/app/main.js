@@ -191,7 +191,8 @@ async function speakTurn(args, stateLabel) {
   if (busy) return;
   busy = true;
   setTrayState(stateLabel);
-  setBuddyState(stateLabel === "listening" ? "listening" : "thinking");
+  // A tap already set "alert"; do not demote it back to plain listening.
+  setBuddyState(stateLabel === "listening" ? "alert" : "thinking");
   refreshMenus();
   try {
     // Surface the answer in the bubble so a tap-to-talk turn has a visible
@@ -518,8 +519,15 @@ app.whenReady().then(() => {
     pushEdges();
     pushContacts();
   });
+  /**
+   * A tap means "I am talking to you" — it should look like being listened to,
+   * not just silently start a recording. The buddy goes alert immediately, well
+   * before the microphone or any model has anything to say, because that
+   * acknowledgement is the entire point of clicking a face.
+   */
   ipcMain.on("overlay:tap", () => {
     console.log("overlay: tap");
+    setBuddyState("alert");
     void speakTurn(["listen"], "listening");
   });
 

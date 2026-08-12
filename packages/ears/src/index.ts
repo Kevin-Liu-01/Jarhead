@@ -1,4 +1,7 @@
 export { detect, isBareWake } from "./wake.ts";
+
+export { RecentSpeech, DEFAULT_WINDOW_MS } from "./recent.ts";
+export type { Heard } from "./recent.ts";
 export type { WakeMatch } from "./wake.ts";
 
 export { parseSilence, applySilence, endpointFrom, isBargeIn, INITIAL_ENDPOINT } from "./vad.ts";

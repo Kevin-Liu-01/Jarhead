@@ -4,7 +4,7 @@
  * of truth and the renderer only ever mirrors what it is told.
  */
 
-export const OVERLAY_STATES = ["idle", "listening", "thinking", "speaking", "pointing"] as const;
+export const OVERLAY_STATES = ["idle", "listening", "thinking", "speaking", "pointing", "alert"] as const;
 export type OverlayState = (typeof OVERLAY_STATES)[number];
 
 /**
