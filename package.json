@@ -32,7 +32,8 @@
     "@jarvis/overlay": "workspace:*",
     "@jarvis/selfmod": "workspace:*",
     "@jarvis/voice": "workspace:*",
-    "@jarvis/wiki-bridge": "workspace:*"
+    "@jarvis/wiki-bridge": "workspace:*",
+    "@jarvis/live": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

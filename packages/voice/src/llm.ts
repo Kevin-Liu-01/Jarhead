@@ -32,6 +32,13 @@ How to speak:
 export interface StreamOptions {
   readonly system?: string;
   readonly maxTokens?: number;
+  /**
+   * Aborts generation mid-stream.
+   *
+   * Required for barge-in: without it, cutting Jarvis off would silence the
+   * audio while the model kept generating (and kept billing) into a void.
+   */
+  readonly signal?: AbortSignal;
   /** Called with each text delta as it arrives. */
   readonly onToken: (token: string) => void;
   /** Called once, when the very first token lands. */
@@ -114,12 +121,15 @@ export class Brain {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const stream = this.client.messages.stream({
-      model: this.model,
-      max_tokens: opts.maxTokens ?? 400,
-      system: opts.system ?? SPOKEN_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const stream = this.client.messages.stream(
+      {
+        model: this.model,
+        max_tokens: opts.maxTokens ?? 400,
+        system: opts.system ?? SPOKEN_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: prompt }],
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    );
 
     stream.on("text", (delta: string) => {
       if (ttftMs === 0) {

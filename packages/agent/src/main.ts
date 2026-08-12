@@ -31,6 +31,7 @@ import { axAvailable, classify, frontmostApp } from "@jarvis/computer";
 import { research } from "@jarvis/browser";
 import { ipcRequest } from "@jarvis/daemon";
 import { ensureEarcon, playFile } from "@jarvis/ack";
+import { LiveConversation } from "@jarvis/live";
 
 const HELP = `
 jarvis — local voice assistant
@@ -41,6 +42,7 @@ jarvis — local voice assistant
   pnpm jarvis voices          list ElevenLabs voices and pick one
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
+  pnpm jarvis live            always-on conversation: instant answers, interruptible
   pnpm jarvis listen          record one utterance, answer, exit (what the app uses)
   pnpm jarvis see "..."       look at the screen and answer out loud
   pnpm jarvis point "..."     find a UI element by name and fly the cursor to it
@@ -558,6 +560,62 @@ async function listenOnce(): Promise<void> {
   printOutcome(outcome, flag("quiet"));
 }
 
+/**
+ * Always-on conversation. No key to hold, no key to stop.
+ *
+ * Different from `listen` in the way that matters: the microphone never closes,
+ * so transcription happens while Kevin talks and the answer starts at the
+ * endpoint (~140ms after his last syllable) rather than after a silence timeout
+ * plus an upload. It can also be cut off mid-sentence.
+ */
+async function live(): Promise<void> {
+  const cfg = readConfig();
+  const openAiKey = process.env["OPENAI_API_KEY"];
+  if (!cfg.anthropicApiKey || !openAiKey) {
+    console.error("live needs ANTHROPIC_API_KEY and OPENAI_API_KEY");
+    process.exit(1);
+  }
+
+  useCacheDir(cfg.stateDir);
+  const convo = new LiveConversation({
+    config: cfg,
+    openAiKey,
+    log: (line) => console.log(`  · ${line}`),
+  });
+
+  const PHASE: Record<string, string> = {
+    idle: "idle",
+    listening: "listening…",
+    thinking: "thinking…",
+    speaking: "speaking",
+  };
+  convo.on("phase", (p: string) => console.log(`  [${PHASE[p] ?? p}]`));
+  convo.on("heard", (text: string, kind: string) => {
+    if (kind === "final") console.log(`  you: ${text}`);
+  });
+  convo.on("answer", (text: string) => console.log(`\n  jarvis: ${text}\n`));
+  convo.on("interrupted", (by: string) => console.log(`  (cut off by "${by}")`));
+  convo.on("metrics", (m) => {
+    if (m.interrupted) return;
+    const ack = m.toAckMs === undefined ? "—" : `${m.toAckMs}ms`;
+    const audio = m.toFirstAudioMs === undefined ? "—" : `${m.toFirstAudioMs}ms`;
+    console.log(`  endpoint→ack ${ack}   endpoint→speech ${audio}   ttft ${m.ttftMs ?? "—"}ms`);
+  });
+  convo.on("error", (e: Error) => console.error(`  error: ${e.message}`));
+
+  await convo.start();
+  console.log("\n  jarvis is listening. just talk. say \"stop\" to cut it off. Ctrl-C to quit.\n");
+
+  await new Promise<void>((resolve) => {
+    for (const sig of ["SIGINT", "SIGTERM"] as const) {
+      process.once(sig, () => {
+        convo.stop();
+        resolve();
+      });
+    }
+  });
+}
+
 async function warm(): Promise<void> {
   useCacheDir(readConfig().stateDir);
   const started = Date.now();
@@ -591,6 +649,9 @@ switch (command) {
     break;
   case "warm":
     await warm();
+    break;
+  case "live":
+    await live();
     break;
   case "listen":
     await listenOnce();

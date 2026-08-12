@@ -38,6 +38,9 @@ importers:
       '@jarvis/ears':
         specifier: workspace:*
         version: link:packages/ears
+      '@jarvis/live':
+        specifier: workspace:*
+        version: link:packages/live
       '@jarvis/overlay':
         specifier: workspace:*
         version: link:packages/overlay
@@ -92,6 +95,9 @@ importers:
       '@jarvis/ears':
         specifier: workspace:*
         version: link:../ears
+      '@jarvis/live':
+        specifier: workspace:*
+        version: link:../live
       '@jarvis/overlay':
         specifier: workspace:*
         version: link:../overlay
@@ -148,6 +154,21 @@ importers:
 
   packages/ears:
     dependencies:
+      '@jarvis/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jarvis/voice':
+        specifier: workspace:*
+        version: link:../voice
+
+  packages/live:
+    dependencies:
+      '@jarvis/ack':
+        specifier: workspace:*
+        version: link:../ack
+      '@jarvis/answers':
+        specifier: workspace:*
+        version: link:../answers
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core

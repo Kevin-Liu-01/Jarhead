@@ -21,6 +21,7 @@
     "@jarvis/ack": "workspace:*",
     "@jarvis/daemon": "workspace:*",
     "@jarvis/selfmod": "workspace:*",
-    "@jarvis/overlay": "workspace:*"
+    "@jarvis/overlay": "workspace:*",
+    "@jarvis/live": "workspace:*"
   }
 }
