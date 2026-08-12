@@ -17,6 +17,9 @@ importers:
       '@jarvis/agent':
         specifier: workspace:*
         version: link:packages/agent
+      '@jarvis/annotate':
+        specifier: workspace:*
+        version: link:packages/annotate
       '@jarvis/answers':
         specifier: workspace:*
         version: link:packages/answers
@@ -47,6 +50,9 @@ importers:
       '@jarvis/selfmod':
         specifier: workspace:*
         version: link:packages/selfmod
+      '@jarvis/tools':
+        specifier: workspace:*
+        version: link:packages/tools
       '@jarvis/voice':
         specifier: workspace:*
         version: link:packages/voice
@@ -110,6 +116,8 @@ importers:
       '@jarvis/wiki-bridge':
         specifier: workspace:*
         version: link:../wiki-bridge
+
+  packages/annotate: {}
 
   packages/answers:
     dependencies:
@@ -196,6 +204,8 @@ importers:
       '@jarvis/wiki-bridge':
         specifier: workspace:*
         version: link:../wiki-bridge
+
+  packages/tools: {}
 
   packages/voice:
     dependencies:
