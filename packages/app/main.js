@@ -14,15 +14,68 @@
  * which is why Info.plist carries real usage strings.
  */
 
-const { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, shell, dialog } = require("electron");
+const { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, screen, shell, dialog } = require("electron");
 const { spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { join } = require("node:path");
+const { homedir } = require("node:os");
 
 const REPO = require("./repo-path.json").repo;
 const TSX = join(REPO, "node_modules", ".bin", "tsx");
 const AGENT = join(REPO, "packages", "agent", "src", "main.ts");
 const DAEMON = join(REPO, "packages", "daemon", "src", "main.ts");
+
+const STATE_DIR = process.env.JARVIS_STATE_DIR || join(homedir(), ".jarvis");
+const POSITION_FILE = join(STATE_DIR, "overlay-position.json");
+
+const BUDDY_SIZE = 220;
+/** Clear of the Dock and the screen edge, on the display holding the cursor. */
+const INSET = { right: 28, bottom: 96 };
+
+function savedPosition() {
+  try {
+    const p = JSON.parse(readFileSync(POSITION_FILE, "utf8"));
+    if (Number.isFinite(p.x) && Number.isFinite(p.y)) return p;
+  } catch {
+    // No saved position yet.
+  }
+  return undefined;
+}
+
+function savePosition(x, y) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(POSITION_FILE, JSON.stringify({ x, y }));
+  } catch {
+    // Losing the position is cosmetic.
+  }
+}
+
+/**
+ * Default to the bottom-right of whichever display the cursor is on.
+ *
+ * Centre-screen is where Electron puts a window with no coordinates, and it is
+ * the worst possible spot: the buddy lands on top of whatever Kevin is reading,
+ * and — before the capture fix — directly in the middle of every screenshot.
+ * Anchoring to the cursor's display matters here because the displays sit at
+ * negative coordinates, so hardcoding anything would land off-screen.
+ */
+function defaultPosition() {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { x, y, width, height } = display.workArea;
+  return {
+    x: Math.round(x + width - BUDDY_SIZE - INSET.right),
+    y: Math.round(y + height - BUDDY_SIZE - INSET.bottom),
+  };
+}
+
+/** True when the saved point still lands on a connected display. */
+function onSomeDisplay(pos) {
+  return screen.getAllDisplays().some((d) => {
+    const a = d.workArea;
+    return pos.x >= a.x - BUDDY_SIZE && pos.x <= a.x + a.width && pos.y >= a.y - BUDDY_SIZE && pos.y <= a.y + a.height;
+  });
+}
 
 let tray;
 let overlayWindow;
@@ -108,6 +161,11 @@ function buildMenu() {
       label: overlayWindow && overlayWindow.isVisible() ? "Hide buddy" : "Show buddy",
       click: () => toggleOverlay(),
     },
+    {
+      label: buddyDraggable ? "Lock buddy (click-through)" : "Move buddy…",
+      click: () => setBuddyDraggable(!buddyDraggable),
+    },
+    { label: "Reset buddy position", click: () => resetBuddyPosition() },
     { type: "separator" },
     { label: "Open repo", click: () => void shell.openPath(REPO) },
     { label: "Quit Jarvis", role: "quit" },
@@ -120,6 +178,30 @@ function refreshMenus() {
   if (process.platform === "darwin" && app.dock) app.dock.setMenu(menu);
 }
 
+let buddyDraggable = false;
+
+/**
+ * Toggle click-through so the buddy can be dragged.
+ *
+ * macOS has no per-region click-through — setIgnoreMouseEvents' `forward`
+ * option is Windows-only — so this is all-or-nothing and has to be a deliberate
+ * mode. While draggable, the buddy eats clicks meant for whatever is under it.
+ */
+function setBuddyDraggable(draggable) {
+  if (!overlayWindow) return;
+  buddyDraggable = draggable;
+  overlayWindow.setIgnoreMouseEvents(!draggable, { forward: true });
+  overlayWindow.setFocusable(draggable);
+  refreshMenus();
+}
+
+function resetBuddyPosition() {
+  if (!overlayWindow) return;
+  const pos = defaultPosition();
+  overlayWindow.setPosition(pos.x, pos.y, false);
+  savePosition(pos.x, pos.y);
+}
+
 function toggleOverlay() {
   if (!overlayWindow) return;
   if (overlayWindow.isVisible()) overlayWindow.hide();
@@ -128,9 +210,14 @@ function toggleOverlay() {
 }
 
 function createOverlay() {
+  const saved = savedPosition();
+  const pos = saved && onSomeDisplay(saved) ? saved : defaultPosition();
+
   overlayWindow = new BrowserWindow({
-    width: 220,
-    height: 220,
+    width: BUDDY_SIZE,
+    height: BUDDY_SIZE,
+    x: pos.x,
+    y: pos.y,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -139,16 +226,23 @@ function createOverlay() {
     skipTaskbar: true,
     focusable: false,
     alwaysOnTop: true,
-    // Excluded from screen capture so Jarvis never sees itself in its own
-    // screenshots — otherwise the vision path describes the buddy back to Kevin.
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   overlayWindow.setAlwaysOnTop(true, "screen-saver");
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // NOT setContentProtection(true): it is a no-op on this macOS. Measured — a
+  // protected window and an unprotected one gave byte-identical captures. The
+  // vision path hides this window around each screenshot instead; see
+  // packages/agent/src/capture.ts.
   overlayWindow.setContentProtection(false);
   // forward:true is a Windows-only option; on macOS this is all-or-nothing,
   // which is the concrete limitation that argues for a native shell later.
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  overlayWindow.on("moved", () => {
+    const [x, y] = overlayWindow.getPosition();
+    savePosition(x, y);
+  });
 
   const renderer = join(REPO, "packages", "overlay", "src", "renderer", "index.html");
   if (existsSync(renderer)) void overlayWindow.loadFile(renderer);

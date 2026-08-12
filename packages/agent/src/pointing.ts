@@ -9,6 +9,7 @@ import {
   type AxElement,
 } from "@jarvis/computer";
 import type { Brain } from "@jarvis/voice";
+import { withOverlayHidden } from "./capture.ts";
 
 /**
  * Point at a thing on screen, AX-first with a vision fallback.
@@ -123,7 +124,11 @@ export async function locate(description: string, brain: Brain): Promise<LocateO
   }
 
   const visionStart = Date.now();
-  const shot = await captureRegion({ x: win.position.x, y: win.position.y, w: win.size.w, h: win.size.h });
+  // Bound to locals because the closure below loses the narrowing on win.*.
+  const bounds = { x: win.position.x, y: win.position.y, w: win.size.w, h: win.size.h };
+  // Hidden for the same reason as the full-screen path: the buddy is often
+  // sitting right over the window we are trying to read.
+  const shot = await withOverlayHidden(() => captureRegion(bounds));
   const small = await downscale(shot.path, 1024);
   const sentPath = typeof small === "string" ? small : small.path;
   const base64 = readFileSync(sentPath).toString("base64");

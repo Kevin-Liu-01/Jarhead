@@ -87,12 +87,74 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 writeFileSync(join(contents, "Info.plist"), plist);
 
-// An ad-hoc signature is enough to launch locally, but TCC grants are keyed to
-// the signature — so they are lost on every rebuild unless a stable identity is
-// used. That is the price of not having an Apple Developer certificate.
-execFileSync("codesign", ["--force", "--deep", "--sign", "-", APP], { stdio: "inherit" });
+/**
+ * Sign with a stable identity when one exists, ad-hoc otherwise.
+ *
+ * This is the whole TCC story. macOS keys Screen Recording, Accessibility and
+ * Microphone grants to the code signature, so an ad-hoc build invalidates every
+ * grant each time it is rebuilt — you re-approve three prompts after every
+ * change. A real certificate makes the identity stable and the grants stick.
+ *
+ * Set JARVIS_SIGN_IDENTITY to pin one explicitly; otherwise the first Apple
+ * identity found wins, preferring Developer ID (distributable) over Apple
+ * Development (this machine only).
+ */
+function pickIdentity(): string | undefined {
+  const pinned = process.env["JARVIS_SIGN_IDENTITY"];
+  if (pinned) return pinned;
+  try {
+    const out = execFileSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
+    const names = [...out.matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
+    return (
+      names.find((n) => n.startsWith("Developer ID Application")) ??
+      names.find((n) => n.startsWith("Apple Development")) ??
+      names.find((n) => n.startsWith("Apple Distribution"))
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+const identity = pickIdentity();
+const entitlements = join(REPO_ROOT, "build-config", "entitlements.plist");
+
+if (identity) {
+  // Sign inside-out: nested helpers and frameworks first, the outer bundle last.
+  // --deep is documented as unreliable for exactly this and Apple advises against
+  // it for real signing.
+  const nested = execFileSync(
+    "find",
+    [APP, "-type", "f", "-name", "*.dylib", "-o", "-type", "d", "-name", "*.framework", "-o", "-type", "d", "-name", "*.app"],
+    { encoding: "utf8" },
+  )
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && l !== APP)
+    .sort((a, b) => b.length - a.length); // deepest first
+
+  for (const path of nested) {
+    execFileSync("codesign", [
+      "--force", "--timestamp", "--options", "runtime",
+      "--entitlements", entitlements,
+      "--sign", identity, path,
+    ]);
+  }
+  execFileSync("codesign", [
+    "--force", "--timestamp", "--options", "runtime",
+    "--entitlements", entitlements,
+    "--sign", identity, APP,
+  ], { stdio: "inherit" });
+} else {
+  execFileSync("codesign", ["--force", "--deep", "--sign", "-", APP], { stdio: "inherit" });
+}
+
+execFileSync("codesign", ["--verify", "--strict", APP], { stdio: "inherit" });
 
 console.log(`\n  built ${APP}`);
 console.log(`  repo baked in: ${REPO_ROOT}`);
+console.log(`  signed with:   ${identity ?? "ad-hoc (TCC grants reset on every rebuild)"}`);
+if (!identity) {
+  console.log(`\n  For grants that survive rebuilds, see "Signing" in README.md.`);
+}
 console.log(`\n  install:  cp -R "${APP}" /Applications/`);
 console.log(`  run:      open -a Jarvis\n`);

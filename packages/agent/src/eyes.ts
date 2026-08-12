@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { captureScreen, downscale, ScreenPermissionError } from "@jarvis/computer";
 import { Brain, SentenceSplitter, type Speaker } from "@jarvis/voice";
+import { withOverlayHidden } from "./capture.ts";
 import type { Timeline } from "./timeline.ts";
 
 /**
@@ -37,7 +38,7 @@ export async function lookAtScreen(
 ): Promise<LookResult> {
   let shot;
   try {
-    shot = await captureScreen();
+    shot = await withOverlayHidden(() => captureScreen());
   } catch (e) {
     if (e instanceof ScreenPermissionError) throw e;
     throw new Error(`could not capture the screen: ${(e as Error).message}`);
