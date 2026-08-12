@@ -22,6 +22,14 @@
 /** Single-token mishearings. */
 const NAME_VARIANTS = [
   "jarhead",
+  // Observed live, not guessed: the transcriber returned "Chathead" for a clear
+  // "jarhead". The J is the fragile consonant — it lands as ch, sh, g or c.
+  "chathead",
+  "charhead",
+  "shathead",
+  "jawhead",
+  "jarheart",
+  "jarhaid",
   "jarhed",
   "jarhad",
   "jarheard",
@@ -43,6 +51,9 @@ const NAME_VARIANTS = [
  */
 const NAME_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["jar", "head"],
+  ["chat", "head"],
+  ["car", "head"],
+  ["chart", "head"],
   ["jar", "hed"],
   ["jar", "bed"],
   ["jar", "had"],
@@ -129,10 +140,10 @@ export function detect(transcript: string): WakeMatch {
     const trailingVocative = after.every((w) => TRAIL_TAG.has(w));
     if (!leadingVocative && !trailingVocative) return NO_MATCH;
 
-    // A name on its own, with nothing either side, is someone saying the word —
-    // unless a greeting precedes it, which makes it a hail.
-    const hasGreeting = before.length > 0 && before.every((w) => GREETINGS.has(w));
-    if (before.length === 0 && after.length === 0 && !hasGreeting) return NO_MATCH;
+    // A lone name IS address. This previously required a greeting, on the theory
+    // that a bare word might be someone saying it rather than calling it — but
+    // Kevin said just "Jarhead" and was ignored. Nobody utters a name alone,
+    // with nothing before or after, except to summon whoever owns it.
 
     // What Kevin actually asked for. A trailing vocative leaves the request in
     // front of the name ("whats up jarhead" -> "whats up"), so the command is

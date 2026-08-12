@@ -42,8 +42,10 @@ test("does not wake when the name appears late in the sentence", () => {
   assert.equal(detect("I was telling Sarah about jarhead yesterday").woke, false);
 });
 
-test("a bare name with no greeting and no command is not a wake", () => {
-  assert.equal(detect("jarhead").woke, false);
+test("a name buried in a sentence about it is not a wake", () => {
+  // The mention/address distinction now rests on position, not on whether a
+  // greeting happens to precede the name.
+  assert.equal(detect("the thing about jarhead is that it never listens").woke, false);
 });
 
 test("a bare name followed by a command does wake", () => {
@@ -118,4 +120,20 @@ test("barge-in requires sustained speech, not a blip", () => {
 test("barge-in is false when nothing was said at all", () => {
   assert.equal(isBargeIn([], 0.4), false);
   assert.equal(isBargeIn(parseSilence("silence_start: 2.0"), 0.4), false);
+});
+
+test("a lone name is address, not a mention", () => {
+  // Kevin said just "Jarhead" and was ignored, because a bare word with nothing
+  // either side was treated as someone saying it rather than calling it. Nobody
+  // utters a name alone except to summon whoever owns it.
+  assert.equal(detect("Jarhead").woke, true);
+  assert.equal(detect("jarhead").bare, true);
+});
+
+test("mishearings observed in the wild, not guessed", () => {
+  // The transcriber returned "Chathead" for a clear "jarhead" — the J is the
+  // fragile consonant and lands as ch, sh, g or c.
+  for (const u of ["What's up, Chathead?", "chat head you there", "hey car head", "hey chart head"]) {
+    assert.equal(detect(u).woke, true, u);
+  }
 });

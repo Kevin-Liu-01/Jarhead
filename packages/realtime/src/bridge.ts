@@ -35,6 +35,10 @@ export interface BridgeOptions {
    * the room got answered twice.
    */
   readonly followUpMs?: number;
+  /** VAD sensitivity, 0..1. Higher ignores more room noise. */
+  readonly threshold?: number;
+  readonly silenceMs?: number;
+  readonly noiseReduction?: "near_field" | "far_field" | "off";
   readonly log?: (line: string) => void;
 }
 
@@ -66,6 +70,9 @@ export class RealtimeBridge extends EventEmitter {
       instructions: opts.instructions,
       ...(opts.voice ? { voice: opts.voice } : {}),
       ...(opts.tools ? { tools: opts.tools } : {}),
+      ...(opts.threshold !== undefined ? { threshold: opts.threshold } : {}),
+      ...(opts.silenceMs !== undefined ? { silenceMs: opts.silenceMs } : {}),
+      ...(opts.noiseReduction ? { noiseReduction: opts.noiseReduction } : {}),
     });
     this.wire();
   }

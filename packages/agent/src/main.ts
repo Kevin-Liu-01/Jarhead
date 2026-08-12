@@ -706,6 +706,9 @@ async function realtime(): Promise<void> {
     apiKey: key,
     instructions: RT_INSTRUCTIONS,
     voice: process.env["JARVIS_RT_VOICE"] ?? "cedar",
+    // Tunable by ear without a rebuild: rooms differ and so do microphones.
+    ...(process.env["JARVIS_VAD_THRESHOLD"] ? { threshold: Number(process.env["JARVIS_VAD_THRESHOLD"]) } : {}),
+    ...(process.env["JARVIS_VAD_SILENCE_MS"] ? { silenceMs: Number(process.env["JARVIS_VAD_SILENCE_MS"]) } : {}),
     tools: toRealtimeTools(TOOL_DEFINITIONS as never),
     runTool: async (call) => {
       const started = Date.now();
@@ -716,7 +719,19 @@ async function realtime(): Promise<void> {
     log: (line) => console.log(`  · ${line}`),
   });
 
-  bridge.on("phase", (p: string) => console.log(`  [${p}]`));
+  // Drive the buddy over the socket rather than in-process: the listener may be
+  // a child of the app or a bare terminal, and neither should have to know.
+  const { OverlayClient } = await import("@jarvis/overlay");
+  const overlay = new OverlayClient();
+  const showState = (p: string): void => {
+    const state = p === "awake" ? "alert" : p === "idle" ? "idle" : p;
+    void overlay.send({ cmd: "setState", state: state as never }).catch(() => undefined);
+  };
+
+  bridge.on("phase", (p: string) => {
+    console.log(`  [${p}]`);
+    showState(p);
+  });
   bridge.on("heard", (t: string) => console.log(`  you: ${t}`));
   bridge.on("answer", (t: string) => console.log(`\n  jarhead: ${t}\n`));
   bridge.on("interrupted", () => console.log("  (cut off)"));
@@ -738,6 +753,7 @@ async function realtime(): Promise<void> {
       process.once(sig, () => {
         stop();
         bridge.stop();
+        overlay.close();
         resolve();
       });
     }

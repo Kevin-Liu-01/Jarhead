@@ -241,6 +241,21 @@ function buildMenu() {
     { label: "Automations…", click: () => void runAgent(["automations"]) },
     { label: "Permissions…", click: () => void runAgent(["permissions", "--open"]) },
     {
+      label: listener ? "Stop listening" : "Start listening",
+      click: () => {
+        if (listener) {
+          stopListener();
+        } else {
+          listeningWanted = true;
+          listenerRestartMs = 2000;
+          startListener();
+        }
+        refreshMenus();
+      },
+    },
+    { label: listener ? "Listening for \u201chey jarhead\u201d" : "Not listening", enabled: false },
+    { type: "separator" },
+    {
       label: overlayWindow && overlayWindow.isVisible() ? "Hide buddy" : "Show buddy",
       click: () => toggleOverlay(),
     },
@@ -458,6 +473,58 @@ async function startOverlayServer() {
   }
 }
 
+/**
+ * The always-on listener.
+ *
+ * Without this the app was a Dock icon with a face on it that could not hear
+ * anything: the continuous microphone loop only existed in the CLI, so Kevin
+ * said "hi jarhead" at a running app and nothing happened. An assistant that
+ * looks awake and is not is worse than no assistant.
+ *
+ * Supervised rather than fire-and-forget — it holds the microphone and a
+ * websocket, and both die eventually. Restart is backed off so a
+ * misconfiguration (no key, no mic grant) does not spin.
+ */
+let listener;
+let listenerRestartMs = 2000;
+let listeningWanted = true;
+
+function startListener() {
+  if (!existsSync(TSX) || !listeningWanted) return;
+
+  listener = spawn(TSX, [AGENT, "rt"], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+
+  const line = (buf) => {
+    for (const l of buf.toString().split("\n")) {
+      const t = l.trim();
+      if (t) console.log(`  rt| ${t}`);
+    }
+  };
+  listener.stdout?.on("data", line);
+  listener.stderr?.on("data", line);
+
+  listener.on("close", (code) => {
+    listener = undefined;
+    if (!listeningWanted) return;
+    console.error(`listener exited (${code}); retrying in ${listenerRestartMs}ms`);
+    setTimeout(startListener, listenerRestartMs);
+    // Back off to a minute: a missing API key fails instantly and forever, and
+    // retrying that every two seconds is just noise.
+    listenerRestartMs = Math.min(listenerRestartMs * 2, 60_000);
+  });
+
+  // A run that survives a while is healthy; reset the backoff.
+  setTimeout(() => {
+    if (listener) listenerRestartMs = 2000;
+  }, 30_000);
+}
+
+function stopListener() {
+  listeningWanted = false;
+  if (listener && !listener.killed) listener.kill("SIGTERM");
+  listener = undefined;
+}
+
 function startDaemon() {
   if (!existsSync(TSX)) return;
   daemon = spawn(TSX, [DAEMON], { cwd: REPO, stdio: "ignore", detached: false });
@@ -479,6 +546,9 @@ app.whenReady().then(() => {
   createOverlay();
   void startOverlayServer();
   startDaemon();
+  // Give the overlay socket a moment to bind so the listener's first state
+  // change lands on a buddy that can receive it.
+  setTimeout(startListener, 1500);
   refreshMenus();
 
   ipcMain.on("overlay:ready", () => console.log("overlay: renderer bridge ready"));
@@ -546,4 +616,5 @@ app.on("will-quit", () => {
   globalShortcut.unregisterAll();
   if (overlayServer) void overlayServer.close();
   if (daemon && !daemon.killed) daemon.kill("SIGTERM");
+  stopListener();
 });

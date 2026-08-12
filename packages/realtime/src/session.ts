@@ -48,6 +48,21 @@ export interface SessionOptions {
   readonly tools?: readonly RealtimeTool[];
   /** Trailing silence before the server calls the turn over. */
   readonly silenceMs?: number;
+  /**
+   * How loud something must be to count as speech, 0..1.
+   *
+   * The default 0.5 was too permissive in a real room: keyboard noise and
+   * background chatter held the VAD in "speech" continuously, so it never
+   * observed the trailing silence and never ended the turn. Kevin's report was
+   * that it "picks up non voice sounds and never realized I stopped saying
+   * stuff" — those are the same fault seen from both ends.
+   */
+  readonly threshold?: number;
+  /**
+   * Server-side noise suppression. Unset by default, which is the wrong default
+   * for a laptop microphone in an occupied room.
+   */
+  readonly noiseReduction?: "near_field" | "far_field" | "off";
 }
 
 export interface ToolCall {
@@ -111,11 +126,17 @@ export class RealtimeSession extends EventEmitter {
               // Kept on despite this being speech-to-speech: the transcript is
               // the only way to gate on the wake phrase.
               transcription: { model: "gpt-4o-mini-transcribe" },
+              // near_field is the right model for a laptop mic at desk distance.
+              ...(this.opts.noiseReduction === "off"
+                ? {}
+                : { noise_reduction: { type: this.opts.noiseReduction ?? "near_field" } }),
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.5,
+                threshold: this.opts.threshold ?? 0.68,
                 prefix_padding_ms: 300,
-                silence_duration_ms: this.opts.silenceMs ?? 400,
+                // Longer than it sounds: a shorter window clips Kevin mid-thought
+                // whenever he pauses, and every clipped turn costs a full retry.
+                silence_duration_ms: this.opts.silenceMs ?? 700,
                 create_response: false,
                 interrupt_response: true,
               },
