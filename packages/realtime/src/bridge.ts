@@ -28,11 +28,13 @@ export interface BridgeOptions {
   /** Executes a tool call. Never throws — a failure is a result the model reads. */
   readonly runTool?: (call: ToolCall) => Promise<unknown>;
   /**
-   * How long after a reply a bare utterance still counts as a follow-up.
+   * How long after JARHEAD FINISHES SPEAKING a bare utterance counts as a reply.
    *
-   * Zero means every turn needs the wake phrase, which is the default for the
-   * reason recorded in @jarvis/live: with a window open, a podcast playing in
-   * the room got answered twice.
+   * An earlier version opened this window on waking, and a podcast in the room
+   * got answered twice. Opening it only after Jarhead has spoken is a much
+   * narrower claim — it just said something to Kevin, so the next thing it hears
+   * is probably his answer — and it is what makes a two-turn exchange possible
+   * without saying the name into every sentence.
    */
   readonly followUpMs?: number;
   /** VAD sensitivity, 0..1. Higher ignores more room noise. */
@@ -48,6 +50,15 @@ export interface TurnTiming {
   readonly toSpeechMs: number | undefined;
   readonly interrupted: boolean;
 }
+
+/**
+ * How long a conversation stays open with no wake phrase.
+ *
+ * Reset every time Jarhead finishes speaking, so a back-and-forth keeps itself
+ * alive and the name is only needed to START one. Long enough to think before
+ * replying; short enough that walking away ends it.
+ */
+const DEFAULT_FOLLOW_UP_MS = 45_000;
 
 export class RealtimeBridge extends EventEmitter {
   private readonly session: RealtimeSession;
@@ -142,8 +153,15 @@ export class RealtimeBridge extends EventEmitter {
         interrupted: this.interrupted,
       } satisfies TurnTiming);
       this.interrupted = false;
-      this.setPhase("listening");
+      // Deliberately NOT setPhase("listening") here. The model has stopped
+      // generating but the speaker is still going for seconds; flipping the
+      // phase now made speech during playback stop counting as an interruption,
+      // which is exactly the barge-in failure Kevin hit. onDrained owns it.
+      if (!this.player.isPlaying) this.finishSpeaking();
     });
+
+    // The real end of a turn: the last sample has played.
+    this.player.onDrained = () => this.finishSpeaking();
   }
 
   /**
@@ -156,9 +174,18 @@ export class RealtimeBridge extends EventEmitter {
   private gate(transcript: string): void {
     if (!transcript) return;
 
+    // An explicit dismissal ends the conversation immediately, so Kevin has a
+    // way out that does not involve waiting 45 seconds in silence.
+    if (this.awakeUntil > Date.now() && /^\s*(never ?mind|forget it|that'?s all|we'?re done|go to sleep|stop listening)\b/i.test(transcript)) {
+      this.awakeUntil = 0;
+      this.log("conversation closed");
+      this.emit("slept");
+      this.setPhase("listening");
+      return;
+    }
+
     const match = detect(transcript);
     if (match.woke) {
-      this.awakeUntil = Date.now() + (this.opts.followUpMs ?? 0);
       this.log(`woke on "${match.matched}"`);
       this.emit("woke", match.command);
       // Brighten the moment the name lands, before any model work starts. This
@@ -186,13 +213,34 @@ export class RealtimeBridge extends EventEmitter {
     }
 
     if (Date.now() < this.awakeUntil) {
-      this.awakeUntil = Date.now() + (this.opts.followUpMs ?? 0);
+      // Mid-conversation. Kevin does not re-introduce himself between sentences
+      // and should not have to here either — the name starts a conversation, it
+      // does not punctuate one.
+      this.log("in conversation");
       this.setPhase("thinking");
       this.session.respond();
       return;
     }
 
     this.log(`ignored: "${transcript.slice(0, 48)}"`);
+  }
+
+  /**
+   * A reply has finished being heard.
+   *
+   * This is where the follow-up window opens, not when the wake phrase lands.
+   * Kevin said "hello jarhead", got an answer, then asked his actual question —
+   * and it was ignored, because a strict gate wants the name on every single
+   * utterance. Having just spoken TO him is the one moment where a bare reply is
+   * obviously addressed back, so that is the only moment the gate relaxes.
+   */
+  private finishSpeaking(): void {
+    if (this.phase === "speaking" || this.phase === "thinking") {
+      // Every reply re-opens the window, so the conversation lasts as long as it
+      // is actually a conversation.
+      this.awakeUntil = Date.now() + (this.opts.followUpMs ?? DEFAULT_FOLLOW_UP_MS);
+    }
+    this.setPhase("listening");
   }
 
   private async handleTool(call: ToolCall): Promise<void> {

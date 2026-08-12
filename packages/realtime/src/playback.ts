@@ -18,7 +18,21 @@ export class PcmPlayer {
   private startedAt = 0;
   private firstAudioAt: number | undefined;
 
+  /**
+   * Called when the last sample is actually audible-through, not when the model
+   * stopped generating.
+   *
+   * These are seconds apart, and conflating them broke barge-in: the phase went
+   * back to "listening" while Jarhead was still talking, so speech during
+   * playback no longer counted as an interruption.
+   */
+  onDrained: (() => void) | undefined;
+
   constructor(private readonly sampleRate: number) {}
+
+  get isPlaying(): boolean {
+    return this.ff !== undefined;
+  }
 
   /** ms from the first chunk written to now; undefined if nothing played. */
   get audibleAt(): number | undefined {
@@ -51,21 +65,31 @@ export class PcmPlayer {
     // A player that dies mid-reply must not take the process with it.
     this.ff.stdin?.on("error", () => undefined);
     this.ff.on("error", () => undefined);
+    this.ff.on("close", () => {
+      this.ff = undefined;
+      this.firstAudioAt = undefined;
+      this.onDrained?.();
+    });
   }
 
-  /** Let the current audio finish naturally. */
+  /**
+   * Stop feeding and let the buffer drain.
+   *
+   * The handle is deliberately NOT cleared here: the process is still playing,
+   * and forgetting it would make isPlaying lie and leave nothing to kill on a
+   * barge-in. The close handler clears it once the audio is genuinely done.
+   */
   end(): void {
     const stdin = this.ff?.stdin;
     if (stdin && !stdin.destroyed) stdin.end();
-    this.ff = undefined;
-    this.firstAudioAt = undefined;
   }
 
   /** Barge-in: cut it off now. */
   stop(): void {
-    this.ff?.kill("SIGKILL");
+    const ff = this.ff;
     this.ff = undefined;
     this.firstAudioAt = undefined;
+    ff?.kill("SIGKILL");
   }
 
   get elapsedMs(): number {
