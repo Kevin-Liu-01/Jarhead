@@ -33,7 +33,7 @@ import { ipcRequest } from "@jarvis/daemon";
 import { ensureEarcon, playFile } from "@jarvis/ack";
 import { LiveConversation } from "@jarvis/live";
 import { act, speakerNarrator } from "./act.ts";
-import { RealtimeBridge, toRealtimeTools } from "@jarvis/realtime";
+import { RealtimeBridge, fillerInstruction, toRealtimeTools } from "@jarvis/realtime";
 import { openMicStream, DEFAULT_MIC_STREAM } from "@jarvis/live";
 import { TOOL_DEFINITIONS, executeTool } from "@jarvis/tools";
 import { makeToolDeps } from "./deps.ts";
@@ -678,7 +678,9 @@ guessing: cursor_position is exact and instant, find_on_screen locates things
 visually, point_at moves the cursor there. Only click when Kevin asks you to.
 
 If a tool cannot find something, say so plainly in one sentence. Do not invent
-coordinates or describe a screen you have not looked at.`;
+coordinates or describe a screen you have not looked at.
+
+${fillerInstruction()}`;
 
 /**
  * Speech-to-speech, with tools.

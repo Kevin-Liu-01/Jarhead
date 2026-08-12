@@ -73,6 +73,19 @@ export class RealtimeBridge extends EventEmitter {
   /** A rolling minute of the room, for requests that point at something already said. */
   private readonly recent = new RecentSpeech();
 
+  /**
+   * Tool calls still running for the current response.
+   *
+   * The API allows exactly one response in flight. Asking for a continuation
+   * after EACH tool result meant a response with two tool calls sent two
+   * response.create events, and the second came back "Conversation already has
+   * an active response in progress" — which surfaced as Jarhead going silent
+   * after thinking, with no clue why. The continuation must be requested once,
+   * after the last result lands.
+   */
+  private outstandingTools = 0;
+  private responseEnded = false;
+
   constructor(private readonly opts: BridgeOptions) {
     super();
     this.log = opts.log ?? ((): void => undefined);
@@ -141,7 +154,10 @@ export class RealtimeBridge extends EventEmitter {
       this.player.end();
     });
 
-    this.session.on("tool", (call: ToolCall) => void this.handleTool(call));
+    this.session.on("tool", (call: ToolCall) => {
+      this.outstandingTools += 1;
+      void this.handleTool(call);
+    });
 
     this.session.on("response-done", () => {
       this.emit("timing", {
@@ -153,6 +169,12 @@ export class RealtimeBridge extends EventEmitter {
         interrupted: this.interrupted,
       } satisfies TurnTiming);
       this.interrupted = false;
+      this.responseEnded = true;
+
+      // Tools still running means this turn is not over — the model asked for
+      // something and is waiting on it. Continuing is the tool handler's job.
+      if (this.outstandingTools > 0) return;
+
       // Deliberately NOT setPhase("listening") here. The model has stopped
       // generating but the speaker is still going for seconds; flipping the
       // phase now made speech during playback stop counting as an interruption,
@@ -193,6 +215,8 @@ export class RealtimeBridge extends EventEmitter {
       // nothing happened.
       this.setPhase("awake");
       this.setPhase("thinking");
+      this.outstandingTools = 0;
+      this.responseEnded = false;
 
       // "you got that jarhead?" — the thing he means was said before he said the
       // name, possibly to someone else. Attach the window only when the request
@@ -256,9 +280,15 @@ export class RealtimeBridge extends EventEmitter {
       output = { error: (e as Error).message };
     }
     this.session.sendToolResult(call.callId, output);
-    // The model needs a nudge to continue after a tool result, because
-    // create_response is off for the whole session.
-    this.session.respond();
+    this.outstandingTools -= 1;
+
+    // Exactly one continuation, once every result is in and the response that
+    // asked for them has finished. Any earlier and the API rejects it for
+    // overlapping the response still in flight.
+    if (this.outstandingTools === 0 && this.responseEnded) {
+      this.responseEnded = false;
+      this.session.respond();
+    }
   }
 
   /** Hand the model a screenshot as part of the conversation. */

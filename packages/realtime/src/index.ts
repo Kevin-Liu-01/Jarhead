@@ -7,3 +7,5 @@ export { RealtimeBridge } from "./bridge.ts";
 export type { BridgeOptions, Phase, TurnTiming } from "./bridge.ts";
 
 export { toRealtimeTools } from "./tools.ts";
+
+export { FILLERS, pickFiller, fillerInstruction } from "./fillers.ts";

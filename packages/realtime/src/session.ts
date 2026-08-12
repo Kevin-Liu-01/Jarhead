@@ -209,7 +209,20 @@ export class RealtimeSession extends EventEmitter {
     }
 
     if (type === "response.done") {
-      this.emit("response-done");
+      // A response can fail without ever emitting a top-level "error" event —
+      // the reason is buried in response.status_details. Without surfacing it,
+      // a failed turn is indistinguishable from a silent one: Jarhead wakes,
+      // thinks, and says nothing, with no clue anywhere as to why.
+      const response = msg["response"] as
+        | { status?: string; status_details?: { error?: { message?: string; code?: string }; reason?: string } }
+        | undefined;
+      const status = response?.status ?? "unknown";
+      if (status !== "completed") {
+        const d = response?.status_details;
+        const why = d?.error?.message ?? d?.error?.code ?? d?.reason ?? "no reason given";
+        this.emit("error", new Error(`response ${status}: ${why}`));
+      }
+      this.emit("response-done", status);
       return;
     }
 

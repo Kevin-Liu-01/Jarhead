@@ -88,13 +88,31 @@ export function resetAxCache(): void {
   axHopeless.clear();
 }
 
+/**
+ * Budget for the accessibility attempt when vision is running alongside it.
+ *
+ * Sequential was costing 5.3s per lookup: ~4s waiting for a Chromium tree that
+ * was never going to answer, and only then starting the 1.5s vision call. Since
+ * most of Kevin's desktop is Chromium, that was the normal path, and a model
+ * chaining two or three lookups turned into the "literal minutes" he hit.
+ */
+const AX_RACE_BUDGET_MS = 1200;
+
 export async function locate(description: string, brain: Brain): Promise<LocateOutcome> {
   const app = await frontmostApp();
 
+  // Both start NOW. Accessibility is still preferred when it answers — its
+  // frames are exact — but nothing waits on it to fail first.
   const axStart = Date.now();
-  const walk = axHopeless.has(app.name)
-    ? { elements: [] as readonly AxElement[], degraded: `${app.name} has no usable accessibility tree (cached)` }
-    : await findElementsDetailed(app.name, description ? { titleContains: description } : {});
+  const axAttempt = axHopeless.has(app.name)
+    ? Promise.resolve({ elements: [] as readonly AxElement[], degraded: "cached: no usable tree" })
+    : findElementsDetailed(app.name, description ? { titleContains: description } : {}, {
+        timeoutMs: AX_RACE_BUDGET_MS,
+      }).catch(() => ({ elements: [] as readonly AxElement[], degraded: "accessibility failed" }));
+
+  const visionAttempt = visionLocate(app.name, description, brain);
+
+  const walk = await axAttempt;
   const axMs = Date.now() - axStart;
 
   if (walk.elements.length === 0) axHopeless.add(app.name);
@@ -102,6 +120,9 @@ export async function locate(description: string, brain: Brain): Promise<LocateO
   for (const el of walk.elements) {
     const c = centerOf(el);
     if (c) {
+      // Vision was started speculatively and is simply discarded. One extra
+      // screenshot is a far better trade than four seconds of silence.
+      void visionAttempt.catch(() => undefined);
       return {
         target: { x: c.x, y: c.y, label: el.title || el.role, via: "accessibility", note: undefined },
         axMs,
@@ -111,13 +132,21 @@ export async function locate(description: string, brain: Brain): Promise<LocateO
     }
   }
 
-  // AX gave us nothing usable. Crop to the frontmost window and look at it.
+  return { ...(await visionAttempt), axMs };
+}
+
+/** The screenshot path, factored out so it can run alongside the accessibility one. */
+async function visionLocate(
+  appName: string,
+  description: string,
+  brain: Brain,
+): Promise<Omit<LocateOutcome, "axMs">> {
+  const app = { name: appName };
   const windows = await listWindows(app.name);
   const win = windows.find((w) => w.position !== undefined && w.size !== undefined);
   if (!win?.position || !win.size) {
     return {
       target: undefined,
-      axMs,
       visionMs: undefined,
       degraded: `${app.name} exposes neither elements nor window bounds — nothing to point at`,
     };
@@ -149,7 +178,6 @@ export async function locate(description: string, brain: Brain): Promise<LocateO
   if (!reply || reply.x === null || reply.y === null) {
     return {
       target: undefined,
-      axMs,
       visionMs,
       degraded: `not visible in the ${app.name} window${reply ? "" : ` (unparseable reply: ${result.text.slice(0, 80)})`}`,
     };
@@ -168,7 +196,6 @@ export async function locate(description: string, brain: Brain): Promise<LocateO
       via: "vision",
       note: `fraction ${fx.toFixed(3)},${fy.toFixed(3)} of ${Math.round(win.size.w)}x${Math.round(win.size.h)} window`,
     },
-    axMs,
     visionMs,
     degraded: undefined,
   };
