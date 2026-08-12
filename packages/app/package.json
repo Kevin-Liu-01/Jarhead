@@ -1,0 +1,7 @@
+{
+  "name": "@jarvis/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "The Dock app shell. CommonJS on purpose: the packaged bundle boots this without tsx, so it cannot use the repo's ESM/TypeScript setup."
+}

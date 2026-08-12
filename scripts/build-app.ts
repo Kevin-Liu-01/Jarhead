@@ -32,7 +32,9 @@ if (!existsSync(electronDist)) {
 // --- stage the app source ---------------------------------------------------
 rmSync(STAGE, { recursive: true, force: true });
 mkdirSync(STAGE, { recursive: true });
-copyFileSync(join(REPO_ROOT, "packages", "app", "main.js"), join(STAGE, "main.js"));
+for (const file of ["main.js", "window-bounds.js", "contacts.js"]) {
+  copyFileSync(join(REPO_ROOT, "packages", "app", file), join(STAGE, file));
+}
 copyFileSync(join(OUT, "icon.png"), join(STAGE, "icon.png"));
 copyFileSync(join(OUT, "iconTemplate.png"), join(STAGE, "iconTemplate.png"));
 copyFileSync(join(OUT, "iconTemplate@2x.png"), join(STAGE, "iconTemplate@2x.png"));

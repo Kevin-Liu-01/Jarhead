@@ -17,7 +17,10 @@
   // most of the ramp is spent on the low end where the falloff happens.
   const RAMP = " ..::--~~==++**##%%@@";
 
-  const FPS = { idle: 8, active: 24 };
+  // 8fps was fine for a CSS circle but makes a Brownian outline look like it is
+  // stuttering rather than drifting. The walk needs enough samples to read as
+  // continuous motion; the window still stops entirely when hidden.
+  const FPS = { idle: 18, active: 26 };
 
   const blob = document.getElementById("blob");
 
@@ -57,26 +60,188 @@
   const lean = { x: 0, y: 0 };
 
   /**
+   * Contacts, each spring-damped toward the value the main process reports.
+   *
+   * Springs rather than direct assignment for one reason: pulling away from an
+   * edge should overshoot and wobble back, not snap. That overshoot is most of
+   * what makes the thing read as alive rather than as a resizing rectangle.
+   */
+  const CONTACT_SLOTS = 2;
+  const STIFFNESS = 165;
+  const DAMPING = 15;
+
+  const contacts = [];
+  for (let i = 0; i < CONTACT_SLOTS; i++) {
+    contacts.push({ nx: 0, ny: 0, press: 0, target: 0, vel: 0 });
+  }
+
+  function setContacts(list) {
+    const incoming = Array.isArray(list) ? list : [];
+    for (let i = 0; i < CONTACT_SLOTS; i++) {
+      const c = contacts[i];
+      const next = incoming[i];
+      if (next) {
+        // Adopt the new normal immediately; only the magnitude is sprung, so a
+        // contact that jumps to another wall does not swing through the middle.
+        c.nx = next.nx;
+        c.ny = next.ny;
+        c.target = next.press;
+      } else {
+        c.target = 0;
+      }
+    }
+  }
+
+  function stepSprings(dt) {
+    // Clamped because a long frame gap (window hidden, machine asleep) would
+    // otherwise integrate into a violent snap on the next visible frame.
+    const step = Math.min(dt, 1 / 30);
+    let moving = false;
+    for (const c of contacts) {
+      const accel = (c.target - c.press) * STIFFNESS - c.vel * DAMPING;
+      c.vel += accel * step;
+      c.press += c.vel * step;
+      if (Math.abs(c.vel) > 0.002 || Math.abs(c.target - c.press) > 0.002) moving = true;
+    }
+    return moving;
+  }
+
+  /**
    * Per-state character of the motion.
    *
-   * amp   how far the surface wobbles
-   * speed how fast the field evolves
-   * lobes how many bulges travel around the perimeter
+   * amp   how far the surface wanders from a circle
+   * speed how fast the wandering evolves
+   * churn how violently the harmonics get re-randomised
    * pull  how strongly the whole body leans toward free space
    */
   const SHAPE = {
-    idle: { amp: 0.06, speed: 0.55, lobes: 3, pull: 0.1 },
-    listening: { amp: 0.15, speed: 1.5, lobes: 4, pull: 0.16 },
-    thinking: { amp: 0.1, speed: 2.4, lobes: 5, pull: 0.12 },
-    speaking: { amp: 0.22, speed: 3.2, lobes: 2, pull: 0.14 },
-    pointing: { amp: 0.08, speed: 1.1, lobes: 3, pull: 0.55 },
+    idle: { amp: 0.3, speed: 0.5, churn: 0.55, pull: 0.1 },
+    listening: { amp: 0.42, speed: 1.5, churn: 1.5, pull: 0.16 },
+    thinking: { amp: 0.36, speed: 2.3, churn: 2.6, pull: 0.12 },
+    speaking: { amp: 0.5, speed: 3.0, churn: 3.2, pull: 0.14 },
+    pointing: { amp: 0.24, speed: 1.0, churn: 0.8, pull: 0.55 },
   };
 
-  /** Slow size pulse. Speaking pulses hardest — that is the "voice" of it. */
-  function breath(s) {
-    const rate = state === "speaking" ? 6 : state === "listening" ? 2.6 : 1.1;
-    const depth = state === "speaking" ? 0.09 : 0.045;
-    return 1 + Math.sin(t * rate) * depth + s.amp * 0.15;
+  /**
+   * Live shape parameters, eased toward the active state's values.
+   *
+   * Snapping these on a state change made the silhouette pop, which read as a
+   * glitch rather than a mood shift. Easing them means "thinking" grows into
+   * "speaking" over a few frames, and the colour transition in CSS lands on the
+   * same beat.
+   */
+  const cur = { ...SHAPE.idle };
+  const EASE_TAU = 0.28;
+
+  /**
+   * Extra churn injected on a state change, decaying away.
+   *
+   * Easing alone made transitions correct but limp — the shape arrived at its new
+   * mood without ever reacting. A short burst of agitation reads as the creature
+   * noticing something, then settling into the new state.
+   */
+  let shiver = 0;
+  const SHIVER_TAU = 0.45;
+
+  function easeParams(dt) {
+    const target = SHAPE[state] ?? SHAPE.idle;
+    // Exponential approach: frame-rate independent, and never overshoots into a
+    // shape the state does not have.
+    const k = 1 - Math.exp(-dt / EASE_TAU);
+    for (const key of Object.keys(cur)) {
+      cur[key] += (target[key] - cur[key]) * k;
+    }
+    shiver *= Math.exp(-dt / SHIVER_TAU);
+    cur.churn += shiver;
+  }
+
+  /**
+   * The silhouette is a sum of harmonics whose amplitudes and phases wander.
+   *
+   * Fixed sine lobes gave a shape that was too regular — it read as a rounded
+   * rectangle or a gear, not a creature. Each harmonic here does its own random
+   * walk (Ornstein-Uhlenbeck: nudged by noise, pulled back toward zero) so the
+   * outline is genuinely Brownian and never repeats, while staying bounded
+   * instead of drifting into spikes.
+   */
+  const HARMONICS = [1, 2, 3, 4, 5, 7].map((k) => ({
+    k,
+    // Higher harmonics get less room, or the surface turns to static.
+    weight: 1 / (k * 0.85),
+    amp: 0,
+    phase: Math.random() * Math.PI * 2,
+    // Irrational-ish drifts so the harmonics never re-align into a pattern.
+    drift: (0.17 + k * 0.113) * (k % 2 === 0 ? -1 : 1),
+  }));
+
+  const OU_PULL = 1.7;
+  /**
+   * Noise scale, chosen from the stationary spread it produces.
+   *
+   * For an Ornstein-Uhlenbeck walk the resting deviation is SIGMA/sqrt(2*PULL),
+   * so this lands each harmonic around ±0.5 of its weight. The first version
+   * applied noise as `noise * dt`, which is not dt-invariant AND shrank the walk
+   * by a factor of ~20 — the outline came out almost perfectly round, which was
+   * the whole complaint.
+   */
+  const SIGMA = 1.3;
+
+  /** Standard normal via Box-Muller: uniform noise gave a flat, buzzy wobble. */
+  function gauss() {
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  function stepHarmonics(dt) {
+    const step = Math.min(dt, 1 / 15);
+    const root = Math.sqrt(step);
+    for (const h of HARMONICS) {
+      // Correct OU: drift scales with dt, noise with sqrt(dt), so the walk looks
+      // the same whether it is running at 18fps or 60.
+      const sigma = SIGMA * cur.churn * h.weight;
+      h.amp += -OU_PULL * h.amp * step + sigma * root * gauss();
+
+      // Bound it: an unbounded walk eventually inverts the radius and the blob
+      // turns inside out.
+      const cap = h.weight * 1.15;
+      if (h.amp > cap) h.amp = cap;
+      if (h.amp < -cap) h.amp = -cap;
+
+      // Phases wander too, so the lobes never settle into a fixed rosette.
+      h.phase += (h.drift * cur.speed + gauss() * 0.12) * step;
+    }
+  }
+
+  // Sum of the weights: divides the harmonic sum so `amp` is a real bound on
+  // deviation rather than something that grows with harmonic count.
+  const WEIGHT_SUM = HARMONICS.reduce((n, h) => n + h.weight, 0);
+
+  /**
+   * Radius multiplier at a given angle: the Brownian outline.
+   *
+   * Floored well above zero because a harmonic sum that reaches -1 would fold
+   * the surface through the centre, which looks like corruption rather than a
+   * creature.
+   */
+  function outline(angle) {
+    let sum = 0;
+    for (const h of HARMONICS) sum += h.amp * Math.sin(h.k * angle + h.phase);
+    return Math.max(0.35, 1 + (sum / WEIGHT_SUM) * cur.amp * 2.6);
+  }
+
+  /**
+   * Slow size pulse, layered under the Brownian outline.
+   *
+   * Driven by the eased speed rather than the raw state, so the breathing rate
+   * changes gradually with everything else instead of jumping.
+   */
+  function breath() {
+    const rate = 1.1 + cur.speed * 1.6;
+    const depth = 0.03 + cur.speed * 0.016;
+    return 1 + Math.sin(t * rate) * depth;
   }
 
   /**
@@ -88,43 +253,140 @@
    * nothing, and the band between is the soft edge that makes it read as a blob
    * rather than a circle.
    */
+  /**
+   * Squash a point against the active contacts.
+   *
+   * Per contact: compress along the wall normal and spread perpendicular, which
+   * is the squash-and-stretch that keeps the blob looking like it has a fixed
+   * volume rather than just getting smaller. Then the wall itself hard-clips
+   * anything past it, which is what produces the flat pressed face — without the
+   * clip you get a small oval, not a creature splatted on glass.
+   *
+   * Returns the deformed offset plus whether this cell fell outside a wall.
+   */
+  function squash(dx, dy, base) {
+    let ox = dx;
+    let oy = dy;
+    let clipped = false;
+
+    // A corner applies two contacts, and multiplying both squashes collapsed the
+    // blob into a one-pixel line — technically correct, visually dead. Splitting
+    // the budget keeps a corner squish dramatic while still leaving a creature.
+    const active = contacts.filter((c) => c.press > 0.01);
+    const share = active.length > 1 ? 0.68 : 1;
+
+    for (const c of active) {
+      const press = c.press * share;
+      const along = ox * c.nx + oy * c.ny;
+      const perpX = ox - c.nx * along;
+      const perpY = oy - c.ny * along;
+
+      // Wall sits this far from centre along -n. As press rises it comes in,
+      // so more of the body is cut away and has to go somewhere.
+      const wall = base * (1 - Math.min(0.66, press * 0.6));
+      if (along < -wall) clipped = true;
+
+      const compress = 1 / (1 - Math.min(0.55, press * 0.47));
+      const spread = 1 / (1 + Math.min(0.8, press * 0.66));
+
+      ox = c.nx * along * compress + perpX * spread;
+      oy = c.ny * along * compress + perpY * spread;
+    }
+
+    return { ox, oy, clipped };
+  }
+
+  /** Net push direction, used to lean the body and aim the eyes. */
+  function contactBias() {
+    let bx = 0;
+    let by = 0;
+    let total = 0;
+    for (const c of contacts) {
+      if (c.press <= 0.01) continue;
+      bx += c.nx * c.press;
+      by += c.ny * c.press;
+      total += c.press;
+    }
+    return { bx, by, total };
+  }
+
   function frame() {
-    const s = SHAPE[state] ?? SHAPE.idle;
-    const cx = (FIELD_W - 1) / 2 + lean.x * s.pull * FIELD_W * 0.5;
-    const cy = (FIELD_H - 1) / 2 + lean.y * s.pull * FIELD_H * 0.5;
+    const bias = contactBias();
 
-    const base = FIELD_H * 0.44;
+    // Pressed blobs slide their mass away from the wall, not just deform in place.
+    const cx = (FIELD_W - 1) / 2 + (lean.x * cur.pull + bias.bx * 0.9) * FIELD_W * 0.16;
+    const cy = (FIELD_H - 1) / 2 + (lean.y * cur.pull + bias.by * 0.9) * FIELD_H * 0.16;
 
-    let out = "";
+    const base = FIELD_H * 0.42 * breath();
+    const grid = [];
+
     for (let y = 0; y < FIELD_H; y++) {
+      let row = "";
       for (let x = 0; x < FIELD_W; x++) {
-        const dx = (x - cx) / ASPECT;
-        const dy = y - cy;
-        const dist = Math.hypot(dx, dy);
-        const angle = Math.atan2(dy, dx);
+        const { ox, oy, clipped } = squash((x - cx) / ASPECT, y - cy, base);
+        if (clipped) {
+          row += " ";
+          continue;
+        }
 
-        const wobble =
-          Math.sin(angle * s.lobes + t * s.speed) * s.amp +
-          Math.sin(angle * (s.lobes + 2) - t * s.speed * 0.7) * s.amp * 0.5;
-        const radius = base * (1 + wobble) * breath(s);
+        const dist = Math.hypot(ox, oy);
+        const radius = base * outline(Math.atan2(oy, ox));
 
         // 0 at the surface, 1 deep inside. Clamped so the ramp index is safe.
-        const depth = Math.max(0, Math.min(1, (radius - dist) / (radius * 0.85)));
-        out += depth <= 0 ? " " : RAMP[Math.min(RAMP.length - 1, Math.floor(depth * RAMP.length))];
+        const depth = Math.max(0, Math.min(1, (radius - dist) / (radius * 0.8)));
+        row += depth <= 0 ? " " : RAMP[Math.min(RAMP.length - 1, Math.floor(depth * RAMP.length))];
       }
-      out += "\n";
+      grid.push(row.split(""));
     }
-    blob.textContent = out;
+
+    drawEyes(grid, cx, cy, base, bias);
+    blob.textContent = grid.map((r) => r.join("")).join("\n");
+  }
+
+  /**
+   * Two eyes, because a blob with eyes is a creature and a blob without is a
+   * loading indicator. They look toward open space (away from whatever it is
+   * pressed against) and squint as the squish deepens.
+   */
+  function drawEyes(grid, cx, cy, base, bias) {
+    const squishing = Math.min(1, bias.total);
+    const glyph = squishing > 0.55 ? "-" : state === "listening" ? "O" : state === "thinking" ? "o" : "•";
+
+    // Look away from the wall; default slightly up, which reads as friendly.
+    const lookX = bias.total > 0.05 ? bias.bx / Math.max(1, bias.total) : 0;
+    const lookY = bias.total > 0.05 ? bias.by / Math.max(1, bias.total) : -0.35;
+
+    const eyeY = Math.round(cy + lookY * 1.6 - 0.6);
+    const spread = Math.max(1, Math.round(base * (0.62 + squishing * 0.55) * ASPECT * 0.5));
+    const centreX = Math.round(cx + lookX * 2.2);
+
+    for (const dx of [-spread, spread]) {
+      const gx = centreX + dx;
+      const row = grid[eyeY];
+      if (!row) continue;
+      // Only draw an eye where there is body to draw it on, so eyes never float
+      // outside a squashed silhouette.
+      if (gx < 0 || gx >= FIELD_W || row[gx] === " ") continue;
+      row[gx] = glyph;
+    }
   }
 
   function loop(now) {
     raf = requestAnimationFrame(loop);
-    const interval = 1000 / (state === "idle" ? FPS.idle : FPS.active);
+    // Springs need a high, steady rate to look elastic, so contact wobble
+    // overrides the idle throttle while it is still settling.
+    const settling = contacts.some((c) => c.press > 0.01 || c.target > 0.01);
+    const interval = 1000 / (state === "idle" && !settling ? FPS.idle : FPS.active);
     if (now - lastFrame < interval) return;
+
+    const dt = (now - lastFrame) / 1000;
+    lastFrame = now;
     // Advance by wall-clock so a throttled window drops frames rather than
     // playing the animation in slow motion.
-    t += (now - lastFrame) / 1000;
-    lastFrame = now;
+    t += dt;
+    easeParams(dt);
+    stepHarmonics(dt);
+    stepSprings(dt);
     frame();
   }
 
@@ -143,7 +405,11 @@
   function setState(next) {
     state = SHAPE[next] ? next : "idle";
     root.dataset.state = state;
-    frame();
+    // A state change is a nudge, not a cut: kick the harmonics and raise the
+    // agitation, both of which decay, so the transition has energy behind it.
+    for (const h of HARMONICS) h.amp += gauss() * 0.3 * h.weight;
+    shiver = 2.6;
+    start();
   }
 
   /**
@@ -234,6 +500,9 @@
           break;
         case "edges":
           setEdges(message.edges);
+          break;
+        case "contacts":
+          setContacts(message.contacts);
           break;
         case "flight":
           setState("pointing");

@@ -19,6 +19,8 @@ const { spawn } = require("node:child_process");
 const { existsSync, readFileSync, writeFileSync, mkdirSync } = require("node:fs");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { windowBounds } = require("./window-bounds.js");
+const { computeContacts } = require("./contacts.js");
 const { homedir } = require("node:os");
 
 const REPO = require("./repo-path.json").repo;
@@ -133,6 +135,29 @@ function nearEdges() {
   if (b.y - area.y <= EDGE_SLOP) edges.push("top");
   if (area.y + area.height - (b.y + b.height) <= EDGE_SLOP) edges.push("bottom");
   return edges;
+}
+
+/**
+ * Windows to squish against, refreshed when a drag begins.
+ *
+ * Not per-frame: the CoreGraphics query costs ~90ms, and other windows do not
+ * move while Kevin is dragging the buddy, so one snapshot per drag is both
+ * cheap and correct.
+ */
+let obstacles = [];
+/** True only between dragstart and dragend — window squish is a drag effect. */
+let dragging = false;
+
+async function refreshObstacles() {
+  obstacles = await windowBounds();
+}
+
+function pushContacts() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const b = overlayWindow.getBounds();
+  const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 }).workArea;
+  const contacts = computeContacts(b, area, obstacles, dragging);
+  overlayWindow.webContents.send("overlay:command", { kind: "contacts", contacts });
 }
 
 function pushEdges() {
@@ -325,6 +350,9 @@ function createOverlay() {
     const [x, y] = overlayWindow.getPosition();
     savePosition(x, y);
     pushEdges();
+    // Recomputed after dragging clears, so window squish releases and the
+    // springs get to wobble back.
+    pushContacts();
   });
 
   // Orientation depends on display geometry, which changes when a monitor is
@@ -333,7 +361,12 @@ function createOverlay() {
   screen.on("display-added", pushEdges);
   screen.on("display-removed", pushEdges);
 
-  overlayWindow.webContents.on("did-finish-load", pushEdges);
+  overlayWindow.webContents.on("did-finish-load", () => {
+    pushEdges();
+    // One snapshot at startup so a buddy parked against a window is already
+    // squished before it is ever touched.
+    void refreshObstacles().then(pushContacts);
+  });
 
   // Renderer failures are otherwise completely silent: the buddy still paints,
   // it just stops responding, which reads as "the click did nothing".
@@ -436,6 +469,10 @@ app.whenReady().then(() => {
     if (!overlayWindow || overlayWindow.isDestroyed()) return;
     const [wx, wy] = overlayWindow.getPosition();
     dragOrigin = { wx, wy, sx: p.screenX, sy: p.screenY };
+    dragging = true;
+    // Fire and forget: the first few frames squish against screen edges only,
+    // then window edges join in ~90ms later. Awaiting here would stall the drag.
+    void refreshObstacles();
   });
   ipcMain.on("overlay:dragmove", (_e, p) => {
     if (!dragOrigin || !overlayWindow || overlayWindow.isDestroyed()) return;
@@ -444,13 +481,16 @@ app.whenReady().then(() => {
       Math.round(dragOrigin.wy + (p.screenY - dragOrigin.sy)),
       false,
     );
+    pushContacts();
   });
   ipcMain.on("overlay:dragend", () => {
     dragOrigin = undefined;
+    dragging = false;
     if (!overlayWindow || overlayWindow.isDestroyed()) return;
     const [x, y] = overlayWindow.getPosition();
     savePosition(x, y);
     pushEdges();
+    pushContacts();
   });
   ipcMain.on("overlay:tap", () => {
     console.log("overlay: tap");

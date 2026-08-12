@@ -114,6 +114,8 @@ importers:
         specifier: workspace:*
         version: link:../wiki-bridge
 
+  packages/app: {}
+
   packages/automations:
     dependencies:
       '@jarvis/core':
