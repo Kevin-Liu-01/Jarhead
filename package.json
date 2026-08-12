@@ -35,7 +35,8 @@
     "@jarvis/wiki-bridge": "workspace:*",
     "@jarvis/live": "workspace:*",
     "@jarvis/annotate": "workspace:*",
-    "@jarvis/tools": "workspace:*"
+    "@jarvis/tools": "workspace:*",
+    "@jarvis/realtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

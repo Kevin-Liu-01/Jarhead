@@ -24,6 +24,7 @@
     "@jarvis/overlay": "workspace:*",
     "@jarvis/live": "workspace:*",
     "@jarvis/annotate": "workspace:*",
-    "@jarvis/tools": "workspace:*"
+    "@jarvis/tools": "workspace:*",
+    "@jarvis/realtime": "workspace:*"
   }
 }

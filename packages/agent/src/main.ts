@@ -33,6 +33,10 @@ import { ipcRequest } from "@jarvis/daemon";
 import { ensureEarcon, playFile } from "@jarvis/ack";
 import { LiveConversation } from "@jarvis/live";
 import { act, speakerNarrator } from "./act.ts";
+import { RealtimeBridge, toRealtimeTools } from "@jarvis/realtime";
+import { openMicStream, DEFAULT_MIC_STREAM } from "@jarvis/live";
+import { TOOL_DEFINITIONS, executeTool } from "@jarvis/tools";
+import { makeToolDeps } from "./deps.ts";
 
 const HELP = `
 jarhead — local voice assistant
@@ -44,7 +48,8 @@ jarhead — local voice assistant
   pnpm jarvis devices         list microphones
   pnpm jarvis warm            pre-fetch the Hacker News cache
   pnpm jarvis do "..."        look at the screen and show you — points, draws, narrates
-  pnpm jarvis live            always-on conversation: instant answers, interruptible
+  pnpm jarvis rt              speech-to-speech via GPT Realtime, with tools (fastest)
+  pnpm jarvis live            always-on conversation: STT -> Claude -> ElevenLabs
   pnpm jarvis listen          record one utterance, answer, exit (what the app uses)
   pnpm jarvis see "..."       look at the screen and answer out loud
   pnpm jarvis point "..."     find a UI element by name and fly the cursor to it
@@ -663,6 +668,82 @@ async function doAct(request: string): Promise<void> {
   console.log("");
 }
 
+const RT_INSTRUCTIONS = `You are Jarhead, Kevin's local assistant, speaking out loud.
+
+Lead with the answer. Two or three sentences unless asked for more. Dry, direct,
+lowercase register. Never bubbly, never a preamble.
+
+You can see and touch Kevin's screen through your tools. Use them rather than
+guessing: cursor_position is exact and instant, find_on_screen locates things
+visually, point_at moves the cursor there. Only click when Kevin asks you to.
+
+If a tool cannot find something, say so plainly in one sentence. Do not invent
+coordinates or describe a screen you have not looked at.`;
+
+/**
+ * Speech-to-speech, with tools.
+ *
+ * One model hears the audio and answers in audio, instead of a transcript being
+ * handed between three services. The chain it replaces spent ~700ms after the
+ * endpoint just getting text before generation could begin.
+ */
+async function realtime(): Promise<void> {
+  const cfg = readConfig();
+  const key = process.env["OPENAI_API_KEY"];
+  if (!key) {
+    console.error("realtime needs OPENAI_API_KEY");
+    process.exit(1);
+  }
+  if (!cfg.anthropicApiKey) {
+    console.error("the tools still need ANTHROPIC_API_KEY for vision");
+    process.exit(1);
+  }
+
+  useCacheDir(cfg.stateDir);
+  const deps = makeToolDeps({ anthropicApiKey: cfg.anthropicApiKey, log: (l) => console.log(`  · ${l}`) });
+
+  const bridge = new RealtimeBridge({
+    apiKey: key,
+    instructions: RT_INSTRUCTIONS,
+    voice: process.env["JARVIS_RT_VOICE"] ?? "cedar",
+    tools: toRealtimeTools(TOOL_DEFINITIONS as never),
+    runTool: async (call) => {
+      const started = Date.now();
+      const out = await executeTool(call.name, call.args, deps);
+      console.log(`  · ${call.name} → ${out.ok ? "ok" : "error"} (${Date.now() - started}ms)`);
+      return out.ok ? out.result : { error: out.error };
+    },
+    log: (line) => console.log(`  · ${line}`),
+  });
+
+  bridge.on("phase", (p: string) => console.log(`  [${p}]`));
+  bridge.on("heard", (t: string) => console.log(`  you: ${t}`));
+  bridge.on("answer", (t: string) => console.log(`\n  jarhead: ${t}\n`));
+  bridge.on("interrupted", () => console.log("  (cut off)"));
+  bridge.on("timing", (t: { toSpeechMs: number | undefined; interrupted: boolean }) => {
+    if (!t.interrupted && t.toSpeechMs !== undefined) console.log(`  endpoint→speech ${t.toSpeechMs}ms`);
+  });
+  bridge.on("error", (e: Error) => console.error(`  error: ${e.message}`));
+
+  await bridge.start();
+
+  const { stream, stop } = openMicStream(DEFAULT_MIC_STREAM);
+  stream.on("data", (pcm: Buffer) => bridge.feed(pcm));
+  stream.on("error", (e: Error) => console.error(`  mic: ${e.message}`));
+
+  console.log(`\n  jarhead (realtime). say "hey jarhead". talk over it to interrupt. Ctrl-C to quit.\n`);
+
+  await new Promise<void>((resolve) => {
+    for (const sig of ["SIGINT", "SIGTERM"] as const) {
+      process.once(sig, () => {
+        stop();
+        bridge.stop();
+        resolve();
+      });
+    }
+  });
+}
+
 async function warm(): Promise<void> {
   useCacheDir(readConfig().stateDir);
   const started = Date.now();
@@ -703,6 +784,9 @@ switch (command) {
       process.exit(1);
     }
     await doAct(rest.join(" "));
+    break;
+  case "rt":
+    await realtime();
     break;
   case "live":
     await live();
