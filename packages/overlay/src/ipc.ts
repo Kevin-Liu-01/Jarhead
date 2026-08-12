@@ -24,7 +24,8 @@ export type OverlayCommand =
   | { readonly cmd: "say"; readonly text: string; readonly ttlMs: number | undefined }
   | { readonly cmd: "hide" }
   | { readonly cmd: "show" }
-  | { readonly cmd: "setInteractive"; readonly interactive: boolean };
+  | { readonly cmd: "setInteractive"; readonly interactive: boolean }
+  | { readonly cmd: "summon" };
 
 export interface OverlayReply {
   readonly ok: boolean;
@@ -39,6 +40,8 @@ export interface OverlayHandler {
   hide(): void;
   show(): void;
   setInteractive(interactive: boolean): void;
+  /** Move to the cursor and flash — the "where did it go" escape hatch. */
+  summon(): void;
 }
 
 export type ParsedCommand =
@@ -99,6 +102,8 @@ export function parseCommand(line: string): ParsedCommand {
       return { ok: true, command: { cmd: "hide" } };
     case "show":
       return { ok: true, command: { cmd: "show" } };
+    case "summon":
+      return { ok: true, command: { cmd: "summon" } };
     case "setInteractive": {
       const interactive = obj["interactive"];
       if (typeof interactive !== "boolean") return fail("setInteractive needs a boolean `interactive`");
@@ -158,6 +163,9 @@ function dispatch(handler: OverlayHandler, command: OverlayCommand): void {
       return;
     case "setInteractive":
       handler.setInteractive(command.interactive);
+      return;
+    case "summon":
+      handler.summon();
       return;
   }
 }

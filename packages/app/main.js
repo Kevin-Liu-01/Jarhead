@@ -247,6 +247,7 @@ function buildMenu() {
       label: ghost ? "Make buddy clickable" : "Ghost mode (click-through)",
       click: () => setGhost(!ghost),
     },
+    { label: "Summon buddy to cursor", click: () => summonBuddy() },
     { label: "Reset buddy position", click: () => resetBuddyPosition() },
     { type: "separator" },
     { label: "Open repo", click: () => void shell.openPath(REPO) },
@@ -290,6 +291,30 @@ function setBuddyDraggable(draggable) {
   overlayWindow.webContents.send("overlay:command", { kind: "interactive", interactive: draggable });
   if (draggable) setGhost(false);
   refreshMenus();
+}
+
+/**
+ * Bring the buddy to the cursor and make it obvious.
+ *
+ * Needed because "where did it go" is a real failure mode: it can end up on a
+ * display that is no longer attached, behind a full-screen app, or — as happened
+ * here — rendering perfectly but invisible against a bright wallpaper. Summoning
+ * puts it under Kevin's eyes rather than making him hunt.
+ */
+function summonBuddy() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const p = screen.getCursorScreenPoint();
+  const x = Math.round(p.x - BUDDY_SIZE / 2);
+  const y = Math.round(p.y - BUDDY_SIZE / 2 - 40);
+  overlayWindow.setPosition(x, y, false);
+  savePosition(x, y);
+  overlayWindow.showInactive();
+  setGhost(false);
+  pushEdges();
+  pushContacts();
+  // A state change kicks the harmonics, so this visibly shivers on arrival.
+  setBuddyState("listening");
+  setTimeout(() => setBuddyState("idle"), 1400);
 }
 
 function resetBuddyPosition() {
@@ -423,6 +448,7 @@ async function startOverlayServer() {
       hide: () => overlayWindow && overlayWindow.hide(),
       show: () => overlayWindow && overlayWindow.showInactive(),
       setInteractive: (interactive) => setBuddyDraggable(interactive),
+      summon: () => summonBuddy(),
     });
     await overlayServer.listen();
     console.log("overlay: socket listening");

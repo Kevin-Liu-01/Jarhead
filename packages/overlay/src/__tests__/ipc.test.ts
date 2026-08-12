@@ -98,6 +98,7 @@ async function wire(name: string, overrides: Partial<OverlayHandler> = {}): Prom
     flyTo: (x, y) => void calls.push(`flyTo:${x},${y}`),
     say: (text, ttlMs) => void calls.push(`say:${text}:${ttlMs}`),
     hide: () => void calls.push("hide"),
+    summon: () => void calls.push("summon"),
     show: () => void calls.push("show"),
     setInteractive: (interactive) => void calls.push(`interactive:${interactive}`),
     ...overrides,

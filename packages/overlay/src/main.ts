@@ -169,6 +169,26 @@ class Overlay implements OverlayHandler {
     this.win?.setIgnoreMouseEvents(!interactive, { forward: true });
     this.post({ kind: "interactive", interactive });
   }
+
+  /**
+   * Move to the cursor and flash.
+   *
+   * The escape hatch for "where did it go" — which is a real failure mode: it can
+   * sit on a display that is no longer attached, behind a full-screen window, or
+   * render perfectly while being invisible against a bright wallpaper.
+   */
+  summon(): void {
+    const win = this.win;
+    if (!win) return;
+    const p = screen.getCursorScreenPoint();
+    const size = win.getSize();
+    const w = size[0] ?? 220;
+    const h = size[1] ?? 220;
+    win.setPosition(Math.round(p.x - w / 2), Math.round(p.y - h / 2 - 40), false);
+    win.showInactive();
+    this.setState("listening");
+    setTimeout(() => this.setState("idle"), 1400);
+  }
 }
 
 async function main(): Promise<void> {

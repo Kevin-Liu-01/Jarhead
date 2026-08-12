@@ -42,40 +42,53 @@ body {
 }
 
 /*
+ * Contrast against an UNKNOWN background.
+ *
+ * The blob floats over whatever Kevin has open, and a coloured glow on coloured
+ * glyphs only reads on a dark one. Against a bright wallpaper it disappeared
+ * completely — it was rendering the whole time and simply could not be seen.
+ *
+ * The fix is a dark outline under the coloured glow: four hairline shadows box
+ * each glyph in near-black, so the shape survives on white, and the glow still
+ * does the work on dark. Cheaper than a backdrop-filter and it keeps the
+ * floating-text look instead of putting the buddy in a visible box.
+ */
+#blob {
+  paint-order: stroke fill;
+  -webkit-text-stroke: 0.6px rgba(4, 6, 12, 0.92);
+}
+
+/*
  * States. Each is a colour plus a glow radius, so the buddy reads at a glance
  * from across the desk even though the glyphs are tiny.
  */
 body[data-state="idle"] #blob {
-  color: rgba(122, 162, 255, 0.72);
-  text-shadow: 0 0 6px rgba(80, 130, 255, 0.35);
+  color: rgb(150, 185, 255);
+  text-shadow: 0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 7px rgba(80, 130, 255, 0.55);
 }
 
 body[data-state="listening"] #blob {
   color: rgb(125, 211, 252);
   text-shadow:
-    0 0 8px rgba(56, 189, 248, 0.75),
-    0 0 20px rgba(56, 189, 248, 0.35);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 9px rgba(56, 189, 248, 0.85), 0 0 20px rgba(56, 189, 248, 0.4);
 }
 
 body[data-state="thinking"] #blob {
   color: rgb(196, 181, 253);
   text-shadow:
-    0 0 8px rgba(167, 139, 250, 0.7),
-    0 0 22px rgba(139, 92, 246, 0.35);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 9px rgba(167, 139, 250, 0.8), 0 0 22px rgba(139, 92, 246, 0.4);
 }
 
 body[data-state="speaking"] #blob {
   color: rgb(134, 239, 172);
   text-shadow:
-    0 0 9px rgba(74, 222, 128, 0.8),
-    0 0 24px rgba(34, 197, 94, 0.4);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(74, 222, 128, 0.85), 0 0 24px rgba(34, 197, 94, 0.45);
 }
 
 body[data-state="pointing"] #blob {
   color: rgb(253, 224, 71);
   text-shadow:
-    0 0 9px rgba(250, 204, 21, 0.8),
-    0 0 22px rgba(234, 179, 8, 0.4);
+    0 0 2px rgba(2, 4, 10, 0.95), 0 0 4px rgba(2, 4, 10, 0.85), 1px 1px 0 rgba(2, 4, 10, 0.8), -1px -1px 0 rgba(2, 4, 10, 0.8), 0 0 10px rgba(250, 204, 21, 0.85), 0 0 22px rgba(234, 179, 8, 0.45);
 }
 
 /*
