@@ -7,6 +7,7 @@ import { judgeEcho, isRealInterruption } from "./echo.ts";
 import { openMicStream, DEFAULT_MIC_STREAM, type MicStreamOptions } from "./micstream.ts";
 import { RealtimeTranscriber } from "./transcribe.ts";
 import { wantsAction } from "./intent.ts";
+import { detect } from "@jarvis/ears";
 
 /**
  * Full-duplex conversation: always listening, answers the moment you stop, and
@@ -47,6 +48,17 @@ export interface ConversationOptions {
    * would be a cycle. Absent, everything falls through to a spoken answer.
    */
   readonly act?: (request: string, io: ActIO) => Promise<void>;
+  /**
+   * How long after waking a bare utterance still counts as a follow-up.
+   *
+   * DEFAULT IS ZERO: every turn needs "hey jarhead". That is what Kevin asked
+   * for, and testing showed why he was right — with a 20s window open, a podcast
+   * playing in the room woke it once and then got answered twice more, because
+   * ambient speech inside the window is indistinguishable from a follow-up.
+   *
+   * Set JARVIS_FOLLOW_UP_MS to opt into conversational mode in a quiet room.
+   */
+  readonly followUpMs?: number;
   readonly log?: (line: string) => void;
 }
 
@@ -61,6 +73,8 @@ export interface Conversation extends EventEmitter {
   on(event: "heard", listener: (text: string, kind: "partial" | "final") => void): this;
   on(event: "answer", listener: (text: string) => void): this;
   on(event: "interrupted", listener: (by: string) => void): this;
+  /** Fired when the wake phrase is heard, with whatever followed it. */
+  on(event: "woke", listener: (command: string) => void): this;
   on(event: "metrics", listener: (m: TurnMetrics) => void): this;
   on(event: "error", listener: (e: Error) => void): this;
 }
@@ -75,6 +89,9 @@ export interface TurnMetrics {
 }
 
 const MIN_TURN_WORDS = 1;
+
+/** Strict by default; see ConversationOptions.followUpMs for why. */
+const DEFAULT_FOLLOW_UP_MS = Number(process.env["JARVIS_FOLLOW_UP_MS"] ?? 0);
 
 export class LiveConversation extends EventEmitter {
   private readonly brain: Brain;
@@ -96,6 +113,8 @@ export class LiveConversation extends EventEmitter {
   private ackAt: number | undefined;
   /** Guards against two turns running at once. */
   private turnId = 0;
+  /** Until when a bare utterance counts as a follow-up rather than background talk. */
+  private awakeUntil = 0;
 
   constructor(private readonly opts: ConversationOptions) {
     super();
@@ -179,7 +198,8 @@ export class LiveConversation extends EventEmitter {
   }
 
   /**
-   * The transcript landed. This is the earliest moment an answer can exist.
+   * The transcript landed. This is the earliest moment an answer can exist —
+   * but only if Kevin was talking to Jarhead at all.
    */
   private onFinal(text: string): void {
     this.emit("heard", text, "final");
@@ -187,12 +207,52 @@ export class LiveConversation extends EventEmitter {
 
     const words = text.trim().split(/\s+/).filter(Boolean);
     if (words.length < MIN_TURN_WORDS) {
-      this.ack?.stop();
-      this.ack = undefined;
-      this.setPhase("listening");
+      this.sleep();
       return;
     }
-    void this.answer(text.trim());
+
+    const request = this.gateOnWakePhrase(text.trim());
+    if (request === undefined) return;
+    void this.answer(request);
+  }
+
+  /**
+   * Everything the microphone hears is transcribed; almost none of it is meant
+   * for Jarhead. This is the gate.
+   *
+   * Returns the command to answer, or undefined to stay quiet. A bare "hey
+   * jarhead" with no command still counts as a wake — it opens the follow-up
+   * window and gets a greeting — because that is how Kevin actually starts.
+   */
+  private gateOnWakePhrase(text: string): string | undefined {
+    const match = detect(text);
+
+    if (match.woke) {
+      this.awakeUntil = Date.now() + (this.opts.followUpMs ?? DEFAULT_FOLLOW_UP_MS);
+      this.log(`woke on "${match.matched}"`);
+      this.emit("woke", match.command);
+      // A bare wake gets a greeting rather than silence, so Kevin can tell it
+      // heard him before he commits to a sentence.
+      return match.bare ? "hey" : match.command;
+    }
+
+    if (Date.now() < this.awakeUntil) {
+      this.log("follow-up within the wake window");
+      this.awakeUntil = Date.now() + (this.opts.followUpMs ?? DEFAULT_FOLLOW_UP_MS);
+      return text;
+    }
+
+    // Overheard, not addressed. This is the common case in a room with people
+    // in it, and answering here is what makes an always-on assistant unbearable.
+    this.log(`ignored (no wake phrase): "${text.slice(0, 48)}"`);
+    this.sleep();
+    return undefined;
+  }
+
+  private sleep(): void {
+    this.ack?.stop();
+    this.ack = undefined;
+    this.setPhase("listening");
   }
 
   /**
@@ -205,6 +265,14 @@ export class LiveConversation extends EventEmitter {
   private onEndpoint(): void {
     if (this.phase === "speaking") return; // interruption already handled it
     this.endpointAt = Date.now();
+
+    // Only acknowledge if we are already awake. At the endpoint the transcript
+    // does not exist yet, so there is no way to know whether this utterance was
+    // addressed to Jarhead — and chirping at every overheard sentence is exactly
+    // the behaviour the wake phrase is meant to prevent. The cost is that the
+    // very first turn after waking has no ack to hide its latency behind.
+    if (Date.now() >= this.awakeUntil) return;
+
     this.setPhase("thinking");
     this.playAck();
   }

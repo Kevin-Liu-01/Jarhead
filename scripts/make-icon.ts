@@ -157,7 +157,7 @@ function renderTemplateRgba(size: number): Buffer {
 
 const SIZES = [16, 32, 64, 128, 256, 512, 1024] as const;
 
-const iconset = join(REPO_ROOT, "build", "Jarvis.iconset");
+const iconset = join(REPO_ROOT, "build", "Jarhead.iconset");
 rmSync(iconset, { recursive: true, force: true });
 mkdirSync(iconset, { recursive: true });
 
@@ -168,7 +168,7 @@ for (const size of SIZES) {
   if (size >= 32) writeFileSync(join(iconset, `icon_${size / 2}x${size / 2}@2x.png`), png);
 }
 
-const icns = join(REPO_ROOT, "build", "Jarvis.icns");
+const icns = join(REPO_ROOT, "build", "Jarhead.icns");
 execFileSync("iconutil", ["-c", "icns", iconset, "-o", icns]);
 writeFileSync(join(REPO_ROOT, "build", "icon.png"), encodePng(1024, renderRgba(1024)));
 writeFileSync(join(REPO_ROOT, "build", "iconTemplate.png"), encodePng(22, renderTemplateRgba(22)));

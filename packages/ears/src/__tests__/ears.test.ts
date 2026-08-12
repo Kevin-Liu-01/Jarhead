@@ -4,20 +4,34 @@ import { detect, isBareWake } from "../wake.ts";
 import { applySilence, endpointFrom, INITIAL_ENDPOINT, isBargeIn, parseSilence } from "../vad.ts";
 
 test("wakes on the canonical phrase", () => {
-  const m = detect("hey jarvis");
+  const m = detect("hey jarhead");
   assert.equal(m.woke, true);
   assert.equal(m.bare, true);
   assert.equal(m.command, "");
 });
 
-test("wakes on documented mishearings", () => {
-  for (const u of ["hey travis", "hey jervis", "hi javis", "hello jarvus"]) {
+test("wakes on single-token mishearings", () => {
+  for (const u of ["hey jared", "hey jarhed", "hi jarhad", "hello garhead"]) {
     assert.equal(detect(u).woke, true, u);
   }
 });
 
+test("wakes when the name is transcribed as two words", () => {
+  // The most likely transcription of an unfamiliar compound, and completely
+  // invisible to a matcher that compares one word at a time.
+  for (const u of ["hey jar head", "hey jar bed", "hi char head"]) {
+    assert.equal(detect(u).woke, true, u);
+  }
+});
+
+test("a two-word name does not swallow the command", () => {
+  const m = detect("hey jar head what's on hackernews");
+  assert.equal(m.woke, true);
+  assert.equal(m.command, "what's on hackernews", "both name tokens must be consumed");
+});
+
 test("separates the command from the wake phrase", () => {
-  const m = detect("hey jarvis what's on hackernews");
+  const m = detect("hey jarhead what's on hackernews");
   assert.equal(m.woke, true);
   assert.equal(m.bare, false);
   assert.equal(m.command, "what's on hackernews");
@@ -25,21 +39,21 @@ test("separates the command from the wake phrase", () => {
 
 test("does not wake when the name appears late in the sentence", () => {
   // The false accept that makes an always-on assistant intolerable.
-  assert.equal(detect("I was telling Sarah about jarvis yesterday").woke, false);
+  assert.equal(detect("I was telling Sarah about jarhead yesterday").woke, false);
 });
 
 test("a bare name with no greeting and no command is not a wake", () => {
-  assert.equal(detect("jarvis").woke, false);
+  assert.equal(detect("jarhead").woke, false);
 });
 
 test("a bare name followed by a command does wake", () => {
-  const m = detect("jarvis what time is it");
+  const m = detect("jarhead what time is it");
   assert.equal(m.woke, true);
   assert.equal(m.command, "what time is it");
 });
 
 test("punctuation and casing do not matter", () => {
-  assert.equal(detect("Hey, Jarvis! ").woke, true);
+  assert.equal(detect("Hey, Jarhead! ").woke, true);
 });
 
 test("empty input never wakes", () => {
@@ -48,8 +62,8 @@ test("empty input never wakes", () => {
 });
 
 test("isBareWake distinguishes greeting-only from a command", () => {
-  assert.equal(isBareWake("hey jarvis"), true);
-  assert.equal(isBareWake("hey jarvis what's up"), false);
+  assert.equal(isBareWake("hey jarhead"), true);
+  assert.equal(isBareWake("hey jarhead what's up"), false);
 });
 
 test("parses ffmpeg silence events", () => {

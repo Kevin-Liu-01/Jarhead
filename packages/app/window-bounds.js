@@ -28,7 +28,7 @@ for (var i = 0; i < arr.count; i++) {
   // and our own screen-saver-level overlay.
   if (ObjC.unwrap(w.objectForKey("kCGWindowLayer")) !== 0) continue;
   var name = ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) || "";
-  if (name === "Jarvis") continue;
+  if (name === "Jarhead") continue;
   var b = ObjC.deepUnwrap(w.objectForKey("kCGWindowBounds"));
   if (!b) continue;
   // Ignore slivers: tooltips and shadows are not worth squishing against.

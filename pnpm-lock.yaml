@@ -186,6 +186,9 @@ importers:
       '@jarvis/core':
         specifier: workspace:*
         version: link:../core
+      '@jarvis/ears':
+        specifier: workspace:*
+        version: link:../ears
       '@jarvis/voice':
         specifier: workspace:*
         version: link:../voice

@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Jarvis.app — the Dock citizen.
+ * Jarhead.app — the Dock citizen.
  *
  * Deliberately plain CommonJS, not TypeScript. Everything else in this repo runs
  * through tsx, but the packaged bundle would then have to carry tsx, esbuild and
@@ -91,7 +91,7 @@ function runAgent(args, { onLine } = {}) {
   return new Promise((resolve) => {
     if (!existsSync(TSX)) {
       dialog.showErrorBox(
-        "Jarvis cannot find its code",
+        "Jarhead cannot find its code",
         `Expected the repo at:\n${REPO}\n\nRun 'pnpm install' there, then relaunch.`,
       );
       resolve({ code: 1, out: "" });
@@ -179,7 +179,7 @@ function buddySay(text) {
 
 function setTrayState(state) {
   if (!tray) return;
-  const label = { idle: "Jarvis", listening: "Jarvis — listening", thinking: "Jarvis — thinking" }[state] ?? "Jarvis";
+  const label = { idle: "Jarhead", listening: "Jarhead — listening", thinking: "Jarhead — thinking" }[state] ?? "Jarhead";
   tray.setToolTip(label);
 }
 
@@ -217,7 +217,7 @@ async function speakTurn(args, stateLabel) {
 
 function buildMenu() {
   return Menu.buildFromTemplate([
-    { label: busy ? "Working…" : "Jarvis", enabled: false },
+    { label: busy ? "Working…" : "Jarhead", enabled: false },
     { type: "separator" },
     {
       label: "Ask (hold to talk)",
@@ -250,7 +250,7 @@ function buildMenu() {
     { label: "Reset buddy position", click: () => resetBuddyPosition() },
     { type: "separator" },
     { label: "Open repo", click: () => void shell.openPath(REPO) },
-    { label: "Quit Jarvis", role: "quit" },
+    { label: "Quit Jarhead", role: "quit" },
   ]);
 }
 

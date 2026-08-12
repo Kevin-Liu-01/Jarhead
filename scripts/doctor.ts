@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Jarvis preflight. Checks the things that fail silently:
+ * Jarhead preflight. Checks the things that fail silently:
  * keys, the wiki link, macOS TCC grants, and the audio/model toolchain.
  *
  * Exits non-zero if anything marked `required` fails, so `pnpm run check`
@@ -63,7 +63,7 @@ add({
   group: "keys",
   name: "ELEVENLABS_VOICE_ID",
   status: cfg.elevenLabsVoiceId ? "ok" : "warn",
-  detail: cfg.elevenLabsVoiceId ?? "unset — Jarvis has no voice picked yet",
+  detail: cfg.elevenLabsVoiceId ?? "unset — Jarhead has no voice picked yet",
   required: false,
   fix: "pick a voice at elevenlabs.io/app/voice-library, or clone one, then set ELEVENLABS_VOICE_ID",
 });
@@ -187,6 +187,21 @@ add({
   required: false,
 });
 
+/**
+ * A muted Mac is the quietest possible failure: everything works, Kevin hears
+ * nothing, and there is no error anywhere. Found the hard way — output volume
+ * was 0 during a live test and the whole pipeline looked broken.
+ */
+const volume = Number(sh("osascript", ["-e", "output volume of (get volume settings)"]) ?? "-1");
+add({
+  group: "toolchain",
+  name: "output volume",
+  status: volume > 0 ? "ok" : volume === 0 ? "fail" : "warn",
+  detail: volume >= 0 ? `${volume}%` : "could not read",
+  required: false,
+  fix: "unmute — a voice assistant on a muted Mac fails completely and silently",
+});
+
 add({
   group: "toolchain",
   name: "state dir",
@@ -200,7 +215,7 @@ add({
 const ICON: Record<Status, string> = { ok: "✔", warn: "!", fail: "✘" };
 const groups = [...new Set(checks.map((c) => c.group))];
 
-console.log(`\njarvis doctor  ·  ${REPO_ROOT}\n`);
+console.log(`\njarhead doctor  ·  ${REPO_ROOT}\n`);
 
 for (const g of groups) {
   console.log(`  ${g}`);

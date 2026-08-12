@@ -44,3 +44,18 @@ test("every verdict explains itself, so a misroute is debuggable", () => {
     assert.ok(wantsAction(u).reason.length > 0, u);
   }
 });
+
+test("the wake phrase gate is what stops a room being answered", async () => {
+  // Observed live: with a follow-up window open, a podcast playing nearby woke
+  // Jarhead once and then had two of its sentences answered as if they were
+  // Kevin's. The gate itself is in @jarvis/ears; this pins the expectation that
+  // ordinary overheard speech carries no wake phrase.
+  const { detect } = await import("@jarvis/ears");
+  for (const overheard of [
+    "So, the models started communicating with each other only just recently?",
+    "I mean, are the conversations able to be sent to another conversation?",
+    "Just recently.",
+  ]) {
+    assert.equal(detect(overheard).woke, false, overheard);
+  }
+});

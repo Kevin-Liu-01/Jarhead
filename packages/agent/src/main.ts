@@ -35,7 +35,7 @@ import { LiveConversation } from "@jarvis/live";
 import { act, speakerNarrator } from "./act.ts";
 
 const HELP = `
-jarvis — local voice assistant
+jarhead — local voice assistant
 
   pnpm jarvis                 talk to it (mic; needs the Microphone grant)
   pnpm jarvis text            type instead of talking — same pipeline, no mic
@@ -115,7 +115,7 @@ async function showDevices(): Promise<void> {
 
 /** Speak a fixed line — no model call. Used for offers and confirmations. */
 async function speak(deps: ReturnType<typeof makeDeps>, text: string): Promise<void> {
-  console.log(`\n  jarvis: ${text}`);
+  console.log(`\n  jarhead: ${text}`);
   if (flag("silent")) return;
   try {
     const speaker = deps.makeSpeaker();
@@ -215,7 +215,7 @@ async function see(question: string): Promise<void> {
   const deps = makeDeps(flag("silent") ? { makeSpeaker: silentSpeaker, ...silentDeps } : {});
   const timeline = new Timeline();
   const r = await lookAtScreen(question || "what am I looking at?", deps, timeline);
-  console.log(`\n  jarvis: ${r.answer.trim()}\n`);
+  console.log(`\n  jarhead: ${r.answer.trim()}\n`);
   if (!flag("quiet")) {
     console.log(timeline.render(r.firstAudioMs));
     console.log(`\n    sent: ${r.sentPath}\n`);
@@ -311,7 +311,7 @@ function listAutomations(): void {
 }
 
 function printOutcome(outcome: Awaited<ReturnType<typeof runTurn>>, quiet: boolean): void {
-  console.log(`\n  jarvis: ${outcome.answer.trim()}\n`);
+  console.log(`\n  jarhead: ${outcome.answer.trim()}\n`);
   if (!quiet) {
     console.log(outcome.timeline.render(outcome.firstAudioMs));
     if (outcome.perceivedMs !== undefined) {
@@ -339,7 +339,7 @@ async function textLoop(): Promise<void> {
   const lines = new LineReader(rl);
 
   const warmMs = deps.config.elevenLabsApiKey ? await prewarm(deps.config.elevenLabsApiKey) : 0;
-  console.log(`\n  jarvis — text mode. Same pipeline, typed input. Ctrl-C to quit.`);
+  console.log(`\n  jarhead — text mode. Same pipeline, typed input. Ctrl-C to quit.`);
   console.log(`  (tts connection warmed in ${warmMs}ms)\n`);
 
   const offered = new Set<string>();
@@ -382,7 +382,7 @@ async function voiceLoop(): Promise<void> {
 
   if (cfg.elevenLabsApiKey) await prewarm(cfg.elevenLabsApiKey);
   const offered = new Set<string>();
-  console.log("\n  jarvis — press Enter to talk, then just stop talking. Ctrl-C to quit.\n");
+  console.log("\n  jarhead — press Enter to talk, then just stop talking. Ctrl-C to quit.\n");
 
   for (;;) {
     if ((await lines.next("  [enter to speak] ")) === undefined) break;
@@ -588,7 +588,7 @@ async function live(): Promise<void> {
       act(request, {
         anthropicApiKey: cfg.anthropicApiKey!,
         speak: async (s: string) => {
-          console.log(`  jarvis: ${s}`);
+          console.log(`  jarhead: ${s}`);
           await io.speak(s);
         },
         signal: io.signal,
@@ -606,7 +606,7 @@ async function live(): Promise<void> {
   convo.on("heard", (text: string, kind: string) => {
     if (kind === "final") console.log(`  you: ${text}`);
   });
-  convo.on("answer", (text: string) => console.log(`\n  jarvis: ${text}\n`));
+  convo.on("answer", (text: string) => console.log(`\n  jarhead: ${text}\n`));
   convo.on("interrupted", (by: string) => console.log(`  (cut off by "${by}")`));
   convo.on("metrics", (m) => {
     if (m.interrupted) return;
@@ -617,7 +617,7 @@ async function live(): Promise<void> {
   convo.on("error", (e: Error) => console.error(`  error: ${e.message}`));
 
   await convo.start();
-  console.log("\n  jarvis is listening. just talk. say \"stop\" to cut it off. Ctrl-C to quit.\n");
+  console.log(`\n  jarhead is listening. say "hey jarhead" to wake it, "stop" to cut it off. Ctrl-C to quit.\n`);
 
   await new Promise<void>((resolve) => {
     for (const sig of ["SIGINT", "SIGTERM"] as const) {
@@ -649,7 +649,7 @@ async function doAct(request: string): Promise<void> {
   const outcome = await act(request, {
     anthropicApiKey: cfg.anthropicApiKey,
     speak: async (s: string) => {
-      console.log(`  jarvis: ${s}`);
+      console.log(`  jarhead: ${s}`);
       await utter(s);
     },
     log: (line) => console.log(`  · ${line}`),

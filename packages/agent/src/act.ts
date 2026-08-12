@@ -26,7 +26,7 @@ import { makeToolDeps } from "./deps.ts";
  * a step appears as the sentence describing it is spoken. See choreograph.ts.
  */
 
-const ACT_SYSTEM = `You are Jarvis, showing Kevin things on his own screen.
+const ACT_SYSTEM = `You are Jarhead, showing Kevin things on his own screen.
 
 You can see the screen and point at it. Work only from what you actually observe —
 never assume an app's layout from memory, because the version in front of Kevin may
@@ -145,7 +145,7 @@ async function sendCommand(annotate: AnnotateClient, command: Command, log: (l: 
  * Replays the exchange as an Anthropic message list.
  *
  * Tool results must come back as a user turn keyed by tool_use_id or the model
- * loses the thread entirely and starts over — which looks like Jarvis forgetting
+ * loses the thread entirely and starts over — which looks like Jarhead forgetting
  * what it just did.
  */
 function buildMessages(

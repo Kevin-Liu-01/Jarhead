@@ -10,6 +10,7 @@
     "@jarvis/ack": "workspace:*",
     "@jarvis/answers": "workspace:*",
     "@jarvis/core": "workspace:*",
-    "@jarvis/voice": "workspace:*"
+    "@jarvis/voice": "workspace:*",
+    "@jarvis/ears": "workspace:*"
   }
 }

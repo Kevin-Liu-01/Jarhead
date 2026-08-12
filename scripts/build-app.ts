@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { REPO_ROOT } from "@jarvis/core";
 
 /**
- * Package Jarvis.app.
+ * Package Jarhead.app.
  *
  * The bundle is a thin face: Dock icon, tray, hotkey, overlay. Everything heavy
  * stays in this repo and is shelled out to, so the .app does not have to carry
@@ -21,7 +21,7 @@ import { REPO_ROOT } from "@jarvis/core";
 
 const OUT = join(REPO_ROOT, "build");
 const STAGE = join(OUT, "app-src");
-const APP = join(OUT, "Jarvis.app");
+const APP = join(OUT, "Jarhead.app");
 
 const electronDist = join(REPO_ROOT, "node_modules", "electron", "dist", "Electron.app");
 if (!existsSync(electronDist)) {
@@ -41,7 +41,7 @@ copyFileSync(join(OUT, "iconTemplate@2x.png"), join(STAGE, "iconTemplate@2x.png"
 writeFileSync(join(STAGE, "repo-path.json"), `${JSON.stringify({ repo: REPO_ROOT }, null, 2)}\n`);
 writeFileSync(
   join(STAGE, "package.json"),
-  `${JSON.stringify({ name: "jarvis", productName: "Jarvis", version: "0.1.0", main: "main.js" }, null, 2)}\n`,
+  `${JSON.stringify({ name: "jarhead", productName: "Jarhead", version: "0.1.0", main: "main.js" }, null, 2)}\n`,
 );
 
 // --- clone the Electron bundle ---------------------------------------------
@@ -54,20 +54,24 @@ const resources = join(contents, "Resources");
 // Electron's default app is a placeholder; ours replaces it.
 rmSync(join(resources, "default_app.asar"), { force: true });
 cpSync(STAGE, join(resources, "app"), { recursive: true });
-copyFileSync(join(OUT, "Jarvis.icns"), join(resources, "electron.icns"));
+copyFileSync(join(OUT, "Jarhead.icns"), join(resources, "electron.icns"));
 
-// Renaming the executable is what makes the process show as "Jarvis" rather
+// Renaming the executable is what makes the process show as "Jarhead" rather
 // than "Electron" in Activity Monitor, the Dock and every TCC prompt.
 const macos = join(contents, "MacOS");
-execFileSync("mv", [join(macos, "Electron"), join(macos, "Jarvis")]);
+execFileSync("mv", [join(macos, "Electron"), join(macos, "Jarhead")]);
 
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Jarvis</string>
-  <key>CFBundleDisplayName</key><string>Jarvis</string>
-  <key>CFBundleExecutable</key><string>Jarvis</string>
+  <key>CFBundleName</key><string>Jarhead</string>
+  <key>CFBundleDisplayName</key><string>Jarhead</string>
+  <key>CFBundleExecutable</key><string>Jarhead</string>
+  <!-- Deliberately still ".jarvis" after the rename to Jarhead: TCC keys its
+       grants to the bundle identifier, so changing this string would silently
+       revoke Microphone, Screen Recording and Accessibility and make Kevin
+       approve all three again. The identifier is invisible; the name is not. -->
   <key>CFBundleIdentifier</key><string>com.kevinliu.jarvis</string>
   <key>CFBundleIconFile</key><string>electron.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -77,13 +81,13 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Jarvis listens when you hold the hotkey, so it can answer out loud.</string>
+  <string>Jarhead listens when you say "hey jarhead", so it can answer out loud.</string>
   <key>NSCameraUsageDescription</key>
-  <string>Jarvis does not use the camera.</string>
+  <string>Jarhead does not use the camera.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Jarvis reads the accessibility tree to find and point at buttons on screen.</string>
+  <string>Jarhead reads the accessibility tree to find and point at buttons on screen.</string>
   <key>NSSystemAdministrationUsageDescription</key>
-  <string>Jarvis needs accessibility access to move the cursor and click for you.</string>
+  <string>Jarhead needs accessibility access to move the cursor and click for you.</string>
 </dict>
 </plist>
 `;
@@ -163,4 +167,4 @@ if (!identity) {
   console.log(`\n  For grants that survive rebuilds, see "Signing" in README.md.`);
 }
 console.log(`\n  install:  cp -R "${APP}" /Applications/`);
-console.log(`  run:      open -a Jarvis\n`);
+console.log(`  run:      open -a Jarhead\n`);

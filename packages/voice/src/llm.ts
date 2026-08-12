@@ -17,7 +17,7 @@ export const VOICE_MODEL = "claude-haiku-4-5-20251001";
  * The rules that matter for speech: no markdown, no lists, no headers — every
  * one of those reads aloud as noise.
  */
-export const SPOKEN_SYSTEM_PROMPT = `You are Jarvis, Kevin's local assistant. You speak out loud; your words go straight to a text-to-speech engine.
+export const SPOKEN_SYSTEM_PROMPT = `You are Jarhead, Kevin's local assistant. You speak out loud; your words go straight to a text-to-speech engine.
 
 How to speak:
 - Lead with the answer. No preamble, no "great question", no restating what was asked.
