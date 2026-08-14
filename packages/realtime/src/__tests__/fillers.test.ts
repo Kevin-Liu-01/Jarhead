@@ -46,3 +46,13 @@ test("the instruction carries every phrase and forbids embellishment", () => {
   assert.match(text, /never repeat the one you just used/i);
   assert.match(text, /Do not promise a result/i);
 });
+
+test("expiry is recognised from the message the API actually sends", () => {
+  // Verbatim from a live session: "Your session hit the maximum duration of 60
+  // minutes." An always-on assistant that does not reconnect goes deaf after an
+  // hour while still holding the microphone.
+  const EXPIRY = /maximum duration|session expired/i;
+  assert.ok(EXPIRY.test("Your session hit the maximum duration of 60 minutes."));
+  assert.ok(EXPIRY.test("session expired"));
+  assert.ok(!EXPIRY.test("Conversation already has an active response in progress"));
+});

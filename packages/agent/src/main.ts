@@ -744,9 +744,34 @@ async function realtime(): Promise<void> {
 
   await bridge.start();
 
-  const { stream, stop } = openMicStream(DEFAULT_MIC_STREAM);
-  stream.on("data", (pcm: Buffer) => bridge.feed(pcm));
-  stream.on("error", (e: Error) => console.error(`  mic: ${e.message}`));
+  /**
+   * The microphone gets its own supervisor.
+   *
+   * ffmpeg dies for reasons that have nothing to do with us — the default input
+   * device changes when AirPods connect, the machine sleeps, CoreAudio
+   * restarts. Without a restart the process stays alive holding nothing, which
+   * looks exactly like a working assistant that has gone deaf. Worse, the
+   * previous capture sometimes survives as an orphan and blocks the next start,
+   * which is what left a stray ffmpeg on the device with no listener attached.
+   */
+  let mic = openMicStream(DEFAULT_MIC_STREAM);
+  let micRestartMs = 1000;
+
+  const attachMic = (): void => {
+    mic.stream.on("data", (pcm: Buffer) => bridge.feed(pcm));
+    mic.stream.on("error", (e: Error) => {
+      console.error(`  mic: ${e.message}`);
+      mic.stop();
+      setTimeout(() => {
+        console.log("  mic: restarting capture");
+        mic = openMicStream(DEFAULT_MIC_STREAM);
+        attachMic();
+        micRestartMs = Math.min(micRestartMs * 2, 30_000);
+      }, micRestartMs);
+    });
+  };
+  attachMic();
+  const stop = (): void => mic.stop();
 
   console.log(`\n  jarhead (realtime). say "hey jarhead". talk over it to interrupt. Ctrl-C to quit.\n`);
 

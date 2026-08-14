@@ -61,7 +61,7 @@ export interface TurnTiming {
 const DEFAULT_FOLLOW_UP_MS = 45_000;
 
 export class RealtimeBridge extends EventEmitter {
-  private readonly session: RealtimeSession;
+  private session: RealtimeSession;
   private readonly player = new PcmPlayer(SAMPLE_RATE);
   private readonly log: (line: string) => void;
 
@@ -89,7 +89,13 @@ export class RealtimeBridge extends EventEmitter {
   constructor(private readonly opts: BridgeOptions) {
     super();
     this.log = opts.log ?? ((): void => undefined);
-    this.session = new RealtimeSession({
+    this.session = this.buildSession();
+    this.wire();
+  }
+
+  private buildSession(): RealtimeSession {
+    const opts = this.opts;
+    return new RealtimeSession({
       apiKey: opts.apiKey,
       instructions: opts.instructions,
       ...(opts.voice ? { voice: opts.voice } : {}),
@@ -98,7 +104,6 @@ export class RealtimeBridge extends EventEmitter {
       ...(opts.silenceMs !== undefined ? { silenceMs: opts.silenceMs } : {}),
       ...(opts.noiseReduction ? { noiseReduction: opts.noiseReduction } : {}),
     });
-    this.wire();
   }
 
   private setPhase(next: Phase): void {
@@ -107,8 +112,58 @@ export class RealtimeBridge extends EventEmitter {
     this.emit("phase", next);
   }
 
+  /**
+   * Sessions expire. Reconnect rather than die.
+   *
+   * A realtime session is capped at 60 minutes, and when it lapses the socket
+   * closes with "Your session hit the maximum duration". Nothing reopened it, so
+   * an always-on assistant went deaf after an hour while its microphone capture
+   * kept running — a zombie holding the device, which then blocked the next
+   * start. An hour is short enough that this is the normal case, not an edge one.
+   */
+  private reconnectMs = 500;
+  private reconnecting = false;
+  private stopped = false;
+
+  private reconnect(): void {
+    if (this.stopped || this.reconnecting) return;
+    this.reconnecting = true;
+
+    setTimeout(() => {
+      if (this.stopped) return;
+      this.log(`reconnecting the realtime session`);
+      this.player.stop();
+      this.outstandingTools = 0;
+      this.responseEnded = false;
+
+      const next = this.buildSession();
+      this.session = next;
+      this.wire();
+      next.once("open", () => {
+        this.reconnecting = false;
+        this.reconnectMs = 500;
+        this.log("realtime session back up");
+        this.setPhase("listening");
+      });
+      next.connect();
+      // Backoff for the failure that is not expiry — a revoked key would
+      // otherwise reconnect in a tight loop forever.
+      this.reconnectMs = Math.min(this.reconnectMs * 2, 30_000);
+    }, this.reconnectMs);
+  }
+
   private wire(): void {
-    this.session.on("error", (e: Error) => this.emit("error", e));
+    this.session.on("error", (e: Error) => {
+      this.emit("error", e);
+      // Expiry arrives as an error before the close, so catch it here too.
+      if (/maximum duration|session expired/i.test(e.message)) this.reconnect();
+    });
+    this.session.on("close", () => {
+      if (!this.stopped) {
+        this.log("realtime session closed");
+        this.reconnect();
+      }
+    });
 
     this.session.on("speech-start", () => {
       // Kevin talking while Jarhead talks is an interruption. The server
@@ -311,6 +366,7 @@ export class RealtimeBridge extends EventEmitter {
   }
 
   stop(): void {
+    this.stopped = true;
     this.player.stop();
     this.session.close();
     this.setPhase("idle");
