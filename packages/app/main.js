@@ -217,8 +217,43 @@ async function speakTurn(args, stateLabel) {
 }
 
 function buildMenu() {
+  const micItems = inputDevices.map((d) => ({
+    label: d.name,
+    type: "radio",
+    checked: micDevice === d.index,
+    click: () => useMicDevice(d.index),
+  }));
+
   return Menu.buildFromTemplate([
     { label: busy ? "Working…" : "Jarhead", enabled: false },
+    { type: "separator" },
+
+    // The microphone sits at the top because it is the only control that
+    // decides whether Kevin can be heard at all. It was buried under
+    // Automations and Permissions, which are things he touches once a month.
+    {
+      label: listener ? "\u25CF  Microphone on" : "\u25CB  Microphone off",
+      enabled: false,
+    },
+    {
+      label: listener ? "Turn microphone off" : "Turn microphone on",
+      accelerator: "Alt+Shift+M",
+      click: () => toggleListening(),
+    },
+    {
+      label: "Microphone input",
+      submenu: [
+        {
+          label: "System default",
+          type: "radio",
+          checked: micDevice === undefined,
+          click: () => useMicDevice(undefined),
+        },
+        ...(micItems.length > 0 ? [{ type: "separator" }, ...micItems] : []),
+        { type: "separator" },
+        { label: "Rescan devices", click: () => refreshInputDevices() },
+      ],
+    },
     { type: "separator" },
     {
       label: "Ask (hold to talk)",
@@ -241,21 +276,6 @@ function buildMenu() {
     { label: "Automations…", click: () => void runAgent(["automations"]) },
     { label: "Permissions…", click: () => void runAgent(["permissions", "--open"]) },
     {
-      label: listener ? "Stop listening" : "Start listening",
-      click: () => {
-        if (listener) {
-          stopListener();
-        } else {
-          listeningWanted = true;
-          listenerRestartMs = 2000;
-          startListener();
-        }
-        refreshMenus();
-      },
-    },
-    { label: listener ? "Listening for \u201chey jarhead\u201d" : "Not listening", enabled: false },
-    { type: "separator" },
-    {
       label: overlayWindow && overlayWindow.isVisible() ? "Hide buddy" : "Show buddy",
       click: () => toggleOverlay(),
     },
@@ -269,6 +289,18 @@ function buildMenu() {
     { label: "Open repo", click: () => void shell.openPath(REPO) },
     { label: "Quit Jarhead", role: "quit" },
   ]);
+}
+
+/** One place owns start/stop, so the menu item and the hotkey cannot disagree. */
+function toggleListening() {
+  if (listener) {
+    stopListener();
+  } else {
+    listeningWanted = true;
+    listenerRestartMs = 2000;
+    startListener();
+  }
+  refreshMenus();
 }
 
 function refreshMenus() {
@@ -489,10 +521,63 @@ let listener;
 let listenerRestartMs = 2000;
 let listeningWanted = true;
 
+/**
+ * Audio input devices, for the picker.
+ *
+ * Worth surfacing because the indices move: when Kevin's AirPods disconnected,
+ * the built-in microphone shifted from 1 to 0 and every capture failed with a
+ * bare "Input/output error". Capture defaults to ":default" now, but when the
+ * system default is the wrong one there has to be a way to say so without
+ * editing an env file.
+ */
+let inputDevices = [];
+
+function refreshInputDevices() {
+  const ff = spawn("ffmpeg", ["-f", "avfoundation", "-list_devices", "true", "-i", ""]);
+  let buf = "";
+  ff.stderr?.on("data", (d) => (buf += d.toString()));
+  ff.on("close", () => {
+    const found = [];
+    let inAudio = false;
+    for (const line of buf.split("\n")) {
+      if (line.includes("AVFoundation audio devices")) { inAudio = true; continue; }
+      if (line.includes("AVFoundation video devices")) { inAudio = false; continue; }
+      if (!inAudio) continue;
+      const m = /\[(\d+)\]\s+(.+?)\s*$/.exec(line);
+      if (m) found.push({ index: m[1], name: m[2] });
+    }
+    inputDevices = found;
+    refreshMenus();
+  });
+  ff.on("error", () => undefined);
+}
+
+/** Which device the listener is using; undefined means the system default. */
+let micDevice = process.env.JARVIS_MIC_DEVICE;
+
+function useMicDevice(index) {
+  micDevice = index;
+  if (index === undefined) delete process.env.JARVIS_MIC_DEVICE;
+  else process.env.JARVIS_MIC_DEVICE = index;
+  // The listener reads the device at startup, so switching means a restart.
+  if (listener) {
+    stopListener();
+    listeningWanted = true;
+    listenerRestartMs = 500;
+    setTimeout(startListener, 400);
+  }
+  refreshMenus();
+}
+
 function startListener() {
   if (!existsSync(TSX) || !listeningWanted) return;
 
   listener = spawn(TSX, [AGENT, "rt"], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"] });
+  // The menu is built before the listener starts (it is on a delay so the
+  // overlay socket can bind first), so without this the status line said
+  // "Microphone off" while the microphone was plainly held. A status that lies
+  // is worse than no status.
+  refreshMenus();
 
   const line = (buf) => {
     for (const l of buf.toString().split("\n")) {
@@ -505,6 +590,7 @@ function startListener() {
 
   listener.on("close", (code) => {
     listener = undefined;
+    refreshMenus();
     if (!listeningWanted) return;
     console.error(`listener exited (${code}); retrying in ${listenerRestartMs}ms`);
     setTimeout(startListener, listenerRestartMs);
@@ -523,6 +609,7 @@ function stopListener() {
   listeningWanted = false;
   if (listener && !listener.killed) listener.kill("SIGTERM");
   listener = undefined;
+  refreshMenus();
 }
 
 function startDaemon() {
@@ -602,6 +689,10 @@ app.whenReady().then(() => {
   });
 
   globalShortcut.register("Alt+Space", () => void speakTurn(["listen"], "listening"));
+  // Same toggle as the menu item, for when the Dock is hidden.
+  globalShortcut.register("Alt+Shift+M", () => toggleListening());
+
+  refreshInputDevices();
 
   // Clicking the Dock icon with no windows open should still do something useful.
   app.on("activate", () => {
