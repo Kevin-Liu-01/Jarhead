@@ -1,3 +1,5 @@
+import { nameLengthAt } from "./similar.ts";
+
 /**
  * Wake word matching for "hey jarhead".
  *
@@ -19,50 +21,13 @@
  * no other way in. Being slightly over-eager only costs a spurious greeting.
  */
 
-/** Single-token mishearings. */
-const NAME_VARIANTS = [
-  "jarhead",
-  // Observed live, not guessed: the transcriber returned "Chathead" for a clear
-  // "jarhead". The J is the fragile consonant — it lands as ch, sh, g or c.
-  "chathead",
-  "charhead",
-  "shathead",
-  "jawhead",
-  "jarheart",
-  "jarhaid",
-  "jarhed",
-  "jarhad",
-  "jarheard",
-  "jarhet",
-  "jarheads",
-  "jared",
-  "jarred",
-  "garhead",
-  "charhead",
-  "jorhead",
-  "jarhede",
-] as const;
-
 /**
- * Two-token mishearings, matched as adjacent pairs.
+ * Variants are no longer enumerated — see similar.ts.
  *
- * "jar head" is the single most likely transcription of an unfamiliar compound,
- * and it was invisible to a matcher that only compared one word at a time.
+ * Every session produced a spelling the hardcoded list did not have (jawhead,
+ * chathead, jar head, jared), and each miss reads to Kevin as being ignored.
+ * Structure plus edit distance covers the ones nobody thought of.
  */
-const NAME_PAIRS: ReadonlyArray<readonly [string, string]> = [
-  ["jar", "head"],
-  ["chat", "head"],
-  ["car", "head"],
-  ["chart", "head"],
-  ["jar", "hed"],
-  ["jar", "bed"],
-  ["jar", "had"],
-  ["jarr", "head"],
-  ["char", "head"],
-  ["jaw", "head"],
-  ["gar", "head"],
-];
-
 const GREETINGS = new Set(["hey", "hi", "hello", "yo", "ok", "okay", "hay", "ay", "a"]);
 
 export interface WakeMatch {
@@ -123,12 +88,10 @@ export function detect(transcript: string): WakeMatch {
     const word = words[i];
     if (word === undefined) continue;
 
-    const single = NAME_VARIANTS.find((v) => v === word);
-    const next = words[i + 1];
-    const pair = next === undefined ? undefined : NAME_PAIRS.find(([a, b]) => a === word && b === next);
-    if (!single && !pair) continue;
+    const span = nameLengthAt(words, i);
+    if (span === 0) continue;
 
-    const consumed = pair ? i + 2 : i + 1;
+    const consumed = i + span;
     const before = words.slice(0, i);
     const after = words.slice(consumed);
 
@@ -157,7 +120,7 @@ export function detect(transcript: string): WakeMatch {
     return {
       woke: true,
       command,
-      matched: pair ? pair.join(" ") : single,
+      matched: words.slice(i, consumed).join(" "),
       bare: command.length === 0,
     };
   }

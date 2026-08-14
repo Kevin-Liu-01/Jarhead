@@ -1,4 +1,5 @@
 export { detect, isBareWake } from "./wake.ts";
+export { looksLikeName, nameLengthAt, editDistance } from "./similar.ts";
 
 export { RecentSpeech, DEFAULT_WINDOW_MS } from "./recent.ts";
 export type { Heard } from "./recent.ts";

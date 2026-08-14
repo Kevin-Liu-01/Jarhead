@@ -13,9 +13,6 @@
   const FIELD_W = 27;
   const FIELD_H = 15;
 
-  // Density ramp, sparse to solid. The blob's edge is the interesting part, so
-  // most of the ramp is spent on the low end where the falloff happens.
-  const RAMP = " ..::--~~==++**##%%@@";
 
   // 8fps was fine for a CSS circle but makes a Brownian outline look like it is
   // stuttering rather than drifting. The walk needs enough samples to read as
@@ -114,15 +111,47 @@
    * churn how violently the harmonics get re-randomised
    * pull  how strongly the whole body leans toward free space
    */
+  /**
+   * A personality per state, not just a colour per state.
+   *
+   * amp    how far the surface wanders from a circle
+   * speed  how fast the wandering evolves
+   * churn  how violently the harmonics get re-randomised
+   * pull   how strongly the body leans toward free space
+   * squash vertical bias: >1 is tall and alert, <1 is wide and settled
+   * ramp    which glyph set it is drawn from — density alone read as one
+   *         creature in five moods, and the character of the glyphs is what
+   *         makes them feel like different creatures
+   * spin   slow rotation of the whole silhouette
+   */
   const SHAPE = {
-    idle: { amp: 0.3, speed: 0.5, churn: 0.55, pull: 0.1 },
-    listening: { amp: 0.42, speed: 1.5, churn: 1.5, pull: 0.16 },
-    thinking: { amp: 0.36, speed: 2.3, churn: 2.6, pull: 0.12 },
-    speaking: { amp: 0.5, speed: 3.0, churn: 3.2, pull: 0.14 },
-    pointing: { amp: 0.24, speed: 1.0, churn: 0.8, pull: 0.55 },
-    // Clicked, or told to pay attention: tighter and faster than listening, so
-    // "I am waiting on you specifically" looks different from "I am awake".
-    alert: { amp: 0.5, speed: 2.2, churn: 2.0, pull: 0.18 },
+    // Barely awake: wide, slow, settled, nearly still.
+    idle: { amp: 0.3, speed: 0.45, churn: 0.5, pull: 0.1, squash: 0.9, ramp: "soft", spin: 0.05 },
+    // Perked up: taller, quicker, alive.
+    listening: { amp: 0.42, speed: 1.5, churn: 1.5, pull: 0.16, squash: 1.15, ramp: "soft", spin: 0.15 },
+    // Leaning in — clicked, or named directly.
+    alert: { amp: 0.5, speed: 2.2, churn: 2.0, pull: 0.18, squash: 1.3, ramp: "sharp", spin: 0.3 },
+    // Churning: dense, agitated, mathematical.
+    thinking: { amp: 0.36, speed: 2.4, churn: 2.8, pull: 0.12, squash: 1.0, ramp: "dense", spin: 0.55 },
+    // Talking: wide pulses, softer edge, like a mouth.
+    speaking: { amp: 0.52, speed: 3.0, churn: 3.0, pull: 0.14, squash: 0.85, ramp: "wave", spin: 0.1 },
+    // Aimed: stretched hard toward the target, quiet surface.
+    pointing: { amp: 0.2, speed: 1.0, churn: 0.7, pull: 0.6, squash: 0.75, ramp: "sharp", spin: 0 },
+  };
+
+  /**
+   * Glyph ramps, sparse to solid.
+   *
+   * Same field, different alphabet. A blob made of braille reads as a different
+   * creature from one made of hashes even at identical density, which is what
+   * "more personalities" actually needs — five colours of the same shape still
+   * looked like one thing.
+   */
+  const RAMPS = {
+    soft: " ..::--~~==++**##%%@@",
+    sharp: " ..\'\':;!|/\\<>()[]{}#%@",
+    dense: " .:-=+*#%@&$8B0QMW",
+    wave: " ....~~~≈≈≈≋≋≋∿∿∿◊◊◊●●",
   };
 
   /**
@@ -134,6 +163,9 @@
    * same beat.
    */
   const cur = { ...SHAPE.idle };
+  /** Ramp is categorical, so it swaps at the midpoint of a transition rather than blending. */
+  let ramp = RAMPS.soft;
+  let spinPhase = 0;
   const EASE_TAU = 0.28;
 
   /**
@@ -152,8 +184,11 @@
     // shape the state does not have.
     const k = 1 - Math.exp(-dt / EASE_TAU);
     for (const key of Object.keys(cur)) {
+      if (typeof target[key] !== "number") continue;
       cur[key] += (target[key] - cur[key]) * k;
     }
+    ramp = RAMPS[target.ramp] ?? RAMPS.soft;
+    spinPhase += cur.spin * dt;
     shiver *= Math.exp(-dt / SHIVER_TAU);
     cur.churn += shiver;
   }
@@ -326,7 +361,17 @@
     for (let y = 0; y < FIELD_H; y++) {
       let row = "";
       for (let x = 0; x < FIELD_W; x++) {
-        const { ox, oy, clipped } = squash((x - cx) / ASPECT, y - cy, base);
+        // Squash vertically per personality, then rotate the sampling frame so
+        // the whole silhouette turns — lobes travelling around a fixed outline
+        // read as surface texture, a turning body reads as a creature.
+        const rx = (x - cx) / ASPECT;
+        const ry = (y - cy) / (cur.squash || 1);
+        const cosS = Math.cos(spinPhase);
+        const sinS = Math.sin(spinPhase);
+        const dx = rx * cosS - ry * sinS;
+        const dy = rx * sinS + ry * cosS;
+
+        const { ox, oy, clipped } = squash(dx, dy, base);
         if (clipped) {
           row += " ";
           continue;
@@ -337,7 +382,7 @@
 
         // 0 at the surface, 1 deep inside. Clamped so the ramp index is safe.
         const depth = Math.max(0, Math.min(1, (radius - dist) / (radius * 0.8)));
-        row += depth <= 0 ? " " : RAMP[Math.min(RAMP.length - 1, Math.floor(depth * RAMP.length))];
+        row += depth <= 0 ? " " : ramp[Math.min(ramp.length - 1, Math.floor(depth * ramp.length))];
       }
       grid.push(row.split(""));
     }
