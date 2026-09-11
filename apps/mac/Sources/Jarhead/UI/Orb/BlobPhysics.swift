@@ -6,11 +6,18 @@ import QuartzCore
 // of the primary display, y down) because that is what CGWindowListCopyWindowInfo
 // and the saved `orbPosition` speak; only the panel-frame write converts to AppKit.
 //
-// Drag: a short spring toward the pointer, so the body lags and stretches like
-// liquid, and its velocity is recorded. Release: momentum, friction, bounces off the
-// work-area edges of the display it is on (restitution 0.55) and off other windows,
-// each impact feeding a squish contact into the renderer. Rest: velocity under a
-// threshold → settle, persist.
+// Drag: the body is a mass on an under-damped spring toward the grab point (ζ ≈ 0.5),
+// so it lags behind the hand, overshoots when the hand stops, and the renderer
+// stretches the silhouette along the lag (`lag`, `grab`, `accel` are what it reads).
+// Release: momentum, friction, bounces off the work-area edges of the display it is
+// on (restitution 0.55) and off other windows, each impact feeding a squish contact
+// into the renderer. Rest: velocity under a threshold → settle, persist.
+//
+// Borders are sticky (`Adhesion`): pressed into an edge by hand past `adhereDepth`,
+// let go touching one, or arriving slower than `stickSpeed`, the body sticks; let go
+// it sags into a parked dome; dragged along it smears; pulled away it clings until
+// `clingLength` of pull, then the patch lets go and it snaps to the hand. A corner
+// holds two patches, one per wall. Faster arrivals bounce, the hardest splat first.
 //
 // The squish maths is legacy/packages/app/contacts.js: half-plane walls for the work
 // area, closest-point-on-rect for windows, merged and capped at two.
@@ -158,6 +165,34 @@ final class BlobBody {
     private struct Impact { var nx: Double; var ny: Double; var press: Double }
     private var impacts: [Impact] = []
 
+    /// What the body is glued to. Adhesion begins when the body is pressed into a
+    /// surface — by hand past `adhereDepth`, let go while touching a wall, or by
+    /// arriving slower than `stickSpeed` — and holds the centre `restDepth` from it.
+    /// Pressed deeper by hand it re-sticks deeper; let go, `restDepth` sags to
+    /// `stuckDepth` and the body parks there (the settled dome, which `contacts()`
+    /// keeps reporting at rest). Pulled away by hand it clings: `clingStiffness`
+    /// drags the centre back per point of pull while the patch stays on the surface
+    /// and `neck` (0…1) says how far it has stretched; past `clingLength` the patch
+    /// lets go (`onSnap`) and the drag spring, no longer fought, throws the body to
+    /// the hand — the recoil. Let go mid-cling, the stuck spot is re-pinned where the
+    /// hand left the centre and sags back onto the patch, the neck shrinking with it.
+    /// One adhesion per surface, at most `maxAdhesions` (a corner's two walls).
+    /// Windows stick only while the hand is on the body: a parked blob overlapping a
+    /// window simply sits there.
+    private struct Adhesion {
+        enum Surface: Equatable { case wall(nx: Double, ny: Double); case window(UInt32) }
+        var surface: Surface
+        var nx: Double, ny: Double
+        /// Distance (pt) from the centre to the surface at the patch: the stuck spot.
+        var restDepth: Double
+        /// 0 flat on the surface … 1 about to let go.
+        var neck = 0.0
+    }
+    private var adhesions: [Adhesion] = []
+    private func adhesion(to surface: Adhesion.Surface) -> Adhesion? { adhesions.first { $0.surface == surface } }
+    /// Surfaces the body can be glued to at once: a corner's two walls.
+    static let maxAdhesions = 2
+
     var obstacles: [Obstacle] = []
     /// Windows the body already overlapped when it was let go: they are not solid until it leaves them.
     private var ignored = Set<UInt32>()
@@ -168,12 +203,31 @@ final class BlobBody {
     private(set) var area: ScreenArea?
     private var areas: [ScreenArea] = []
 
+    /// The drag's lag: grab target minus centre (pt); zero when not dragging. The
+    /// renderer stretches the silhouette along it.
+    private(set) var lag = CGVector.zero
+    /// Last step's acceleration (pt/s²), wall impulses included: what rings the renderer's wobble.
+    private(set) var accel = CGVector.zero
+    /// Where the hand holds the body, relative to the centre (pt); nil when not dragging.
+    var grab: CGVector? { dragging ? CGVector(dx: -grabOffset.dx, dy: -grabOffset.dy) : nil }
+    /// The preview harness drags with no real button held; the missed-mouse-up guard must not end it.
+    var syntheticDrag = false
+    /// How far the patch has been pulled (0 not clinging … 1 about to let go); the most-pulled of a corner's two.
+    var neck: Double { adhesions.map(\.neck).max() ?? 0 }
+    var isStuck: Bool { !adhesions.isEmpty }
+    /// How many surfaces the body is glued to (a corner: two).
+    var stuckCount: Int { adhesions.count }
+
     var onSettle: (() -> Void)?
-    /// Called with the impact speed (pt/s) on every bounce.
+    /// Called with the impact speed (pt/s) on every bounce, and on a slow arrival that sticks.
     var onImpact: ((Double) -> Void)?
     /// Called once per goal flight, the moment the body first turns back toward its
     /// goal: the visible arrival, well before the wobble settles.
     var onArrive: (() -> Void)?
+    /// The patch let go of a surface: (nx, ny) is the surface's outward normal.
+    var onSnap: ((Double, Double) -> Void)?
+    /// A bounce hard enough to splat first, with the impact speed (pt/s).
+    var onSplat: ((Double) -> Void)?
 
     // Tuning.
     static let restitution = 0.55
@@ -181,8 +235,12 @@ final class BlobBody {
     static let friction = 1.4            // 1/s, exponential
     static let decel = 90.0              // pt/s², so it actually stops
     static let maxSpeed = 4500.0
-    static let dragStiffness = 380.0
-    static let dragDamping = 26.0        // ζ ≈ 0.67: lags and overshoots a little
+    /// The drag spring. ζ = c / 2√k ≈ 0.49: the body trails the hand by c/k ≈ 57 ms of
+    /// its speed (a slow 300 pt/s pull lags 17 pt, a 1200 pt/s sweep 68 pt — most of a
+    /// radius, which is the teardrop), overshoots once when the hand stops, and rings
+    /// at √k/2π ≈ 2.8 Hz. Was 380/26 (ζ 0.67, 68 ms): a stiff follow with no visible lag.
+    static let dragStiffness = 300.0
+    static let dragDamping = 17.0
     static let stopFraction = 0.90       // centre may approach a wall to this × radius in flight
     /// Clear air between the body's surface and an `orb.fly` target (pt).
     static let flyClearance: CGFloat = 36
@@ -190,6 +248,32 @@ final class BlobBody {
     static let restSpeed = 8.0
     static let reach = 0.82              // contacts.js REACH
     static let edgeSlop: CGFloat = 40    // main.js EDGE_SLOP: "near" an edge, for the lean
+
+    // Sticky borders (see `Adhesion`).
+    /// Arriving at a wall slower than this (pt/s along the normal) sticks instead of bouncing.
+    static let stickSpeed = 420.0
+    /// A bounce faster than this splats first (`onSplat`): the renderer's one-frame dense burst.
+    static let splatSpeed = 1300.0
+    /// Where a released stick's centre settles, × radius: the dome's depth (press ≈ 0.63 in `contacts()`).
+    static let stuckDepth = 0.62
+    /// Seconds for a released stick to sag from where the hand left it to `stuckDepth`.
+    static let stickRelaxTau = 0.35
+    /// Points of pull from the stuck spot before the patch lets go — the neck's full
+    /// length: two thirds of a radius, so the body visibly leaves the wall (its
+    /// surface clears the edge after ~22 pt) and a neck has room to be seen before
+    /// the snap. The hand travels about 1.8× this (see `clingStiffness`): ~70 pt.
+    static let clingLength = 40.0
+    /// The adhesion spring, pt/s² per point of pull. Against the drag spring (300) it
+    /// holds the body back to about 55% of the hand's lead until the snap.
+    static let clingStiffness = 230.0
+    /// Pressed this deep by hand (× radius) the body sticks to a wall or window — a
+    /// firm push, well short of the `dragFraction` stop the hand can shove it to.
+    static let adhereDepth = 0.72
+    /// Tangential velocity kept when a slow arrival sticks: the surface scrubs the rest.
+    static let stickFriction = 0.55
+    /// A fling gentler than this (pt/s) — a poke's hop — leaves a stuck body stuck;
+    /// let go moving away from a wall faster than this, it is a flick, not a park.
+    static let unstickSpeed = 300.0
 
     init(size: CGSize, center: CGPoint) {
         self.size = size
@@ -208,9 +292,12 @@ final class BlobBody {
     func teleport(to c: CGPoint) {
         center = c
         velocity = .zero
+        lag = .zero
+        accel = .zero
         goal = nil
         arrived = false
         impacts.removeAll()
+        adhesions.removeAll()
         dragging = false
         isActive = false
         refreshScreens()
@@ -244,24 +331,53 @@ final class BlobBody {
 
     /// Let go: keep the momentum. The body already carries the pointer's velocity
     /// through the spring; blending in the raw pointer velocity makes a flick snappier.
+    /// Stuck to a wall it stays stuck and sags into its dome from wherever the hand
+    /// left it (flicked away faster than `unstickSpeed`, the patch tears off instead);
+    /// merely touching a wall it sticks, as a slow arrival would; a window lets go of
+    /// it, since a released blob never squishes into windows.
     func endDrag() {
         guard dragging else { return }
         dragging = false
+        lag = .zero
         let stale = CACurrentMediaTime() - pointerAt > 0.12   // held still before release
         let pv = stale ? CGVector.zero : pointerVel
         velocity = CGVector(dx: velocity.dx * 0.6 + pv.dx * 0.4, dy: velocity.dy * 0.6 + pv.dy * 0.4)
         capSpeed()
+        let r = Double(radius)
+        var kept: [Adhesion] = []
+        for var a in adhesions {
+            guard case .wall = a.surface, let (d, nx, ny) = surfaceDistance(a.surface) else { continue }
+            let vn = velocity.dx * nx + velocity.dy * ny
+            if a.neck > 0, vn > Self.unstickSpeed {
+                onSnap?(nx, ny)
+                continue
+            }
+            // Re-pin the stuck spot where the centre is: `cling` sags it (and the neck)
+            // back to the dome instead of `resolveWalls` writing the pull back in one step.
+            a.restDepth = max(d, r * Self.dragFraction)
+            kept.append(a)
+        }
+        adhesions = kept
+        for wall in walls() where adhesions.count < Self.maxAdhesions && wall.d < r * Self.stopFraction {
+            let surface = Adhesion.Surface.wall(nx: wall.nx, ny: wall.ny)
+            guard adhesion(to: surface) == nil else { continue }
+            let vn = velocity.dx * wall.nx + velocity.dy * wall.ny
+            guard vn < Self.unstickSpeed else { continue }
+            stick(to: surface, nx: wall.nx, ny: wall.ny, depth: wall.d)
+        }
         ignoreTouchingObstacles()
         isActive = true
     }
 
-    /// Throw it.
+    /// Throw it. A hard throw tears a stuck body off its wall; a poke's hop leaves it stuck.
     func fling(_ v: CGVector) {
         dragging = false
+        lag = .zero
         goal = nil
         arrived = false
         ignoreWindows = false
         velocity = v
+        if (v.dx * v.dx + v.dy * v.dy).squareRoot() > Self.unstickSpeed { adhesions.removeAll() }
         capSpeed()
         ignoreTouchingObstacles()
         isActive = true
@@ -323,6 +439,8 @@ final class BlobBody {
         arrived = false
         ignoreWindows = true
         impacts.removeAll()
+        adhesions.removeAll()
+        lag = .zero
         isActive = true
     }
 
@@ -406,17 +524,19 @@ final class BlobBody {
     func step(_ dtRaw: Double) -> [BlobContact] {
         let dt = min(max(dtRaw, 0), 1.0 / 30)
         guard isActive || dragging else { return contacts() }
-        if dragging, NSEvent.pressedMouseButtons & 1 == 0 {
+        if dragging, !syntheticDrag, NSEvent.pressedMouseButtons & 1 == 0 {
             // A missed mouse-up would otherwise glue the body to the pointer forever.
             endDrag()
         }
 
         area = ScreenArea.containing(center, in: areas)
+        let v0 = velocity
 
         if dragging {
             let tx = pointer.x + grabOffset.dx, ty = pointer.y + grabOffset.dy
-            let ax = Self.dragStiffness * (tx - center.x) - Self.dragDamping * velocity.dx
-            let ay = Self.dragStiffness * (ty - center.y) - Self.dragDamping * velocity.dy
+            lag = CGVector(dx: tx - center.x, dy: ty - center.y)
+            let ax = Self.dragStiffness * lag.dx - Self.dragDamping * velocity.dx
+            let ay = Self.dragStiffness * lag.dy - Self.dragDamping * velocity.dy
             velocity.dx += ax * dt
             velocity.dy += ay * dt
         } else if let g = goal {
@@ -452,6 +572,7 @@ final class BlobBody {
                 velocity.dy *= ns / s
             }
         }
+        cling(dt)
         capSpeed()
 
         center.x += velocity.dx * dt
@@ -459,7 +580,9 @@ final class BlobBody {
 
         resolveWalls()
         if !dragging, !ignoreWindows { resolveObstacles() }
+        if dragging { adhereToObstacles() }
         keepOnSomeScreen()
+        if dt > 0 { accel = CGVector(dx: (velocity.dx - v0.dx) / dt, dy: (velocity.dy - v0.dy) / dt) }
 
         for i in impacts.indices { impacts[i].press *= exp(-dt / 0.22) }
         impacts.removeAll { $0.press < 0.02 }
@@ -474,7 +597,7 @@ final class BlobBody {
                     center = g
                     settle()
                 }
-            } else if speed < Self.restSpeed {
+            } else if speed < Self.restSpeed, domeSettled {
                 if let back = nearestWorkPoint(), back != center {
                     // Came to rest in a menu bar or Dock strip: slide back onto the work area.
                     goal = back
@@ -490,13 +613,96 @@ final class BlobBody {
     /// How fast the centre is moving, pt/s.
     var speed: Double { (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot() }
 
+    /// A released stick is still sagging toward its dome: not at rest yet.
+    private var domeSettled: Bool {
+        adhesions.allSatisfy { abs($0.restDepth - Double(radius) * Self.stuckDepth) < 0.6 && $0.neck == 0 }
+    }
+
     private func settle() {
         velocity = .zero
+        lag = .zero
+        accel = .zero
         goal = nil
         ignoreWindows = false
         isActive = false
         arrived = false
         onSettle?()
+    }
+
+    // MARK: adhesion
+
+    /// Distance from the centre to an adhered surface and its outward normal; nil when
+    /// the surface is gone (a display or window went away).
+    private func surfaceDistance(_ s: Adhesion.Surface) -> (Double, Double, Double)? {
+        switch s {
+        case .wall(let nx, let ny):
+            guard let w = walls().first(where: { $0.nx == nx && $0.ny == ny }) else { return nil }
+            return (w.d, w.nx, w.ny)
+        case .window(let id):
+            guard let ob = obstacles.first(where: { $0.id == id }) else { return nil }
+            return distance(to: ob.rect)
+        }
+    }
+
+    /// Glue the body to a surface, its centre `depth` from it (never shallower than
+    /// the hand's stop). A surface it is already glued to is re-pinned; a third
+    /// surface is ignored.
+    private func stick(to surface: Adhesion.Surface, nx: Double, ny: Double, depth: Double) {
+        let a = Adhesion(surface: surface, nx: nx, ny: ny, restDepth: max(depth, Double(radius) * Self.dragFraction))
+        if let i = adhesions.firstIndex(where: { $0.surface == surface }) { adhesions[i] = a; return }
+        guard adhesions.count < Self.maxAdhesions else { return }
+        adhesions.append(a)
+    }
+
+    /// The adhesion springs, run before the move. By hand: pulled off its stuck spot
+    /// the body is dragged back in proportion to the pull and the neck grows; past
+    /// `clingLength` the patch lets go (`onSnap`) — the recoil is the drag spring's,
+    /// suddenly unopposed. Pressed deeper instead, it re-sticks deeper. Let go: the
+    /// stuck spot sags to `stuckDepth` (the dome) and `resolveWalls` holds the centre
+    /// there, so a body released mid-cling is drawn back over `stickRelaxTau`; the
+    /// neck it was left with shrinks with the pull that is left, and never grows.
+    private func cling(_ dt: Double) {
+        guard !adhesions.isEmpty else { return }
+        let r = Double(radius)
+        var kept: [Adhesion] = []
+        for var a in adhesions {
+            guard let (d, nx, ny) = surfaceDistance(a.surface) else { continue }
+            a.nx = nx
+            a.ny = ny
+            if dragging {
+                let pull = d - a.restDepth
+                if pull > 0 {
+                    a.neck = pull / Self.clingLength
+                    if a.neck >= 1 {
+                        onSnap?(nx, ny)
+                        continue
+                    }
+                    velocity.dx -= nx * Self.clingStiffness * pull * dt
+                    velocity.dy -= ny * Self.clingStiffness * pull * dt
+                } else {
+                    a.neck = 0
+                    a.restDepth = max(d, r * Self.dragFraction)
+                }
+            } else {
+                let want = r * Self.stuckDepth
+                a.restDepth += (want - a.restDepth) * (1 - exp(-dt / Self.stickRelaxTau))
+                a.neck = max(0, min(a.neck, (d - want) / Self.clingLength))
+            }
+            kept.append(a)
+        }
+        adhesions = kept
+    }
+
+    /// By hand, pressed into a window past `adhereDepth`: stuck to it (patch, smear,
+    /// cling) for as long as the hand stays on the body. One window at a time.
+    private func adhereToObstacles() {
+        guard adhesions.count < Self.maxAdhesions,
+              !adhesions.contains(where: { if case .window = $0.surface { return true } else { return false } }) else { return }
+        let deep = Double(radius) * Self.adhereDepth
+        for ob in obstacles {
+            let (d, nx, ny) = distance(to: ob.rect)
+            if d < deep { stick(to: .window(ob.id), nx: nx, ny: ny, depth: d); return }
+        }
     }
 
     // MARK: walls
@@ -533,16 +739,64 @@ final class BlobBody {
     }
 
     private func resolveWalls() {
-        let stop = Double(radius) * (dragging ? Self.dragFraction : Self.stopFraction)
-        for wall in walls() where wall.d < stop {
+        let r = Double(radius)
+        let stop = r * (dragging ? Self.dragFraction : Self.stopFraction)
+        for wall in walls() {
+            let surface = Adhesion.Surface.wall(nx: wall.nx, ny: wall.ny)
+            if let a = adhesion(to: surface) {
+                if dragging {
+                    // The hand may press it in as far as ever; `cling` handles the pull.
+                    guard wall.d < stop else { continue }
+                    let push = stop - wall.d
+                    center.x += wall.nx * push
+                    center.y += wall.ny * push
+                    bounce(nx: wall.nx, ny: wall.ny, restitution: Self.restitution)
+                } else {
+                    // Parked on its patch: held exactly `restDepth` from the wall, no
+                    // motion along the normal, so the dome sags in place as that eases.
+                    let push = a.restDepth - wall.d
+                    center.x += wall.nx * push
+                    center.y += wall.ny * push
+                    let vn = velocity.dx * wall.nx + velocity.dy * wall.ny
+                    velocity.dx -= wall.nx * vn
+                    velocity.dy -= wall.ny * vn
+                }
+                continue
+            }
+            if dragging, wall.d < r * Self.adhereDepth {
+                // Pushed in by hand past `adhereDepth`: stuck where it is. (`cling`
+                // follows the hand deeper, and holds it back when it pulls away.)
+                // Checked before the stop below, which the hand reaches only by
+                // shoving the centre almost onto the edge.
+                stick(to: surface, nx: wall.nx, ny: wall.ny, depth: max(wall.d, stop))
+            }
+            guard wall.d < stop else { continue }
             let push = stop - wall.d
             center.x += wall.nx * push
             center.y += wall.ny * push
+            if dragging {
+                bounce(nx: wall.nx, ny: wall.ny, restitution: Self.restitution)
+                continue
+            }
+            let vn = velocity.dx * wall.nx + velocity.dy * wall.ny
+            if goal == nil, vn < 0, -vn < Self.stickSpeed {
+                // Slow enough that the surface takes it: no bounce, the tangential
+                // motion mostly scrubbed, and the stuck spot starts at the stop and
+                // sags in from there (`cling`) — sucked onto the edge.
+                let tx = velocity.dx - wall.nx * vn, ty = velocity.dy - wall.ny * vn
+                velocity.dx = tx * Self.stickFriction
+                velocity.dy = ty * Self.stickFriction
+                stick(to: surface, nx: wall.nx, ny: wall.ny, depth: stop)
+                impacts.append(Impact(nx: wall.nx, ny: wall.ny, press: min(0.6, 0.2 + (-vn) / 1200)))
+                onImpact?(-vn)
+                continue
+            }
             bounce(nx: wall.nx, ny: wall.ny, restitution: Self.restitution)
         }
     }
 
-    /// Kill or reflect the velocity component into a surface; record the impact.
+    /// Kill or reflect the velocity component into a surface; record the impact. The
+    /// hardest hits splat first (`onSplat`).
     private func bounce(nx: Double, ny: Double, restitution: Double) {
         let vn = velocity.dx * nx + velocity.dy * ny
         guard vn < 0 else { return }
@@ -557,6 +811,7 @@ final class BlobBody {
         velocity.dy = -ny * vn * restitution + ty * 0.92
         let press = min(1.3, 0.35 + (-vn) / 900)
         impacts.append(Impact(nx: nx, ny: ny, press: press))
+        if -vn > Self.splatSpeed { onSplat?(-vn) }
         onImpact?(-vn)
     }
 
@@ -617,6 +872,7 @@ final class BlobBody {
         if center != before {
             area = ScreenArea.containing(center, in: areas)
             impacts.removeAll()
+            adhesions.removeAll()
             goal = nil
             updateLean()
             return true
@@ -652,14 +908,31 @@ final class BlobBody {
 
     // MARK: contacts (contacts.js)
 
-    /// Everything the blob is pressed against right now, strongest first, capped at two.
+    /// Everything the blob is pressed against right now, strongest first, capped at
+    /// two. A surface's contact carries the real distance from the centre to it, so
+    /// the renderer can put its flat face and the neck's foot on the true edge. An
+    /// adhered surface's contact carries the stick: `stuck`, the `neck` while
+    /// clinging (its press held at the patch's, since the patch is still on the
+    /// surface however far the body has been pulled), and the tangential speed for the
+    /// renderer's smear.
     func contacts() -> [BlobContact] {
         let r = Double(radius)
         var found: [BlobContact] = []
+        func stickInfo(_ c: inout BlobContact, _ surface: Adhesion.Surface, d: Double) {
+            guard let a = adhesion(to: surface) else { return }
+            c.stuck = true
+            c.neck = a.neck
+            if a.neck > 0 { c.press = max(c.press, min(1.4, (r - a.restDepth) / (r * 0.6))) }
+            c.smear = velocity.dx * -c.ny + velocity.dy * c.nx
+        }
 
         // Screen edges are hard walls and always press back.
-        for wall in walls() where wall.d < r {
-            found.append(BlobContact(nx: wall.nx, ny: wall.ny, press: min(1.4, max(0, (r - wall.d) / (r * 0.6)))))
+        for wall in walls() {
+            let surface = Adhesion.Surface.wall(nx: wall.nx, ny: wall.ny)
+            guard wall.d < r || adhesion(to: surface) != nil else { continue }
+            var c = BlobContact(nx: wall.nx, ny: wall.ny, press: min(1.4, max(0, (r - wall.d) / (r * 0.6))), distance: wall.d)
+            stickInfo(&c, surface, d: wall.d)
+            found.append(c)
         }
 
         // Windows squish only while Kevin is pushing; a parked blob overlapping a
@@ -667,12 +940,15 @@ final class BlobBody {
         if dragging {
             for ob in obstacles {
                 let (d, nx, ny) = distance(to: ob.rect)
+                var c: BlobContact
                 if d < 0 {
                     // Inside: flatten against the wall it came in through, deeper means more.
-                    found.append(BlobContact(nx: nx, ny: ny, press: min(1.6, 1 + (-d) / r)))
-                } else if d > 0, d < r * Self.reach {
-                    found.append(BlobContact(nx: nx, ny: ny, press: min(1, (r * Self.reach - d) / r)))
-                }
+                    c = BlobContact(nx: nx, ny: ny, press: min(1.6, 1 + (-d) / r), distance: d)
+                } else if d < r * Self.reach || adhesion(to: .window(ob.id)) != nil {
+                    c = BlobContact(nx: nx, ny: ny, press: min(1, max(0, (r * Self.reach - d) / r)), distance: d)
+                } else { continue }
+                stickInfo(&c, .window(ob.id), d: d)
+                found.append(c)
             }
         }
 

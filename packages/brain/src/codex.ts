@@ -7,7 +7,7 @@ import { LineSplitter, REPO_ROOT, logger } from "@jarhead/core";
 import { DaemonClient, DaemonServer, type EngineLike } from "@jarhead/daemon";
 import { SECRET_KEYS, type Effort } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
-import { brainSystemPrompt } from "./brain.ts";
+import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
 import type { ToolRunner } from "./runner.ts";
@@ -283,7 +283,7 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
 
 /** What the Codex brain adds to the shared standing orders. */
 export function codexAddendum(userName = "Kevin"): string {
-  return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it. Every action goes through the tools of the "${CODEX_MCP_SERVER}" MCP server (screenshot, zoom, left_click, type, key, scroll, open_app, read_focused_text, run_shell, agents_list, speak_progress and the rest). When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again.`;
+  return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it or to read from it. The sandbox does not stop you reading ~/.jarhead/env, ~/.ssh or the other secret stores; the standing orders do, and every read goes through read_file, list_dir, search_files and web_fetch of the "${CODEX_MCP_SERVER}" MCP server so those stores stay refused. Every action goes through that server's tools too (screenshot, zoom, left_click, type, key, scroll, open_app, read_focused_text, run_shell, read_file, edit_file, write_file, search_files, web_fetch, applescript, agents_list, self_edit, speak_progress and the rest) — use those, not your own shell, to read and change files on this Mac. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.`;
 }
 
 // ------------------------------------------------------------------ the brain
@@ -403,6 +403,7 @@ export class CodexBrain implements Brain {
       const socket = await this.ensureToolSocket();
       const model = this.model ?? probe.configModel;
       this.ready = true;
+      log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
       this.readyDetail = `${probe.detail}; ${model ? `model ${model}` : "default model"}${this.model ? "" : model ? " (from ~/.codex/config.toml)" : ""}${this.opts.effort ? `, effort ${codexEffort(this.opts.effort)}` : ""}; tools over ${socket === this.opts.socketPath ? "the daemon socket" : "a private socket"}`;
       return { ready: true, detail: this.readyDetail };
     } catch (e) {
@@ -484,7 +485,7 @@ export class CodexBrain implements Brain {
     });
     const base = this.opts.env ?? process.env;
     const env = codexEnv(base, this.opts.codexHome ?? codexHomeDir(base));
-    this.opts.runner.attach(sink);
+    this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
       let child: ChildProcess;
       try {

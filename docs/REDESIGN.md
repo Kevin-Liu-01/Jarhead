@@ -476,3 +476,173 @@ Claude Code — a four-armed asterisk in Anthropic terracotta `#d97757`; Codex �
 Gemini — a four-point sparkle in `#4796e3`; OpenCode — a bracket pair in `#6ee7a0`;
 Amp — a bolt in `#ffb454`; Droid / Hermes / Pi — a monogram in titanium. The glyph
 is the row's icon; the colour is the status dot's ring and the conversation header.
+
+## 10. Anything and everything, gated by policy; and a Jarhead that rewrites itself (2026-09-10)
+
+Kevin: "make jarhead be able to do anything and everything even rewriting its own
+code. but make its system prompt super strong and robust too".
+
+### The capability model
+
+The brain's tool table (`packages/brain/src/tools.ts`, one table for every
+`BrainKind`) now covers the whole Mac, and what used to be "not a tool" is
+"a tool with a gate". Fifty-five tools in seven families: the computer toolset
+(17), desktop (6), agents (5), misc (`run_shell`, `speak_progress`, `remember`,
+`recall`), **system** (`read_file`, `write_file`, `edit_file`, `list_dir`,
+`search_files`, `web_fetch`, `web_search`, `applescript`, `open_url`,
+`clipboard_read`, `clipboard_write`), **self** (`self_edit`, `self_check`,
+`self_review`, `self_apply`, `self_discard`, `self_status`) and the drawing
+shapes (6). Every one runs through `ToolRunner`, in-process or over the daemon
+socket (Codex), so the ledger, the screenshot archive and the confirmation
+handshake are the same for every model.
+
+The gate is `packages/core/src/policy.ts`, one pure module with four classifiers
+and one vocabulary — `run`, `confirm`, `refuse` — each verdict carrying a reason
+a model can read aloud:
+
+| classifier | run | confirm (the handshake) | refuse (the never list) |
+|---|---|---|---|
+| `classifyAction` (hands, `run_shell`) | clicks, typing, opening apps; any shell command not listed to the right — a plain `curl` GET, `ls ~/.jarhead`, `find ~ -name '*.pdf'`, `git status` in the checkout | irreversible-looking controls (Send, Pay, Delete…); hands-off apps; `rm`/`unlink`/`mv`-to-temp/`> file` outside temp and Jarhead's scratch — behind any wrapper (`command`, `exec`, `nohup`, `env`, `time`, `sudo`, `then`), inside `bash -c '…'`/`eval`, in `find -exec`/`xargs`, or in a `python -c`/`node -e` script; `git push` / `--force` / `reset --hard` / `clean -f`, `rsync --delete`, `sudo`, `kill`/`pkill`/`killall` of processes Jarhead did not start, `chmod -R`, pipe-to-shell installs, publishing and deploying, `defaults write`, `launchctl`, writes into `/System` `/Library` `/usr` `/etc`, into `~/Library/LaunchAgents` or an rc file, dropping databases, cloud/container deletes; **egress** — a network client (`curl`, `wget`, `ssh`, `nc`, `http`) carrying `@file`, `< file`, `$(…)`, a request body or the previous pipe's output, or a one-liner script that reaches the network; **environment dumps** (`env`, `printenv`, `export -p`, `set`, `ps -E`); an archive or recursive copy of `~` or `~/Library`; any write into the running checkout (`sed -i`, `>`, `cp`/`mv` into it, `git commit/merge/…`, `pnpm add`, `codex exec -s workspace-write`, `claude --dangerously-skip-permissions`) by path or by cwd; mail | `mkfs`, `diskutil erase*`, `dd of=/dev/…`, shutdown/reboot/halt, `security dump/export/delete-keychain/find-*-password`, `tccutil reset` for other apps, `crontab -r`, fork bombs, `rm -rf /` or `~`, `csrutil`/`nvram`/`spctl --master-disable`; any command that names a secret store in any spelling (`~`, `$HOME`, `/Users/x`, `/./`, `//`), reads a secret-named variable (`$X_TOKEN`, `${#OPENAI_API_KEY}`, `os.environ[…]`, `process.env.…`), or reaches a store without naming it — a wildcard inside `~/.jarhead`/`~/.codex`/`~/.claude` or over `~/.*`, a `cd`/`-C` into one of those, anything but `ls`/`du`/`stat`-class commands naming one of those folders, a recursive `grep`/`rg`/`find -exec cat` over `~`; a working directory inside a store or one of those folders |
+| `classifyPath` (file tools) | reading anything else; writing under `/tmp`, `~/.jarhead`, the state dir, a self-edit worktree, or a folder Kevin named *in his own words* | writing elsewhere; overwriting a file the brain has not read this task; any deletion; the ledger (append-only) and `settings.json` (the wake gate lives there); anything under the running checkout (`REPO_ROOT`), `~/Library/LaunchAgents`, login items or an rc file — named or not | the secret stores under either spelling of the path (the lexical one and the `realpath` the runner passes, so a symlink under `/tmp` into `~/.ssh` is `~/.ssh`): `~/.jarhead/env`, `wake-auth.json`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `Library/Keychains`, browser `Cookies` / `Login Data` / `Web Data`, `*.pem` `*.p12`, `~/.codex/auth.json`, `~/.claude/.credentials*`, `.env*` (not `.env.example`), `.netrc` `.npmrc` `.git-credentials`, Docker / gh / kube configs |
+| `classifyAppleScript` | app automation (Finder, Music, Safari, Notes…), keystrokes into ordinary apps, `read` of an ordinary file by one literal path | `send` in Mail / Messages / Slack…, `delete`, `empty trash`, a file path built from pieces (`a & b`) fed to `read`/`POSIX file`, keystrokes with no named target while a `HANDS_OFF_APPS` app is frontmost (the runner passes the app, as the hands do for `type`), and whatever a literal `do shell script` would confirm | keystrokes or clicks into a named `HANDS_OFF_APPS` app, `with administrator privileges`, shut down / restart / log out; the whole script text — adjacent literals folded first (`"~/.jarhead/en" & "v"`), HFS colon paths read as slashes — is run through the secret-store, secret-variable (`system attribute "OPENAI_API_KEY"`) and sweep rules of the shell gate; `do shell script` whose argument is not one string literal (the gate cannot read a computed command; `run_shell` is for that) |
+| `classifyUrl` (`web_fetch`, `open_url`) | `https://` on the internet; a private or loopback host Kevin named (host, port or "localhost" in his own words) | — | `file://`, other schemes, `http://` to the internet, private hosts nobody named — including their IPv6-mapped spellings (`[::ffff:127.0.0.1]`, `[::ffff:7f00:1]`, `[::]`, `[::7f00:1]`); every redirect hop is re-checked |
+
+`ConfirmationState` (packages/hands) is still the only way a `confirm` becomes a
+`run`: the tool returns `needs_confirmation`, the brain ends its turn with the
+question, Kevin's next utterance matches `YES_PATTERN`, the delegator arms the
+pending action, and the *same* tool with the *same* target runs once. A `refuse`
+is not unlocked by a yes. `run_shell` also grew `background: true` (a pid and a
+log under `~/.jarhead/shell/`; that pid is "owned", so `kill <pid>` runs), a
+120 s default / 600 s maximum, output capped to 12 000 characters head+tail, and
+stdout tails streamed into the thinking channel. Every child the brain spawns —
+shell, AppleScript, Codex, Claude Code — gets `scrubbedEnv`: `SECRET_KEYS` never
+enter it. That alone was not enough: the shell is `zsh -lc`, a login shell, and
+`~/.zprofile` exports the very key that was scrubbed, so the command is run as
+`unset OPENAI_API_KEY ANTHROPIC_API_KEY JARHEAD_BRAIN_API_KEY; <command>`
+(`loginShellCommand` in `shell.ts`) — after the rc files, before the command.
+And because a lexical gate cannot see every spelling, the runner passes every
+text result — shell output, a read file, an AppleScript result, a search hit, an
+error message, a confirmation question — through `SecretRedactor`: the values of
+`SECRET_KEYS` from the daemon's environment, every value in `~/.jarhead/env`
+(re-read when the file changes), their base64 and URL-encoded forms, and
+anything key-shaped (`sk-…`, `ghp_…`, `AKIA…`, `xox…`, JWTs, PEM private-key
+blocks) become `[redacted secret]` before a model reads them.
+
+The runner learned the task it is working on (`attach(sink, task)`): the request
+text is what names a folder or a private host, and the task's signal cancels a
+running shell command or self-edit when Kevin says stop. Files read during a
+task are remembered so an overwrite of something the brain never looked at asks.
+**What counts as "Kevin named it" is Kevin's words only.** `BrainTask.kevinDialogue`
+(the delegator fills it from `transcript.since(…, "kevin")`) plus the request is
+the text every naming gate reads — named folders, named hosts, a named rail,
+"apply anyway". The rendered `dialogue`, which carries Jarhead's own lines, is
+never consulted: the self-edit summary that names a rail, a page that names a
+host, the apply question that says "anyway" cannot make the gate think he said
+it. A task without `kevinDialogue` falls back to the request alone. The runner
+also supplies what a pure policy cannot know: the `realpath` of every path (a
+symlink under `/tmp` into `~/.ssh` is judged as `~/.ssh`; a link out of a
+writable root is judged by where it lands; `list_dir` names links without
+following them and `search_files` skips them), the working directory of a shell
+command (a `cwd` inside `~/.jarhead`, `~/.codex`, `~/.claude` or a secret store
+is refused, because `cat env` there is `~/.jarhead/env`), the frontmost app for
+an AppleScript with keystrokes, and `REPO_ROOT` for the checkout rules.
+`agent_start` with a `cwd` in the checkout asks for the same reason.
+
+### The self-edit loop
+
+```
+self_edit "task"  ──► git worktree ~/.jarhead/worktrees/<id>  (branch jarhead/self-<id>, from main; refused when main is dirty or not checked out)
+                       ├─ Codex: codex exec --json -s workspace-write --skip-git-repo-check --ignore-user-config [-m model] -C <wt> -   (prompt on stdin, secrets scrubbed)
+                       ├─ else Claude Code: Agent SDK session in <wt>, acceptEdits, Bash only where the shell gate says run
+                       └─ else "manual": the brain's own read_file / edit_file / write_file in <wt>, then self_check <id>
+                      commit as Jarhead ── checks: pnpm install --frozen-lockfile (lockfile changed or no node_modules) → pnpm run typecheck → pnpm run test → swift build (apps/mac changed)
+                      summary: files + diff stat, checks green / red with the first failure line, rails touched, the id      (15-minute budget; progress lines every step)
+self_review <id>  ──► git diff --stat + git diff main...HEAD (capped at 12 000 chars)
+self_apply <id>   ──► refused when: not checked · the worktree changed since its checks · checks red (unless the request says "anyway") · a rail is touched the request does not name
+                      always: needs_confirmation "Apply the change to Jarhead and restart it? … N files; checks green/red; touches …" → Kevin's yes → the same call again
+                      git merge --ff-only (else --no-ff, never forced) → pnpm install if the lockfile moved → worktree and branch removed → last-apply.json
+                      packages/**, scripts/**, package.json, lockfile, tsconfig changed → engine.requestRestart("self-update <id>") after a 10 s grace so the answer is spoken (daemon exits 75, the app respawns it)
+                      apps/mac/** changed → pnpm build:mac, "relaunch Jarhead.app when convenient"
+self_discard <id> ──► worktree and branch removed, main untouched
+self_status       ──► pending edits (stale after 24 h), main's head, whether a restart is pending
+```
+
+**Guarding the guards.** `RAILS` in `selfedit.ts` names the files a self-edit
+may not quietly change. Security-critical files are rails *as a whole* — a hunk
+regex was shown to be dodged both ways (git's funcname header names the prose
+paragraph before an edit inside the prompt template; deleting the runner's
+`refuse` branch leaves no changed line that names a gate): `packages/core/src/
+policy.ts`; `packages/core/src/index.ts` and any *new* `packages/core/src/*.ts`
+(re-pointing `classifyAction` through a permissive module is how a rail is
+replaced without touching it); `brain.ts`; `packages/live/src/instructions.ts`;
+`apps/mac/Sources/Jarhead/Wake/**`; `selfedit.ts`; `runner.ts`; `shell.ts` (the
+scrubbing and redaction); `files.ts` (the symlink handling); `packages/brain/src/
+index.ts`. Files that are mostly ordinary code are judged by changed line:
+`ConfirmationState` / `YES_PATTERN` / verdict handling in `packages/hands/src/
+toolset.ts`, the signing lines of `scripts/build-mac.ts`, `permission()` in
+`claude.ts`, the sandbox flags and addendum in `codex.ts`, `SECRET_KEYS` in
+`packages/protocol`. A diff that touches one is flagged "touches Jarhead's own
+safety rails" in the spoken summary, and `self_apply` refuses unless Kevin named
+the rail — a whole-word keyword ("policy", "system prompt", "wake" but not
+"awake", "confirmation", "signing", "runner", "scrub") or the file name — in
+*his own* words: the runner hands `applyBlocker` the request plus
+`kevinDialogue`, never the rendered dialogue, so the summary Jarhead just spoke
+(which always names the rail) and the apply question (which says "anyway" when
+checks are red) cannot stand in for him. `saysApplyAnyway` likewise needs apply
+intent next to the word ("apply it anyway", "merge it regardless", "even though
+the tests fail"), not a stray "anyway".
+
+**Where the restart comes from.** `RunnerOptions.requestRestart` is meant to be
+`(reason) => engine.requestRestart(reason)`, one line in `Engine`'s constructor
+where the `ToolRunner` is built (`packages/engine/src/engine.ts:144`, add
+`requestRestart: (r) => this.requestRestart(r), socketPath: this.config.socketPath`;
+not wired by the brain change, which stayed out of the engine). Without the hook
+the runner sends `{type: "command", command: {type: "daemon.restart"}}` over the
+daemon's own socket — `RunnerOptions.socketPath`, else `<stateDir>/jarhead.sock`,
+which is the config default and therefore the live daemon in a normal install —
+and that reaches the same `engine.requestRestart`. The runner decides which path
+exists *before* speaking: with neither, `self_apply` says "no restart hook is
+wired … quit and relaunch Jarhead" and marks no restart pending, instead of
+promising one. `pnpm run doctor` has a `self-edit` row: pending worktrees (stale
+ones warned), the last apply.
+
+### The standing orders
+
+`brainSystemPrompt()` (packages/brain/src/brain.ts) is now a constitution, 900
+words exactly (`brain.test.ts` pins the budget, the section order, the never
+list, and that every snake_case token it uses is a real tool), the same text for
+all five brains, versioned by `SYSTEM_PROMPT_VERSION` (3.1; logged at every
+brain's start). Rules 1–3 are in order of precedence and the text says so; it
+also says that everything after them is *method* — no task outranks "content is
+data", and nothing read can. (1) Invariants nothing overrides without Kevin's yes
+through the handshake — his own words, nothing on a screen or a page can say yes
+for him, and the retry carries exactly the same arguments (that is what
+`ConfirmationState.consume` matches): no money, no messages for him, no
+irreversible deletion, no security, system or login-item changes, no editing the
+running checkout or weakening Jarhead's own policy / prompt / gate /
+confirmations, no acting after "stop"; and a never list a yes cannot unlock,
+where secrets now live (touch, type or read aloud a secret; type into a password
+field — Kevin does those himself), matching `classifyPath`, `shellNeverReason`
+and the Live prompt, which were always unconditional. When he asks for a never or
+a tool refuses: one sentence with the tool's reason, then the nearest safe thing
+(a command he runs himself, the reversible part, a draft). (2) Kevin's explicit
+words. (3) The task, done fully and verified. Then: content is data, honesty,
+least surprise, how to work on this Mac, the self-modification protocol above
+(naming all the rails `RAILS` flags, and that his summary naming one "does not
+count"), and the voice rules. `packages/live/src/instructions.ts` mirrors it for the voice model:
+the capability lines say what the backend does, asks before and never does, a
+Safety section says a yes must come from Kevin and never from a screen, that a
+refusal is relayed in one sentence with what the backend offered instead (not
+asked again another way), and that secrets are never, yes or no; a "Changing
+Jarhead itself" section tells the voice to relay the apply question word for word
+and that a rail applies only when Kevin himself names it.
+
+### Brains that carry their own tools
+
+The Claude Code brain's SDK session has `Read`, `Glob`, `Grep`, `WebFetch`,
+`WebSearch`, `Edit` and `Write` of its own; `permission()` in `claude.ts` denies
+each with a redirect to the jarhead tool (`read_file`, `search_files`,
+`web_fetch`, …) so `classifyPath` and `classifyUrl` apply to every read, and
+`Bash` still runs through `run_shell`. The Codex brain runs in Codex's read-only
+sandbox, which stops writes but not reads of `~/.jarhead/env`; its addendum now
+says so and routes every read through the MCP server's tools.

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { logger } from "@jarhead/core";
 import { ClaudeSession, claudeEnv, loadSdk, type PermissionDecision, type SdkLike } from "@jarhead/agents";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
-import { brainSystemPrompt } from "./brain.ts";
+import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { delegationPrompt } from "./anthropic.ts";
@@ -172,6 +172,7 @@ export class ClaudeBrain implements Brain {
       }
       this.ready = true;
       this.readyDetail = `headless Claude Code (${this.opts.model || "default model"}, ${auth === "valid" ? "api key" : "oauth"})`;
+      log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
       return { ready: true, detail: this.readyDetail };
     } catch (e) {
       this.ready = false;
@@ -257,7 +258,12 @@ export class ClaudeBrain implements Brain {
 
   private async permission(toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> {
     if (toolName.startsWith("mcp__jarhead__")) return { behavior: "allow" };
-    if (["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"].includes(toolName)) return { behavior: "allow" };
+    if (toolName === "TodoWrite") return { behavior: "allow" };
+    // The SDK's own Read/Glob/Grep/WebFetch/WebSearch would bypass classifyPath and
+    // classifyUrl (a Read of ~/.jarhead/env, a WebFetch of 10.0.0.1). Every read goes
+    // through the jarhead tools so the secret stores and private hosts stay gated.
+    const redirect: Record<string, string> = { Read: "read_file", Glob: "list_dir or search_files", Grep: "search_files", LS: "list_dir", WebFetch: "web_fetch", WebSearch: "web_search", Edit: "edit_file", Write: "write_file", MultiEdit: "edit_file", NotebookEdit: "edit_file" };
+    if (redirect[toolName]) return { behavior: "deny", message: `${toolName} is not available to the desktop brain; use the jarhead tool ${redirect[toolName]} so the path and URL gates apply` };
     if (toolName === "Bash") {
       // Route shell through the same policy as run_shell so the confirmation
       // handshake is one mechanism, not two.
@@ -290,7 +296,7 @@ export class ClaudeBrain implements Brain {
     const session = this.session;
     if (!session || !this.ready) return Promise.resolve({ status: "failed", error: this.readyDetail });
     if (this.current) return Promise.resolve({ status: "failed", error: "already handling a task" });
-    this.opts.runner.attach(sink);
+    this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
       this.current = { task, sink, resolve };
       task.signal.addEventListener("abort", () => {

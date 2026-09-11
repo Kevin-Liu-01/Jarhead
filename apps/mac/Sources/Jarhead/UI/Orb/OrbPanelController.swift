@@ -9,10 +9,14 @@ import SwiftUI
 /// into the capsule's passphrase field makes the panel key for exactly as long as the
 /// field holds focus (see `OrbPanel` and `releaseKey`).
 ///
-/// The blob is a fluid body (`BlobBody`): dragging it pulls it along on a short
-/// spring, letting go keeps the momentum, and it bounces off the work-area edges and
-/// other windows, squishing on impact. The panel window follows the body every
-/// display frame, so the blob really travels across the screen.
+/// The blob is a fluid body (`BlobBody`): dragging it pulls it along on an
+/// under-damped spring, so it lags the hand and the field stretches it into a
+/// teardrop toward the grab (`BlobSim.setMotion`); letting go keeps the momentum
+/// and it jiggles. It bounces off the work-area edges and other windows, squishing
+/// on impact — or sticks, when it arrives slowly or is pushed in by hand: it spreads
+/// on the edge, sags into a dome, smears when dragged along it, and clings on a neck
+/// when pulled away until the patch snaps free. The panel window follows the body
+/// every display frame, so the blob really travels across the screen.
 ///
 /// It also flies to the work. An `orb.fly` on `state.overlayCommands` sends it from
 /// its perch to a point on the screen (parking up-left of it, never on it): a short
@@ -172,6 +176,23 @@ public final class OrbPanelController {
             self.blobView.poke()
         }
         body.onArrive = { [weak self] in self?.bodyDidArrive() }
+        // Sticky borders: the patch letting go, and a landing hard enough to splat.
+        body.onSnap = { [weak self] nx, ny in
+            guard let self else { return }
+            self.sim.snapFree(nx: nx, ny: ny)
+            self.blobView.poke()
+        }
+        body.onSplat = { [weak self] speed in
+            guard let self else { return }
+            self.sim.splat(min(1, 0.5 + speed / 3000))
+            self.blobView.poke()
+        }
+        // The listening eyes follow the hand when it is near.
+        sim.pointer = { [weak self] in
+            guard let self else { return nil }
+            let m = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
+            return CGVector(dx: m.x - self.body.center.x, dy: m.y - self.body.center.y)
+        }
 
         bind()
     }
@@ -491,6 +512,7 @@ public final class OrbPanelController {
 
     private func bodyDidSettle() {
         sim.setContacts(body.contacts())
+        sim.setMotion(lag: .zero, grab: nil, velocity: .zero, dragging: false)
         sim.leanX = body.leanX
         sim.leanY = body.leanY
         syncPanelToBody()
@@ -696,6 +718,13 @@ public final class OrbPanelController {
         guard !expanded, !frozen, body.isActive || body.dragging else { return false }
         let contacts = body.step(dt)
         sim.setContacts(contacts)
+        sim.setMotion(lag: body.lag, grab: body.grab, velocity: body.velocity, dragging: body.dragging)
+        // The acting eyes track the work on a flight; otherwise the direction of motion.
+        if flight != .none, let target = flightTarget {
+            sim.attention = CGVector(dx: target.x - body.center.x, dy: target.y - body.center.y)
+        } else {
+            sim.attention = nil
+        }
         sim.leanX = body.leanX
         sim.leanY = body.leanY
         syncPanelToBody()
@@ -857,19 +886,33 @@ public final class OrbPanelController {
 
     /// Mouse-down on the blob starts tracking: release without moving is a tap
     /// (toggle the capsule); move past the slop and it is a drag that drives the body.
-    /// Clicks on the capsule itself fall through to its buttons.
+    /// Clicks on the capsule itself fall through to its buttons. The three handlers
+    /// read the real mouse and hand its CG position to `pointerDown` / `pointerDragged`
+    /// / `pointerUp`, the one path a drag takes (the preview harness drives the same
+    /// path with a synthetic hand).
     private func mouseDown(_ event: NSEvent) -> Bool {
         let inContainer = container.convert(event.locationInWindow, from: nil)
         guard blobCell.frame.contains(inContainer) else { return false }
-        downPoint = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
-        downTime = event.timestamp
-        dragMoved = false
+        pointerDown(at: CGSpace.point(fromAppKit: NSEvent.mouseLocation), time: event.timestamp)
         return true
     }
 
     private func mouseDragged(_ event: NSEvent) {
+        pointerDragged(to: CGSpace.point(fromAppKit: NSEvent.mouseLocation))
+    }
+
+    private func mouseUp(_ event: NSEvent) {
+        pointerUp(clickCount: event.clickCount, time: event.timestamp)
+    }
+
+    private func pointerDown(at p: CGPoint, time: TimeInterval) {
+        downPoint = p
+        downTime = time
+        dragMoved = false
+    }
+
+    private func pointerDragged(to p: CGPoint) {
         guard let down = downPoint else { return }
-        let p = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
         if !dragMoved {
             guard hypot(p.x - down.x, p.y - down.y) >= 4 else { return }
             dragMoved = true
@@ -887,21 +930,21 @@ public final class OrbPanelController {
         body.moveDrag(pointer: p)
     }
 
-    private func mouseUp(_ event: NSEvent) {
+    private func pointerUp(clickCount: Int, time: TimeInterval) {
         defer { downPoint = nil }
         if dragMoved {
             body.endDrag()
             blobView.poke()
             return
         }
-        guard event.timestamp - downTime < 0.6 else { return }
+        guard time - downTime < 0.6 else { return }
         // A click is play, not a command: it pokes the blob and opens nothing. The
         // capsule is a double-click (or the right-click menu); an open capsule folds
         // on a single click. The poke waits one double-click interval so the first
         // half of a double-click does not send the blob skittering away.
         if expanded {
             collapse()
-        } else if event.clickCount >= 2 {
+        } else if clickCount >= 2 {
             pendingPoke?.cancel()
             pendingPoke = nil
             expand()
@@ -915,12 +958,14 @@ public final class OrbPanelController {
 
     private var pendingPoke: DispatchWorkItem?
 
-    /// The blob reacts to a tap: a shiver and a small hop that lands where it was.
+    /// The blob reacts to a tap: wide eyes and a blink, a shiver and a small hop that
+    /// lands where it was (a stuck blob hops along its wall and stays stuck).
     private func pokeBlob() {
         pendingPoke = nil
         guard !expanded else { return }
         blobView.paused = false
         sim.nudge(1.4)
+        sim.poke()
         // Mid-flight a hop would strand it (the goal goes with the fling) or make its
         // hover spot home when it landed; a shiver is enough.
         guard flight == .none else { blobView.poke(); return }
@@ -1170,6 +1215,77 @@ extension OrbPanelController {
         body.fling(CGVector(dx: vx, dy: vy))
         scanObstacles(force: true)
         blobView.poke()
+    }
+
+    /// The body's CG centre.
+    public var previewCenterCG: CGPoint { body.center }
+    /// The drag's lag (grab target − centre, pt) and the eased elongation the field draws (0…0.75).
+    public var previewLag: CGVector { body.lag }
+    public var previewStretch: Double { sim.previewStretch }
+    /// The wobble: the slosh's displacement (rows) and the ellipse mode (× radius).
+    public var previewWobble: (slosh: Double, mode2: Double) { sim.previewWobble }
+    /// Sticky borders: glued to a surface, and how far the patch has been pulled (0…1).
+    public var previewIsStuck: Bool { body.isStuck }
+    /// How many surfaces hold it: a corner is two.
+    public var previewStuckCount: Int { body.stuckCount }
+    public var previewNeck: Double { body.neck }
+    public var previewIsDragging: Bool { body.dragging }
+    /// The eyes this frame: "col,row open pupilX,pupilY shape" each.
+    public var previewEyes: String {
+        sim.eyes.map { String(format: "%.1f,%.1f open %.2f look %.2f,%.2f %@", $0.col, $0.row, $0.open, $0.pupilX, $0.pupilY, String(describing: $0.shape)) }.joined(separator: " | ")
+    }
+
+    /// The unit direction and distance from the body's centre to the nearest work-area
+    /// wall of its display, for a throw that is meant to stick.
+    public var previewNearestWall: (dx: Double, dy: Double, distance: Double)? {
+        guard let s = ScreenArea.all().first(where: { $0.frame.contains(body.center) }) ?? ScreenArea.all().first else { return nil }
+        let w = s.work, c = body.center
+        let options: [(Double, Double, Double)] = [(-1, 0, Double(c.x - w.minX)), (1, 0, Double(w.maxX - c.x)), (0, -1, Double(c.y - w.minY)), (0, 1, Double(w.maxY - c.y))]
+        guard let best = options.min(by: { $0.2 < $1.2 }) else { return nil }
+        return (best.0, best.1, best.2)
+    }
+
+    /// A synthetic drag through the panel's own mouse path: the hand comes down at `from`
+    /// (CG), sweeps to `to` over `ms` with an ease-in-out (it accelerates, then stops —
+    /// the mid-sweep is the fastest, where the teardrop is longest), and lets go. No
+    /// button is really held, so the body is told not to end the drag on that account.
+    /// `progress` is called every step with 0…1; `done` after the release.
+    public func previewDrag(from: CGPoint, to: CGPoint, ms: Double, progress: ((Double) -> Void)? = nil, done: (() -> Void)? = nil) {
+        blobView.paused = false
+        body.syntheticDrag = true
+        pointerDown(at: from, time: ProcessInfo.processInfo.systemUptime)
+        let start = CACurrentMediaTime()
+        let duration = max(0.05, ms / 1000)
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                let u = min(1, (CACurrentMediaTime() - start) / duration)
+                let s = u * u * (3 - 2 * u)
+                let p = CGPoint(x: from.x + (to.x - from.x) * s, y: from.y + (to.y - from.y) * s)
+                self.pointerDragged(to: p)
+                progress?(u)
+                if u >= 1 {
+                    timer.invalidate()
+                    self.pointerUp(clickCount: 1, time: ProcessInfo.processInfo.systemUptime)
+                    self.body.syntheticDrag = false
+                    done?()
+                }
+            }
+        }
+    }
+
+    /// Pin the phase and gate the field shows, for the expression strip (bypasses AppState).
+    public func previewSetExpression(phase: Phase, gate: WakeGateState?) {
+        sim.setPhase(phase)
+        if let gate { sim.setGate(BlobGate(gate)) }
+        blobView.poke()
+    }
+    public func previewPoke() { sim.poke(); blobView.poke() }
+    /// Step the field's clock by `seconds` without waiting (settles the eases for a shot).
+    public func previewAdvanceField(_ seconds: Double) {
+        var left = seconds
+        while left > 0 { sim.step(min(left, 1.0 / 24)); left -= 1.0 / 24 }
+        blobView.renderNow()
     }
 
     /// Solid rects to collide with, on top of whatever the window scan finds.

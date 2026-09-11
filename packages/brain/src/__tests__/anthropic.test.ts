@@ -61,7 +61,7 @@ test("anthropic brain: one tool round-trip through the runner, then the spoken a
 
     const first = server.seen[1]!.body as { model: string; system: string; tools: unknown[]; thinking: unknown; output_config: unknown; tool_choice: unknown; messages: Array<{ role: string; content: unknown }> };
     assert.equal(first.model, "claude-opus-5");
-    assert.match(first.system, /hands and eyes of Jarhead/);
+    assert.match(first.system, /brain of Jarhead/);
     assert.equal(first.tools.length, ALL_TOOL_SPECS.length);
     assert.deepEqual(first.thinking, { type: "adaptive" });
     assert.deepEqual(first.output_config, { effort: "medium" });

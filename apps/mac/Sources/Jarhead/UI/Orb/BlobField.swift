@@ -7,9 +7,19 @@ import QuartzCore
 // A faithful port of legacy/packages/overlay/src/renderer/overlay.js (the v1
 // Electron buddy) onto a plain NSView with CoreGraphics glyph drawing:
 //  * `BlobSim` owns every mutable animation value and turns (phase, levels,
-//    contacts, lean, time) into a 27×15 grid of ramp indices, a matching halo
-//    coverage mask, and two eyes (a blob with eyes is a creature; without, a
-//    loading indicator).
+//    contacts, motion, lean, time) into a 27×15 grid of ramp indices, a matching
+//    halo coverage mask, per-cell flags (the wet patch), and two eyes (a blob with
+//    eyes is a creature; without, a loading indicator). Every cell goes through one
+//    inverse-mapping pipeline in the world frame — the contacts (flatten against a
+//    plane at the surface's real distance, the adhesion patch spreading along it,
+//    the smear, the neck while clinging), then the drag stretch (a teardrop along
+//    the lag, sheared toward the grab, thinned to keep its volume), then the spun
+//    harmonic outline plus the wobble modes — so the flat face always lies on the
+//    real edge and the stretch always points at the hand.
+//  * The eyes are glyph discs from the same font, sized past the grid: a sclera a
+//    step brighter than the body, ringed in the ground colour, a dark pupil that
+//    looks around, a glint; lids are the disc flattened. Every expression is a
+//    (openness, pupil, look, shape) tuple per phase and gate state (`renderEyes`).
 //  * `BlobFieldView` runs one CADisplayLink for the whole orb (physics ticks at
 //    display rate, the field re-renders at 10–24 fps like v1) and stops entirely
 //    when nothing moves, when muted, when fast asleep, or when the panel is hidden.
@@ -156,10 +166,21 @@ struct BlobPersonality {
 
 /// What the blob is pressed against: a normal pointing from the surface toward free
 /// space (field/CG orientation, y down) and how hard (0 touching, 1 flattened, >1 squeezed in).
+/// A sticky one adds the adhesion: `stuck` (the patch is glued on: the dome sags onto it
+/// and breathes), `neck` (0 flat … 1 about to let go: the patch stays on the surface
+/// while a neck stretches to the body) and `smear`, the body's speed along the surface
+/// (pt/s, positive along (−ny, nx)) that the footprint lags behind.
 struct BlobContact: Equatable {
     var nx: Double
     var ny: Double
     var press: Double
+    /// Distance (pt) from the body's centre to the surface, when there is one to
+    /// measure (a wall, a window; negative inside a window): the renderer puts the
+    /// flat face and the neck's foot there. Nil for an impact's echo.
+    var distance: Double? = nil
+    var neck = 0.0
+    var smear = 0.0
+    var stuck = false
 }
 
 /// What the wake word gate is doing, as far as the blob cares. Only read while the
@@ -273,12 +294,142 @@ final class BlobSim {
     /// Halo coverage per cell (0…255): the silhouette plus a soft margin. The view
     /// upscales it into the glow behind the glyphs.
     private(set) var halo = [UInt8](repeating: 0, count: BlobSim.cellCount)
+    /// Per-cell flags: bit 0 set = the wet patch (drawn from the dense ramp, a step brighter).
+    private(set) var flags = [UInt8](repeating: 0, count: BlobSim.cellCount)
+    nonisolated static let wetFlag: UInt8 = 1
 
-    /// Cells carrying an eye this frame (0–2) and the glyph they show.
-    private(set) var eyeCells: [Int] = []
-    private(set) var eyeGlyph: Character = "•"
-    private var nextBlinkAt = 2.5
+    // MARK: motion (the jelly)
+
+    /// The last motion the physics reported, CG orientation: the drag's lag (grab
+    /// target − centre, pt), the hand's hold relative to the centre, the velocity and
+    /// acceleration (pt/s, pt/s²), and whether a hand is on it.
+    private var lag = CGVector.zero
+    private var grab: CGVector?
+    private var velocity = CGVector.zero
+    /// The body's change of velocity (pt/s) since the last field frame, summed over
+    /// the physics ticks in between, so a one-tick wall impulse rings the wobble
+    /// whichever tick it fell on.
+    private var dvX = 0.0, dvY = 0.0
+    private var dragging = false
+    private var wasDragging = false
+    /// The eased stretch: a unit direction (toward the hand, or along the flight) and
+    /// the elongation 0…`maxStretch` — how far the silhouette is pulled into a teardrop.
+    private var stretchX = 1.0, stretchY = 0.0
+    private var stretch = 0.0
+    /// The shear from where the hand holds the body: the grabbed side leads, the rest
+    /// trails like a lifted skirt. Signed, in the stretch's perpendicular.
+    private var shear = 0.0
+    /// The body's speed (pt/s), eased, for the eyes and the flight elongation.
+    private var speed = 0.0
+    /// The wobble: three damped oscillators on the low harmonics, masses inside the
+    /// body rung by its changes of velocity (impacts, the hand speeding up or
+    /// stopping, the release) — a slosh (k = 1, a vector in rows: the mass lags the
+    /// body), an ellipse mode along the motion (k = 2) and a triangle mode (k = 3),
+    /// both fractions of the radius. `gain` is the share of the body's Δv the mode
+    /// picks up (1 would be a free mass). ζ ≈ 0.13–0.16: ringing for ~0.8 s.
+    private struct Mode { var x = 0.0, v = 0.0; let hz: Double; let zeta: Double; let gain: Double; let cap: Double }
+    private var sloshX = Mode(hz: 3.2, zeta: 0.14, gain: 0.35, cap: 0.9)
+    private var sloshY = Mode(hz: 3.2, zeta: 0.14, gain: 0.35, cap: 0.9)
+    private var mode2 = Mode(hz: 4.6, zeta: 0.13, gain: 0.7, cap: 0.32)
+    private var mode3 = Mode(hz: 6.4, zeta: 0.16, gain: 0.35, cap: 0.22)
+    /// The motion's direction (eased angle vector) the k = 2 and 3 modes are aligned to.
+    private var motionX = 1.0, motionY = 0.0
+    /// A hard landing: one dense burst over the whole body, gone in a few frames.
+    private var splat = 0.0
+    static let splatTau = 0.09
+    /// neck², while clinging: how hard the tail on the patch is pinched.
+    private var necking = 0.0
+    /// Elongation per point of lag, and its ceiling: 90 pt of lag (most of a radius)
+    /// pulls the body to a 1.75 : 0.7 teardrop.
+    static let stretchPerLag = 1 / 90.0
+    static let maxStretch = 0.75
+    /// The teardrop at unit stretch: the tail pulls out by this much of the radius,
+    /// the leading side compresses by that much.
+    static let tailStretch = 0.95
+    static let leadCompress = 0.22
+    /// Fixed volume: the stretched body's radius shrinks by 1 / (1 + this × stretch)
+    /// (more for a vertical stretch, which the 15-row field has less room for), so
+    /// the teardrop reads as thinner, not bigger, and its point stays on the field.
+    static let stretchShrink = 0.3
+    /// A thrown body elongates along its flight: this much per pt/s, capped lower.
+    static let stretchPerSpeed = 1 / 3600.0
+    static let maxFlightStretch = 0.42
+    static let stretchTau = 0.07
+    /// The most velocity change (pt/s) one field frame feeds the wobble: a hard bounce.
+    static let maxImpulse = 800.0
+    /// Sticky borders, in rows. `patchWidth`: how much the contact patch spreads along
+    /// the surface per unit press (adhesion: the body wets the edge). `smearRows`: how
+    /// far the footprint trails at `smearSpeed` along the surface.
+    static let patchWidth = 0.55
+    static let smearRows = 1.6
+    static let smearSpeed = 700.0
+    /// The neck, while clinging, × the body's radius: where its root sits inside the
+    /// body (less as the neck grows — the body gives way to the neck past it), the
+    /// root's half-width, the foot's on the surface (plus a share of the press: the
+    /// patch it grew from), and the waist's at neck 0 — it narrows as (1 − neck)^0.8
+    /// of that, to a hairline as the patch lets go.
+    static let neckRoot = 0.66
+    static let neckRootWidth = 0.5
+    static let neckFootWidth = 0.35
+    static let neckWaistWidth = 0.4
+    /// The parked dome's breath: the patch's press swells this much over `breathPeriod`.
+    static let domeBreath = 0.07
+
+    // MARK: eyes
+
+    /// One eye, for the view: centre in cell units (fractional), the disc's radius in
+    /// points, how open (0.06 shut … 1 round … 1.3 wide — the disc flattens below 1
+    /// and grows above), where the pupil looks (−1…1 of its travel), the pupil's size
+    /// as a fraction of the eye's, and the shape for the expressions a lid cannot make.
+    struct BlobEye {
+        enum Shape { case round, happy, cross, deniedLeft, deniedRight }
+        var col: Double
+        var row: Double
+        var radius: Double
+        var open: Double
+        var pupilX: Double
+        var pupilY: Double
+        var pupil: Double
+        var shape: Shape
+    }
+    private(set) var eyes: [BlobEye] = []
+    /// Cells under the eyes: the view draws no body glyph there.
+    private(set) var eyeFootprint: [Int] = []
+    /// Where the eyes look (−1…1), eased so they never snap.
+    private var lookX = 0.0, lookY = -0.25
+    /// Where the eyes sit (cells), eased the same way: a lobe or the squish moving
+    /// under them shifts them, never jumps them.
+    private var eyeRow = 0.0, eyeLeftCol = 0.0, eyeRightCol = 0.0
+    private var eyesPlaced = false
+    static let eyePlaceTau = 0.09
+    /// Rows to try around the eyes' nominal row, in order: half a row up first, then down the face.
+    static let eyeRowSearch: [Double] = [0, -0.5, 0.5, -1, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5]
+    /// Each eye's openness, eased; the lids move fast (a blink is 120 ms) but not instantly.
+    private var openL = 0.1, openR = 0.1
+    private var nextBlinkAt = 3.0
     private var blinkUntil = -1.0
+    private var blinkLength = 0.12
+    private var doubleBlinkAt = -1.0
+    private var pokedAt = -100.0
+    /// A wandering glance (connecting looks around; listening turns to "the last sound").
+    private var glanceX = 0.0, glanceY = -0.3
+    private var nextGlanceAt = 0.0
+    /// The listening perk-up: an onset in the input level widens the eyes, then decays.
+    private var perk = 0.0
+    private var lastInput = 0.0
+    /// The hand's position relative to the body centre (pt, CG orientation), if the
+    /// controller can say; the listening eyes follow it within `followReach`.
+    var pointer: (() -> CGVector?)?
+    /// What the acting eyes track (the flight target relative to the centre, pt); nil for the direction of motion.
+    var attention: CGVector?
+    static let followReach = 300.0
+    /// The disc's radius in points: 17 pt across on a body about 120 — big enough to
+    /// carry an expression, small enough to leave a face around them.
+    static let eyeRadiusPt = 8.6
+    /// The thinnest a lid closes to: a clear bright dash, not a hairline.
+    static let shutOpenness = 0.14
+    /// Row height in points, from the view's metrics: the eyes are sized in points.
+    var rowHeightPt = 10.5
 
     // Harmonics: each amplitude does an Ornstein-Uhlenbeck random walk, phases drift.
     private struct Harmonic {
@@ -308,11 +459,18 @@ final class BlobSim {
     static let ouPull = 1.7
     static let sigma = 1.3
 
-    // Contacts, each spring-damped toward the value physics reports.
+    // Contacts, each spring-damped toward the value physics reports. The adhesion
+    // parts ride along: `stuck`, `neck` and `distance` adopted at once (they are the
+    // physics' own eased quantities), `smear` eased here (in rows).
     private struct ContactSlot {
         var nx = 0.0, ny = 0.0, press = 0.0, target = 0.0, vel = 0.0
+        var neck = 0.0, smear = 0.0, smearTarget = 0.0
+        var distance: Double? = nil
+        var stuck = false
     }
     private var contacts = [ContactSlot(), ContactSlot()]
+    /// The contacts as drawn this frame: `contacts` plus the parked dome's breath.
+    private var shown = [ContactSlot(), ContactSlot()]
     static let stiffness = 165.0
     static let damping = 15.0
     private var springsMoving = false
@@ -375,23 +533,77 @@ final class BlobSim {
     }
 
     /// Adopt the new normals immediately; only the magnitude is sprung, so a contact
-    /// that jumps to another wall does not swing through the middle.
+    /// that jumps to another wall does not swing through the middle. The neck is
+    /// adopted at once too (it is the physics' own eased quantity); the smear eases here.
     func setContacts(_ list: [BlobContact]) {
         for i in contacts.indices {
             if i < list.count {
                 contacts[i].nx = list[i].nx
                 contacts[i].ny = list[i].ny
                 contacts[i].target = list[i].press
+                contacts[i].neck = list[i].neck
+                contacts[i].stuck = list[i].stuck
+                contacts[i].distance = list[i].distance
+                // The footprint trails the motion: the sample point shifts against it.
+                contacts[i].smearTarget = -min(1, max(-1, list[i].smear / Self.smearSpeed)) * Self.smearRows
             } else {
                 contacts[i].target = 0
+                contacts[i].neck = 0
+                contacts[i].stuck = false
+                contacts[i].distance = nil
+                contacts[i].smearTarget = 0
             }
         }
+    }
+
+    /// The body's motion this physics tick. Everything the jelly reads: the lag
+    /// stretches it, the grab shears it, the change of velocity rings the wobble, the
+    /// velocity elongates a throw and gives the eyes something to look along.
+    func setMotion(lag l: CGVector, grab g: CGVector?, velocity v: CGVector, dragging d: Bool) {
+        lag = l
+        grab = g
+        dvX += v.dx - velocity.dx
+        dvY += v.dy - velocity.dy
+        velocity = v
+        dragging = d
     }
 
     /// Extra agitation (an impact, a summon landing), decaying away.
     func nudge(_ strength: Double) {
         shiver = min(4, shiver + (reducedMotion ? strength * 0.3 : strength))
         for i in harmonics.indices { harmonics[i].amp += gaussianRandom() * 0.12 * strength * harmonics[i].weight }
+    }
+
+    /// A hard landing: the whole body goes dense for a few frames and the patch
+    /// spreads wide, then the bounce carries on. `strength` 0…1.
+    func splat(_ strength: Double) {
+        splat = min(1, max(splat, reducedMotion ? strength * 0.4 : strength))
+        ring(mode2: 0.25 * strength, mode3: 0.12 * strength)
+    }
+
+    /// The patch let go of a surface whose outward normal is (nx, ny): a recoil wobble
+    /// away from it, a ripple through the surface.
+    func snapFree(nx: Double, ny: Double) {
+        let k = reducedMotion ? 0.35 : 1.0
+        sloshX.v -= nx * 3.2 * k
+        sloshY.v -= ny * 3.2 * k
+        ring(mode2: 0.22 * k, mode3: 0.1 * k)
+        nudge(0.7)
+        rippleAt = t
+        rippleGain = 0.7 * k
+    }
+
+    /// A tap: wide eyes, then a blink (the blink is scheduled from the poke).
+    func poke() {
+        pokedAt = t
+        blinkUntil = -1
+        doubleBlinkAt = -1
+        nextBlinkAt = t + 0.26
+    }
+
+    private func ring(mode2 a2: Double, mode3 a3: Double) {
+        mode2.v += a2 * 2 * .pi * mode2.hz
+        mode3.v += a3 * 2 * .pi * mode3.hz
     }
 
     // MARK: scheduling
@@ -403,6 +615,14 @@ final class BlobSim {
     var isLively: Bool {
         springsMoving || shiver > 0.03 || flash > 0.02 || pulse > 0.02 || t - rippleAt < Self.rippleLength
             || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0 || t - flightChangedAt < 1.0
+            || motionLively
+    }
+
+    /// The jelly is still moving: stretched, wobbling, splatting, or a hand is on it.
+    private var motionLively: Bool {
+        dragging || stretch > 0.01 || splat > 0.02 || t - pokedAt < 0.6
+            || abs(sloshX.x) + abs(sloshY.x) + abs(mode2.x) + abs(mode3.x) > 0.012
+            || abs(sloshX.v) + abs(sloshY.v) + abs(mode2.v) + abs(mode3.v) > 0.08
     }
 
     var desiredFPS: Double { isLively ? 24 : target.fps }
@@ -478,11 +698,109 @@ final class BlobSim {
         // otherwise integrate into a violent snap on the next visible frame.
         let dt = min(max(dtRaw, 0), 0.1)
         t += dt
+        frameDt = dt
         easeParams(dt)
         smoothLevels(dt)
         stepHarmonics(dt)
+        stepMotion(dt)
         springsMoving = stepSprings(dt)
         render()
+    }
+
+    /// The jelly: ease the stretch toward what the lag (or the flight) asks, the shear
+    /// toward the grab, and ring the wobble modes with the acceleration. The release
+    /// itself is a kick: the spring force vanished, and the body jiggles with what it had.
+    private func stepMotion(_ dt: Double) {
+        let lagLen = (lag.dx * lag.dx + lag.dy * lag.dy).squareRoot()
+        let vLen = (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot()
+        speed += (vLen - speed) * min(1, dt * 14)
+        let k = 1 - exp(-dt / Self.stretchTau)
+
+        var want = 0.0
+        var dx = stretchX, dy = stretchY
+        // Clinging: the whole body is a teardrop pulled off the patch — the tail on the
+        // wall, the hand's side compressed — so the neck has a body to narrow from.
+        var neck = 0.0
+        var neckNX = 0.0, neckNY = 0.0
+        for c in contacts where c.neck > neck { neck = c.neck; neckNX = c.nx; neckNY = c.ny }
+        necking = neck * neck
+        if dragging {
+            want = min(Self.maxStretch, lagLen * Self.stretchPerLag + neck * 0.5)
+            if lagLen > 3 { dx = lag.dx / lagLen; dy = lag.dy / lagLen } else if neck > 0 { dx = neckNX; dy = neckNY }
+        } else if vLen > 60 {
+            want = min(Self.maxFlightStretch, vLen * Self.stretchPerSpeed)
+            dx = velocity.dx / vLen; dy = velocity.dy / vLen
+        }
+        if reducedMotion { want *= 0.4 }
+        // The direction eases as a vector so it turns instead of flipping.
+        stretchX += (dx - stretchX) * k
+        stretchY += (dy - stretchY) * k
+        let len = (stretchX * stretchX + stretchY * stretchY).squareRoot()
+        if len > 0.01 { stretchX /= len; stretchY /= len } else { stretchX = dx; stretchY = dy }
+        stretch += (want - stretch) * k
+
+        // Shear: the hand's hold, measured across the stretch — the held side leads.
+        var wantShear = 0.0
+        if dragging, let g = grab, want > 0.02 {
+            let perp = -g.dx * stretchY + g.dy * stretchX
+            wantShear = min(1, max(-1, perp / (Self.eyeRadiusPt * 9))) * 1.2 * want
+        }
+        shear += (wantShear - shear) * k
+
+        // Motion axis for the k = 2 / 3 modes.
+        if vLen > 40 {
+            motionX += (velocity.dx / vLen - motionX) * min(1, dt * 10)
+            motionY += (velocity.dy / vLen - motionY) * min(1, dt * 10)
+        }
+
+        // Wobble: the modes are masses inside the body, so its change of velocity since
+        // the last frame — the hand speeding up or stopping, a wall, a flick — kicks
+        // each by gain × Δv: in rows for the slosh, as a fraction of the radius for
+        // the k = 2, 3 modes. A brisk drag's 4500 pt/s² holds the slosh about 0.4 row
+        // behind the hand and swings it forward when the hand stops; a 600 pt/s bounce
+        // throws it most of a row and rings the ellipse mode to its cap. Release is a
+        // kick of its own: the spring force vanished, and the body jiggles with what it had.
+        var jx = dvX / rowHeightPt, jy = dvY / rowHeightPt   // rows/s
+        dvX = 0; dvY = 0
+        let jLen = (jx * jx + jy * jy).squareRoot()
+        let jCap = Self.maxImpulse / rowHeightPt
+        if jLen > jCap { jx *= jCap / jLen; jy *= jCap / jLen }
+        let g = reducedMotion ? 0.3 : 1.0
+        sloshX.v -= jx * sloshX.gain * g
+        sloshY.v -= jy * sloshY.gain * g
+        let jr = min(jLen, jCap) / (Double(Self.rows) * 0.38)   // radii/s
+        mode2.v += jr * mode2.gain * g
+        mode3.v += jr * mode3.gain * g * (mode3.x >= 0 ? -1 : 1)
+        if wasDragging, !dragging {
+            let kick = (reducedMotion ? 0.3 : 1.0) * (0.35 + stretch)
+            sloshX.v += stretchX * 2.4 * kick
+            sloshY.v += stretchY * 2.4 * kick
+            ring(mode2: 0.18 * kick, mode3: 0.08 * kick)
+        }
+        wasDragging = dragging
+
+        Self.advance(&sloshX, dt)
+        Self.advance(&sloshY, dt)
+        Self.advance(&mode2, dt)
+        Self.advance(&mode3, dt)
+        splat *= exp(-dt / Self.splatTau)
+    }
+
+    /// One exact step of the damped oscillator (ζ < 1), stable for any dt. The asleep
+    /// cadence (10 fps; a frame gap is clamped to 0.1 s) puts the fastest mode at
+    /// ω·dt ≈ 4, where the semi-implicit Euler step this replaced — stable only below
+    /// ω·dt ≈ 1.7, even halved — fed on its own error, re-armed `motionLively` every
+    /// frame and never let the display link pause.
+    private static func advance(_ m: inout Mode, _ dt: Double) {
+        let w = 2 * .pi * m.hz
+        let zw = m.zeta * w
+        let wd = w * (1 - m.zeta * m.zeta).squareRoot()
+        let decay = exp(-zw * dt)
+        let c = cos(wd * dt), s = sin(wd * dt)
+        let b = (m.v + zw * m.x) / wd
+        let x = decay * (m.x * c + b * s)
+        m.v = decay * ((b * wd - zw * m.x) * c - (m.x * wd + zw * b) * s)
+        m.x = min(m.cap, max(-m.cap, x))
     }
 
     private func easeParams(_ dt: Double) {
@@ -560,6 +878,9 @@ final class BlobSim {
         }
     }
 
+    /// The contact springs. The parked dome's breath is not here: it is a render-time
+    /// term (`render`), so it never counts as spring motion and a fast-asleep blob
+    /// stops breathing when the link pauses.
     private func stepSprings(_ dt: Double) -> Bool {
         let step = min(dt, 1.0 / 30)
         var moving = false
@@ -568,7 +889,8 @@ final class BlobSim {
             let accel = (c.target - c.press) * Self.stiffness - c.vel * Self.damping
             c.vel += accel * step
             c.press += c.vel * step
-            if abs(c.vel) > 0.002 || abs(c.target - c.press) > 0.002 { moving = true }
+            c.smear += (c.smearTarget - c.smear) * min(1, step * 9)
+            if abs(c.vel) > 0.002 || abs(c.target - c.press) > 0.002 || abs(c.smearTarget - c.smear) > 0.01 { moving = true }
             contacts[i] = c
         }
         return moving
@@ -576,14 +898,20 @@ final class BlobSim {
 
     // MARK: silhouette
 
-    /// Radius multiplier at a given angle: the Brownian outline. Floored well above
-    /// zero because a sum that reaches -1 would fold the surface through the centre.
-    /// `ampScale` is the frame's wander amplitude (see `ampBreath`).
+    /// Radius multiplier at a given angle: the Brownian outline. The caller floors it
+    /// (after adding the wobble) well above zero, because a sum that reaches -1 would
+    /// fold the surface through the centre. `ampScale` is the frame's wander amplitude
+    /// (see `ampBreath`).
     private func outline(_ angle: Double, ampScale: Double) -> Double {
         var sum = 0.0
-        for h in harmonics { sum += h.amp * sin(h.k * angle + h.phase) }
-        return max(0.35, 1 + (sum / weightSum) * ampScale)
+        for h in harmonics { sum += h.amp * (h.k == 1 ? lobeScale : 1) * sin(h.k * angle + h.phase) }
+        return 1 + (sum / weightSum) * ampScale
     }
+
+    /// The k = 1 harmonic is a lopsided lobe — mass to one side. Pressed against a
+    /// surface the surface decides where the mass is, so it fades with the press: a
+    /// parked dome sits square on its edge instead of leaning off it.
+    private var lobeScale = 1.0
 
     /// The listening breath: the wander amplitude swells and settles over ~4 s,
     /// faintly, so an asleep blob with an ear reads differently from one fast asleep.
@@ -601,42 +929,146 @@ final class BlobSim {
         return (1 + sin(t * rate) * depth) * (1 + swell)
     }
 
-    /// Squash a point against the active contacts: compress along the wall normal and
-    /// spread perpendicular (fixed volume), then hard-clip anything past the wall,
-    /// which is what produces the flat pressed face.
-    private func squash(_ dx: Double, _ dy: Double, base: Double) -> (Double, Double, Bool) {
+    private static func smoothstep(_ x: Double) -> Double {
+        let u = min(1, max(0, x))
+        return u * u * (3 - 2 * u)
+    }
+
+    // MARK: deformation (all in the world frame; the spin turns only the outline)
+
+    /// The drag stretch, as an inverse map: a field point is pulled back to where it
+    /// samples the undeformed body. Along the stretch (u toward the hand) the trailing
+    /// half is extended by up to 1 + `tailStretch`·e and the leading half compressed
+    /// by 1 − `leadCompress`·e — the teardrop — blended across the middle; the tail
+    /// thins as it goes out (its perpendicular grows in the inverse); the shear leads
+    /// the grabbed side. `base` is the volume-kept (shrunk) radius, see `render`. Also
+    /// returns a density multiplier: the tail's glyphs thin (surface tension), the
+    /// front's bunch where the body piles up.
+    private func stretched(_ x: Double, _ y: Double, base: Double) -> (Double, Double, Double) {
+        let e = stretch
+        let sx = stretchX, sy = stretchY
+        var u = x * sx + y * sy
+        let w = -x * sy + y * sx
+        u -= shear * w
+        // 0 deep in the tail … 1 on the leading side.
+        let tLead = Self.smoothstep(u / base * 0.9 + 0.5)
+        let along = (1 + Self.tailStretch * e) * (1 - tLead) + (1 - Self.leadCompress * e) * tLead
+        let uu = u / along
+        let tail = u < 0 ? min(1, -u / base) : 0
+        // The tail draws to a point (harder the further out, harder still while the
+        // patch holds it); the front bulges where the body piles up.
+        let thin = 1 + e * (0.5 * tail + 1.4 * tail * tail) + necking * 2.5 * tail
+        let widen = 1 + 0.22 * e * tLead
+        let ww = w * thin / widen
+        let density = (1 - 0.5 * e * tail) * (1 + 0.3 * e * tLead * tLead)
+        return (uu * sx - ww * sy, uu * sy + ww * sx, density)
+    }
+
+    private struct Deformed {
+        var x: Double, y: Double
+        var clipped: Bool
+        /// Depth of a neck cell (0…1), or −1 outside the neck.
+        var neckDepth: Double
+        /// How much of the wet patch this cell is (0…1).
+        var wet: Double
+        /// How much of the body is drawn here (1 all of it): clinging, the body ends
+        /// at the neck's root and the neck takes over from there to the surface.
+        var body: Double
+    }
+
+    /// The contacts. Per contact: compress along the normal and spread across it
+    /// (fixed volume), the adhesion widening the spread near the surface into the
+    /// contact patch (`patchWidth`, more on a splat) and the smear shifting the
+    /// footprint along it; then the surface hard-clips anything past it — the flat
+    /// face, on the surface's real distance when the contact knows it. Clinging, the
+    /// face relaxes as the body is pulled off; the body ends at the neck's root and
+    /// the neck (drawn here, not by the outline) bridges from there out to a foot on
+    /// the surface, narrowing in the middle until it parts; only the foot is wet.
+    private func deformed(_ dx: Double, _ dy: Double, base: Double, sq: Double) -> Deformed {
         var ox = dx, oy = dy
+        var wet = 0.0
+        var neckDepth = -1.0
         var clipped = false
+        var body = 1.0
+        var active = 0
+        for c in shown where c.press > 0.01 { active += 1 }
         // A corner applies two contacts; multiplying both squashes collapsed the blob
         // into a line. Splitting the budget keeps a corner squish dramatic.
-        var active = 0
-        for c in contacts where c.press > 0.01 { active += 1 }
         let share = active > 1 ? 0.68 : 1.0
 
-        for c in contacts where c.press > 0.01 {
+        for c in shown where c.press > 0.01 {
             let press = c.press * share
             let along = ox * c.nx + oy * c.ny
-            let perpX = ox - c.nx * along
-            let perpY = oy - c.ny * along
+            let pw = -ox * c.ny + oy * c.nx
+            let bodyPress = press * (1 - 0.55 * c.neck)
+            // The surface's plane, along −n from the centre, in body units. A contact
+            // that knows its distance (a wall, a window) puts it exactly there — the
+            // vertical squash taken out for a horizontal surface — so the flat face
+            // lies on the screen's own edge and the neck's foot lands on it, whatever
+            // the press says. An impact (no surface left to measure) brings a plane
+            // in with its press.
+            let wall: Double
+            if let d = c.distance, d > 0 {
+                wall = d / rowHeightPt / (1 + (sq - 1) * c.ny * c.ny)
+            } else {
+                wall = base * (1 - min(0.66, bodyPress * 0.6))
+            }
 
-            // Wall sits this far from centre along -n; as press rises it comes in.
-            let wall = base * (1 - min(0.66, press * 0.6))
-            if along < -wall { clipped = true }
+            if c.neck > 0.01 {
+                // Root inside the body, foot on the surface, everything this side of
+                // the plane. The body gives way to the neck past the root, over half a
+                // row, as the neck takes hold (`grip`).
+                let grip = min(1, c.neck / 0.35)
+                let root = -min(wall, base) * (Self.neckRoot - 0.16 * c.neck)
+                let foot = -wall
+                body = min(body, 1 - grip * Self.smoothstep((root - along) / 0.6 + 0.5))
+                if along < root, along > foot {
+                    let s = (root - along) / (root - foot)   // 0 at the body, 1 at the surface
+                    // A suction cup: the foot on the surface about as wide as the root on
+                    // the body, the waist between them narrowing with the neck to a hairline.
+                    let rootW = base * Self.neckRootWidth
+                    let footW = base * (Self.neckFootWidth + 0.25 * min(1, press))
+                    let waist = max(0.12, base * Self.neckWaistWidth * pow(max(0, 1 - c.neck), 0.8))
+                    let bulge = sin(.pi * s)
+                    let half = (rootW * (1 - s) + footW * s) * (1 - bulge) + waist * bulge
+                    let off = abs(pw - c.smear * s) / half
+                    if off < 1 {
+                        let d = (1 - off * off) * (0.9 - 0.3 * c.neck) * (1 - 0.1 * s)
+                        neckDepth = max(neckDepth, d * grip)
+                        if s > 0.7 { wet = max(wet, press * min(1, (s - 0.7) / 0.2)) }
+                    }
+                }
+            }
+            if along < -wall { clipped = true; continue }
 
-            let compress = 1 / (1 - min(0.55, press * 0.47))
-            let spread = 1 / (1 + min(0.8, press * 0.66))
-
-            ox = c.nx * along * compress + perpX * spread
-            oy = c.ny * along * compress + perpY * spread
+            let wallness = along < 0 ? Self.smoothstep(-along / wall) : 0
+            // Fixed volume: flattened along the normal, spread across it — except
+            // against a side wall, where the 15-row field has no room to spread into
+            // (the resting body already spans most of it): a side contact spreads
+            // little and flattens less, so its dome stays rounded inside the field.
+            let sideways = c.nx * c.nx
+            let spreadK = min(0.8, bodyPress * 0.66) * (1 - 0.8 * sideways)
+            let compressK = min(0.55, bodyPress * 0.47) * (1 - 0.45 * sideways)
+            let compress = 1 / (1 - compressK)
+            var spread = 1 / (1 + spreadK)
+            spread /= 1 + (Self.patchWidth * press * (1 - 0.6 * sideways) + splat * 0.7) * wallness * wallness
+            let pws = pw - c.smear * wallness * wallness
+            ox = c.nx * along * compress - c.ny * pws * spread
+            oy = c.ny * along * compress + c.nx * pws * spread
+            // The wet band on the face — gone once the body is being peeled off, when
+            // only the neck's foot is wet.
+            if press > 0.2, c.neck < 0.3 {
+                wet = max(wet, min(1, press) * Self.smoothstep((wallness - 0.55) / 0.45) * (1 - c.neck / 0.3))
+            }
         }
-        return (ox, oy, clipped)
+        return Deformed(x: ox, y: oy, clipped: clipped, neckDepth: neckDepth, wet: wet, body: body)
     }
 
     /// Net push direction (and total press), used to slide the body away from what it
     /// is pressed against and to aim the eyes.
     private func contactBias() -> (bx: Double, by: Double, total: Double) {
         var bx = 0.0, by = 0.0, total = 0.0
-        for c in contacts where c.press > 0.01 {
+        for c in shown where c.press > 0.01 {
             bx += c.nx * c.press
             by += c.ny * c.press
             total += c.press
@@ -646,101 +1078,387 @@ final class BlobSim {
 
     private func render() {
         let cols = Self.cols, rows = Self.rows
+        let sq = cur.squash == 0 ? 1 : cur.squash
+        // The contacts as drawn: the springs' state, plus the parked dome's breath — a
+        // render-time swell of the patch's press, never spring motion, so it rides the
+        // frames the phase already draws and stops with them when the link pauses.
+        let domeBreath = reducedMotion ? 0 : Self.domeBreath * sin(2 * .pi * t / Self.breathPeriod)
+        for i in contacts.indices {
+            shown[i] = contacts[i]
+            if contacts[i].stuck, contacts[i].neck == 0, !dragging { shown[i].press *= 1 + domeBreath }
+        }
         let bias = contactBias()
-        // Pressed blobs slide their mass away from the wall, not just deform in place.
-        let cx = Double(cols - 1) / 2 + (leanX * cur.pull + bias.bx * 0.9) * Double(cols) * 0.16 + jitterX
-        let cy = Double(rows - 1) / 2 + (leanY * cur.pull + bias.by * 0.9) * Double(rows) * 0.16 - lift + jitterY
+        var stuckAny = false, anyContact = false
+        for c in shown where c.press > 0.01 { anyContact = true; if c.stuck { stuckAny = true } }
+        lobeScale = 1 - 0.65 * min(1, bias.total)
+        // Pressed blobs slide their mass away from the wall — glued to it, the dome sags
+        // onto the patch instead. The slosh mode moves the whole mass too.
+        let slide = stuckAny ? 0.3 : 0.9
         // Smaller than v1's 0.42: the lobes reach 1.5× the base and were hard-clipping
         // into flat edges at the field boundary. The calibration ripple adds at most
         // half a row (about one column) to the radius for a third of a second.
         let base = Double(rows) * 0.38 * breath() + rippleGain * ripple
-        let ampScale = cur.amp * 2.6 * ampBreath
-        let cosS = cos(spinPhase), sinS = sin(spinPhase)
-        let sq = cur.squash == 0 ? 1 : cur.squash
+        // Stretched, the body keeps its volume — its radius shrinks as it lengthens
+        // (`stretchShrink`) — and its outline smooths, as a skin under tension does.
+        // The whole of it sits toward the hand in its field, by half the difference
+        // between the tail's reach and the compressed front's, so the tail's point
+        // lands inside the field and not in its fade. Not for the part of the stretch
+        // that is the cling, whose foot must stay on the real edge.
+        let e = stretch
+        let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * stretchY * stretchY) * e)
+        let toward = bodyBase * (Self.tailStretch + Self.leadCompress) / 2 * max(0, e - necking.squareRoot() * 0.5)
+        let cx = Double(cols - 1) / 2 + (leanX * cur.pull + bias.bx * slide) * Double(cols) * 0.16 + jitterX + (sloshX.x + stretchX * toward) * aspect
+        let cy = Double(rows - 1) / 2 + (leanY * cur.pull + bias.by * slide) * Double(rows) * 0.16 - lift + jitterY + sloshY.x + stretchY * toward * sq
+        let ampScale = cur.amp * 2.6 * ampBreath * (1 - 0.4 * e)
         let rampLen = Double(ramp.glyphs.count)
         let maxIdx = UInt8(ramp.glyphs.count - 1)
+        let stretching = stretch > 0.004
+        let wobbling = abs(mode2.x) > 0.003 || abs(mode3.x) > 0.003
+        let mAngle = atan2(motionY, motionX)
+        let splatBoost = splat * 0.55
+        let wetAll = splat > 0.45
 
         var i = 0
         for y in 0..<rows {
             let ry = (Double(y) - cy) / sq
             let edgeY = min(y, rows - 1 - y)
             for x in 0..<cols {
-                // Squash vertically per personality, then rotate the sampling frame so
-                // the whole silhouette turns: a turning body reads as a creature.
-                let rx = (Double(x) - cx) / aspect
-                let dx = rx * cosS - ry * sinS
-                let dy = rx * sinS + ry * cosS
-                let (ox, oy, clipped) = squash(dx, dy, base: base)
-                if clipped { cells[i] = 0; halo[i] = 0; i += 1; continue }
-                let dist = (ox * ox + oy * oy).squareRoot()
-                let radius = base * outline(atan2(oy, ox), ampScale: ampScale)
-                // 0 at the surface, 1 deep inside.
-                var depth = min(1, max(0, (radius - dist) / (radius * 0.8)))
-                // The halo reaches past the surface and fades smoothly; the same lobes, so
-                // the glow hugs the silhouette instead of being a disc behind it.
-                var g = min(1, max(0, (radius * 1.28 - dist) / (radius * 0.85)))
-                g = g * g * (3 - 2 * g)
+                // Squash vertically per personality; everything else is an inverse map
+                // of this point back onto the undeformed body. The contacts go first —
+                // a wall is a plane fixed in the field, so its clip and the neck's foot
+                // must be measured here, not in the stretched body's frame — then the
+                // stretch, whose tail the wall then cuts flat at the patch.
+                var ox = (Double(x) - cx) / aspect, oy = ry
+                var density = 1.0
+                var wet = 0.0, neckDepth = -1.0, bodyKeep = 1.0
+                var clipped = false
+                if anyContact {
+                    let d = deformed(ox, oy, base: bodyBase, sq: sq)
+                    ox = d.x; oy = d.y; wet = d.wet; neckDepth = d.neckDepth; clipped = d.clipped; bodyKeep = d.body
+                }
+                if stretching, !clipped { (ox, oy, density) = stretched(ox, oy, base: bodyBase) }
+                var depth = 0.0, g = 0.0
+                if !clipped, bodyKeep > 0.001 {
+                    let dist = (ox * ox + oy * oy).squareRoot()
+                    let angle = atan2(oy, ox)
+                    // The spun harmonic outline plus the wobble modes; floored so the
+                    // surface never folds through the centre.
+                    var mul = outline(angle + spinPhase, ampScale: ampScale)
+                    if wobbling { mul += mode2.x * cos(2 * (angle - mAngle)) + mode3.x * cos(3 * (angle - mAngle)) }
+                    let radius = bodyBase * max(0.35, mul)
+                    // 0 at the surface, 1 deep inside.
+                    depth = min(1, max(0, (radius - dist) / (radius * 0.8))) * density * bodyKeep
+                    // The halo reaches past the surface and fades smoothly; the same lobes,
+                    // so the glow hugs the silhouette instead of being a disc behind it.
+                    g = min(1, max(0, (radius * 1.28 - dist) / (radius * 0.85)))
+                    g = g * g * (3 - 2 * g) * (0.25 + 0.75 * bodyKeep)
+                }
+                if neckDepth > 0 {
+                    depth = max(depth, neckDepth * density)
+                    g = max(g, min(1, neckDepth + 0.45))
+                }
+                // The wet patch is where the body is pressed hardest: its glyphs go dense
+                // however near the surface they are. A splat does that everywhere.
+                if depth > 0 { depth = min(1, max(depth, wet * 0.85) + splatBoost) }
                 // A lobe that runs off the field thins out instead of being cut flat.
                 let edge = min(edgeY, min(x, cols - 1 - x))
                 if edge == 0 { depth *= 0.3; g *= 0.35 } else if edge == 1 { depth *= 0.65; g *= 0.7 }
                 cells[i] = depth <= 0 ? 0 : min(maxIdx, UInt8(depth * rampLen))
                 halo[i] = UInt8(g * 255)
+                flags[i] = depth > 0 && (wet > 0.5 || wetAll) ? Self.wetFlag : 0
                 i += 1
             }
         }
-        renderEyes(cx: cx, cy: cy, base: base, bias: bias)
+        renderEyes(cx: cx, cy: cy, base: bodyBase, sq: sq, bias: bias)
     }
 
-    /// Two eyes (v1's drawEyes): they look toward open space, away from whatever the
-    /// body is pressed against, squint as the squish deepens, blink now and then, and
-    /// stay shut while asleep. Only drawn where there is body to draw them on.
-    private func renderEyes(cx: Double, cy: Double, base: Double, bias: (bx: Double, by: Double, total: Double)) {
-        eyeCells.removeAll(keepingCapacity: true)
+    // MARK: eyes
+
+    /// Where the listening eyes look: the hand, when it is within `followReach`;
+    /// otherwise "the last sound" — the level has no direction, so an onset picks a
+    /// glance that then holds — and slightly up, which reads as friendly, in silence.
+    private func listeningLook() -> (Double, Double) {
+        if let p = pointer?() {
+            let d = (p.dx * p.dx + p.dy * p.dy).squareRoot()
+            if d < Self.followReach, d > 1 {
+                let k = min(1, d / 120)
+                return (p.dx / d * k, p.dy / d * k)
+            }
+        }
+        return input > 0.06 ? (glanceX, glanceY) : (glanceX * 0.3, -0.25)
+    }
+
+    /// The eyes. Two discs on the upper third of the body, spaced by its radius,
+    /// shifted with the lean, the look and the stretch (they ride toward the leading
+    /// side), and pulled inward until body lies under them, so neither the squish nor
+    /// a lobe running off the field can clip one. Then the expression: what the phase
+    /// or gate state says, overridden by the reactions (a poke, a flick, a border),
+    /// blinks on a 3–6 s clock (one in ten a double), every quantity eased.
+    private func renderEyes(cx: Double, cy: Double, base: Double, sq: Double, bias: (bx: Double, by: Double, total: Double)) {
+        eyes.removeAll(keepingCapacity: true)
+        eyeFootprint.removeAll(keepingCapacity: true)
+        let dt = frameDt
         let squishing = min(1, bias.total)
-        if t >= nextBlinkAt {
-            blinkUntil = t + 0.14
-            nextBlinkAt = t + Double.random(in: 2.4...5.5)
-        }
-        // Asleep the eyes stay shut — except while the gate has heard the word and is
-        // asking who is there: half-open, the way you answer a knock at night.
-        let asking = phase == .asleep && (gate == .heard || gate == .authenticating || gate == .granted)
-        // On the wing it is awake whatever the phase says: eyes open, acting's eyes.
-        let shut = t < blinkUntil || squishing > 0.55 || (phase == .asleep && !asking && !flight)
-        eyeGlyph = shut ? "-" : (flight ? Self.eyeGlyph(for: .acting) : (asking ? "o" : Self.eyeGlyph(for: phase)))
+        let gateAge = t - gateChangedAt
+        let shown: Phase = flight ? .acting : phase
 
-        // Look away from the wall; default slightly up, which reads as friendly.
-        let lookX = bias.total > 0.05 ? bias.bx / max(1, bias.total) : 0
-        let lookY = bias.total > 0.05 ? bias.by / max(1, bias.total) : -0.35
-        let row = Int((cy + lookY * 1.6 - 0.6).rounded())
-        guard row >= 0, row < Self.rows else { return }
-        // Spread widens as the body flattens.
-        let spread = max(1, Int((base * (0.62 + squishing * 0.55) * aspect * 0.5).rounded()))
-        let centre = Int((cx + lookX * 2.2).rounded())
-        for dx in [-spread, spread] {
-            let col = centre + dx
-            guard col >= 0, col < Self.cols else { continue }
-            let idx = row * Self.cols + col
-            if cells[idx] > 0 { eyeCells.append(idx) }
+        // The listening perk-up: an onset in the input level.
+        if input - lastInput > 0.09 { perk = min(1, perk + 0.7); glanceX = Double.random(in: -0.7...0.7); glanceY = Double.random(in: -0.5...0.2) }
+        lastInput = input
+        perk *= exp(-dt / 0.5)
+
+        // Expression: openness (1 round), pupil size, look target, shape.
+        var open = 1.0, pupil = 0.42
+        var shape = BlobEye.Shape.round
+        var biasL = 1.0, biasR = 1.0            // asymmetry: the suspicious squint
+        var wantX = 0.0, wantY = -0.25
+        var blinkable = true, slowBlink = false
+        var lift = 0.85
+        switch shown {
+        case .asleep:
+            // Closed lids that breathe with the body.
+            open = Self.shutOpenness + 0.04 * (0.5 + 0.5 * sin(2 * .pi * t / Self.breathPeriod))
+            blinkable = false
+            wantY = 0
+        case .connecting:
+            open = 0.55
+            pupil = 0.4
+            if t >= nextGlanceAt {
+                glanceX = Double.random(in: -0.8...0.8)
+                glanceY = Double.random(in: -0.7...0.3)
+                nextGlanceAt = t + Double.random(in: 0.6...1.4)
+            }
+            wantX = glanceX; wantY = glanceY
+        case .listening:
+            open = 1.0 + 0.25 * perk
+            pupil = 0.42 - 0.12 * perk
+            (wantX, wantY) = listeningLook()
+        case .speaking:
+            shape = .happy
+            blinkable = false
+        case .thinking:
+            open = 0.5
+            pupil = 0.4
+            wantX = -0.7; wantY = -0.75
+            slowBlink = true
+        case .acting:
+            open = 0.82
+            pupil = 0.36
+            if let a = attention, a.dx * a.dx + a.dy * a.dy > 1 {
+                wantX = min(1, max(-1, a.dx / 220)); wantY = min(1, max(-1, a.dy / 220))
+            } else if speed > 80 {
+                wantX = velocity.dx / max(speed, 1); wantY = velocity.dy / max(speed, 1)
+            }
+        case .muted:
+            open = 0.3
+            pupil = 0.38
+            wantY = 0
+            blinkable = false
+            lift = 0.4
+        case .error:
+            shape = .cross
+            blinkable = false
+        }
+        if phase == .asleep, !flight {
+            switch gate {
+            case .off, .listening:
+                break
+            case .heard:
+                // Wide surprise, then just awake.
+                let surprised = gateAge < 0.4
+                open = surprised ? 1.3 : 1.0
+                pupil = surprised ? 0.3 : 0.4
+                blinkable = !surprised
+                wantY = -0.3
+            case .authenticating:
+                open = 0.48; biasL = 0.78; biasR = 1.15
+                pupil = 0.44
+                wantX = 0.55; wantY = -0.1
+            case .granted:
+                open = 1.05
+                pupil = 0.4
+                wantY = -0.35
+            case .denied:
+                if gateAge < 1.0 { shape = .deniedLeft } else { open = Self.shutOpenness }
+                blinkable = false
+            case .lockedOut:
+                open = Self.shutOpenness
+                blinkable = false
+                wantY = 0.2
+            }
+        }
+
+        // Reactions.
+        if t - pokedAt < 0.24 { open = max(open, 1.3); pupil = min(pupil, 0.32) }
+        let flick = dragging ? min(1, max(0, (stretch - 0.3) / 0.35)) : min(1, max(0, (speed - 900) / 900))
+        if shape == .round {
+            if flick > 0 {
+                open = max(open, 1 + 0.22 * flick)
+                pupil = min(pupil, 0.42 - 0.1 * flick)
+                // Look ahead: along the stretch (toward the hand) or the flight.
+                wantX = wantX * (1 - flick) + stretchX * flick
+                wantY = wantY * (1 - flick) + stretchY * flick
+            } else if dragging, stretch > 0.05 {
+                wantX = wantX * 0.5 + stretchX * 0.5
+                wantY = wantY * 0.5 + stretchY * 0.5
+            }
+        }
+        // Look away from a wall, by how hard it presses; pressed flat, the eyes close most of the way.
+        if bias.total > 0.05 {
+            let k = min(1, bias.total)
+            wantX = wantX * (1 - k) + bias.bx / bias.total * k
+            wantY = wantY * (1 - k) + bias.by / bias.total * k
+        }
+        if squishing > 0.85 { open = min(open, 0.45) }
+
+        // Blinks.
+        if blinkable {
+            if t >= nextBlinkAt {
+                blinkLength = slowBlink ? 0.34 : 0.12
+                blinkUntil = t + blinkLength
+                nextBlinkAt = t + (slowBlink ? Double.random(in: 4...7) : Double.random(in: 3...6))
+                doubleBlinkAt = !slowBlink && Double.random(in: 0..<1) < 0.1 ? blinkUntil + 0.1 : -1
+            }
+            if doubleBlinkAt > 0, t >= doubleBlinkAt { blinkUntil = t + blinkLength; doubleBlinkAt = -1 }
+        }
+        if t < blinkUntil { open = Self.shutOpenness * 0.8 }
+
+        // Where they look, eased.
+        let lk = min(1, dt * 9)
+        lookX += (wantX - lookX) * lk
+        lookY += (wantY - lookY) * lk
+
+        // Placement: close-set, on the upper third; stretched, they ride toward the
+        // hand, where the body is (the tail behind is too thin to hold them).
+        let e = stretch
+        let spread = base * 0.30 * aspect * (1 - 0.15 * squishing)
+        let centreCol = cx + lookX * 0.9 + leanX * 0.5 + stretchX * e * 2.2 * aspect
+        var row = cy - base * 0.34 * sq + lookY * 0.55 + stretchY * e * 2.2 * sq
+        var leftCol = centreCol - spread, rightCol = centreCol + spread
+        var placed = false
+        // Half a row up first, then down the face (`eyeRowSearch`), until both eyes
+        // sit on body with a clear gap between; failing that, anywhere three cells of
+        // body will hold them.
+        for pass in 0..<2 {
+            for rowTry in Self.eyeRowSearch {
+                let r = row + rowTry
+                if let l = fittedColumn(leftCol, row: r, toward: cx, strict: pass == 0),
+                   let rr = fittedColumn(rightCol, row: r, toward: cx, strict: pass == 0), rr - l >= 3.6 {
+                    leftCol = l; rightCol = rr; row = r
+                    placed = true
+                    break
+                }
+            }
+            if placed { break }
+        }
+        guard placed else { openL = open; openR = open; eyesPlaced = false; return }
+        // The spot eases (τ ≈ 90 ms) so a lobe or the squish moving under the eyes
+        // shifts them rather than jumping them a row; an eased spot that has left the
+        // body snaps to the fitted one, which is on body by construction.
+        if eyesPlaced {
+            let pk = 1 - exp(-dt / Self.eyePlaceTau)
+            let er = eyeRow + (row - eyeRow) * pk
+            let el = eyeLeftCol + (leftCol - eyeLeftCol) * pk
+            let erc = eyeRightCol + (rightCol - eyeRightCol) * pk
+            if onBody(el, row: er), onBody(erc, row: er) { row = er; leftCol = el; rightCol = erc }
+        }
+        eyeRow = row; eyeLeftCol = leftCol; eyeRightCol = rightCol
+        eyesPlaced = true
+        if phase == .error, !reducedMotion {
+            leftCol += gaussianRandom() * 0.18
+            rightCol += gaussianRandom() * 0.18
+        }
+
+        // The pressed side squints: the eye nearer the wall, by how far toward it it
+        // sits, in eye-spread units — so at a firm press the wall-side eye closes to
+        // about half while the far one stays round.
+        func squint(_ col: Double) -> Double {
+            var k = 1.0
+            let ex = (col - cx) / aspect, ey = (row - cy) / sq
+            let unit = max(spread / aspect, 0.5)
+            for c in self.shown where c.press > 0.05 {   // `shown` here is the phase
+                let side = max(0, -(ex * c.nx + ey * c.ny)) / unit
+                k *= 1 - 0.7 * min(1, c.press) * min(1, side * 1.6)
+            }
+            return k
+        }
+        let targetL = open * biasL * squint(leftCol), targetR = open * biasR * squint(rightCol)
+        let ok = min(1, dt * 26)
+        openL += (targetL - openL) * ok
+        openR += (targetR - openR) * ok
+
+        let radius = Self.eyeRadiusPt * (shown == .muted ? 0.9 : 1)
+        // Past round, the lid cannot open further: the eye grows instead (surprise).
+        func make(_ col: Double, _ o: Double, _ shape: BlobEye.Shape) -> BlobEye {
+            BlobEye(col: col, row: row, radius: radius * (1 + 0.5 * max(0, o - 1)), open: min(1, o),
+                    pupilX: lookX, pupilY: lookY, pupil: pupil, shape: shape)
+        }
+        let rightShape: BlobEye.Shape = shape == .deniedLeft ? .deniedRight : shape
+        eyes.append(make(leftCol, openL, shape))
+        eyes.append(make(rightCol, openR, rightShape))
+        eyeLift = lift
+
+        // The cells under each eye (and its rim): the body draws nothing there.
+        let cellW = rowHeightPt / aspect
+        for eye in eyes {
+            let rc = (eye.radius * 1.2 + 2.5) / cellW
+            let rr = (eye.radius * 1.2 * max(0.45, eye.open) + 2.5) / rowHeightPt
+            let c0 = max(0, Int((eye.col - rc).rounded(.down))), c1 = min(Self.cols - 1, Int((eye.col + rc).rounded(.up)))
+            let r0 = max(0, Int((eye.row - rr).rounded(.down))), r1 = min(Self.rows - 1, Int((eye.row + rr).rounded(.up)))
+            guard c0 <= c1, r0 <= r1 else { continue }
+            for r in r0...r1 {
+                for c in c0...c1 {
+                    let u = (Double(c) - eye.col) / rc, v = (Double(r) - eye.row) / rr
+                    if u * u + v * v < 1 { eyeFootprint.append(r * Self.cols + c) }
+                }
+            }
         }
     }
 
-    static func eyeGlyph(for phase: Phase) -> Character {
-        switch phase {
-        case .asleep: return "-"
-        case .connecting, .thinking: return "o"
-        case .listening: return "O"
-        case .speaking, .acting: return "•"
-        case .muted: return "·"      // awake but hushed: small, half-lidded, not staring
-        case .error: return "x"
-        }
+    /// Three cells of body under this spot (the relaxed fit), for an eased eye position.
+    private func onBody(_ col: Double, row: Double) -> Bool {
+        let r = Int(row.rounded()), ci = Int(col.rounded())
+        guard r >= 0, r < Self.rows, ci >= 1, ci < Self.cols - 1 else { return false }
+        let base = r * Self.cols
+        for d in -1...1 where cells[base + ci + d] == 0 { return false }
+        return true
     }
 
-    /// How far the eyes are lifted toward white over the body colour: a step brighter
-    /// so they read as eyes, except muted, whose eyes stay dim like the rest of it.
-    static func eyeLift(for phase: Phase) -> Double { phase == .muted ? 0.35 : 0.8 }
+    /// Pull an eye's column toward the body's centre until body lies under it: strictly,
+    /// five cells on its row and three on the row below (the disc is nearly three cells
+    /// wide and hangs into the face); relaxed, three cells on its row. Nil when there is
+    /// no body to put it on.
+    private func fittedColumn(_ col: Double, row: Double, toward: Double, strict: Bool) -> Double? {
+        let r = Int(row.rounded())
+        guard r >= 0, r < Self.rows else { return nil }
+        let reach = strict ? 2 : 1
+        var c = col
+        for _ in 0..<9 {
+            let ci = Int(c.rounded())
+            if ci >= reach, ci < Self.cols - reach {
+                let base = r * Self.cols
+                var ok = true
+                for d in -reach...reach where cells[base + ci + d] == 0 { ok = false; break }
+                if ok, strict, r + 1 < Self.rows {
+                    for d in -1...1 where cells[base + Self.cols + ci + d] == 0 { ok = false; break }
+                }
+                if ok { return c }
+            }
+            c += (toward - c) * 0.35
+            if abs(toward - c) < 0.6 { return nil }
+        }
+        return nil
+    }
 
-    /// Every glyph an eye can be, so the glyph cache resolves them up front.
-    nonisolated static let eyeGlyphs: [Character] = ["-", "o", "O", "•", "·", "x"]
+    /// How far the eyes are lifted toward white over the body colour this frame: a
+    /// step brighter so they read as eyes, except muted, whose eyes stay dim like the rest of it.
+    private(set) var eyeLift = 0.85
+    /// Seconds since the last field frame, for the eyes' easing.
+    private var frameDt = 0.0
+    /// The eased elongation, for the preview harness.
+    var previewStretch: Double { stretch }
+    /// The wobble this frame, for the preview harness: the slosh's displacement (rows) and the ellipse mode (× radius).
+    var previewWobble: (slosh: Double, mode2: Double) { ((sloshX.x * sloshX.x + sloshY.x * sloshY.x).squareRoot(), mode2.x) }
 }
 
 // MARK: - Glyphs and metrics
@@ -768,6 +1486,12 @@ enum BlobMetrics {
 /// Pre-resolved glyphs for every ramp character, grouped by the font that has them.
 /// SF Mono lacks a couple of the wave glyphs; those fall back to Menlo / Apple Symbols
 /// and are centred in their cell so the columns still line up.
+///
+/// The eyes' glyphs come only from the field's own font (measured with CTFont: ● ^ × >
+/// < are all there at the font's one advance; ◉ ◕ ◠ are not — they fall back to
+/// Menlo at a different advance, so they are not used). They are drawn well past the
+/// grid's size, so what matters is the glyph's shape and its bounding box per unit of
+/// font size, which is what `EyeGlyph` records.
 final class BlobGlyphs {
     struct Ref {
         let font: Int
@@ -779,13 +1503,22 @@ final class BlobGlyphs {
         let cg: CGFont
         let size: CGFloat
     }
+    enum EyeShape { case disc, happy, cross, deniedLeft, deniedRight }
+    /// A glyph in the base font with its bounding box per point of font size: the
+    /// centre (from the glyph origin, y up) and the width and height.
+    struct EyeGlyph {
+        let glyph: CGGlyph
+        let centre: CGPoint
+        let width: CGFloat
+        let height: CGFloat
+    }
 
     nonisolated(unsafe) static let shared = BlobGlyphs()
 
     private(set) var fonts: [FontEntry] = []
     /// Per ramp, per ramp index; nil for blank.
     private(set) var tables: [[Ref?]] = []
-    private var eyes: [Character: Ref] = [:]
+    private var eyeGlyphs: [EyeShape: EyeGlyph] = [:]
 
     private init() {
         let base = BlobMetrics.font as CTFont
@@ -801,13 +1534,30 @@ final class BlobGlyphs {
             }
             tables.append(table)
         }
-        // Eyes resolve here too, so `fonts` is final once the view starts drawing.
-        for ch in BlobSim.eyeGlyphs {
-            if let ref = byChar[ch] ?? resolve(ch, base: base) { eyes[ch] = ref }
+        // The eyes: first candidate the base font has. ASCII stand-ins after each, in
+        // case a future system font drops a symbol.
+        let candidates: [(EyeShape, [Character])] = [
+            (.disc, ["●", "O", "0"]), (.happy, ["^"]), (.cross, ["×", "x"]), (.deniedLeft, [">"]), (.deniedRight, ["<"]),
+        ]
+        for (shape, chars) in candidates {
+            for ch in chars {
+                if let g = eyeGlyph(ch, base: base) { eyeGlyphs[shape] = g; break }
+            }
         }
     }
 
-    func eye(_ ch: Character) -> Ref? { eyes[ch] }
+    func eyeGlyph(_ shape: EyeShape) -> EyeGlyph? { eyeGlyphs[shape] }
+
+    /// A glyph from the base font only, with its box measured at size 1.
+    private func eyeGlyph(_ ch: Character, base: CTFont) -> EyeGlyph? {
+        var utf16 = Array(String(ch).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+        guard CTFontGetGlyphsForCharacters(base, &utf16, &glyphs, utf16.count), glyphs[0] != 0 else { return nil }
+        let box = CTFontGetBoundingRectsForGlyphs(base, .horizontal, glyphs, nil, 1)
+        guard box.width > 0, box.height > 0 else { return nil }
+        let s = CTFontGetSize(base)
+        return EyeGlyph(glyph: glyphs[0], centre: CGPoint(x: box.midX / s, y: box.midY / s), width: box.width / s, height: box.height / s)
+    }
 
     private func resolve(_ ch: Character, base: CTFont) -> Ref? {
         var utf16 = Array(String(ch).utf16)
@@ -880,6 +1630,7 @@ final class BlobFieldView: NSView {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         sim.aspect = Double(BlobMetrics.rowHeight / BlobMetrics.cellWidth)
+        sim.rowHeightPt = Double(BlobMetrics.rowHeight)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
     }
@@ -914,6 +1665,14 @@ final class BlobFieldView: NSView {
         idleSince = -1
         guard !paused, let link else { return }
         if link.isPaused { lastTick = 0; link.isPaused = false }
+    }
+
+    /// Redraw now from the sim's current frame — glyphs and halo both — for a caller
+    /// that stepped the sim itself (the preview harness's expression strip).
+    func renderNow() {
+        updateHalo()
+        needsDisplay = true
+        displayIfNeeded()
     }
 
     @objc private func onFrame(_ link: CADisplayLink) {
@@ -965,35 +1724,46 @@ final class BlobFieldView: NSView {
         let origin = CGPoint(x: (size.width - field.width) / 2, y: (size.height - field.height) / 2)
 
         // The halo lives on its own layer beneath this view (see updateHalo); this
-        // view draws only glyphs: body cells from the phase ramp, eye cells from the
-        // eye glyph.
+        // view draws only glyphs: body cells from the phase ramp (the wet patch from
+        // the dense ramp, a step brighter), nothing under the eyes, then the eyes.
         let cw = BlobMetrics.cellWidth, rh = BlobMetrics.rowHeight
         let shift = BlobMetrics.baselineShift
         let glyphs = BlobGlyphs.shared
         let table = glyphs.table(for: sim.ramp)
-        let eyeRef = glyphs.eye(sim.eyeGlyph)
-        let eyeCells = sim.eyeCells
+        let dense = glyphs.table(for: .dense)
         let fontCount = glyphs.fonts.count
+        for c in sim.eyeFootprint where c >= 0 && c < skip.count { skip[c] = true }
+        defer { for c in sim.eyeFootprint where c >= 0 && c < skip.count { skip[c] = false } }
 
         var runs = [[CGGlyph]](repeating: [], count: fontCount)
         var positions = [[CGPoint]](repeating: [], count: fontCount)
-        var eyeRuns = [[CGGlyph]](repeating: [], count: fontCount)
-        var eyePositions = [[CGPoint]](repeating: [], count: fontCount)
+        var wetRuns = [[CGGlyph]](repeating: [], count: fontCount)
+        var wetPositions = [[CGPoint]](repeating: [], count: fontCount)
+        var anyWet = false
         var i = 0
         for row in 0..<BlobSim.rows {
             let baseline = origin.y + (CGFloat(row) + 0.5) * rh + shift
             for col in 0..<BlobSim.cols {
                 let cell = i
                 let idx = Int(sim.cells[i]); i += 1
-                guard idx > 0 else { continue }
-                let isEye = !eyeCells.isEmpty && eyeCells.contains(cell)
-                guard let ref = isEye ? eyeRef : (idx < table.count ? table[idx] : nil) else { continue }
+                guard idx > 0, !skip[cell] else { continue }
+                let wet = sim.flags[cell] & BlobSim.wetFlag != 0
+                let ref: BlobGlyphs.Ref?
+                if wet {
+                    // The same depth on the dense ramp, pushed two steps denser.
+                    let d = min(dense.count - 1, Int(Double(idx) / Double(table.count - 1) * Double(dense.count - 1)) + 2)
+                    ref = dense[d]
+                } else {
+                    ref = idx < table.count ? table[idx] : nil
+                }
+                guard let ref else { continue }
                 let x = origin.x + CGFloat(col) * cw + (cw - ref.advance) / 2
                 // Text space is flipped below, so y maps to -y.
                 let p = CGPoint(x: x, y: -baseline)
-                if isEye {
-                    eyeRuns[ref.font].append(ref.glyph)
-                    eyePositions[ref.font].append(p)
+                if wet {
+                    anyWet = true
+                    wetRuns[ref.font].append(ref.glyph)
+                    wetPositions[ref.font].append(p)
                 } else {
                     runs[ref.font].append(ref.glyph)
                     positions[ref.font].append(p)
@@ -1016,19 +1786,87 @@ final class BlobFieldView: NSView {
             }
         }
         // One dark under-copy boxes each glyph in near-black (v1's text-stroke), then
-        // the colour; the eyes a step brighter so they read as eyes.
+        // the colour; the wet patch a step brighter.
         cg.setFillColor(OrbPalette.ground.cgColor(alpha: 0.85))
         cg.textPosition = CGPoint(x: 0.6, y: 0.7)
         show(runs, positions)
-        show(eyeRuns, eyePositions)
+        if anyWet { show(wetRuns, wetPositions) }
         cg.textPosition = .zero
         cg.setFillColor(color.cgColor)
         show(runs, positions)
-        if !eyeCells.isEmpty {
-            cg.setFillColor(color.mixed(with: RGB(1, 1, 1), BlobSim.eyeLift(for: sim.phase)).cgColor)
-            show(eyeRuns, eyePositions)
+        if anyWet {
+            cg.setFillColor(color.mixed(with: RGB(1, 1, 1), 0.3).cgColor)
+            show(wetRuns, wetPositions)
+        }
+
+        // The eyes, over everything.
+        if !sim.eyes.isEmpty {
+            let sclera = color.mixed(with: RGB(1, 1, 1), sim.eyeLift)
+            let pupil = OrbPalette.ground.mixed(with: color, 0.22)
+            for eye in sim.eyes {
+                let p = CGPoint(x: origin.x + (CGFloat(eye.col) + 0.5) * cw, y: origin.y + (CGFloat(eye.row) + 0.5) * rh)
+                drawEye(cg, eye, at: p, sclera: sclera, pupil: pupil, glyphs: glyphs)
+            }
         }
         cg.restoreGState()
+    }
+
+    /// Cells the body must not draw this frame (under the eyes); reused across frames.
+    private var skip = [Bool](repeating: false, count: BlobSim.cellCount)
+
+    /// One eye. The disc is the font's ● drawn well past the grid's size and flattened
+    /// by the lid (`open`) through the text matrix; the pupil and the glint are the same
+    /// glyph, smaller, moving with the look. Happy, error and denied eyes are ^ × > <
+    /// from the same font, sized to the disc. Everything is first laid down in the
+    /// ground colour a hair larger, so the eye has an outline against the body's
+    /// glyphs and against any desktop.
+    private func drawEye(_ cg: CGContext, _ eye: BlobSim.BlobEye, at p: CGPoint, sclera: RGB, pupil: RGB, glyphs: BlobGlyphs) {
+        guard let font = glyphs.fonts.first else { return }
+        cg.setFont(font.cg)
+        let vs = CGFloat(max(0.06, min(1, eye.open)))
+        let r = CGFloat(eye.radius)
+        let ground = OrbPalette.ground.cgColor
+        func show(_ g: BlobGlyphs.EyeGlyph, width: CGFloat, scaleY: CGFloat, at c: CGPoint, color: CGColor) {
+            let size = width / g.width
+            cg.setFontSize(size)
+            cg.setFillColor(color)
+            // The text matrix flips (the view is y-down) and flattens; glyph positions
+            // are in text space, so the wanted user-space centre is mapped back through it.
+            cg.textMatrix = CGAffineTransform(scaleX: 1, y: -scaleY)
+            let pos = CGPoint(x: c.x - g.centre.x * size, y: -c.y / scaleY - g.centre.y * size)
+            cg.showGlyphs([g.glyph], at: [pos])
+        }
+        switch eye.shape {
+        case .round:
+            guard let disc = glyphs.eyeGlyph(.disc) else { return }
+            // A shut lid stretches a little wider, so it reads as a lid and not a dot.
+            let lid = vs < 0.3 ? 1 + (0.3 - vs) * 0.6 : 1
+            show(disc, width: (2 * r) * lid + 2.4, scaleY: vs + (vs < 0.3 ? 0.06 : 0), at: p, color: ground)
+            show(disc, width: (2 * r) * lid, scaleY: vs, at: p, color: sclera.cgColor)
+            guard vs > 0.22 else { return }
+            let pr = r * CGFloat(eye.pupil)
+            let travel = (r - pr) * 0.72
+            let pc = CGPoint(x: p.x + CGFloat(eye.pupilX) * travel, y: p.y + CGFloat(eye.pupilY) * travel * vs)
+            show(disc, width: 2 * pr, scaleY: vs, at: pc, color: pupil.cgColor)
+            let gr = max(0.9, pr * 0.42)
+            show(disc, width: 2 * gr, scaleY: max(vs, 0.5), at: CGPoint(x: pc.x - pr * 0.38, y: pc.y - pr * 0.36 * vs), color: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.95))
+        case .happy:
+            guard let g = glyphs.eyeGlyph(.happy) else { return }
+            // A crescent the width of the disc, about two thirds as tall.
+            let sy = (1.3 * r / (g.height * (2 * r / g.width)))
+            show(g, width: 2 * r + 2.4, scaleY: sy, at: p, color: ground)
+            show(g, width: 2 * r, scaleY: sy, at: p, color: sclera.cgColor)
+        case .cross:
+            guard let g = glyphs.eyeGlyph(.cross) else { return }
+            let sy = (2 * r / (g.height * (2 * r / g.width)))
+            show(g, width: 2 * r + 2.4, scaleY: sy, at: p, color: ground)
+            show(g, width: 2 * r, scaleY: sy, at: p, color: sclera.cgColor)
+        case .deniedLeft, .deniedRight:
+            guard let g = glyphs.eyeGlyph(eye.shape == .deniedLeft ? .deniedLeft : .deniedRight) else { return }
+            let sy = (1.7 * r / (g.height * (1.7 * r / g.width)))
+            show(g, width: 1.7 * r + 2.4, scaleY: sy, at: p, color: ground)
+            show(g, width: 1.7 * r, scaleY: sy, at: p, color: sclera.cgColor)
+        }
     }
 
     /// Refine the sim's halo and hand it to the glow layer as one premultiplied image:

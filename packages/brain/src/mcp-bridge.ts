@@ -13,7 +13,7 @@ import { resultText } from "./runner.ts";
  * jarhead-mcp — Jarhead's tools as a stdio MCP server.
  *
  * An out-of-process brain (the Codex CLI today; any MCP client tomorrow) starts
- * this as its MCP server and sees the same 38 tools the in-process brains have.
+ * this as its MCP server and sees the same tool table the in-process brains have.
  * Nothing runs here: every tools/call becomes one `tool.run` message to the
  * daemon over its unix socket (`JARHEAD_SOCKET`), the engine's ToolRunner does
  * the work under the usual policy / ledger / confirmation handshake, and the

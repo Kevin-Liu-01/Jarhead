@@ -141,7 +141,20 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.agentsList = list;
       this.scheduleSnapshot();
     });
-    this.runner = new ToolRunner({ toolset: this.toolset, agents: this.agents, stateDir: this.config.stateDir, overlay: (cmd) => this.emit("overlay", cmd) });
+    this.runner = new ToolRunner({
+      toolset: this.toolset,
+      agents: this.agents,
+      stateDir: this.config.stateDir,
+      overlay: (cmd) => this.emit("overlay", cmd),
+      // Self-edit: after a change to engine code passes its checks and Kevin confirms,
+      // the daemon restarts on the new code (exit 75 → the app respawns it).
+      requestRestart: (reason) => this.requestRestart(reason),
+      socketPath: this.config.socketPath,
+      selfEdit: {
+        ...(this.config.codexBin ? { codexBin: this.config.codexBin } : {}),
+        ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
+      },
+    });
     this.transcript.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });

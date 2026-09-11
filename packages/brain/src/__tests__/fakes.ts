@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { ComputerToolset, ConfirmationState, type NativeHands } from "@jarhead/hands";
 import { AgentRegistry, type AgentConnector } from "@jarhead/agents";
-import { ToolRunner } from "../runner.ts";
+import { ToolRunner, type RunnerOptions } from "../runner.ts";
 import type { BrainSink, BrainTask } from "../brain.ts";
 
 /** Hands that answer every op with a canned result; enough for a tool round-trip. */
@@ -28,11 +28,11 @@ const fakeConnector: AgentConnector = {
   read: async () => "last line",
 };
 
-export function makeRunner(): { runner: ToolRunner; dir: string } {
+export function makeRunner(overrides: Partial<RunnerOptions> = {}, hands: NativeHands = new FakeHands()): { runner: ToolRunner; dir: string; toolset: ComputerToolset } {
   const dir = mkdtempSync(join(tmpdir(), "jh-brain-"));
-  const toolset = new ComputerToolset({ hands: new FakeHands(), confirmations: new ConfirmationState() });
-  const runner = new ToolRunner({ toolset, agents: new AgentRegistry([fakeConnector], 0), stateDir: dir });
-  return { runner, dir };
+  const toolset = new ComputerToolset({ hands, confirmations: new ConfirmationState() });
+  const runner = new ToolRunner({ toolset, agents: new AgentRegistry([fakeConnector], 0), stateDir: dir, ...overrides });
+  return { runner, dir, toolset };
 }
 
 export interface SinkLog {
@@ -53,8 +53,9 @@ export function makeSink(): SinkLog {
   return log;
 }
 
-export function makeTask(request: string, signal?: AbortSignal): BrainTask {
-  return { delegationId: "item_1", request, dialogue: "", confirmation: false, offsetMs: 0, signal: signal ?? new AbortController().signal };
+/** A task for the runner; `extra` sets the dialogue fields (what the gates read is `request` + `kevinDialogue`, never `dialogue`). */
+export function makeTask(request: string, signal?: AbortSignal, extra: Partial<Pick<BrainTask, "dialogue" | "kevinDialogue" | "confirmation">> = {}): BrainTask {
+  return { delegationId: "item_1", request, dialogue: "", confirmation: false, offsetMs: 0, signal: signal ?? new AbortController().signal, ...extra };
 }
 
 export interface Seen {

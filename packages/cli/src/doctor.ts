@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, type BrainKind, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
 import { defaultConnectors } from "@jarhead/agents";
-import { probeCodex } from "@jarhead/brain";
+import { probeCodex, selfEditDoctorRow } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess } from "@jarhead/hands";
 
@@ -254,6 +254,13 @@ export async function runChecks(): Promise<Check[]> {
   }
   const daemonSock = existsSync(cfg.socketPath);
   add({ group: "app", name: "daemon socket", status: daemonSock ? "ok" : "warn", detail: daemonSock ? `${cfg.socketPath} present (app or jarheadd running)` : "no daemon running", required: false });
+  // ---- self-edit: worktrees the brain made of this repo and the last one it applied
+  try {
+    const se = selfEditDoctorRow(join(cfg.stateDir, "worktrees"));
+    add({ group: "app", name: "self-edit", status: se.stale > 0 ? "warn" : "ok", detail: se.detail, required: false, fix: se.stale > 0 ? `${se.stale} worktree${se.stale === 1 ? "" : "s"} older than a day: say "discard the old self-edits" or run git worktree remove under ${join(cfg.stateDir, "worktrees")}` : undefined });
+  } catch (e) {
+    add({ group: "app", name: "self-edit", status: "warn", detail: (e as Error).message, required: false });
+  }
 
   // ---- toolchain
   const nodeMajor = Number(process.versions.node.split(".")[0]);

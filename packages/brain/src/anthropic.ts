@@ -3,7 +3,7 @@ import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import type { Effort } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
-import { brainSystemPrompt } from "./brain.ts";
+import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
@@ -184,6 +184,7 @@ export class AnthropicBrain implements Brain {
       this.ready = true;
       const flags = [this.reasoning.thinking ? "adaptive thinking" : "", this.reasoning.effort ? `effort ${this.reasoning.effort}` : ""].filter(Boolean);
       this.readyDetail = `Anthropic Messages API (${info.display_name || this.model}${flags.length ? `, ${flags.join(", ")}` : ""})`;
+      log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
     } catch (e) {
       this.ready = false;
       this.readyDetail = this.describeProbeError(e);
@@ -223,7 +224,7 @@ export class AnthropicBrain implements Brain {
     task.signal.addEventListener("abort", onAbort, { once: true });
     if (task.signal.aborted) abort.abort();
     this.current = { task, abort };
-    this.opts.runner.attach(sink);
+    this.opts.runner.attach(sink, task);
     try {
       return await this.loop(client, task, sink, abort.signal);
     } finally {

@@ -22,6 +22,15 @@
 #   ORB_MARK=1 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=4 Scripts/orb-preview.sh      # overlay: mark mode, a synthesised stroke → prints mark.add, preview-overlay-mark.png
 #   ORB_MARK=seam ORB_EXIT_AFTER=4 Scripts/orb-preview.sh                                             # overlay: the stroke crosses the main display's top edge → live stroke on every window, mark.add with y < 0
 #   ORB_MARK=click / ORB_MARK=cancel …                                                                # overlay: the cancel paths (no movement / Escape); see UI/Overlay/OverlayPreviewDemo.swift
+#   ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_DRAG="282,282->700,420@700" ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=5 Scripts/orb-preview.sh
+#                                                                                                     # jelly: a synthetic drag from the blob's centre; prints lag/stretch/wobble/eyes (and the jiggle for 1 s after release), → preview-blob-drag.png (the teardrop mid-sweep)
+#   ORB_X=60 ORB_Y=300 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_DRAG="142,382->20,382@900" ORB_EXIT_AFTER=5 Scripts/orb-preview.sh
+#                                                                                                     # sticky by hand: pushed into the left wall it sticks while held (stuck 1 before "released"), let go it sags into the dome (press 1.0 → 0.62 over ~1 s, no jump)
+#   ORB_X=200 ORB_Y=300 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_STICK=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=7 Scripts/orb-preview.sh
+#                                                                                                     # sticky: thrown at the nearest wall slow enough to stick, parks (→ preview-blob-stick.png), pulled off (→ preview-blob-peel.png: the neck), snaps
+#   … ORB_STICK=1 ORB_STICK_PULL=30 …                                                                 # let go mid-cling (neck ≈ 0.4): prints the sag back onto the patch every 50 ms — the centre eases ~1 pt a step, never jumps
+#   ORB_X=118 ORB_Y=798 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_FLING=-500,500 ORB_EXIT_AFTER=6 Scripts/orb-preview.sh   # a slow throw into the bottom-left corner: "settled … stuck 2" — one patch per wall
+#   ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=3 Scripts/orb-preview.sh   # every expression in one labelled strip → preview-blob-eyes.png
 #
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's

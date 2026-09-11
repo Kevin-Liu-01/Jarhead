@@ -148,10 +148,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // owns the task; general session context is the only channel then.
     const appendId = target === "responses" ? null : liveId;
     const sink = this.makeSink(id, appendId, marks);
+    const windowMs = this.opts.dialogueWindowMs ?? 120_000;
+    const uptoMs = live.nowMs || offsetMs;
     const task: BrainTask = {
       delegationId: liveId,
       request,
-      dialogue: transcript.render(this.opts.dialogueWindowMs ?? 120_000, live.nowMs || offsetMs),
+      dialogue: transcript.render(windowMs, uptoMs),
+      // Kevin's side only, for the gates: the rendered dialogue above carries Jarhead's lines too.
+      kevinDialogue: transcript
+        .since(uptoMs - windowMs - 1, "kevin")
+        .map((i) => i.text.trim())
+        .filter(Boolean)
+        .join("\n"),
       confirmation,
       offsetMs,
       signal: abort.signal,

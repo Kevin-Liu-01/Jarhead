@@ -1,7 +1,7 @@
 import { logger } from "@jarhead/core";
 import type { LiveSession, ResponsesDelegationConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
-import { brainSystemPrompt } from "./brain.ts";
+import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { loadAttachments, type LoadedAttachment } from "./attachments.ts";
@@ -89,6 +89,7 @@ export class ResponsesBrain implements Brain {
   }
 
   async start(): Promise<{ ready: boolean; detail: string }> {
+    log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
     return { ready: true, detail: `responses delegation via ${this.opts.model || DEFAULT_RESPONSES_MODEL}` };
   }
 
@@ -98,7 +99,7 @@ export class ResponsesBrain implements Brain {
    * response completes.
    */
   handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
-    this.opts.runner.attach(sink);
+    this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
       this.sinks.set(task.delegationId, { sink, resolve, started: Date.now() });
       // The backend is already answering by the time we hear of the delegation, so
@@ -240,6 +241,19 @@ export class ResponsesBrain implements Brain {
   }
 }
 
+function base(v: unknown): string {
+  const s = String(v ?? "").trim();
+  return s ? (s.split("/").filter(Boolean).pop() ?? s).slice(0, 40) : "a file";
+}
+
+function hostOf(v: unknown): string {
+  try {
+    return new URL(String(v ?? "")).host || "a page";
+  } catch {
+    return "a page";
+  }
+}
+
 /** Short, speakable progress for the thinking channel. */
 export function progressLine(name: string, args: unknown): string {
   const a = (typeof args === "object" && args !== null ? args : {}) as Record<string, unknown>;
@@ -263,6 +277,40 @@ export function progressLine(name: string, args: unknown): string {
       return `Opening ${String(a["name"] ?? "the app")}.`;
     case "run_shell":
       return `Running ${String(a["command"] ?? "a command").slice(0, 60)}.`;
+    case "read_file":
+      return `Reading ${base(a["path"])}.`;
+    case "write_file":
+      return `Writing ${base(a["path"])}.`;
+    case "edit_file":
+      return `Editing ${base(a["path"])}.`;
+    case "list_dir":
+      return `Listing ${base(a["path"])}.`;
+    case "search_files":
+      return `Searching for ${String(a["pattern"] ?? "").slice(0, 40)}.`;
+    case "web_fetch":
+      return `Fetching ${hostOf(a["url"])}.`;
+    case "web_search":
+      return `Searching the web for ${String(a["query"] ?? "").slice(0, 50)}.`;
+    case "applescript":
+      return "Running an AppleScript.";
+    case "open_url":
+      return `Opening ${hostOf(a["url"])} in the browser.`;
+    case "clipboard_read":
+      return "Reading the clipboard.";
+    case "clipboard_write":
+      return "Copying to the clipboard.";
+    case "self_edit":
+      return "Starting a change to my own code.";
+    case "self_check":
+      return "Re-running my checks.";
+    case "self_review":
+      return "Looking at what I changed.";
+    case "self_apply":
+      return "Applying the change to myself.";
+    case "self_discard":
+      return "Throwing the change away.";
+    case "self_status":
+      return "Checking my pending changes.";
     case "agents_list":
       return "Checking the agents.";
     case "agent_send":

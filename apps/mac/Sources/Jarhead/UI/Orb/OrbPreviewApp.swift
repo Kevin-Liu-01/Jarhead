@@ -75,6 +75,27 @@ import QuartzCore
 //                          waiting for Kevin's own throw to land (ORB_FLING just before it)
 //   ORB_FLY_HOME=1         send orb.home ORB_FLY_HOME_AT s after the last orb.fly (default 1.0)
 //   ORB_REDUCE_MOTION=1    pretend the system's reduce-motion is on (no trail, softer cues)
+//   ORB_DRAG="x0,y0->x1,y1@ms"  a synthetic drag through the panel's own mouse path: the hand
+//                          comes down at CG x0,y0 (put it on the blob: its centre is ORB_X+82,
+//                          ORB_Y+82), sweeps to x1,y1 over ms (default 700) with an ease-in-out,
+//                          lets go. Starts at ORB_DRAG_AT s (default 1.0). Prints the lag, the
+//                          field's stretch, the wobble (slosh rows / ellipse mode), the speed and
+//                          the eyes every 0.1 s, and the wobble for a second after the release; with
+//                          ORB_SHOT_DIR shoots drag.png once the stretch reaches
+//                          ORB_DRAG_SHOT_STRETCH (default 0.3) or mid-sweep, the hand drawn as
+//                          a small cross in the in-process shot, then rest.png when it settles
+//   ORB_STICK=1            sticky borders: at ORB_STICK_AT s (default 1.0) throws the blob at the
+//                          nearest work-area wall just fast enough to arrive under the stick
+//                          speed (ORB_STICK_V=pt/s overrides), waits for it to park on the wall
+//                          (shoots stick.png: the dome spread on the edge), then 0.8 s later a
+//                          synthetic drag pulls it ORB_STICK_PULL pt (default 95) straight off
+//                          over 1100 ms (shoots peel.png when the neck reaches ORB_STICK_NECK,
+//                          default 0.5) and lets go. Prints the stick, the neck as it grows, the
+//                          snap and where it comes to rest
+//   ORB_EYES=1             the expression strip: at ORB_EYES_AT s (default 1.0) pins each phase,
+//                          then each wake gate state while asleep, then a poke, settles the
+//                          field for each and renders them side by side, labelled, to
+//                          <ORB_SHOT_DIR>/<prefix>eyes.png (in-process; needs ORB_SHOT_DIR)
 
 @main
 struct OrbPreviewMain {
@@ -127,6 +148,19 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var gateMethod = "Touch ID or passphrase"
     var heardIndex = 0
     static let heardWords = ["hey", "hey so", "so what", "what time", "time is it", "is it jarhead", "hmm", "okay"]
+
+    // The synthetic hand (ORB_DRAG / ORB_STICK): where it is, for the in-process shots.
+    var hand: CGPoint?
+    var dragShotTaken = false
+    /// ORB_STICK: "" → "flung" → "stuck" → "peeling" → "peeled".
+    var stickPhase = ""
+    var stickWall: (dx: Double, dy: Double, distance: Double)?
+    var stickShotTaken = false
+    var peelShotTaken = false
+    var stickPull = 70.0
+    var stickNeckShot = 0.5
+    var lastStickLog = 0.0
+    var peeledAt = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let env = ProcessInfo.processInfo.environment
@@ -455,6 +489,49 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if env["ORB_REDUCE_MOTION"] == "1" { orb.previewSetReducedMotion(true) }
+        if let spec = env["ORB_DRAG"] {
+            let at = Double(env["ORB_DRAG_AT"] ?? "") ?? 1.0
+            let shotStretch = Double(env["ORB_DRAG_SHOT_STRETCH"] ?? "") ?? 0.3
+            var ms = 700.0
+            var path = spec
+            if let atSign = spec.lastIndex(of: "@") {
+                ms = Double(spec[spec.index(after: atSign)...]) ?? ms
+                path = String(spec[..<atSign])
+            }
+            let ends = path.components(separatedBy: "->").map { $0.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) } }
+            if ends.count == 2, ends[0].count == 2, ends[1].count == 2 {
+                let from = CGPoint(x: ends[0][0], y: ends[0][1]), to = CGPoint(x: ends[1][0], y: ends[1][1])
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                    guard let self else { return }
+                    self.runDrag(from: from, to: to, ms: ms, shotStretch: shotStretch, shotName: "drag", label: "drag")
+                }
+            } else {
+                print("ORB_DRAG: could not parse \(spec); want x0,y0->x1,y1@ms")
+            }
+        }
+        if env["ORB_STICK"] == "1" {
+            let at = Double(env["ORB_STICK_AT"] ?? "") ?? 1.0
+            stickPull = Double(env["ORB_STICK_PULL"] ?? "") ?? 95
+            stickNeckShot = Double(env["ORB_STICK_NECK"] ?? "") ?? 0.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self, let wall = self.orb.previewNearestWall else { print("stick: no wall found"); return }
+                // The body stops 0.9 × radius short of the wall; launch so it arrives at
+                // ~320 pt/s, under the stick speed, unless told the speed.
+                let travel = max(10, wall.distance - 0.9 * 0.36 * Double(OrbPanelController.collapsedSize.width))
+                let v0 = Double(env["ORB_STICK_V"] ?? "") ?? Self.launchSpeed(travel: travel, arrival: 320)
+                self.stickWall = wall
+                self.stickPhase = "flung"
+                self.restShotTaken = true   // the stick shot replaces the rest shot
+                print(self.stamp, String(format: "stick: fling %.0f pt/s toward the wall at (%.0f,%.0f), %.0f pt away (travel %.0f) from CG %.0f,%.0f",
+                                         v0, wall.dx, wall.dy, wall.distance, travel, self.orb.previewCenterCG.x, self.orb.previewCenterCG.y))
+                fflush(stdout)
+                self.orb.previewFling(vx: wall.dx * v0, vy: wall.dy * v0)
+            }
+        }
+        if env["ORB_EYES"] == "1" {
+            let at = Double(env["ORB_EYES_AT"] ?? "") ?? 1.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in self?.renderExpressionStrip() }
+        }
         if let spec = env["ORB_FLY"] {
             flyTargets = spec.split(separator: ";").compactMap { pair -> CGPoint? in
                 let p = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -525,6 +602,224 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The launch speed that arrives at the wall at `arrival` pt/s after `travel` pt
+    /// under the body's own friction (exponential 1.4/s plus 90 pt/s² of decel), by
+    /// bisection on a 60 Hz replay of that model.
+    static func launchSpeed(travel: Double, arrival: Double) -> Double {
+        func arrivalSpeed(_ v0: Double) -> Double {
+            var v = v0, x = 0.0
+            let dt = 1.0 / 60
+            while x < travel, v > 0 {
+                v *= exp(-BlobBody.friction * dt)
+                v = max(0, v - BlobBody.decel * dt)
+                x += v * dt
+            }
+            return x >= travel ? v : 0
+        }
+        var lo = 50.0, hi = 4000.0
+        for _ in 0..<40 {
+            let mid = (lo + hi) / 2
+            if arrivalSpeed(mid) < arrival { lo = mid } else { hi = mid }
+        }
+        return (lo + hi) / 2
+    }
+
+    /// A synthetic drag through the panel's mouse path, logged every 0.1 s, with one
+    /// shot named `shotName` once the stretch reaches `shotStretch` (or mid-sweep).
+    private func runDrag(from: CGPoint, to: CGPoint, ms: Double, shotStretch: Double, shotName: String, label: String, done: (() -> Void)? = nil) {
+        let c = orb.previewCenterCG
+        print(stamp, String(format: "%@: hand down at CG %.0f,%.0f (body centre %.0f,%.0f), sweep to %.0f,%.0f over %.0f ms", label, from.x, from.y, c.x, c.y, to.x, to.y, ms))
+        fflush(stdout)
+        var lastLog = 0.0
+        var shot = false
+        hand = from
+        orb.previewDrag(from: from, to: to, ms: ms, progress: { [weak self] u in
+            guard let self else { return }
+            let s = u * u * (3 - 2 * u)
+            self.hand = CGPoint(x: from.x + (to.x - from.x) * s, y: from.y + (to.y - from.y) * s)
+            let now = CACurrentMediaTime()
+            let lag = self.orb.previewLag
+            if now - lastLog > 0.1 {
+                lastLog = now
+                let c = self.orb.previewCenterCG
+                let w = self.orb.previewWobble
+                print(self.stamp, String(format: "%@ u %.2f CG %.0f,%.0f lag %.0f pt stretch %.2f wobble %.2f/%.2f speed %.0f stuck %d neck %.2f eyes [%@]", label, u, c.x, c.y,
+                                         hypot(lag.dx, lag.dy), self.orb.previewStretch, w.slosh, w.mode2, self.orb.previewBodySpeed, self.orb.previewStuckCount,
+                                         self.orb.previewNeck, self.orb.previewEyes))
+                fflush(stdout)
+            }
+            if let dir = self.shotDir, !shot, self.orb.previewStretch >= shotStretch || u >= 0.55 {
+                shot = true
+                self.shoot("\(dir)/\(self.shotPrefix)\(shotName).png",
+                           note: String(format: "%@, lag %.0f pt, stretch %.2f, speed %.0f", label, hypot(lag.dx, lag.dy), self.orb.previewStretch, self.orb.previewBodySpeed))
+            }
+        }, done: { [weak self] in
+            guard let self else { return }
+            self.hand = nil
+            self.restShotTaken = false
+            print(self.stamp, String(format: "%@ released: speed %.0f stretch %.2f stuck %d at CG %.0f,%.0f", label, self.orb.previewBodySpeed,
+                                     self.orb.previewStretch, self.orb.previewIsStuck ? 1 : 0, self.orb.previewCenterCG.x, self.orb.previewCenterCG.y))
+            fflush(stdout)
+            // The jiggle after the release, every 0.1 s for a second.
+            let releasedAt = CACurrentMediaTime()
+            Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self, CACurrentMediaTime() - releasedAt < 1.05 else { timer.invalidate(); return }
+                    let w = self.orb.previewWobble
+                    print(self.stamp, String(format: "%@ after %.1f s: wobble %.2f/%.2f stretch %.2f speed %.0f", label, CACurrentMediaTime() - releasedAt,
+                                             w.slosh, w.mode2, self.orb.previewStretch, self.orb.previewBodySpeed))
+                    fflush(stdout)
+                }
+            }
+            done?()
+        })
+    }
+
+    /// ORB_STICK, driven from `watch`: once the throw has parked on the wall, the stick
+    /// shot; 0.8 s later the peel — a slow pull straight off the wall — with the peel
+    /// shot as the neck passes `stickNeckShot`.
+    private func watchStick(moving: Bool, now: Double) {
+        guard let wall = stickWall else { return }
+        switch stickPhase {
+        case "flung":
+            if moving, now - lastStickLog > 0.15 {
+                lastStickLog = now
+                print(stamp, String(format: "stick: speed %.0f stuck %d press %.2f", orb.previewBodySpeed, orb.previewIsStuck ? 1 : 0, orb.previewMaxPress))
+                fflush(stdout)
+            }
+            guard !moving else { return }
+            let c = orb.previewCenterCG
+            print(stamp, String(format: "stick: parked at CG %.0f,%.0f stuck %d press %.2f eyes [%@]", c.x, c.y, orb.previewIsStuck ? 1 : 0, orb.previewMaxPress, orb.previewEyes))
+            fflush(stdout)
+            stickPhase = "stuck"
+            if let dir = shotDir, !stickShotTaken {
+                stickShotTaken = true
+                shoot("\(dir)/\(shotPrefix)stick.png", note: String(format: "stuck to the wall, press %.2f", orb.previewMaxPress))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                let from = self.orb.previewCenterCG
+                let to = CGPoint(x: from.x - wall.dx * self.stickPull, y: from.y - wall.dy * self.stickPull)
+                self.stickPhase = "peeling"
+                var wasStuck = true
+                var lastNeckLog = 0.0
+                self.hand = from
+                self.orb.previewDrag(from: from, to: to, ms: 1100, progress: { [weak self] u in
+                    guard let self else { return }
+                    let s = u * u * (3 - 2 * u)
+                    self.hand = CGPoint(x: from.x + (to.x - from.x) * s, y: from.y + (to.y - from.y) * s)
+                    let now = CACurrentMediaTime()
+                    let stuck = self.orb.previewIsStuck
+                    if now - lastNeckLog > 0.1 || (wasStuck && !stuck) {
+                        lastNeckLog = now
+                        print(self.stamp, String(format: "peel: u %.2f neck %.2f stuck %d lag %.0f speed %.0f%@", u, self.orb.previewNeck, stuck ? 1 : 0,
+                                                 hypot(self.orb.previewLag.dx, self.orb.previewLag.dy), self.orb.previewBodySpeed, wasStuck && !stuck ? "  <- SNAP" : ""))
+                        fflush(stdout)
+                    }
+                    wasStuck = stuck
+                    if let dir = self.shotDir, !self.peelShotTaken, self.orb.previewNeck >= self.stickNeckShot {
+                        self.peelShotTaken = true
+                        self.shoot("\(dir)/\(self.shotPrefix)peel.png", note: String(format: "peeling, neck %.2f", self.orb.previewNeck))
+                    }
+                }, done: { [weak self] in
+                    guard let self else { return }
+                    self.hand = nil
+                    self.stickPhase = "peeled"
+                    self.peeledAt = CACurrentMediaTime()
+                    self.restShotTaken = false
+                    print(self.stamp, String(format: "peel: released, stuck %d neck %.2f speed %.0f at CG %.0f,%.0f", self.orb.previewIsStuck ? 1 : 0,
+                                             self.orb.previewNeck, self.orb.previewBodySpeed, self.orb.previewCenterCG.x, self.orb.previewCenterCG.y))
+                    fflush(stdout)
+                })
+            }
+        case "peeled":
+            // The way back (or away) after the release, finely: a re-pinned stick sags
+            // onto its dome over ~0.35 s, the neck shrinking with it — never a jump.
+            if now - peeledAt < 1.0, now - lastStickLog > 0.05 {
+                lastStickLog = now
+                let c = orb.previewCenterCG
+                print(stamp, String(format: "peel: after %.2f s CG %.1f,%.1f neck %.2f stuck %d speed %.0f", now - peeledAt, c.x, c.y, orb.previewNeck,
+                                    orb.previewIsStuck ? 1 : 0, orb.previewBodySpeed))
+                fflush(stdout)
+            }
+        default:
+            break
+        }
+    }
+
+    /// ORB_EYES: every expression side by side. Each cell pins the phase (and gate),
+    /// steps the field until the eases have settled, and renders the panel's layers
+    /// over the orb's own ground; labels underneath. Synchronous, so no timer can
+    /// change the phase under it.
+    private func renderExpressionStrip() {
+        guard let dir = shotDir else { print("ORB_EYES needs ORB_SHOT_DIR"); return }
+        struct Cell { let label: String; let phase: Phase; let gate: WakeGateState?; let settle: Double; let poke: Bool }
+        var cellsToDraw: [Cell] = Phase.allCases.map { Cell(label: $0.rawValue, phase: $0, gate: nil, settle: 1.3, poke: false) }
+        cellsToDraw += [
+            Cell(label: "gate listening", phase: .asleep, gate: .listening, settle: 1.0, poke: false),
+            Cell(label: "wake heard", phase: .asleep, gate: .heard, settle: 0.15, poke: false),
+            Cell(label: "authenticating", phase: .asleep, gate: .authenticating(method: gateMethod), settle: 1.0, poke: false),
+            Cell(label: "granted", phase: .asleep, gate: .granted, settle: 0.8, poke: false),
+            Cell(label: "denied", phase: .asleep, gate: .denied(reason: "preview"), settle: 0.3, poke: false),
+            Cell(label: "locked out", phase: .asleep, gate: .lockedOut(until: Date().addingTimeInterval(60)), settle: 1.0, poke: false),
+            Cell(label: "poked", phase: .listening, gate: nil, settle: 0.1, poke: true),
+        ]
+        let size = OrbPanelController.collapsedSize
+        let scale: CGFloat = 2
+        let labelH: CGFloat = 22
+        let perRow = 5
+        let rows = (cellsToDraw.count + perRow - 1) / perRow
+        let cellH = size.height + labelH
+        let w = Int(size.width * CGFloat(perRow) * scale), h = Int(cellH * CGFloat(rows) * scale)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let gctx = NSGraphicsContext(bitmapImageRep: rep) else { print("eyes: no bitmap"); return }
+        let cg = gctx.cgContext
+        cg.scaleBy(x: scale, y: scale)
+        cg.setFillColor(OrbPalette.ground.cgColor)
+        cg.fill(CGRect(x: 0, y: 0, width: size.width * CGFloat(perRow), height: cellH * CGFloat(rows)))
+        orb.previewFreeze(true)
+        for (i, cell) in cellsToDraw.enumerated() {
+            orb.previewSetExpression(phase: cell.phase, gate: cell.gate ?? .off(reason: "preview"))
+            if cell.poke {
+                orb.previewAdvanceField(1.0)
+                orb.previewPoke()
+            }
+            orb.previewAdvanceField(cell.settle)
+            // The bitmap is y-up: the first row of cells sits at the top.
+            let x = CGFloat(i % perRow) * size.width
+            let y = CGFloat(rows - 1 - i / perRow) * cellH
+            cg.saveGState()
+            cg.translateBy(x: x, y: y + labelH)
+            orb.previewRender(in: cg)
+            cg.restoreGState()
+            // Hairlines between cells, and the label.
+            cg.setFillColor(CGColor(gray: 1, alpha: 0.08))
+            cg.fill(CGRect(x: x + size.width - 0.5, y: y, width: 0.5, height: cellH))
+            cg.fill(CGRect(x: x, y: y + cellH - 0.5, width: size.width, height: 0.5))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = gctx
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 9, weight: .medium), .foregroundColor: NSColor(white: 0.75, alpha: 1)]
+            let s = cell.label as NSString
+            let sw = s.size(withAttributes: attrs).width
+            s.draw(at: NSPoint(x: x + (size.width - sw) / 2, y: y + 6), withAttributes: attrs)
+            NSGraphicsContext.restoreGraphicsState()
+            print(String(format: "eyes: %@ -> [%@]", cell.label, orb.previewEyes))
+        }
+        orb.previewFreeze(false)
+        // Back to what the state says.
+        orb.previewSetExpression(phase: state.snapshot.phase, gate: state.wakeGate)
+        let path = "\(dir)/\(shotPrefix)eyes.png"
+        guard let png = rep.representation(using: .png, properties: [:]) else { print("eyes: no PNG"); return }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            print("shot:", path, "(expression strip, \(cellsToDraw.count) cells) rendered in-process \(w)×\(h)")
+        } catch {
+            print("eyes: write failed:", error)
+        }
+        fflush(stdout)
+    }
+
     /// One fake gate state, as the real gate would publish it.
     private func applyGate(_ name: String) {
         gateStart = Date()
@@ -568,10 +863,11 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             fflush(stdout)
         }
         if wasMoving, !moving {
-            print(stamp, String(format: "settled: CG %.0f,%.0f (%@)", frame.minX, frame.minY, phase))
+            print(stamp, String(format: "settled: CG %.0f,%.0f (%@) stuck %d press %.2f eyes [%@]", frame.minX, frame.minY, phase, orb.previewStuckCount, orb.previewMaxPress, orb.previewEyes))
             fflush(stdout)
         }
         wasMoving = moving
+        if !stickPhase.isEmpty { watchStick(moving: moving || orb.previewIsDragging, now: now) }
 
         guard let dir = shotDir else { return }
         if !flyShotsOwed.isEmpty, flyShot(phase: phase, now: now, dir: dir) { return }
@@ -716,6 +1012,32 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         cg.translateBy(x: pf.minX - regionAK.minX, y: pf.minY - regionAK.minY)
         orb.previewRender(in: cg)
         cg.restoreGState()
+        // The screen's edge, where the region reaches it: a grey hairline, so a blob
+        // stuck to the border reads against something.
+        if let screen = NSScreen.screens.first(where: { s in
+            let cgs = CGRect(x: s.frame.minX, y: mainMaxY - s.frame.maxY, width: s.frame.width, height: s.frame.height)
+            return cgs.contains(CGPoint(x: f.midX, y: f.midY))
+        }) {
+            let sf = screen.frame
+            let vis = screen.visibleFrame
+            cg.setStrokeColor(CGColor(gray: 0.55, alpha: 0.9))
+            cg.setLineWidth(1)
+            func line(_ a: CGPoint, _ b: CGPoint) { cg.move(to: a); cg.addLine(to: b); cg.strokePath() }
+            // Work-area edges in AppKit space, relative to the region.
+            if abs(vis.minX - regionAK.minX) < 1.5 || regionAK.minX <= sf.minX + 0.5 { line(CGPoint(x: 0.5, y: 0), CGPoint(x: 0.5, y: f.height)) }
+            if abs(vis.maxX - regionAK.maxX) < 1.5 || regionAK.maxX >= sf.maxX - 0.5 { line(CGPoint(x: f.width - 0.5, y: 0), CGPoint(x: f.width - 0.5, y: f.height)) }
+            if regionAK.maxY >= vis.maxY - 0.5 { let y = vis.maxY - regionAK.minY; line(CGPoint(x: 0, y: y - 0.5), CGPoint(x: f.width, y: y - 0.5)) }
+            if regionAK.minY <= vis.minY + 0.5 { let y = vis.minY - regionAK.minY; line(CGPoint(x: 0, y: y + 0.5), CGPoint(x: f.width, y: y + 0.5)) }
+        }
+        // The synthetic hand: a small cross where the pointer is.
+        if let hand {
+            let hx = hand.x - f.minX, hy = (mainMaxY - hand.y) - regionAK.minY
+            cg.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.9))
+            cg.setLineWidth(1.2)
+            cg.move(to: CGPoint(x: hx - 6, y: hy)); cg.addLine(to: CGPoint(x: hx + 6, y: hy)); cg.strokePath()
+            cg.move(to: CGPoint(x: hx, y: hy - 6)); cg.addLine(to: CGPoint(x: hx, y: hy + 6)); cg.strokePath()
+            cg.strokeEllipse(in: CGRect(x: hx - 3.5, y: hy - 3.5, width: 7, height: 7))
+        }
         guard let png = rep.representation(using: .png, properties: [:]) else { print("shot failed: no PNG for", path); return }
         do {
             try png.write(to: URL(fileURLWithPath: path))

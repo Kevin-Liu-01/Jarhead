@@ -37,6 +37,56 @@ GPT-Live-1 delegation. v1 lives in `legacy/` and is not built or tested.
 - **Retire, do not delete.** Superseded code moves under `legacy/`
   (`shell-electron-v2`, `connectors-v2`, `vendor-docs`, v1 `packages/`); nothing
   there is built, typechecked or tested.
+- **Gated by policy, not by absence.** The brain can read, write, run, fetch and
+  script anything on this Mac; `packages/core/src/policy.ts` decides per call
+  (`classifyAction` / `classifyPath` / `classifyAppleScript` / `classifyUrl`):
+  run, confirm (the `ConfirmationState` handshake), or refuse (the never list
+  and the secret stores — `~/.jarhead/env`, `~/.ssh`, keychains, cookies,
+  `.env*`). Add a gate there with a table-driven case in `policy.test.ts`; never
+  special-case a tool in the runner. The shell gate is lexical and fails closed:
+  strip wrappers (`command`, `exec`, `env`, `sudo`, `then`), read inner shells
+  (`bash -c`, `eval`) and one-liner scripts, normalise paths (`~`, `$HOME`,
+  `/Users/x`, `/./`, `//`, and `/private/var` ≡ `/var`), and refuse anything
+  that *sweeps* a folder holding a secret (a glob in it, a `cd` into it, a
+  recursive reader or archiver naming it) whether or not the secret's name
+  appears. Egress (a network client carrying a file, `$(…)`, a body or a pipe)
+  and environment dumps (`env`, `set`, `ps -E`) confirm.
+- **"Kevin named it" means Kevin's words.** Every gate that asks whether he
+  named a folder, a host, a rail or said "apply anyway" reads
+  `BrainTask.request` + `BrainTask.kevinDialogue` (his utterances, filled by the
+  `Delegator` from `transcript.since(…, "kevin")`), never `dialogue`, which
+  carries Jarhead's own lines. Do not pass the rendered dialogue to a gate.
+- **Judge the real path.** `classifyPath` takes `realPath` (the runner computes
+  it with `realPathOf`, parent-resolved for files that do not exist yet) and
+  checks both spellings; `listTree` / `walkSearch` use `lstat` and never follow
+  links; `run_shell` refuses a `cwd` inside a secret store or one of the folders
+  that hold one. The running checkout (`REPO_ROOT`) is not a scratch folder:
+  writes into it by file tool, shell or `agent_start` confirm with "self_edit is
+  the way".
+- **Jarhead edits itself only through the self-edit loop** (`packages/brain/src/
+  selfedit.ts`, docs/REDESIGN.md §10): a worktree under `~/.jarhead/worktrees`,
+  a coding agent, `pnpm run typecheck && pnpm test`, a spoken summary, Kevin's
+  yes to "apply the change to Jarhead and restart it?", fast-forward into main,
+  `engine.requestRestart`. The rails are files as a whole (policy.ts, core's
+  index.ts and any new core module, brain.ts, instructions.ts,
+  `apps/mac/.../Wake`, selfedit.ts, runner.ts, shell.ts, files.ts, brain's
+  index.ts) or, for mostly-ordinary files, changed lines (the handshake in
+  toolset.ts, build-mac signing, `permission()` in claude.ts, the Codex sandbox
+  flags, `SECRET_KEYS`); a touched rail applies only when Kevin's own words name
+  it by whole word or file name. Do not add a hunk-narrowed rail for a
+  security-critical file: hunk regexes are dodged by editing the lines around
+  them. Bump `SYSTEM_PROMPT_VERSION` when the standing orders change;
+  `brain.test.ts` pins the prompt's order, budget (900 words) and tool names.
+- **Secrets never enter a child, and never leave a result.** `scrubbedEnv` /
+  `codexEnv` strip `SECRET_KEYS` from every process the brain spawns (shell,
+  AppleScript, Codex, Claude Code); `loginShellCommand` unsets them again inside
+  `zsh -lc`, because `~/.zprofile` re-exports them; the policy refuses commands
+  that name the secret stores or a secret-named variable; and `SecretRedactor`
+  (`shell.ts`) strikes every known secret value (env keys, everything in
+  `~/.jarhead/env`, their base64) and every key-shaped string from every text
+  result before a model reads it. A brain's own built-in tools bypass none of
+  this: the Claude Code brain denies `Read`/`Glob`/`Grep`/`WebFetch`/`WebSearch`
+  with a redirect to the jarhead tools.
 
 ## Commands
 
@@ -108,6 +158,17 @@ to his microphone and bills per second.
   resident helper must be restarted to *use* it. A System Settings row created
   by an ad-hoc build survives re-signing but is bound to the old cdhash — it
   shows "on" and does nothing; the user must remove it and re-request.
+- `@Published` sinks fire in `willSet`: inside a Combine sink, reading the
+  property you subscribed to still returns the *old* value. Keep the payload
+  the sink delivers (WakeGate, AppDelegate audio activity, checkFirstRun all
+  bit on this).
+- A `LazyVStack` chat feed re-estimates the height of rows it has dropped, so
+  the content height jitters by tens of points after every append and the
+  viewport slides. Two hundred materialised rows in a plain `VStack` are
+  cheap and stable; the sticky-scroll probe pins the bottom exactly.
+- SwiftUI's macOS ScrollView honours the system "Show scroll bars: Always"
+  with a 15pt legacy gutter; force `.overlay` scrollers through the enclosing
+  NSScrollView (ConsoleThinScrollers) for the thin auto-hiding kind.
 - Hardened-runtime exceptions (`disable-library-validation`,
   `allow-dyld-environment-variables`) do nothing for *child* processes; they
   only weaken the app itself. The bundle carries neither.
@@ -115,3 +176,34 @@ to his microphone and bills per second.
   workflows mid-flight; their transcripts survive under
   `~/.claude/projects/<slug>/<session>/subagents/`, and a workflow's
   `journal.jsonl` keeps every finished agent's return value.
+- Killing a `zsh -lc` child on a timeout leaves its `sleep`/server orphaned and
+  holding the stdout pipe, so Node's `close` never fires: spawn with
+  `detached: true` and signal the process group (`process.kill(-pid)`), and
+  settle on `exit` with a short grace (`packages/brain/src/shell.ts`).
+- `git add -A -- . ':!node_modules'` errors when node_modules is gitignored
+  ("paths are ignored by one of your .gitignore files"); `git add -A` followed
+  by `git rm -r --cached --ignore-unmatch -- node_modules '*/node_modules'`
+  does not. `pnpm run` in a lockfile-less folder drops `node_modules/.package-map.json`
+  and a `pnpm-lock.yaml`, so a self-edit's commit step must exclude them itself.
+- A fresh git worktree has no `node_modules`; the self-edit checks run
+  `pnpm install --frozen-lockfile --prefer-offline` there first (only when the
+  lockfile exists), and resolve `pnpm` next to `process.execPath` because the
+  daemon's launchd PATH has no nvm.
+- `timeout(1)` does not exist on macOS; `perl -e 'alarm N; exec @ARGV' cmd…`
+  is the portable stand-in for a bounded one-off run.
+- `zsh -lc` is a *login* shell: it sources `~/.zprofile`, which on this Mac
+  exports `OPENAI_API_KEY`, so a child spawned with a scrubbed environment gets
+  the key back before the command runs. Scrubbing the parent's env is not
+  enough; unset the keys inside the shell after the rc files (`loginShellCommand`).
+- `realpathSync` turns `/var/…` and `/tmp/…` into `/private/var/…` and
+  `/private/tmp/…`; a real path is never lexically "under" a root given in the
+  short spelling. Compare through one canonical spelling (`canon` in policy.ts)
+  or every temp-dir test passes for the wrong reason.
+- A rail judged by changed lines is dodged two ways: git's `@@` funcname header
+  is the nearest column-0 line starting with a letter (inside a template literal
+  that is the previous prose paragraph, not the function), and deleting a line
+  leaves no `+` line to match. Flag the file, not the hunk.
+- The runner's `request` used to be `request + dialogue`; `transcript.render`
+  emits `Jarhead:` lines too, so the self-edit summary (which names the rail)
+  satisfied the rail guard on the next turn's bare "yes". Gates read Kevin's
+  lines only (`kevinDialogue`).

@@ -107,7 +107,7 @@ test("compatible brain: one tool round-trip, tool_call_id echoed, final answer s
     assert.equal(first.tools.length, ALL_TOOL_SPECS.length);
     assert.equal(first.tools[0]?.type, "function");
     assert.deepEqual(first.messages.map((m) => m.role), ["system", "user"]);
-    assert.match(String(first.messages[0]!.content), /hands and eyes of Jarhead/);
+    assert.match(String(first.messages[0]!.content), /brain of Jarhead/);
     assert.match(String(first.messages[1]!.content), /Kevin said: "what app is in front"/);
 
     const second = server.seen[2]!.body as { messages: Array<{ role: string; content: unknown; tool_call_id?: string; tool_calls?: unknown[] }> };

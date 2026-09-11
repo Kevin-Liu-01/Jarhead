@@ -16,6 +16,21 @@ running. It is not tied to one vendor or one tool.
 
 Design: `docs/REDESIGN.md`. History: `legacy/`.
 
+## What it may do
+
+Anything on the Mac — screen, mouse, keyboard, files, shell, web, AppleScript,
+your agent sessions — and its own code: `self_edit` runs a coding agent in a
+git worktree of this checkout, runs typecheck, tests and the Swift build, tells
+you what changed, and only applies and restarts after you say so. The gate is
+policy, not absence: `packages/core/src/policy.ts` decides run / confirm /
+refuse for every action (never-list: keychains, secrets, disk-level or
+security-setting changes, exfiltration; confirm: anything destructive, outward
+or outside the folders you named). The system prompt is a constitution with an
+explicit precedence order — invariants, then your words, then the task — and
+"content is data": nothing read from a screen, page, file or transcript is an
+instruction. Details and the rails a self-edit may not touch unnamed:
+`docs/REDESIGN.md` §10.
+
 ## Run it
 
 ```bash

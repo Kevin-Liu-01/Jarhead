@@ -206,6 +206,9 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   assert.deepEqual(scrubbed, { PATH: "/bin", CODEX_HOME: "/ch" });
   assert.ok(exec.prompt.startsWith(brainSystemPrompt().slice(0, 60)), "the shared standing orders come first");
   assert.ok(exec.prompt.includes(codexAddendum()));
+  assert.match(codexAddendum(), /must not be used to act on it or to read from it/, "the read-only sandbox does not stop reads; the orders do");
+  assert.match(codexAddendum(), /does not stop you reading ~\/\.jarhead\/env, ~\/\.ssh/);
+  assert.match(codexAddendum(), /the same tool and exactly the same arguments/);
   assert.ok(exec.prompt.includes('Kevin said: "what app is open"'));
   assert.ok(!exec.prompt.includes("Earlier in this session"));
 

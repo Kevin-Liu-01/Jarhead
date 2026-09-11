@@ -1,7 +1,7 @@
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
-import { brainSystemPrompt } from "./brain.ts";
+import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
@@ -256,6 +256,7 @@ export class OpenAICompatibleBrain implements Brain {
       if (verdict.kind === "ready") {
         this.ready = true;
         this.readyDetail = verdict.detail;
+        log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
         return { ready: true, detail: this.readyDetail };
       }
       this.readyDetail = verdict.detail;
@@ -314,7 +315,7 @@ export class OpenAICompatibleBrain implements Brain {
     task.signal.addEventListener("abort", onAbort, { once: true });
     if (task.signal.aborted) abort.abort();
     this.current = { task, abort };
-    this.opts.runner.attach(sink);
+    this.opts.runner.attach(sink, task);
     try {
       return await this.loop(task, sink, abort.signal, this.model);
     } finally {
