@@ -1,9 +1,12 @@
 {
-  "name": "@jarvis/core",
-  "version": "0.0.0",
+  "name": "@jarhead/core",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@jarhead/protocol": "workspace:*"
   }
 }

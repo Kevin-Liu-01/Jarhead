@@ -1,0 +1,19 @@
+{
+  "name": "@jarhead/cli",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@jarhead/agents": "workspace:*",
+    "@jarhead/brain": "workspace:*",
+    "@jarhead/core": "workspace:*",
+    "@jarhead/daemon": "workspace:*",
+    "@jarhead/engine": "workspace:*",
+    "@jarhead/hands": "workspace:*",
+    "@jarhead/live": "workspace:*",
+    "@jarhead/protocol": "workspace:*"
+  }
+}

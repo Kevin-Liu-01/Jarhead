@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleName</key><string>Jarhead</string>
+  <key>CFBundleDisplayName</key><string>Jarhead</string>
+  <key>CFBundleExecutable</key><string>Jarhead</string>
+  <!-- TCC keys microphone / screen recording / accessibility grants to this identifier. -->
+  <key>CFBundleIdentifier</key><string>com.kevinliu.jarhead</string>
+  <key>CFBundleIconFile</key><string>Jarhead</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleShortVersionString</key><string>2.0.0</string>
+  <key>CFBundleVersion</key><string>2.0.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <!-- Dock icon on: the Orb is the presence, the Dock is how you find the Console. -->
+  <key>LSUIElement</key><false/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Jarhead listens so you can talk to it. Audio goes only to the voice model while a session is open.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Jarhead listens for its wake word with on-device speech recognition while it is asleep. Nothing is sent anywhere until you authenticate.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Jarhead drives other apps to do what you ask.</string>
+  <key>NSSystemAdministrationUsageDescription</key>
+  <string>Jarhead needs accessibility access to move the cursor, click, and type for you.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>com.kevinliu.jarhead</string>
+      <key>CFBundleURLSchemes</key>
+      <array><string>jarhead</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarhead</title>
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <link rel="stylesheet" href="./orb.css" />
+  </head>
+  <body>
+    <div id="root" class="orb-root">
+      <canvas id="orb" width="96" height="96" role="button" tabindex="0" aria-label="Jarhead" aria-expanded="false"></canvas>
+      <span id="badge" class="badge" hidden aria-hidden="true"></span>
+      <section id="panel" class="panel" hidden aria-label="Jarhead status"></section>
+      <div id="menu" class="menu" hidden role="menu" aria-label="Jarhead actions"></div>
+      <div id="toast" class="orb-toast" hidden role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="./orb.js"></script>
+  </body>
+</html>

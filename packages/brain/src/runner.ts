@@ -1,0 +1,208 @@
+import { execFile } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { classifyAction, logger, newId, type Decision } from "@jarhead/core";
+import type { AgentRegistry } from "@jarhead/agents";
+import { ComputerToolset, type ToolResult } from "@jarhead/hands";
+import type { BrainSink } from "./brain.ts";
+
+/**
+ * Executes tool calls by name. Both brains route every call through here so the
+ * policy, the ledger, the screenshot archive, and the confirmation handshake
+ * behave identically regardless of which model is asking.
+ */
+
+const log = logger("brain.runner");
+
+export interface RunnerOptions {
+  readonly toolset: ComputerToolset;
+  readonly agents: AgentRegistry;
+  readonly stateDir: string;
+  /** Interim speech; wired to the current sink by the brain. */
+  readonly speak?: (text: string) => void;
+  readonly now?: () => number;
+}
+
+export interface RunOutcome {
+  readonly result: ToolResult;
+  /** Path (relative to stateDir) of the archived screenshot, when the result was an image. */
+  readonly screenshotPath?: string;
+  readonly ms: number;
+}
+
+export class ToolRunner {
+  private readonly notes: { at: number; note: string }[] = [];
+  private sink: BrainSink | undefined;
+  private readonly now: () => number;
+
+  constructor(private readonly opts: RunnerOptions) {
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** The sink for the task currently running; tools that report progress use it. */
+  attach(sink: BrainSink | undefined): void {
+    this.sink = sink;
+  }
+
+  async run(name: string, input: unknown): Promise<RunOutcome> {
+    const started = this.now();
+    const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+    let result: ToolResult;
+    try {
+      result = await this.dispatch(name, args);
+    } catch (e) {
+      result = { kind: "error", message: (e as Error).message };
+    }
+    const ms = this.now() - started;
+
+    let screenshotPath: string | undefined;
+    if (result.kind === "image") {
+      screenshotPath = this.archive(result.pngBase64);
+      this.sink?.screenshot(screenshotPath, result.note);
+    }
+    this.sink?.step({
+      kind: result.kind === "needs-confirmation" ? "confirm" : result.kind === "error" ? "error" : "tool",
+      ...(result.kind === "needs-confirmation" ? { text: result.question } : result.kind === "error" ? { text: result.message } : {}),
+      tool: { name, input: redact(args), output: summarize(result), ok: result.kind !== "error", ms },
+      ...(screenshotPath ? { screenshotPath } : {}),
+    });
+    if (result.kind === "error") log.warn(`${name}: ${result.message}`);
+    return { result, ...(screenshotPath ? { screenshotPath } : {}), ms };
+  }
+
+  private archive(pngBase64: string): string {
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const rel = join("shots", day, `${newId("shot")}.png`);
+    try {
+      mkdirSync(join(this.opts.stateDir, "shots", day), { recursive: true });
+      writeFileSync(join(this.opts.stateDir, rel), Buffer.from(pngBase64, "base64"));
+    } catch (e) {
+      log.warn(`could not archive screenshot: ${(e as Error).message}`);
+    }
+    return rel;
+  }
+
+  private async dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const { toolset, agents } = this.opts;
+    if (toolset.isKnown(name)) return toolset.run(name, args);
+
+    switch (name) {
+      case "speak_progress": {
+        const text = String(args["text"] ?? "").trim();
+        if (!text) return { kind: "error", message: "speak_progress needs text" };
+        (this.opts.speak ?? this.sink?.commentary.bind(this.sink))?.(text);
+        return { kind: "text", text: "said" };
+      }
+      case "remember": {
+        const note = String(args["note"] ?? "").trim();
+        if (!note) return { kind: "error", message: "remember needs a note" };
+        this.notes.push({ at: this.now(), note });
+        return { kind: "text", text: `remembered (${this.notes.length} notes)` };
+      }
+      case "recall":
+        return { kind: "text", text: this.notes.length ? this.notes.map((n) => `- ${n.note}`).join("\n") : "no notes yet" };
+      case "run_shell":
+        return this.runShell(String(args["command"] ?? ""), typeof args["cwd"] === "string" ? args["cwd"] : undefined);
+      case "agents_list": {
+        const { agents: list, health } = await agents.snapshot();
+        const down = health.filter((h) => !h.ok).map((h) => `${h.kind}: ${h.detail}`);
+        const rows = list.map((a) => `${a.id} | ${a.name} | ${a.status}${a.detail ? ` (${a.detail})` : ""}${a.cwd ? ` | ${a.cwd}` : ""}`);
+        return { kind: "text", text: [...rows, ...(down.length ? [`unavailable: ${down.join("; ")}`] : [])].join("\n") || "no agents found" };
+      }
+      case "agent_send": {
+        const target = await agents.find(String(args["agent"] ?? ""));
+        if (!target) return { kind: "error", message: `no agent matching "${String(args["agent"])}"; call agents_list` };
+        const r = await agents.send(target.id, String(args["text"] ?? ""));
+        return r.accepted ? { kind: "text", text: `sent to ${target.name} (${target.id})${r.detail ? `: ${r.detail}` : ""}` } : { kind: "error", message: r.detail ?? "not accepted" };
+      }
+      case "agent_read": {
+        const target = await agents.find(String(args["agent"] ?? ""));
+        if (!target) return { kind: "error", message: `no agent matching "${String(args["agent"])}"` };
+        const lines = typeof args["lines"] === "number" ? args["lines"] : 80;
+        return { kind: "text", text: await agents.read(target.id, { lines }) };
+      }
+      case "agent_wait": {
+        const target = await agents.find(String(args["agent"] ?? ""));
+        if (!target) return { kind: "error", message: `no agent matching "${String(args["agent"])}"` };
+        const timeoutMs = Math.min(600, Math.max(1, Number(args["timeout"] ?? 120))) * 1000;
+        const settled = (await agents.waitSettled(target.id, timeoutMs)) ?? target;
+        const output = await agents.read(target.id, { lines: 60 });
+        return { kind: "text", text: `${settled.name}: ${settled.status}${settled.detail ? ` (${settled.detail})` : ""}\n${output}` };
+      }
+      case "agent_start": {
+        // Vendor-neutral: `tool` names the CLI (`kind` is the old spelling). Codex threads
+        // start through the sessions connector, which persists them like any other thread;
+        // Claude Code keeps its own headless connector.
+        const tool = String(args["tool"] ?? args["kind"] ?? "").trim().toLowerCase();
+        if (!tool) return { kind: "error", message: "agent_start needs a tool: 'codex' or 'claude-code'" };
+        const connectorKind = tool === "codex" ? "sessions" : tool === "claude-code" || tool === "claude" ? "claude-code" : undefined;
+        if (!connectorKind) return { kind: "error", message: `unknown tool "${tool}"; agent_start starts 'codex' or 'claude-code' sessions` };
+        const cwd = typeof args["cwd"] === "string" ? args["cwd"].trim() : "";
+        if (!cwd) return { kind: "error", message: "agent_start needs cwd: the folder to work in" };
+        const prompt = typeof args["prompt"] === "string" ? args["prompt"] : "";
+        if (!prompt.trim()) return { kind: "error", message: "agent_start needs a prompt: the first thing to ask the agent" };
+        const info = await agents.start(connectorKind, {
+          ...(connectorKind === "sessions" ? { tool } : {}),
+          cwd,
+          prompt,
+          ...(typeof args["name"] === "string" ? { name: args["name"] } : {}),
+          ...(typeof args["projectId"] === "string" ? { projectId: args["projectId"] } : {}),
+        });
+        return { kind: "text", text: `started ${info.id} (${info.name}) in ${info.cwd ?? cwd} — ${info.status}${info.detail ? ` (${info.detail})` : ""}. Use agent_wait / agent_read on ${info.id} for its answer.` };
+      }
+      default:
+        return { kind: "error", message: `unknown tool ${name}` };
+    }
+  }
+
+  private runShell(command: string, cwd: string | undefined): Promise<ToolResult> {
+    if (!command.trim()) return Promise.resolve({ kind: "error", message: "run_shell needs a command" });
+    const confirmed = this.opts.toolset.confirmations.consume("run_shell", { command });
+    const decision: Decision = classifyAction({ kind: "run_shell", text: command, confirmed });
+    if (decision.verdict === "refuse") return Promise.resolve({ kind: "error", message: `refused: ${decision.reason}` });
+    if (decision.verdict === "confirm") {
+      const pending = this.opts.toolset.confirmations.ask(`run "${command.slice(0, 80)}"`, "run_shell", { command });
+      return Promise.resolve({ kind: "needs-confirmation", pendingId: pending.id, question: `About to run "${command.slice(0, 80)}"${cwd ? ` in ${cwd}` : ""}. ${decision.reason}. Ask Kevin to confirm out loud, then stop.` });
+    }
+    return new Promise((resolve) => {
+      execFile("/bin/zsh", ["-lc", command], { cwd: cwd ?? process.env["HOME"], timeout: 30_000, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
+        const out = `${stdout}${stderr ? `\n[stderr] ${stderr}` : ""}`.trim();
+        if (err && (err as NodeJS.ErrnoException).code === "ETIMEDOUT") resolve({ kind: "error", message: `timed out after 30s\n${out.slice(0, 2000)}` });
+        else resolve({ kind: "text", text: `${err ? `[exit ${(err as { code?: number }).code ?? "?"}] ` : ""}${out.slice(0, 6000) || "(no output)"}` });
+      });
+    });
+  }
+}
+
+function summarize(result: ToolResult): unknown {
+  switch (result.kind) {
+    case "image":
+      return { image: `${result.width}x${result.height}`, ...(result.note ? { note: result.note } : {}) };
+    case "text":
+      return result.text.length > 600 ? `${result.text.slice(0, 600)}…` : result.text;
+    case "error":
+      return { error: result.message };
+    case "needs-confirmation":
+      return { needsConfirmation: result.question };
+  }
+}
+
+function redact(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) out[k] = typeof v === "string" && v.length > 300 ? `${v.slice(0, 300)}…` : v;
+  return out;
+}
+
+/** Render a ToolResult as the text a function-calling model reads. */
+export function resultText(result: ToolResult): string {
+  switch (result.kind) {
+    case "text":
+      return result.text;
+    case "image":
+      return `screenshot attached (${result.width}x${result.height} px)${result.note ? `; ${result.note}` : ""}`;
+    case "error":
+      return `error: ${result.message}`;
+    case "needs-confirmation":
+      return `needs_confirmation: ${result.question}`;
+  }
+}

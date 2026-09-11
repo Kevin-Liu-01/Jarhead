@@ -4,10 +4,11 @@ node_modules/
 .env.*.local
 dist/
 build/
+.build/
 *.tsbuildinfo
 .DS_Store
 *.log
-.jarvis/
+.jarhead/
 state/
 *.sqlite
 *.sqlite-*
@@ -17,6 +18,3 @@ coverage/
 *.pem
 *.p12
 secrets/
-build/Jarvis.app/
-build/app-src/
-build/Jarvis.iconset/

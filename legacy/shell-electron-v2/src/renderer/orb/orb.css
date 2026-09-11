@@ -1,0 +1,391 @@
+/* Orb window. Body is transparent; everything visible is drawn by us. */
+
+html,
+body {
+  background: transparent;
+  overflow: hidden;
+  height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.orb-root {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  --accent: var(--phase-listening);
+}
+
+.orb-root.expanded,
+.orb-root.menu-open,
+.orb-root.toast-open {
+  width: 340px;
+  height: 220px;
+}
+
+#orb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 96px;
+  height: 96px;
+  z-index: 3;
+  border-radius: 50%;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+
+#orb:focus-visible {
+  box-shadow: none;
+  outline: 2px solid color-mix(in oklab, var(--accent) 60%, transparent);
+  outline-offset: -14px;
+}
+
+.badge {
+  position: absolute;
+  left: 66px;
+  top: 20px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--phase-error);
+  box-shadow: 0 0 0 2px rgba(11, 12, 16, 0.9), 0 0 10px color-mix(in oklab, var(--phase-error) 70%, transparent);
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- panel --- */
+
+.panel {
+  position: absolute;
+  left: 10px;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: grid;
+  grid-template-rows: 70px 1fr;
+  gap: 4px;
+  padding: 10px 12px 10px 12px;
+  border-radius: 22px;
+  background: rgba(13, 14, 20, 0.92);
+  border: 1px solid var(--hair-2);
+  box-shadow:
+    var(--shadow-1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  animation: panel-in var(--t-med) var(--ease-out);
+}
+
+.panel::before {
+  /* a soft phase-tinted glow near the orb */
+  content: "";
+  position: absolute;
+  left: -30px;
+  top: -30px;
+  width: 160px;
+  height: 130px;
+  background: radial-gradient(closest-side, color-mix(in oklab, var(--accent) 22%, transparent), transparent 70%);
+  pointer-events: none;
+  transition: background var(--t-slow) var(--ease-out);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.panel .head {
+  position: relative;
+  padding-left: 82px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto 1fr;
+  column-gap: 8px;
+  align-content: start;
+}
+
+.panel .phase {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--fs-15);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 20px;
+  color: var(--fg);
+  grid-column: 1;
+}
+
+.panel .phase .dot {
+  width: 8px;
+  height: 8px;
+  transition: background var(--t-slow) var(--ease-out);
+}
+
+.panel .actions {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  gap: 2px;
+  margin-top: -3px;
+  margin-right: -4px;
+}
+
+.panel .actions .btn {
+  width: 26px;
+  height: 26px;
+}
+
+.panel .meta {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-12);
+  color: var(--fg-2);
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel .meta .sep {
+  color: var(--fg-3);
+  padding: 0 5px;
+}
+
+.panel .problem {
+  grid-column: 1 / -1;
+  align-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 8px 0 6px;
+  border-radius: 999px;
+  font-size: var(--fs-11);
+  font-weight: 500;
+  color: var(--phase-error);
+  background: color-mix(in oklab, var(--phase-error) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--phase-error) 38%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  justify-self: start;
+}
+
+.panel .problem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel .problem .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.panel .body {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  padding-top: 2px;
+}
+
+.panel .line {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 8px;
+  font-size: var(--fs-12);
+  line-height: 16px;
+  min-height: 16px;
+}
+
+.panel .line .who {
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  padding-top: 1px;
+}
+
+.panel .line .what {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel .line.jarhead .what {
+  color: color-mix(in oklab, var(--fg) 72%, var(--phase-speaking));
+}
+
+.panel .line.jarhead .who {
+  color: color-mix(in oklab, var(--phase-speaking) 70%, var(--fg-3));
+}
+
+.panel .line .what.empty-text {
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+.panel .line .what.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 11px;
+  margin-left: 3px;
+  vertical-align: -1px;
+  background: currentColor;
+  animation: caret 1s steps(2) infinite;
+}
+
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+.panel .line.two .what {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.panel .deleg {
+  align-self: end;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 9px 0 8px;
+  border-radius: var(--r-8);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--hair);
+  font-size: var(--fs-12);
+  line-height: 1;
+}
+
+.panel .deleg .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+
+.panel .deleg .text b {
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.panel .deleg .count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  color: var(--fg-3);
+}
+
+.panel .hint {
+  align-self: end;
+  font-size: var(--fs-12);
+  color: var(--fg-3);
+  line-height: 16px;
+}
+
+/* ---------------------------------------------------------------- menu --- */
+
+.menu {
+  position: absolute;
+  left: 92px;
+  top: 6px;
+  z-index: 10;
+  min-width: 158px;
+  padding: 4px;
+  border-radius: var(--r-10);
+  background: rgba(16, 18, 26, 0.97);
+  border: 1px solid var(--hair-2);
+  box-shadow: var(--shadow-1);
+  animation: panel-in var(--t-fast) var(--ease-out);
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-12);
+  text-align: left;
+}
+
+.menu button .icon {
+  color: var(--fg-2);
+}
+
+.menu button:hover,
+.menu button:focus-visible {
+  background: var(--bg-active);
+  box-shadow: none;
+}
+
+.menu .hair {
+  margin: 4px 6px;
+}
+
+/* --------------------------------------------------------------- toast --- */
+
+.orb-toast {
+  position: absolute;
+  left: 100px;
+  top: 28px;
+  z-index: 9;
+  max-width: 230px;
+  pointer-events: none;
+}
+
+/* Expanded: sit in the quiet band between the transcript lines and the strip. */
+.orb-root.expanded .orb-toast {
+  left: 24px;
+  right: 14px;
+  top: 142px;
+  max-width: none;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.orb-root.expanded .orb-toast .toast {
+  padding: 5px 10px;
+  font-size: var(--fs-11);
+}
+
+/* ------------------------------------------------------ mock preview only --- */
+
+.mock body {
+  background:
+    radial-gradient(1200px 600px at 20% 0%, #1d2233 0%, transparent 60%),
+    radial-gradient(900px 500px at 90% 100%, #241f2b 0%, transparent 60%),
+    #14161d;
+}
+
+.mock .orb-root {
+  position: absolute;
+  left: 48px;
+  top: 48px;
+}

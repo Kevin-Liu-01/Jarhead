@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- What the app does: hears you, and drives other apps. -->
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.automation.apple-events</key><true/>
+
+  <!--
+    No hardened-runtime exceptions: spawning node (jarheadd) and the jarhead-hands
+    helper is unaffected by the hardened runtime, which only governs what loads into
+    this process. The children run with their own, separate protections.
+  -->
+
+  <!--
+    NOT sandboxed, deliberately. App Sandbox would block reading the repo, driving
+    the accessibility tree of other apps, and synthesizing input, which is most of
+    what Jarhead is for. No JIT entitlement: the app is native Swift; node runs as
+    a separate, unhardened child.
+  -->
+</dict>
+</plist>

@@ -1,6 +1,6 @@
 {
-  "name": "jarvis",
-  "version": "0.0.0",
+  "name": "jarhead",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.30.0",
@@ -10,37 +10,31 @@
   "scripts": {
     "doctor": "tsx scripts/doctor.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test packages/*/src/__tests__/*.test.ts && node --test packages/app/__tests__/*.test.js",
+    "test": "node --import tsx --test 'packages/*/src/**/*.test.ts'",
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
-    "jarvis": "tsx packages/agent/src/main.ts",
-    "jarvisd": "tsx packages/daemon/src/main.ts",
-    "overlay": "electron packages/overlay/src/electron-entry.cjs",
+    "jarhead": "tsx packages/cli/src/main.ts",
+    "build:hands": "tsx scripts/build-hands.ts",
     "build:icon": "tsx scripts/make-icon.ts",
-    "build:app": "tsx scripts/make-icon.ts && tsx scripts/build-app.ts"
+    "jarheadd": "tsx packages/daemon/src/main.ts",
+    "build:mac": "tsx scripts/build-mac.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.267",
     "@anthropic-ai/sdk": "^0.116.0",
-    "@jarvis/ack": "workspace:*",
-    "@jarvis/agent": "workspace:*",
-    "@jarvis/answers": "workspace:*",
-    "@jarvis/automations": "workspace:*",
-    "@jarvis/browser": "workspace:*",
-    "@jarvis/computer": "workspace:*",
-    "@jarvis/core": "workspace:*",
-    "@jarvis/daemon": "workspace:*",
-    "@jarvis/ears": "workspace:*",
-    "@jarvis/overlay": "workspace:*",
-    "@jarvis/selfmod": "workspace:*",
-    "@jarvis/voice": "workspace:*",
-    "@jarvis/wiki-bridge": "workspace:*",
-    "@jarvis/live": "workspace:*",
-    "@jarvis/annotate": "workspace:*",
-    "@jarvis/tools": "workspace:*",
-    "@jarvis/realtime": "workspace:*"
+    "@jarhead/agents": "workspace:*",
+    "@jarhead/brain": "workspace:*",
+    "@jarhead/cli": "workspace:*",
+    "@jarhead/core": "workspace:*",
+    "@jarhead/daemon": "workspace:*",
+    "@jarhead/engine": "workspace:*",
+    "@jarhead/hands": "workspace:*",
+    "@jarhead/live": "workspace:*",
+    "@jarhead/protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "electron": "^43.3.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

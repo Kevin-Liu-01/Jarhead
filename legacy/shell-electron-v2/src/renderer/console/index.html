@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarhead Console</title>
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <link rel="stylesheet" href="./console.css" />
+  </head>
+  <body class="console">
+    <div class="app">
+      <header class="top">
+        <div class="wordmark">
+          <span class="mark" aria-hidden="true"></span>
+          <span>Jarhead</span>
+        </div>
+        <div id="phase-pill" class="phase-pill"><span class="dot"></span><span class="label">—</span></div>
+        <div class="spacer"></div>
+        <button id="open-ledger" class="btn ghost" type="button">Ledger</button>
+      </header>
+
+      <main class="grid">
+        <aside class="rail rail-left" aria-label="Agents">
+          <div class="rail-head">
+            <h2 class="eyebrow">Agents</h2>
+            <button id="agents-refresh" class="btn ghost icon-only" type="button" title="Refresh agents" aria-label="Refresh agents"></button>
+          </div>
+          <div id="agents" class="agents"></div>
+        </aside>
+
+        <section class="stream" aria-label="Stream">
+          <div id="stream-banner" class="stream-banner" hidden></div>
+          <div id="feed" class="feed" tabindex="0"></div>
+          <button id="jump" class="jump" type="button" hidden>Jump to latest</button>
+          <form id="composer" class="composer" autocomplete="off">
+            <button id="wake-toggle" class="btn icon-only" type="button" title="Wake" aria-label="Wake"></button>
+            <button id="mute-toggle" class="btn icon-only" type="button" title="Mute" aria-label="Mute"></button>
+            <textarea id="say" class="field" rows="1" placeholder="Say something to Jarhead… (Enter to send)" aria-label="Say something to Jarhead"></textarea>
+            <button id="send" class="btn primary" type="submit">Send</button>
+            <button id="stop" class="btn danger stop" type="button" title="Stop everything Jarhead is doing">Stop</button>
+          </form>
+        </section>
+
+        <aside class="rail rail-right" aria-label="Status and settings">
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" data-tab="now" aria-selected="true" type="button">Now</button>
+            <button class="tab" role="tab" data-tab="settings" aria-selected="false" type="button">Settings</button>
+            <button class="tab" role="tab" data-tab="ledger" aria-selected="false" type="button">Ledger</button>
+          </div>
+          <div id="tab-now" class="tabpanel" role="tabpanel"></div>
+          <div id="tab-settings" class="tabpanel" role="tabpanel" hidden></div>
+          <div id="tab-ledger" class="tabpanel" role="tabpanel" hidden></div>
+        </aside>
+      </main>
+    </div>
+
+    <dialog id="lightbox" class="lightbox" aria-label="Screenshot">
+      <img alt="" />
+      <div class="caption"></div>
+    </dialog>
+
+    <script type="module" src="./console.js"></script>
+  </body>
+</html>

@@ -1,16 +1,13 @@
 {
-  "name": "@jarvis/live",
-  "version": "0.0.0",
+  "name": "@jarhead/live",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@jarvis/ack": "workspace:*",
-    "@jarvis/answers": "workspace:*",
-    "@jarvis/core": "workspace:*",
-    "@jarvis/voice": "workspace:*",
-    "@jarvis/ears": "workspace:*"
+    "@jarhead/core": "workspace:*",
+    "@jarhead/protocol": "workspace:*"
   }
 }

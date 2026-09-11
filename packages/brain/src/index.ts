@@ -1,0 +1,19 @@
+export type { Brain, BrainTask, BrainSink, BrainResult } from "./brain.ts";
+export { brainSystemPrompt } from "./brain.ts";
+export { ALL_TOOL_SPECS, COMPUTER_TOOL_SPECS, DESKTOP_TOOL_SPECS, AGENT_SPECS, MISC_SPECS, specByName } from "./tools.ts";
+export type { ToolSpec } from "./tools.ts";
+export { ToolRunner, resultText } from "./runner.ts";
+export type { RunnerOptions, RunOutcome } from "./runner.ts";
+export { ResponsesBrain, responsesDelegationConfig, toFunctionTool, progressLine, DEFAULT_RESPONSES_MODEL } from "./responses.ts";
+export type { ResponsesBrainOptions, ResponsesConfigOptions } from "./responses.ts";
+export { ClaudeBrain, zodShape, probeAnthropicAuth } from "./claude.ts";
+export type { ClaudeBrainOptions, McpResult, AuthProbe } from "./claude.ts";
+export { Delegator } from "./delegator.ts";
+export type { DelegatorOptions, DelegatorEvents } from "./delegator.ts";
+export { AnthropicBrain, DEFAULT_ANTHROPIC_MODEL, anthropicReasoning, claudeGeneration, delegationPrompt, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
+export type { AnthropicBrainOptions } from "./anthropic.ts";
+export { OpenAICompatibleBrain, detectCapabilities, isLoopbackHost, isPrivateHost, normalizeBaseUrl, resolveCompatibleApiKey, toChatTool } from "./compatible.ts";
+export type { OpenAICompatibleBrainOptions, CompatibleCapabilities, CompatibleKeyChoice, ChatMessage, ChatTool, ChatToolCall } from "./compatible.ts";
+export { CodexBrain, CODEX_MCP_SERVER, codexAddendum, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexHomeDir, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "./codex.ts";
+export type { CodexBinary, CodexBrainOptions, CodexExecOptions, CodexProbe, CodexProbeOptions, FindCodexOptions } from "./codex.ts";
+// mcp-bridge.ts is a script (the stdio MCP server Codex starts); import it directly, not from here.

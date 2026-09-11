@@ -1,210 +1,150 @@
-# jarvis
+# Jarhead
 
-A local voice assistant for macOS. Ask it something out loud and hear the answer in
-about a second. It can look at your screen, point at things, drive a browser, run
-research on a schedule, and — under governance — propose changes to its own code.
+A voice-first assistant that lives on Kevin's Mac and uses the computer for him.
 
-Runs on this machine. Inspired by [Clicky](https://github.com/farzaa/clicky),
-built on Kevin's brain at `~/repos/kevin-wiki-rebuild`.
+Say something; it answers in under a second because the voice is
+[GPT-Live-1](https://developers.openai.com/api/docs/guides/live), a full-duplex
+model that listens and talks at the same time. Ask it to *do* something and it
+delegates to a brain you pick in Setup — Codex or Claude Code (your existing
+logins, no key), the Anthropic API, any OpenAI-compatible server (OpenRouter,
+Ollama, LM Studio, vLLM… via a base URL and key), or the Live session's own
+Responses backend; `auto`, the default, takes the first one that is signed in or
+configured, in that order. Whichever brain runs has the same native hands on the
+Mac — screenshots, clicks, typing, apps — and a line to every coding-agent
+session on the Mac — Claude Code, Codex, any other agent CLI found on disk or
+running. It is not tied to one vendor or one tool.
 
-## What works
+Design: `docs/REDESIGN.md`. History: `legacy/`.
 
-| | |
-|---|---|
-| Speaks answers | ✅ streaming, sentence-pipelined, mp3 piped to ffplay |
-| Hears you | ✅ push-to-talk, silence endpointing, on-device-ready |
-| Hacker News | ✅ live, disk-cached 15 min |
-| Daily briefing | ✅ from the wiki's briefd projection (and says when it's stale) |
-| "What do I know about X" | ✅ BM25 over your private qmd collection |
-| Web research | ✅ plain fetch + DDG search, escalates to agent-browser only if needed |
-| "Make it recurring" | ✅ contract-validated registration |
-| Runs them on a schedule | ✅ `jarvisd`, bucket-idempotent, verified end to end |
-| Looks at your screen | ✅ capture → downscale → vision, speaks while looking |
-| Points at things | ✅ accessibility-first, vision fallback, real cursor glide |
-| Overlay buddy | ✅ Electron, transparent, always-on-top, IPC-driven |
-| Masks latency with acks | ✅ perceived 9ms p50, wired into every turn |
-| Rewrites its own code | ⚠️ built and tested; never run against this repo for real |
-| Wake word ("hey jarvis") | ⚠️ matches on transcript, not a always-on detector — see below |
-
-230 tests. `pnpm run check` (typecheck + tests + doctor) is clean.
-
-## Try it
+## Run it
 
 ```bash
 pnpm install
-pnpm jarvis permissions                       # three macOS grants; --open to fix
-pnpm jarvis ask "what's on hackernews"        # speaks out loud
-pnpm jarvis text                              # conversation, typed input
-pnpm jarvis                                   # conversation, spoken input
-pnpm jarvis see "what's on my screen"         # vision
-pnpm jarvis point "the address bar"           # finds it and flies the cursor there
-pnpm jarvis web "what is raft consensus"      # research, then answer aloud
-pnpm jarvisd                                  # the daemon that runs your automations
-pnpm overlay                                  # the on-screen buddy
+pnpm build:hands            # compiles the Swift helper to build/jarhead-hands
+pnpm run doctor             # keys, brain, hands permissions, agent sessions, app signing + wake word, toolchain
+pnpm build:mac              # the native app → build/Jarhead.app (Swift; needs Xcode's swiftc)
+cp -R build/Jarhead.app /Applications/ && open -a Jarhead
+# say "jarhead", pass Touch ID (or your passphrase), talk. Asleep = local wake word only, no API spend.
 ```
 
-The flagship loop, verbatim from a real run:
+The first launch opens **Setup**: paste the OpenAI key (the voice), pick a brain
+and check it, grant Microphone / Speech Recognition / Screen Recording /
+Accessibility, choose the wake word and how it authenticates you, and see the
+agent sessions it found. Reopen it any time from the menu-bar icon › *Set Up…*.
+
+The native app owns the microphone, the speaker, and the TCC prompts (grant
+Microphone, Speech Recognition (for the local wake word), Screen Recording, and
+Accessibility to **Jarhead** once; the grants survive rebuilds when a stable
+signing identity is available). It launches the engine daemon (`jarheadd`) from
+this checkout through tsx, so changing the engine means editing this checkout
+(or, once v2 is committed, pulling it); only `apps/mac` and
+`packages/hands/native` need a repackage. The Electron shell it replaced is kept
+in `legacy/shell-electron-v2` and is not built.
+
+Keys live in `~/.jarhead/env` (Setup writes it; see Keys below). Settings you change in the
+Console persist to `~/.jarhead/settings.json`. Everything that happens is
+appended to `~/.jarhead/ledger/<date>.jsonl`; screenshots the brain took are
+under `~/.jarhead/shots/`.
+
+```bash
+pnpm jarhead probe "hey jarhead, what app is open right now?"   # end-to-end test, no mic needed
+pnpm jarhead live                                              # headless in the terminal
+pnpm jarhead status                                            # ask the running app/daemon what it is doing
+pnpm jarhead say "open slack"                                  # type to it
+pnpm jarhead agents                                            # agent sessions found on this Mac (Claude Code, Codex, …)
+pnpm jarheadd                                                  # the engine daemon alone (the app starts it for you)
+```
+
+## How it is put together
 
 ```
-you: what's on hackernews
-jarvis: Muse Glimmer's a new thirty billion parameter model for running AI
-        agents locally, getting a ton of discussion...
-
-jarvis: want me to make that a recurring thing?
-you: go for it, daily
-jarvis: done. whats on hackernews, running daily.
+voice   GPT-Live-1 over wss://api.openai.com/v1/live/sessions — full duplex, client delegation
+brain   auto → codex | claude-code (Agent SDK, MCP tools) | anthropic-api (Messages API) | openai-compatible (Chat Completions at a base URL) | openai-responses (Live delegation, gpt-5.6-terra)
+hands   Swift helper: ScreenCaptureKit + CGEvent + AX, ~ms per action; Claude's 17-member computer toolset on top
+agents  sessions found on this Mac (Claude Code, Codex, other agent CLIs on disk or running) · Claude Code (Agent SDK) to continue one
+app     Swift (apps/mac): ASCII-guy Orb (NSPanel) · Console (SwiftUI) · per-display overlay · AVAudioEngine with echo cancellation
+daemon  jarheadd: the engine over a unix socket, 5-byte binary frames (JSON · mic PCM · speaker PCM)
 ```
 
-...and then, from `jarvisd` on its next tick:
+Packages: `protocol` (shared types) · `core` (config, ledger, policy, marks) ·
+`live` · `hands` · `agents` · `brain` · `engine` · `daemon` · `cli`; the native
+app is `apps/mac`. Retired code (the Electron shell, the herdr and T3 Code
+connectors) is under `legacy/`.
 
-```
-ran jarvis-whats-on-hackernews-2026-08-11 [.../2026-08-11] -> completed
-```
+## Brains
 
-A forced re-tick returns `[]` — the bucket is spent, so it cannot run twice.
+The brain is a setting (Setup, the Console, or `JARHEAD_BRAIN`), never a vendor.
+Every brain drives the same tools through the same policy; only the model differs.
 
-## Measured latency
-
-From `pnpm jarvis bench`, real numbers on this machine, not the plan's estimates:
-
-| stage | p50 | p95 |
+| brain | needs | notes |
 |---|---|---|
-| **perceived — the ack** | **9ms** | **16ms** |
-| route (context gathering) | 4ms | 712ms |
-| LLM time-to-first-token | 651ms | 1611ms |
-| first speakable chunk | 1035ms | 2477ms |
-| real answer audio | 1330ms | 2724ms |
+| `codex` | Codex signed in — the ChatGPT login of Codex Desktop (inside ChatGPT.app) or `codex login`; no key | one `codex exec` per task in a read-only sandbox; acts only through Jarhead's tools, mounted as an MCP server |
+| `claude-code` | your `claude` login (or a valid `ANTHROPIC_API_KEY`) | headless Claude Code via the Agent SDK; inherits your CLAUDE.md and skills |
+| `anthropic-api` | `ANTHROPIC_API_KEY` | the Messages API directly |
+| `openai-compatible` | `JARHEAD_BRAIN_BASE_URL` + a model (+ `JARHEAD_BRAIN_API_KEY` if the server wants one) | OpenAI, OpenRouter, Ollama, LM Studio, vLLM… |
+| `openai-responses` | `OPENAI_API_KEY` (already there for the voice) | the Live session's own Responses delegation |
+| `auto` (default) | — | codex → claude-code → anthropic-api → openai-compatible → openai-responses: the first that is configured and starts |
 
-The real answer is still over the 1s target and LLM TTFT still dominates it. What
-changed is what Kevin experiences: a pre-synthesized acknowledgement plays in
-**9ms**, because it is already on disk and touches no network. The plan hoped for
-a 150–250ms perceived floor.
+`auto` skips what is not configured quietly and reports (Console › problems) a
+backend that is configured but will not start. `pnpm jarhead doctor` has a
+`codex` row (binary, version, signed in, desktop app running) and a `default
+brain` row that says what `auto` resolves to on this Mac. `JARHEAD_BRAIN_MODEL`
+empty means each backend's own default (for Codex, the `model` in
+`~/.codex/config.toml`). Codex never sees Jarhead's secrets and acts only through
+the tools: the bridge talks to this process's daemon socket, or to a private one
+when the engine runs without a daemon or another Jarhead holds the default path.
+Design notes: `docs/REDESIGN.md` §6c.
 
-The ack is chosen from the intent, which is a pure keyword match, deliberately
-*before* context gathering. Keying it on the route instead put the ack at 1153ms —
-after a 1103ms qmd search had already elapsed — which masked almost nothing.
-Greetings get no ack: the real answer is shorter than the ack would be.
+## Rules that shaped it
 
-Three things already bought real time and are worth not regressing:
+- The voice never waits on a tool. Progress flows back through
+  `session.thinking.append`; results through `session.commentary.append`.
+- Reversible actions run without asking. Sending, paying, deleting, publishing
+  and anything in a credential field stop for a spoken yes, and the yes unlocks
+  exactly that action, once.
+- Every delegation records `delegated → first thinking → first commentary →
+  done`. Latency claims come from the ledger, not a table.
+- Idle for ten minutes and the session closes (Live bills per second). Tap the
+  orb, use the hotkey, or open the Console to wake it.
 
-- **Streaming mp3 into `ffplay`** rather than buffering a file. The Clicky teardown
-  found whole-file buffering to be its single biggest latency mistake.
-- **Breaking the first chunk at a clause**, not a full stop. A 168-character opener
-  was 639ms of dead air.
-- **Pre-warming the ElevenLabs TLS connection** during generation, off the critical
-  path. A greeting went 1934ms → 842ms.
+## Hotkeys
 
-## Computer use, honestly
-
-Accessibility-first, vision fallback. AX gives exact element frames and survives
-layout shifts; vision guesses. But measured here:
-
-- **Claude** — AX tree never answers, times out at 6s
-- **Chrome** — 4.3s for 104 mostly-untitled elements
-
-Most of your desktop is Chromium, so the "fallback" is the ordinary path. Vision
-asks for coordinates as fractions of the **window**, not the display: a crop is a
-smaller image so relative error costs fewer pixels, and remapping through the
-window origin handles your above-primary displays for free. Verified — found
-Chrome's address bar and glided to `702,-2085`.
-
-A per-app cache means an app with a hopeless AX tree is only asked once.
-
-Every action is classified before it runs: read-only, pre-approvable,
-always-confirm, hand-off. Unknown actions are hand-off — it fails closed.
-`point` moves the cursor and deliberately does **not** click.
-
-## The wake word compromise
-
-The plan wanted openWakeWord, which is Python + ONNX. You chose TypeScript-only,
-so the wake word matches against a transcript instead — one STT call per
-utterance rather than a continuously running detector. That is a worse latency
-story and it is written down as such rather than hidden. Swapping in a real
-detector later only replaces `detect()` in `@jarvis/ears`.
-
-Matching is deliberately forgiving: "hey travis" and "hey jervis" both count,
-because they're what actually comes back. It will not fire on "I was telling
-Sarah about jarvis yesterday" — the name has to be near the start.
-
-## Self-modification
-
-Built, tested, and never run for real against this repo. The tests are the
-deliverable: a changed diff invalidates a prior approval, an approval cannot be
-replayed across proposals, a failed `pnpm run check` blocks approval, ambiguous
-consent is refusal, and dry-run is the default. Pushing requires a spoken
-approval bound to the exact diff digest.
-
-## Layout
-
-```
-packages/core          config, env, turn/latency contracts
-packages/wiki-bridge   the single seam to kevin-wiki
-packages/voice         mic, STT, streaming TTS, sentence splitter, Claude (+vision)
-packages/ears          wake word, endpointing, barge-in, always-on listening
-packages/answers       HN, brief, wiki memory, intent router
-packages/automations   "make it recurring" — contract-validated registrations
-packages/daemon        jarvisd: the clock that actually runs them
-packages/ack           pre-synthesized acks + earcons to mask model latency
-packages/computer      screen capture, accessibility tree, input, policy, selection
-packages/browser       plain fetch / agent-browser routing, research
-packages/overlay       the Electron buddy, flight choreography, IPC
-packages/selfmod       worktree, proposal, gate, exact-hash approval, push
-packages/agent         turn loop, latency timeline, vision, pointing, CLI
-```
+| | |
+|---|---|
+| `⌥⇧J` | open the Console |
+| `⌥⇧M` | mute / unmute |
+| `⌥⎋` | stop what it is doing |
+| `⌥⇧Space` | wake / sleep |
 
 ## macOS permissions
 
-Three grants, all currently granted here. Each fails in its own confusing way, so
-`pnpm jarvis permissions` probes them by attempting the real operation:
+Microphone, Screen Recording, and Accessibility are keyed to the app that
+launched the process: your terminal for `pnpm jarhead …` / `pnpm jarheadd`,
+Jarhead.app when the app launches the daemon. `pnpm run doctor` shows the grants
+for whatever launched it; without Screen Recording the eyes fall back to
+`screencapture`, without Accessibility clicks and typing silently do nothing.
 
-| grant | without it |
+## Keys
+
+Keys and knobs live in `~/.jarhead/env` (mode 0600). Setup writes it for you:
+the app hands a key to the daemon (`config.set-secrets`), the daemon writes the
+file, restarts the brain and probes; only presence and probe results ever come
+back (`snapshot.setup`), never a value.
+
+| variable | what it is for |
 |---|---|
-| Microphone | ffmpeg **hangs forever** — it does not error |
-| Screen Recording | `screencapture` prints "could not create image from display" |
-| Accessibility | System Events still lists processes but refuses every useful query |
+| `OPENAI_API_KEY` | the voice (GPT-Live-1) and the `openai-responses` brain |
+| `ANTHROPIC_API_KEY` | the `anthropic-api` brain (Claude Code uses your `claude` login instead) |
+| `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain; the key falls back to `OPENAI_API_KEY` |
+| `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`, `JARHEAD_BRAIN_EFFORT` | defaults for what Setup and the Console also set (`auto`, the backend's own default model, `medium`) |
+| `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` |
+| `JARHEAD_IDLE_SLEEP_MINUTES`, `JARHEAD_LOG_LEVEL` | `10`; `debug` / `info` / `warn` / `error` |
+| `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN` | where the CLIs are when they are not on PATH |
 
-That last one is why the probe queries a window's UI elements rather than the
-process list — the process list succeeds without the grant and will convince you
-accessibility works when it does not.
-
-## Configuration
-
-Copy `.env.example` → `.env.local`. Shell env wins over the file.
-
-| var | required | notes |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | yes | Haiku 4.5 for voice and vision |
-| `ELEVENLABS_API_KEY` | yes | streaming TTS — free tier is 10k chars/month |
-| `ELEVENLABS_VOICE_ID` | yes | `pnpm jarvis voices` to change it |
-| `OPENAI_API_KEY` | mic only | STT; macOS 26 on-device is the M1 target |
-| `KEVIN_WIKI_ROOT` | yes | defaults to `~/repos/kevin-wiki-rebuild` |
-
-## How the wiki is consumed
-
-Standalone repo that **links** packages out of the wiki checkout rather than
-vendoring copies. Those packages export raw `./src/index.ts` with no build step,
-and `contracts` resolves its JSON schemas relative to its own directory via
-`import.meta.url` — copying `src/` breaks schema resolution, linking the directory
-does not. Automation registrations are validated against the wiki's real
-`scheduler-registration-registry` contract.
-
-Voice-created automations land in `~/.jarvis/`, **not** in the wiki's
-`schedulers/registrations.json`: that worktree is shared, and direct-writing it
-bypasses the `SCHEDULE_BINDINGS` gate its own ops hub warns about.
-
-What is deliberately *not* bridged, and why, is in `packages/wiki-bridge/src/index.ts`.
-
-## Known limits
-
-- **Electron cannot do per-region click-through on macOS.**
-  `setIgnoreMouseEvents(true, {forward: true})`'s forward option is Windows-only.
-  This is the concrete thing that argues for a native shell if the overlay ever
-  needs to be both see-through and interactive at once.
-- **Screenshots go to the API.** `see` and the vision fallback upload a frame of
-  your screen. Whatever is on it goes too.
-- **Semantic search is unusable here** (qmd vsearch: ~7s + a Metal compile error),
-  so memory answers are BM25 over a manually-indexed collection.
-
-Plan and milestones: `DECISION.md`. Read `DECISION-AMENDMENTS.md` first — it
-overrides the plan where they disagree, including two of its recommendations you
-overrode and one claim it got wrong.
+For the three keys and for `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`,
+`JARHEAD_BRAIN_BASE_URL`, `JARHEAD_VOICE` and `JARHEAD_LIVE_MODEL` the env file
+wins over a value exported by your shell (a stale `OPENAI_API_KEY` in
+`~/.zprofile` was the cause of a doctor failure); the other knobs follow dotenv
+convention (shell wins). The doctor says which source the OpenAI key came from.
+Process knobs (`JARHEAD_STATE_DIR`, `JARHEAD_SOCKET`, `JARHEAD_HANDS_BIN`,
+`JARHEAD_AUTO_WAKE`) are in `apps/mac/README.md`.

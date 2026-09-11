@@ -1,36 +1,44 @@
 #!/usr/bin/env tsx
-import { readConfig } from "@jarvis/core";
-import { buildPrompt, route } from "@jarvis/answers";
-import { Brain } from "@jarvis/voice";
-import { Daemon } from "./daemon.ts";
+import { readConfig, setLogLevel } from "@jarhead/core";
+import { Engine } from "@jarhead/engine";
+import { DaemonServer } from "./server.ts";
 
 /**
- * The launchd entry point. Everything interesting is injected into Daemon so
- * it stays testable; this file is only the wiring that picks the real clock,
- * the real config, and the real answer pipeline.
+ * jarheadd — the engine as a process.
  *
- * The executor is a headless voice turn: same route → prompt → model path as
- * a live question, minus the speaker. The recorded answer text is what gets
- * spoken later when Jarvis delivers the result.
+ * The native app launches this and talks over the socket; the CLI can too. It
+ * never touches a microphone or a speaker itself: audio arrives from whoever is
+ * connected, which is what lets the app own the devices and the TCC prompts.
  */
 
+const args = process.argv.slice(2);
+const socketArg = args.indexOf("--socket");
 const config = readConfig();
-if (!config.anthropicApiKey) {
-  console.error("ANTHROPIC_API_KEY is not set. Run `pnpm run doctor`.");
-  process.exit(1);
+setLogLevel(config.logLevel);
+const socketPath = socketArg >= 0 ? (args[socketArg + 1] ?? config.socketPath) : config.socketPath;
+const autoWake = args.includes("--no-wake") ? false : process.env["JARHEAD_AUTO_WAKE"] !== "0";
+
+const engine = new Engine({ config });
+const server = new DaemonServer(engine, socketPath);
+await server.listen();
+await engine.start();
+// The wake word gate (native app, on-device) owns waking when it is enabled: the
+// session must not open, and start billing, until Kevin has said the word and
+// authenticated.
+const gated = engine.currentSettings.wake.enabled;
+if (autoWake && engine.currentSettings.autoWake && !gated) void engine.wake("auto-wake at daemon start");
+else console.log(`jarheadd: not auto-waking (env JARHEAD_AUTO_WAKE=${process.env["JARHEAD_AUTO_WAKE"] ?? "unset"}, settings.autoWake=${engine.currentSettings.autoWake}, wake word gate=${gated ? "on" : "off"})`);
+console.log(`jarheadd up on ${socketPath} (pid ${process.pid})`);
+
+let stopping = false;
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  console.log(`jarheadd: ${signal}, shutting down`);
+  await Promise.race([Promise.all([server.close(), engine.stop()]), new Promise((r) => setTimeout(r, 6000))]);
+  process.exit(0);
 }
-
-const brain = new Brain(config.anthropicApiKey);
-
-const execute = async (intent: string): Promise<string> => {
-  const routed = await route(intent, { wikiRoot: config.kevinWikiRoot });
-  const result = await brain.stream(buildPrompt(intent, routed), { onToken: () => undefined });
-  return result.text;
-};
-
-const daemon = new Daemon({ config, execute });
-
-daemon.start().catch((e: Error) => {
-  console.error(e.message);
-  process.exit(1);
-});
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => void shutdown(sig));
+// The app closing its end of the socket is not a shutdown; only signals and stdin EOF are.
+process.stdin.on("end", () => void shutdown("stdin closed"));
+process.stdin.resume();

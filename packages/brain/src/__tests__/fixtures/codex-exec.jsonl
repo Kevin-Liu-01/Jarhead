@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"01a08de0-1e16-72a2-938f-79bdda25aad6"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Exceeded skills context budget. All skill descriptions were removed and 443 additional skills were not included in the model-visible skills list."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I’ll check the frontmost app and take a screenshot."}}
+{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"jarhead","tool":"frontmost_app","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"jarhead","tool":"frontmost_app","arguments":{},"result":{"content":[{"type":"text","text":"Finder — window: Desktop"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"jarhead","tool":"screenshot","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"jarhead","tool":"screenshot","arguments":{},"result":{"content":[{"type":"image","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=","mimeType":"image/png"},{"type":"text","text":"1x1 px; scratch display. Coordinates for clicks are pixels of this image."}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"Finder is in front."}}
+{"type":"turn.completed","usage":{"input_tokens":85055,"cached_input_tokens":41856,"cache_write_input_tokens":0,"output_tokens":153,"reasoning_output_tokens":0}}

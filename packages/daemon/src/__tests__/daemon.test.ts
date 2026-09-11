@@ -1,175 +1,157 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JarvisConfig } from "@jarvis/core";
-import { registryPathFor, type RegistrationEntry } from "@jarvis/automations";
-import {
-  AlreadyRunningError,
-  Daemon,
-  acquirePidfile,
-  pidAlive,
-  pidfilePathFor,
-  releasePidfile,
-  type DaemonStatus,
-} from "../daemon.ts";
-import { ipcRequest } from "../ipc.ts";
-import type { RunRecord } from "../runner.ts";
+import type { ToolResult } from "@jarhead/hands";
+import { FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, type DaemonMessage } from "../wire.ts";
+import { DaemonServer, type EngineLike } from "../server.ts";
+import { DaemonClient } from "../client.ts";
 
-const state = (): string => mkdtempSync(join(tmpdir(), "jarvisd-test-"));
+test("frames survive arbitrary chunking and reject oversize", () => {
+  const a = encodeJson({ type: "hello" });
+  const b = encodeFrame(FRAME_MIC, Buffer.from([1, 2, 3, 4, 5, 6]));
+  const all = Buffer.concat([a, b]);
+  const p = new FrameParser();
+  const out = [];
+  for (let i = 0; i < all.length; i += 3) out.push(...p.push(all.subarray(i, i + 3)));
+  assert.equal(out.length, 2);
+  assert.equal(JSON.parse(out[0]!.payload.toString()).type, "hello");
+  assert.equal(out[1]!.type, FRAME_MIC);
+  assert.equal(out[1]!.payload.length, 6);
+  const bad = Buffer.alloc(5);
+  bad.writeUInt8(1, 0);
+  bad.writeUInt32BE(0xffffffff, 1);
+  assert.throws(() => new FrameParser().push(bad));
+});
 
-function configFor(stateDir: string): JarvisConfig {
-  return {
-    anthropicApiKey: undefined,
-    elevenLabsApiKey: undefined,
-    elevenLabsVoiceId: undefined,
-    elevenLabsModelId: "eleven_flash_v2_5",
-    deepgramApiKey: undefined,
-    kevinWikiRoot: stateDir,
-    stateDir,
-    socketPath: join(stateDir, "d.sock"),
-    logLevel: "info",
+class FakeEngine extends EventEmitter implements EngineLike {
+  mic: Buffer[] = [];
+  commands: unknown[] = [];
+  pids: number[] = [];
+  levels: number[] = [];
+  micPermission = "unknown";
+  ledger = { read: () => [{ at: 1, type: "problem", text: "x" }], days: () => ["2026-09-09.jsonl", "2026-09-10.jsonl"] };
+  config = { stateDir: "/tmp/jh-test" };
+  toolCalls: { name: string; input: unknown }[] = [];
+  runner = {
+    run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
+      this.toolCalls.push({ name, input });
+      if (name === "screenshot") return { result: { kind: "image", pngBase64: Buffer.from("png").toString("base64"), width: 100, height: 50, note: "main display" } };
+      if (name === "run_shell") return { result: { kind: "needs-confirmation", pendingId: "p1", question: "About to run rm. Ask Kevin, then stop." } };
+      if (name === "zoom") throw new Error("hands are down");
+      return { result: { kind: "text", text: `${name} ran with ${JSON.stringify(input)}` } };
+    },
   };
-}
-
-function seedRegistry(dir: string, entries: RegistrationEntry[]): void {
-  mkdirSync(join(dir, "automations"), { recursive: true });
-  writeFileSync(
-    registryPathFor(dir),
-    JSON.stringify({
-      schemaVersion: "1",
-      generatedAt: new Date(0).toISOString(),
-      digest: "0".repeat(64),
-      entries,
-    }),
-  );
-}
-
-async function deadPid(): Promise<number> {
-  const child = spawn(process.execPath, ["-e", ""]);
-  await once(child, "exit");
-  return child.pid!;
-}
-
-test("pidAlive: this process is alive, an exited child is not", async () => {
-  assert.ok(pidAlive(process.pid));
-  assert.ok(!pidAlive(await deadPid()));
-});
-
-test("acquirePidfile refuses while the recorded process is alive", () => {
-  const dir = state();
-  acquirePidfile(dir, process.pid);
-  assert.throws(() => acquirePidfile(dir, 99999), AlreadyRunningError);
-  assert.equal(readFileSync(pidfilePathFor(dir), "utf8").trim(), String(process.pid));
-});
-
-test("a stale pidfile is cleaned up and replaced, not fatal", async () => {
-  const dir = state();
-  writeFileSync(pidfilePathFor(dir), `${await deadPid()}\n`);
-  acquirePidfile(dir, process.pid);
-  assert.equal(readFileSync(pidfilePathFor(dir), "utf8").trim(), String(process.pid));
-});
-
-test("releasePidfile only removes its own pidfile", () => {
-  const dir = state();
-  acquirePidfile(dir, process.pid);
-  releasePidfile(dir, 99999);
-  assert.ok(existsSync(pidfilePathFor(dir)), "someone else's release must not drop our lock");
-  releasePidfile(dir, process.pid);
-  assert.ok(!existsSync(pidfilePathFor(dir)));
-});
-
-test("daemon end to end over the socket: tick, status, runs, stop", async () => {
-  const dir = state();
-  const config = configFor(dir);
-  seedRegistry(dir, [
-    {
-      registrationId: "reg-hn",
-      slug: "whats-on-hackernews",
-      workflowId: "research.refresh",
-      profile: "jarvis-voice",
-      schedule: "daily",
-      timezone: "UTC",
-      enabled: true,
-      quietDelivery: false,
-      jitterSeconds: 0,
-      input: { intent: "what's on hackernews" },
-    },
-  ]);
-
-  let now = new Date("2026-08-11T12:00:00.000Z").getTime();
-  let prefetches = 0;
-
-  const daemon = new Daemon({
-    config,
-    execute: async (intent) => `answer to ${intent}`,
-    clock: () => now,
-    // A day between timer ticks: this test drives every tick explicitly.
-    tickMs: 24 * 60 * 60 * 1000,
-    prefetch: async () => {
-      prefetches += 1;
-    },
-    log: () => undefined,
-  });
-
-  try {
-    await daemon.start();
-    assert.equal(prefetches, 1, "the startup tick warms the cache");
-    assert.equal(readFileSync(pidfilePathFor(dir), "utf8").trim(), String(process.pid));
-
-    const status = await ipcRequest(config.socketPath, { cmd: "status" });
-    assert.ok(status.ok);
-    const payload = status.result as DaemonStatus;
-    assert.equal(payload.pid, process.pid);
-    assert.equal(payload.registrations, 1);
-    assert.equal(payload.ticks, 1);
-
-    const sameBucket = await ipcRequest(config.socketPath, { cmd: "tick" });
-    assert.ok(sameBucket.ok);
-    assert.deepEqual(sameBucket.result, [], "the startup tick already spent today's bucket");
-
-    now += 24 * 60 * 60 * 1000;
-    const nextDay = await ipcRequest(config.socketPath, { cmd: "tick" });
-    assert.ok(nextDay.ok);
-    const runs = nextDay.result as RunRecord[];
-    assert.equal(runs.length, 1);
-    assert.equal(runs[0]?.status, "completed");
-
-    const recent = await ipcRequest(config.socketPath, { cmd: "runs", limit: 1 });
-    assert.ok(recent.ok);
-    assert.equal((recent.result as RunRecord[]).length, 1);
-
-    const stop = await ipcRequest(config.socketPath, { cmd: "stop" });
-    assert.ok(stop.ok);
-  } finally {
-    // Idempotent; also covers the failure paths above.
-    await daemon.stop("test cleanup");
+  snapshot(): unknown {
+    return { phase: "asleep" };
   }
+  async command(cmd: unknown): Promise<void> {
+    this.commands.push(cmd);
+  }
+  feedMic(pcm: Buffer): void {
+    this.mic.push(pcm);
+  }
+  reportInputLevel(level: number): void {
+    this.levels.push(level);
+  }
+  setMicrophonePermission(state: string): void {
+    this.micPermission = state;
+  }
+  registerOwnPid(pid: number): void {
+    this.pids.push(pid);
+  }
+  problem(): void {}
+}
 
-  assert.ok(!existsSync(pidfilePathFor(dir)), "stop releases the pidfile");
-  assert.ok(!existsSync(config.socketPath), "stop removes the socket");
+test("server and client round-trip control, audio, and ledger over a unix socket", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const client = new DaemonClient(path);
+  const messages: { type: string }[] = [];
+  const audio: Buffer[] = [];
+  client.on("message", (m) => messages.push(m as { type: string }));
+  client.on("audio", (b) => audio.push(b));
+  await client.connect({ pid: 4242, audio: true });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(messages.map((m) => m.type), ["hello", "snapshot"]);
+  assert.deepEqual(engine.pids, [4242]);
+
+  client.sendJson({ type: "command", command: { type: "wake" } });
+  client.sendJson({ type: "command", command: { type: "nonsense" } as never });
+  client.sendJson({ type: "mic-level", level: 0.4 });
+  client.sendJson({ type: "permission", which: "microphone", state: "granted" });
+  client.sendMic(Buffer.alloc(4800));
+  client.sendJson({ type: "ledger.read", id: "r1", date: "2026-09-10" });
+  client.sendJson({ type: "ledger.days", id: "r2" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(engine.commands, [{ type: "wake" }]);
+  assert.deepEqual(engine.levels, [0.4]);
+  assert.equal(engine.micPermission, "granted");
+  assert.equal(engine.mic[0]?.length, 4800);
+  const types = messages.map((m) => m.type);
+  assert.ok(types.includes("error") && types.includes("ledger.rows") && types.includes("ledger.days"));
+  const days = messages.find((m) => m.type === "ledger.days") as unknown as { days: string[] };
+  assert.deepEqual(days.days, ["2026-09-10", "2026-09-09"]);
+
+  engine.emit("event", { type: "snapshot", snapshot: { phase: "listening" } });
+  engine.emit("event", { type: "speaker-flush" });
+  engine.emit("overlay", { cmd: "clear" });
+  engine.emit("audio", Buffer.alloc(960));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(messages.some((m) => m.type === "overlay"));
+  // A stop/cancel/sleep reaches the speaker as the audio flush control.
+  assert.ok(messages.some((m) => m.type === "audio" && (m as { control?: string }).control === "flush"));
+  assert.equal(audio[0]?.length, 960);
+  assert.equal(encodeFrame(FRAME_SPEAKER, Buffer.alloc(0)).length, 5);
+
+  client.close();
+  await server.close();
 });
 
-test("a second daemon on the same state dir refuses to start", async () => {
-  const dir = state();
-  const config = configFor(dir);
+test("tool.run goes through the engine's runner and answers the asking client only; unknown names are refused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const asker = new DaemonClient(path);
+  const bystander = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  const seenByBystander: DaemonMessage[] = [];
+  asker.on("message", (m) => got.push(m));
+  bystander.on("message", (m) => seenByBystander.push(m));
+  await asker.connect({ pid: 1 });
+  await bystander.connect({ pid: 2 });
 
-  const daemon = new Daemon({
-    config,
-    execute: async () => "unused",
-    tickMs: 24 * 60 * 60 * 1000,
-    prefetch: async () => undefined,
-    log: () => undefined,
-  });
+  asker.sendJson({ type: "tool.run", id: "t1", name: "frontmost_app", input: {} });
+  asker.sendJson({ type: "tool.run", id: "t2", name: "screenshot", input: { display: "main" } });
+  asker.sendJson({ type: "tool.run", id: "t3", name: "run_shell", input: { command: "rm -rf x" } });
+  asker.sendJson({ type: "tool.run", id: "t4", name: "zoom", input: { region: [0, 0, 1, 1] } });
+  asker.sendJson({ type: "tool.run", id: "t5", name: "format_disk", input: {} });
+  await new Promise((r) => setTimeout(r, 80));
 
-  try {
-    await daemon.start();
-    // Same process, so acquirePidfile is exercised directly with a foreign pid.
-    assert.throws(() => acquirePidfile(dir, 99999), AlreadyRunningError);
-  } finally {
-    await daemon.stop("test cleanup");
-  }
+  const results = got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
+  const byId = new Map(results.map((r) => [r.id, r.result]));
+  assert.equal(byId.get("t1")?.kind, "text");
+  assert.match((byId.get("t1") as { text: string }).text, /frontmost_app ran/);
+  assert.equal(byId.get("t2")?.kind, "image");
+  assert.equal((byId.get("t2") as { width: number }).width, 100);
+  assert.equal(byId.get("t3")?.kind, "needs-confirmation");
+  // A runner that throws becomes an error result, not a dropped connection.
+  assert.equal(byId.get("t4")?.kind, "error");
+  assert.match((byId.get("t4") as { message: string }).message, /hands are down/);
+  // Names outside ALL_TOOL_SPECS never reach the runner.
+  assert.equal(byId.get("t5")?.kind, "error");
+  assert.match((byId.get("t5") as { message: string }).message, /unknown tool format_disk/);
+  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app", "screenshot", "run_shell", "zoom"]);
+  assert.equal(seenByBystander.filter((m) => m.type === "tool.result").length, 0, "tool results are not broadcast");
+
+  asker.close();
+  bystander.close();
+  await server.close();
 });

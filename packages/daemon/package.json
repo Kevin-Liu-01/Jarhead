@@ -1,15 +1,14 @@
 {
-  "name": "@jarvis/daemon",
-  "version": "0.0.0",
+  "name": "@jarhead/daemon",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@jarvis/answers": "workspace:*",
-    "@jarvis/automations": "workspace:*",
-    "@jarvis/core": "workspace:*",
-    "@jarvis/voice": "workspace:*"
+    "@jarhead/core": "workspace:*",
+    "@jarhead/engine": "workspace:*",
+    "@jarhead/protocol": "workspace:*"
   }
 }

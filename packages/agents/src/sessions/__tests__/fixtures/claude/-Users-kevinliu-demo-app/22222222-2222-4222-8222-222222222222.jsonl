@@ -1,0 +1,2 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"<command-name>/review</command-name>\n<command-args>PR 12</command-args>"},"uuid":"u1","timestamp":"2026-08-10T09:00:00.000Z","sessionId":"22222222-2222-4222-8222-222222222222","version":"2.1.200"}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PR 12 looks good; one nit on naming."}]},"uuid":"a1","timestamp":"2026-08-10T09:02:00.000Z","sessionId":"22222222-2222-4222-8222-222222222222"}

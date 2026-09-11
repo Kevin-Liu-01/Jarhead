@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Jarhead — orb phase gallery</title>
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <style>
+      body {
+        background:
+          radial-gradient(1200px 600px at 20% 0%, #1d2233 0%, transparent 60%),
+          radial-gradient(900px 500px at 90% 100%, #241f2b 0%, transparent 60%),
+          #14161d;
+        min-height: 100vh;
+        display: grid;
+        place-content: center;
+        gap: 18px;
+        padding: 40px;
+      }
+      h1 {
+        font-size: var(--fs-13);
+        font-weight: 500;
+        color: var(--fg-2);
+        letter-spacing: 0.02em;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, 150px);
+        gap: 22px 14px;
+      }
+      figure {
+        margin: 0;
+        display: grid;
+        justify-items: center;
+        gap: 6px;
+      }
+      figcaption {
+        font-size: var(--fs-12);
+        color: var(--fg-2);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      figcaption .mono {
+        color: var(--fg-3);
+        font-size: var(--fs-11);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Orb — every phase, live levels (dev gallery, not shipped)</h1>
+    <div class="grid" id="grid"></div>
+    <script type="module">
+      import { OrbRenderer } from "../orb/ring.js";
+      import { PHASE_META } from "../shared/phase.js";
+      import { h, dot } from "../shared/dom.js";
+
+      const grid = document.getElementById("grid");
+      const orbs = [];
+      for (const [phase, meta] of Object.entries(PHASE_META)) {
+        const canvas = h("canvas", { width: 96, height: 96 });
+        grid.append(
+          h("figure", null, canvas, h("figcaption", null, dot(meta.token), meta.label, h("span", { class: "mono" }, meta.color))),
+        );
+        const orb = new OrbRenderer(canvas, { size: 96 });
+        orb.setPhase(phase);
+        orbs.push(orb);
+      }
+      // plausible levels so listening/speaking have something to show
+      let t = 0;
+      setInterval(() => {
+        t += 1 / 30;
+        const input = 0.25 + 0.35 * Math.abs(Math.sin(t * 5.1) * Math.sin(t * 1.7));
+        const output = 0.4 + 0.45 * Math.abs(Math.sin(t * 6.7) * Math.sin(t * 1.3));
+        for (const o of orbs) o.setLevels({ input, output });
+      }, 33);
+    </script>
+  </body>
+</html>
