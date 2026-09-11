@@ -25,6 +25,7 @@ pnpm run doctor             # keys, brain, hands permissions, agent sessions, ap
 pnpm build:mac              # the native app → build/Jarhead.app (Swift; needs Xcode's swiftc)
 cp -R build/Jarhead.app /Applications/ && open -a Jarhead
 # say "jarhead", pass Touch ID (or your passphrase), talk. Asleep = local wake word only, no API spend.
+# ⌥⇧C, then circle anything on screen: Jarhead sees exactly that. Click a session in the Console to step into it.
 ```
 
 The first launch opens **Setup**: paste the OpenAI key (the voice), pick a brain

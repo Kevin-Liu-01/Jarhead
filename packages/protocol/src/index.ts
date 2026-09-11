@@ -91,15 +91,76 @@ export type AgentKind = "claude-code" | "sessions";
 
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown" | "offline";
 
+/** The CLI or app behind a session — drives the icon and brand colour in the UI. */
+export type AgentTool = "claude" | "codex" | "cursor" | "gemini" | "opencode" | "amp" | "droid" | "hermes" | "pi" | "other";
+
 export interface AgentInfo {
   /** Stable, connector-scoped: "sessions:claude:<uuid>", "sessions:codex:<id>", "claude-code:<sessionId>". */
   readonly id: string;
   readonly kind: AgentKind;
+  /** Which agent this is (Codex, Claude Code, Cursor…); absent = the connector's default. */
+  readonly tool?: AgentTool;
   readonly name: string;
   readonly status: AgentStatus;
   readonly detail?: string;
   readonly cwd?: string;
   readonly updatedAt: number;
+  /** Total messages in the conversation, when known. */
+  readonly messageCount?: number;
+}
+
+// ------------------------------------------------------- conversations ---
+
+export type AgentRole = "user" | "assistant" | "tool" | "system";
+
+export interface AgentToolCall {
+  readonly name: string;
+  /** Pretty-printed input, truncated by the connector. */
+  readonly input?: string;
+  readonly output?: string;
+  readonly status: "running" | "done" | "error";
+}
+
+/** One turn of an agent's conversation, normalised across Codex / Claude Code / others. */
+export interface AgentMessage {
+  /** Stable within the session (the tool's own message/item id when it has one). */
+  readonly id: string;
+  readonly role: AgentRole;
+  readonly text: string;
+  readonly at: number;
+  readonly tool?: AgentToolCall;
+  /** Reasoning / thinking text rather than a reply. */
+  readonly thinking?: boolean;
+}
+
+/**
+ * A window of an agent's conversation. The engine sends `replace` with the newest
+ * page when a session is opened (and on `agent.history`, prepending older
+ * messages), then `append` deltas while it is open and the file grows.
+ */
+export interface AgentTranscript {
+  readonly agentId: string;
+  readonly messages: readonly AgentMessage[];
+  /** Total messages known in the session (for "showing 40 of 1 200"). */
+  readonly total: number;
+  /** True when `messages` starts at the very first message. */
+  readonly complete: boolean;
+  /** True while the engine is tailing the session file for new turns. */
+  readonly live: boolean;
+}
+
+// ------------------------------------------------------------- marks ---
+
+/** Something Kevin circled on screen for Jarhead: a region, its stroke, and its screenshot. */
+export interface ScreenMark {
+  readonly id: string;
+  readonly rect: Rect;
+  readonly path?: readonly Point[];
+  readonly at: number;
+  /** Relative to the state dir, like screenshot steps. */
+  readonly screenshotPath?: string;
+  /** Handed to a brain already (kept a while for the Console, then dropped). */
+  readonly consumed: boolean;
 }
 
 export interface ConnectorHealth {
@@ -247,6 +308,8 @@ export interface Snapshot {
   readonly brainReady: boolean;
   readonly handsReady: boolean;
   readonly setup: SetupStatus;
+  /** Regions Kevin circled, newest last; the next delegation sees the unconsumed ones. */
+  readonly marks: readonly ScreenMark[];
 }
 
 // --------------------------------------------------------- shell messages ---
@@ -257,7 +320,9 @@ export type EngineEvent =
   | { readonly type: "levels"; readonly levels: AudioLevels }
   | { readonly type: "toast"; readonly text: string; readonly tone: "info" | "warn" | "error" }
   /** Drop whatever is queued for the speaker (stop, cancel, sleep). */
-  | { readonly type: "speaker-flush" };
+  | { readonly type: "speaker-flush" }
+  /** A page of an opened agent's conversation (`replace`), or new turns while it is open (`append`). */
+  | { readonly type: "agent.transcript"; readonly transcript: AgentTranscript; readonly mode: "replace" | "append" };
 
 /**
  * A settings change. `null` clears an optional field (JSON has no way to send
@@ -283,7 +348,17 @@ export type EngineCommand =
   /** Write secrets to ~/.jarhead/env (null removes), reload, restart the brain. */
   | { readonly type: "config.set-secrets"; readonly secrets: Partial<Record<SecretKey, string | null>> }
   /** Check the OpenAI key and the brain; results land in snapshot.setup. */
-  | { readonly type: "config.probe" };
+  | { readonly type: "config.probe" }
+  /** Follow an agent's conversation: newest page now, live turns until closed. */
+  | { readonly type: "agent.open"; readonly agentId: string }
+  | { readonly type: "agent.close"; readonly agentId: string }
+  /** Older turns before message `before`. */
+  | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
+  /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
+  | { readonly type: "mark.add"; readonly rect: Rect; readonly path?: readonly Point[] }
+  | { readonly type: "mark.clear" }
+  /** Exit the daemon with code 75 so the app respawns it on the new code (after a self-edit passed its checks). */
+  | { readonly type: "daemon.restart" };
 
 // ---------------------------------------------------------------- overlay ---
 
@@ -300,11 +375,24 @@ export interface Point {
 }
 
 /** Engine → annotation layer. Global points. */
+/** Colour family of an annotation: accent (Jarhead pointing), ok/warn (feedback), mark (Kevin's own circles). */
+export type OverlayTone = "accent" | "ok" | "warn" | "mark";
+
 export type OverlayCommand =
   | { readonly cmd: "point"; readonly x: number; readonly y: number; readonly label?: string; readonly ttlMs?: number }
   | { readonly cmd: "highlight"; readonly rect: Rect; readonly label?: string; readonly ttlMs?: number }
   | { readonly cmd: "path"; readonly from: Point; readonly to: Point; readonly ttlMs?: number }
   | { readonly cmd: "click-pulse"; readonly x: number; readonly y: number }
+  /** Teaching shapes: drawn on the click-through layer, fading after ttlMs (default 6 s). */
+  | { readonly cmd: "circle"; readonly x: number; readonly y: number; readonly radius: number; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
+  | { readonly cmd: "arrow"; readonly from: Point; readonly to: Point; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
+  | { readonly cmd: "rect"; readonly rect: Rect; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
+  | { readonly cmd: "text"; readonly x: number; readonly y: number; readonly text: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
+  /** A freehand stroke (Kevin's circle echoed back, or a brain drawing). */
+  | { readonly cmd: "stroke"; readonly points: readonly Point[]; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
+  /** The blob flies to a point and hovers there for dwellMs (default 2 s) before drifting home. */
+  | { readonly cmd: "orb.fly"; readonly x: number; readonly y: number; readonly dwellMs?: number; readonly reason?: string }
+  | { readonly cmd: "orb.home" }
   | { readonly cmd: "clear" };
 
 // ----------------------------------------------------------------- ledger ---
@@ -332,7 +420,7 @@ export function isPhase(value: unknown): value is Phase {
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "wake", "sleep", "mute", "unmute", "stop", "say-text", "set-settings", "clear-problems",
-  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe",
+  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {

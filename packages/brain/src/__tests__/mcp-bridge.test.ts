@@ -46,7 +46,7 @@ test("mcp bridge: tool specs become MCP tools verbatim and results become MCP co
   assert.equal(scroll.inputSchema.type, "object");
   assert.deepEqual(scroll.inputSchema.required, ["scroll_direction", "scroll_amount"]);
   assert.deepEqual((scroll.inputSchema.properties as Record<string, { enum?: string[] }>)["scroll_direction"]?.enum, ["up", "down", "left", "right"]);
-  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 32);
+  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 38);
 
   assert.deepEqual(toMcpContent({ kind: "text", text: "hi" }), { content: [{ type: "text", text: "hi" }] });
   const img = toMcpContent({ kind: "image", pngBase64: "AAAA", width: 10, height: 5, note: "n" });

@@ -165,6 +165,13 @@ final class StatusItem: NSObject {
 
         let quit = NSMenuItem(title: "Quit Jarhead", action: #selector(doQuit), keyEquivalent: "q")
         quit.target = self
+        let circle = NSMenuItem(title: "Circle Something…", action: #selector(doMark), keyEquivalent: "c")
+        circle.keyEquivalentModifierMask = [.option, .shift]
+        circle.target = self
+        circle.image = StatusItem.symbol("scope")
+        circle.toolTip = "Draw around anything on screen and Jarhead sees it (⌥⇧C)"
+        menu.addItem(circle)
+
         let setup = NSMenuItem(title: "Set Up…", action: #selector(doSetup), keyEquivalent: "")
         setup.target = self
         setup.image = StatusItem.symbol("gearshape.fill")
@@ -185,6 +192,7 @@ final class StatusItem: NSObject {
     @objc private func doOpenLedger() { actions.openLedgerFolder() }
     @objc private func doQuit() { actions.quit() }
     @objc private func doSetup() { state.openOnboarding() }
+    @objc private func doMark() { state.beginMarkMode() }
 
     // MARK: - wake gate
 

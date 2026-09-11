@@ -1,4 +1,4 @@
-export type { AgentConnector, SendResult, ReadOptions, StartOptions } from "./types.ts";
+export type { AgentConnector, SendResult, ReadOptions, StartOptions, TranscriptOptions, TranscriptPage, TranscriptDelta } from "./types.ts";
 export { agentId, splitAgentId } from "./types.ts";
 export { AgentRegistry } from "./registry.ts";
 export { ClaudeCodeConnector, defaultCanUseTool } from "./claude-code/connector.ts";
@@ -10,3 +10,8 @@ export { defaultConnectors } from "./defaults.ts";
 export type { DefaultConnectorOptions } from "./defaults.ts";
 export { SessionsConnector } from "./sessions/connector.ts";
 export type { SessionsConnectorOptions } from "./sessions/connector.ts";
+export { TranscriptSource, TranscriptParser, readTranscriptPage, DEFAULT_PAGE, MAX_PAGE_BYTES } from "./sessions/transcript.ts";
+export type { ReadLimits } from "./sessions/transcript.ts";
+export { ClaudeTranscriptParser } from "./sessions/claude-transcript.ts";
+export { CodexTranscriptParser } from "./sessions/codex-transcript.ts";
+export { FileTail } from "./sessions/tail.ts";

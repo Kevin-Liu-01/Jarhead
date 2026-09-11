@@ -59,7 +59,7 @@ test("an ordinary click runs; a Send button asks, and yes unlocks exactly that c
 
   hands.elementTitle = "Search";
   assert.equal((await ts.run("left_click", { coordinate: [100, 100] })).kind, "text");
-  assert.deepEqual(pulses, ["click-pulse"]);
+  assert.deepEqual(pulses, ["orb.fly", "click-pulse"], "the blob flies to the click, then the click pulses");
 
   hands.elementTitle = "Send";
   const asked = await ts.run("left_click", { coordinate: [500, 300] });

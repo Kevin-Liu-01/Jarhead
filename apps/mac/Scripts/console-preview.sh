@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Throwaway preview of the Console window with fake data.
 #   Scripts/console-preview.sh [scenario] [out.png]
-# scenario: live | confirm | empty | settings | wake-locked | ledger | light (default live)
+# scenario: live | confirm | empty | settings | wake-locked | ledger | light |
+#           conversation | conversation-codex (default live)
 #   `settings` is asleep with the wake gate listening (Settings tab); `wake-locked`
 #   the same tab with the gate locked out and no passphrase set.
+#   `conversation` steps into the blocked Claude Code session (its transcript, a
+#   permission question with Allow / Deny, circled regions in Now); `conversation-codex`
+#   steps into the finished Codex thread.
 #   `light` is the live scenario in the aqua appearance; PREVIEW_APPEARANCE=light|dark
 #   pins the appearance for any scenario (default dark, so shots are deterministic).
 #   PREVIEW_BRAIN=<BrainKind raw> swaps the brain; PREVIEW_GATE=off|awake overrides

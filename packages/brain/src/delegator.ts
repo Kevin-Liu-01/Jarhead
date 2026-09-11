@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
+import { isAbsolute, join } from "node:path";
 import { logger, newId, Marks, type Ledger } from "@jarhead/core";
 import { chunkForAppend, type LiveSession, type Transcript } from "@jarhead/live";
 import { YES_PATTERN, type ConfirmationState } from "@jarhead/hands";
-import type { Delegation, DelegationStep, DelegationTimings } from "@jarhead/protocol";
-import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
+import type { Delegation, DelegationStep, DelegationTimings, ScreenMark } from "@jarhead/protocol";
+import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
+import { markNote } from "./attachments.ts";
 
 /**
  * Where the voice meets the brain.
@@ -26,6 +28,22 @@ export interface DelegatorOptions {
   /** How much dialogue to hand the brain. */
   readonly dialogueWindowMs?: number;
   readonly now?: () => number;
+  /** Regions Kevin circled since the last task; they ride with the next one and are then consumed. */
+  readonly marks?: PendingMarks;
+}
+
+/** The engine's ScreenMarks as the delegator sees them. */
+export interface PendingMarks {
+  /** Unconsumed marks, oldest first. */
+  pending(): readonly ScreenMark[];
+  /** The marks with these ids were handed to the brain. */
+  consume(ids: readonly string[]): void;
+  /** The brain never took the task (it failed before doing anything); these marks are pending again. */
+  release(ids: readonly string[]): void;
+  /** Resolves once every capture still in flight has landed (or given up), so a mark circled a moment ago rides with this task, pixels included. */
+  settled?(): Promise<void>;
+  /** ScreenMark.screenshotPath is relative to this directory. */
+  readonly stateDir: string;
 }
 
 export interface DelegatorEvents {
@@ -119,7 +137,12 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.opts.ledger?.append({ at: marks.startedAt, type: "delegation.created", delegation });
     this.emit("change", delegation);
     this.emit("phase", "thinking");
-    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}`);
+
+    // A circle still being captured is waited for (it is what "this" means); a
+    // delegation that supersedes this one meanwhile takes the marks instead.
+    const { attachments, ids: markIds } = await this.takeMarks();
+    if (this.running?.delegation.id !== id) return;
+    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}${attachments.length ? ` [${attachments.length} circled region(s)]` : ""}`);
 
     // Live rejects non-null delegation ids on appends while a Responses backend
     // owns the task; general session context is the only channel then.
@@ -132,6 +155,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       confirmation,
       offsetMs,
       signal: abort.signal,
+      ...(attachments.length ? { attachments } : {}),
     };
 
     let result: BrainResult;
@@ -142,6 +166,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     }
     if (this.running?.delegation.id !== id) return; // cancelled or superseded meanwhile
     if (result.status === "failed") {
+      // The brain never got to work on it ("restarting", "already handling a task", a
+      // spawn failure): the circles are still Kevin's next question, not spent.
+      if (markIds.length > 0) this.opts.marks?.release(markIds);
       sink.commentary(`Something went wrong: ${(result.error ?? "unknown error").slice(0, 300)}`);
     } else if (result.summary && result.status === "done") {
       // Only speak the summary when the brain did not already speak it.
@@ -149,6 +176,37 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       if (!spokenAlready) sink.commentary(result.summary);
     }
     this.finish(id, result);
+  }
+
+  /**
+   * Everything Kevin circled since the last task goes in with this one. A capture
+   * still in flight is waited for first. Every pending mark is consumed, with or
+   * without a screenshot — a region the hands could not capture is not worth
+   * showing him twice — and the brain gets the ones that have pixels, as absolute
+   * paths with the standard note (which says how old the circle is once that
+   * matters). The ids come back so a task the brain never took can release them.
+   */
+  private async takeMarks(): Promise<{ attachments: BrainAttachment[]; ids: string[] }> {
+    const source = this.opts.marks;
+    if (!source) return { attachments: [], ids: [] };
+    if (source.settled && source.pending().some((m) => !m.consumed)) {
+      try {
+        await source.settled();
+      } catch (e) {
+        log.warn(`waiting for a mark capture: ${(e as Error).message}`);
+      }
+    }
+    const pending = source.pending().filter((m) => !m.consumed);
+    if (pending.length === 0) return { attachments: [], ids: [] };
+    const attachments: BrainAttachment[] = [];
+    const now = this.now();
+    for (const m of pending) {
+      if (!m.screenshotPath) continue;
+      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: markNote(m.rect, now - m.at) });
+    }
+    const ids = pending.map((m) => m.id);
+    source.consume(ids);
+    return { attachments, ids };
   }
 
   private current(id: string): Delegation | undefined {

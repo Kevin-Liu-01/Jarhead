@@ -102,14 +102,103 @@ public enum AgentStatus: String, Codable {
     }
 }
 
+/// The CLI or app behind a session; drives the icon and brand colour.
+public enum AgentTool: String, Codable, CaseIterable {
+    case claude, codex, cursor, gemini, opencode, amp, droid, hermes, pi, other
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentTool(rawValue: raw) ?? .other
+    }
+    public var label: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .codex: return "Codex"
+        case .cursor: return "Cursor"
+        case .gemini: return "Gemini CLI"
+        case .opencode: return "OpenCode"
+        case .amp: return "Amp"
+        case .droid: return "Droid"
+        case .hermes: return "Hermes"
+        case .pi: return "Pi"
+        case .other: return "Agent"
+        }
+    }
+}
+
 public struct AgentInfo: Codable, Identifiable, Equatable {
     public var id: String
     public var kind: AgentKind
+    public var tool: AgentTool?
     public var name: String
     public var status: AgentStatus
     public var detail: String?
     public var cwd: String?
     public var updatedAt: Double
+    public var messageCount: Int?
+
+    /// The tool, inferred from the id when the connector did not say.
+    public var resolvedTool: AgentTool {
+        if let tool { return tool }
+        if id.hasPrefix("sessions:codex:") { return .codex }
+        if id.hasPrefix("sessions:claude:") || id.hasPrefix("claude-code:") { return .claude }
+        return .other
+    }
+}
+
+// MARK: - Conversations
+
+public enum AgentRole: String, Codable {
+    case user, assistant, tool, system
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentRole(rawValue: raw) ?? .system
+    }
+}
+
+public struct AgentToolCall: Codable, Equatable {
+    public enum Status: String, Codable {
+        case running, done, error
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Status(rawValue: raw) ?? .done
+        }
+    }
+    public var name: String
+    public var input: String?
+    public var output: String?
+    public var status: Status
+}
+
+public struct AgentMessage: Codable, Identifiable, Equatable {
+    public var id: String
+    public var role: AgentRole
+    public var text: String
+    public var at: Double
+    public var tool: AgentToolCall?
+    public var thinking: Bool?
+}
+
+public struct AgentTranscript: Codable, Equatable {
+    public var agentId: String
+    public var messages: [AgentMessage]
+    public var total: Int
+    public var complete: Bool
+    public var live: Bool
+
+    public static func empty(_ agentId: String) -> AgentTranscript {
+        AgentTranscript(agentId: agentId, messages: [], total: 0, complete: false, live: false)
+    }
+}
+
+// MARK: - Marks (what Kevin circled)
+
+public struct ScreenMark: Codable, Identifiable, Equatable {
+    public var id: String
+    public var rect: Rect
+    public var path: [Point2]?
+    public var at: Double
+    public var screenshotPath: String?
+    public var consumed: Bool
 }
 
 public struct ConnectorHealth: Codable, Equatable {
@@ -284,14 +373,16 @@ public struct Snapshot: Codable, Equatable {
     public var handsReady: Bool
     /// Optional on the wire for older daemons.
     public var setup: SetupStatus?
+    public var marks: [ScreenMark]?
 
     public var setupStatus: SetupStatus { setup ?? .unknown }
+    public var screenMarks: [ScreenMark] { marks ?? [] }
 
     public static let empty = Snapshot(
         phase: .asleep, session: nil, transcript: [], delegations: [], agents: [], connectors: [],
         settings: Settings(voice: "cedar", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", micDeviceId: nil, idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, onboarded: nil),
         permissions: Permissions(microphone: .unknown, screenRecording: .unknown, accessibility: .unknown),
-        problems: [], brainReady: false, handsReady: false, setup: nil)
+        problems: [], brainReady: false, handsReady: false, setup: nil, marks: [])
 }
 
 // MARK: - Commands (app → engine). Encoded as {"type": ..., ...} exactly like EngineCommand.
@@ -303,6 +394,15 @@ public enum EngineCommand: Equatable {
     case clearProblems
     case agentSend(agentId: String, text: String)
     case agentRefresh
+    /// Follow / stop following an agent's conversation; older page before a message id.
+    case agentOpen(agentId: String)
+    case agentClose(agentId: String)
+    case agentHistory(agentId: String, before: String)
+    /// Kevin circled a region (global points, y down) — with his stroke.
+    case markAdd(rect: Rect, path: [Point2]?)
+    case markClear
+    /// Restart the engine process on its current code (the app respawns it).
+    case daemonRestart
     case openConsole, openLedger
     case requestPermission(String)
     /// Secrets to write to ~/.jarhead/env; nil removes. Keys: OPENAI_API_KEY, ANTHROPIC_API_KEY, JARHEAD_BRAIN_API_KEY.
@@ -322,6 +422,15 @@ public enum EngineCommand: Equatable {
         case .clearProblems: return ["type": "clear-problems"]
         case .agentSend(let id, let text): return ["type": "agent.send", "agentId": id, "text": text]
         case .agentRefresh: return ["type": "agent.refresh"]
+        case .agentOpen(let id): return ["type": "agent.open", "agentId": id]
+        case .agentClose(let id): return ["type": "agent.close", "agentId": id]
+        case .agentHistory(let id, let before): return ["type": "agent.history", "agentId": id, "before": before]
+        case .markAdd(let rect, let path):
+            var o: [String: Any] = ["type": "mark.add", "rect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]]
+            if let path { o["path"] = path.map { ["x": $0.x, "y": $0.y] } }
+            return o
+        case .markClear: return ["type": "mark.clear"]
+        case .daemonRestart: return ["type": "daemon.restart"]
         case .openConsole: return ["type": "open-console"]
         case .openLedger: return ["type": "open-ledger"]
         case .requestPermission(let which): return ["type": "request-permission", "which": which]
@@ -386,17 +495,63 @@ public struct Point2: Codable, Equatable {
     public var x: Double, y: Double
 }
 
+/// Colour family of an annotation.
+public enum OverlayTone: String, Codable {
+    case accent, ok, warn, mark
+}
+
 public enum OverlayCommand: Equatable {
     case point(x: Double, y: Double, label: String?, ttlMs: Double?)
     case highlight(rect: Rect, label: String?, ttlMs: Double?)
     case path(from: Point2, to: Point2, ttlMs: Double?)
     case clickPulse(x: Double, y: Double)
+    /// Teaching shapes on the click-through layer; fade after ttlMs (default 6 s).
+    case circle(x: Double, y: Double, radius: Double, label: String?, ttlMs: Double?, tone: OverlayTone)
+    case arrow(from: Point2, to: Point2, label: String?, ttlMs: Double?, tone: OverlayTone)
+    case rect(rect: Rect, label: String?, ttlMs: Double?, tone: OverlayTone)
+    case text(x: Double, y: Double, text: String, ttlMs: Double?, tone: OverlayTone)
+    case stroke(points: [Point2], label: String?, ttlMs: Double?, tone: OverlayTone)
+    /// The blob flies to a point and hovers dwellMs (default 2 s) before drifting home.
+    case orbFly(x: Double, y: Double, dwellMs: Double?, reason: String?)
+    case orbHome
     case clear
 
     public init?(json: [String: Any]) {
         guard let cmd = json["cmd"] as? String else { return nil }
         func num(_ k: String) -> Double? { (json[k] as? NSNumber)?.doubleValue }
+        func pt(_ v: Any?) -> Point2? {
+            guard let d = v as? [String: Any], let x = (d["x"] as? NSNumber)?.doubleValue, let y = (d["y"] as? NSNumber)?.doubleValue else { return nil }
+            return Point2(x: x, y: y)
+        }
+        func rectOf(_ v: Any?) -> Rect? {
+            guard let r = v as? [String: Any], let x = (r["x"] as? NSNumber)?.doubleValue, let y = (r["y"] as? NSNumber)?.doubleValue,
+                  let w = (r["w"] as? NSNumber)?.doubleValue, let h = (r["h"] as? NSNumber)?.doubleValue else { return nil }
+            return Rect(x: x, y: y, w: w, h: h)
+        }
+        let tone = OverlayTone(rawValue: json["tone"] as? String ?? "") ?? .accent
         switch cmd {
+        case "circle":
+            guard let x = num("x"), let y = num("y"), let r = num("radius") else { return nil }
+            self = .circle(x: x, y: y, radius: r, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone)
+        case "arrow":
+            guard let f = pt(json["from"]), let t = pt(json["to"]) else { return nil }
+            self = .arrow(from: f, to: t, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone)
+        case "rect":
+            guard let r = rectOf(json["rect"]) else { return nil }
+            self = .rect(rect: r, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone)
+        case "text":
+            guard let x = num("x"), let y = num("y"), let text = json["text"] as? String else { return nil }
+            self = .text(x: x, y: y, text: text, ttlMs: num("ttlMs"), tone: tone)
+        case "stroke":
+            guard let raw = json["points"] as? [Any] else { return nil }
+            let pts = raw.compactMap(pt)
+            guard pts.count >= 2 else { return nil }
+            self = .stroke(points: pts, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone)
+        case "orb.fly":
+            guard let x = num("x"), let y = num("y") else { return nil }
+            self = .orbFly(x: x, y: y, dwellMs: num("dwellMs"), reason: json["reason"] as? String)
+        case "orb.home":
+            self = .orbHome
         case "point":
             guard let x = num("x"), let y = num("y") else { return nil }
             self = .point(x: x, y: y, label: json["label"] as? String, ttlMs: num("ttlMs"))

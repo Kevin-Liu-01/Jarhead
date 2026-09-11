@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         console = ConsoleWindowController(state: state)
         onboarding = OnboardingWindowController(state: state)
         state.openOnboardingHandler = { [weak self] in self?.onboarding.show() }
+        state.beginMarkModeHandler = { [weak self] in self?.overlay.beginMarkMode() }
 
         let socketPath = AppDelegate.socketPath()
 
@@ -245,6 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .stop:
             state.send(.stop)
             audio.flush()
+        case .markScreen:
+            state.beginMarkMode()
         case .toggleWake:
             state.send(state.isAwake ? .sleep : .wake)
         }

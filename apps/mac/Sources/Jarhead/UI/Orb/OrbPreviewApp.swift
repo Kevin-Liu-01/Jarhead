@@ -1,6 +1,7 @@
 #if JARHEAD_ORB_PREVIEW
 import AppKit
 import Combine
+import QuartzCore
 
 // Throwaway preview harness: compiled only by Scripts/orb-preview.sh (which passes
 // -D JARHEAD_ORB_PREVIEW). Cycles the phases with fake levels, fires overlay
@@ -11,7 +12,12 @@ import Combine
 //   ORB_X / ORB_Y          CG top-left position of the orb (default 200,200)
 //   ORB_PHASE_SECONDS      seconds per phase (default 2.5)
 //   ORB_PHASES             comma list to cycle (default all)
-//   ORB_EXPAND=1           expand the capsule after 1 s (and screenshot it at 2.2 s)
+//   ORB_EXPAND=1           expand the capsule after ORB_EXPAND_AT s (default 1; screenshot 1.2 s later)
+//   ORB_TOGGLE_AT=s        toggle the capsule again at that time (with ORB_EXPAND: collapse it), printing
+//                          the flight phase and the perch — with ORB_FLY: expand mid-hover, collapse,
+//                          and the blob must go home, not adopt the hover spot
+//   ORB_HIDE_AT / ORB_SHOW_AT=s   hide() / show() the orb at those times, printing the flight phase and
+//                          where the body is (hide mid-flight: it must reappear on its perch, flight over)
 //   ORB_CLICK_TEST=1       synthetic clicks at 1.5 s: the blob (expects expand), then the
 //                          capsule's Stop and Console buttons (expects a stop command and
 //                          openConsole()); prints each result
@@ -57,6 +63,18 @@ import Combine
 //                          backdrop colour) instead of screencapture, which needs the Screen
 //                          Recording grant for whatever launched the harness. Automatic when
 //                          screencapture fails.
+//   ORB_FLY="x,y;x,y;…"    orb.fly commands (CG points) sent on state.overlayCommands, the
+//                          first at ORB_FLY_AT s (default 1.2), then ORB_FLY_EVERY s apart
+//                          (default 2), dwellMs ORB_FLY_DWELL (default 2000). Each target
+//                          gets a small ring window so "beside the target" is visible. With
+//                          ORB_SHOT_DIR, screenshots fly-outbound (in flight, trail behind),
+//                          fly-hover (parked by the target) and fly-home (drifting back),
+//                          framed to take in the perch, the target and the ghosts; prints
+//                          the flight phase, speed and ghost count as it goes, each take-off's
+//                          landing spot, and after each command the hover left / whether it is
+//                          waiting for Kevin's own throw to land (ORB_FLING just before it)
+//   ORB_FLY_HOME=1         send orb.home ORB_FLY_HOME_AT s after the last orb.fly (default 1.0)
+//   ORB_REDUCE_MOTION=1    pretend the system's reduce-motion is on (no trail, softer cues)
 
 @main
 struct OrbPreviewMain {
@@ -81,6 +99,13 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var backdrop: NSWindow?
     var obstacleWindow: NSWindow?
 
+    // Flights: the targets' ring windows and which fly shots are still owed.
+    var targetWindows: [NSWindow] = []
+    var flyTargets: [CGPoint] = []
+    var flyShotsOwed: Set<String> = []
+    var lastFlightPhase = "none"
+    var flightPhaseSince = 0.0
+
     var shotDir: String?
     var shotPrefix = "preview-blob-"
     var shotPress = 0.3
@@ -90,6 +115,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var restShotTaken = false
     var wasMoving = false
     var lastLog = 0.0
+    /// Seconds since launch, prefixed to the flight log lines so hovers and settles can be timed.
+    let launchedAt = CACurrentMediaTime()
+    var stamp: String { String(format: "%6.2f s", CACurrentMediaTime() - launchedAt) }
 
     // The wake gate cycle.
     var gates: [String] = []
@@ -124,7 +152,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
 
         state.sendHandler = { cmd in
             if let data = try? JSONSerialization.data(withJSONObject: cmd.json), let s = String(data: data, encoding: .utf8) {
-                print("send:", s)
+                print(self.stamp, "send:", s)
             }
         }
         state.openConsoleHandler = { print("openConsole()") }
@@ -288,20 +316,51 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     self.orb.previewFling(vx: p[0], vy: p[1])
                     self.restShotTaken = false
-                    print("fling:", p[0], p[1], "from CG", self.orb.previewFrameCG.origin)
+                    print(self.stamp, "fling:", p[0], p[1], "from CG", self.orb.previewFrameCG.origin)
                     fflush(stdout)
                 }
             }
         }
         if env["ORB_EXPAND"] == "1" {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.orb.toggleExpanded()
-                print("expanded")
+            let expandAt = Double(env["ORB_EXPAND_AT"] ?? "") ?? 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + expandAt) { [weak self] in
+                guard let self else { return }
+                self.orb.toggleExpanded()
+                print("expanded (flight was \(self.lastFlightPhase); goes home on collapse: \(self.orb.previewHomeAfterCollapse))")
+                fflush(stdout)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + expandAt + 1.2) { [weak self] in
                 // With a gate cycle the gate-<name>-expanded shot covers it.
                 guard let self, let dir = self.shotDir, self.gates.isEmpty else { return }
                 self.shoot("\(dir)/\(self.shotPrefix)expanded.png", note: "expanded")
+            }
+        }
+        if let at = Double(env["ORB_TOGGLE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                self.orb.toggleExpanded()
+                print("toggled -> expanded: \(self.orb.previewIsExpanded), flight: \(self.orb.previewFlightPhase), perch: \(self.orb.previewPerchCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil")")
+                fflush(stdout)
+            }
+        }
+        if let at = Double(env["ORB_HIDE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let before = self.orb.previewFlightPhase
+                self.orb.hide()
+                let f = self.orb.previewFrameCG
+                print(String(format: "hide (flight was %@) -> visible %d, flight %@, body CG %.0f,%.0f", before, self.orb.isVisible ? 1 : 0, self.orb.previewFlightPhase, f.midX, f.midY))
+                fflush(stdout)
+            }
+        }
+        if let at = Double(env["ORB_SHOW_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                self.orb.show()
+                let f = self.orb.previewFrameCG
+                print(String(format: "show -> visible %d, flight %@, moving %d, body CG %.0f,%.0f, perch %@", self.orb.isVisible ? 1 : 0, self.orb.previewFlightPhase,
+                             self.orb.previewIsMoving ? 1 : 0, f.midX, f.midY, self.orb.previewPerchCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"))
+                fflush(stdout)
             }
         }
         if env["ORB_CLICK_TEST"] == "1" {
@@ -395,6 +454,54 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                 fflush(stdout)
             }
         }
+        if env["ORB_REDUCE_MOTION"] == "1" { orb.previewSetReducedMotion(true) }
+        if let spec = env["ORB_FLY"] {
+            flyTargets = spec.split(separator: ";").compactMap { pair -> CGPoint? in
+                let p = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                return p.count == 2 ? CGPoint(x: p[0], y: p[1]) : nil
+            }
+            let at = Double(env["ORB_FLY_AT"] ?? "") ?? 1.2
+            let every = Double(env["ORB_FLY_EVERY"] ?? "") ?? 2.0
+            let dwell = Double(env["ORB_FLY_DWELL"] ?? "") ?? 2000
+            if shotDir != nil { flyShotsOwed = ["outbound", "hovering", "homing"] }
+            for (i, target) in flyTargets.enumerated() {
+                // A ring where the target is, so the shots show the blob parked beside it and not on it.
+                let ring = NSWindow(contentRect: NSRect(x: target.x - 14, y: mainMaxY - target.y - 14, width: 28, height: 28),
+                                    styleMask: [.borderless], backing: .buffered, defer: false)
+                ring.level = .floating
+                ring.isOpaque = false
+                ring.backgroundColor = .clear
+                ring.ignoresMouseEvents = true
+                ring.hasShadow = false
+                ring.isReleasedWhenClosed = false
+                ring.contentView = TargetRingView(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+                ring.orderFrontRegardless()
+                targetWindows.append(ring)
+                DispatchQueue.main.asyncAfter(deadline: .now() + at + every * Double(i)) { [weak self] in
+                    guard let self else { return }
+                    print(self.stamp, String(format: "orb.fly -> CG %.0f,%.0f (dwell %.0f ms) from CG %.0f,%.0f", target.x, target.y, dwell,
+                                 self.orb.previewFrameCG.midX, self.orb.previewFrameCG.midY))
+                    fflush(stdout)
+                    self.state.overlayCommands.send(.orbFly(x: target.x, y: target.y, dwellMs: dwell, reason: "preview \(i + 1)"))
+                    // The command is delivered on the next turn of the run loop; report what it did.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self else { return }
+                        print(String(format: "  -> flight %@, hover left %.2f s, waiting for Kevin's motion: %d", self.orb.previewFlightPhase,
+                                     self.orb.previewHoverRemaining, self.orb.previewHasPendingFly ? 1 : 0))
+                        fflush(stdout)
+                    }
+                }
+            }
+            if env["ORB_FLY_HOME"] == "1", !flyTargets.isEmpty {
+                let homeAt = at + every * Double(flyTargets.count - 1) + (Double(env["ORB_FLY_HOME_AT"] ?? "") ?? 1.0)
+                DispatchQueue.main.asyncAfter(deadline: .now() + homeAt) { [weak self] in
+                    guard let self else { return }
+                    print(self.stamp, "orb.home (phase was \(self.orb.previewFlightPhase))")
+                    fflush(stdout)
+                    self.state.overlayCommands.send(.orbHome)
+                }
+            }
+        }
         if env["ORB_OVERLAY"] == "1" {
             let base = CGPoint(x: x + 200, y: y + 40)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
@@ -442,18 +549,32 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         let now = CACurrentMediaTime()
         let moving = orb.previewIsMoving
         let frame = orb.previewFrameCG
+        let phase = orb.previewFlightPhase
+        if phase != lastFlightPhase {
+            print(stamp, String(format: "flight: %@ -> %@ at CG %.0f,%.0f speed %.0f ghosts %d", lastFlightPhase, phase, frame.midX, frame.midY,
+                         orb.previewBodySpeed, orb.previewGhostFrames.count))
+            fflush(stdout)
+            lastFlightPhase = phase
+            flightPhaseSince = now
+        }
         if moving, now - lastLog > 0.25 {
             lastLog = now
-            print(String(format: "body: CG %.0f,%.0f press %.2f", frame.minX, frame.minY, orb.previewMaxPress))
+            if phase == "none" {
+                print(String(format: "body: CG %.0f,%.0f press %.2f", frame.minX, frame.minY, orb.previewMaxPress))
+            } else {
+                print(stamp, String(format: "body: CG %.0f,%.0f press %.2f %@ speed %.0f ghosts %d", frame.minX, frame.minY, orb.previewMaxPress,
+                             phase, orb.previewBodySpeed, orb.previewGhostFrames.count))
+            }
             fflush(stdout)
         }
         if wasMoving, !moving {
-            print(String(format: "settled: CG %.0f,%.0f", frame.minX, frame.minY))
+            print(stamp, String(format: "settled: CG %.0f,%.0f (%@)", frame.minX, frame.minY, phase))
             fflush(stdout)
         }
         wasMoving = moving
 
         guard let dir = shotDir else { return }
+        if !flyShotsOwed.isEmpty, flyShot(phase: phase, now: now, dir: dir) { return }
         if moving, squishShots < 4, orb.previewMaxPress >= shotPress, now - lastShotAt > 0.5 {
             squishShots += 1
             lastShotAt = now
@@ -474,15 +595,59 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The three fly shots, each once: outbound while it is really moving with a ghost
+    /// or two behind it, hover once it has been parked 0.45 s, home 0.3 s into the
+    /// drift. Framed to include the target (out, hover), the wake (out, home) and the
+    /// perch (home). Returns true when a shot was taken this tick.
+    private func flyShot(phase: String, now: Double, dir: String) -> Bool {
+        guard flyShotsOwed.contains(phase) else { return false }
+        let since = now - flightPhaseSince
+        let speed = orb.previewBodySpeed
+        let ghosts = orb.previewGhostFrames
+        let mainMaxY = NSScreen.screens.first?.frame.maxY ?? 0
+        func cg(_ r: NSRect) -> CGRect { CGRect(x: r.minX, y: mainMaxY - r.maxY, width: r.width, height: r.height) }
+        var extra: CGRect?
+        func include(_ r: CGRect) { extra = extra.map { $0.union(r) } ?? r }
+        let target = flyTargets.last.map { CGRect(x: $0.x - 40, y: $0.y - 40, width: 80, height: 80) }
+        let name: String
+        switch phase {
+        case "outbound":
+            guard since > 0.12, speed > 500, ghosts.count >= 1 || since > 0.4 else { return false }
+            name = "outbound"
+            if let target { include(target) }
+            for g in ghosts { include(cg(g)) }
+        case "hovering":
+            guard since > 0.45 else { return false }
+            name = "hover"
+            if let target { include(target) }
+        case "homing":
+            guard since > 0.3, speed > 150 || since > 0.8 else { return false }
+            name = "home"
+            for g in ghosts { include(cg(g)) }
+            if let perch = orb.previewPerchCG {
+                let s = OrbPanelController.collapsedSize
+                include(CGRect(x: perch.x - s.width / 2, y: perch.y - s.height / 2, width: s.width, height: s.height))
+            }
+        default:
+            return false
+        }
+        flyShotsOwed.remove(phase)
+        lastShotAt = now
+        shoot("\(dir)/\(shotPrefix)fly-\(name).png", note: String(format: "%@, speed %.0f, %d ghosts", phase, speed, ghosts.count), extra: extra)
+        return true
+    }
+
     /// Freeze everything, capture the panel plus a margin of desktop, let go.
     /// `screencapture -R` needs the Screen Recording grant for whatever launched the
     /// harness; without it (ORB_SHOT_INPROCESS=1, or when screencapture fails) the
     /// shot is drawn by this process instead — the backdrop colour, then the panel's
     /// own layer tree — which shows the orb exactly and nothing of the desktop.
-    private func shoot(_ path: String, note: String) {
+    /// `extra` (CG) widens the region to take in more than the panel.
+    private func shoot(_ path: String, note: String, extra: CGRect? = nil) {
         orb.previewFreeze(true)
         defer { orb.previewFreeze(false) }
         var f = orb.previewFrameCG.insetBy(dx: -48, dy: -48)
+        if let extra { f = f.union(extra.insetBy(dx: -24, dy: -24)) }
         // Keep the region on the display the orb is on; a region that spills off it comes back at 1x.
         let mainMaxY = NSScreen.screens.first?.frame.maxY ?? 0
         let centre = CGPoint(x: f.midX, y: f.midY)
@@ -535,6 +700,17 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             cg.setFillColor(ow.backgroundColor.cgColor)
             cg.fill(ow.frame.offsetBy(dx: -regionAK.minX, dy: -regionAK.minY))
         }
+        // Flight targets (rings) and the wake, under the blob, as on screen.
+        let acting = OrbPalette.acting
+        for t in flyTargets {
+            let c = CGPoint(x: t.x - f.minX, y: (mainMaxY - t.y) - regionAK.minY)
+            cg.setStrokeColor(acting.cgColor(alpha: 0.9))
+            cg.setLineWidth(2)
+            cg.strokeEllipse(in: CGRect(x: c.x - 10, y: c.y - 10, width: 20, height: 20))
+            cg.setFillColor(acting.cgColor(alpha: 0.9))
+            cg.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
+        }
+        orb.previewRenderTrail(in: cg, offset: regionAK.origin)
         let pf = orb.previewPanelFrame
         cg.saveGState()
         cg.translateBy(x: pf.minX - regionAK.minX, y: pf.minY - regionAK.minY)
@@ -547,6 +723,27 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         } catch {
             print("shot failed:", error)
         }
+    }
+}
+
+/// A flight target for the eye: a ring in the acting colour with a dot at the point.
+final class TargetRingView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("TargetRingView is code-only") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let cg = NSGraphicsContext.current?.cgContext else { return }
+        let c = CGPoint(x: bounds.midX, y: bounds.midY)
+        let acting = OrbPalette.acting
+        cg.setStrokeColor(acting.cgColor(alpha: 0.9))
+        cg.setLineWidth(2)
+        cg.strokeEllipse(in: CGRect(x: c.x - 10, y: c.y - 10, width: 20, height: 20))
+        cg.setFillColor(acting.cgColor(alpha: 0.9))
+        cg.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
     }
 }
 #endif

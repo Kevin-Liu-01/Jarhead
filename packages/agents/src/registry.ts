@@ -1,6 +1,6 @@
 import { logger } from "@jarhead/core";
 import type { AgentInfo, ConnectorHealth } from "@jarhead/protocol";
-import { splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions } from "./types.ts";
+import { splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "./types.ts";
 
 /**
  * All connectors behind one door. The brain's `agents_*` tools call this; the
@@ -121,6 +121,19 @@ export class AgentRegistry {
   async interrupt(agentIdValue: string): Promise<void> {
     const c = this.connectorFor(agentIdValue);
     await c.interrupt?.(agentIdValue);
+  }
+
+  /** A page of an agent's conversation; rejects when its connector keeps no transcript. */
+  async transcript(agentIdValue: string, opts?: TranscriptOptions): Promise<TranscriptPage> {
+    const c = this.connectorFor(agentIdValue);
+    if (!c.transcript) throw new Error(`${c.kind} keeps no conversation transcript`);
+    return c.transcript(agentIdValue, opts);
+  }
+
+  /** Follow an agent's conversation; undefined when its connector cannot. `onEnd` hears when the tail could not start or stopped. */
+  watch(agentIdValue: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): (() => void) | undefined {
+    const c = this.connectorFor(agentIdValue);
+    return c.watch?.(agentIdValue, onDelta, onEnd);
   }
 }
 

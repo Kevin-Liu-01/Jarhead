@@ -134,6 +134,25 @@ signature), and switch the new row on.
 No hardened-runtime exceptions: spawning node and the helper is unaffected by the
 hardened runtime, which governs only what loads into the app's own process.
 
+## Stepping into sessions, circling the screen, watching it fly
+
+- **Sessions** in the Console's left rail carry the mark and colour of the agent
+  that owns them (Claude Code, Codex, Cursor, Gemini…). Click one to step into
+  the conversation: every turn, tool call and fold of reasoning, growing live
+  while the agent works (the engine tails the session file), with a composer
+  that talks to that agent and Allow / Deny for a resumed session's questions.
+- **⌥⇧C** (or the menu-bar *Circle Something…*) enters mark mode: the overlay
+  takes one stroke, Kevin circles anything, the engine screenshots that region
+  and hands it to the brain with the next task; Live is told he circled
+  something. Escape cancels; the mode times out after 20 s.
+- **Flight and drawing.** When the brain acts, the blob flies to the target,
+  hovers while the hands work, and drifts home; the overlay pulses clicks,
+  traces drags and frames regions being read. Brains have `show_circle`,
+  `show_arrow`, `show_rect`, `show_text`, `show_stroke` and `show_clear` to
+  teach on the click-through layer; shapes fade after a few seconds.
+
+The contract for all of it is in `docs/REDESIGN.md` §9.
+
 ## Wake word (`Sources/Jarhead/Wake`)
 
 While the engine is asleep nothing is billed and nothing leaves the Mac: the app

@@ -400,3 +400,79 @@ they were superseded, so the launch tree holds only what runs:
   first-class device-pairing flow (`/api/auth/pairing-token` → `/oauth/token`
   exchange) and Jarhead paired like a phone would; the principle — never read
   another app's token store — stands for any future connector.
+
+## 9. Sessions you can step into, a screen you can circle, a blob that flies (planned 2026-09-10, built the same night)
+
+Kevin: "for sessions use the agent icons and color for what they are. and be able
+to hop in the actual conversations and see everything and talk with it like it's
+the actual agent app in like codex or claude code. but then also be able to circle
+stuff on my screen for jarhead, and jarhead should also be able to fly around,
+select stuff, show the actions that run in the background with jarhead actually
+flying around, it can teach you by creating shapes and showing stuff."
+
+### The vision
+
+Three loops share one surface — Kevin's screen — and one presence, the blob.
+
+1. **Sessions are first-class conversations.** The agents rail shows each session
+   with the mark and colour of the agent that owns it (Codex, Claude Code,
+   Cursor, Gemini…). Clicking one *steps into it*: the full conversation renders
+   in the stream — every user turn, assistant reply, tool call with its input and
+   output, reasoning folded away — and keeps growing live while the agent works,
+   because the engine tails the session file. The composer at the bottom talks
+   to *that* agent; a resumed Claude Code session's permission questions appear
+   as yes/no right there. It should feel like sitting in Codex Desktop or Claude
+   Code, not like reading a log.
+2. **Kevin can point.** ⌥⇧C (or the orb menu) enters mark mode: the overlay
+   stops being click-through for one stroke, Kevin circles anything, the stroke
+   is echoed back on the layer, and the engine screenshots the circled region.
+   The mark is *context*: Live hears that Kevin circled something, the next
+   delegation carries the image and the region, and every brain (Codex via
+   `-i`, Claude via image blocks, Anthropic API, OpenAI-compatible, Responses)
+   sees it. "What is this?" while circling a dialog just works.
+3. **Jarhead shows its work.** When a brain acts, the blob flies to where the
+   action lands, hovers while the hands click, type or scroll, and the overlay
+   pulses the click, traces the drag, and frames the region being read. When a
+   brain explains, it can *draw*: circles, arrows, rectangles, freehand strokes
+   and short labels on the click-through layer, fading after a few seconds — so
+   "the button is here, then drag this there" is a shape on the screen, not a
+   sentence. The blob's flight is the same fluid body: a spring flight, an
+   impact squish on landing, a drift home when it is done.
+
+### Architecture
+
+```
+Console ── agent.open ──► Engine ── registry.transcript/watch ──► sessions connector
+   ▲  agent.transcript (replace/append)                       (Claude JSONL, Codex rollouts,
+   │                                                            fs.watch tail while open)
+   └── composer ── agent.send ──► runners (Codex exec/queue, Claude SDK resume)
+
+Overlay ── mark mode stroke ── mark.add {rect,path} ──► Engine ── hands.zoom(rect) → shots/
+                                                            │      pending ScreenMark, Live note
+                                                            └──► Delegator → BrainTask.attachments → every brain
+
+ToolRunner (click/type/scroll/drag/zoom) ──► overlay events: orb.fly → click-pulse / path / rect
+Brain tools show_circle / show_arrow / show_rect / show_text / show_stroke / show_clear ──► overlay shapes
+Orb ◄── overlay commands (orb.fly / orb.home) ── spring flight, hover, drift home
+```
+
+### Contract (packages/protocol — the truth; Model/Protocol.swift mirrors it)
+
+- `AgentInfo.tool: AgentTool` ("claude" | "codex" | "cursor" | "gemini" | "opencode" | "amp" | "droid" | "hermes" | "pi" | "other") and `messageCount`.
+- `AgentMessage {id, role: user|assistant|tool|system, text, at, tool?: {name,input?,output?,status}, thinking?}`;
+  `AgentTranscript {agentId, messages, total, complete, live}`.
+- Commands `agent.open` / `agent.close` / `agent.history {before}`; event `agent.transcript {transcript, mode: replace|append}`
+  (the daemon forwards it as a JSON message of the same name).
+- `ScreenMark {id, rect, path?, at, screenshotPath?, consumed}` in `Snapshot.marks`; commands `mark.add {rect, path?}` / `mark.clear`.
+- Overlay: `circle` / `arrow` / `rect` / `text` / `stroke` (with `tone: accent|ok|warn|mark`, `ttlMs`), `orb.fly {x,y,dwellMs?,reason?}`, `orb.home`.
+- Brain: `BrainTask.attachments?: [{path, mediaType, note}]`; tools `show_circle`, `show_arrow`, `show_rect`, `show_text`, `show_stroke`, `show_clear`.
+- App: hotkey ⌥⇧C → `AppState.beginMarkMode()` → `OverlayManager.beginMarkMode()`; `AppState.transcripts[agentId]` fed by the daemon client.
+
+### Brand marks
+
+No vendor logos ship in the bundle. Each tool gets a drawn glyph and its colour:
+Claude Code — a four-armed asterisk in Anthropic terracotta `#d97757`; Codex — a
+`>_` prompt in paper on ink (OpenAI's mono); Cursor — a pointer arrow in paper;
+Gemini — a four-point sparkle in `#4796e3`; OpenCode — a bracket pair in `#6ee7a0`;
+Amp — a bolt in `#ffb454`; Droid / Hermes / Pi — a monogram in titanium. The glyph
+is the row's icon; the colour is the status dot's ring and the conversation header.

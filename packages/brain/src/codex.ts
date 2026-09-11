@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { LineSplitter, REPO_ROOT, logger } from "@jarhead/core";
 import { DaemonClient, DaemonServer, type EngineLike } from "@jarhead/daemon";
 import { SECRET_KEYS, type Effort } from "@jarhead/protocol";
-import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
+import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { brainSystemPrompt } from "./brain.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
@@ -238,6 +238,8 @@ export interface CodexExecOptions {
   /** MCP server start / per-tool budgets, in seconds. */
   readonly startupTimeoutSec?: number | undefined;
   readonly toolTimeoutSec?: number | undefined;
+  /** PNGs attached to the prompt with `-i` (the regions Kevin circled). */
+  readonly images?: readonly string[] | undefined;
 }
 
 /** The argv of one delegation; the prompt itself arrives on stdin (`-`). */
@@ -254,6 +256,8 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
     // Kevin's config.toml wires Codex's own computer-use, browser and REPL servers;
     // loaded, they would act on the Mac around Jarhead's policy. Auth still comes from CODEX_HOME.
     "--ignore-user-config",
+    // `-i <FILE>...` is variadic; one flag per file, and a flag always follows, so it never swallows the `-`.
+    ...(o.images ?? []).flatMap((p) => ["-i", p]),
     ...(o.model ? ["-m", o.model] : []),
     ...(o.effort ? ["-c", `model_reasoning_effort=${toml(codexEffort(o.effort))}`] : []),
     "-c",
@@ -452,12 +456,13 @@ export class CodexBrain implements Brain {
     return path;
   }
 
-  private prompt(task: BrainTask): string {
+  /** The whole prompt; `attached` are the images going in with `-i`, so the preamble numbers exactly those. */
+  private prompt(task: BrainTask, attached: readonly BrainAttachment[]): string {
     const parts = [brainSystemPrompt(this.opts.userName), codexAddendum(this.opts.userName)];
     if (this.history.length > 0) {
       parts.push(["Earlier in this session:", ...this.history.flatMap((h) => [`${this.opts.userName ?? "Kevin"} said: "${h.request}"`, `You answered: ${h.answer}`])].join("\n"));
     }
-    parts.push(delegationPrompt(task, this.opts.userName));
+    parts.push(delegationPrompt(task, this.opts.userName, attached));
     return parts.join("\n\n");
   }
 
@@ -466,6 +471,7 @@ export class CodexBrain implements Brain {
     if (!this.ready || !probe?.bin || !this.toolSocket) return Promise.resolve({ status: "failed", error: this.readyDetail });
     if (this.current) return Promise.resolve({ status: "failed", error: "already handling a task" });
     if (task.signal.aborted) return Promise.resolve({ status: "cancelled" });
+    const attached = existingAttachments(task);
     const args = codexExecArgs({
       cwd: this.cwd(),
       model: this.model ?? probe.configModel,
@@ -474,6 +480,7 @@ export class CodexBrain implements Brain {
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
+      images: attached.map((a) => a.path),
     });
     const base = this.opts.env ?? process.env;
     const env = codexEnv(base, this.opts.codexHome ?? codexHomeDir(base));
@@ -517,7 +524,7 @@ export class CodexBrain implements Brain {
         this.settle(state, code, signal);
       });
       child.stdin?.on("error", (e) => log.debug(`stdin: ${e.message}`));
-      child.stdin?.end(this.prompt(task));
+      child.stdin?.end(this.prompt(task, attached));
     });
   }
 
@@ -713,6 +720,11 @@ export class CodexBrain implements Brain {
     this.started = false; // a later start() probes again
     this.history = [];
   }
+}
+
+/** The circled regions Codex gets with `-i`; a file already gone is left out rather than failing the run, and the prompt names only these. */
+function existingAttachments(task: BrainTask): BrainAttachment[] {
+  return (task.attachments ?? []).filter((a) => existsSync(a.path));
 }
 
 /**

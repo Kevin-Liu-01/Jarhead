@@ -28,6 +28,54 @@ public final class AppState: ObservableObject {
     /// Installed by the gate. UI code only ever calls these.
     public var wakeActions = WakeActions()
 
+    // MARK: conversations and marks
+
+    /// Conversations the Console has opened (`agent.open`), keyed by agent id; the
+    /// daemon client replaces or appends as `agent.transcript` events arrive.
+    @Published public var transcripts: [String: AgentTranscript] = [:]
+    /// Mark mode (Kevin circles something on screen). Installed by the app.
+    public var beginMarkModeHandler: () -> Void = {}
+    public func beginMarkMode() { beginMarkModeHandler() }
+
+    /// Called by the daemon client for every `agent.transcript` event.
+    ///
+    /// `append` upserts by id: the engine re-sends a message when it changes (a tool
+    /// call gains its output and status, an assistant turn gains a later block).
+    /// `replace` is either the newest page (first open) or an older page from
+    /// `agent.history`, recognised by ending before what we already have — that one
+    /// is prepended, and `complete` comes from the page (the last page reaches the
+    /// first message and says so).
+    public func applyTranscript(_ t: AgentTranscript, mode: String) {
+        if mode == "append", var existing = transcripts[t.agentId] {
+            var index: [String: Int] = [:]
+            for (i, m) in existing.messages.enumerated() { index[m.id] = i }
+            for m in t.messages {
+                if let i = index[m.id] {
+                    existing.messages[i] = m
+                } else {
+                    index[m.id] = existing.messages.count
+                    existing.messages.append(m)
+                }
+            }
+            existing.total = max(existing.total, t.total)
+            existing.live = t.live
+            transcripts[t.agentId] = existing
+            return
+        }
+        if let existing = transcripts[t.agentId], !existing.messages.isEmpty, let firstKnown = existing.messages.first,
+           let last = t.messages.last, last.id != firstKnown.id, last.at <= firstKnown.at {
+            // An older page: prepend what we did not have, keep the rest.
+            var merged = t
+            let known = Set(t.messages.map(\.id))
+            merged.messages.append(contentsOf: existing.messages.filter { !known.contains($0.id) })
+            merged.live = existing.live
+            merged.total = max(existing.total, t.total)
+            transcripts[t.agentId] = merged
+            return
+        }
+        transcripts[t.agentId] = t
+    }
+
     /// Installed by the daemon client. UI code only ever calls `send`.
     public var sendHandler: (EngineCommand) -> Void = { _ in }
     public var ledgerDaysHandler: () async -> [String] = { [] }

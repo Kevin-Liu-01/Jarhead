@@ -39,6 +39,8 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         Task { await session.loadDays(from: state); await session.pick(day: day, from: state) }
     }
     func openAgent(_ id: String?) { session.openAgentId = id }
+    /// The conversation on screen, for the preview harness's scripted actions.
+    var openAgentIdForPreview: String? { session.openAgentId }
 
     // MARK: - window
 
@@ -77,7 +79,9 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             pickLedgerDay: { [state] day in Task { await session.pick(day: day, from: state) } },
             openOnboarding: { [state] in state.openOnboarding() },
             setWakePassphrase: { [state] phrase in state.wakeActions.setPassphrase(phrase) },
-            clearWakePassphrase: { [state] in state.wakeActions.clearPassphrase() })
+            clearWakePassphrase: { [state] in state.wakeActions.clearPassphrase() },
+            beginMarkMode: { [state] in state.beginMarkMode() },
+            reveal: { url in NSWorkspace.shared.activateFileViewerSelecting([url]) })
 
         let root = ConsoleRootView()
             .environmentObject(state)

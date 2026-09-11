@@ -66,6 +66,14 @@ export function decodeProjectSlug(slug: string): string {
   return slug.replace(/-/g, "/");
 }
 
+/**
+ * The slug Claude Code files a cwd under: every character outside [A-Za-z0-9] becomes a
+ * dash, so "/Users/kevinliu/.claude/x" → "-Users-kevinliu--claude-x" (as seen on this Mac).
+ */
+export function projectSlug(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
 interface Candidate {
   readonly path: string;
   readonly slug: string;
@@ -103,11 +111,29 @@ export class ClaudeStore {
     return sessions.filter((s): s is DiscoveredSession => s !== undefined);
   }
 
-  /** Parse one session by id regardless of age/cap; undefined when not on disk. */
+  /** Parse one session by id regardless of age/cap; undefined when not on disk. Walks every project directory. */
   async find(sessionId: string): Promise<DiscoveredSession | undefined> {
     const all = await this.candidates(true);
     const c = all.find((x) => basename(x.path, ".jsonl") === sessionId);
     return c ? this.load(c) : undefined;
+  }
+
+  /**
+   * Parse the session at `<root>/<projectSlug(cwd)>/<sessionId>.jsonl` — where the CLI
+   * writes a session started in `cwd` — with one stat instead of a walk; undefined when
+   * that file is not there (the walk in `find` is the fallback, for a cwd the CLI
+   * resolved differently, a symlinked /tmp for one).
+   */
+  async findAt(cwd: string, sessionId: string): Promise<DiscoveredSession | undefined> {
+    const slug = projectSlug(cwd);
+    const path = join(this.root, slug, `${sessionId}.jsonl`);
+    try {
+      const st = await stat(path);
+      if (!st.isFile()) return undefined;
+      return this.load({ path, slug, mtimeMs: st.mtimeMs, size: st.size });
+    } catch {
+      return undefined;
+    }
   }
 
   private async candidates(ignoreAge = false): Promise<Candidate[]> {

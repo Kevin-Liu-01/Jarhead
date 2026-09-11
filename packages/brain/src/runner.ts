@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { classifyAction, logger, newId, type Decision } from "@jarhead/core";
 import type { AgentRegistry } from "@jarhead/agents";
 import { ComputerToolset, type ToolResult } from "@jarhead/hands";
+import type { OverlayCommand, Point, Rect } from "@jarhead/protocol";
 import type { BrainSink } from "./brain.ts";
 
 /**
@@ -20,6 +21,8 @@ export interface RunnerOptions {
   readonly stateDir: string;
   /** Interim speech; wired to the current sink by the brain. */
   readonly speak?: (text: string) => void;
+  /** The annotation layer: the show_* teaching shapes go out through here (the engine forwards them to the overlay). */
+  readonly overlay?: (cmd: OverlayCommand) => void;
   readonly now?: () => number;
 }
 
@@ -150,9 +153,98 @@ export class ToolRunner {
         });
         return { kind: "text", text: `started ${info.id} (${info.name}) in ${info.cwd ?? cwd} — ${info.status}${info.detail ? ` (${info.detail})` : ""}. Use agent_wait / agent_read on ${info.id} for its answer.` };
       }
+      case "show_circle":
+      case "show_arrow":
+      case "show_rect":
+      case "show_text":
+      case "show_stroke":
+      case "show_clear":
+        return this.draw(name, args);
       default:
         return { kind: "error", message: `unknown tool ${name}` };
     }
+  }
+
+  // ------------------------------------------------------------- drawing
+
+  /**
+   * The show_* tools: shapes on the click-through overlay. The brain speaks in
+   * pixels of its last screenshot, like every other tool, so the same Screen
+   * mapping the clicks use turns them into global points; before any screenshot
+   * the numbers are taken as global points as they are. Bad input throws and
+   * run() turns that into an error result the model can read.
+   */
+  private draw(name: string, args: Record<string, unknown>): ToolResult {
+    const ttlMs = ttlOf(args);
+    const fade = `fades in ${Math.round((ttlMs ?? 6000) / 1000)} s`;
+    const label = typeof args["label"] === "string" && args["label"].trim() ? { label: args["label"].trim().slice(0, 60) } : {};
+    const ttl = ttlMs !== undefined ? { ttlMs } : {};
+    switch (name) {
+      case "show_clear":
+        this.overlay({ cmd: "clear" });
+        return { kind: "text", text: "cleared the drawings" };
+      case "show_circle": {
+        const p = this.toPoints(numberArg(args, "x"), numberArg(args, "y"));
+        const radius = Math.max(4, this.toLength(numberArg(args, "radius")));
+        this.overlay({ cmd: "circle", x: p.x, y: p.y, radius, ...label, ...ttl, tone: "accent" });
+        return { kind: "text", text: `drew a circle at ${fmt(p)} (global points), radius ${Math.round(radius)}; ${fade}` };
+      }
+      case "show_arrow": {
+        const [fx, fy] = pairArg(args, "from");
+        const [tx, ty] = pairArg(args, "to");
+        const from = this.toPoints(fx, fy);
+        const to = this.toPoints(tx, ty);
+        this.overlay({ cmd: "arrow", from, to, ...label, ...ttl, tone: "accent" });
+        return { kind: "text", text: `drew an arrow from ${fmt(from)} to ${fmt(to)} (global points); ${fade}` };
+      }
+      case "show_rect": {
+        const raw = args["rect"];
+        if (!Array.isArray(raw) || raw.length !== 4 || !raw.every(isFiniteNumber)) throw new Error("rect must be [x, y, w, h] in screenshot pixels");
+        const [x, y, w, h] = raw as [number, number, number, number];
+        const origin = this.toPoints(Math.min(x, x + w), Math.min(y, y + h));
+        const rect: Rect = { x: origin.x, y: origin.y, w: Math.max(1, this.toLength(Math.abs(w))), h: Math.max(1, this.toLength(Math.abs(h))) };
+        this.overlay({ cmd: "rect", rect, ...label, ...ttl, tone: "accent" });
+        return { kind: "text", text: `framed ${Math.round(rect.w)}×${Math.round(rect.h)} at ${fmt(rect)} (global points); ${fade}` };
+      }
+      case "show_text": {
+        const text = String(args["text"] ?? "").trim();
+        if (!text) throw new Error("show_text needs text");
+        const p = this.toPoints(numberArg(args, "x"), numberArg(args, "y"));
+        this.overlay({ cmd: "text", x: p.x, y: p.y, text: text.slice(0, 80), ...ttl, tone: "accent" });
+        return { kind: "text", text: `wrote "${text.slice(0, 40)}" at ${fmt(p)} (global points); ${fade}` };
+      }
+      case "show_stroke": {
+        const raw = args["points"];
+        if (!Array.isArray(raw) || raw.length < 2) throw new Error("points must be [[x, y], [x, y], ...] with at least two points");
+        const points: Point[] = raw.map((pt, i) => {
+          if (!Array.isArray(pt) || pt.length !== 2 || !pt.every(isFiniteNumber)) throw new Error(`points[${i}] must be [x, y]`);
+          return this.toPoints(pt[0] as number, pt[1] as number);
+        });
+        this.overlay({ cmd: "stroke", points, ...label, ...ttl, tone: "accent" });
+        return { kind: "text", text: `drew a stroke through ${points.length} points, ${fmt(points[0]!)} to ${fmt(points[points.length - 1]!)} (global points); ${fade}` };
+      }
+      default:
+        return { kind: "error", message: `unknown drawing tool ${name}` };
+    }
+  }
+
+  private overlay(cmd: OverlayCommand): void {
+    if (!this.opts.overlay) {
+      log.debug(`no overlay attached; dropping ${cmd.cmd}`);
+      return;
+    }
+    this.opts.overlay(cmd);
+  }
+
+  /** Screenshot pixel → global point through the last screenshot; taken as global before one exists. */
+  private toPoints(x: number, y: number): Point {
+    const screen = this.opts.toolset.screen;
+    return screen.last ? screen.toPoints(x, y) : { x, y };
+  }
+
+  private toLength(n: number): number {
+    const m = this.opts.toolset.screen.last;
+    return m ? n / m.scale : n;
   }
 
   private runShell(command: string, cwd: string | undefined): Promise<ToolResult> {
@@ -172,6 +264,33 @@ export class ToolRunner {
       });
     });
   }
+}
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function numberArg(args: Record<string, unknown>, key: string): number {
+  const v = args[key];
+  if (!isFiniteNumber(v)) throw new Error(`${key} must be a number (screenshot pixels)`);
+  return v;
+}
+
+function pairArg(args: Record<string, unknown>, key: string): [number, number] {
+  const v = args[key];
+  if (!Array.isArray(v) || v.length !== 2 || !v.every(isFiniteNumber)) throw new Error(`${key} must be [x, y] in screenshot pixels`);
+  return [v[0] as number, v[1] as number];
+}
+
+/** ttlMs (or ttl_ms), clamped to something a person can see and nothing that lingers for minutes. */
+function ttlOf(args: Record<string, unknown>): number | undefined {
+  const v = args["ttlMs"] ?? args["ttl_ms"];
+  if (!isFiniteNumber(v)) return undefined;
+  return Math.min(60_000, Math.max(500, Math.round(v)));
+}
+
+function fmt(p: { x: number; y: number }): string {
+  return `${Math.round(p.x)},${Math.round(p.y)}`;
 }
 
 function summarize(result: ToolResult): unknown {

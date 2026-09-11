@@ -1,6 +1,12 @@
+import { logger } from "@jarhead/core";
 import type { AgentInfo, ConnectorHealth } from "@jarhead/protocol";
-import { agentId, splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions } from "../types.ts";
+import { ClaudeStore } from "../sessions/claude-store.ts";
+import { ClaudeTranscriptParser } from "../sessions/claude-transcript.ts";
+import { TranscriptSource } from "../sessions/transcript.ts";
+import { agentId, splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "../types.ts";
 import { ClaudeSession, claudeEnv, loadSdk, type PermissionDecision, type SdkLike } from "./session.ts";
+
+const log = logger("agents.claude-code");
 
 /**
  * Claude Code sessions Jarhead started, as agents.
@@ -8,6 +14,10 @@ import { ClaudeSession, claudeEnv, loadSdk, type PermissionDecision, type SdkLik
  * "Ask the claude in gt-cloud to run the tests" starts (or reuses) a headless
  * session with that cwd. Sessions live for the Jarhead run; `resume` ids are
  * kept so a session can be picked up again after a restart.
+ *
+ * The CLI behind the SDK writes each session to ~/.claude/projects/<slug>/<sessionId>.jsonl
+ * like any other; `transcript()` and `watch()` read that file, so stepping into one of
+ * these looks the same as stepping into a session Kevin opened himself.
  */
 
 export interface ClaudeCodeConnectorOptions {
@@ -20,6 +30,11 @@ export interface ClaudeCodeConnectorOptions {
   readonly canUseTool?: (toolName: string, input: Record<string, unknown>, session: ClaudeSession) => Promise<PermissionDecision>;
   readonly dropApiKey?: boolean;
   readonly onChange?: (agent: AgentInfo) => void;
+  /** Where the CLI keeps its transcripts. Default ~/.claude/projects. */
+  readonly claudeRoot?: string;
+  /** watch(): stat interval when fs.watch cannot be used (default 1 s) and the burst window (default 50 ms). */
+  readonly tailPollMs?: number;
+  readonly tailCoalesceMs?: number;
 }
 
 export class ClaudeCodeConnector implements AgentConnector {
@@ -28,8 +43,13 @@ export class ClaudeCodeConnector implements AgentConnector {
   private readonly listeners = new Set<(agent: AgentInfo) => void>();
   private sdkPromise: Promise<SdkLike> | undefined;
   private seq = 0;
+  private readonly store: ClaudeStore;
+  /** Conversation sources by local id, once the session has a file. */
+  private readonly sources = new Map<string, TranscriptSource>();
 
-  constructor(private readonly opts: ClaudeCodeConnectorOptions = {}) {}
+  constructor(private readonly opts: ClaudeCodeConnectorOptions = {}) {
+    this.store = new ClaudeStore(opts.claudeRoot ? { root: opts.claudeRoot } : {});
+  }
 
   private sdk(): Promise<SdkLike> {
     if (this.opts.sdk) return Promise.resolve(this.opts.sdk);
@@ -51,6 +71,7 @@ export class ClaudeCodeConnector implements AgentConnector {
     return {
       id: agentId(this.kind, localId),
       kind: this.kind,
+      tool: "claude",
       name: s.name,
       status: s.status,
       ...(s.statusDetail ? { detail: s.statusDetail } : {}),
@@ -158,7 +179,86 @@ export class ClaudeCodeConnector implements AgentConnector {
     return this.resolve(id).session.resolvePermission(allow);
   }
 
+  // ---------------------------------------------------------- conversations ---
+
+  /**
+   * The session's transcript file, once the CLI has reported its id and written it;
+   * undefined before that. The file is looked for where the CLI puts a session started
+   * in this cwd (one stat); `walk` allows the full walk of ~/.claude/projects as the
+   * fallback, which watch() rations while it waits for the file to appear.
+   */
+  private async sourceFor(id: string, walk = true): Promise<TranscriptSource | undefined> {
+    const { localId, session } = this.resolve(id);
+    const sessionId = session.sessionId;
+    if (!sessionId) return undefined;
+    const existing = this.sources.get(localId);
+    if (existing) return existing;
+    const found = (await this.store.findAt(session.cwd, sessionId)) ?? (walk ? await this.store.find(sessionId) : undefined);
+    if (!found) return undefined;
+    const source = new TranscriptSource({
+      path: found.path,
+      makeParser: () => new ClaudeTranscriptParser(),
+      storeCount: () => found.messageCount,
+      ...(this.opts.tailPollMs !== undefined ? { pollMs: this.opts.tailPollMs } : {}),
+      ...(this.opts.tailCoalesceMs !== undefined ? { coalesceMs: this.opts.tailCoalesceMs } : {}),
+    });
+    this.sources.set(localId, source);
+    return source;
+  }
+
+  /** A page of the session's conversation from its file; empty and complete while the file does not exist yet. */
+  async transcript(id: string, opts: TranscriptOptions = {}): Promise<TranscriptPage> {
+    const source = await this.sourceFor(id);
+    if (!source) return { messages: [], total: 0, complete: true };
+    return source.page(opts);
+  }
+
+  /** Waiting for a session's file: how often to look (the direct path every time, the walk on the first look and every fifth after). */
+  private static readonly WALK_EVERY = 5;
+  private static readonly WAIT_BACKOFF_AFTER = 5;
+
+  /**
+   * New turns as the file grows. A session that has no file yet is checked again every
+   * second (every 5 s after the first few looks) until it does, then followed from its
+   * first line — nothing of it was ever shown, whether the file appeared before this call
+   * or during the wait. `onEnd` hears when there is no such session.
+   */
+  watch(id: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void {
+    let stop: (() => void) | undefined;
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let looks = 0;
+    const attempt = (): void => {
+      looks += 1;
+      this.sourceFor(id, looks % ClaudeCodeConnector.WALK_EVERY === 1)
+        .then((source) => {
+          if (closed) return;
+          if (source) {
+            // A source that has served a page continues from it; one that has not (the
+            // Console saw the "no file yet" page) is replayed from its first line.
+            stop = source.follow(onDelta, { fromStart: !source.served });
+            return;
+          }
+          const base = this.opts.tailPollMs ?? 1_000;
+          timer = setTimeout(attempt, looks < ClaudeCodeConnector.WAIT_BACKOFF_AFTER ? base : base * 5);
+          timer.unref?.();
+        })
+        .catch((e: unknown) => {
+          log.debug(`watch ${id}: ${(e as Error).message}`);
+          if (!closed) onEnd?.((e as Error).message);
+        });
+    };
+    attempt();
+    return () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      stop?.();
+    };
+  }
+
   async closeAll(): Promise<void> {
+    for (const source of this.sources.values()) source.close();
+    this.sources.clear();
     await Promise.all([...this.sessions.values()].map((s) => s.close()));
     this.sessions.clear();
   }

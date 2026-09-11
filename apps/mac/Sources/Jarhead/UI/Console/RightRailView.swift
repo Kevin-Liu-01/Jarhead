@@ -46,7 +46,7 @@ struct RightRail: View, Equatable {
                     case .now:
                         NowPanel(phase: snapshot.phase, sessionInfo: snapshot.session, permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
-                                 brain: snapshot.settings.brain)
+                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks)
                     case .settings:
                         SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake)
                     case .ledger:
@@ -195,6 +195,8 @@ struct NowPanel: View {
     let brainReady: Bool
     let handsReady: Bool
     let brain: BrainKind
+    /// What Kevin circled (Snapshot.marks); context for the next delegation.
+    let marks: [ScreenMark]
 
     @Environment(\.consoleActions) private var actions
 
@@ -249,6 +251,28 @@ struct NowPanel: View {
             ConsoleHairline()
 
             RailSection("Audio") { AudioMeters() }
+
+            // What Kevin circled on screen, newest last, and the way to circle more.
+            RailSection("Circled", count: marks.isEmpty ? nil : marks.count, trailing: {
+                if !marks.isEmpty {
+                    Button("Clear") { actions.send(.markClear) }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                        .help("Forget the circled regions")
+                }
+            }) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !marks.isEmpty {
+                        ConsoleFlow(hSpacing: 6, vSpacing: 6) {
+                            ForEach(marks) { mark in MarkThumb(mark: mark) }
+                        }
+                        .padding(.top, 2)
+                    }
+                    Button { actions.beginMarkMode() } label: { Label("Circle something…", systemImage: "scope") }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
+                        .help("Circle a region of the screen for Jarhead (⌥⇧C)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             RailSection("Ready") {
                 VStack(spacing: 0) {
@@ -332,6 +356,51 @@ struct NowPanel: View {
                 .accessibilityLabel(meta.label)
         }
         .frame(height: 28)
+    }
+}
+
+/// One circled region: the engine's crop of it, 80pt wide, in the frame weight;
+/// a placeholder with the region's size while the crop is still on its way.
+/// Dimmed once a delegation has used it. Click opens the full crop.
+private struct MarkThumb: View {
+    let mark: ScreenMark
+
+    @Environment(\.consoleActions) private var actions
+    @EnvironmentObject private var session: ConsoleSession
+
+    /// Three across with 6pt gaps is 252pt: inside the section's 272 even while
+    /// the panel's first layout still reserves a 15pt legacy scroller.
+    private static let width: CGFloat = 80
+
+    private var caption: String {
+        let size = "\(Int(mark.rect.w.rounded()))×\(Int(mark.rect.h.rounded()))"
+        return [size, ConsoleFormat.time(mark.at), mark.consumed ? "used" : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    var body: some View {
+        Group {
+            if let path = mark.screenshotPath, !path.isEmpty {
+                let url = actions.screenshotURL(path)
+                ScreenshotThumb(url: url, onTap: {
+                    session.lightbox = ConsoleLightboxItem(url: url, caption: "Circled · \(caption)")
+                }, width: Self.width)
+            } else {
+                ZStack {
+                    Rectangle().fill(ConsoleTheme.raised)
+                    VStack(spacing: 3) {
+                        Image(systemName: "scope").font(.system(size: 12, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
+                        Text("\(Int(mark.rect.w.rounded()))×\(Int(mark.rect.h.rounded()))")
+                            .font(ConsoleTheme.mono(10)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                    }
+                }
+                .aspectRatio(max(0.6, min(2.2, mark.rect.h > 0 ? mark.rect.w / mark.rect.h : 1.6)), contentMode: .fit)
+                .frame(width: Self.width)
+                .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
+            }
+        }
+        .opacity(mark.consumed ? 0.5 : 1)
+        .help(caption)
+        .accessibilityLabel("Circled region, \(caption)")
     }
 }
 

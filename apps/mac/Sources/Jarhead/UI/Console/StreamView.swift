@@ -181,6 +181,18 @@ final class ConsoleScrollProbeView: NSView {
         scroll.reflectScrolledClipView(clip)
         return true
     }
+
+    /// After rows were added *above* the viewport (an older page loaded), shifts
+    /// the clip down by the growth so the row Kevin was reading stays put.
+    /// `previousContent` is the document height before the change.
+    func keepOffset(previousContent: CGFloat) {
+        guard let scroll = enclosingScrollView, let doc = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let delta = doc.frame.height - previousContent
+        guard delta > 0.5, doc.isFlipped else { return }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + delta))
+        scroll.reflectScrolledClipView(clip)
+    }
 }
 
 struct ConsoleScrollProbe: NSViewRepresentable {
@@ -209,6 +221,9 @@ final class ConsoleFeedTracker: ObservableObject {
     @Published private(set) var showJump = false
     /// Follows the end: new rows and growth re-pin the bottom.
     private(set) var stuck = true
+    /// The last geometry the probe reported — during a SwiftUI update this is
+    /// still the document *before* the change, which a prepend needs.
+    private(set) var lastGeometry: ConsoleScrollGeometry?
     private var lastMinY: CGFloat = 0
     weak var probe: ConsoleScrollProbeView?
     /// SwiftUI's own scroll-to-bottom, for the moment before the probe is hooked.
@@ -226,7 +241,7 @@ final class ConsoleFeedTracker: ObservableObject {
     /// row materialising, a taller window) re-pins it exactly — a zone-wide
     /// tolerance here would leave a new row a line below the fold.
     func track(_ geo: ConsoleScrollGeometry) {
-        defer { lastMinY = geo.minY }
+        defer { lastMinY = geo.minY; lastGeometry = geo }
         let distance = geo.distanceFromBottom
         if geo.minY < lastMinY - 0.5 {
             guard distance > 0.5 else { return }
@@ -347,7 +362,8 @@ struct StreamFeed: View {
 
 }
 
-private struct JumpPillStyle: ButtonStyle {
+/// The "Latest" pill the stream and a conversation share.
+struct JumpPillStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(ConsoleTheme.sans(12, .medium))
@@ -788,9 +804,11 @@ actor ConsoleThumbnails {
 struct ScreenshotThumb: View {
     let url: URL
     let onTap: () -> Void
+    /// 200pt in the stream; the Now panel's mark thumbnails are smaller.
+    var width: CGFloat = 200
 
-    /// 2x of the 200pt frame.
-    private static let maxPixel = 400
+    /// 2x of the frame.
+    private var maxPixel: Int { Int(width * 2) }
 
     @State private var image: CGImage?
     @State private var failed = false
@@ -810,14 +828,14 @@ struct ScreenshotThumb: View {
                 .aspectRatio(16 / 10, contentMode: .fit)
             }
         }
-        .frame(width: 200)
+        .frame(width: width)
         .overlay(Rectangle().stroke(hovering && image != nil ? ConsoleTheme.fg : ConsoleTheme.hairFrame, lineWidth: 1))
         .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { if image != nil { onTap() } }
         .task(id: url) {
-            let decoded = await ConsoleThumbnails.shared.thumbnail(for: url, maxPixel: Self.maxPixel)
+            let decoded = await ConsoleThumbnails.shared.thumbnail(for: url, maxPixel: maxPixel)
             guard !Task.isCancelled else { return }
             image = decoded
             failed = decoded == nil

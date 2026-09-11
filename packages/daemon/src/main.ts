@@ -31,14 +31,19 @@ else console.log(`jarheadd: not auto-waking (env JARHEAD_AUTO_WAKE=${process.env
 console.log(`jarheadd up on ${socketPath} (pid ${process.pid})`);
 
 let stopping = false;
-async function shutdown(signal: string): Promise<void> {
+async function shutdown(signal: string, code = 0): Promise<void> {
   if (stopping) return;
   stopping = true;
   console.log(`jarheadd: ${signal}, shutting down`);
   await Promise.race([Promise.all([server.close(), engine.stop()]), new Promise((r) => setTimeout(r, 6000))]);
-  process.exit(0);
+  process.exit(code);
 }
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => void shutdown(sig));
+// Self-update: the engine asks to be replaced; exit 75 (EX_TEMPFAIL) tells the app to respawn at once.
+engine.on("restart", (reason) => {
+  console.log(`jarheadd: restart requested (${reason}); exiting 75 for the app to respawn`);
+  void shutdown("restart", 75);
+});
 // The app closing its end of the socket is not a shutdown; only signals and stdin EOF are.
 process.stdin.on("end", () => void shutdown("stdin closed"));
 process.stdin.resume();

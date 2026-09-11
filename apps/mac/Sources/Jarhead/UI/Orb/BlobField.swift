@@ -116,6 +116,22 @@ struct BlobPersonality {
     var ramp: BlobRamp
     var fps: Double
 
+    /// The same creature on the wing: the surface wanders faster and churns harder,
+    /// it sits taller, glows at least as bright as acting. It draws at full rate only
+    /// while the body is actually moving (the panel is being re-placed every frame
+    /// then anyway); parked beside the work it shimmers at the phase's own rate, like
+    /// a blob at rest after a fling, so a long hover costs no more than sitting still.
+    func inFlight(moving: Bool) -> BlobPersonality {
+        var p = self
+        p.speed = max(speed * 1.6, 2.6)
+        p.churn = max(churn * 1.4, 2.4)
+        p.squash = max(squash, 1.12)
+        p.glow = max(glow, 0.62)
+        p.jitter = 0
+        if moving { p.fps = 24 }
+        return p
+    }
+
     static func forPhase(_ p: Phase) -> BlobPersonality {
         switch p {
         case .asleep:      // v1 idle: barely awake, wide, slow, settled.
@@ -185,8 +201,24 @@ final class BlobSim {
 
     // Eased parameters and their target.
     private(set) var phase: Phase = .asleep
-    private var target = BlobPersonality.forPhase(.asleep)
+    private var phaseTarget = BlobPersonality.forPhase(.asleep)
+    /// The personality the field eases toward: the phase's, quickened while in flight.
+    private var target: BlobPersonality { flight ? phaseTarget.inFlight(moving: flightMoving) : phaseTarget }
     private var cur = BlobPersonality.forPhase(.asleep)
+    /// Set by the controller for the whole of an `orb.fly` — out, hover, home. The
+    /// field takes the acting colour and a faster shimmer, whatever the phase, so the
+    /// blob on the move reads as Jarhead at work.
+    var flight = false {
+        didSet {
+            guard flight != oldValue else { return }
+            flightChangedAt = t
+            if flight { nudge(reducedMotion ? 0.3 : 0.8) }
+        }
+    }
+    /// The body is in the air (out or home) rather than parked beside the work; full
+    /// frame rate only then. Set by the controller from the physics.
+    var flightMoving = false
+    private var flightChangedAt = -100.0
     private(set) var ramp: BlobRamp = .soft
     private var rampSwitchAt = -1.0
     static let easeTau = 0.28
@@ -227,8 +259,10 @@ final class BlobSim {
     private var flash = 0.0
     /// Granted: one bright pulse.
     private var pulse = 0.0
-    /// wakeHeard changed: when the surface last swelled by a cell.
+    /// wakeHeard changed (or a flight landed): when the surface last swelled.
     private var rippleAt = -100.0
+    /// Rows the ripple adds at its peak: half a row for "I hear you", a full one for a landing.
+    private var rippleGain = 0.55
     static let flashTau = 0.32
     static let pulseTau = 0.45
     static let rippleLength = 0.36
@@ -290,7 +324,7 @@ final class BlobSim {
     func setPhase(_ p: Phase) {
         guard p != phase else { return }
         phase = p
-        target = .forPhase(p)
+        phaseTarget = .forPhase(p)
         phaseChangedAt = t
         // Ramp is categorical, so it swaps early in the transition rather than blending.
         rampSwitchAt = t + 0.12
@@ -331,6 +365,13 @@ final class BlobSim {
     func rippleHeard() {
         guard phase == .asleep, gate == .listening else { return }
         rippleAt = t
+        rippleGain = 0.55
+    }
+
+    /// A flight arrived: one ring runs out through the surface, a row deep, and is gone.
+    func rippleLanding() {
+        rippleAt = t
+        rippleGain = reducedMotion ? 0.5 : 1.0
     }
 
     /// Adopt the new normals immediately; only the magnitude is sprung, so a contact
@@ -355,10 +396,13 @@ final class BlobSim {
 
     // MARK: scheduling
 
-    /// True while the contact springs are still settling or a transition is live.
+    /// True while the contact springs are still settling or a transition is live. A
+    /// flight counts around take-off and touch-down (the colour change, the tense
+    /// shiver, the landing ripple), not for its whole length: the in-flight
+    /// personality sets the rate while the body moves (`inFlight(moving:)`).
     var isLively: Bool {
         springsMoving || shiver > 0.03 || flash > 0.02 || pulse > 0.02 || t - rippleAt < Self.rippleLength
-            || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0
+            || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0 || t - flightChangedAt < 1.0
     }
 
     var desiredFPS: Double { isLively ? 24 : target.fps }
@@ -367,9 +411,10 @@ final class BlobSim {
     /// with nothing happening — it stops breathing until something pokes it). The
     /// view then pauses the display link entirely. An ear keeps it awake: the gate's
     /// listening breath and authenticating pulse need frames, at the asleep cadence
-    /// (10 fps), never more.
+    /// (10 fps), never more. A blob on a flight is never static — a muted one hovering
+    /// beside the work still shimmers at muted's own rate rather than freezing.
     var isStatic: Bool {
-        guard !isLively, rawInput < 0.02, rawOutput < 0.02 else { return false }
+        guard !isLively, !flight, rawInput < 0.02, rawOutput < 0.02 else { return false }
         switch phase {
         case .muted: return t - phaseChangedAt > 1.5
         case .asleep:
@@ -388,8 +433,10 @@ final class BlobSim {
         }
     }
 
-    /// The colour the field eases toward: the phase's, or the gate's while asleep.
+    /// The colour the field eases toward: the phase's, or the gate's while asleep, or
+    /// acting's for the whole of a flight.
     private var targetColor: RGB {
+        if flight { return OrbPalette.acting }
         let base = OrbPalette.color(for: phase)
         guard phase == .asleep else { return base }
         switch gate {
@@ -449,7 +496,10 @@ final class BlobSim {
         cur.spin += (target.spin - cur.spin) * k
         cur.jitter += (target.jitter - cur.jitter) * k
         cur.glow += (target.glow - cur.glow) * k
-        color = color.mixed(with: targetColor, k)
+        // A flight changes colour on take-off and on touch-down, not over the first
+        // stretch of the trip: the colour eases twice as fast around those moments.
+        let colorK = t - flightChangedAt < 1.0 ? 1 - exp(-dt / (Self.easeTau * 0.45)) : k
+        color = color.mixed(with: targetColor, colorK)
         if rampSwitchAt >= 0, t >= rampSwitchAt { ramp = target.ramp; rampSwitchAt = -1 }
         spinPhase += cur.spin * dt
         shiver *= exp(-dt / Self.shiverTau)
@@ -603,7 +653,7 @@ final class BlobSim {
         // Smaller than v1's 0.42: the lobes reach 1.5× the base and were hard-clipping
         // into flat edges at the field boundary. The calibration ripple adds at most
         // half a row (about one column) to the radius for a third of a second.
-        let base = Double(rows) * 0.38 * breath() + 0.55 * ripple
+        let base = Double(rows) * 0.38 * breath() + rippleGain * ripple
         let ampScale = cur.amp * 2.6 * ampBreath
         let cosS = cos(spinPhase), sinS = sin(spinPhase)
         let sq = cur.squash == 0 ? 1 : cur.squash
@@ -654,8 +704,9 @@ final class BlobSim {
         // Asleep the eyes stay shut — except while the gate has heard the word and is
         // asking who is there: half-open, the way you answer a knock at night.
         let asking = phase == .asleep && (gate == .heard || gate == .authenticating || gate == .granted)
-        let shut = t < blinkUntil || squishing > 0.55 || (phase == .asleep && !asking)
-        eyeGlyph = shut ? "-" : (asking ? "o" : Self.eyeGlyph(for: phase))
+        // On the wing it is awake whatever the phase says: eyes open, acting's eyes.
+        let shut = t < blinkUntil || squishing > 0.55 || (phase == .asleep && !asking && !flight)
+        eyeGlyph = shut ? "-" : (flight ? Self.eyeGlyph(for: .acting) : (asking ? "o" : Self.eyeGlyph(for: phase)))
 
         // Look away from the wall; default slightly up, which reads as friendly.
         let lookX = bias.total > 0.05 ? bias.bx / max(1, bias.total) : 0

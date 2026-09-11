@@ -99,6 +99,34 @@ enum ObstacleScanner {
     }
 }
 
+// MARK: - Goal springs
+
+/// How the body flies to a goal. The summon is under-damped and quick: it flies past
+/// the point and swings back, splatting on the turn. The drift is the way home after a
+/// flight: slower, nearly critically damped, no splat — it settles like a leaf.
+struct GoalSpring: Equatable {
+    var stiffness: Double
+    var damping: Double
+    var maxSpeed: Double
+    /// Record an impact (a squish) the moment the body starts coming back to the goal.
+    var splat: Bool
+    /// Parked: within this many points of the goal, slower than this (pt/s) — the body
+    /// snaps the rest of the way. Tight for the summon (it is Kevin's cursor); looser
+    /// for a flight, so the last few points of the wobble do not eat into the hover.
+    var settleDistance: Double
+    var settleSpeed: Double
+
+    /// ζ ≈ 0.35: flies past the cursor and swings back. The ceiling is the body's own (`BlobBody.maxSpeed`).
+    static let summon = GoalSpring(stiffness: 48, damping: 4.8, maxSpeed: 4500, splat: true, settleDistance: 1.5, settleSpeed: 12)
+    /// An `orb.fly`: as quick as the summon but ζ ≈ 0.65, so it lands once — one
+    /// overshoot (about 5% of the distance, 48 pt on 860), one squish — and is parked
+    /// still about a second after take-off. The summon's ζ 0.35 sailed past by a third
+    /// of the trip and squished four times over 1.8 s, which was the whole hover.
+    static let flight = GoalSpring(stiffness: 48, damping: 9.0, maxSpeed: 4500, splat: true, settleDistance: 8, settleSpeed: 60)
+    /// ζ ≈ 0.8 and a low ceiling, so a long way home is a glide, not a shot.
+    static let drift = GoalSpring(stiffness: 14, damping: 6, maxSpeed: 1400, splat: false, settleDistance: 3, settleSpeed: 30)
+}
+
 // MARK: - Body
 
 @MainActor
@@ -120,7 +148,12 @@ final class BlobBody {
 
     private var goal: CGPoint?
     private var goalArmed = false
+    private var goalSpring = GoalSpring.summon
+    /// `onArrive` has fired for the current goal.
+    private var arrived = false
     private var ignoreWindows = false
+    /// True while a goal spring is pulling the body somewhere (summon, flight, drift home).
+    var hasGoal: Bool { goal != nil }
 
     private struct Impact { var nx: Double; var ny: Double; var press: Double }
     private var impacts: [Impact] = []
@@ -138,6 +171,9 @@ final class BlobBody {
     var onSettle: (() -> Void)?
     /// Called with the impact speed (pt/s) on every bounce.
     var onImpact: ((Double) -> Void)?
+    /// Called once per goal flight, the moment the body first turns back toward its
+    /// goal: the visible arrival, well before the wobble settles.
+    var onArrive: (() -> Void)?
 
     // Tuning.
     static let restitution = 0.55
@@ -147,9 +183,9 @@ final class BlobBody {
     static let maxSpeed = 4500.0
     static let dragStiffness = 380.0
     static let dragDamping = 26.0        // ζ ≈ 0.67: lags and overshoots a little
-    static let goalStiffness = 48.0
-    static let goalDamping = 4.8         // ζ ≈ 0.35: flies past the cursor and swings back
     static let stopFraction = 0.90       // centre may approach a wall to this × radius in flight
+    /// Clear air between the body's surface and an `orb.fly` target (pt).
+    static let flyClearance: CGFloat = 36
     static let dragFraction = 0.25       // … and this deep while being pushed by hand
     static let restSpeed = 8.0
     static let reach = 0.82              // contacts.js REACH
@@ -173,6 +209,7 @@ final class BlobBody {
         center = c
         velocity = .zero
         goal = nil
+        arrived = false
         impacts.removeAll()
         dragging = false
         isActive = false
@@ -183,6 +220,7 @@ final class BlobBody {
     func beginDrag(pointer p: CGPoint) {
         dragging = true
         goal = nil
+        arrived = false
         ignoreWindows = false
         pointer = p
         pointerVel = .zero
@@ -221,6 +259,7 @@ final class BlobBody {
     func fling(_ v: CGVector) {
         dragging = false
         goal = nil
+        arrived = false
         ignoreWindows = false
         velocity = v
         capSpeed()
@@ -232,28 +271,124 @@ final class BlobBody {
     /// Fly to a point (the cursor) with an under-damped spring, so it overshoots and
     /// bounces back. Across displays it first hops to the far side of the target's
     /// display, because the edges between displays may not be passable.
-    func summon(to g: CGPoint) {
+    func summon(to g: CGPoint) { fly(to: g, spring: .summon) }
+
+    /// The way home after a flight: the same path, a gentler spring, no splat.
+    func drift(to g: CGPoint) { fly(to: g, spring: .drift) }
+
+    /// Fly to a goal on the given spring. Windows are ignored on the way (the body
+    /// passes over them; a flight that bounced off every window would never arrive),
+    /// walls are not. A goal already being flown to is simply retargeted mid-air.
+    func fly(to g: CGPoint, spring: GoalSpring) {
         dragging = false
         refreshScreens()
+        hop(toward: g)
+        aim(at: g, spring: spring)
+    }
+
+    /// Fly to a spot beside `target` (`landing(for:)`), never onto it. Across displays
+    /// the hop comes first, so the spot is ranked against the approach the body will
+    /// actually make from where it lands on the far display — ranked from the origin
+    /// display, the chosen side could lie right along the real flight line and the
+    /// overshoot swept the target. Returns the spot.
+    @discardableResult
+    func flyBeside(_ target: CGPoint, spring: GoalSpring) -> CGPoint {
+        dragging = false
+        refreshScreens()
+        hop(toward: target)
+        let spot = landing(for: target)
+        aim(at: spot, spring: spring)
+        return spot
+    }
+
+    /// A goal on another display (or the body has fallen off its own): jump to a point
+    /// 320 pt from the goal toward the middle of that display's work area and fly the
+    /// rest, because the seams between displays may not be passable.
+    private func hop(toward g: CGPoint) {
         let target = ScreenArea.containing(g, in: areas)
-        if let target, let here = area, target.frame != here.frame || !here.frame.contains(center) {
-            let mid = CGPoint(x: target.work.midX, y: target.work.midY)
-            var dx = mid.x - g.x, dy = mid.y - g.y
-            let len = (dx * dx + dy * dy).squareRoot()
-            if len < 1 { dx = -1; dy = 0 } else { dx /= len; dy /= len }
-            center = target.work.insetBy(dx: radius, dy: radius).clamped(CGPoint(x: g.x + dx * 320, y: g.y + dy * 320))
-            velocity = .zero
-        }
+        guard let target, let here = area, target.frame != here.frame || !here.frame.contains(center) else { return }
+        let mid = CGPoint(x: target.work.midX, y: target.work.midY)
+        var dx = mid.x - g.x, dy = mid.y - g.y
+        let len = (dx * dx + dy * dy).squareRoot()
+        if len < 1 { dx = -1; dy = 0 } else { dx /= len; dy /= len }
+        center = target.work.insetBy(dx: radius, dy: radius).clamped(CGPoint(x: g.x + dx * 320, y: g.y + dy * 320))
+        velocity = .zero
+        area = target
+    }
+
+    private func aim(at g: CGPoint, spring: GoalSpring) {
         goal = g
+        goalSpring = spring
         goalArmed = false
+        arrived = false
         ignoreWindows = true
         impacts.removeAll()
         isActive = true
     }
 
+    /// Where to park beside an `orb.fly` target so the body never covers it: up-left
+    /// of it, `flyClearance` of air between the surface and the point (the centre
+    /// sits radius + clearance away).
+    ///
+    /// A body already parked beside the target stays put: a repeat fly to the same
+    /// work (click here, then type here) must not swing it round to another side.
+    ///
+    /// Otherwise: the flight is a straight spring with an overshoot, so the body sweeps
+    /// through the landing spot along its line of flight. A landing spot on that line
+    /// — up-left of a target approached from up-left, or from down-right — puts the
+    /// target under the sweep. So the spot is chosen among eight directions around
+    /// the target (the corners and the sides) by how square it is to the approach:
+    /// the more perpendicular, the wider the body passes the point (radius + clearance
+    /// at 90°). Up-left keeps its place whenever it is square enough (28 pt of air on
+    /// the pass); otherwise the squarest direction wins, ties going to the side the
+    /// body is already on, then upward. A spot off the work area (near the display's
+    /// edges) is skipped for the next. If none fits, up-left is clamped onto the work
+    /// area and the target may be grazed.
+    func landing(for target: CGPoint) -> CGPoint {
+        refreshScreens()
+        guard let s = ScreenArea.containing(target, in: areas) else { return target }
+        let stop = radius * CGFloat(Self.stopFraction) + 2
+        let room = s.work.insetBy(dx: min(stop, s.work.width / 2), dy: min(stop, s.work.height / 2))
+        let reach = Double(radius + Self.flyClearance)
+        if isBeside(target), room.contains(center) { return center }
+        // Unit direction of travel; already on top of the target: up-left, plainly.
+        var ux = Double(target.x - center.x), uy = Double(target.y - center.y)
+        let len = (ux * ux + uy * uy).squareRoot()
+        if len > 1 { ux /= len; uy /= len } else { ux = 0; uy = 0 }
+        let d = 1 / 2.0.squareRoot()
+        // Unit offsets from the target, upper ones first so ties fall upward.
+        let directions: [(Double, Double)] = [(-d, -d), (0, -1), (d, -d), (-1, 0), (1, 0), (-d, d), (0, 1), (d, d)]
+        let ranked = directions.enumerated().sorted { a, b in
+            // |cos| between the offset and the flight; up-left is squared off to the
+            // front while its own |cos| ≤ 0.4 (sin ≥ 0.92: 28 pt of air on the pass).
+            let ca = abs(a.element.0 * ux + a.element.1 * uy), cb = abs(b.element.0 * ux + b.element.1 * uy)
+            let sa = a.offset == 0 && ca <= 0.4 ? -1 : ca, sb = b.offset == 0 && cb <= 0.4 ? -1 : cb
+            if sa != sb { return sa < sb }
+            // Squareness ties (the two sides of the flight line): the side the body is
+            // coming from, so it never crosses over the target to park.
+            return a.element.0 * -ux + a.element.1 * -uy > b.element.0 * -ux + b.element.1 * -uy
+        }
+        for (_, dir) in ranked {
+            let p = CGPoint(x: target.x + CGFloat(reach * dir.0), y: target.y + CGFloat(reach * dir.1))
+            if room.contains(p) { return p }
+        }
+        return room.clamped(CGPoint(x: target.x - CGFloat(reach * d), y: target.y - CGFloat(reach * d)))
+    }
+
+    /// Parked (still) beside the target: about radius + clearance away — from 90% of
+    /// it (26 pt of air still) to 160% (close enough to read as "at the work") — and
+    /// not moving. What a repeat `orb.fly` to the same spot leaves alone.
+    func isBeside(_ target: CGPoint) -> Bool {
+        guard speed < 1, !dragging else { return false }
+        let reach = Double(radius + Self.flyClearance)
+        let off = Double(hypot(center.x - target.x, center.y - target.y))
+        return off >= reach * 0.9 && off <= reach * 1.6
+    }
+
     private func capSpeed() {
+        let cap = goal != nil && !dragging ? goalSpring.maxSpeed : Self.maxSpeed
         let s = (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot()
-        if s > Self.maxSpeed { velocity = CGVector(dx: velocity.dx / s * Self.maxSpeed, dy: velocity.dy / s * Self.maxSpeed) }
+        if s > cap { velocity = CGVector(dx: velocity.dx / s * cap, dy: velocity.dy / s * cap) }
     }
 
     private func ignoreTouchingObstacles() {
@@ -285,8 +420,8 @@ final class BlobBody {
             velocity.dx += ax * dt
             velocity.dy += ay * dt
         } else if let g = goal {
-            let ax = Self.goalStiffness * (g.x - center.x) - Self.goalDamping * velocity.dx
-            let ay = Self.goalStiffness * (g.y - center.y) - Self.goalDamping * velocity.dy
+            let ax = goalSpring.stiffness * (g.x - center.x) - goalSpring.damping * velocity.dx
+            let ay = goalSpring.stiffness * (g.y - center.y) - goalSpring.damping * velocity.dy
             velocity.dx += ax * dt
             velocity.dy += ay * dt
             // The moment it starts coming back is the landing: splat a little.
@@ -295,9 +430,15 @@ final class BlobBody {
             else if goalArmed, toward < 0 {
                 goalArmed = false
                 let s = speed
-                if s > 1 {
-                    impacts.append(Impact(nx: -velocity.dx / s, ny: -velocity.dy / s, press: 0.7))
+                // The splat scales with the swing: the arrival lands hard, the dying
+                // wobble barely dents it, a crawl not at all.
+                if goalSpring.splat, s > 60 {
+                    impacts.append(Impact(nx: -velocity.dx / s, ny: -velocity.dy / s, press: min(0.75, 0.3 + s / 2000)))
                     onImpact?(s)
+                }
+                if !arrived {
+                    arrived = true
+                    onArrive?()
                 }
             }
         } else {
@@ -328,7 +469,8 @@ final class BlobBody {
         // Rest.
         if !dragging {
             if let g = goal {
-                if abs(g.x - center.x) < 1.5, abs(g.y - center.y) < 1.5, speed < 12 {
+                let near = goalSpring.settleDistance
+                if abs(g.x - center.x) < near, abs(g.y - center.y) < near, speed < goalSpring.settleSpeed {
                     center = g
                     settle()
                 }
@@ -345,13 +487,15 @@ final class BlobBody {
         return contacts()
     }
 
-    private var speed: Double { (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot() }
+    /// How fast the centre is moving, pt/s.
+    var speed: Double { (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot() }
 
     private func settle() {
         velocity = .zero
         goal = nil
         ignoreWindows = false
         isActive = false
+        arrived = false
         onSettle?()
     }
 

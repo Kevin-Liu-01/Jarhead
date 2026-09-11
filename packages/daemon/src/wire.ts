@@ -78,6 +78,7 @@ export type DaemonMessage =
   | { readonly type: "audio"; readonly control: "flush" }
   | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[] }
   | { readonly type: "ledger.days"; readonly id: string; readonly days: string[] }
+  | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
    * ToolResult as the runner produced it (text / image {pngBase64, width, height,

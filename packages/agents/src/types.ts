@@ -1,4 +1,4 @@
-import type { AgentInfo, AgentKind, ConnectorHealth } from "@jarhead/protocol";
+import type { AgentInfo, AgentKind, AgentMessage, ConnectorHealth } from "@jarhead/protocol";
 
 /**
  * One interface over every place Kevin's agents live.
@@ -36,6 +36,41 @@ export interface AgentConnector {
 
   /** Push-based status changes when the backend offers them. Returns unsubscribe. */
   subscribe?(onChange: (agent: AgentInfo) => void): () => void;
+
+  /**
+   * A page of the agent's conversation: the newest `limit` messages, or the ones just
+   * before message `before`. Connectors that keep no transcript leave this out.
+   */
+  transcript?(agentId: string, opts?: TranscriptOptions): Promise<TranscriptPage>;
+
+  /**
+   * New turns as they land, until the returned function is called. `onEnd` is called
+   * (once, with the reason) when the tail cannot start or stops on its own — the session
+   * is gone, its file unreadable — so a surface can stop calling the conversation live.
+   */
+  watch?(agentId: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void;
+}
+
+export interface TranscriptOptions {
+  /** Messages per page. Default 60. */
+  readonly limit?: number;
+  /** A message id: the page ends just before it. */
+  readonly before?: string;
+}
+
+/** What a connector knows of a conversation window; the engine adds `agentId` and `live`. */
+export interface TranscriptPage {
+  readonly messages: readonly AgentMessage[];
+  /** Messages in the whole session (exact when the whole file was read, the store's estimate otherwise). */
+  readonly total: number;
+  /** The first message of the session is included. */
+  readonly complete: boolean;
+}
+
+/** Messages created or changed since the last delta (a tool call comes again with its output). */
+export interface TranscriptDelta {
+  readonly messages: readonly AgentMessage[];
+  readonly total: number;
 }
 
 export interface SendResult {

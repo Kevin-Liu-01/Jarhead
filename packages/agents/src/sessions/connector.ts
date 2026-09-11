@@ -6,10 +6,13 @@ import { logger } from "@jarhead/core";
 import type { AgentInfo, AgentStatus, ConnectorHealth } from "@jarhead/protocol";
 import { defaultCanUseTool } from "../claude-code/connector.ts";
 import type { ClaudeSession, PermissionDecision, SdkLike } from "../claude-code/session.ts";
-import { agentId, splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions } from "../types.ts";
+import { agentId, splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "../types.ts";
 import { defaultClaudeSessionsDir, readClaudeRegistry, type SessionOwner } from "./claude-registry.ts";
 import { ClaudeStore, defaultClaudeProjectsRoot } from "./claude-store.ts";
 import { CodexStore, defaultCodexRoot } from "./codex-store.ts";
+import { ClaudeTranscriptParser } from "./claude-transcript.ts";
+import { CodexTranscriptParser } from "./codex-transcript.ts";
+import { TranscriptSource } from "./transcript.ts";
 import { detectOthers } from "./others.ts";
 import { listAgentProcesses, type AgentProcess, type ExecFn, type ProcessSnapshot } from "./processes.ts";
 import { ClaudeCodeRunner } from "./runners/claude-code.ts";
@@ -31,6 +34,11 @@ const log = logger("agents.sessions");
  * resume` headlessly. New threads start the same way (`start()`), in a folder.
  *
  * Ids: `sessions:claude:<sessionId>`, `sessions:codex:<threadId>`.
+ *
+ * Stepping into a session is `transcript()` (a page of its conversation, newest first) and
+ * `watch()` (new turns as the file grows) over the same files, whoever is writing them: a
+ * Claude Desktop pane, Codex Desktop, or a runner of ours — the Agent SDK's resume and
+ * `codex exec resume` both append to the very file the listing found.
  *
  * Resuming appends to a transcript another process may still be writing, so send()
  * only spawns when ownership is settled: the Claude Code registry, argv and the rollout
@@ -87,6 +95,9 @@ export interface SessionsConnectorOptions {
   readonly codexStartTimeoutMs?: number;
   readonly codexQueueTimeoutMs?: number;
   readonly codexKillGraceMs?: number;
+  /** watch(): stat interval when fs.watch cannot be used (default 1 s) and the burst window (default 50 ms). */
+  readonly tailPollMs?: number;
+  readonly tailCoalesceMs?: number;
 }
 
 export interface StatusWindows {
@@ -282,6 +293,8 @@ export class SessionsConnector implements AgentConnector {
   private readonly askChanges = new EventEmitter();
   /** Fires a runKey on every event of that run; waitSettled() listens. */
   private readonly runChanges = new EventEmitter();
+  /** Conversations opened through transcript()/watch(), by runKey; each knows its file and where the last read ended. */
+  private readonly sources = new Map<string, TranscriptSource>();
   private snapshotCache: Snapshot | undefined;
   private lastListed = new Map<string, Listed>();
   private lastListedAt = 0;
@@ -389,10 +402,10 @@ export class SessionsConnector implements AgentConnector {
         : run.statusDetail
           ? `resumed: ${run.statusDetail}`
           : "resumed by Jarhead";
-      return { id, kind: this.kind, name: sessionName(s), status: ask ? "blocked" : run.status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt) };
+      return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status: ask ? "blocked" : run.status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt), messageCount: s.messageCount };
     }
     const { status, hint } = statusFor(s, snap.processes, this.now(), this.windows, snap.owners);
-    return { id, kind: this.kind, name: sessionName(s), status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt };
+    return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt, messageCount: s.messageCount };
   }
 
   /**
@@ -469,6 +482,103 @@ export class SessionsConnector implements AgentConnector {
     if (ask) return `${context}\nwaiting for Kevin's yes or no before ${ask.toolName}${ask.summary ? `: ${ask.summary}` : ""}`;
     const text = run?.lastReply || s.lastAssistantText || (run?.status === "working" ? "(still working)" : "(no assistant reply recorded)");
     return `${context}\n${text}`;
+  }
+
+  // ---------------------------------------------------------- conversations ---
+
+  /**
+   * The session behind an id, freshest first: straight from disk (the file may have grown
+   * since the listing, and a thread started here has a real rollout by now), then the
+   * listing, then a start still waiting for its file.
+   */
+  private async resolveFromDisk(id: string): Promise<DiscoveredSession> {
+    const parsed = parseSessionsAgentId(id);
+    if (!parsed) throw new TypeError(`not a sessions agent id: ${id}`);
+    const found = parsed.tool === "claude" ? await this.claude.find(parsed.localId) : await this.codex.find(parsed.localId);
+    if (found) {
+      const full = agentId(this.kind, `${parsed.tool}:${parsed.localId}`);
+      const listed = this.lastListed.get(full);
+      if (listed) this.lastListed.set(full, { session: found, info: listed.info });
+      return found;
+    }
+    return this.resolve(id);
+  }
+
+  /**
+   * The conversation source for a session; replaced when its file moved (a pending start
+   * got its rollout). `replaced` says a source for another path stood here before, so
+   * whatever the new file holds was never shown from it.
+   */
+  private async sourceFor(id: string): Promise<{ session: DiscoveredSession; source: TranscriptSource; replaced: boolean }> {
+    const s = await this.resolveFromDisk(id);
+    const key = runKey(s.tool, s.id);
+    let source = this.sources.get(key);
+    let replaced = false;
+    if (!source || source.path !== s.path) {
+      replaced = source !== undefined;
+      source?.close();
+      source = new TranscriptSource({
+        path: s.path,
+        makeParser: s.tool === "claude" ? () => new ClaudeTranscriptParser() : () => new CodexTranscriptParser(),
+        storeCount: () => this.lastListed.get(agentId(this.kind, `${s.tool}:${s.id}`))?.session.messageCount ?? s.messageCount,
+        ...(this.opts.tailPollMs !== undefined ? { pollMs: this.opts.tailPollMs } : {}),
+        ...(this.opts.tailCoalesceMs !== undefined ? { coalesceMs: this.opts.tailCoalesceMs } : {}),
+      });
+      this.sources.set(key, source);
+    }
+    return { session: s, source, replaced };
+  }
+
+  /** A thread started here whose file the tool has not written yet: its path is the placeholder nothing will ever write. */
+  private isPlaceholder(s: DiscoveredSession): boolean {
+    return this.pendingStarts.get(runKey(s.tool, s.id))?.path === s.path;
+  }
+
+  /** A page of the session's conversation: the newest `limit` turns, or those before message `before`. */
+  async transcript(id: string, opts: TranscriptOptions = {}): Promise<TranscriptPage> {
+    const { source } = await this.sourceFor(id);
+    return source.page(opts);
+  }
+
+  /**
+   * New turns as the session file grows — whoever writes them — until the returned
+   * function is called. Deltas carry messages created or changed: a tool call appears
+   * first as running and again, same id, with its output. A thread started here whose
+   * file is not on disk yet is looked for again every second, then followed from its
+   * first line. `onEnd` hears when there is no such session (any more).
+   */
+  watch(id: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void {
+    let stop: (() => void) | undefined;
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let looks = 0;
+    const attempt = (): void => {
+      looks += 1;
+      this.sourceFor(id)
+        .then(({ session, source, replaced }) => {
+          if (closed) return;
+          if (this.isPlaceholder(session)) {
+            // Each look walks the store for the file; after the first few, look five times less often.
+            const base = this.opts.tailPollMs ?? 1_000;
+            timer = setTimeout(attempt, looks < 5 ? base : base * 5);
+            timer.unref?.();
+            return;
+          }
+          // A file that took the place of the placeholder was never shown: replay it from
+          // its first line (unless a page of it was served meanwhile, e.g. by a reload).
+          stop = source.follow(onDelta, { fromStart: replaced && !source.served });
+        })
+        .catch((e: unknown) => {
+          log.debug(`watch ${id}: ${(e as Error).message}`);
+          if (!closed) onEnd?.((e as Error).message);
+        });
+    };
+    attempt();
+    return () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      stop?.();
+    };
   }
 
   async send(id: string, text: string): Promise<SendResult> {
@@ -848,6 +958,8 @@ export class SessionsConnector implements AgentConnector {
 
   async closeAll(): Promise<void> {
     for (const queue of [...this.asks.values()]) for (const ask of [...queue]) ask.settle({ behavior: "deny", message: "Jarhead is shutting down" });
+    for (const source of this.sources.values()) source.close();
+    this.sources.clear();
     await Promise.all([...this.runs.values()].map((r) => r.close()));
     this.runs.clear();
     this.pendingStarts.clear();

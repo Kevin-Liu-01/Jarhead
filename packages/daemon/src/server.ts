@@ -59,6 +59,8 @@ export class DaemonServer {
           return this.broadcast({ type: "toast", text: e.text, tone: e.tone });
         case "speaker-flush":
           return this.broadcast({ type: "audio", control: "flush" });
+        case "agent.transcript":
+          return this.broadcast({ type: "agent.transcript", transcript: e.transcript, mode: e.mode });
       }
     });
     engine.on("audio", (pcm) => {

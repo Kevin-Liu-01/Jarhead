@@ -6,6 +6,8 @@ import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
+import { delegationPrompt } from "./anthropic.ts";
+import { loadAttachments } from "./attachments.ts";
 import type { ToolRunner } from "./runner.ts";
 
 /**
@@ -299,15 +301,13 @@ export class ClaudeBrain implements Brain {
           resolve({ status: "cancelled" });
         }
       }, { once: true });
-      const prompt = [
-        task.confirmation ? "Kevin just said YES to the pending confirmation. Do that action now, then report." : "",
-        `Kevin said: "${task.request}"`,
-        task.dialogue ? `Recent conversation:\n${task.dialogue}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      // The same words as the API brains; the circled regions ride as image blocks of
+      // this user turn (ClaudeSession builds Anthropic-shaped content), and the prompt
+      // says what each one is.
+      const attachments = loadAttachments(task);
+      const prompt = delegationPrompt(task, undefined, attachments);
       try {
-        session.send(prompt);
+        session.send(prompt, attachments.map((a) => ({ pngBase64: a.pngBase64 })));
       } catch (e) {
         this.current = undefined;
         resolve({ status: "failed", error: (e as Error).message });
@@ -352,7 +352,8 @@ export function zodShape(spec: ToolSpec): Record<string, z.ZodTypeAny> {
     if (prop.enum) t = z.enum(prop.enum as [string, ...string[]]);
     else if (type === "number" || type === "integer") t = z.number();
     else if (type === "boolean") t = z.boolean();
-    else if (type === "array") t = z.array(prop.items?.type === "number" ? z.number() : z.string());
+    // Arrays of numbers (coordinates), of [x, y] pairs (show_stroke), or of strings.
+    else if (type === "array") t = z.array(prop.items?.type === "number" ? z.number() : prop.items?.type === "array" ? z.array(z.number()) : z.string());
     else if (Array.isArray(prop.type)) t = z.union([z.string(), z.number()]);
     else t = z.string();
     if (prop.description) t = t.describe(prop.description);

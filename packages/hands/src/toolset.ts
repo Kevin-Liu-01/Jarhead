@@ -194,6 +194,8 @@ export class ComputerToolset {
           return { kind: "error", message: "zoom needs region: [x0, y0, x1, y1] in screenshot pixels" };
         }
         const rect = this.screen.regionToRect(region as number[]);
+        // Frame what is being read, briefly.
+        this.opts.annotate?.({ cmd: "rect", rect, ttlMs: 1500, tone: "accent" });
         const shot = await hands.request<ScreenshotResult>("zoom", { ...rect, maxLongEdge: (this.opts.budget ?? DEFAULT_SHOT_BUDGET).maxLongEdge }, 6000);
         return { kind: "image", pngBase64: shot.pngBase64, width: shot.width, height: shot.height, note: "zoomed view; click coordinates still refer to the last full screenshot" };
       }
@@ -222,12 +224,23 @@ export class ComputerToolset {
         if (gate.result) return gate.result;
         const button = name === "right_click" ? "right" : name === "middle_click" ? "middle" : "left";
         const count = name === "double_click" ? 2 : name === "triple_click" ? 3 : 1;
+        // The blob flies to where the action lands, then the click pulses under it.
+        this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
         await hands.request("click", { ...p, button, count, modifiers: modifiersOf(input) });
         this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
         return ok();
       }
       case "left_mouse_down":
       case "left_mouse_up": {
+        if (name === "left_mouse_down") {
+          // The press lands under the pointer; the blob goes there (best effort: no pointer position, no flight).
+          try {
+            const c = await this.cursorPoints();
+            if (Number.isFinite(c.x) && Number.isFinite(c.y)) this.opts.annotate?.({ cmd: "orb.fly", x: c.x, y: c.y, dwellMs: 1500, reason: name });
+          } catch {
+            // no pointer position, no flight
+          }
+        }
         await hands.request(name === "left_mouse_down" ? "mouse_down" : "mouse_up", { button: "left" });
         return ok();
       }
@@ -238,6 +251,9 @@ export class ComputerToolset {
         const gate = await this.gate(name, input, { points: to });
         noteDecision(gate.decision);
         if (gate.result) return gate.result;
+        // The blob flies to the grab point and the layer traces the drag.
+        this.opts.annotate?.({ cmd: "orb.fly", x: from.x, y: from.y, dwellMs: 1500, reason: name });
+        this.opts.annotate?.({ cmd: "path", from, to, ttlMs: 1500 });
         await hands.request("drag", { from, to, modifiers: modifiersOf(input) }, 8000);
         return ok();
       }
@@ -251,6 +267,7 @@ export class ComputerToolset {
         const dy = dir === "up" ? px : dir === "down" ? -px : 0;
         const dx = dir === "left" ? px : dir === "right" ? -px : 0;
         if (dx === 0 && dy === 0) return { kind: "error", message: `scroll_direction must be up, down, left or right (got ${dir})` };
+        if (p) this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
         await hands.request("scroll", { ...(p ?? {}), dx, dy, modifiers: modifiersOf(input) });
         return ok();
       }
@@ -260,6 +277,13 @@ export class ComputerToolset {
         const gate = await this.gate(name, input, { text });
         noteDecision(gate.decision);
         if (gate.result) return gate.result;
+        // Typing lands in the focused element; when accessibility knows where that is, the blob hovers there.
+        try {
+          const f = await hands.request<FocusedText>("focused_text", {}, 1500);
+          if (f.frame) this.opts.annotate?.({ cmd: "orb.fly", x: f.frame.x + f.frame.w / 2, y: f.frame.y + f.frame.h / 2, dwellMs: 1500, reason: name });
+        } catch {
+          // no frame, no flight
+        }
         await hands.request("type", { text }, 5000 + text.length * 15);
         return ok();
       }

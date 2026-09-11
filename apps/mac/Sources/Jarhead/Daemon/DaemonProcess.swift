@@ -24,6 +24,8 @@ final class DaemonProcess {
 
     /// Queue-confined; safe to append to from the pipe reader threads.
     nonisolated private let logFile: DaemonLog
+    /// The daemon's "restart me" exit code (sysexits EX_TEMPFAIL).
+    static let restartRequestedExit: Int32 = 75
 
     var pid: Int32? { process.flatMap { $0.isRunning ? $0.processIdentifier : nil } }
 
@@ -168,6 +170,15 @@ final class DaemonProcess {
         let how = reason == .uncaughtSignal ? "signal \(status)" : "exit \(status)"
         log("[app] daemon ended: \(how)")
         if stopping { return }
+        // Exit 75 (EX_TEMPFAIL) is the daemon asking to be restarted — after it has
+        // rewritten its own code and passed its checks. Fresh start, no backoff.
+        if reason == .exit && status == DaemonProcess.restartRequestedExit {
+            log("[app] daemon requested a restart (self-update); respawning now")
+            backoff = 1
+            setDetail("restarting (self-update)")
+            spawn()
+            return
+        }
         // A daemon that lived a while has earned a fresh backoff.
         if let at = spawnedAt, Date().timeIntervalSince(at) > 60 { backoff = 1 }
         scheduleRestart(why: how)

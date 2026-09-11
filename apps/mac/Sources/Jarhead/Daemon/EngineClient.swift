@@ -266,6 +266,10 @@ final class EngineClient: @unchecked Sendable {
             onMain { $0.overlayCommands.send(cmd) }
         case "audio":
             if obj["control"] as? String == "flush" { audio?.flush() }
+        case "agent.transcript":
+            guard let sub = obj["transcript"], let t: AgentTranscript = decode(sub) else { return }
+            let mode = obj["mode"] as? String ?? "replace"
+            onMain { $0.applyTranscript(t, mode: mode) }
         case "ledger.rows":
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["rows"]) }
         case "ledger.days":

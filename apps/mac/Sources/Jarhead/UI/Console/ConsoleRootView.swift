@@ -2,8 +2,9 @@ import SwiftUI
 
 /// The Console's root. This is the only view (besides the audio meters) that
 /// observes `AppState`; it slices the snapshot — and the wake gate's three
-/// published values — into plain values for the three regions, each of which
-/// is `Equatable` so a 20 Hz level tick re-evaluates nothing below this body.
+/// published values, and the one open conversation — into plain values for the
+/// three regions, each of which is `Equatable` so a 20 Hz level tick
+/// re-evaluates nothing below this body.
 ///
 /// Lines: the header owns its bottom rule; the two vertical rules between the
 /// columns are drawn here, once each; the rails draw no edge of their own.
@@ -13,6 +14,13 @@ struct ConsoleRootView: View {
 
     var body: some View {
         let snap = state.snapshot
+        // The session Kevin stepped into, while it is still on the rail.
+        let openAgent = session.openAgentId.flatMap { id in snap.agents.first { $0.id == id } }
+        // Gone from a rail that still lists sessions: the conversation is over, and
+        // must not pop back over the stream if the id shows up again. An empty rail
+        // is the registry still listing (the daemon just started), so the id survives
+        // that and the tail resumes with the rail.
+        let orphaned = session.openAgentId != nil && openAgent == nil && !snap.agents.isEmpty
         VStack(spacing: 0) {
             ConsoleHeader(phase: snap.phase, connected: state.connected, daemonDetail: state.daemonDetail)
                 .equatable()
@@ -21,11 +29,20 @@ struct ConsoleRootView: View {
                     .equatable()
                     .frame(width: ConsoleLayout.agentsRailWidth)
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
-                StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
-                           hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
-                           ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading)
-                    .equatable()
-                    .frame(minWidth: ConsoleLayout.streamMinWidth, maxWidth: .infinity)
+                if let agent = openAgent {
+                    // Only that agent's transcript reaches the pane; its id is the pane's
+                    // identity, so switching sessions closes one tail and opens the next.
+                    ConversationPane(agent: agent, transcript: state.transcripts[agent.id])
+                        .equatable()
+                        .id(agent.id)
+                        .frame(minWidth: ConsoleLayout.streamMinWidth, maxWidth: .infinity)
+                } else {
+                    StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
+                               hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
+                               ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading)
+                        .equatable()
+                        .frame(minWidth: ConsoleLayout.streamMinWidth, maxWidth: .infinity)
+                }
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
                 RightRail(snapshot: snap, ledgerDays: session.ledgerDays, ledgerDay: session.ledgerDay,
                           ledgerLoading: session.ledgerLoading, ledgerStats: session.ledgerStats, tab: session.tab,
@@ -43,6 +60,9 @@ struct ConsoleRootView: View {
             LightboxView(item: item) { session.lightbox = nil }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .onChange(of: orphaned) {
+            if orphaned { session.openAgentId = nil }
+        }
         // The same sum the window's minSize uses, so the columns always fit.
         .frame(minWidth: ConsoleLayout.minWidth, minHeight: ConsoleLayout.minHeight)
     }

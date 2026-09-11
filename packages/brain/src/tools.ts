@@ -75,9 +75,49 @@ export const MISC_SPECS: readonly ToolSpec[] = [
   { name: "recall", description: "List the notes saved with remember, newest last.", parameters: { type: "object", properties: {} } },
 ];
 
+const point = { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, y] in pixels of the last screenshot (global points if you have taken none)" };
+const ttlMs = { type: "integer", minimum: 500, maximum: 60000, description: "How long the shape stays, in ms (default 6000)" };
+const label = { type: "string", description: "Short caption drawn next to the shape (a few words)" };
+
+/**
+ * Teaching shapes. Nothing here clicks or types: the shapes land on Jarhead's
+ * click-through overlay so a brain can show Kevin where something is or what to
+ * do next, and they fade after a few seconds. Coordinates follow the same rule
+ * as every other tool — pixels of the last screenshot — so a brain circles
+ * exactly what it just saw.
+ */
+export const DRAW_SPECS: readonly ToolSpec[] = [
+  {
+    name: "show_circle",
+    description: "Draw a fading circle on Kevin's screen to point at something while you explain — where a button is, what to click next. Teaching only; it does not click. x, y and radius are pixels of the last screenshot, like every other tool (global points if you have taken none).",
+    parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, radius: { type: "number", description: "in the same pixels as x and y" }, label, ttlMs }, required: ["x", "y", "radius"] },
+  },
+  {
+    name: "show_arrow",
+    description: "Draw a fading arrow from one point to another on Kevin's screen — 'drag this there', 'then this one'. Teaching only. Points are [x, y] in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { from: point, to: point, label, ttlMs }, required: ["from", "to"] },
+  },
+  {
+    name: "show_rect",
+    description: "Frame a region of Kevin's screen with a fading rectangle — the panel, the field, the row he should look at. Teaching only. rect is [x, y, w, h] in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { rect: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[x, y, w, h] in pixels of the last screenshot" }, label, ttlMs }, required: ["rect"] },
+  },
+  {
+    name: "show_text",
+    description: "Put a short fading label on Kevin's screen at a point ('start here', 'this one'). Teaching only. x and y are pixels of the last screenshot.",
+    parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, text: { type: "string", description: "a few words" }, ttlMs }, required: ["x", "y", "text"] },
+  },
+  {
+    name: "show_stroke",
+    description: "Draw a fading freehand line through a list of points on Kevin's screen — trace a path, underline something, sketch a shape. Teaching only. points is [[x, y], [x, y], ...] (at least two) in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 2, description: "[[x, y], ...] in pixels of the last screenshot" }, label, ttlMs }, required: ["points"] },
+  },
+  { name: "show_clear", description: "Remove every shape you drew on Kevin's screen.", parameters: { type: "object", properties: {} } },
+];
+
 export const COMPUTER_TOOL_SPECS: readonly ToolSpec[] = COMPUTER_MEMBERS.map((m) => COMPUTER_SPECS[m]);
 export const DESKTOP_TOOL_SPECS: readonly ToolSpec[] = DESKTOP_TOOLS.map((t) => DESKTOP_SPECS[t]);
-export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...AGENT_SPECS, ...MISC_SPECS];
+export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...AGENT_SPECS, ...MISC_SPECS, ...DRAW_SPECS];
 
 export function specByName(name: string): ToolSpec | undefined {
   return ALL_TOOL_SPECS.find((t) => t.name === name);

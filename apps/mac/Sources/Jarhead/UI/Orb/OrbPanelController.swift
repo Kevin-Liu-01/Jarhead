@@ -13,6 +13,19 @@ import SwiftUI
 /// spring, letting go keeps the momentum, and it bounces off the work-area edges and
 /// other windows, squishing on impact. The panel window follows the body every
 /// display frame, so the blob really travels across the screen.
+///
+/// It also flies to the work. An `orb.fly` on `state.overlayCommands` sends it from
+/// its perch to a point on the screen (parking up-left of it, never on it): a short
+/// wind-up (it turns the acting colour and tenses), then the flight spring — one
+/// overshoot, one squish, a ripple on arrival — and it hovers beside the work for the
+/// command's dwell (counted from being parked; a repeat fly to the same spot only
+/// extends it) before drifting home on a gentler spring; `orb.home` brings it back at
+/// once. The perch is the last spot Kevin put it (the persisted `orbPosition`); a
+/// flight never persists where it landed, opening the capsule mid-flight parks it
+/// until the capsule closes (then it goes home), and only a drag makes a new spot
+/// home. A fly that arrives while Kevin's own throw is still gliding waits for it to
+/// land. In flight it wears the acting colour, shimmers faster and trails a dotted
+/// wake of itself (`BlobTrail`).
 @MainActor
 public final class OrbPanelController {
     public let state: AppState
@@ -56,6 +69,29 @@ public final class OrbPanelController {
     private var lastScan = 0.0
     private var scanning = false
     private var frozen = false
+
+    // Flights (orb.fly / orb.home).
+    /// Where an `orb.fly` is: on the way out, parked beside the target, on the way back.
+    private enum Flight: Equatable { case none, outbound, hovering, homing }
+    private var flight = Flight.none
+    /// The CG centre the blob calls home: the last user-placed (persisted) position.
+    private var perch: CGPoint?
+    private var flightTarget: CGPoint?
+    private var flightDwell = 2.0
+    /// CACurrentMediaTime deadline for the hover; each new orb.fly, the arrival and the park push it out.
+    private var hoverUntil = 0.0
+    private var hoverTimer: Task<Void, Never>?
+    /// The launch, a wind-up after the command so the blob visibly tenses and turns colour first.
+    private var takeoff: DispatchWorkItem?
+    static let windup = 0.14
+    /// An `orb.fly` that arrived while Kevin's own motion (a drop, a fling, a summon, a
+    /// poke) was still gliding: it fires once that has landed and become the perch.
+    private struct PendingFly { var target: CGPoint; var dwellMs: Double?; var reason: String?; var expires: Double }
+    private var pendingFly: PendingFly?
+    /// The capsule opened mid-flight: the flight is parked, and closing the capsule
+    /// sends the blob home instead of making the capsule's spot the perch.
+    private var homeAfterCollapse = false
+    private let trail: BlobTrail
 
     private var sim: BlobSim { blobView.sim }
 
@@ -108,6 +144,7 @@ public final class OrbPanelController {
         container.addSubview(capsuleHost)
 
         body = BlobBody(size: c, center: CGSpace.point(fromAppKit: NSPoint(x: panel.frame.midX, y: panel.frame.midY)))
+        trail = BlobTrail(size: c)
         sim.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
         capsuleHost.rootView = OrbCapsuleView(model: capsuleModel, actions: OrbCapsuleActions(
@@ -134,6 +171,7 @@ public final class OrbPanelController {
             self.sim.nudge(min(2.0, 0.4 + speed / 900))
             self.blobView.poke()
         }
+        body.onArrive = { [weak self] in self?.bodyDidArrive() }
 
         bind()
     }
@@ -147,6 +185,8 @@ public final class OrbPanelController {
         for m in dismissMonitors { NSEvent.removeMonitor(m) }
         persistDebounce?.cancel()
         deniedPillTimer?.cancel()
+        hoverTimer?.cancel()
+        takeoff?.cancel()
     }
 
     // MARK: - Public API (fixed signature)
@@ -161,6 +201,14 @@ public final class OrbPanelController {
 
     public func hide() {
         collapse()
+        pendingFly = nil
+        if flight != .none {
+            // Cut the flight short and put the body back on its perch now, so it
+            // reappears where Kevin left it: a goal spring left armed would fly on
+            // after show() and persist its landing spot as the perch.
+            cancelFlight()
+            if let perch { placeBody(centerCG: perch) }
+        }
         blobView.paused = true
         statusModel.shown = false
         panel.orderOut(nil)
@@ -170,9 +218,13 @@ public final class OrbPanelController {
         if expanded { collapse() } else { expand() }
     }
 
-    /// Fling the blob to the cursor (landing slightly above it) with a bounce.
+    /// Fling the blob to the cursor (landing slightly above it) with a bounce. Kevin
+    /// calling it over ends any flight: where it lands is the new perch.
     public func summon() {
+        // A capsule opened mid-flight starts the drift home as it folds; Kevin's call cuts that short too.
         if expanded { collapse() }
+        cancelFlight()
+        pendingFly = nil
         if !positioned { placeInitially() }
         let mouse = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
         let goal = CGPoint(x: mouse.x, y: mouse.y - 40)
@@ -269,8 +321,24 @@ public final class OrbPanelController {
             .removeDuplicates()
             .compactMap { $0 }
             .sink { [weak self] pos in
-                guard let self, !self.userMoved, !self.expanded, !self.body.isActive else { return }
+                guard let self, !self.userMoved, !self.expanded, !self.body.isActive, self.flight == .none else { return }
                 self.apply(savedPosition: pos)
+            }
+            .store(in: &cancellables)
+
+        // Flights. The overlay layer draws the shapes; the blob answers only these two.
+        state.overlayCommands
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] cmd in
+                guard let self else { return }
+                switch cmd {
+                case .orbFly(let x, let y, let dwellMs, let reason):
+                    self.fly(to: CGPoint(x: x, y: y), dwellMs: dwellMs, reason: reason)
+                case .orbHome:
+                    self.flyHome()
+                default:
+                    break
+                }
             }
             .store(in: &cancellables)
 
@@ -357,6 +425,8 @@ public final class OrbPanelController {
         let onScreen = ScreenArea.all().contains { $0.frame.contains(body.center) }
         if !onScreen, expanded { collapse() }
         let moved = body.rescueOntoScreens()
+        // A flight to a display that just went away has nowhere to go; the rescue spot is home.
+        if moved { cancelFlight() }
         if !expanded {
             sim.setContacts(body.contacts())
             sim.leanX = body.leanX
@@ -392,10 +462,18 @@ public final class OrbPanelController {
         return true
     }
 
-    /// Put the body (and the panel) at a CG top-left, motionless.
+    /// Put the body (and the panel) at a CG top-left, motionless. A placement is a
+    /// perch: it is either the saved position or the default spot.
     private func place(topLeftCG p: CGPoint) {
         let size = Self.collapsedSize
-        body.teleport(to: CGPoint(x: p.x + size.width / 2, y: p.y + size.height / 2))
+        placeBody(centerCG: CGPoint(x: p.x + size.width / 2, y: p.y + size.height / 2))
+        perch = body.center
+    }
+
+    /// Put the body (and the panel) at a CG centre, motionless, without touching the perch.
+    private func placeBody(centerCG c: CGPoint) {
+        let size = Self.collapsedSize
+        body.teleport(to: c)
         sim.setContacts(body.contacts())
         sim.leanX = body.leanX
         sim.leanY = body.leanY
@@ -416,18 +494,199 @@ public final class OrbPanelController {
         sim.leanX = body.leanX
         sim.leanY = body.leanY
         syncPanelToBody()
-        persistPosition()
+        switch flight {
+        case .outbound:
+            // Parked beside the target. The dwell is time spent parked here — it
+            // counts from now, not from the arrival splat, so the landing wobble
+            // never eats it. Nothing is persisted.
+            flight = .hovering
+            sim.flightMoving = false
+            hoverUntil = max(hoverUntil, CACurrentMediaTime() + flightDwell)
+            scheduleHoverEnd()
+        case .homing:
+            // Home again, on the perch it left: nothing changed, nothing to save.
+            endFlight(clearTrail: false)
+        case .hovering:
+            break
+        case .none:
+            persistPosition()
+            // Kevin's throw has landed and is the perch; now the fly that waited for it.
+            if let p = pendingFly {
+                pendingFly = nil
+                if CACurrentMediaTime() < p.expires { fly(to: p.target, dwellMs: p.dwellMs, reason: p.reason) }
+            }
+        }
     }
 
+    /// Save where the body rests. Only ever a spot Kevin chose (a drop, a fling, a
+    /// summon, a rescue) — flights do not come through here — so it is also the perch.
+    /// The spot is taken now: a flight that leaves within the debounce (one that was
+    /// waiting for this very landing) must not stop the perch being saved, nor be
+    /// saved itself.
     private func persistPosition() {
-        guard !expanded else { return }
+        guard !expanded, flight == .none else { return }
+        perch = body.center
+        let tl = body.topLeft
         persistDebounce?.cancel()
         persistDebounce = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
-            guard let self, !Task.isCancelled, !self.expanded else { return }
-            let tl = self.body.topLeft
+            guard let self, !Task.isCancelled else { return }
             self.state.send(.setSettings(SettingsPatch(orbPosition: OrbPosition(x: tl.x, y: tl.y))))
         }
+    }
+
+    // MARK: - Flights (orb.fly / orb.home)
+
+    /// Leave the perch for a point on the screen. Refused while Kevin is dragging
+    /// (his hand wins) and while the orb is hidden; an open capsule folds first. While
+    /// Kevin's own throw is still gliding the fly waits for it to land (that landing
+    /// is his perch, and must be saved as such before anything flies). A fly during a
+    /// flight retargets it in the air and extends the hover — unless it is the same
+    /// work again (the target within a body's radius of the last, or the blob already
+    /// parked beside it), when it only extends the hover: relaunching would swing the
+    /// blob round the target for nothing.
+    private func fly(to target: CGPoint, dwellMs: Double?, reason: String?) {
+        guard !body.dragging, panel.isVisible else { return }
+        if expanded { collapse() }
+        if !positioned { placeInitially() }
+        let now = CACurrentMediaTime()
+        let dwell = max(0.2, (dwellMs ?? 2000) / 1000)
+        if flight == .none, body.isActive {
+            pendingFly = PendingFly(target: target, dwellMs: dwellMs, reason: reason, expires: now + dwell + 1.0)
+            return
+        }
+        pendingFly = nil
+        if perch == nil { perch = body.center }
+        flightDwell = dwell
+        hoverUntil = max(hoverUntil, now + dwell)
+        if flight == .outbound || flight == .hovering {
+            let sameWork = flightTarget.map { hypot(target.x - $0.x, target.y - $0.y) <= body.radius } ?? false
+            if sameWork || (flight == .hovering && body.isBeside(target)) {
+                flightTarget = target
+                blobView.poke()
+                return
+            }
+        }
+        flightTarget = target
+        hoverTimer?.cancel(); hoverTimer = nil
+        flight = .outbound
+        // The wind-up: colour, eyes and a tense shiver first (`BlobSim.flight`), the
+        // launch a beat later — so it visibly gathers itself and is already green when
+        // the wake starts. Already in the air, it just retargets.
+        sim.flight = true
+        blobView.paused = false
+        panel.orderFrontRegardless()
+        if body.isActive { takeOff() } else { scheduleTakeoff() }
+        blobView.poke()
+    }
+
+    private func scheduleTakeoff() {
+        takeoff?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.takeOff() }
+        }
+        takeoff = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (sim.reducedMotion ? 0 : Self.windup), execute: work)
+    }
+
+    /// Launch (or retarget) the body toward the spot beside the target. Across
+    /// displays the body hops first and picks the spot from where it lands.
+    private func takeOff() {
+        takeoff = nil
+        guard flight == .outbound, !body.dragging, let target = flightTarget else { return }
+        sim.flightMoving = true
+        #if JARHEAD_ORB_PREVIEW
+        let from = body.center
+        #endif
+        let spot = body.flyBeside(target, spring: .flight)
+        #if JARHEAD_ORB_PREVIEW
+        print(String(format: "takeoff: from CG %.0f,%.0f (after any hop %.0f,%.0f) -> landing CG %.0f,%.0f beside %.0f,%.0f",
+                     from.x, from.y, body.center.x, body.center.y, spot.x, spot.y, target.x, target.y))
+        fflush(stdout)
+        #endif
+        scanObstacles(force: true)
+        blobView.poke()
+    }
+
+    /// The visible arrival (the turn back toward the landing spot): a ripple runs out
+    /// through the surface. The dwell is guaranteed from here as a floor; it really
+    /// counts from being parked (`bodyDidSettle`).
+    private func bodyDidArrive() {
+        guard flight == .outbound else { return }
+        sim.rippleLanding()
+        hoverUntil = max(hoverUntil, CACurrentMediaTime() + flightDwell)
+        blobView.poke()
+    }
+
+    private func scheduleHoverEnd() {
+        hoverTimer?.cancel()
+        hoverTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.flight == .hovering else { return }
+                let remaining = self.hoverUntil - CACurrentMediaTime()
+                if remaining <= 0 { self.flyHome(); return }
+                try? await Task.sleep(nanoseconds: UInt64(max(0.01, remaining) * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Back to the perch: at once on `orb.home`, or when the hover runs out.
+    private func flyHome() {
+        guard flight != .none else { return }
+        driftHome()
+    }
+
+    /// Start the way home from wherever the body is — the tail of a flight, or of one
+    /// the capsule interrupted. A gentle spring, no splat: the blob drifting home
+    /// behind the work, not racing.
+    private func driftHome() {
+        hoverTimer?.cancel(); hoverTimer = nil
+        takeoff?.cancel(); takeoff = nil
+        guard let perch else { endFlight(clearTrail: false); return }
+        flight = .homing
+        sim.flight = true
+        sim.flightMoving = true
+        blobView.paused = false
+        body.drift(to: perch)
+        scanObstacles(force: true)
+        blobView.poke()
+    }
+
+    /// The flight is over: home, or overtaken by Kevin's hand (a drag, a summon, the
+    /// capsule opening, the orb hiding). Cancelled flights take their wake down with them.
+    private func endFlight(clearTrail: Bool) {
+        hoverTimer?.cancel(); hoverTimer = nil
+        takeoff?.cancel(); takeoff = nil
+        flight = .none
+        flightTarget = nil
+        hoverUntil = 0
+        sim.flight = false
+        sim.flightMoving = false
+        if clearTrail { trail.clear() }
+        blobView.poke()
+    }
+
+    /// Cut a flight short. Nothing of it outlives this: the launch is called off and
+    /// the body is stopped where it is (a goal spring left armed would fly on and
+    /// settle — and a settle outside a flight is persisted as the perch).
+    private func cancelFlight() {
+        takeoff?.cancel(); takeoff = nil
+        guard flight != .none else { return }
+        if body.hasGoal { body.teleport(to: body.center) }
+        endFlight(clearTrail: true)
+    }
+
+    /// One dotted ghost of the blob where it is now, every `BlobTrail.spacing` while a
+    /// flight is actually moving. Never under reduce motion. Always in the flight
+    /// colour: the first ghost drops while the field is still easing from the phase
+    /// colour, and a purple ghost behind a green blob reads as two creatures.
+    private func dropGhostIfDue() {
+        guard flight != .none, !sim.reducedMotion, body.speed > 240 else { return }
+        let now = CACurrentMediaTime()
+        guard now - trail.lastDropAt >= BlobTrail.spacing else { return }
+        guard let image = BlobGhostImage.render(cells: sim.cells, ramp: sim.ramp, color: OrbPalette.acting,
+                                                size: Self.collapsedSize, scale: panel.backingScaleFactor) else { return }
+        trail.drop(image: image, frame: panel.frame, below: panel, at: now)
     }
 
     // MARK: - Physics loop
@@ -441,6 +700,7 @@ public final class OrbPanelController {
         sim.leanY = body.leanY
         syncPanelToBody()
         if body.isActive || body.dragging { scanObstacles(force: false) }
+        if body.isActive { dropGhostIfDue() }
         return body.isActive || body.dragging
     }
 
@@ -480,7 +740,13 @@ public final class OrbPanelController {
     private func expand() {
         guard !expanded else { return }
         expanded = true
-        // Whatever it was doing, it holds still while the capsule is open.
+        // Whatever it was doing, it holds still while the capsule is open. A flight is
+        // parked, not forgotten: Kevin double-clicking the blob beside the work to ask
+        // about it must not make that spot his perch — the capsule closing sends it home.
+        let wasFlying = flight != .none
+        cancelFlight()
+        pendingFly = nil
+        homeAfterCollapse = wasFlying
         body.teleport(to: body.center)
         sim.setContacts(body.contacts())
         syncPanelToBody()
@@ -535,7 +801,13 @@ public final class OrbPanelController {
         sim.leanX = body.leanX
         sim.leanY = body.leanY
         blobView.poke()
-        persistPosition()
+        if homeAfterCollapse {
+            // Opened beside the work mid-flight: not a spot Kevin chose. Home it goes.
+            homeAfterCollapse = false
+            driftHome()
+        } else {
+            persistPosition()
+        }
     }
 
     private func layout(expanded: Bool, blobY: CGFloat) {
@@ -602,6 +874,11 @@ public final class OrbPanelController {
             guard hypot(p.x - down.x, p.y - down.y) >= 4 else { return }
             dragMoved = true
             if expanded { collapse() }
+            // Kevin's hand ends a flight (and one the capsule had parked, which the
+            // collapse just sent home); where he lets go is the new perch. A fly that
+            // was waiting for his throw to land is dropped: he has taken over.
+            cancelFlight()
+            pendingFly = nil
             userMoved = true
             body.beginDrag(pointer: down)
             scanObstacles(force: true)
@@ -644,6 +921,9 @@ public final class OrbPanelController {
         guard !expanded else { return }
         blobView.paused = false
         sim.nudge(1.4)
+        // Mid-flight a hop would strand it (the goal goes with the fling) or make its
+        // hover spot home when it landed; a shiver is enough.
+        guard flight == .none else { blobView.poke(); return }
         let dx = Double.random(in: -90 ... 90)
         let dy = Double.random(in: -140 ... -60)
         body.fling(CGVector(dx: dx, dy: dy))
@@ -801,6 +1081,22 @@ extension OrbPanelController {
     public var previewBlobCellFrame: NSRect { blobCell.frame }
     public var previewIsKey: Bool { panel.isKeyWindow }
     public var previewPanelFrame: NSRect { panel.frame }
+    /// "none" / "outbound" / "hovering" / "homing".
+    public var previewFlightPhase: String { String(describing: flight) }
+    public var previewBodySpeed: Double { body.speed }
+    /// The CG centre the blob will drift back to.
+    public var previewPerchCG: CGPoint? { perch }
+    /// Seconds of hover left before it heads home (0 outside a flight).
+    public var previewHoverRemaining: Double { flight == .none ? 0 : max(0, hoverUntil - CACurrentMediaTime()) }
+    /// An orb.fly is waiting for Kevin's own motion to land.
+    public var previewHasPendingFly: Bool { pendingFly != nil }
+    /// The capsule interrupted a flight; closing it sends the blob home.
+    public var previewHomeAfterCollapse: Bool { homeAfterCollapse }
+    /// The trail's ghosts currently showing (AppKit frames), for framing a screenshot.
+    public var previewGhostFrames: [NSRect] { trail.visibleFrames }
+    /// Draw the showing ghosts into a context whose origin is `offset` (AppKit screen space).
+    public func previewRenderTrail(in ctx: CGContext, offset: NSPoint) { trail.render(in: ctx, offset: offset) }
+    public func previewSetReducedMotion(_ on: Bool) { sim.reducedMotion = on }
 
     /// Draw the panel's content — its layer tree, what is on screen — into a context
     /// whose origin is the panel's bottom-left (AppKit, y up). For the harness's own

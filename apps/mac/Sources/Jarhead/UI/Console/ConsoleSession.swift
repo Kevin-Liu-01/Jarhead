@@ -88,6 +88,10 @@ struct ConsoleActions {
     /// gate may install them after the window exists). Set returns false when too short.
     var setWakePassphrase: (String) -> Bool = { _ in false }
     var clearWakePassphrase: () -> Void = {}
+    /// Now › "Circle something…": mark mode on the overlay (AppState.beginMarkMode).
+    var beginMarkMode: () -> Void = {}
+    /// A conversation's Reveal: the session's folder or file in Finder.
+    var reveal: (URL) -> Void = { _ in }
 }
 
 private struct ConsoleActionsKey: EnvironmentKey {

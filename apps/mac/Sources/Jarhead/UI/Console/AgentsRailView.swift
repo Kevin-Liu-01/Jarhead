@@ -1,10 +1,12 @@
 import SwiftUI
 
-// Left rail: agents grouped by connector. A group is a 24pt head (the
-// connector's solid icon, tinted red when it is down, the name, a count) and
-// 44pt rows (status glyph, name, relative time, one detail line). Groups are
-// separated by a gap, never a rule; the selected row carries the accent bar
-// and its composer.
+// Left rail: sessions grouped by the tool that owns them (Claude Code, Codex,
+// Cursor…). A group is a 24pt head (the tool's mark, its name, a count) and 44pt
+// rows: the mark on the icon column, the name with its status ringed in the
+// brand colour, and one mono meta line — project · messages · age. Groups are
+// separated by a gap, never a rule; a down connector keeps a head of its own so
+// its reason shows. Clicking a row steps into that conversation in the stream;
+// the selected row carries the accent bar.
 
 private let railInset: CGFloat = 12
 private let iconGap: CGFloat = 8
@@ -23,26 +25,28 @@ struct AgentsRail: View, Equatable {
     static func == (a: AgentsRail, b: AgentsRail) -> Bool { a.agents == b.agents && a.connectors == b.connectors }
 
     private struct Group: Identifiable {
-        let kind: AgentKind
-        let connector: ConnectorHealth?
+        let tool: AgentTool
         let agents: [AgentInfo]
-        var id: String { kind.rawValue }
+        var id: String { tool.rawValue }
     }
 
     private var groups: [Group] {
-        var seen = Set<AgentKind>()
+        var seen = Set<AgentTool>()
         var out: [Group] = []
-        let kinds = ConsoleTheme.kindOrder + agents.map(\.kind).filter { !ConsoleTheme.kindOrder.contains($0) }
-        for kind in kinds where !seen.contains(kind) {
-            seen.insert(kind)
-            let connector = connectors.first { $0.kind == kind }
-            let list = agents.filter { $0.kind == kind }.sorted { $0.updatedAt > $1.updatedAt }
-            // A healthy connector with nothing under it is a head with no rows: skip it.
-            // A down connector keeps its head so its detail line ("Not running") shows.
-            if list.isEmpty && (connector?.ok ?? true) { continue }
-            out.append(Group(kind: kind, connector: connector, agents: list))
+        let tools = ConsoleBrand.order + agents.map(\.resolvedTool).filter { !ConsoleBrand.order.contains($0) }
+        for tool in tools where !seen.contains(tool) {
+            seen.insert(tool)
+            let list = agents.filter { $0.resolvedTool == tool }.sorted { $0.updatedAt > $1.updatedAt }
+            if list.isEmpty { continue }
+            out.append(Group(tool: tool, agents: list))
         }
         return out
+    }
+
+    /// Connectors that are down: a head with the reason, whatever sessions exist.
+    private var down: [ConnectorHealth] {
+        ConsoleTheme.kindOrder.compactMap { kind in connectors.first { $0.kind == kind && !$0.ok } }
+            + connectors.filter { !$0.ok && !ConsoleTheme.kindOrder.contains($0.kind) }
     }
 
     var body: some View {
@@ -76,6 +80,10 @@ struct AgentsRail: View, Equatable {
                             groupView(group, now: now)
                                 .padding(.top, index > 0 ? 12 : 0)
                         }
+                        ForEach(Array(down.enumerated()), id: \.element.kind) { index, connector in
+                            downView(connector)
+                                .padding(.top, index > 0 || !groups.isEmpty ? 12 : 0)
+                        }
                     }
                     .padding(.top, 8).padding(.bottom, 24)
                 }
@@ -85,46 +93,54 @@ struct AgentsRail: View, Equatable {
     }
 
     private func groupView(_ group: Group, now: Double) -> some View {
-        let ok = group.connector?.ok ?? true
-        return VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: iconGap) {
-                ConsoleIcon(name: ConsoleTheme.kindSymbol(group.kind), tint: ok ? ConsoleTheme.titanium : ConsoleTheme.error)
-                Text(ConsoleTheme.kindTitle(group.kind))
+                BrandMark(tool: group.tool)
+                Text(group.tool.label)
                     .font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if !group.agents.isEmpty {
-                    Text("\(group.agents.count)").font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                }
+                Text("\(group.agents.count)").font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
             }
             .padding(.horizontal, railInset)
             .frame(height: 24)
-            .help(group.connector?.detail ?? ConsoleTheme.kindTitle(group.kind))
-            .accessibilityLabel("\(ConsoleTheme.kindTitle(group.kind))\(ok ? "" : ", down")")
-
-            if let connector = group.connector, !ok {
-                Text(connector.detail)
-                    .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
-                    .lineLimit(1).truncationMode(.tail)
-                    .padding(.leading, textInset).padding(.trailing, railInset).padding(.bottom, 4)
-                    .help(connector.detail)
-            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(group.tool.label), \(group.agents.count)")
 
             ForEach(group.agents) { agent in
                 let open = session.openAgentId == agent.id
-                VStack(spacing: 0) {
-                    AgentRowView(agent: agent, now: now, open: open) {
-                        withAnimation(reduceMotion ? nil : ConsoleTheme.fast) {
-                            session.openAgentId = open ? nil : agent.id
-                        }
+                AgentRowView(agent: agent, now: now, open: open) {
+                    withAnimation(reduceMotion ? nil : ConsoleTheme.fast) {
+                        session.openAgentId = open ? nil : agent.id
                     }
-                    if open { AgentComposer(agent: agent) }
                 }
                 .background(open ? ConsoleTheme.active : Color.clear)
                 .overlay(alignment: .leading) {
                     if open { Rectangle().fill(ConsoleTheme.accent).frame(width: 2).padding(.vertical, 4) }
                 }
             }
+        }
+    }
+
+    /// A connector that is not running: its icon in red and its reason, no rows.
+    private func downView(_ connector: ConnectorHealth) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: iconGap) {
+                ConsoleIcon(name: ConsoleTheme.kindSymbol(connector.kind), tint: ConsoleTheme.error)
+                Text(ConsoleTheme.kindTitle(connector.kind))
+                    .font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, railInset)
+            .frame(height: 24)
+            .accessibilityLabel("\(ConsoleTheme.kindTitle(connector.kind)), down")
+            Text(connector.detail)
+                .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+                .lineLimit(2).truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, textInset).padding(.trailing, railInset).padding(.bottom, 4)
+                .help(connector.detail)
         }
     }
 }
@@ -138,10 +154,11 @@ struct AgentRowView: View {
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var detailLine: String? {
-        if let d = agent.detail, !d.isEmpty { return d }
-        let p = ConsoleFormat.truncPath(agent.cwd, max: 36)
-        return p.isEmpty ? nil : p
+    private var tool: AgentTool { agent.resolvedTool }
+
+    /// project · 42 msgs · 2m — whichever parts the connector gave.
+    private var metaLine: String {
+        ConsoleFormat.agentMeta(agent, now: now)
     }
 
     private var tooltip: String {
@@ -151,24 +168,20 @@ struct AgentRowView: View {
     var body: some View {
         Button(action: toggle) {
             HStack(alignment: .top, spacing: iconGap) {
-                ConsoleStatusGlyph(status: agent.status)
+                BrandMark(tool: tool)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(spacing: 8) {
                         Text(agent.name)
                             .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
                             .lineLimit(1).truncationMode(.tail)
                         Spacer(minLength: 4)
-                        Text(ConsoleFormat.relative(agent.updatedAt, now: now))
-                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                            .help(ConsoleFormat.fullDate(agent.updatedAt))
+                        BrandStatusGlyph(status: agent.status, tool: tool)
                     }
                     .frame(height: 20)
-                    if let line = detailLine {
-                        Text(line)
-                            .font(agent.detail == nil ? ConsoleTheme.mono(11) : ConsoleTheme.sans(11))
-                            .foregroundStyle(ConsoleTheme.fg3)
-                            .lineLimit(1).truncationMode(.tail)
-                    }
+                    Text(metaLine)
+                        .font(ConsoleTheme.mono(11)).monospacedDigit()
+                        .foregroundStyle(ConsoleTheme.fg3)
+                        .lineLimit(1).truncationMode(.tail)
                 }
             }
             .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
@@ -180,44 +193,32 @@ struct AgentRowView: View {
         .onHover { hovering = $0 }
         .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
         .help(tooltip.isEmpty ? agent.name : tooltip)
-        .accessibilityLabel("\(agent.name), \(agent.status.rawValue)")
+        .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)")
+        .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])
     }
 }
 
-/// Continue an agent's session with a message. Return sends.
-struct AgentComposer: View {
-    let agent: AgentInfo
-    @Environment(\.consoleActions) private var actions
-    @EnvironmentObject private var session: ConsoleSession
-    @State private var text = ""
-    @FocusState private var focused: Bool
-
-    private var hasText: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            TextField("Message \(agent.name)…", text: $text)
-                .consoleField(height: 28, focused: focused)
-                .focused($focused)
-                .onSubmit(submit)
-                .onExitCommand { session.openAgentId = nil }
-            Button(action: submit) {
-                Image(systemName: "arrow.up").font(.system(size: 12, weight: .semibold))
-            }
-            .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, iconOnly: true, height: 28))
-            .disabled(!hasText)
-            .help("Send (Return)")
-            .accessibilityLabel("Send")
-        }
-        .padding(EdgeInsets(top: 0, leading: textInset, bottom: 8, trailing: railInset))
-        .onAppear { focused = true }
+extension ConsoleFormat {
+    /// The rail's meta line: `project · 42 msgs · 2m`. The project is the working
+    /// directory's last component; a count of one reads "1 msg".
+    static func agentMeta(_ agent: AgentInfo, now: Double) -> String {
+        var parts: [String] = []
+        if let project = projectName(agent.cwd) { parts.append(project) }
+        if let n = agent.messageCount { parts.append(messageCount(n)) }
+        parts.append(relative(agent.updatedAt, now: now))
+        return parts.joined(separator: " · ")
     }
 
-    private func submit() {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        actions.send(.agentSend(agentId: agent.id, text: t))
-        text = ""
+    /// "42 msgs" / "1 msg" — the one spelling, in the rail and the conversation header.
+    static func messageCount(_ n: Int) -> String { n == 1 ? "1 msg" : "\(n) msgs" }
+
+    /// "/Users/kevinliu/gt/apps/api" → "api"; "~" for the home folder; nil when unset.
+    static func projectName(_ cwd: String?) -> String? {
+        guard let cwd, !cwd.isEmpty else { return nil }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if cwd == home || cwd == home + "/" { return "~" }
+        let last = cwd.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init)
+        return (last?.isEmpty ?? true) ? nil : last
     }
 }

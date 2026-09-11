@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeEnvSecrets, secretsPresent, Ledger, logger, readConfig, type JarheadConfig } from "@jarhead/core";
+import { writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, NativeHandsProcess, YES_PATTERN, type ActionEvent } from "@jarhead/hands";
-import { AgentRegistry, defaultConnectors, type AgentConnector } from "@jarhead/agents";
+import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, type ActionEvent, type ScreenshotResult } from "@jarhead/hands";
+import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
 import { ClaudeBrain, Delegator, ResponsesBrain, ToolRunner, responsesDelegationConfig, type Brain } from "@jarhead/brain";
 import {
   DEFAULT_SETTINGS,
@@ -19,6 +19,9 @@ import {
   type Permissions,
   type Phase,
   type Settings,
+  type Point,
+  type Rect,
+  type ScreenMark,
   type SecretKey,
   type SettingsPatch,
   type SetupStatus,
@@ -46,6 +49,8 @@ export interface EngineEvents {
   overlay: [command: OverlayCommand];
   /** Emitted when the transcript gains a finalized utterance. */
   utterance: [item: TranscriptItem];
+  /** The engine wants its host process replaced (self-update); the daemon exits 75 and the app respawns it. */
+  restart: [reason: string];
 }
 
 export interface EngineOptions {
@@ -74,6 +79,14 @@ export class Engine extends EventEmitter<EngineEvents> {
   private brainReady = false;
   private brainDetail = "not started";
   private setupProbe: { openaiKey: SetupStatus["openaiKey"]; brain: SetupStatus["brain"] } = { openaiKey: "unchecked", brain: "unchecked" };
+  /** Regions Kevin circled for Jarhead; the delegator hands the unconsumed ones to the brain. */
+  protected marks: ScreenMark[] = [];
+  /** Captures still in flight, by mark id; the delegator waits for them before taking the marks. */
+  private readonly markCaptures = new Map<string, Promise<void>>();
+  /** When each consumed mark was handed over (the contract has no field for it); it ages out from here, not from when it was drawn. */
+  private readonly markConsumedAt = new Map<string, number>();
+  /** Conversations a surface has stepped into, by agent id: how many viewers, and the live tail kept while any remain. */
+  private readonly openConversations = new Map<string, { viewers: number; unwatch: (() => void) | undefined }>();
   private permissionPollAt = 0;
   private permissionFastUntil = 0;
   private permissionPolling = false;
@@ -128,7 +141,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.agentsList = list;
       this.scheduleSnapshot();
     });
-    this.runner = new ToolRunner({ toolset: this.toolset, agents: this.agents, stateDir: this.config.stateDir });
+    this.runner = new ToolRunner({ toolset: this.toolset, agents: this.agents, stateDir: this.config.stateDir, overlay: (cmd) => this.emit("overlay", cmd) });
     this.transcript.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
@@ -645,7 +658,22 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!brain) throw new Error("brain not started");
     if (brain instanceof ResponsesBrain) brain.bind(live);
     this.delegator?.dispose();
-    const delegator = new Delegator({ live, transcript: this.transcript, brain: this.brainProxy, confirmations: this.confirmations, ledger: this.ledger, now: this.now });
+    const delegator = new Delegator({
+      live,
+      transcript: this.transcript,
+      brain: this.brainProxy,
+      confirmations: this.confirmations,
+      ledger: this.ledger,
+      now: this.now,
+      // Whatever Kevin circled since the last task goes in with the next one.
+      marks: {
+        pending: () => this.marks.filter((m) => !m.consumed),
+        consume: (ids) => this.consumeMarks(ids),
+        release: (ids) => this.releaseMarks(ids),
+        settled: () => this.marksSettled(),
+        stateDir: this.config.stateDir,
+      },
+    });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
     delegator.on("cancelled", () => this.flushSpeaker());
@@ -732,6 +760,205 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.live?.appendInstructions(null, "Kevin pressed stop. Stop speaking now and wait.");
   }
 
+  // ------------------------------------------------------- conversations
+  // Implemented in packages/agents-backed methods below; the UI sends agent.open
+  // when Kevin hops into a session, receives `agent.transcript` events while it
+  // is open, and agent.close when he leaves.
+
+  private async openAgent(agentId: string): Promise<void> {
+    // Count the viewer first so a close() that races the page read is not lost.
+    const open = this.openConversations.get(agentId);
+    if (open) open.viewers += 1;
+    else this.openConversations.set(agentId, { viewers: 1, unwatch: undefined });
+    let page: TranscriptPage;
+    try {
+      page = await this.agents.transcript(agentId, { limit: DEFAULT_PAGE });
+    } catch (e) {
+      this.toast(`could not open ${agentId}: ${(e as Error).message}`, "warn");
+      this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: [], total: 0, complete: true, live: false }, mode: "replace" });
+      return;
+    }
+    const entry = this.openConversations.get(agentId);
+    if (!entry) return; // closed while the page was read
+    // One tail per conversation however many surfaces show it; its deltas cannot arrive before the page below is emitted.
+    if (!entry.unwatch) {
+      let ended = false;
+      try {
+        const stop = this.agents.watch(
+          agentId,
+          (delta) => {
+            if (!this.openConversations.has(agentId)) return;
+            this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: delta.messages, total: delta.total, complete: false, live: true }, mode: "append" });
+          },
+          (reason) => {
+            // The tail could not start (the session is gone, its file unreadable): the
+            // conversation stays open but is no longer live, and the surfaces hear so.
+            ended = true;
+            const current = this.openConversations.get(agentId);
+            if (!current) return;
+            current.unwatch?.(); // lets the connector drop its timers; a no-op once the tail has ended
+            current.unwatch = undefined;
+            log.warn(`agent.open ${agentId}: live tail ended (${reason})`);
+            this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: [], total: page.total, complete: false, live: false }, mode: "append" });
+          },
+        );
+        // `ended` may already be set when the connector gave up synchronously.
+        if (ended) stop?.();
+        else entry.unwatch = stop;
+      } catch (e) {
+        log.warn(`agent.open ${agentId}: no live tail (${(e as Error).message})`);
+      }
+    }
+    this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry.unwatch !== undefined }, mode: "replace" });
+  }
+
+  private async closeAgent(agentId: string): Promise<void> {
+    const open = this.openConversations.get(agentId);
+    if (!open) return;
+    open.viewers -= 1;
+    if (open.viewers > 0) return;
+    this.openConversations.delete(agentId);
+    open.unwatch?.();
+  }
+
+  private async agentHistory(agentId: string, before: string): Promise<void> {
+    try {
+      const page = await this.agents.transcript(agentId, { limit: DEFAULT_PAGE, before });
+      this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: this.openConversations.has(agentId) }, mode: "replace" });
+    } catch (e) {
+      this.toast(`no older turns for ${agentId}: ${(e as Error).message}`, "warn");
+    }
+  }
+
+  /** Stop every live tail; the surfaces are going away with the engine. */
+  private closeConversations(): void {
+    for (const open of this.openConversations.values()) open.unwatch?.();
+    this.openConversations.clear();
+  }
+
+  // --------------------------------------------------------------- marks
+  // Kevin circles a region on screen (⌥⇧C, then a stroke): the engine records it
+  // as a pending mark at once, tells Live, screenshots it through the hands, and
+  // the next delegation carries it (waiting for the capture if it is still going).
+
+  /** Marks the snapshot carries (pending plus recently consumed); the oldest go first. */
+  private static readonly MAX_MARKS = 6;
+  /** A consumed mark stays this long after it was handed over so the Console can show what the brain saw. */
+  private static readonly CONSUMED_MARK_TTL_MS = 2 * 60_000;
+  /** A circle nobody asked about for this long is not context any more; it leaves rather than ride into an unrelated task. */
+  private static readonly PENDING_MARK_TTL_MS = 15 * 60_000;
+
+  private async addMark(rawRect: Rect, path?: readonly Point[]): Promise<void> {
+    const rect = normalizeRect(rawRect);
+    const id = newId("mark");
+    const at = this.now();
+    const size = `${Math.round(rect.w)}×${Math.round(rect.h)} at ${Math.round(rect.x)},${Math.round(rect.y)}`;
+    // Registered before the capture, so a delegation fired while the hands work
+    // sees a mark to wait for instead of missing it.
+    const mark: ScreenMark = { id, rect, ...(path && path.length > 0 ? { path } : {}), at, consumed: false };
+    this.marks = [...this.marks, mark].slice(-Engine.MAX_MARKS);
+    this.scheduleSnapshot();
+    // Asleep, the mark simply waits for the next session; awake, the voice hears about it now.
+    this.live?.appendInstructions(null, `Kevin just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`);
+    const capture = this.captureMark(id, rect, at, size);
+    this.markCaptures.set(id, capture);
+    try {
+      await capture;
+    } finally {
+      this.markCaptures.delete(id);
+    }
+    // A sender with a stroke (the overlay's mark mode) has drawn it on the layer
+    // already; echoing it again would double the glow. A bare box (no path) gets
+    // its outline echoed once the capture is done, so the echo is never in the shot.
+    if (!path || path.length < 2) this.emit("overlay", { cmd: "stroke", points: rectCorners(rect), tone: "mark", ttlMs: 8000 });
+  }
+
+  /** Screenshot the region through the hands and fill the mark's screenshotPath in place; never throws. */
+  private async captureMark(id: string, rect: Rect, at: number, size: string): Promise<void> {
+    try {
+      // Jarhead's own windows (the orb, the overlay with the stroke on it) stay out of the shot, as with every capture.
+      const shot = await this.hands.request<ScreenshotResult>("zoom", { ...rect, maxLongEdge: DEFAULT_SHOT_BUDGET.maxLongEdge, excludePids: [...this.excludePids, process.pid] }, 6000);
+      const day = new Date(at).toISOString().slice(0, 10);
+      const rel = join("shots", day, `${id}.png`);
+      mkdirSync(join(this.config.stateDir, "shots", day), { recursive: true });
+      writeFileSync(join(this.config.stateDir, rel), Buffer.from(shot.pngBase64, "base64"));
+      // The mark may be gone already (mark.clear, or pushed out by the cap); then the file is just a shot on disk.
+      this.marks = this.marks.map((m) => (m.id === id ? { ...m, screenshotPath: rel } : m));
+      log.info(`mark ${id}: ${size} → ${rel}`);
+    } catch (e) {
+      // No eyes right now (helper not built, Screen Recording denied): the mark still
+      // counts; the brain gets the region without the pixels.
+      log.warn(`mark ${id}: ${size}; could not capture the region: ${(e as Error).message}`);
+    }
+    this.scheduleSnapshot();
+  }
+
+  /** Resolves when no capture is in flight; a capture that failed counts as landed. */
+  private async marksSettled(): Promise<void> {
+    while (this.markCaptures.size > 0) await Promise.all([...this.markCaptures.values()]);
+  }
+
+  /** The delegator handed these to the brain; they stay in the snapshot a while so the Console can show what went in. */
+  private consumeMarks(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const set = new Set(ids);
+    const now = this.now();
+    this.marks = this.marks.map((m) => {
+      if (!set.has(m.id) || m.consumed) return m;
+      this.markConsumedAt.set(m.id, now);
+      return { ...m, consumed: true };
+    });
+    this.scheduleSnapshot();
+  }
+
+  /** The brain never took the task those marks went with; they are pending again for the next one. */
+  private releaseMarks(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const set = new Set(ids);
+    let changed = false;
+    this.marks = this.marks.map((m) => {
+      if (!set.has(m.id) || !m.consumed) return m;
+      changed = true;
+      this.markConsumedAt.delete(m.id);
+      return { ...m, consumed: false };
+    });
+    if (changed) {
+      log.info(`marks released, pending again: ${ids.join(", ")}`);
+      this.scheduleSnapshot();
+    }
+  }
+
+  /**
+   * Called from tick: a consumed mark leaves CONSUMED_MARK_TTL_MS after it was
+   * handed over; a mark nobody asked about leaves after PENDING_MARK_TTL_MS.
+   */
+  private pruneMarks(): void {
+    const now = this.now();
+    const kept = this.marks.filter((m) => {
+      if (m.consumed) return (this.markConsumedAt.get(m.id) ?? m.at) >= now - Engine.CONSUMED_MARK_TTL_MS;
+      return m.at >= now - Engine.PENDING_MARK_TTL_MS;
+    });
+    if (kept.length !== this.marks.length) {
+      const alive = new Set(kept.map((m) => m.id));
+      for (const id of this.markConsumedAt.keys()) if (!alive.has(id)) this.markConsumedAt.delete(id);
+      this.marks = kept;
+      this.scheduleSnapshot();
+    }
+  }
+
+  private clearMarks(): void {
+    this.marks = [];
+    this.markConsumedAt.clear();
+    this.scheduleSnapshot();
+  }
+
+  /** Ask the host to restart this process on the current code (the app respawns on exit 75). */
+  requestRestart(reason: string): void {
+    log.info(`restart requested: ${reason}`);
+    this.toast("Jarhead is restarting on its new code", "info");
+    this.emit("restart", reason);
+  }
+
   /** Tell every surface to drop queued speaker audio. */
   private flushSpeaker(): void {
     this.emit("event", { type: "speaker-flush" });
@@ -777,6 +1004,18 @@ export class Engine extends EventEmitter<EngineEvents> {
         await this.probeSetup();
         return;
       }
+      case "agent.open":
+        return this.openAgent(cmd.agentId);
+      case "agent.close":
+        return this.closeAgent(cmd.agentId);
+      case "agent.history":
+        return this.agentHistory(cmd.agentId, cmd.before);
+      case "mark.add":
+        return this.addMark(cmd.rect, cmd.path);
+      case "mark.clear":
+        return this.clearMarks();
+      case "daemon.restart":
+        return this.requestRestart("restart command");
       case "request-permission":
         return this.requestPermission(cmd.which);
       case "open-console":
@@ -788,6 +1027,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    this.closeConversations();
     await this.sleep();
     await this.brain?.stop();
     this.hands.stop();
@@ -803,6 +1043,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private tick(): void {
     // Speaking decays when the transcript stops arriving; levels alone lie (silence frames).
     this.recomputePhase();
+    this.pruneMarks();
     const idleMs = this.settings.idleSleepMinutes * 60_000;
     if (this.live && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && this.now() - this.lastAddressedAt > idleMs) {
       log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
@@ -886,6 +1127,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       problems: this.problems,
       brainReady: this.brainReady,
       setup: this.setupStatus(),
+      marks: this.marks,
       handsReady: this.hands.ready || this.hands.available,
     };
   }
@@ -899,6 +1141,22 @@ export class Engine extends EventEmitter<EngineEvents> {
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
     return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brainDetail };
   }
+}
+
+/** A stroke drawn right-to-left gives a negative size; the capture needs a positive box at least a point wide. */
+function normalizeRect(r: Rect): Rect {
+  return { x: Math.min(r.x, r.x + r.w), y: Math.min(r.y, r.y + r.h), w: Math.max(1, Math.abs(r.w)), h: Math.max(1, Math.abs(r.h)) };
+}
+
+/** The echo for a mark that arrived without a stroke: its outline. */
+function rectCorners(r: Rect): Point[] {
+  return [
+    { x: r.x, y: r.y },
+    { x: r.x + r.w, y: r.y },
+    { x: r.x + r.w, y: r.y + r.h },
+    { x: r.x, y: r.y + r.h },
+    { x: r.x, y: r.y },
+  ];
 }
 
 function rms(pcm: Buffer): number {

@@ -5,7 +5,8 @@ import { brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
-import { delegationPrompt } from "./anthropic.ts";
+import { delegationPrompt, historyPrompt } from "./anthropic.ts";
+import { loadAttachments } from "./attachments.ts";
 
 /**
  * The OpenAI-compatible brain: Chat Completions with function tools over plain
@@ -328,8 +329,7 @@ export class OpenAICompatibleBrain implements Brain {
   }
 
   private async loop(task: BrainTask, sink: BrainSink, signal: AbortSignal, model: string): Promise<BrainResult> {
-    const prompt = delegationPrompt(task, this.opts.userName);
-    const messages: ChatMessage[] = [{ role: "system", content: brainSystemPrompt(this.opts.userName) }, ...this.history, { role: "user", content: prompt }];
+    const messages: ChatMessage[] = [{ role: "system", content: brainSystemPrompt(this.opts.userName) }, ...this.history, { role: "user", content: this.userContent(task) }];
     const started = Date.now();
     const maxSteps = this.opts.maxSteps ?? 40;
     const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
@@ -353,7 +353,8 @@ export class OpenAICompatibleBrain implements Brain {
         if (choice.finish_reason === "length" && !text) return { status: "failed", error: "the answer was cut off by the token limit" };
         if (choice.finish_reason === "content_filter") return { status: "failed", error: "the server's content filter declined" };
         const summary = text || "done.";
-        this.remember(prompt, summary);
+        // History keeps the words and the regions, not the pixels — so it must not say "attached image".
+        this.remember(historyPrompt(task, this.opts.userName), summary);
         log.debug(`done in ${steps} step(s), ${Date.now() - started}ms`);
         return { status: "done", summary };
       }
@@ -380,6 +381,26 @@ export class OpenAICompatibleBrain implements Brain {
         });
       }
     }
+  }
+
+  /**
+   * The first user turn: the words, plus the circled regions as image_url parts
+   * where the server takes them. A text-only server gets the regions by their
+   * coordinates alone, and the prompt does not call them attached images.
+   */
+  private userContent(task: BrainTask): string | ChatContentPart[] {
+    const attachments = loadAttachments(task);
+    if (attachments.length === 0) return delegationPrompt(task, this.opts.userName, []);
+    if (!this.capabilities.images) {
+      return `${historyPrompt(task, this.opts.userName)}\n\nThis server cannot receive images, so the circled region is known only by the coordinates above: zoom on it, or use element_at and read_focused_text, to learn what is there.`;
+    }
+    return [
+      { type: "text", text: delegationPrompt(task, this.opts.userName, attachments) },
+      ...attachments.flatMap((a): ChatContentPart[] => [
+        { type: "text", text: a.note },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${a.pngBase64}`, detail: "high" } },
+      ]),
+    ];
   }
 
   private toolText(name: string, r: ToolResult): string {
