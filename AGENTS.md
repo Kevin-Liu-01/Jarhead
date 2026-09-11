@@ -1,7 +1,7 @@
 # jarhead — agent index
 
 Voice-first computer-use assistant for Kevin's Mac. v2 (2026-09-10) rebuilt on
-GPT-Live-1 delegation. v1 lives in `legacy/` and is not built or tested.
+GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not built or tested.
 
 ## Boot
 
@@ -34,7 +34,7 @@ GPT-Live-1 delegation. v1 lives in `legacy/` and is not built or tested.
   the agent sessions on this Mac (Claude Code, Codex, other CLIs on disk or
   running); `claude-code` continues one. Do not add a connector for a specific
   product; the herdr and T3 Code ones were retired for that reason.
-- **Retire, do not delete.** Superseded code moves under `legacy/`
+- **Retire, do not delete.** Superseded code moves under git history (before `1ff11e2`)
   (`shell-electron-v2`, `connectors-v2`, `vendor-docs`, v1 `packages/`); nothing
   there is built, typechecked or tested.
 - **Gated by policy, not by absence.** The brain can read, write, run, fetch and
@@ -207,3 +207,64 @@ to his microphone and bills per second.
   emits `Jarhead:` lines too, so the self-edit summary (which names the rail)
   satisfied the rail guard on the next turn's bare "yes". Gates read Kevin's
   lines only (`kevinDialogue`).
+- **Stop is local.** GPT-Live-1 has no interrupt/cancel client event: after a
+  stop the engine drops incoming output audio and ignores output-transcript
+  deltas for the phase (`outputGateUntil`, 2.5 s or until Kevin's next input
+  delta), flushes the speaker, fails the helper's pending request
+  (`cancelPending` — a gate whose probe was cancelled refuses the action), stops
+  this task's background jobs, and finishes the delegation *before* awaiting the
+  brain's cancel (a brain that settles on the abort signal would otherwise finish
+  it first and lose the reason).
+- `codex app-server` (0.153.4) is JSON-RPC 2.0, newline-delimited, over stdio
+  (`--listen stdio://`): `initialize` → `initialized` notification → `thread/start`
+  → `turn/start {input:[{type:"text",text,text_elements:[]},{type:"localImage",path}]}`
+  → notifications `item/started` / `item/completed` (v2 items are camelCase:
+  `agentMessage`, `mcpToolCall`, `commandExecution`, `reasoning`), `item/agentMessage/
+  delta`, `thread/tokenUsage/updated {total,last,modelContextWindow}`, `turn/completed
+  {turn:{status: completed|interrupted|failed}}`; `turn/interrupt` lands in ~35 ms.
+  Server requests carry an id and must be answered (approvals, `item/tool/
+  requestUserInput`, `mcpServer/elicitation/request`). `initialize` ~50 ms,
+  `thread/start` ~2 s, MCP servers start per thread on its first turn (~1.3 s).
+  Discover the types with `codex app-server generate-ts --out DIR`.
+- The app-server has **no `--ignore-user-config`**. `-c mcp_servers={…}` does not
+  replace Kevin's table (his servers start alongside); `-c mcp_servers.<name>.
+  enabled=false` per server does switch them off, with the name **unquoted**
+  (`mcp_servers."x".enabled=false` fails with "invalid transport"). The built-in
+  plugin runtime `codex_apps` (Kevin's ChatGPT connectors — Drive, Sites, agents;
+  134 tools, deletes and shares among them) is not a server but a *feature*:
+  `--disable apps` (= `-c features.apps=false`) switches it off, and Jarhead's
+  argv always passes it (`codex features list` shows `apps stable true`). His
+  `notify` hook loads too; `-c notify=[]` silences it. Verify with
+  `mcpServerStatus/list` after `initialize` — no thread, no turn, no billing.
+- A thread's **first** `turn/start` answers only after ~2 s (the MCP servers
+  start before the reply); an interrupt that arrives before the turn id is known
+  must be remembered and sent once it is, or the server-side turn runs on after
+  the stop. `thread/start` is 1.8 s on an idle Mac and 25 s to over a minute at
+  load average 26–44: never await the app-server's start inside a task, and give
+  its requests the boot budget rather than a default timeout.
+- The daemon refuses `tool.run` while the engine's `ToolRunner` has no task
+  attached (`runner.attached === false`): an out-of-process brain acts only
+  under a delegation.
+- A spoken "stop" must run the engine's stop *after* the other listeners for that
+  transcript fragment (a microtask): the engine lifts the output gate on any input
+  delta, and the delta that said "stop" would lift the gate the stop just set.
+- Live delivers input-transcript fragments in bursts; any fixed quiet window after
+  a fragment is a mid-sentence pause sometimes. A reflex may run ahead of the
+  delegation only when the transcriber closed the sentence (`.`/`!`/`?`, then
+  180 ms) or the pause is long (450 ms), and only when Kevin named Jarhead (or,
+  mid-exchange, the sentence is closed). A prefire is a delegation record of its
+  own on the ledger and is adopted by transcript item, never by text alone.
+- Mark snapping: pick the **largest** frame that holds the centroid and is mostly
+  inside the stroke, not the smallest — `element_at` at a circled dialog's centroid
+  is a label inside it, which always fits.
+- An ordered tool batch (one call acts) stops at the first `needs_confirmation`,
+  refusal or error; with `disable_parallel_tool_use: false` a model may send
+  "click Send, then ⌘Q" in one turn and the question must reach Kevin first.
+- In tests, two transcript fragments less than `GAP_MS` (1400 ms) apart in
+  session time merge into one utterance, and a `FakeLive.nowMs` that never moves
+  pins `lastDelegationEndMs`, so the next request repeats old words. Space
+  utterances and advance `nowMs` per delegation.
+- A test that asserts *before* it cancels its pending helper requests leaves
+  their 8 s timers alive; node:test then reports the late timeouts as
+  "asynchronous activity after the test ended" — the symptom of the early
+  assertion failure, not a client bug.

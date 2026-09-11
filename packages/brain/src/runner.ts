@@ -76,6 +76,10 @@ export class ToolRunner {
   private task: BrainTask | undefined;
   /** Files read during the current task; overwriting one the brain never looked at asks first. */
   private readonly readThisTask = new Set<string>();
+  /** When the current task was attached; a stop kills the background jobs started since. */
+  private taskStartedAt = 0;
+  /** Timers for the arrow heads that follow a traced arrow; a stop or a clear drops them. */
+  private readonly pendingHeads = new Set<NodeJS.Timeout>();
   private readonly now: () => number;
   private readonly home: string;
   private readonly repoRoot: string;
@@ -105,9 +109,33 @@ export class ToolRunner {
     this.sink = sink;
     if (task && task !== this.task) {
       this.task = task;
+      this.taskStartedAt = this.now();
       this.readThisTask.clear();
     }
     if (!sink) this.task = undefined;
+  }
+
+  /**
+   * True while a brain (or the engine's eyes / a reflex) has a sink attached: the
+   * daemon refuses an out-of-process `tool.run` otherwise, so a Codex turn that
+   * outlived its delegation (a stop during turn/start) cannot act unwatched.
+   */
+  get attached(): boolean {
+    return this.sink !== undefined || this.task !== undefined;
+  }
+
+  /**
+   * Kevin pressed stop: end what this task set in motion outside the brain's own
+   * turn — the background shell jobs it started (the task's signal already ends a
+   * foreground command and a self-edit) and the arrow heads still to be drawn.
+   * Returns what was stopped, for the log.
+   */
+  abortTask(reason: string): { jobs: number } {
+    const jobs = this.taskStartedAt ? this.jobs.stopSince(this.taskStartedAt) : 0;
+    for (const t of this.pendingHeads) clearTimeout(t);
+    this.pendingHeads.clear();
+    if (jobs) log.info(`${reason}: stopped ${jobs} background job(s) this task started`);
+    return { jobs };
   }
 
   async run(name: string, input: unknown): Promise<RunOutcome> {
@@ -639,23 +667,39 @@ export class ToolRunner {
     const fade = `fades in ${Math.round((ttlMs ?? 6000) / 1000)} s`;
     const label = typeof args["label"] === "string" && args["label"].trim() ? { label: args["label"].trim().slice(0, 60) } : {};
     const ttl = ttlMs !== undefined ? { ttlMs } : {};
+    // By default the blob flies over and draws the shape by hand (orb.trace); `quick`
+    // stamps it on the layer at once, for when speed matters more than the show.
+    const quick = args["quick"] === true;
+    const how = quick ? "stamped" : "the blob is drawing it";
     switch (name) {
       case "show_clear":
+        for (const t of this.pendingHeads) clearTimeout(t);
+        this.pendingHeads.clear();
         this.overlay({ cmd: "clear" });
         return { kind: "text", text: "cleared the drawings" };
       case "show_circle": {
         const p = this.toPoints(numberArg(args, "x"), numberArg(args, "y"));
         const radius = Math.max(4, this.toLength(numberArg(args, "radius")));
-        this.overlay({ cmd: "circle", x: p.x, y: p.y, radius, ...label, ...ttl, tone: "accent" });
-        return { kind: "text", text: `drew a circle at ${fmt(p)} (global points), radius ${Math.round(radius)}; ${fade}` };
+        if (quick) this.overlay({ cmd: "circle", x: p.x, y: p.y, radius, ...label, ...ttl, tone: "accent" });
+        else this.overlay({ cmd: "orb.trace", points: circlePoints(p, radius), closed: true, ...label, ...ttl, tone: "accent", reason: "show_circle" });
+        return { kind: "text", text: `drew a circle at ${fmt(p)} (global points), radius ${Math.round(radius)}; ${how}; ${fade}` };
       }
       case "show_arrow": {
         const [fx, fy] = pairArg(args, "from");
         const [tx, ty] = pairArg(args, "to");
         const from = this.toPoints(fx, fy);
         const to = this.toPoints(tx, ty);
-        this.overlay({ cmd: "arrow", from, to, ...label, ...ttl, tone: "accent" });
-        return { kind: "text", text: `drew an arrow from ${fmt(from)} to ${fmt(to)} (global points); ${fade}` };
+        if (quick) this.overlay({ cmd: "arrow", from, to, ...label, ...ttl, tone: "accent" });
+        else {
+          // The blob traces the shaft; the head is stamped the moment the trace should have landed.
+          this.overlay({ cmd: "orb.trace", points: [from, to], closed: false, ...ttl, tone: "accent", reason: "show_arrow" });
+          const head = setTimeout(() => {
+            this.pendingHeads.delete(head);
+            this.overlay({ cmd: "arrow", from: headStart(from, to), to, ...label, ...ttl, tone: "accent" });
+          }, traceDurationMs([from, to]));
+          this.pendingHeads.add(head);
+        }
+        return { kind: "text", text: `drew an arrow from ${fmt(from)} to ${fmt(to)} (global points); ${how}; ${fade}` };
       }
       case "show_rect": {
         const raw = args["rect"];
@@ -663,8 +707,9 @@ export class ToolRunner {
         const [x, y, w, h] = raw as [number, number, number, number];
         const origin = this.toPoints(Math.min(x, x + w), Math.min(y, y + h));
         const rect: Rect = { x: origin.x, y: origin.y, w: Math.max(1, this.toLength(Math.abs(w))), h: Math.max(1, this.toLength(Math.abs(h))) };
-        this.overlay({ cmd: "rect", rect, ...label, ...ttl, tone: "accent" });
-        return { kind: "text", text: `framed ${Math.round(rect.w)}×${Math.round(rect.h)} at ${fmt(rect)} (global points); ${fade}` };
+        if (quick) this.overlay({ cmd: "rect", rect, ...label, ...ttl, tone: "accent" });
+        else this.overlay({ cmd: "orb.trace", points: rectPoints(rect), closed: true, ...label, ...ttl, tone: "accent", reason: "show_rect" });
+        return { kind: "text", text: `framed ${Math.round(rect.w)}×${Math.round(rect.h)} at ${fmt(rect)} (global points); ${how}; ${fade}` };
       }
       case "show_text": {
         const text = String(args["text"] ?? "").trim();
@@ -680,8 +725,9 @@ export class ToolRunner {
           if (!Array.isArray(pt) || pt.length !== 2 || !pt.every(isFiniteNumber)) throw new Error(`points[${i}] must be [x, y]`);
           return this.toPoints(pt[0] as number, pt[1] as number);
         });
-        this.overlay({ cmd: "stroke", points, ...label, ...ttl, tone: "accent" });
-        return { kind: "text", text: `drew a stroke through ${points.length} points, ${fmt(points[0]!)} to ${fmt(points[points.length - 1]!)} (global points); ${fade}` };
+        if (quick) this.overlay({ cmd: "stroke", points, ...label, ...ttl, tone: "accent" });
+        else this.overlay({ cmd: "orb.trace", points, closed: false, ...label, ...ttl, tone: "accent", reason: "show_stroke" });
+        return { kind: "text", text: `drew a stroke through ${points.length} points, ${fmt(points[0]!)} to ${fmt(points[points.length - 1]!)} (global points); ${how}; ${fade}` };
       }
       default:
         return { kind: "error", message: `unknown drawing tool ${name}` };
@@ -733,6 +779,43 @@ function ttlOf(args: Record<string, unknown>): number | undefined {
 
 function fmt(p: { x: number; y: number }): string {
   return `${Math.round(p.x)},${Math.round(p.y)}`;
+}
+
+/** A circle as the blob draws it: 40 points around, starting at the top, closed by the layer. */
+export function circlePoints(center: Point, radius: number, n = 40): Point[] {
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+    out.push({ x: center.x + Math.cos(a) * radius, y: center.y + Math.sin(a) * radius });
+  }
+  return out;
+}
+
+/** A rectangle's corners, clockwise from the top-left; closed by the layer. */
+export function rectPoints(r: Rect): Point[] {
+  return [
+    { x: r.x, y: r.y },
+    { x: r.x + r.w, y: r.y },
+    { x: r.x + r.w, y: r.y + r.h },
+    { x: r.x, y: r.y + r.h },
+  ];
+}
+
+/** How long the blob takes to trace a path: a flight to the start plus ~1.4 points per ms along it, capped. */
+export function traceDurationMs(points: readonly Point[]): number {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) length += Math.hypot((points[i]!.x - points[i - 1]!.x), (points[i]!.y - points[i - 1]!.y));
+  return Math.min(3000, Math.round(350 + length / 1.4));
+}
+
+/** Where the arrow head's shaft starts: 28 points before the tip along the line, so the stamped head sits on the traced line's end. */
+export function headStart(from: Point, to: Point): Point {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return from;
+  const back = Math.min(28, len);
+  return { x: to.x - (dx / len) * back, y: to.y - (dy / len) * back };
 }
 
 function summarize(result: ToolResult): unknown {

@@ -102,7 +102,13 @@ export type ClientMessage =
    * that gives an external brain (Codex) the same tools the in-process brains
    * have. Only local unix-socket clients exist, so there is no further auth.
    */
-  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown };
+  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown }
+  /**
+   * The app's on-device ear while awake: a partial or final transcript of what
+   * Kevin is saying, ~100–200 ms behind his speech. `at` is ms since epoch when the
+   * recogniser produced it. The engine's reflex layer acts on unambiguous commands.
+   */
+  | { readonly type: "ear"; readonly text: string; readonly isFinal: boolean; readonly segment: number; readonly at: number };
 
 export function parseClientMessage(payload: Buffer): ClientMessage | undefined {
   try {

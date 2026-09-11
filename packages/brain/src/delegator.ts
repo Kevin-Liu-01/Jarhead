@@ -2,10 +2,11 @@ import { EventEmitter } from "node:events";
 import { isAbsolute, join } from "node:path";
 import { logger, newId, Marks, type Ledger } from "@jarhead/core";
 import { chunkForAppend, type LiveSession, type Transcript } from "@jarhead/live";
-import { YES_PATTERN, type ConfirmationState } from "@jarhead/hands";
-import type { Delegation, DelegationStep, DelegationTimings, ScreenMark } from "@jarhead/protocol";
+import { ACTING_MEMBERS, YES_PATTERN, type ConfirmationState } from "@jarhead/hands";
+import type { Delegation, DelegationStep, DelegationTimings, ScreenMark, TranscriptItem } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { markNote } from "./attachments.ts";
+import { addressesJarhead, normalizeUtterance, type Reflex, type ReflexOutcome } from "./reflex.ts";
 
 /**
  * Where the voice meets the brain.
@@ -13,8 +14,22 @@ import { markNote } from "./attachments.ts";
  * Listens to one LiveSession, builds a task for every delegation from the
  * transcript, runs it on the brain, and relays progress back through the three
  * append channels with the 500-token cap respected. Also owns the two spoken
- * escape hatches: "stop" cancels the running task, and a "yes" arms a pending
- * confirmation so the next attempt of that exact action goes through.
+ * escape hatches: "stop" ends the running task (through the engine's
+ * stopEverything when it is wired, so the speaker, the hands and the toast go
+ * with it), and a "yes" arms a pending confirmation so the next attempt of that
+ * exact action goes through.
+ *
+ * Two things happen here before a brain is involved. A *reflex* — "scroll down",
+ * "press enter", "open Safari" — is run straight through the ToolRunner and the
+ * delegation finishes at once. The cheap reversible ones may *prefire*: when the
+ * utterance has clearly ended (the transcriber closed the sentence, or it has
+ * been quiet for a good while) and Kevin named Jarhead, the reflex runs before
+ * Live delegates, as a delegation record of its own — created, stepped and
+ * finished on the ledger like any other — which the delegation that follows
+ * adopts (by transcript item, never by text alone) and only has to speak for.
+ * And the *eyes* pre-warm: a quick screenshot taken while the circled regions are
+ * gathered, handed to the brain as its first attachment so its first move can be
+ * an action.
  */
 
 const log = logger("delegator");
@@ -30,6 +45,39 @@ export interface DelegatorOptions {
   readonly now?: () => number;
   /** Regions Kevin circled since the last task; they ride with the next one and are then consumed. */
   readonly marks?: PendingMarks;
+  /**
+   * The pre-warm shot: a quick screenshot taken as the task begins, in parallel
+   * with the marks, returned as an attachment (`kind: "screen"`) or undefined
+   * when there are no eyes right now. The sink is attached so the shot lands in
+   * this delegation's timeline.
+   */
+  readonly eyes?: ((sink: BrainSink) => Promise<BrainAttachment | undefined>) | undefined;
+  /** The reflex table and its runner; absent = every task goes to the brain. */
+  readonly reflexes?: ReflexSource | undefined;
+  /**
+   * Kevin said "stop" while a task ran. When wired (the engine's stopEverything)
+   * it owns the whole stop — speaker, hands, jobs, toast, this delegation — and
+   * the delegator does not cancel on its own; without it the delegator cancels
+   * the task itself.
+   */
+  readonly onStop?: ((reason: string) => void) | undefined;
+  /** Consecutive commentary lines within this window go to Live as one append (default 600 ms; 0 sends each at once). */
+  readonly commentaryCoalesceMs?: number | undefined;
+  /** Quiet after an utterance the transcriber closed with a full stop before a prefire is considered (default 180 ms). */
+  readonly prefireQuietMs?: number | undefined;
+  /** Quiet after an utterance with no terminal punctuation before a prefire is considered (default 450 ms: a mid-sentence pause is shorter). */
+  readonly prefireLongQuietMs?: number | undefined;
+  /** How long a prefired reflex waits to be adopted by Live's delegation before its record is closed as never delegated (default 8 s). */
+  readonly prefireTtlMs?: number | undefined;
+}
+
+/** What the delegator needs to run a reflex; the engine builds it over its ToolRunner. */
+export interface ReflexSource {
+  match(utterance: string): Reflex | undefined;
+  /** Run it with the sink attached, so the tool step lands in the delegation (a prefire has a record of its own). */
+  run(reflex: Reflex, sink?: BrainSink): Promise<ReflexOutcome>;
+  /** True while Jarhead is mid-exchange (spoke or was delegated to a moment ago); a prefire without the wake word needs this and a closed sentence. */
+  inExchange?(): boolean;
 }
 
 /** The engine's ScreenMarks as the delegator sees them. */
@@ -51,16 +99,66 @@ export interface DelegatorEvents {
   phase: [phase: "thinking" | "acting" | "idle"];
   /** A running delegation was cancelled (stop word, Stop button, sleep). */
   cancelled: [reason: string];
+  /** A reflex ran (label as understood, ms it took, whether before the delegation arrived). */
+  reflex: [label: string, ms: number, prefired: boolean];
+}
+
+/**
+ * What the ledger's `delegation.finished` row carries beyond the contract's
+ * DelegationTimings: when the first tool ran, when the first *action* (a member
+ * that moves or types) ran, every tool's round trip, and whether a reflex did the
+ * work. The Swift decoder ignores keys it does not know; the contract should grow
+ * these as optional fields.
+ */
+export interface DelegationTimingsExtra extends DelegationTimings {
+  readonly firstToolAt?: number;
+  readonly firstActionAt?: number;
+  readonly toolRoundTripMs?: readonly number[];
+  readonly reflex?: boolean;
+  /** How long the eyes' pre-warm shot took, when one was taken. */
+  readonly eyesMs?: number;
 }
 
 const STOP_PATTERN = /^\s*(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+/** A prefired reflex is adopted by the delegation for its utterance within this long; then its record is finished as never delegated. */
+const PREFIRE_TTL_MS = 8000;
+const MAX_ROUND_TRIP_SAMPLES = 40;
+/** The transcriber closed the sentence: the strongest end-of-utterance signal there is. */
+const CLOSED_SENTENCE = /[.!?…]["')\]]?\s*$/;
+
+/**
+ * A reflex that ran ahead of Live's delegation. `id` is its delegation record
+ * (already created on the ledger); `itemId` the transcript utterance it answers —
+ * only a delegation whose request ends with that very item adopts it. `outcome`
+ * settles when the tool has run (a delegation that arrives earlier waits for it
+ * instead of running the reflex again).
+ */
+interface Prefired {
+  readonly id: string;
+  readonly itemId: string;
+  readonly text: string;
+  readonly reflex: Reflex;
+  readonly at: number;
+  readonly outcome: Promise<ReflexOutcome | undefined>;
+  settled: ReflexOutcome | undefined;
+  forgetTimer: NodeJS.Timeout | undefined;
+}
 
 export class Delegator extends EventEmitter<DelegatorEvents> {
   private readonly delegations: Delegation[] = [];
-  private running: { delegation: Delegation; abort: AbortController; marks: Marks } | undefined;
+  private running: { delegation: Delegation; abort: AbortController; marks: Marks; looking?: boolean } | undefined;
   private lastDelegationEndMs = 0;
   private readonly now: () => number;
   private unbind: (() => void)[] = [];
+  /** Commentary held back so a burst becomes one append; per delegation id. */
+  private readonly commentaryQueue = new Map<string, { liveId: string | null; texts: string[]; timer: NodeJS.Timeout | undefined }>();
+  private lastCommentaryAt = 0;
+  private prefireTimer: NodeJS.Timeout | undefined;
+  /** Wall clock (real, since the timers are real) of the last input-transcript fragment. */
+  private lastInputAt = 0;
+  private prefired: Prefired | undefined;
+  /** Utterances already considered for a prefire (id:text), so a settled utterance is tried once. */
+  private prefireSeen = "";
 
   constructor(private readonly opts: DelegatorOptions) {
     super();
@@ -83,37 +181,200 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   dispose(): void {
     for (const u of this.unbind.splice(0)) u();
+    if (this.prefireTimer) clearTimeout(this.prefireTimer);
+    this.prefireTimer = undefined;
+    if (this.prefired?.forgetTimer) clearTimeout(this.prefired.forgetTimer);
+    for (const q of this.commentaryQueue.values()) if (q.timer) clearTimeout(q.timer);
+    this.commentaryQueue.clear();
   }
 
-  /** "stop" while a task runs cancels it. Checked on fragments so it lands fast. */
+  /**
+   * "stop" while a task runs ends it. Checked on fragments so it lands fast; the
+   * engine's stop runs after the other listeners on this fragment have had it (its
+   * output gate would otherwise be lifted by the very words that asked for it). A
+   * settled utterance may be a reflex.
+   */
   private onInputDelta(delta: string): void {
-    if (!this.running) return;
-    const recent = (this.opts.transcript.last("kevin")?.text ?? "") + delta;
-    const tail = recent.slice(-40);
-    if (STOP_PATTERN.test(tail.trimStart()) || /\b(stop|cancel)\b\s*$/i.test(tail)) {
-      log.info("Kevin said stop; cancelling");
-      void this.cancel("Kevin said stop");
+    this.lastInputAt = Date.now();
+    if (this.running) {
+      const recent = (this.opts.transcript.last("kevin")?.text ?? "") + delta;
+      const tail = recent.slice(-40);
+      if (STOP_PATTERN.test(tail.trimStart()) || /\b(stop|cancel)\b\s*$/i.test(tail)) {
+        log.info("Kevin said stop; cancelling");
+        const onStop = this.opts.onStop;
+        if (onStop) queueMicrotask(() => onStop("Kevin said stop"));
+        else void this.cancel("Kevin said stop");
+      }
+      return;
     }
+    if (!this.opts.reflexes) return;
+    // The engine pushes this fragment into the transcript after us; judge the whole
+    // utterance once it has been quiet for a moment, not the fragment.
+    this.armPrefire(this.opts.prefireQuietMs ?? 180);
   }
 
-  async cancel(reason: string): Promise<void> {
+  private armPrefire(inMs: number): void {
+    if (this.prefireTimer) clearTimeout(this.prefireTimer);
+    this.prefireTimer = setTimeout(() => {
+      this.prefireTimer = undefined;
+      void this.considerPrefire();
+    }, inMs);
+  }
+
+  /**
+   * A settled utterance that is a whole cheap reflex, said to Jarhead, runs now as
+   * a delegation record of its own; the delegation that follows adopts the result
+   * and only has to speak. The utterance must have clearly ended: a sentence the
+   * transcriber closed with a full stop counts after the short quiet window, an
+   * open one only after the long window ("scroll down" — pause — "to the footer"
+   * must not scroll). Without the wake word only a closed sentence mid-exchange
+   * qualifies. Nothing else fires ahead of Live's word.
+   */
+  private async considerPrefire(): Promise<void> {
+    const reflexes = this.opts.reflexes;
+    const last = this.opts.transcript.last("kevin");
+    if (!reflexes || !last || this.running) return;
+    const key = `${last.id}:${last.text}`;
+    if (key === this.prefireSeen) return;
+    const closed = CLOSED_SENTENCE.test(last.text);
+    const need = closed ? (this.opts.prefireQuietMs ?? 180) : (this.opts.prefireLongQuietMs ?? 450);
+    const quiet = Date.now() - this.lastInputAt;
+    if (quiet < need) {
+      this.armPrefire(need - quiet);
+      return;
+    }
+    this.prefireSeen = key;
+    const reflex = reflexes.match(last.text);
+    if (!reflex?.prefire) return;
+    const addressed = addressesJarhead(last.text);
+    if (!addressed && !(closed && reflexes.inExchange?.())) return;
+
+    // The record first: the scroll about to happen is on the ledger whatever Live decides.
+    const at = this.now();
+    const id = newId("dlg");
+    const timings: DelegationTimingsExtra = { delegatedAt: at, reflex: true };
+    const delegation: Delegation = { id, liveId: `prefire:${last.id}`, createdAt: at, offsetMs: last.endMs, request: last.text, status: "running", steps: [], timings: timings as DelegationTimings };
+    this.pushDelegation(delegation);
+    this.opts.ledger?.append({ at, type: "delegation.created", delegation });
+    this.emit("change", delegation);
+    this.addStep(id, { kind: "note", text: `reflex: ${reflex.label} — running ahead of the delegation` });
+    // A prefire still parked for an earlier utterance is not this one's; it is finished as never delegated.
+    if (this.prefired) this.finishPrefire(this.prefired, "superseded by the next utterance");
+
+    const prefired: Prefired = {
+      id,
+      itemId: last.id,
+      text: last.text,
+      reflex,
+      at,
+      settled: undefined,
+      forgetTimer: undefined,
+      outcome: reflexes
+        .run(reflex, this.makePrefireSink(id))
+        .then((outcome) => {
+          prefired.settled = outcome;
+          if (outcome.ok) {
+            log.info(`reflex "${reflex.label}" fired ${this.now() - at}ms after the utterance settled, ahead of the delegation`);
+            this.emit("reflex", reflex.label, outcome.ms, true);
+          }
+          return outcome;
+        })
+        .catch((e: unknown) => {
+          log.warn(`prefire "${reflex.label}" threw: ${(e as Error).message}`);
+          this.addStep(id, { kind: "error", text: (e as Error).message.slice(0, 300) });
+          return undefined;
+        }),
+    };
+    this.prefired = prefired;
+    // Live may decide Kevin was not talking to it; then nobody adopts this and the record is closed as such.
+    prefired.forgetTimer = setTimeout(() => this.finishPrefire(prefired, "Live never delegated this utterance; forgotten"), this.opts.prefireTtlMs ?? PREFIRE_TTL_MS);
+    prefired.forgetTimer.unref?.();
+  }
+
+  /** The prefire's steps land in its own record; a reflex has no thinking or commentary of its own. */
+  private makePrefireSink(id: string): BrainSink {
+    const open = (): boolean => this.current(id)?.status === "running";
+    return {
+      thinking: () => undefined,
+      commentary: () => undefined,
+      step: (step) => {
+        if (open()) this.addStep(id, step);
+      },
+      screenshot: (path, note) => {
+        if (open()) this.addStep(id, { kind: "screenshot", screenshotPath: path, ...(note ? { text: note } : {}) });
+      },
+    };
+  }
+
+  /**
+   * The prefire whose utterance is the last item of this delegation's request, if
+   * any — the delegation adopts its record. A prefire for an earlier item of the
+   * request (Kevin said more before Live delegated) is closed instead: the
+   * delegation is about more than the reflex, and the brain gets all of it.
+   */
+  private claimPrefired(items: readonly TranscriptItem[]): Prefired | undefined {
+    const p = this.prefired;
+    if (!p) return undefined;
+    const last = items[items.length - 1];
+    if (!last || last.id !== p.itemId) {
+      if (items.some((i) => i.id === p.itemId)) this.finishPrefire(p, "a longer request followed; the brain took it whole");
+      return undefined;
+    }
+    this.prefired = undefined;
+    if (p.forgetTimer) clearTimeout(p.forgetTimer);
+    p.forgetTimer = undefined;
+    return p;
+  }
+
+  /** Close a prefire's record that no delegation adopted, once its tool has settled. */
+  private finishPrefire(p: Prefired, why: string): void {
+    if (this.prefired === p) this.prefired = undefined;
+    if (p.forgetTimer) clearTimeout(p.forgetTimer);
+    p.forgetTimer = undefined;
+    void p.outcome.then((outcome) => {
+      const d = this.current(p.id);
+      if (!d || d.status !== "running") return;
+      this.addStep(p.id, { kind: "note", text: why });
+      const doneAt = this.now();
+      const ok = outcome?.ok === true;
+      const status = ok ? (outcome.result.kind === "needs-confirmation" ? "awaiting-confirmation" : "done") : "failed";
+      const summary = ok ? `${p.reflex.said} (${why})` : `reflex ${p.reflex.label} did not apply (${why})`;
+      const finished = this.update(p.id, (x) => ({ ...x, status, summary, timings: { ...x.timings, doneAt } }));
+      if (finished) this.opts.ledger?.append({ at: doneAt, type: "delegation.finished", delegationId: p.id, status, timings: finished.timings, summary });
+      log.info(`prefired reflex "${p.reflex.label}" ${status}: ${why}`);
+    });
+  }
+
+  /**
+   * End the running task. `quiet` skips the delegator's own word to the voice —
+   * the engine's stopEverything sends the one instruction for the whole stop and
+   * asks for that, so the voice is not told both to acknowledge and to be silent.
+   */
+  async cancel(reason: string, opts: { readonly quiet?: boolean } = {}): Promise<void> {
     const run = this.running;
     if (!run) return;
+    // Finish first, then wait for the brain: a brain that settles its turn on the
+    // abort signal must not finish the delegation itself and lose the reason.
     run.abort.abort();
-    await this.opts.brain.cancel();
+    this.dropCommentary(run.delegation.id);
     this.finish(run.delegation.id, { status: "cancelled", summary: reason });
     this.emit("cancelled", reason);
-    this.opts.live.appendInstructions(null, "Kevin cancelled the task. Acknowledge with one word and wait.");
+    if (!opts.quiet) this.opts.live.appendInstructions(null, "Kevin cancelled the task. Acknowledge with one word and wait.");
+    await this.opts.brain.cancel();
   }
 
   private async onDelegation(liveId: string, target: "client" | "responses", offsetMs: number): Promise<void> {
     const { transcript, live, confirmations, brain } = this.opts;
+    // Live has spoken: a prefire still being considered for this utterance would only duplicate the work below.
+    if (this.prefireTimer) clearTimeout(this.prefireTimer);
+    this.prefireTimer = undefined;
     // A new delegation while one runs: the voice decided Kevin wants something
     // else. Finish the old one as superseded rather than running two at once.
     if (this.running) {
       this.running.abort.abort();
-      await brain.cancel();
+      this.dropCommentary(this.running.delegation.id);
       this.finish(this.running.delegation.id, { status: "cancelled", summary: "superseded by a new request" });
+      await brain.cancel();
     }
 
     const kevinSince = transcript.since(this.lastDelegationEndMs, "kevin");
@@ -128,26 +389,45 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     const marks = new Marks(this.now);
     const abort = new AbortController();
-    const id = newId("dlg");
-    const timings: DelegationTimings = { delegatedAt: marks.startedAt };
-    const delegation: Delegation = { id, liveId, createdAt: marks.startedAt, offsetMs, request, status: "running", steps: [], timings };
-    this.delegations.push(delegation);
-    if (this.delegations.length > 200) this.delegations.splice(0, this.delegations.length - 200);
+    // A reflex that already ran for this very utterance: its record becomes this delegation's.
+    const prefired = this.claimPrefired(requestItems);
+    let delegation: Delegation;
+    if (prefired && this.current(prefired.id)?.status === "running") {
+      delegation = this.update(prefired.id, (d) => ({ ...d, liveId, offsetMs, request }))!;
+    } else {
+      const id = newId("dlg");
+      const timings: DelegationTimings = { delegatedAt: marks.startedAt };
+      delegation = { id, liveId, createdAt: marks.startedAt, offsetMs, request, status: "running", steps: [], timings };
+      this.pushDelegation(delegation);
+      this.opts.ledger?.append({ at: marks.startedAt, type: "delegation.created", delegation });
+      this.emit("change", delegation);
+    }
+    const id = delegation.id;
     this.running = { delegation, abort, marks };
-    this.opts.ledger?.append({ at: marks.startedAt, type: "delegation.created", delegation });
-    this.emit("change", delegation);
     this.emit("phase", "thinking");
-
-    // A circle still being captured is waited for (it is what "this" means); a
-    // delegation that supersedes this one meanwhile takes the marks instead.
-    const { attachments, ids: markIds } = await this.takeMarks();
-    if (this.running?.delegation.id !== id) return;
-    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}${attachments.length ? ` [${attachments.length} circled region(s)]` : ""}`);
 
     // Live rejects non-null delegation ids on appends while a Responses backend
     // owns the task; general session context is the only channel then.
     const appendId = target === "responses" ? null : liveId;
     const sink = this.makeSink(id, appendId, marks);
+
+    // A reflex needs no brain: run it (or take the one that already ran) and finish.
+    if (!confirmation && this.opts.reflexes && target === "client") {
+      const done = await this.tryReflex(id, request, sink, prefired);
+      if (done || this.running?.delegation.id !== id) return;
+    } else if (prefired) {
+      // Adopted, but this is a confirmation or a Responses task: the brain takes it, the record says what already happened.
+      this.addStep(id, { kind: "note", text: `reflex ${prefired.reflex.label} already ran ahead of this request` });
+    }
+
+    // A circle still being captured is waited for (it is what "this" means); the
+    // eyes take their quick shot meanwhile. A delegation that supersedes this one
+    // meanwhile takes the marks instead.
+    const [{ attachments: circled, ids: markIds }, screen] = await Promise.all([this.takeMarks(), this.look(id, sink)]);
+    if (this.running?.delegation.id !== id) return;
+    const attachments: BrainAttachment[] = [...(screen ? [screen] : []), ...circled];
+    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}${circled.length ? ` [${circled.length} circled region(s)]` : ""}${screen ? " [screen]" : ""}`);
+
     const windowMs = this.opts.dialogueWindowMs ?? 120_000;
     const uptoMs = live.nowMs || offsetMs;
     const task: BrainTask = {
@@ -186,6 +466,92 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.finish(id, result);
   }
 
+  private pushDelegation(delegation: Delegation): void {
+    this.delegations.push(delegation);
+    if (this.delegations.length > 200) this.delegations.splice(0, this.delegations.length - 200);
+  }
+
+  /**
+   * The reflex path. Returns true when the delegation is finished here (the
+   * reflex ran, or asked for a confirmation); false hands the task to the brain,
+   * with the failed attempt on the timeline. A prefire whose result this
+   * delegation adopted is waited for, never run again; one whose words are not
+   * the whole request is noted and the brain takes the request as a whole.
+   */
+  private async tryReflex(id: string, request: string, sink: BrainSink, prefired: Prefired | undefined): Promise<boolean> {
+    const reflexes = this.opts.reflexes;
+    if (!reflexes) return false;
+    let reflex: Reflex | undefined;
+    let outcome: ReflexOutcome;
+    if (prefired) {
+      const want = normalizeUtterance(prefired.text);
+      const got = normalizeUtterance(request);
+      const matches = want !== "" && (got === want || got.endsWith(want));
+      const settled = prefired.settled ?? (await prefired.outcome);
+      if (this.running?.delegation.id !== id) return true;
+      const lead = this.now() - prefired.at;
+      if (!matches) {
+        this.addStep(id, { kind: "note", text: `reflex ${prefired.reflex.label} already ran ${lead} ms ago, but the request says more; the brain takes it whole` });
+        return false;
+      }
+      reflex = prefired.reflex;
+      this.addStep(id, { kind: "note", text: `the delegation arrived ${lead} ms after the reflex ran` });
+      if (!settled) {
+        this.addStep(id, { kind: "note", text: `reflex ${reflex.label} did not apply; the brain takes it` });
+        return false;
+      }
+      outcome = settled;
+    } else {
+      reflex = reflexes.match(request);
+      if (!reflex) return false;
+      this.addStep(id, { kind: "note", text: `reflex: ${reflex.label}` });
+      this.emit("phase", "acting");
+      try {
+        outcome = await reflexes.run(reflex, sink);
+      } catch (e) {
+        outcome = { reflex, result: { kind: "error", message: (e as Error).message }, ms: 0, ok: false };
+      }
+      if (this.running?.delegation.id !== id) return true;
+      this.emit("reflex", reflex.label, outcome.ms, false);
+    }
+    if (!outcome.ok) {
+      this.addStep(id, { kind: "note", text: `reflex ${reflex.label} did not apply (${outcome.result.kind === "error" ? outcome.result.message.slice(0, 200) : outcome.result.kind}); the brain takes it` });
+      return false;
+    }
+    this.markReflex(id);
+    if (outcome.result.kind === "needs-confirmation") {
+      // The runner recorded the handshake; the question is the whole answer.
+      sink.commentary(outcome.result.question);
+      this.finish(id, { status: "done", summary: outcome.result.question });
+      return true;
+    }
+    sink.commentary(reflex.said);
+    this.finish(id, { status: "done", summary: reflex.said });
+    return true;
+  }
+
+  private markReflex(id: string): void {
+    this.update(id, (d) => ({ ...d, timings: { ...d.timings, reflex: true } as DelegationTimings }));
+  }
+
+  /** The eyes' quick shot, in this delegation's timeline; never throws, never blocks a task without eyes. */
+  private async look(id: string, sink: BrainSink): Promise<BrainAttachment | undefined> {
+    if (!this.opts.eyes) return undefined;
+    const t0 = this.now();
+    const run = this.running;
+    if (run) run.looking = true;
+    try {
+      const shot = await this.opts.eyes(sink);
+      if (shot) this.update(id, (d) => ({ ...d, timings: { ...d.timings, eyesMs: this.now() - t0 } as DelegationTimings }));
+      return shot;
+    } catch (e) {
+      log.debug(`no pre-warm screenshot: ${(e as Error).message}`);
+      return undefined;
+    } finally {
+      if (run) run.looking = false;
+    }
+  }
+
   /**
    * Everything Kevin circled since the last task goes in with this one. A capture
    * still in flight is waited for first. Every pending mark is consumed, with or
@@ -210,7 +576,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const now = this.now();
     for (const m of pending) {
       if (!m.screenshotPath) continue;
-      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: markNote(m.rect, now - m.at) });
+      const what = m.element?.title || m.element?.app ? ` — ${[m.element?.role, m.element?.title ? `"${m.element.title}"` : undefined, m.element?.app ? `in ${m.element.app}` : undefined].filter(Boolean).join(" ")}` : "";
+      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: `${markNote(m.rect, now - m.at)}${what}`, kind: "mark" });
     }
     const ids = pending.map((m) => m.id);
     source.consume(ids);
@@ -231,9 +598,24 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     return next;
   }
 
+  /** Record a step and keep the latency marks: first tool, first action, every round trip. */
   private addStep(id: string, step: Omit<DelegationStep, "id" | "at">): void {
     const full: DelegationStep = { id: newId("step"), at: this.now(), ...step };
-    this.update(id, (d) => ({ ...d, steps: [...d.steps, full] }));
+    const looking = this.running?.delegation.id === id && this.running.looking === true;
+    this.update(id, (d) => {
+      let timings = d.timings as DelegationTimingsExtra;
+      // The eyes' pre-warm shot is the engine's, not the brain's: it does not count as the first tool.
+      if (!looking && (step.kind === "tool" || step.kind === "screenshot" || step.kind === "confirm")) {
+        const name = step.tool?.name;
+        if (timings.firstToolAt === undefined) timings = { ...timings, firstToolAt: full.at };
+        if (timings.firstActionAt === undefined && name && ACTING_MEMBERS.has(name) && step.kind === "tool") timings = { ...timings, firstActionAt: full.at };
+        if (step.tool && Number.isFinite(step.tool.ms)) {
+          const samples = timings.toolRoundTripMs ?? [];
+          if (samples.length < MAX_ROUND_TRIP_SAMPLES) timings = { ...timings, toolRoundTripMs: [...samples, Math.round(step.tool.ms)] };
+        }
+      }
+      return { ...d, steps: [...d.steps, full], timings: timings as DelegationTimings };
+    });
     this.opts.ledger?.append({ at: full.at, type: "delegation.step", delegationId: id, step: full });
   }
 
@@ -262,7 +644,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
           this.update(id, (d) => ({ ...d, timings: { ...d.timings, firstCommentaryAt: this.now() } }));
         }
         this.addStep(id, { kind: "commentary", text });
-        for (const chunk of chunkForAppend(text)) live.appendCommentary(liveId, chunk);
+        this.queueCommentary(id, liveId, text);
       },
       step: (step) => {
         if (this.running?.delegation.id !== id) return;
@@ -281,10 +663,54 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     };
   }
 
+  /**
+   * Commentary reaches Live promptly but not as a burst: the first line of a
+   * quiet moment goes at once; lines that follow within the window are joined
+   * into one append when it closes (or when the delegation finishes).
+   */
+  private queueCommentary(id: string, liveId: string | null, text: string): void {
+    const windowMs = this.opts.commentaryCoalesceMs ?? 600;
+    const now = this.now();
+    const queue = this.commentaryQueue.get(id);
+    if (windowMs <= 0 || (!queue?.texts.length && now - this.lastCommentaryAt >= windowMs)) {
+      this.lastCommentaryAt = now;
+      for (const chunk of chunkForAppend(text)) this.opts.live.appendCommentary(liveId, chunk);
+      return;
+    }
+    const q = queue ?? { liveId, texts: [], timer: undefined };
+    q.texts.push(text);
+    this.commentaryQueue.set(id, q);
+    if (!q.timer) {
+      const wait = Math.max(20, windowMs - (now - this.lastCommentaryAt));
+      q.timer = setTimeout(() => this.flushCommentary(id), wait);
+    }
+  }
+
+  private flushCommentary(id: string): void {
+    const q = this.commentaryQueue.get(id);
+    if (!q) return;
+    this.commentaryQueue.delete(id);
+    if (q.timer) clearTimeout(q.timer);
+    const text = q.texts.join(" ").trim();
+    if (!text) return;
+    this.lastCommentaryAt = this.now();
+    for (const chunk of chunkForAppend(text)) this.opts.live.appendCommentary(q.liveId, chunk);
+  }
+
+  /** A cancelled task says nothing more. */
+  private dropCommentary(id: string): void {
+    const q = this.commentaryQueue.get(id);
+    if (!q) return;
+    if (q.timer) clearTimeout(q.timer);
+    this.commentaryQueue.delete(id);
+  }
+
   private finish(id: string, result: BrainResult): void {
     const run = this.running;
     if (run?.delegation.id !== id) return;
     this.running = undefined;
+    if (result.status === "cancelled") this.dropCommentary(id);
+    else this.flushCommentary(id);
     const doneAt = this.now();
     const awaiting = run.delegation.steps.some((s) => s.kind === "confirm");
     const status = result.status === "done" && awaiting ? "awaiting-confirmation" : result.status;
@@ -297,7 +723,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.lastDelegationEndMs = this.opts.live.nowMs || run.delegation.offsetMs;
     if (finished) {
       this.opts.ledger?.append({ at: doneAt, type: "delegation.finished", delegationId: id, status: finished.status, timings: finished.timings, ...(finished.summary ? { summary: finished.summary } : {}) });
-      log.info(`delegation ${id} ${finished.status} in ${doneAt - run.marks.startedAt}ms (thinking@${run.marks.since("firstThinking") ?? "-"} commentary@${run.marks.since("firstCommentary") ?? "-"})`);
+      const t = finished.timings as DelegationTimingsExtra;
+      const rel = (v: number | undefined): string => (v === undefined ? "-" : String(v - t.delegatedAt));
+      log.info(`delegation ${id} ${finished.status} in ${doneAt - run.marks.startedAt}ms (thinking@${rel(t.firstThinkingAt)} tool@${rel(t.firstToolAt)} action@${rel(t.firstActionAt)} commentary@${rel(t.firstCommentaryAt)}${t.reflex ? " reflex" : ""}${t.toolRoundTripMs?.length ? ` tools ${t.toolRoundTripMs.join("/")}ms` : ""})`);
     }
     this.emit("phase", "idle");
   }

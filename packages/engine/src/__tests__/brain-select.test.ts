@@ -83,7 +83,8 @@ test("auto resolves to codex when the CLI is found and signed in, and says so in
     await engine.ready();
     assert.equal(engine.brainInfo.kind, "codex");
     assert.equal(engine.brainInfo.ready, true);
-    assert.match(engine.brainInfo.detail, /^Codex 0\.153\.4-fake via JARHEAD_CODEX_BIN, signed in with ChatGPT; default model, effort \w+; tools over a private socket$/);
+    // The stand-in CLI has no app-server, so the brain says it fell back to exec per task and why.
+    assert.match(engine.brainInfo.detail, /^Codex 0\.153\.4-fake via JARHEAD_CODEX_BIN, signed in with ChatGPT; default model, effort \w+; tools over a private socket; codex exec per task \(app-server: .+\)$/);
     const snap = engine.snapshot();
     assert.equal(snap.setup.brainResolved, "codex");
     assert.equal(snap.brainReady, true);

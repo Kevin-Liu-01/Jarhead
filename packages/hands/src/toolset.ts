@@ -1,7 +1,7 @@
 import { classifyAction, logger, type ActionContext, type Decision } from "@jarhead/core";
 import type { OverlayCommand } from "@jarhead/protocol";
 import { NativeRequestError, type ElementInfo, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "./native.ts";
-import { DEFAULT_SHOT_BUDGET, Screen, type ShotBudget } from "./screen.ts";
+import { DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET, Screen, type ShotBudget } from "./screen.ts";
 import { screencaptureFallback } from "./fallback.ts";
 import type { DisplayInfo } from "./native.ts";
 
@@ -26,6 +26,26 @@ export type ComputerMember = (typeof COMPUTER_MEMBERS)[number];
 
 export const DESKTOP_TOOLS = ["open_app", "focus_app", "list_windows", "read_focused_text", "element_at", "frontmost_app"] as const;
 export type DesktopTool = (typeof DESKTOP_TOOLS)[number];
+
+/**
+ * The members that move something or type something — an *action* as opposed to
+ * a look. The delegator's `firstActionAt` timing and the reflex table read this;
+ * screenshots, zooms and the AX reads are not in it.
+ */
+export const ACTING_MEMBERS: ReadonlySet<string> = new Set([
+  "left_click", "right_click", "middle_click", "double_click", "triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
+  "scroll", "type", "key", "hold_key", "open_app", "focus_app",
+]);
+
+/**
+ * Tools that only look: several of these in one model turn can run at once
+ * without one changing what the next one sees. Anything else runs in order.
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "screenshot", "zoom", "cursor_position", "list_windows", "read_focused_text", "element_at", "frontmost_app",
+  "read_file", "list_dir", "search_files", "web_fetch", "web_search", "agents_list", "agent_read", "recall", "clipboard_read", "self_status", "self_review",
+  "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke", "show_clear",
+]);
 
 export type ToolResult =
   | { readonly kind: "text"; readonly text: string }
@@ -169,7 +189,9 @@ export class ComputerToolset {
     const hands = this.opts.hands;
     switch (name) {
       case "screenshot": {
-        const budget = this.opts.budget ?? DEFAULT_SHOT_BUDGET;
+        // `quick: true` trades pixels for time (a 1280-pixel long edge): the pre-warm
+        // shot at delegation, a reflex, the bench. The default budget stays for reading.
+        const budget = input["quick"] === true ? QUICK_SHOT_BUDGET : this.opts.budget ?? DEFAULT_SHOT_BUDGET;
         const display = (input["display"] as string | number | undefined) ?? "cursor";
         let shot: ScreenshotResult;
         try {
@@ -186,7 +208,7 @@ export class ComputerToolset {
           log.warn(`native screenshot unavailable (${e.detail.code}); used screencapture`);
         }
         this.screen.remember(shot);
-        return { kind: "image", pngBase64: shot.pngBase64, width: shot.width, height: shot.height, note: `display ${shot.displayId}, ${shot.width}x${shot.height} px covering ${Math.round(shot.points.w)}x${Math.round(shot.points.h)} points` };
+        return { kind: "image", pngBase64: shot.pngBase64, width: shot.width, height: shot.height, note: `display ${shot.displayId}, ${shot.width}x${shot.height} px covering ${Math.round(shot.points.w)}x${Math.round(shot.points.h)} points${input["quick"] === true ? " (quick budget)" : ""}` };
       }
       case "zoom": {
         const region = input["region"];
@@ -390,20 +412,31 @@ export class ComputerToolset {
     let app = "";
     let target = "";
     let secure = false;
-    try {
-      const front = await this.opts.hands.request<FrontmostInfo>("frontmost", {}, 1500);
-      app = front.app;
-      if (about.points) {
-        const el = await this.opts.hands.request<ElementInfo>("element_at", about.points, 1500);
-        target = [el.title, el.description, el.value, el.role].filter((s) => typeof s === "string" && s.length > 0).join(" · ");
-      }
-      if (member === "type" || member === "key") {
-        const f = await this.opts.hands.request<FocusedText>("focused_text", {}, 1500);
-        secure = f.secure;
-        if (!target) target = f.title ?? f.role;
-      }
-    } catch {
-      // Without AX the policy sees less; it errs toward asking, never toward acting.
+    // Only the probes this member needs, and all of them in flight together: the
+    // helper answers them in order, but the pipeline saves a round trip each.
+    const hands = this.opts.hands;
+    const wantsElement = about.points !== undefined;
+    const wantsFocus = member === "type" || member === "key";
+    // A probe dropped by a stop (cancelPending) means Kevin pressed stop while this
+    // action was being judged: it does not run, whatever the policy would have said.
+    let stopped = false;
+    const probe = <T>(p: Promise<T>): Promise<T | undefined> =>
+      p.catch((e: unknown) => {
+        if (e instanceof NativeRequestError && e.detail.code === "cancelled") stopped = true;
+        return undefined;
+      });
+    const [front, el, f] = await Promise.all([
+      probe(hands.request<FrontmostInfo>("frontmost", {}, 1500)),
+      wantsElement ? probe(hands.request<ElementInfo>("element_at", about.points, 1500)) : Promise.resolve(undefined),
+      wantsFocus ? probe(hands.request<FocusedText>("focused_text", {}, 1500)) : Promise.resolve(undefined),
+    ]);
+    if (stopped) return { decision: { verdict: "refuse", reason: "Kevin pressed stop" }, result: { kind: "error", message: "stopped: Kevin pressed stop before this action ran" } };
+    // Without AX the policy sees less; it errs toward asking, never toward acting.
+    if (front) app = front.app;
+    if (el) target = [el.title, el.description, el.value, el.role].filter((s) => typeof s === "string" && s.length > 0).join(" · ");
+    if (f) {
+      secure = f.secure;
+      if (!target) target = f.title ?? f.role;
     }
     const confirmed = this.confirmations.consume(member, input);
     const decision = this.policy({ kind: member, app, target, text: about.text, secureField: secure, confirmed });

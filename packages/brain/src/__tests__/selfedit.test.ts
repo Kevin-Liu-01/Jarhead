@@ -371,6 +371,7 @@ class RecordingEngine extends EventEmitter implements EngineLike {
   reportInputLevel(): void {}
   setMicrophonePermission(): void {}
   registerOwnPid(): void {}
+  ear(): void {}
   problem(): void {}
 }
 

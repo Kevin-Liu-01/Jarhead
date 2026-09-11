@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, type ActionEvent, type ScreenshotResult } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type ElementInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
-import { ClaudeBrain, Delegator, ResponsesBrain, ToolRunner, responsesDelegationConfig, type Brain } from "@jarhead/brain";
+import { ClaudeBrain, Delegator, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reflex, type ReflexOutcome } from "@jarhead/brain";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
@@ -51,6 +51,8 @@ export interface EngineEvents {
   utterance: [item: TranscriptItem];
   /** The engine wants its host process replaced (self-update); the daemon exits 75 and the app respawns it. */
   restart: [reason: string];
+  /** A reflex ran: its label, how long the tool took, and whether it fired ahead of the delegation. */
+  reflex: [label: string, ms: number, prefired: boolean];
 }
 
 export interface EngineOptions {
@@ -60,6 +62,8 @@ export interface EngineOptions {
   readonly makeLive?: (config: SessionConfig) => LiveSession;
   readonly brain?: Brain;
   readonly now?: () => number;
+  /** Answers the helper's requests instead of the Swift binary (tests, `jarhead bench --fake-hands`). */
+  readonly hands?: NativeHands;
 }
 
 const SETTINGS_FILE = "settings.json";
@@ -104,6 +108,14 @@ export class Engine extends EventEmitter<EngineEvents> {
   private connectorHealth: ConnectorHealth[] = [];
   private lastOutputSpeechAt = 0;
   private lastAddressedAt = 0;
+  /**
+   * The output gate: Live has no interrupt, so after a stop the voice's audio is
+   * dropped here (and its transcript deltas do not count as speaking) until Kevin's
+   * next input-transcript delta or OUTPUT_GATE_MS pass. Wall clock of `now()`.
+   */
+  private outputGateUntil = 0;
+  private gatedFrames = 0;
+  private readonly reflexRunner: ReflexRunner;
   private outputLevel = 0;
   private inputLevel = 0;
   private snapshotTimer: NodeJS.Timeout | undefined;
@@ -122,7 +134,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     mkdirSync(this.config.stateDir, { recursive: true });
     this.ledger = new Ledger(this.config.stateDir);
     this.settings = this.loadSettings();
-    this.hands = new NativeHandsProcess({ binPath: this.config.handsBin });
+    // The seam: a stand-in answers the helper's request lines as a fake child, so the
+    // real client (pending map, timeouts, a stop's cancelPending) runs unchanged.
+    this.hands = new NativeHandsProcess({ binPath: this.config.handsBin, ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}) });
     this.toolset = new ComputerToolset({
       hands: this.hands,
       confirmations: this.confirmations,
@@ -155,6 +169,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
       },
     });
+    // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up.
+    this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName() });
     this.transcript.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
@@ -163,6 +179,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.scheduleSnapshot();
     });
   }
+
+  /** How long the voice stays muted locally after a stop when Kevin says nothing. */
+  static readonly OUTPUT_GATE_MS = 2500;
+  /** "Mid-exchange": Jarhead spoke or was delegated to this recently, so a bare reflex without the wake word may fire ahead of the delegation. */
+  static readonly EXCHANGE_WINDOW_MS = 8000;
 
   // ------------------------------------------------------------- settings
 
@@ -423,7 +444,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     return {
       openaiKey: this.setupProbe.openaiKey,
       brain: this.setupProbe.brain,
-      brainDetail: this.brainDetail,
+      // A brain whose state moves after start() (Codex's warm transport landing later) says so itself.
+      brainDetail: this.brain?.detail ?? this.brainDetail,
       // What `auto` resolved to. startBrain() only installs brains whose `kind` is a
       // contract BrainKind; a test-injected brain (opts.brain) need not be one.
       ...(this.brainReady && this.brain && this.brain !== this.opts.brain ? { brainResolved: this.brain.kind as Exclude<Settings["brain"], "auto"> } : {}),
@@ -686,21 +708,50 @@ export class Engine extends EventEmitter<EngineEvents> {
         settled: () => this.marksSettled(),
         stateDir: this.config.stateDir,
       },
+      // The eyes: a quick shot of the screen as the task begins, in parallel with the marks.
+      eyes: (sink) => this.lookAtScreen(sink),
+      // Reflexes: one-step commands that need no brain. Not when Live's own Responses
+      // backend is the brain — it would act on the same words a second time.
+      ...(brain instanceof ResponsesBrain
+        ? {}
+        : {
+            reflexes: {
+              match: (u) => this.reflexRunner.match(u),
+              run: (reflex, sink) => this.runReflex(reflex, sink),
+              inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
+            },
+          }),
+      // A spoken "stop" is a Stop like any other: the whole stop, not only the delegation.
+      onStop: (reason) => void this.stopEverything(reason, "said"),
     });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
     delegator.on("cancelled", () => this.flushSpeaker());
+    delegator.on("reflex", (label, ms, prefired) => {
+      log.info(`reflex ${label} in ${ms}ms${prefired ? " (ahead of the delegation)" : ""}`);
+      this.emit("reflex", label, ms, prefired);
+    });
     this.delegator = delegator;
 
     live.on("audio", (pcm) => {
+      // After a stop the voice is muted here until Kevin speaks or the gate lapses:
+      // the API has no interrupt, so a sentence already in flight is simply not played.
+      if (this.now() < this.outputGateUntil) {
+        this.gatedFrames++;
+        this.outputLevel = 0;
+        return;
+      }
       this.outputLevel = rms(pcm);
       this.emit("audio", pcm);
     });
     live.on("inputTranscript", (delta, s, e) => {
+      if (this.outputGateUntil) this.liftOutputGate("Kevin spoke");
       this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
     });
     live.on("outputTranscript", (delta, s, e) => {
+      // What the model said goes on the record even when the gate kept it off the speaker.
       this.transcript.push({ speaker: "jarhead", delta, startMs: s, endMs: e });
+      if (this.now() < this.outputGateUntil) return; // muted locally: not "speaking"
       this.lastOutputSpeechAt = this.now();
       this.lastAddressedAt = this.now();
       this.recomputePhase();
@@ -767,10 +818,90 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.live.appendInstructions(null, `Kevin just typed (treat it exactly like speech): "${t}". Respond to it now; delegate if it asks for anything the backend does.`);
   }
 
-  async stopEverything(): Promise<void> {
+  /**
+   * Every Stop entry lands here — the Console's button and ⌘., the capsule's Stop,
+   * ⌥⎋, the orb menu, `jarhead cmd stop`, and a spoken "stop" (the Delegator's
+   * `onStop`, which runs after the fragment's other listeners so the gate set here
+   * is not lifted by the words that asked for it). Within a frame or two
+   * everything Kevin can perceive ends: the speaker is flushed and the voice gated
+   * locally (Live cannot be interrupted), the running delegation is cancelled and
+   * its brain turn interrupted, the hands' pending request is dropped so a late
+   * answer never acts, background jobs this task started are stopped, the voice
+   * is told once, and a toast says "stopped". The delegation's `finished` ledger
+   * row (status cancelled, summary "Kevin pressed/said stop") is the record; with
+   * nothing running there is nothing to record beyond the log line.
+   */
+  async stopEverything(source = "stop", how: "pressed" | "said" = "pressed"): Promise<void> {
+    const t0 = this.now();
+    const running = this.delegator?.active;
+    const reason = `Kevin ${how} stop`;
+    // The gate first, so a frame arriving between here and the flush is dropped too.
+    this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+    this.gatedFrames = 0;
     this.flushSpeaker();
-    await this.delegator?.cancel("stopped from the console");
-    this.live?.appendInstructions(null, "Kevin pressed stop. Stop speaking now and wait.");
+    const dropped = this.hands.cancelPending(reason);
+    const aborted = this.runner.abortTask("stop");
+    // The brain's own cancel may take a moment (SIGINT, an interrupt request); the
+    // stop must not wait on it to be felt, so it is capped here. The delegator's own
+    // word to the voice is skipped: the one instruction below speaks for the whole stop.
+    const cancel = this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve();
+    this.live?.appendInstructions(null, `${reason}. Stop speaking now and wait.`);
+    this.toast("stopped", "info");
+    this.recomputePhase();
+    await Promise.race([cancel, new Promise((r) => setTimeout(r, 1500))]);
+    log.info(`stop (${source}) in ${this.now() - t0}ms: ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${aborted.jobs} background job(s) stopped; voice gated for ${Engine.OUTPUT_GATE_MS} ms`);
+  }
+
+  /** The gate ends early when Kevin speaks; the clock ends it otherwise. */
+  private liftOutputGate(why: string): void {
+    if (!this.outputGateUntil) return;
+    if (this.now() < this.outputGateUntil) log.debug(`output gate lifted (${why}) after dropping ${this.gatedFrames} frame(s)`);
+    this.outputGateUntil = 0;
+    this.gatedFrames = 0;
+  }
+
+  /** True while the voice is being muted locally after a stop. */
+  get outputGated(): boolean {
+    return this.now() < this.outputGateUntil;
+  }
+
+  /**
+   * The eyes' pre-warm shot: the display under the cursor at the quick budget,
+   * archived like every screenshot (it is this delegation's first step) and handed
+   * to the brain as an attachment. Nothing when the brain is Live's own Responses
+   * delegation (it is already answering; there is nowhere to put an image first)
+   * or when there are no hands.
+   */
+  private async lookAtScreen(sink: BrainSink): Promise<BrainAttachment | undefined> {
+    if (this.brain instanceof ResponsesBrain) return undefined;
+    if (!this.hands.ready && !this.hands.available) return undefined;
+    this.runner.attach(sink);
+    try {
+      const out = await this.runner.run("screenshot", { quick: true });
+      if (out.result.kind !== "image" || !out.screenshotPath) return undefined;
+      return { path: join(this.config.stateDir, out.screenshotPath), mediaType: "image/png", note: screenNote(out.result.width, out.result.height, out.result.note), kind: "screen" };
+    } finally {
+      this.runner.attach(undefined);
+    }
+  }
+
+  /** A reflex through the runner, its steps in the delegation when there is one (a prefire has none yet). */
+  private async runReflex(reflex: Reflex, sink?: BrainSink): Promise<ReflexOutcome> {
+    if (sink) this.runner.attach(sink);
+    try {
+      return await this.reflexRunner.run(reflex);
+    } finally {
+      if (sink) this.runner.attach(undefined);
+    }
+  }
+
+  private async frontmostAppName(): Promise<string> {
+    try {
+      const r = await this.toolset.run("frontmost_app", {});
+      return r.kind === "text" ? String((JSON.parse(r.text) as { app?: string }).app ?? "") : "";
+    } catch {
+      return "";
+    }
   }
 
   // ------------------------------------------------------- conversations
@@ -862,28 +993,82 @@ export class Engine extends EventEmitter<EngineEvents> {
   private static readonly PENDING_MARK_TTL_MS = 15 * 60_000;
 
   private async addMark(rawRect: Rect, path?: readonly Point[]): Promise<void> {
-    const rect = normalizeRect(rawRect);
+    const bbox = normalizeRect(rawRect);
     const id = newId("mark");
     const at = this.now();
-    const size = `${Math.round(rect.w)}×${Math.round(rect.h)} at ${Math.round(rect.x)},${Math.round(rect.y)}`;
+    const size = `${Math.round(bbox.w)}×${Math.round(bbox.h)} at ${Math.round(bbox.x)},${Math.round(bbox.y)}`;
     // Registered before the capture, so a delegation fired while the hands work
     // sees a mark to wait for instead of missing it.
-    const mark: ScreenMark = { id, rect, ...(path && path.length > 0 ? { path } : {}), at, consumed: false };
+    const mark: ScreenMark = { id, rect: bbox, ...(path && path.length > 0 ? { path } : {}), at, consumed: false };
     this.marks = [...this.marks, mark].slice(-Engine.MAX_MARKS);
     this.scheduleSnapshot();
     // Asleep, the mark simply waits for the next session; awake, the voice hears about it now.
     this.live?.appendInstructions(null, `Kevin just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`);
-    const capture = this.captureMark(id, rect, at, size);
-    this.markCaptures.set(id, capture);
+    // What did he surround? The element under the stroke's centroid and the window
+    // list say; the mark snaps to the smallest frame that holds the centroid and
+    // sits mostly inside his stroke. Failing that, the stroke's own box stands.
+    const capture = (async () => {
+      const snapped = await this.resolveMarkTarget(bbox, path);
+      if (snapped) this.marks = this.marks.map((m) => (m.id === id ? { ...m, rect: snapped.rect, ...(snapped.element ? { element: snapped.element } : {}) } : m));
+      const rect = snapped?.rect ?? bbox;
+      const what = snapped?.element ? ` (${[snapped.element.role, snapped.element.title ? `"${snapped.element.title}"` : "", snapped.element.app ? `in ${snapped.element.app}` : ""].filter(Boolean).join(" ")})` : "";
+      await this.captureMark(id, rect, at, `${size}${what}`);
+      return { rect, element: snapped?.element };
+    })();
+    this.markCaptures.set(id, capture.then(() => undefined));
+    let target: { rect: Rect; element: ScreenMark["element"] };
     try {
-      await capture;
+      target = await capture;
     } finally {
       this.markCaptures.delete(id);
     }
     // A sender with a stroke (the overlay's mark mode) has drawn it on the layer
     // already; echoing it again would double the glow. A bare box (no path) gets
     // its outline echoed once the capture is done, so the echo is never in the shot.
-    if (!path || path.length < 2) this.emit("overlay", { cmd: "stroke", points: rectCorners(rect), tone: "mark", ttlMs: 8000 });
+    // Then the blob outlines what he meant: it flies over and drags a rounded frame
+    // around the snapped target, labelled with what it is.
+    if (!path || path.length < 2) this.emit("overlay", { cmd: "stroke", points: rectCorners(target.rect), tone: "mark", ttlMs: 2500 });
+    const label = target.element?.title || target.element?.app;
+    this.emit("overlay", { cmd: "orb.trace", points: roundedRectPoints(target.rect), closed: true, tone: "mark", ttlMs: 6000, ...(label ? { label: label.slice(0, 40) } : {}), reason: "mark" });
+  }
+
+  /** Over this share of a frame inside the padded stroke box, the frame is what Kevin surrounded. */
+  private static readonly MARK_SNAP_COVERAGE = 0.6;
+
+  /**
+   * The LARGEST element or window frame that contains the stroke's centroid and
+   * lies at least 60 % inside the stroke's padded box: what Kevin surrounded is the
+   * biggest thing mostly inside his stroke. (The element under the centroid of a
+   * circled dialog is a label inside it; the label always fits, the dialog is what
+   * he meant. A circled button: the window around it fails the coverage test and
+   * the button is the largest fit.) Both probes run at once and either may fail
+   * (no Accessibility, no helper): then the box itself stands, with the app under
+   * the centroid noted when the window list could say.
+   */
+  private async resolveMarkTarget(bbox: Rect, path?: readonly Point[]): Promise<{ rect: Rect; element?: ScreenMark["element"] } | undefined> {
+    const centroid = path && path.length >= 2 ? centroidOf(path) : { x: bbox.x + bbox.w / 2, y: bbox.y + bbox.h / 2 };
+    const pad = Math.max(12, 0.1 * Math.max(bbox.w, bbox.h));
+    const padded: Rect = { x: bbox.x - pad, y: bbox.y - pad, w: bbox.w + 2 * pad, h: bbox.h + 2 * pad };
+    const [el, wins] = await Promise.all([
+      this.hands.request<ElementInfo>("element_at", { x: centroid.x, y: centroid.y }, 1500).catch(() => undefined),
+      this.hands.request<{ windows: WindowInfo[] }>("windows", {}, 1500).catch(() => undefined),
+    ]);
+    type Candidate = { rect: Rect; element: NonNullable<ScreenMark["element"]> };
+    const candidates: Candidate[] = [];
+    if (el?.frame && el.frame.w > 0 && el.frame.h > 0) {
+      candidates.push({ rect: el.frame, element: { ...(el.role ? { role: el.role } : {}), ...(el.title || el.description ? { title: (el.title || el.description) as string } : {}), ...(el.app ? { app: el.app } : {}) } });
+    }
+    const under = (wins?.windows ?? []).filter((w) => w.w > 0 && w.h > 0 && contains({ x: w.x, y: w.y, w: w.w, h: w.h }, centroid));
+    for (const w of under) candidates.push({ rect: { x: w.x, y: w.y, w: w.w, h: w.h }, element: { role: "AXWindow", ...(w.title ? { title: w.title } : {}), ...(w.app ? { app: w.app } : {}) } });
+    const fits = candidates.filter((c) => contains(c.rect, centroid) && c.rect.w * c.rect.h >= 16 && coverage(c.rect, padded) >= Engine.MARK_SNAP_COVERAGE).sort((a, b) => b.rect.w * b.rect.h - a.rect.w * a.rect.h);
+    const best = fits[0];
+    if (best) {
+      log.info(`mark snapped to ${best.element.role ?? "?"}${best.element.title ? ` "${best.element.title}"` : ""}${best.element.app ? ` in ${best.element.app}` : ""}: ${Math.round(best.rect.w)}×${Math.round(best.rect.h)}`);
+      return { rect: normalizeRect(best.rect), element: best.element };
+    }
+    // Nothing fits the stroke; his box stands, with the app it is over when known.
+    const app = under.sort((a, b) => a.w * a.h - b.w * b.h)[0]?.app ?? el?.app;
+    return app ? { rect: bbox, element: { app } } : undefined;
   }
 
   /** Screenshot the region through the hands and fill the mark's screenshotPath in place; never throws. */
@@ -965,6 +1150,22 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.scheduleSnapshot();
   }
 
+  // ------------------------------------------------------- pause / reflexes
+  // Filled in by the reflex fan-out; stubs keep the contract compiling.
+
+  async pause(): Promise<void> {
+    log.info("pause (not implemented yet)");
+  }
+
+  async resume(): Promise<void> {
+    log.info("resume (not implemented yet)");
+  }
+
+  /** On-device partial/final transcript from the app's ear (the reflex path). */
+  ear(text: string, isFinal: boolean, segment: number, at: number): void {
+    log.debug(`ear ${isFinal ? "final" : "partial"} #${segment} @${at}: ${text.slice(0, 80)}`);
+  }
+
   /** Ask the host to restart this process on the current code (the app respawns on exit 75). */
   requestRestart(reason: string): void {
     log.info(`restart requested: ${reason}`);
@@ -992,7 +1193,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "unmute":
         return this.setMuted(false);
       case "stop":
-        return this.stopEverything();
+        return this.stopEverything("stop command");
       case "say-text":
         return this.sayText(cmd.text);
       case "set-settings":
@@ -1029,6 +1230,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         return this.clearMarks();
       case "daemon.restart":
         return this.requestRestart("restart command");
+      case "pause":
+        return this.pause();
+      case "resume":
+        return this.resume();
       case "request-permission":
         return this.requestPermission(cmd.which);
       case "open-console":
@@ -1079,7 +1284,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     if (this.muted) return this.setPhase("muted");
     const active = this.delegator?.active;
-    if (this.now() - this.lastOutputSpeechAt < 1200) return this.setPhase("speaking");
+    if (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated) return this.setPhase("speaking");
     if (active) {
       const acting = active.steps.some((s) => (s.kind === "tool" || s.kind === "screenshot") && this.now() - s.at < 4000);
       return this.setPhase(acting ? "acting" : "thinking");
@@ -1152,13 +1357,58 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
-    return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brainDetail };
+    return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brain?.detail ?? this.brainDetail };
   }
 }
 
 /** A stroke drawn right-to-left gives a negative size; the capture needs a positive box at least a point wide. */
 function normalizeRect(r: Rect): Rect {
   return { x: Math.min(r.x, r.x + r.w), y: Math.min(r.y, r.y + r.h), w: Math.max(1, Math.abs(r.w)), h: Math.max(1, Math.abs(r.h)) };
+}
+
+/** Where a stroke's mass is: the mean of its points. */
+function centroidOf(path: readonly Point[]): Point {
+  let x = 0;
+  let y = 0;
+  for (const p of path) {
+    x += p.x;
+    y += p.y;
+  }
+  return { x: x / path.length, y: y / path.length };
+}
+
+function contains(r: Rect, p: Point): boolean {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+/** The share of `inner`'s area that lies inside `outer`. */
+function coverage(inner: Rect, outer: Rect): number {
+  const area = inner.w * inner.h;
+  if (area <= 0) return 0;
+  const x0 = Math.max(inner.x, outer.x);
+  const y0 = Math.max(inner.y, outer.y);
+  const x1 = Math.min(inner.x + inner.w, outer.x + outer.w);
+  const y1 = Math.min(inner.y + inner.h, outer.y + outer.h);
+  if (x1 <= x0 || y1 <= y0) return 0;
+  return ((x1 - x0) * (y1 - y0)) / area;
+}
+
+/** A rounded frame for the blob to drag around what Kevin circled: four straight runs and four quarter arcs, clockwise from the top-left. */
+export function roundedRectPoints(r: Rect, radius = Math.min(12, r.w / 4, r.h / 4), arcSteps = 4): Point[] {
+  const rad = Math.max(0, radius);
+  const out: Point[] = [];
+  const arc = (cx: number, cy: number, from: number): void => {
+    for (let i = 0; i <= arcSteps; i++) {
+      const a = from + (i / arcSteps) * (Math.PI / 2);
+      out.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad });
+    }
+  };
+  // top-left corner → along the top → top-right → right side → bottom-right → bottom → bottom-left → left side (closed by the layer)
+  arc(r.x + rad, r.y + rad, Math.PI);
+  arc(r.x + r.w - rad, r.y + rad, -Math.PI / 2);
+  arc(r.x + r.w - rad, r.y + r.h - rad, 0);
+  arc(r.x + rad, r.y + r.h - rad, Math.PI / 2);
+  return out;
 }
 
 /** The echo for a mark that arrived without a stroke: its outline. */

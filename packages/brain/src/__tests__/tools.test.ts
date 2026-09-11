@@ -206,7 +206,8 @@ test("run_shell: anything non-destructive runs with secrets scrubbed, output is 
   assert.ok(m, resultText(bg.result));
   const pid = Number(m![1]);
   assert.ok(runner.jobs.pids().includes(pid));
-  await new Promise((r) => setTimeout(r, 300));
+  // A login shell under a loaded test run can take a moment to echo; wait for the line, up to 3 s.
+  for (let i = 0; i < 30 && !/started/.test(readFileSync(m![2]!, "utf8")); i++) await new Promise((r) => setTimeout(r, 100));
   assert.match(readFileSync(m![2]!, "utf8"), /started/);
   assert.equal(resultText((await runner.run("run_shell", { command: `kill ${pid}` })).result), "(no output)");
   await new Promise((r) => setTimeout(r, 200));

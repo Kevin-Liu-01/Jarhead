@@ -11,6 +11,10 @@ import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
 import type { ToolRunner } from "./runner.ts";
+import { CODEX_MCP_SERVER, codexMcpConfigArgs, toml } from "./codex-config.ts";
+import { CodexAppServer, type AppServerItem, type TurnResult, type UserInput } from "./codex-app-server.ts";
+
+export { CODEX_MCP_SERVER } from "./codex-config.ts";
 
 /**
  * The Codex brain: the Codex CLI (`codex exec`) on Kevin's ChatGPT login, with
@@ -21,25 +25,35 @@ import type { ToolRunner } from "./runner.ts";
  * after JARHEAD_CODEX_BIN and PATH. Auth is whatever ~/.codex/auth.json holds
  * (a ChatGPT login, or an API key from `codex login --with-api-key`).
  *
- * Each delegation is one `codex exec --json --ephemeral` run: the prompt goes in
- * on stdin, JSONL events come out, the run leaves no session files behind. Codex
- * runs in its read-only sandbox with the user config ignored — Kevin's
- * config.toml enables Codex's own computer-use, browser and REPL servers, which
- * would let it act on the Mac around Jarhead's policy — so the only way it can
- * act is through the `jarhead` MCP server (`mcp-bridge.ts`), whose calls land in
- * the same ToolRunner as every other brain: policy, ledger, screenshot archive,
- * confirmation handshake included. The bridge reaches the runner over the
- * daemon socket when the daemon is this process; otherwise (`jarhead live` /
- * `probe`, or another Jarhead on the default path) the brain serves a socket
- * of its own. Jarhead's secrets never enter Codex's environment.
+ * Two transports, one brain. The warm one is a resident `codex app-server`
+ * (`codex-app-server.ts`): started with the brain, one ephemeral thread that
+ * lives across delegations — so "do it again" means something and the MCP bridge
+ * is already up when a task arrives — each delegation one `turn/start`, a stop
+ * one `turn/interrupt`, and a fresh thread once the context grows past its
+ * rollover point (the last exchanges carried over as text). When the app-server
+ * cannot start or dies, each delegation is one `codex exec --json --ephemeral`
+ * run instead: the prompt on stdin, JSONL events on stdout, nothing left on
+ * disk. The app-server's start never sits on a task's path: start() waits a
+ * short patience window for it and reports "still starting" otherwise, a task
+ * that arrives before it is up runs on exec, and a failed start is retried in
+ * the background a minute later. `detail` says which transport is live and why.
  *
- * No persistent session: like the API brains, the last few request/answer pairs
- * ride along as text so a "yes" still knows what it is confirming.
+ * Either way Codex runs in its read-only sandbox with Kevin's own MCP servers off
+ * (`--ignore-user-config` for exec; per-server `enabled=false` plus
+ * `--disable apps` for the app-server, which has no such flag) — his config.toml
+ * enables Codex's own computer-use, browser and REPL servers, and the plugin
+ * runtime binds his ChatGPT connectors, which would let it act on the Mac and on
+ * his accounts around Jarhead's policy — so the only way it can act is through
+ * the `jarhead` MCP server (`mcp-bridge.ts`), whose calls land in the same
+ * ToolRunner as every other brain: policy, ledger, screenshot archive,
+ * confirmation handshake included. A call to any other MCP server fails the turn
+ * outright. The bridge reaches the runner over the daemon socket when the daemon
+ * is this process; otherwise (`jarhead live` / `probe`, or another Jarhead on the
+ * default path) the brain serves a socket of its own. Jarhead's secrets never
+ * enter Codex's environment.
  */
 
 const log = logger("brain.codex");
-
-export const CODEX_MCP_SERVER = "jarhead";
 
 // ----------------------------------------------------------------- finding it
 
@@ -220,11 +234,6 @@ export function codexEffort(effort: Effort): "low" | "medium" | "high" | "xhigh"
   return effort === "max" ? "xhigh" : effort;
 }
 
-/** A TOML basic string; JSON's escapes are a subset of TOML's. */
-function toml(value: string): string {
-  return JSON.stringify(value);
-}
-
 export interface CodexExecOptions {
   readonly cwd: string;
   readonly model?: string | undefined;
@@ -260,21 +269,7 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
     ...(o.images ?? []).flatMap((p) => ["-i", p]),
     ...(o.model ? ["-m", o.model] : []),
     ...(o.effort ? ["-c", `model_reasoning_effort=${toml(codexEffort(o.effort))}`] : []),
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.command=${toml(o.node)}`,
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.args=[${toml(o.tsxCli)}, ${toml(o.bridgePath)}]`,
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.env={JARHEAD_SOCKET=${toml(o.socketPath)}}`,
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.startup_timeout_sec=${o.startupTimeoutSec ?? 30}`,
-    // agent_wait may take ten minutes.
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.tool_timeout_sec=${o.toolTimeoutSec ?? 660}`,
-    // exec runs with approval policy "never"; without this every MCP call is refused
-    // ("MCP tool call requires approval, but approval policy is never").
-    "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.default_tools_approval_mode="approve"`,
+    ...codexMcpConfigArgs(o),
     "-C",
     o.cwd,
     "-",
@@ -316,6 +311,19 @@ export interface CodexBrainOptions {
   readonly tsxCli?: string | undefined;
   readonly bridgePath?: string | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
+  /**
+   * Which Codex to drive: `auto` (default) tries the resident app-server and falls
+   * back to `exec` per task when it cannot start; `app-server` / `exec` force one.
+   */
+  readonly transport?: "auto" | "app-server" | "exec" | undefined;
+  /** initialize + thread/start budget for the app-server (default 25 s). */
+  readonly appServerStartTimeoutMs?: number | undefined;
+  /** How long start() waits for the app-server before reporting ready on exec with the warm start continuing in the background (default 4 s). */
+  readonly appServerPatienceMs?: number | undefined;
+  /** After a failed start or a crash, the warm transport is tried again this much later (default 60 s). */
+  readonly appServerRetryMs?: number | undefined;
+  /** Test seam for the app-server process. */
+  readonly spawnImpl?: typeof spawn | undefined;
 }
 
 /** One `codex exec --json` event, as far as this brain reads it. */
@@ -366,6 +374,19 @@ function errorMessage(e: CodexItem["error"] | undefined, fallback: string): stri
   return fallback;
 }
 
+/** A turn on the resident app-server, as this brain tracks it. */
+interface WarmTurn {
+  readonly task: BrainTask;
+  readonly sink: BrainSink;
+  readonly started: number;
+  candidate: string | undefined;
+  steps: number;
+  /** Set when this brain asked for the interrupt itself (budget), so the result reads as failed, not cancelled. */
+  failed: string | undefined;
+  cancelled: boolean;
+  timer: NodeJS.Timeout | undefined;
+}
+
 export class CodexBrain implements Brain {
   readonly kind = "codex";
   private probe: CodexProbe | undefined;
@@ -373,18 +394,49 @@ export class CodexBrain implements Brain {
   private readyDetail = "not started";
   private started = false;
   private current: RunState | undefined;
+  private warm: WarmTurn | undefined;
   private history: Array<{ request: string; answer: string }> = [];
   private toolSocket: string | undefined;
   private privateServer: DaemonServer | undefined;
   private readonly model: string | undefined;
+  private appServer: CodexAppServer | undefined;
+  /** Which transport the next task takes. */
+  private transport: "app-server" | "exec" = "exec";
+  /** Why the app-server is not in use, for the detail line and the log. */
+  private appServerFailure: string | undefined;
+  private appServerRetryAt = 0;
+  /** The warm start in flight, if any: never awaited by a task, only by start()'s patience window. */
+  private appServerStarting: Promise<string> | undefined;
+  /** The detail line up to the transport fragment; `detail` completes it with the transport's current state. */
+  private baseDetail = "";
+  /** The next warm turn carries the recent exchanges as text (a fresh thread knows nothing). */
+  private carryHistory = false;
 
   constructor(private readonly opts: CodexBrainOptions) {
     this.probe = opts.probe;
     this.model = opts.model?.trim() || undefined;
   }
 
+  /** "app-server" (warm) or "exec" (per task): what the next delegation will use. */
+  get activeTransport(): "app-server" | "exec" {
+    return this.transport;
+  }
+
+  /** The one-line status as of now: the transport fragment follows the warm start as it lands, fails or falls. */
+  get detail(): string {
+    return this.ready && this.baseDetail ? `${this.baseDetail}; ${this.transportDetail()}` : this.readyDetail;
+  }
+
+  private transportDetail(): string {
+    if (this.appServer?.running && this.transport === "app-server") return `warm app-server (thread ${this.appServer.thread?.slice(0, 8) ?? "?"})`;
+    const transport = this.opts.transport ?? "auto";
+    if (transport === "exec") return "codex exec per task";
+    if (this.appServerStarting) return "codex exec per task until the app-server is up (still starting)";
+    return this.appServerFailure ? `codex exec per task (app-server: ${this.appServerFailure})` : "codex exec per task";
+  }
+
   async start(): Promise<{ ready: boolean; detail: string }> {
-    if (this.started) return { ready: this.ready, detail: this.readyDetail };
+    if (this.started) return { ready: this.ready, detail: this.detail };
     this.started = true;
     try {
       const probe = this.probe ?? (await probeCodex({ bin: this.opts.bin, codexHome: this.opts.codexHome, env: this.opts.env }));
@@ -402,15 +454,110 @@ export class CodexBrain implements Brain {
       mkdirSync(this.cwd(), { recursive: true });
       const socket = await this.ensureToolSocket();
       const model = this.model ?? probe.configModel;
+      // The warm transport gets a short patience window; past it the brain is ready
+      // on exec and the app-server keeps starting in the background (an explicit
+      // `transport: "app-server"` still waits for it, since there is no fallback).
+      const starting = this.startAppServer(probe);
+      const patience = this.opts.appServerPatienceMs ?? 4000;
+      const warm = (this.opts.transport ?? "auto") === "app-server" ? await starting : await Promise.race([starting, new Promise<string>((r) => setTimeout(() => r("codex exec per task until the app-server is up (still starting)"), patience).unref?.())]);
       this.ready = true;
-      log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}`);
-      this.readyDetail = `${probe.detail}; ${model ? `model ${model}` : "default model"}${this.model ? "" : model ? " (from ~/.codex/config.toml)" : ""}${this.opts.effort ? `, effort ${codexEffort(this.opts.effort)}` : ""}; tools over ${socket === this.opts.socketPath ? "the daemon socket" : "a private socket"}`;
+      this.baseDetail = `${probe.detail}; ${model ? `model ${model}` : "default model"}${this.model ? "" : model ? " (from ~/.codex/config.toml)" : ""}${this.opts.effort ? `, effort ${codexEffort(this.opts.effort)}` : ""}; tools over ${socket === this.opts.socketPath ? "the daemon socket" : "a private socket"}`;
+      this.readyDetail = `${this.baseDetail}; ${warm}`;
+      log.info(`ready; standing orders v${SYSTEM_PROMPT_VERSION}; transport ${this.transport}${this.appServerStarting ? " (app-server still starting)" : ""}`);
       return { ready: true, detail: this.readyDetail };
     } catch (e) {
       this.ready = false;
       this.readyDetail = (e as Error).message;
       return { ready: false, detail: this.readyDetail };
     }
+  }
+
+  /**
+   * The warm transport: spawn the app-server and open its thread. Never throws
+   * under `auto`; on any failure the brain runs `exec` per task and says so, and
+   * tries again after the retry window. Returns the detail fragment for the ready
+   * line. One start at a time: a second call while one is in flight joins it.
+   */
+  private startAppServer(probe: CodexProbe): Promise<string> {
+    if (this.appServerStarting) return this.appServerStarting;
+    const transport = this.opts.transport ?? "auto";
+    if (transport === "exec" || !probe.bin || !this.toolSocket) {
+      this.transport = "exec";
+      return Promise.resolve("codex exec per task");
+    }
+    const bin = probe.bin;
+    const base = this.opts.env ?? process.env;
+    const codexHome = this.opts.codexHome ?? codexHomeDir(base);
+    const server = new CodexAppServer({
+      bin: bin.path,
+      cwd: this.cwd(),
+      env: codexEnv(base, codexHome),
+      codexHome,
+      model: this.model ?? probe.configModel,
+      effort: this.opts.effort,
+      node: this.node(),
+      tsxCli: this.tsxCli(),
+      bridgePath: this.bridgePath(),
+      socketPath: this.toolSocket,
+      developerInstructions: `${brainSystemPrompt(this.opts.userName)}\n\n${codexAddendum(this.opts.userName)}`,
+      startTimeoutMs: this.opts.appServerStartTimeoutMs,
+      killGraceMs: this.opts.killGraceMs,
+      spawnImpl: this.opts.spawnImpl,
+    });
+    const t0 = Date.now();
+    const starting = (async (): Promise<string> => {
+      try {
+        const r = await server.start();
+        if (!this.started) {
+          // stop() ran while we were starting: nothing may stay warm.
+          await server.stop();
+          return "codex exec per task";
+        }
+        this.appServer = server;
+        this.transport = "app-server";
+        this.appServerFailure = undefined;
+        this.carryHistory = this.history.length > 0;
+        server.on("exit", (reason) => {
+          if (this.appServer !== server) return;
+          this.appServer = undefined;
+          this.transport = "exec";
+          this.appServerFailure = reason;
+          // Try the warm path again a minute later; until then exec carries the tasks.
+          this.appServerRetryAt = Date.now() + (this.opts.appServerRetryMs ?? 60_000);
+          log.warn(`falling back to codex exec per task: ${reason}`);
+        });
+        log.info(`warm app-server up after ${Date.now() - t0} ms (thread ${r.threadId.slice(0, 8)}, initialize ${r.initMs} ms, thread/start ${r.threadMs} ms)`);
+        return `warm app-server (thread ${r.threadId.slice(0, 8)}, initialize ${r.initMs} ms, thread/start ${r.threadMs} ms)`;
+      } catch (e) {
+        this.transport = "exec";
+        this.appServerFailure = (e as Error).message;
+        this.appServerRetryAt = Date.now() + (this.opts.appServerRetryMs ?? 60_000);
+        log.warn(`app-server unavailable after ${Date.now() - t0} ms (${this.appServerFailure}); codex exec per task`);
+        if (transport === "app-server") throw new Error(`codex app-server: ${this.appServerFailure}`);
+        return `codex exec per task (app-server: ${this.appServerFailure})`;
+      } finally {
+        this.appServerStarting = undefined;
+      }
+    })();
+    this.appServerStarting = starting;
+    return starting;
+  }
+
+  /**
+   * Before a task: the warm transport if it is up; else exec — now, without
+   * waiting. A warm start that is due (first time, or the retry window has passed)
+   * is kicked off in the background for the tasks that follow.
+   */
+  private ensureTransport(): "app-server" | "exec" {
+    if (this.appServer?.running) return "app-server";
+    const transport = this.opts.transport ?? "auto";
+    if (transport === "exec" || !this.probe || !this.started) return "exec";
+    if (!this.appServerStarting && Date.now() >= this.appServerRetryAt) {
+      const probe = this.probe;
+      log.info("warm app-server is not up; this task runs on exec while it starts");
+      this.startAppServer(probe).catch((e: Error) => log.warn(`app-server start failed: ${e.message}`));
+    }
+    return "exec";
   }
 
   private node(): string {
@@ -467,11 +614,167 @@ export class CodexBrain implements Brain {
     return parts.join("\n\n");
   }
 
-  handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
+  async handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
     const probe = this.probe;
-    if (!this.ready || !probe?.bin || !this.toolSocket) return Promise.resolve({ status: "failed", error: this.readyDetail });
-    if (this.current) return Promise.resolve({ status: "failed", error: "already handling a task" });
-    if (task.signal.aborted) return Promise.resolve({ status: "cancelled" });
+    if (!this.ready || !probe?.bin || !this.toolSocket) return { status: "failed", error: this.readyDetail };
+    if (this.current || this.warm) return { status: "failed", error: "already handling a task" };
+    if (task.signal.aborted) return { status: "cancelled" };
+    if (this.ensureTransport() === "app-server" && this.appServer) return this.handleWarm(task, sink, this.appServer);
+    return this.handleExec(task, sink, probe);
+  }
+
+  // ------------------------------------------------------------ warm turns
+
+  private async handleWarm(task: BrainTask, sink: BrainSink, server: CodexAppServer): Promise<BrainResult> {
+    const attached = existingAttachments(task);
+    // A thread that grew past its rollover point is replaced before this task; the
+    // recent exchanges ride along as text so a "yes" still knows what it confirms.
+    if (server.needsFreshThread()) {
+      try {
+        const id = await server.freshThread();
+        this.carryHistory = true;
+        log.info(`context rolled over to a fresh thread ${id.slice(0, 8)} (${server.tokenUsage?.totalTokens ?? "?"} tokens used)`);
+      } catch (e) {
+        log.warn(`could not start a fresh thread (${(e as Error).message}); staying on the old one`);
+      }
+    }
+    const parts: string[] = [];
+    if (this.carryHistory && this.history.length > 0) {
+      parts.push(["Earlier in this session:", ...this.history.flatMap((h) => [`${this.opts.userName ?? "Kevin"} said: "${h.request}"`, `You answered: ${h.answer}`])].join("\n"));
+    }
+    this.carryHistory = false;
+    parts.push(delegationPrompt(task, this.opts.userName, attached));
+    const input: UserInput[] = [{ type: "text", text: parts.join("\n\n"), text_elements: [] }, ...attached.map((a): UserInput => ({ type: "localImage", path: a.path, detail: "high" }))];
+
+    const warm: WarmTurn = { task, sink, started: Date.now(), candidate: undefined, steps: 0, failed: undefined, cancelled: false, timer: undefined };
+    this.warm = warm;
+    this.opts.runner.attach(sink, task);
+    const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
+    warm.timer = setTimeout(() => this.failWarm(warm, server, `I ran out of time after ${Math.round(maxWallMs / 1000)} seconds`), maxWallMs);
+    const onAbort = (): void => {
+      warm.cancelled = true;
+      void server.interrupt();
+    };
+    task.signal.addEventListener("abort", onAbort, { once: true });
+    let result: TurnResult;
+    try {
+      result = await server.turn(input, {
+        onItemStarted: (item) => this.onWarmItemStarted(warm, server, item),
+        onItemCompleted: (item) => this.onWarmItemCompleted(warm, item),
+        onWarning: (m) => log.debug(`codex warning: ${m}`),
+        onError: (m, willRetry) => {
+          if (willRetry) sink.step({ kind: "note", text: `codex: ${m.slice(0, 200)} (retrying)` });
+          else this.failWarm(warm, server, m);
+        },
+      });
+    } catch (e) {
+      result = { status: "failed", error: (e as Error).message, turnId: "" };
+    } finally {
+      task.signal.removeEventListener("abort", onAbort);
+      if (warm.timer) clearTimeout(warm.timer);
+      if (this.warm === warm) {
+        this.warm = undefined;
+        this.opts.runner.attach(undefined);
+      }
+    }
+    const ms = Date.now() - warm.started;
+    let out: BrainResult;
+    if (warm.cancelled || (result.status === "interrupted" && !warm.failed)) out = { status: "cancelled" };
+    else if (warm.failed) out = { status: "failed", error: warm.failed };
+    else if (result.status === "failed") out = { status: "failed", error: result.error ?? "the Codex turn failed" };
+    else {
+      const summary = warm.candidate || "done.";
+      this.remember(task.request, summary);
+      out = { status: "done", summary };
+    }
+    log.debug(`${out.status} in ${ms}ms after ${warm.steps} step(s) (app-server)`);
+    return out;
+  }
+
+  private failWarm(warm: WarmTurn, server: CodexAppServer, error: string): void {
+    if (warm.failed || warm.cancelled) return;
+    warm.failed = error;
+    void server.interrupt();
+  }
+
+  private onWarmItemStarted(warm: WarmTurn, server: CodexAppServer, item: AppServerItem): void {
+    const { sink } = warm;
+    switch (item.type) {
+      case "mcpToolCall": {
+        if (!this.countWarmStep(warm, server)) return;
+        const tool = item.tool ?? "?";
+        if (item.server === CODEX_MCP_SERVER) {
+          sink.thinking(progressLine(tool, item.arguments));
+          return;
+        }
+        // Every other MCP server is switched off in the argv; a call to one means Codex
+        // found a way around Jarhead's policy, and the turn ends there.
+        sink.step({ kind: "error", text: `codex tried to act around Jarhead through ${item.server ?? "?"}.${tool}; the turn was stopped` });
+        this.failWarm(warm, server, aroundJarhead(item.server, tool));
+        return;
+      }
+      case "commandExecution": {
+        if (!this.countWarmStep(warm, server)) return;
+        sink.thinking(`Codex is looking with ${(item.command ?? "").slice(0, 60) || "a command"}.`);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private countWarmStep(warm: WarmTurn, server: CodexAppServer): boolean {
+    const maxSteps = this.opts.maxSteps ?? 40;
+    if (++warm.steps > maxSteps) {
+      this.failWarm(warm, server, `I stopped after ${maxSteps} tool calls without finishing`);
+      return false;
+    }
+    return true;
+  }
+
+  private onWarmItemCompleted(warm: WarmTurn, item: AppServerItem): void {
+    const { sink } = warm;
+    switch (item.type) {
+      case "agentMessage": {
+        const text = (item.text ?? "").trim();
+        if (!text) return;
+        if (warm.candidate) sink.step({ kind: "note", text: warm.candidate.slice(0, 1000) });
+        warm.candidate = text;
+        // Before the first tool call this is the only speakable thing; see the exec path.
+        if (warm.steps === 0) sink.thinking(text.slice(0, 200));
+        return;
+      }
+      case "reasoning": {
+        const text = [...(item.summary ?? []), ...(item.content ?? [])].join(" ").trim();
+        if (text) sink.thinking(text.slice(0, 300));
+        return;
+      }
+      case "mcpToolCall": {
+        const tool = item.tool ?? "?";
+        if (item.status === "failed" || item.error) {
+          const why = errorMessage(item.error, "failed");
+          sink.step({ kind: "error", text: `${tool}: ${why}` });
+          if (/approval/i.test(why)) log.warn(`${tool}: ${why}`);
+        } else if (item.server !== CODEX_MCP_SERVER) {
+          sink.step({ kind: "note", text: `codex finished ${item.server ?? "?"}.${tool}` });
+        }
+        return;
+      }
+      case "commandExecution": {
+        const out = (item.aggregatedOutput ?? "").trim();
+        sink.step({ kind: "note", text: `codex ran ${(item.command ?? "").slice(0, 120)}${item.exitCode !== undefined && item.exitCode !== null ? ` (exit ${item.exitCode})` : ""}${out ? `: ${out.slice(0, 300)}` : ""}` });
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  // -------------------------------------------------------------- exec runs
+
+  private handleExec(task: BrainTask, sink: BrainSink, probe: CodexProbe): Promise<BrainResult> {
+    const bin = probe.bin;
+    if (!bin || !this.toolSocket) return Promise.resolve({ status: "failed", error: this.readyDetail });
     const attached = existingAttachments(task);
     const args = codexExecArgs({
       cwd: this.cwd(),
@@ -489,7 +792,7 @@ export class CodexBrain implements Brain {
     return new Promise<BrainResult>((resolve) => {
       let child: ChildProcess;
       try {
-        child = spawn(probe.bin!.path, args, { cwd: this.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
+        child = spawn(bin.path, args, { cwd: this.cwd(), env, stdio: ["pipe", "pipe", "pipe"] });
       } catch (e) {
         this.opts.runner.attach(undefined);
         resolve({ status: "failed", error: `could not start Codex: ${(e as Error).message}` });
@@ -583,8 +886,13 @@ export class CodexBrain implements Brain {
         const tool = item.tool ?? "?";
         // Our own tools report through the runner (the bridge lands there); this is the
         // "about to" line the in-process brains emit before each call.
-        if (item.server === CODEX_MCP_SERVER) sink.thinking(progressLine(tool, item.arguments));
-        else sink.step({ kind: "note", text: `codex is calling ${item.server ?? "?"}.${tool}` });
+        if (item.server === CODEX_MCP_SERVER) {
+          sink.thinking(progressLine(tool, item.arguments));
+          return;
+        }
+        // exec runs with --ignore-user-config, so no other server should exist; one that does is a way around the policy.
+        sink.step({ kind: "error", text: `codex tried to act around Jarhead through ${item.server ?? "?"}.${tool}; the run was stopped` });
+        this.fail(state, aroundJarhead(item.server, tool));
         return;
       }
       case "command_execution": {
@@ -704,6 +1012,11 @@ export class CodexBrain implements Brain {
   }
 
   async cancel(): Promise<void> {
+    const warm = this.warm;
+    if (warm) {
+      warm.cancelled = true;
+      await this.appServer?.interrupt();
+    }
     const cur = this.current;
     if (!cur) return;
     cur.cancelled = true;
@@ -712,15 +1025,26 @@ export class CodexBrain implements Brain {
 
   async stop(): Promise<void> {
     await this.cancel();
+    this.started = false; // a later start() probes again; a warm start still in flight sees this and stops its server
+    const app = this.appServer;
+    this.appServer = undefined;
+    await app?.stop();
     const server = this.privateServer;
     this.privateServer = undefined;
     this.toolSocket = undefined;
     await server?.close();
     this.ready = false;
     this.readyDetail = "stopped";
-    this.started = false; // a later start() probes again
+    this.baseDetail = "";
+    this.transport = "exec";
+    this.appServerRetryAt = 0;
     this.history = [];
   }
+}
+
+/** The error a turn ends with when Codex calls an MCP server other than Jarhead's. */
+function aroundJarhead(server: string | undefined, tool: string): string {
+  return `Codex tried to act around Jarhead (an MCP call to ${server ?? "?"}.${tool}); the turn was stopped`;
 }
 
 /** The circled regions Codex gets with `-i`; a file already gone is left out rather than failing the run, and the prompt names only these. */
@@ -765,6 +1089,7 @@ function runnerOnlyEngine(runner: ToolRunner, stateDir: string): EngineLike {
     on: () => undefined,
     snapshot: () => ({ phase: "asleep", note: "codex tool socket" }),
     command: async () => undefined,
+    ear: () => undefined,
     feedMic: () => undefined,
     reportInputLevel: () => undefined,
     setMicrophonePermission: () => undefined,

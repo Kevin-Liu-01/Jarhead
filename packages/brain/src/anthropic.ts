@@ -8,6 +8,7 @@ import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { attachmentsPreamble, attachmentsRecap, loadAttachments } from "./attachments.ts";
+import { runToolBatch } from "./batch.ts";
 
 /**
  * The Anthropic brain: the Messages API with ANTHROPIC_API_KEY.
@@ -207,8 +208,9 @@ export class AnthropicBrain implements Brain {
       max_tokens: this.opts.maxTokens ?? 16000,
       system: brainSystemPrompt(this.opts.userName),
       tools: this.tools,
-      // Desktop actions depend on each other (click, then look); one call per turn.
-      tool_choice: { type: "auto", disable_parallel_tool_use: true },
+      // Several calls in one turn are allowed: the runner runs the ones that only look
+      // together and the ones that act in order (batch.ts), so a click never races a screenshot.
+      tool_choice: { type: "auto", disable_parallel_tool_use: false },
       ...(this.reasoning.thinking ? { thinking: this.reasoning.thinking } : {}),
       ...(this.reasoning.effort ? { output_config: { effort: this.reasoning.effort } } : {}),
       messages,
@@ -284,14 +286,13 @@ export class AnthropicBrain implements Brain {
 
       if (toolUses.length > 0) {
         if (text) sink.step({ kind: "note", text: text.slice(0, 1000) });
-        const results: Anthropic.ToolResultBlockParam[] = [];
-        for (const use of toolUses) {
-          if (signal.aborted) return { status: "cancelled" };
-          if (++steps > maxSteps) return { status: "failed", error: `I stopped after ${maxSteps} tool calls without finishing` };
-          sink.thinking(progressLine(use.name, use.input));
-          const outcome = await this.opts.runner.run(use.name, use.input);
-          results.push(toolResultBlock(use.id, outcome.result));
-        }
+        if (signal.aborted) return { status: "cancelled" };
+        steps += toolUses.length;
+        if (steps > maxSteps) return { status: "failed", error: `I stopped after ${maxSteps} tool calls without finishing` };
+        // Look-only calls run together, anything that acts runs in order (batch.ts).
+        const outcomes = await runToolBatch(this.opts.runner, toolUses.map((u) => ({ name: u.name, input: u.input })), { signal, before: (c) => sink.thinking(progressLine(c.name, c.input)) });
+        if (signal.aborted) return { status: "cancelled" };
+        const results: Anthropic.ToolResultBlockParam[] = toolUses.map((use, i) => toolResultBlock(use.id, outcomes[i]?.result ?? { kind: "error", message: "cancelled before it ran" }));
         // All results of a turn go back in one user message.
         messages.push({ role: "user", content: results });
         continue;

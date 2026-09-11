@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import QuartzCore
+import SwiftUI
 
 // Throwaway preview harness: compiled only by Scripts/orb-preview.sh (which passes
 // -D JARHEAD_ORB_PREVIEW). Cycles the phases with fake levels, fires overlay
@@ -96,6 +97,25 @@ import QuartzCore
 //                          then each wake gate state while asleep, then a poke, settles the
 //                          field for each and renders them side by side, labelled, to
 //                          <ORB_SHOT_DIR>/<prefix>eyes.png (in-process; needs ORB_SHOT_DIR)
+//   ORB_TRACE="x,y;x,y;…"  an orb.trace (CG points) on state.overlayCommands at ORB_TRACE_AT s
+//                          (default 1.2); ORB_TRACE_CLOSED=1 closes the loop, ORB_TRACE_LABEL (default
+//                          "Deploy button", "" for none) and ORB_TRACE_TONE=accent|ok|warn|mark
+//                          (default accent) dress it. Prints the flight phases ("tracing" is the
+//                          drawing), and every 0.25 s while drawing: the pen's progress, where the
+//                          pen and the field's tip are and how far apart (the glue), the cursor
+//                          form's depth and the eyes; then the seal, the hold and the way home —
+//                          with how many of the drawing's frames (sampled 60×/s) had no eyes. With
+//                          ORB_SHOT_DIR: trace-cursor (mid-line: the pen form and the growing line)
+//                          and trace-done (the whole line, the pen still on it), framed to take in
+//                          the stroke, the perch and the label pill. The stroke itself is the
+//                          overlay's: in-process shots paint the overlay windows too
+//   ORB_STOP_AT=s          press the capsule's Stop at that time (OrbPanelController.stopPressed):
+//                          the fake sender prints the stop command, the overlay is cleared, the
+//                          "Stopped" toast is the pill; prints what the flight was and what it is
+//                          0.05 s later; with ORB_SHOT_DIR shoots stop.png 0.45 s after
+//   ORB_CLEAR_AT=s         send the overlay's `clear` (the brain's show_clear) at that time: a line
+//                          being drawn comes down and the pen goes home quietly — no Stop, no pill;
+//                          a plain fly (ORB_FLY) is left alone. Prints the flight before and after
 
 @main
 struct OrbPreviewMain {
@@ -126,6 +146,18 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var flyShotsOwed: Set<String> = []
     var lastFlightPhase = "none"
     var flightPhaseSince = 0.0
+    // Traces: the stroke sent, its label, which trace shots are still owed, the last
+    // progress line, and the eye count over the drawing's frames (60×/s).
+    var tracePoints: [CGPoint] = []
+    var traceLabel: String?
+    var traceShotsOwed: Set<String> = []
+    var lastTraceLog = 0.0
+    var traceWasDone = false
+    var traceFrames = 0
+    var traceEyelessFrames = 0
+    /// Every publish on state.liveStrokes (the blob's and mark mode's), for the trace's publish rate.
+    var strokePublishes = 0
+    var strokeSubscription: AnyCancellable?
 
     var shotDir: String?
     var shotPrefix = "preview-blob-"
@@ -341,6 +373,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         timers.append(Timer.scheduledTimer(withTimeInterval: 1 / 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.watch() }
         })
+        strokeSubscription = state.liveStrokes.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.strokePublishes += 1 }
+        }
 
         if let spec = env["ORB_FLING"] {
             let p = spec.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -576,6 +611,77 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     print(self.stamp, "orb.home (phase was \(self.orb.previewFlightPhase))")
                     fflush(stdout)
                     self.state.overlayCommands.send(.orbHome)
+                }
+            }
+        }
+        if let spec = env["ORB_TRACE"] {
+            tracePoints = spec.split(separator: ";").compactMap { pair -> CGPoint? in
+                let p = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                return p.count == 2 ? CGPoint(x: p[0], y: p[1]) : nil
+            }
+            let at = Double(env["ORB_TRACE_AT"] ?? "") ?? 1.2
+            let closed = env["ORB_TRACE_CLOSED"] == "1"
+            let labelRaw = env["ORB_TRACE_LABEL"] ?? "Deploy button"
+            let label: String? = labelRaw.isEmpty ? nil : labelRaw
+            traceLabel = label
+            let tone = OverlayTone(rawValue: env["ORB_TRACE_TONE"] ?? "accent") ?? .accent
+            if shotDir != nil { traceShotsOwed = ["cursor", "done"] }
+            if tracePoints.count >= 2 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                    guard let self else { return }
+                    let f = self.orb.previewFrameCG
+                    print(self.stamp, String(format: "orb.trace -> %d points%@ from CG %.0f,%.0f (%@, tone %@, label %@)", self.tracePoints.count,
+                                             closed ? " (closed)" : "", f.midX, f.midY, self.tracePoints.map { "\(Int($0.x)),\(Int($0.y))" }.joined(separator: " "),
+                                             tone.rawValue, label ?? "none"))
+                    fflush(stdout)
+                    self.state.overlayCommands.send(.orbTrace(points: self.tracePoints.map { Point2(x: $0.x, y: $0.y) }, closed: closed, label: label,
+                                                             ttlMs: nil, tone: tone, reason: "preview"))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self else { return }
+                        print(String(format: "  -> flight %@, tracing %d, cursor %.2f", self.orb.previewFlightPhase, self.orb.previewIsTracing ? 1 : 0, self.orb.previewCursorK))
+                        fflush(stdout)
+                    }
+                }
+            } else {
+                print("ORB_TRACE: could not parse \(spec); want x,y;x,y;…")
+            }
+        }
+        if let at = Double(env["ORB_CLEAR_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let before = self.orb.previewFlightPhase
+                let progress = self.orb.previewTraceProgress
+                print(self.stamp, String(format: "overlay clear (flight was %@, trace at %.0f/%.0f)", before, progress.s, progress.length))
+                fflush(stdout)
+                self.state.overlayCommands.send(.clear)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    guard let self else { return }
+                    let layer = self.overlay.windows.map { "\($0.model.strokes.count)" }.joined(separator: ", ")
+                    print(self.stamp, String(format: "  -> flight %@, tracing %d, cursor %.2f, pill %@, overlay strokes [%@]", self.orb.previewFlightPhase,
+                                             self.orb.previewIsTracing ? 1 : 0, self.orb.previewCursorK, self.state.toasts.last?.text ?? "none", layer))
+                    fflush(stdout)
+                }
+            }
+        }
+        if let at = Double(env["ORB_STOP_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let before = self.orb.previewFlightPhase
+                let progress = self.orb.previewTraceProgress
+                print(self.stamp, String(format: "stop pressed (flight was %@, trace at %.0f/%.0f)", before, progress.s, progress.length))
+                fflush(stdout)
+                self.orb.previewStop()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                    guard let self else { return }
+                    print(self.stamp, String(format: "  -> flight %@, tracing %d, cursor %.2f, pill %@, eyes [%@]", self.orb.previewFlightPhase,
+                                             self.orb.previewIsTracing ? 1 : 0, self.orb.previewCursorK, self.state.toasts.last?.text ?? "none", self.orb.previewEyes))
+                    fflush(stdout)
+                }
+                if let dir = self.shotDir {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                        guard let self else { return }
+                        self.shoot("\(dir)/\(self.shotPrefix)stop.png", note: "0.45 s after Stop, flight \(self.orb.previewFlightPhase)", extra: self.traceRegion)
+                    }
                 }
             }
         }
@@ -868,8 +974,10 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
         wasMoving = moving
         if !stickPhase.isEmpty { watchStick(moving: moving || orb.previewIsDragging, now: now) }
+        if !tracePoints.isEmpty { watchTrace(phase: phase, now: now) }
 
         guard let dir = shotDir else { return }
+        if !traceShotsOwed.isEmpty, traceShot(phase: phase, now: now, dir: dir) { return }
         if !flyShotsOwed.isEmpty, flyShot(phase: phase, now: now, dir: dir) { return }
         if moving, squishShots < 4, orb.previewMaxPress >= shotPress, now - lastShotAt > 0.5 {
             squishShots += 1
@@ -889,6 +997,109 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             phaseShotTaken = true
             shoot("\(dir)/\(shotPrefix)phase-\(state.snapshot.phase.rawValue).png", note: state.snapshot.phase.rawValue)
         }
+    }
+
+    /// ORB_TRACE: the drawing, every 0.25 s — the pen's progress along the stroke,
+    /// where the pen and the field's tip are and how far apart they sit (the glue
+    /// between the line and the blob's point), the cursor form's depth, the eyes —
+    /// and the moment the line is whole.
+    private func watchTrace(phase: String, now: Double) {
+        guard phase == "tracing" else { return }
+        let p = orb.previewTraceProgress
+        let done = p.length > 0 && p.s >= p.length
+        if done, !traceWasDone {
+            traceWasDone = true
+            let tip = orb.previewTipCG
+            print(stamp, String(format: "trace: sealed %.0f pt, pen at the end, tip CG %.0f,%.0f, cursor %.2f — holding; eyes missing in %d of %d drawing frames; %d live-stroke publishes so far",
+                                p.length, tip.x, tip.y, orb.previewCursorK, traceEyelessFrames, traceFrames, strokePublishes))
+            fflush(stdout)
+            return
+        }
+        if !done {
+            // Every watch tick (60/s) while the line grows: the face must never blink out.
+            traceFrames += 1
+            if orb.previewEyes.isEmpty {
+                traceEyelessFrames += 1
+                if traceEyelessFrames == 1 {
+                    print(stamp, String(format: "trace: no eyes this frame (%.0f%% along, speed %.0f); %@; the body:\n%@", p.length > 0 ? p.s / p.length * 100 : 0,
+                                        orb.previewBodySpeed, orb.previewEyeFitNote, orb.previewCellsArt))
+                    fflush(stdout)
+                }
+            }
+        }
+        guard !done, now - lastTraceLog > 0.25 else { return }
+        lastTraceLog = now
+        let tip = orb.previewTipCG
+        let pen = orb.previewPenCG ?? tip
+        // What the overlay holds of the line, per window: strokes (points of the live
+        // one) — and how often its canvases painted and the line was published since
+        // the last line (per second): with the layer's clock paused for a line being
+        // drawn, the paints should track the publishes, not run ahead of them.
+        let layer = overlay.windows.map { w in "\(w.model.strokes.count) (\(w.model.strokes.first(where: { !$0.done })?.points.count ?? 0) pts)" }.joined(separator: ", ")
+        let paints = OverlayCanvasView.paintCount - lastPaintCount
+        let publishes = strokePublishes - lastPublishCount
+        lastPaintCount = OverlayCanvasView.paintCount
+        lastPublishCount = strokePublishes
+        print(stamp, String(format: "trace: %.0f/%.0f pt (%.0f%%) pen CG %.0f,%.0f tip CG %.0f,%.0f glue %.1f pt speed %.0f cursor %.2f stretch %.2f overlay [%@] paints %.0f/s publishes %.0f/s eyes [%@]",
+                            p.s, p.length, p.length > 0 ? p.s / p.length * 100 : 0, pen.x, pen.y, tip.x, tip.y, hypot(pen.x - tip.x, pen.y - tip.y),
+                            orb.previewBodySpeed, orb.previewCursorK, orb.previewStretch, layer, Double(paints) * 4, Double(publishes) * 4, orb.previewEyes))
+        fflush(stdout)
+    }
+    private var lastPaintCount = 0
+    private var lastPublishCount = 0
+
+    /// The stroke's box plus the perch — and the label pill, which rides off the pen's
+    /// upper right while the line grows (OverlayPainter.liveStrokeLabel) and sits above
+    /// the box's top-left once sealed — for framing the trace shots.
+    private var traceRegion: CGRect? {
+        var r: CGRect? = nil
+        func include(_ x: CGRect) { r = r.map { $0.union(x) } ?? x }
+        var box: CGRect?
+        if let b = orb.previewTraceBounds { box = b }
+        else if let first = tracePoints.first {
+            var b = CGRect(origin: first, size: .zero)
+            for p in tracePoints { b = b.union(CGRect(origin: p, size: .zero)) }
+            box = b
+        }
+        if let box { include(box.insetBy(dx: -30, dy: -30)) }
+        if traceLabel != nil {
+            // Wide enough for a 40-character label at 11 pt.
+            let pillW: CGFloat = 320, pillH: CGFloat = 60
+            if let pen = orb.previewPenCG {
+                include(CGRect(x: pen.x + 18, y: pen.y - 14 - pillH, width: pillW, height: pillH + 14))
+            } else if let box {
+                include(CGRect(x: box.minX, y: box.minY - 10 - pillH, width: pillW, height: pillH + 10))
+            }
+        }
+        if let perch = orb.previewPerchCG {
+            let s = OrbPanelController.collapsedSize
+            include(CGRect(x: perch.x - s.width / 2, y: perch.y - s.height / 2, width: s.width, height: s.height))
+        }
+        return r
+    }
+
+    /// The two trace shots, each once: cursor when the pen is 35–70 % along the line
+    /// (the form is complete, the line half drawn), done once the line is whole and the
+    /// pen still on it. Returns true when a shot was taken this tick.
+    private func traceShot(phase: String, now: Double, dir: String) -> Bool {
+        guard phase == "tracing" else { return false }
+        let p = orb.previewTraceProgress
+        guard p.length > 0 else { return false }
+        let k = p.s / p.length
+        let name: String
+        if traceShotsOwed.contains("cursor"), k >= 0.35, k <= 0.7 {
+            name = "cursor"
+        } else if traceShotsOwed.contains("done"), p.s >= p.length {
+            name = "done"
+        } else {
+            return false
+        }
+        traceShotsOwed.remove(name)
+        lastShotAt = now
+        let tip = orb.previewTipCG
+        shoot("\(dir)/\(shotPrefix)trace-\(name).png",
+              note: String(format: "trace %@, %.0f%% drawn, cursor %.2f, tip CG %.0f,%.0f", name, k * 100, orb.previewCursorK, tip.x, tip.y), extra: traceRegion)
+        return true
     }
 
     /// The three fly shots, each once: outbound while it is really moving with a ghost
@@ -1037,6 +1248,28 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             cg.move(to: CGPoint(x: hx - 6, y: hy)); cg.addLine(to: CGPoint(x: hx + 6, y: hy)); cg.strokePath()
             cg.move(to: CGPoint(x: hx, y: hy - 6)); cg.addLine(to: CGPoint(x: hx, y: hy + 6)); cg.strokePath()
             cg.strokeEllipse(in: CGRect(x: hx - 3.5, y: hy - 3.5, width: 7, height: 7))
+        }
+        // The overlay's layer — the line being drawn, the shapes — over everything,
+        // as on screen (the overlay windows sit above the orb's panel), painted the
+        // way the live windows paint it (see OverlayPreviewDemo.shoot).
+        if let overlay {
+            let now = Date()
+            for win in overlay.windows where win.cgFrame.intersects(f) {
+                let sub = f.intersection(win.cgFrame)
+                guard sub.width >= 1, sub.height >= 1 else { continue }
+                let origin = win.local(sub.origin)
+                let canvas = Canvas(opaque: false, rendersAsynchronously: false) { ctx, _ in
+                    ctx.translateBy(x: -origin.x, y: -origin.y)
+                    OverlayCanvasView.paint(win.model, now: now, topInset: win.topInset, size: win.cgFrame.size, in: ctx)
+                }
+                .frame(width: sub.width, height: sub.height)
+                let renderer = ImageRenderer(content: canvas)
+                renderer.scale = scale
+                renderer.isOpaque = false
+                if let image = renderer.cgImage {
+                    cg.draw(image, in: CGRect(x: sub.minX - f.minX, y: f.maxY - sub.maxY, width: sub.width, height: sub.height))
+                }
+            }
         }
         guard let png = rep.representation(using: .png, properties: [:]) else { print("shot failed: no PNG for", path); return }
         do {

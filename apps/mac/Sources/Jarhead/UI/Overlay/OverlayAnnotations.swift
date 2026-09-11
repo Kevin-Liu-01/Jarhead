@@ -16,6 +16,13 @@ import SwiftUI
 // exactly one of them (`Annotation.showsLabel`, decided in OverlayManager.spread from
 // `OverlayPainter.label(for:)`), so a pill is never clamped into view on a display
 // the shape is not on.
+//
+// Live strokes (`LiveStrokeItem`) are the third thing here: a line still being drawn
+// — Kevin's in mark mode, the blob's on a trace — arrives on `AppState.liveStrokes`
+// as the same id with more points each time and is updated in place, so it grows
+// from under the pen with no draw-on; `done` seals it and it lives its ttl, then
+// fades like a shape. Its label rides the pen while it draws and settles at the
+// top-left of the line's box when done. One code path draws both hands' lines.
 
 enum AnnotationKind {
     case point(CGPoint, label: String?)
@@ -44,17 +51,32 @@ struct Annotation: Identifiable {
     let showsLabel: Bool
 }
 
+/// A line being drawn live on this window (local points): whose tone, its label,
+/// and — once `done` — when it was sealed and how long it stays before fading.
+struct LiveStrokeItem: Identifiable {
+    let id: String
+    var points: [CGPoint]
+    var tone: OverlayTone
+    var label: String?
+    var done = false
+    var doneAt: Date?
+    /// Seconds it stays after `doneAt`; the last 0.3 s fade.
+    var ttl: TimeInterval = 0
+    /// Whether this window draws the label (the one whose display holds its anchor).
+    var showsLabel = true
+}
+
 @MainActor
 final class OverlayModel: ObservableObject {
     @Published private(set) var items: [Annotation] = []
+    /// Lines being drawn, in arrival order; sealed ones stay their ttl (see `LiveStrokeItem`).
+    @Published private(set) var strokes: [LiveStrokeItem] = []
 
     // Mark mode, per window: a faint accent wash and an accent frame while it is on,
-    // the hint pill on the display under the cursor, and the stroke as Kevin drags it.
+    // and the hint pill on the display under the cursor. Kevin's stroke itself comes
+    // through `strokes`, like the blob's.
     @Published var markMode = false
     @Published var markHint = false
-    /// The stroke in progress, local points (every window gets the whole stroke, so a
-    /// drag that crosses onto the other display stays visible); mark tone, no draw-on.
-    @Published var liveStroke: [CGPoint] = []
 
     private var pruneTimer: Timer?
 
@@ -63,8 +85,38 @@ final class OverlayModel: ObservableObject {
         schedulePrune()
     }
 
+    func hasStroke(_ id: String) -> Bool { strokes.contains { $0.id == id } }
+
+    /// A live stroke's latest state: updated in place by id (the points only ever
+    /// grow), added when new. Sealing it starts its clock. One write to `strokes` per
+    /// update — the item is built first — so the canvas is asked to repaint once, not
+    /// once per field.
+    func upsertStroke(id: String, points: [CGPoint], tone: OverlayTone, label: String?, done: Bool, ttl: TimeInterval, showsLabel: Bool) {
+        if let i = strokes.firstIndex(where: { $0.id == id }) {
+            var item = strokes[i]
+            item.points = points
+            item.tone = tone
+            item.label = label
+            item.showsLabel = showsLabel
+            if done {
+                if !item.done { item.doneAt = Date() }
+                item.done = true
+                item.ttl = ttl
+            }
+            strokes[i] = item
+        } else {
+            strokes.append(LiveStrokeItem(id: id, points: points, tone: tone, label: label, done: done, doneAt: done ? Date() : nil, ttl: ttl, showsLabel: showsLabel))
+        }
+        if done { schedulePrune() }
+    }
+
+    func removeStroke(id: String) {
+        strokes.removeAll { $0.id == id }
+    }
+
     func clear() {
         items.removeAll()
+        strokes.removeAll()
         pruneTimer?.invalidate()
         pruneTimer = nil
     }
@@ -76,7 +128,8 @@ final class OverlayModel: ObservableObject {
                 guard let self else { return }
                 let now = Date()
                 self.items.removeAll { now.timeIntervalSince($0.createdAt) >= $0.ttl }
-                if self.items.isEmpty {
+                self.strokes.removeAll { s in s.done && s.doneAt.map { now.timeIntervalSince($0) >= s.ttl } ?? false }
+                if self.items.isEmpty, !self.strokes.contains(where: \.done) {
                     self.pruneTimer?.invalidate()
                     self.pruneTimer = nil
                 }
@@ -91,7 +144,13 @@ struct OverlayCanvasView: View {
     var topInset: CGFloat = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: model.items.isEmpty && !model.markMode)) { timeline in
+        // The clock runs only while something on the layer moves on its own: a shape
+        // drawing itself on or fading, a sealed stroke fading, mark mode's frame. A
+        // line still being drawn has no motion of its own — every change to it arrives
+        // as a publish, which repaints the canvas by itself — so the clock stays
+        // paused for it and the display is painted once per publish, not once per
+        // publish and 30 more times a second besides.
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: model.items.isEmpty && !model.markMode && !model.strokes.contains(where: \.done))) { timeline in
             Canvas(opaque: false, rendersAsynchronously: false) { ctx, size in
                 OverlayCanvasView.paint(model, now: timeline.date, topInset: topInset, size: size, in: ctx)
             }
@@ -100,10 +159,18 @@ struct OverlayCanvasView: View {
         .accessibilityHidden(true)
     }
 
+    #if JARHEAD_ORB_PREVIEW
+    /// Every paint of every overlay window, for the harness's paint-rate check.
+    nonisolated(unsafe) static var paintCount = 0
+    #endif
+
     /// One frame of the layer at `now`. The live view paints this every tick; the
     /// preview harness paints it offscreen (ImageRenderer) when it cannot screenshot.
     @MainActor
     static func paint(_ model: OverlayModel, now: Date, topInset: CGFloat, size: CGSize, in ctx: GraphicsContext) {
+        #if JARHEAD_ORB_PREVIEW
+        paintCount += 1
+        #endif
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if model.markMode {
             OverlayPainter.drawMarkModeFrame(size, in: ctx)
@@ -113,8 +180,8 @@ struct OverlayCanvasView: View {
             let fade = min(1, max(0, (a.ttl - age) / 0.3))
             OverlayPainter.draw(a, age: age, fade: fade, reducedMotion: reduced, bounds: size, in: ctx)
         }
-        if model.liveStroke.count >= 1 {
-            OverlayPainter.drawLiveStroke(model.liveStroke, in: ctx)
+        for s in model.strokes {
+            OverlayPainter.drawLiveStroke(s, now: now, bounds: size, in: ctx)
         }
         if model.markMode, model.markHint {
             OverlayPainter.drawLabel("Circle something for Jarhead · Esc to cancel",
@@ -462,19 +529,44 @@ enum OverlayPainter {
         drawShapeLabel(label, tone: tone, progress: p, bounds: bounds, in: ctx)
     }
 
-    // MARK: - Mark mode
+    // MARK: - Live strokes (mark mode's, the blob's)
 
-    /// Mark mode's stroke as Kevin drags it: the same treatment as a finished stroke
-    /// (glow, ink rim, mark tone — the rim is what keeps the orange legible on a light
-    /// window) but with no draw-on, so it feels like ink following the cursor.
-    static func drawLiveStroke(_ pts: [CGPoint], in ctx: GraphicsContext) {
-        guard let first = pts.first else { return }
-        if pts.count == 1 {
-            ctx.fill(Path(ellipseIn: CGRect(x: first.x - 2.5, y: first.y - 2.5, width: 5, height: 5)), with: .color(mark))
-            return
+    /// A line as it is drawn: the same treatment as a finished stroke (glow, ink rim,
+    /// round caps, its tone — the rim is what keeps a warm line legible on a light
+    /// window) with no draw-on, so it feels like ink following the pen. Sealed, it
+    /// fades over its last 0.3 s. The label rides just ahead of the pen while the
+    /// line grows and settles above the line's box (below when there is no room).
+    static func drawLiveStroke(_ s: LiveStrokeItem, now: Date, bounds: CGSize, in ctx: GraphicsContext) {
+        guard let first = s.points.first else { return }
+        var g = ctx
+        if s.done, let at = s.doneAt {
+            g.opacity *= min(1, max(0, (s.ttl - now.timeIntervalSince(at)) / 0.3))
         }
-        strokeTone(smoothed(pts), tone: .mark, width: 2.5, in: ctx)
+        let c = color(s.tone)
+        if s.points.count == 1 {
+            g.fill(Path(ellipseIn: CGRect(x: first.x - 2.5, y: first.y - 2.5, width: 5, height: 5)), with: .color(c))
+        } else {
+            strokeTone(smoothed(s.points), tone: s.tone, width: 2.5, in: g)
+        }
+        if s.showsLabel, let text = s.label, !text.isEmpty {
+            drawLabel(liveStrokeLabel(points: s.points, done: s.done, text: text), dot: c, bounds: bounds, in: g)
+        }
     }
+
+    /// Where a live stroke's pill hangs: off the pen's upper right while the line is
+    /// drawn (the body that holds the pen trails behind it), then at the top-left of
+    /// the line's box once sealed. Works in any one coordinate space — the manager
+    /// asks in global points to pick the display that draws it, the painter in local.
+    static func liveStrokeLabel(points: [CGPoint], done: Bool, text: String) -> LabelSpec {
+        let box = OverlayGeometry.bounds(points)
+        if !done, let pen = points.last {
+            return LabelSpec(text: text, point: CGPoint(x: pen.x + 18, y: pen.y - 14), edge: .bottomLeading)
+        }
+        let above = box.minY > 44
+        return LabelSpec(text: text, point: CGPoint(x: box.minX, y: above ? box.minY - 10 : box.maxY + 10), edge: above ? .bottomLeading : .topLeading)
+    }
+
+    // MARK: - Mark mode
 
     /// While mark mode is on: a faint accent wash over the display and a 2pt accent
     /// frame at its edge. The wash alone is lost over a light window and the crosshair
@@ -487,8 +579,13 @@ enum OverlayPainter {
 
     // MARK: - Geometry helpers
 
-    /// Quadratic smoothing through the midpoints: keeps the hand's shape, loses the jitter.
-    static func smoothed(_ pts: [CGPoint]) -> Path {
+    /// Quadratic smoothing round the vertices: keeps the hand's shape, loses the
+    /// jitter. Each curve leaves its segments `maxRound` short of the vertex — or at
+    /// their midpoints when they are shorter — so a dense freehand stroke is smoothed
+    /// through its midpoints as before, and a sparse polyline (an `orb.trace` of a
+    /// rectangle's four corners) keeps its corners, filleted rather than ballooned
+    /// into a loop.
+    static func smoothed(_ pts: [CGPoint], maxRound: CGFloat = 7) -> Path {
         var path = Path()
         guard let first = pts.first else { return path }
         path.move(to: first)
@@ -496,9 +593,17 @@ enum OverlayPainter {
             if pts.count == 2 { path.addLine(to: pts[1]) }
             return path
         }
+        func toward(_ v: CGPoint, _ p: CGPoint) -> CGPoint {
+            let dx = p.x - v.x, dy = p.y - v.y
+            let len = hypot(dx, dy)
+            guard len > 0.001 else { return v }
+            let d = min(maxRound, len / 2)
+            return CGPoint(x: v.x + dx / len * d, y: v.y + dy / len * d)
+        }
         for i in 1..<(pts.count - 1) {
-            let mid = CGPoint(x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2)
-            path.addQuadCurve(to: mid, control: pts[i])
+            let v = pts[i]
+            path.addLine(to: toward(v, pts[i - 1]))
+            path.addQuadCurve(to: toward(v, pts[i + 1]), control: v)
         }
         path.addLine(to: pts[pts.count - 1])
         return path

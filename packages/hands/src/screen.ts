@@ -26,6 +26,15 @@ export interface ShotBudget {
 
 export const DEFAULT_SHOT_BUDGET: ShotBudget = { maxLongEdge: 2000, maxPixels: 2_500_000 };
 
+/**
+ * The quick budget: what a screenshot costs when the point is to act now, not to
+ * read small print — the pre-warm shot handed to a brain as its task begins, a
+ * reflex "screenshot this", the bench. A 1280-pixel long edge is a quarter of the
+ * pixels of the default and encodes in roughly a third of the time; zoom is there
+ * for anything that needs the full budget.
+ */
+export const QUICK_SHOT_BUDGET: ShotBudget = { maxLongEdge: 1280, maxPixels: 1_100_000 };
+
 export class Screen {
   private mapping: ScreenMapping | undefined;
 

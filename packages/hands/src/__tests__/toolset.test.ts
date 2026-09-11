@@ -136,3 +136,28 @@ test("fitScale never upscales and respects both limits", () => {
   const screen = new Screen();
   assert.throws(() => screen.toPoints(1, 1));
 });
+
+test("screenshot: quick: true asks the helper for the 1280-pixel budget and says so; the gate's probes go out together and only the ones the member needs", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  const quick = await ts.run("screenshot", { quick: true });
+  assert.equal(quick.kind, "image");
+  assert.match((quick as { note: string }).note, /\(quick budget\)$/);
+  const req = hands.calls.find((c) => c.op === "screenshot")!.params;
+  assert.equal(req["maxLongEdge"], 1280);
+  assert.equal(req["maxPixels"], 1_100_000);
+  const full = hands.calls.filter((c) => c.op === "screenshot");
+  await ts.run("screenshot", {});
+  assert.equal(hands.calls.filter((c) => c.op === "screenshot")[full.length]!.params["maxLongEdge"], 2000, "the default budget is unchanged");
+
+  // A click probes frontmost + element_at; a key press probes frontmost + focused_text; a scroll probes nothing.
+  hands.calls.length = 0;
+  await ts.run("left_click", { coordinate: [100, 100] });
+  assert.deepEqual(hands.calls.map((c) => c.op).filter((op) => op !== "click"), ["frontmost", "element_at"]);
+  hands.calls.length = 0;
+  await ts.run("key", { text: "Return" });
+  assert.deepEqual(hands.calls.map((c) => c.op).filter((op) => op !== "key"), ["frontmost", "focused_text"]);
+  hands.calls.length = 0;
+  await ts.run("scroll", { scroll_direction: "down", scroll_amount: 2 });
+  assert.deepEqual(hands.calls.map((c) => c.op), ["scroll"]);
+});

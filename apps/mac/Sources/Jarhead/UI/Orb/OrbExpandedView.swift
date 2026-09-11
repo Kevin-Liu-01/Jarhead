@@ -23,6 +23,8 @@ final class OrbCapsuleModel: ObservableObject {
     @Published var wakeHeard = ""
     /// Bumped when the panel stops being key: the passphrase field drops its focus ring.
     @Published var keyLost = 0
+    /// Bumped on every Stop pressed on the capsule or the menu: the Stop button flashes red for the press.
+    @Published var stopFlash = 0
 
     var phase: Phase { snapshot.phase }
     var lastKevin: TranscriptItem? { snapshot.transcript.last { $0.speaker == .kevin } }
@@ -120,6 +122,7 @@ enum OrbStyle {
         case .thinking: return "Thinking"
         case .acting: return "Acting"
         case .muted: return "Muted"
+        case .paused: return "Paused"
         case .error: return "Error"
         }
     }
@@ -210,9 +213,12 @@ struct OrbCapsuleView: View {
     @ObservedObject var model: OrbCapsuleModel
     let actions: OrbCapsuleActions
     @Environment(\.colorScheme) private var scheme
+    /// Stop was just pressed: the button wears the danger fill for 300 ms whatever is running.
+    @State private var stopFlashing = false
 
     /// The capsule's coordinate space (its top-left, y down): what `fieldFrame` reports in.
     static let space = "OrbCapsule"
+    static let stopFlashSeconds = 0.3
 
     var body: some View {
         let theme = OrbTheme(dark: scheme == .dark)
@@ -226,6 +232,13 @@ struct OrbCapsuleView: View {
         // The one sanctioned shadow in chrome: the capsule floats over other apps.
         .shadow(color: .black.opacity(theme.dark ? 0.45 : 0.18), radius: 14, y: 6)
         .coordinateSpace(name: Self.space)
+        .onChange(of: model.stopFlash) {
+            stopFlashing = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(Self.stopFlashSeconds * 1_000_000_000))
+                stopFlashing = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -410,11 +423,12 @@ struct OrbCapsuleView: View {
         .frame(minHeight: OrbTheme.rowHeight, alignment: .leading)
     }
 
-    /// Wake is the one filled accent button, and only while asleep; Stop fills red only
-    /// while a delegation runs; everything else is a ghost.
+    /// Wake is the one filled accent button, and only while asleep; Stop fills red
+    /// while a delegation runs and for the 300 ms after a press (it is never
+    /// disabled: a Stop must land in every phase); everything else is a ghost.
     private func actionRow(theme: OrbTheme) -> some View {
         let muted = model.phase == .muted
-        let running = model.activeDelegation != nil
+        let running = model.activeDelegation != nil || stopFlashing
         return HStack(spacing: 6) {
             if model.isAwake {
                 OrbIconButton(icon: "moon.fill", help: "Sleep", theme: theme, action: actions.toggleAwake)

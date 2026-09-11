@@ -19,7 +19,7 @@
  * model is attending. "speaking"/"thinking"/"acting" are what Jarhead is doing
  * right now; "asleep" means no Live session is open (and nothing is billed).
  */
-export const PHASES = ["asleep", "connecting", "listening", "speaking", "thinking", "acting", "muted", "error"] as const;
+export const PHASES = ["asleep", "connecting", "listening", "speaking", "thinking", "acting", "muted", "error", "paused"] as const;
 export type Phase = (typeof PHASES)[number];
 
 // ------------------------------------------------------------- transcript ---
@@ -161,6 +161,8 @@ export interface ScreenMark {
   readonly screenshotPath?: string;
   /** Handed to a brain already (kept a while for the Console, then dropped). */
   readonly consumed: boolean;
+  /** What the stroke surrounded, when the accessibility tree or window list could say. `rect` is snapped to it. */
+  readonly element?: { readonly role?: string; readonly title?: string; readonly app?: string };
 }
 
 export interface ConnectorHealth {
@@ -227,6 +229,10 @@ export interface Settings {
   /** Where the Orb sits, saved across launches. */
   readonly orbPosition?: { readonly x: number; readonly y: number };
   readonly wake: WakeSettings;
+  /** Act on unambiguous spoken commands without the model (the 250 ms path). */
+  readonly reflexes: boolean;
+  /** Where the blob lives: floating where it last worked, or tucked in the MacBook notch. */
+  readonly orbHome: "free" | "notch";
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -244,6 +250,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoWake: true,
   wake: DEFAULT_WAKE,
   onboarded: false,
+  reflexes: true,
+  orbHome: "notch",
 };
 
 /**
@@ -358,7 +366,10 @@ export type EngineCommand =
   | { readonly type: "mark.add"; readonly rect: Rect; readonly path?: readonly Point[] }
   | { readonly type: "mark.clear" }
   /** Exit the daemon with code 75 so the app respawns it on the new code (after a self-edit passed its checks). */
-  | { readonly type: "daemon.restart" };
+  | { readonly type: "daemon.restart" }
+  /** Keep the session open but go silent: mic muted, output dropped, no delegations. */
+  | { readonly type: "pause" }
+  | { readonly type: "resume" };
 
 // ---------------------------------------------------------------- overlay ---
 
@@ -392,6 +403,13 @@ export type OverlayCommand =
   | { readonly cmd: "stroke"; readonly points: readonly Point[]; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
   /** The blob flies to a point and hovers there for dwellMs (default 2 s) before drifting home. */
   | { readonly cmd: "orb.fly"; readonly x: number; readonly y: number; readonly dwellMs?: number; readonly reason?: string }
+  /**
+   * The blob draws: it flies to the first point, becomes a cursor, and drags the
+   * stroke along the points (closing it when `closed`), then goes home. The stroke
+   * stays on the layer for ttlMs. This is how Jarhead points at things and how it
+   * outlines what Kevin circled — a hand-drawn line, not a stamped shape.
+   */
+  | { readonly cmd: "orb.trace"; readonly points: readonly Point[]; readonly closed?: boolean; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone; readonly reason?: string }
   | { readonly cmd: "orb.home" }
   | { readonly cmd: "clear" };
 
@@ -420,7 +438,7 @@ export function isPhase(value: unknown): value is Phase {
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "wake", "sleep", "mute", "unmute", "stop", "say-text", "set-settings", "clear-problems",
-  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart",
+  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {

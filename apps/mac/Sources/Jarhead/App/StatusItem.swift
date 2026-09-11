@@ -91,6 +91,7 @@ final class StatusItem: NSObject {
         case .acting: return "acting"
         case .muted: return "muted"
         case .error: return "error"
+        case .paused: return "paused"
         }
     }
 

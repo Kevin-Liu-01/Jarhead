@@ -30,7 +30,7 @@ struct ConsolePreviewMain {
         // Line-buffered, so the `send:` / `action:` trail survives the screenshot script's kill.
         setlinebuf(stdout)
         let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory) // never a Dock tile: previews are throwaway
         let delegate = PreviewDelegate()
         app.delegate = delegate
         app.run()

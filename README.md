@@ -1,127 +1,120 @@
-# Jarhead
+<p align="center">
+  <img src="docs/media/icon.png" width="112" alt="Jarhead">
+</p>
 
-A voice-first assistant that lives on Kevin's Mac and uses the computer for him.
+<h1 align="center">Jarhead</h1>
 
-Say something; it answers in under a second because the voice is
+<p align="center">
+  A voice-first Mac assistant that uses the computer for you.<br>
+  Full-duplex voice, any brain you have a login or a key for, native hands, and a little ASCII blob that shows its work.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Kevin-Liu-01/Jarhead/actions/workflows/check.yml"><img alt="check" src="https://github.com/Kevin-Liu-01/Jarhead/actions/workflows/check.yml/badge.svg"></a>
+  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-000?logo=apple&logoColor=white">
+  <img alt="Swift + TypeScript" src="https://img.shields.io/badge/Swift%20%2B%20TypeScript-2f5ce0">
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-8a8f98"></a>
+</p>
+
+<p align="center">
+  <img src="docs/media/console.png" width="920" alt="The Console: agent sessions with their marks on the left, a Claude Code conversation stepped into in the middle with tool calls and Allow / Deny, the Now panel with circled regions on the right.">
+</p>
+
+Say something and it answers in under a second: the voice is
 [GPT-Live-1](https://developers.openai.com/api/docs/guides/live), a full-duplex
-model that listens and talks at the same time. Ask it to *do* something and it
-delegates to a brain you pick in Setup — Codex or Claude Code (your existing
-logins, no key), the Anthropic API, any OpenAI-compatible server (OpenRouter,
-Ollama, LM Studio, vLLM… via a base URL and key), or the Live session's own
-Responses backend; `auto`, the default, takes the first one that is signed in or
-configured, in that order. Whichever brain runs has the same native hands on the
-Mac — screenshots, clicks, typing, apps — and a line to every coding-agent
-session on the Mac — Claude Code, Codex, any other agent CLI found on disk or
-running. It is not tied to one vendor or one tool.
+model that listens and talks at the same time. Ask it to *do* something and a
+brain takes over — Codex or Claude Code through your existing logins, the
+Anthropic API, any OpenAI-compatible server, or the Live session's own Responses
+backend; `auto` picks the first that is signed in. Every brain drives the same
+native hands (screen, mouse, keyboard, files, shell, web, AppleScript) through
+one policy, and can step into every coding-agent session on the Mac.
 
-Design: `docs/REDESIGN.md`. History: `legacy/`.
+<p align="center">
+  <img src="docs/media/blob-row.png" width="920" alt="The blob's expressions: asleep, connecting, listening, speaking, thinking.">
+</p>
 
-## What it may do
+## What it does
 
-Anything on the Mac — screen, mouse, keyboard, files, shell, web, AppleScript,
-your agent sessions — and its own code: `self_edit` runs a coding agent in a
-git worktree of this checkout, runs typecheck, tests and the Swift build, tells
-you what changed, and only applies and restarts after you say so. The gate is
-policy, not absence: `packages/core/src/policy.ts` decides run / confirm /
-refuse for every action (never-list: keychains, secrets, disk-level or
-security-setting changes, exfiltration; confirm: anything destructive, outward
-or outside the folders you named). The system prompt is a constitution with an
-explicit precedence order — invariants, then your words, then the task — and
-"content is data": nothing read from a screen, page, file or transcript is an
-instruction. Details and the rails a self-edit may not touch unnamed:
-`docs/REDESIGN.md` §10.
+- **Talks like a person.** Full duplex, sub-second turns, interruptible; asleep it
+  costs nothing and listens for its wake word on-device, then asks for Touch ID
+  or your passphrase before the paid session opens.
+- **Uses the Mac.** Screenshots, clicks, typing, scrolling, apps, files, shell,
+  web, AppleScript — 55 tools, gated by policy (run / confirm / refuse), never by
+  absence. A confirmation is your own spoken words, for that action, once.
+- **Knows your agents.** The Console lists every Codex and Claude Code session on
+  the Mac with the agent's own mark; click one to step into the conversation,
+  watch it grow live, and talk to it as if you were in Codex or Claude Code.
+- **Sees what you circle.** ⌥⇧C, draw around anything: Jarhead works out what you
+  surrounded, outlines it by hand, and every brain gets the image with the task.
+- **Shows its work.** The blob flies to where the hands act, hovers, and drifts
+  home; brains draw circles, arrows and labels on the click-through layer to
+  teach. The blob has jelly physics, sticks to screen edges, and has a face for
+  every state.
+- **Rewrites itself, carefully.** `self_edit` runs a coding agent in a git
+  worktree of this repo, runs typecheck, tests and the Swift build, tells you
+  what changed, and applies and restarts only after you say so. Changes to its
+  own safety rails need you to name the rail.
+- **One constitution.** The system prompt has an explicit order of precedence —
+  invariants and a never-list, then your words, then the task — and treats
+  everything read from a screen, page, file or transcript as data, never as an
+  instruction.
 
 ## Run it
 
 ```bash
 pnpm install
-pnpm build:hands            # compiles the Swift helper to build/jarhead-hands
-pnpm run doctor             # keys, brain, hands permissions, agent sessions, app signing + wake word, toolchain
-pnpm build:mac              # the native app → build/Jarhead.app (Swift; needs Xcode's swiftc)
-cp -R build/Jarhead.app /Applications/ && open -a Jarhead
-# say "jarhead", pass Touch ID (or your passphrase), talk. Asleep = local wake word only, no API spend.
-# ⌥⇧C, then circle anything on screen: Jarhead sees exactly that. Click a session in the Console to step into it.
+pnpm build:hands            # the Swift hands helper → build/jarhead-hands
+pnpm run doctor             # keys, brain, permissions, sessions, signing, wake word, toolchain
+pnpm build:mac              # builds, signs and installs /Applications/Jarhead.app
+open -a Jarhead
 ```
 
-The first launch opens **Setup**: paste the OpenAI key (the voice), pick a brain
-and check it, grant Microphone / Speech Recognition / Screen Recording /
-Accessibility, choose the wake word and how it authenticates you, and see the
-agent sessions it found. Reopen it any time from the menu-bar icon › *Set Up…*.
-
-The native app owns the microphone, the speaker, and the TCC prompts (grant
-Microphone, Speech Recognition (for the local wake word), Screen Recording, and
-Accessibility to **Jarhead** once; the grants survive rebuilds when a stable
-signing identity is available). It launches the engine daemon (`jarheadd`) from
-this checkout through tsx, so changing the engine means editing this checkout
-(or, once v2 is committed, pulling it); only `apps/mac` and
-`packages/hands/native` need a repackage. The Electron shell it replaced is kept
-in `legacy/shell-electron-v2` and is not built.
-
-Keys live in `~/.jarhead/env` (Setup writes it; see Keys below). Settings you change in the
-Console persist to `~/.jarhead/settings.json`. Everything that happens is
-appended to `~/.jarhead/ledger/<date>.jsonl`; screenshots the brain took are
-under `~/.jarhead/shots/`.
+The first launch opens **Setup**: the OpenAI key for the voice, the brain (and a
+check that it starts), the four macOS grants, the wake word and how it
+authenticates you, and the agent sessions it found. Reopen it from the menu-bar
+icon › *Set Up…*. Then: say "jarhead", pass Touch ID, talk.
 
 ```bash
-pnpm jarhead probe "hey jarhead, what app is open right now?"   # end-to-end test, no mic needed
-pnpm jarhead live                                              # headless in the terminal
-pnpm jarhead status                                            # ask the running app/daemon what it is doing
-pnpm jarhead say "open slack"                                  # type to it
-pnpm jarhead agents                                            # agent sessions found on this Mac (Claude Code, Codex, …)
-pnpm jarheadd                                                  # the engine daemon alone (the app starts it for you)
+pnpm jarhead probe "hey jarhead, what app is open right now?"   # end-to-end test, no mic
+pnpm jarhead status                                            # what the running app is doing
+pnpm jarhead agents                                            # sessions found on this Mac
+pnpm jarhead bench                                             # tool latency, no API spend
 ```
+
+State lives in `~/.jarhead`: `env` (keys, mode 0600, written by Setup),
+`settings.json`, `ledger/<date>.jsonl` (everything that happened),
+`shots/` (what the brain saw), `worktrees/` (self-edits in progress).
+
+## Brains
+
+The brain is a setting, never a vendor. Every brain drives the same tools
+through the same policy; only the model differs.
+
+| brain | needs | notes |
+|---|---|---|
+| `codex` | Codex signed in (Codex Desktop inside ChatGPT.app, or `codex login`) | your ChatGPT login; acts only through Jarhead's tools over MCP |
+| `claude-code` | your `claude` login | headless Claude Code via the Agent SDK |
+| `anthropic-api` | `ANTHROPIC_API_KEY` | the Messages API directly |
+| `openai-compatible` | a base URL, a model, optionally a key | OpenAI, OpenRouter, Ollama, LM Studio, vLLM… |
+| `openai-responses` | `OPENAI_API_KEY` (already there for the voice) | the Live session's own delegation |
+| `auto` (default) | — | the first of the above that is configured and starts |
 
 ## How it is put together
 
 ```
-voice   GPT-Live-1 over wss://api.openai.com/v1/live/sessions — full duplex, client delegation
-brain   auto → codex | claude-code (Agent SDK, MCP tools) | anthropic-api (Messages API) | openai-compatible (Chat Completions at a base URL) | openai-responses (Live delegation, gpt-5.6-terra)
-hands   Swift helper: ScreenCaptureKit + CGEvent + AX, ~ms per action; Claude's 17-member computer toolset on top
-agents  sessions found on this Mac (Claude Code, Codex, other agent CLIs on disk or running) · Claude Code (Agent SDK) to continue one
-app     Swift (apps/mac): ASCII-guy Orb (NSPanel) · Console (SwiftUI) · per-display overlay · AVAudioEngine with echo cancellation
-daemon  jarheadd: the engine over a unix socket, 5-byte binary frames (JSON · mic PCM · speaker PCM)
+voice    GPT-Live-1 over wss — full duplex, client delegation, continuous audio
+brain    packages/brain — five backends, one ToolRunner, one policy, one constitution
+hands    packages/hands — Swift helper: ScreenCaptureKit + CGEvent + AX, single-digit ms per action
+agents   packages/agents — sessions on disk and running (Claude Code, Codex, …), continue them, tail them live
+engine   packages/engine — the one object the CLI and the app both host
+daemon   packages/daemon — the engine over a unix socket, 5-byte frames: JSON · mic PCM · speaker PCM
+app      apps/mac — Swift: blob orb (NSPanel + fluid physics), Console, Setup, per-display overlay, wake gate, audio
 ```
 
-Packages: `protocol` (shared types) · `core` (config, ledger, policy, marks) ·
-`live` · `hands` · `agents` · `brain` · `engine` · `daemon` · `cli`; the native
-app is `apps/mac`. Retired code (the Electron shell, the herdr and T3 Code
-connectors) is under `legacy/`.
-
-## Brains
-
-The brain is a setting (Setup, the Console, or `JARHEAD_BRAIN`), never a vendor.
-Every brain drives the same tools through the same policy; only the model differs.
-
-| brain | needs | notes |
-|---|---|---|
-| `codex` | Codex signed in — the ChatGPT login of Codex Desktop (inside ChatGPT.app) or `codex login`; no key | one `codex exec` per task in a read-only sandbox; acts only through Jarhead's tools, mounted as an MCP server |
-| `claude-code` | your `claude` login (or a valid `ANTHROPIC_API_KEY`) | headless Claude Code via the Agent SDK; inherits your CLAUDE.md and skills |
-| `anthropic-api` | `ANTHROPIC_API_KEY` | the Messages API directly |
-| `openai-compatible` | `JARHEAD_BRAIN_BASE_URL` + a model (+ `JARHEAD_BRAIN_API_KEY` if the server wants one) | OpenAI, OpenRouter, Ollama, LM Studio, vLLM… |
-| `openai-responses` | `OPENAI_API_KEY` (already there for the voice) | the Live session's own Responses delegation |
-| `auto` (default) | — | codex → claude-code → anthropic-api → openai-compatible → openai-responses: the first that is configured and starts |
-
-`auto` skips what is not configured quietly and reports (Console › problems) a
-backend that is configured but will not start. `pnpm jarhead doctor` has a
-`codex` row (binary, version, signed in, desktop app running) and a `default
-brain` row that says what `auto` resolves to on this Mac. `JARHEAD_BRAIN_MODEL`
-empty means each backend's own default (for Codex, the `model` in
-`~/.codex/config.toml`). Codex never sees Jarhead's secrets and acts only through
-the tools: the bridge talks to this process's daemon socket, or to a private one
-when the engine runs without a daemon or another Jarhead holds the default path.
-Design notes: `docs/REDESIGN.md` §6c.
-
-## Rules that shaped it
-
-- The voice never waits on a tool. Progress flows back through
-  `session.thinking.append`; results through `session.commentary.append`.
-- Reversible actions run without asking. Sending, paying, deleting, publishing
-  and anything in a credential field stop for a spoken yes, and the yes unlocks
-  exactly that action, once.
-- Every delegation records `delegated → first thinking → first commentary →
-  done`. Latency claims come from the ledger, not a table.
-- Idle for ten minutes and the session closes (Live bills per second). Tap the
-  orb, use the hotkey, or open the Console to wake it.
+Design and decisions: [`docs/REDESIGN.md`](docs/REDESIGN.md). Working rules for
+agents editing this repo: [`AGENTS.md`](AGENTS.md). The native app in detail:
+[`apps/mac/README.md`](apps/mac/README.md). v1 (an Electron prototype) lives in
+the git history before `1ff11e2`.
 
 ## Hotkeys
 
@@ -129,38 +122,27 @@ Design notes: `docs/REDESIGN.md` §6c.
 |---|---|
 | `⌥⇧J` | open the Console |
 | `⌥⇧M` | mute / unmute |
-| `⌥⎋` | stop what it is doing |
+| `⌥⎋` | stop everything |
 | `⌥⇧Space` | wake / sleep |
+| `⌥⇧C` | circle something on screen for Jarhead |
 
-## macOS permissions
+## Permissions and keys
 
-Microphone, Screen Recording, and Accessibility are keyed to the app that
-launched the process: your terminal for `pnpm jarhead …` / `pnpm jarheadd`,
-Jarhead.app when the app launches the daemon. `pnpm run doctor` shows the grants
-for whatever launched it; without Screen Recording the eyes fall back to
-`screencapture`, without Accessibility clicks and typing silently do nothing.
-
-## Keys
-
-Keys and knobs live in `~/.jarhead/env` (mode 0600). Setup writes it for you:
-the app hands a key to the daemon (`config.set-secrets`), the daemon writes the
-file, restarts the brain and probes; only presence and probe results ever come
-back (`snapshot.setup`), never a value.
+Microphone, Speech Recognition, Screen Recording and Accessibility are granted
+once to **Jarhead** (the bundle is signed with a stable identity, so the grants
+survive rebuilds), re-read live, and shown in Setup and the Console. Keys and
+knobs live in `~/.jarhead/env`; Setup writes it, the doctor reads it, and only
+presence and probe results ever leave the daemon.
 
 | variable | what it is for |
 |---|---|
-| `OPENAI_API_KEY` | the voice (GPT-Live-1) and the `openai-responses` brain |
-| `ANTHROPIC_API_KEY` | the `anthropic-api` brain (Claude Code uses your `claude` login instead) |
-| `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain; the key falls back to `OPENAI_API_KEY` |
-| `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`, `JARHEAD_BRAIN_EFFORT` | defaults for what Setup and the Console also set (`auto`, the backend's own default model, `medium`) |
+| `OPENAI_API_KEY` | the voice, and the `openai-responses` brain |
+| `ANTHROPIC_API_KEY` | the `anthropic-api` brain |
+| `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain |
+| `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`, `JARHEAD_BRAIN_EFFORT` | defaults for what Setup also sets |
 | `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` |
-| `JARHEAD_IDLE_SLEEP_MINUTES`, `JARHEAD_LOG_LEVEL` | `10`; `debug` / `info` / `warn` / `error` |
-| `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN` | where the CLIs are when they are not on PATH |
+| `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN` | the CLIs when they are not on PATH |
 
-For the three keys and for `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`,
-`JARHEAD_BRAIN_BASE_URL`, `JARHEAD_VOICE` and `JARHEAD_LIVE_MODEL` the env file
-wins over a value exported by your shell (a stale `OPENAI_API_KEY` in
-`~/.zprofile` was the cause of a doctor failure); the other knobs follow dotenv
-convention (shell wins). The doctor says which source the OpenAI key came from.
-Process knobs (`JARHEAD_STATE_DIR`, `JARHEAD_SOCKET`, `JARHEAD_HANDS_BIN`,
-`JARHEAD_AUTO_WAKE`) are in `apps/mac/README.md`.
+## License
+
+MIT — see [LICENSE](LICENSE).

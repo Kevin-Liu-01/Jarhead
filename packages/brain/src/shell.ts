@@ -340,6 +340,25 @@ export class BackgroundJobs {
     return [...this.jobs.values()];
   }
 
+  /** Stop the jobs started at or after `since` (Kevin pressed stop mid-task); returns how many were signalled. */
+  stopSince(since: number): number {
+    let n = 0;
+    for (const job of this.list()) {
+      if (job.startedAt < since) continue;
+      n++;
+      try {
+        process.kill(-job.pid, "SIGTERM");
+      } catch {
+        try {
+          process.kill(job.pid, "SIGTERM");
+        } catch {
+          // already gone
+        }
+      }
+    }
+    return n;
+  }
+
   /** Stop every job Jarhead started (the whole process group of each). */
   stopAll(): void {
     for (const pid of this.pids()) {

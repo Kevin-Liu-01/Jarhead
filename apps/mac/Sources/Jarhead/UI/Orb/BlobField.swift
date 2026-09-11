@@ -72,6 +72,17 @@ enum OrbPalette {
     static let accentDark = RGB(hex: 0x5b82ff)
     static func accent(dark: Bool) -> RGB { dark ? accentDark : accentLight }
 
+    /// The overlay's tone colours (OverlayPainter's, one for one), for the blob on a
+    /// trace: the pen is the colour of the line it draws.
+    static func tone(_ t: OverlayTone) -> RGB {
+        switch t {
+        case .accent: return accentDark
+        case .ok: return acting
+        case .warn: return error
+        case .mark: return speaking
+        }
+    }
+
     static func color(for phase: Phase) -> RGB {
         switch phase {
         case .asleep: return asleep
@@ -81,6 +92,7 @@ enum OrbPalette {
         case .thinking: return thinking
         case .acting: return acting
         case .muted: return muted
+        case .paused: return muted
         case .error: return error
         }
     }
@@ -158,6 +170,8 @@ struct BlobPersonality {
             return BlobPersonality(amp: 0.42, speed: 2.2, churn: 2.0, pull: 0.40, squash: 1.20, spin: 0.30, jitter: 0, glow: 0.60, ramp: .sharp, fps: 24)
         case .muted:       // a dim grey idle, nearly frozen.
             return BlobPersonality(amp: 0.22, speed: 0.30, churn: 0.3, pull: 0.08, squash: 0.88, spin: 0.02, jitter: 0, glow: 0.18, ramp: .soft, fps: 6)
+        case .paused:      // resting with the session open: calm, dim, slow breath.
+            return BlobPersonality(amp: 0.26, speed: 0.35, churn: 0.4, pull: 0.08, squash: 0.90, spin: 0.02, jitter: 0, glow: 0.22, ramp: .soft, fps: 8)
         case .error:       // red, sharp, jittering.
             return BlobPersonality(amp: 0.40, speed: 2.6, churn: 3.2, pull: 0.10, squash: 1.00, spin: 0.00, jitter: 0.4, glow: 0.60, ramp: .sharp, fps: 24)
         }
@@ -240,6 +254,62 @@ final class BlobSim {
     /// frame rate only then. Set by the controller from the physics.
     var flightMoving = false
     private var flightChangedAt = -100.0
+    /// The colour of a trace's line while the blob draws it (an `orb.trace` tone); nil
+    /// for the acting green of an ordinary flight. Read only while `flight` is on.
+    var traceColor: RGB?
+
+    // MARK: the cursor (a trace)
+
+    /// The cursor form: set by the controller for the whole of an `orb.trace` — from
+    /// take-off, so the blob turns into the pen on its way to the first point — as the
+    /// unit direction of travel (CG orientation). Nil morphs it back. The body pulls
+    /// into a compact teardrop whose point leads: the stretch axis is turned against
+    /// the travel — and swung `cursorPenAngle` off it, to the `cursorHand` side, the
+    /// way a pen is held — so the tail, the end the drag physics draws to a point, is
+    /// at the front on the pen while the body rides beside the line it has just drawn
+    /// instead of trailing on it (the line paints above the orb, and ran through the
+    /// face). The eyes narrow and look along the travel; the colour is the line's.
+    /// Every quantity eases (`cursorTau`), so the morph is a morph and a corner swings
+    /// the body round the pen instead of snapping it.
+    var cursor: CGVector? {
+        didSet {
+            guard (cursor == nil) != (oldValue == nil) else { return }
+            cursorChangedAt = t
+            nudge(reducedMotion ? 0.2 : 0.7)
+        }
+    }
+    /// Which side of the line the body rides on: +1 puts it above a line drawn to the
+    /// right (the outside of a loop drawn clockwise on screen), −1 the other way. The
+    /// controller sets it per trace from the stroke's turn so the body stays outside a
+    /// loop instead of cutting through it.
+    var cursorHand = 1.0
+    /// How far the pen's axis is swung off the travel (radians): the body 36° to the
+    /// side puts the eyes about two eye-widths clear of the line at full form.
+    static let cursorPenAngle = 36.0 * .pi / 180
+    /// How far into the cursor form (0 blob … 1 pen), eased.
+    private var cursorK = 0.0
+    /// The travel direction the form points along, eased as a vector so it turns.
+    private var cursorDirX = 1.0, cursorDirY = 0.0
+    private var cursorChangedAt = -100.0
+    /// The eased elongation of the pen: a firm teardrop, short of the drag's maximum.
+    static let cursorStretch = 0.66
+    /// The pen is compact: the body's radius shrinks by this share at full form.
+    static let cursorShrink = 0.2
+    /// Extra pinch on the last third of the tail at full form: the needle.
+    static let cursorPinch = 2.6
+    static let cursorTau = 0.14
+    /// The pen stick (`render`): glyphs rasterised along the axis from this share of
+    /// the body's radius out to the point, so the needle reaches the pen whatever its
+    /// angle — the thinned tail alone rendered only where a cell centre happened to
+    /// fall inside it, and stopped a finger's width short of the line. Its glyph
+    /// depth runs from `penDepthBody` at the body to `penDepthTip` at the point.
+    static let penStickFrom = 0.8
+    static let penDepthBody = 0.5
+    static let penDepthTip = 0.3
+    /// Where the pen's point is this frame, from the field's centre, in points (CG
+    /// orientation): the tail's tip along the travel, as `render` last laid it out.
+    /// The controller places the body so that `center + cursorTip` is the pen point.
+    private(set) var cursorTip = CGVector.zero
     private(set) var ramp: BlobRamp = .soft
     private var rampSwitchAt = -1.0
     static let easeTau = 0.28
@@ -401,9 +471,13 @@ final class BlobSim {
     /// under them shifts them, never jumps them.
     private var eyeRow = 0.0, eyeLeftCol = 0.0, eyeRightCol = 0.0
     private var eyesPlaced = false
+    /// Why the last eye fit failed (the numbers), for the preview harness.
+    private(set) var eyeFitNote = ""
     static let eyePlaceTau = 0.09
     /// Rows to try around the eyes' nominal row, in order: half a row up first, then down the face.
     static let eyeRowSearch: [Double] = [0, -0.5, 0.5, -1, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5]
+    /// The least the eyes sit apart, in columns: the discs (radius `eyeRadiusPt`) plus a hair of face between.
+    static let minEyeSpread = 1.9
     /// Each eye's openness, eased; the lids move fast (a blink is 120 ms) but not instantly.
     private var openL = 0.1, openR = 0.1
     private var nextBlinkAt = 3.0
@@ -614,13 +688,13 @@ final class BlobSim {
     /// personality sets the rate while the body moves (`inFlight(moving:)`).
     var isLively: Bool {
         springsMoving || shiver > 0.03 || flash > 0.02 || pulse > 0.02 || t - rippleAt < Self.rippleLength
-            || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0 || t - flightChangedAt < 1.0
+            || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0 || t - flightChangedAt < 1.0 || t - cursorChangedAt < 1.0
             || motionLively
     }
 
     /// The jelly is still moving: stretched, wobbling, splatting, or a hand is on it.
     private var motionLively: Bool {
-        dragging || stretch > 0.01 || splat > 0.02 || t - pokedAt < 0.6
+        dragging || stretch > 0.01 || splat > 0.02 || t - pokedAt < 0.6 || cursor != nil || cursorK > 0.01
             || abs(sloshX.x) + abs(sloshY.x) + abs(mode2.x) + abs(mode3.x) > 0.012
             || abs(sloshX.v) + abs(sloshY.v) + abs(mode2.v) + abs(mode3.v) > 0.08
     }
@@ -636,7 +710,7 @@ final class BlobSim {
     var isStatic: Bool {
         guard !isLively, !flight, rawInput < 0.02, rawOutput < 0.02 else { return false }
         switch phase {
-        case .muted: return t - phaseChangedAt > 1.5
+        case .muted, .paused: return t - phaseChangedAt > 1.5
         case .asleep:
             if gateAnimates { return false }
             return t - max(phaseChangedAt, gateChangedAt) > 20
@@ -654,9 +728,9 @@ final class BlobSim {
     }
 
     /// The colour the field eases toward: the phase's, or the gate's while asleep, or
-    /// acting's for the whole of a flight.
+    /// acting's for the whole of a flight — the line's tone when the flight is a trace.
     private var targetColor: RGB {
-        if flight { return OrbPalette.acting }
+        if flight { return traceColor ?? OrbPalette.acting }
         let base = OrbPalette.color(for: phase)
         guard phase == .asleep else { return base }
         switch gate {
@@ -732,6 +806,28 @@ final class BlobSim {
             dx = velocity.dx / vLen; dy = velocity.dy / vLen
         }
         if reducedMotion { want *= 0.4 }
+        // The pen: a fixed teardrop pointing along the travel — the stretch axis
+        // turned against it, so the drawn-to-a-point tail is the front — blended in
+        // by how far into the form the body is.
+        let ck = 1 - exp(-dt / Self.cursorTau)
+        cursorK += ((cursor == nil ? 0 : 1) - cursorK) * ck
+        if let c = cursor {
+            let cl = (c.dx * c.dx + c.dy * c.dy).squareRoot()
+            if cl > 0.01 {
+                cursorDirX += (c.dx / cl - cursorDirX) * ck
+                cursorDirY += (c.dy / cl - cursorDirY) * ck
+                let dl = (cursorDirX * cursorDirX + cursorDirY * cursorDirY).squareRoot()
+                if dl > 0.01 { cursorDirX /= dl; cursorDirY /= dl } else { cursorDirX = c.dx / cl; cursorDirY = c.dy / cl }
+            }
+        }
+        if cursorK > 0.01 {
+            let formStretch = reducedMotion ? Self.cursorStretch * 0.4 : Self.cursorStretch
+            want = want * (1 - cursorK) + formStretch * cursorK
+            // Against the travel, then swung off it to the hand's side (see `cursorHand`).
+            let (ax, ay) = Self.penAxis(dirX: cursorDirX, dirY: cursorDirY, hand: cursorHand)
+            dx = dx * (1 - cursorK) + ax * cursorK
+            dy = dy * (1 - cursorK) + ay * cursorK
+        }
         // The direction eases as a vector so it turns instead of flipping.
         stretchX += (dx - stretchX) * k
         stretchY += (dy - stretchY) * k
@@ -765,7 +861,10 @@ final class BlobSim {
         let jLen = (jx * jx + jy * jy).squareRoot()
         let jCap = Self.maxImpulse / rowHeightPt
         if jLen > jCap { jx *= jCap / jLen; jy *= jCap / jLen }
-        let g = reducedMotion ? 0.3 : 1.0
+        // The pen's surface is calm: the speed changes of being led along a line (the
+        // ease-in, the corners) ring it half as hard, so its body — and the eye row —
+        // is not pinched by a wobble mid-stroke.
+        let g = (reducedMotion ? 0.3 : 1.0) * (1 - 0.5 * cursorK)
         sloshX.v -= jx * sloshX.gain * g
         sloshY.v -= jy * sloshY.gain * g
         let jr = min(jLen, jCap) / (Double(Self.rows) * 0.38)   // radii/s
@@ -957,7 +1056,7 @@ final class BlobSim {
         let tail = u < 0 ? min(1, -u / base) : 0
         // The tail draws to a point (harder the further out, harder still while the
         // patch holds it); the front bulges where the body piles up.
-        let thin = 1 + e * (0.5 * tail + 1.4 * tail * tail) + necking * 2.5 * tail
+        let thin = 1 + e * (0.5 * tail + 1.4 * tail * tail) + necking * 2.5 * tail + cursorK * Self.cursorPinch * tail * tail * tail
         let widen = 1 + 0.22 * e * tLead
         let ww = w * thin / widen
         let density = (1 - 0.5 * e * tail) * (1 + 0.3 * e * tLead * tLead)
@@ -1105,11 +1204,24 @@ final class BlobSim {
         // lands inside the field and not in its fade. Not for the part of the stretch
         // that is the cling, whose foot must stay on the real edge.
         let e = stretch
-        let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * stretchY * stretchY) * e)
+        // The pen is compact (`cursorShrink`) and its surface calm, so its point holds still.
+        let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * stretchY * stretchY) * e) * (1 - Self.cursorShrink * cursorK)
         let toward = bodyBase * (Self.tailStretch + Self.leadCompress) / 2 * max(0, e - necking.squareRoot() * 0.5)
         let cx = Double(cols - 1) / 2 + (leanX * cur.pull + bias.bx * slide) * Double(cols) * 0.16 + jitterX + (sloshX.x + stretchX * toward) * aspect
         let cy = Double(rows - 1) / 2 + (leanY * cur.pull + bias.by * slide) * Double(rows) * 0.16 - lift + jitterY + sloshY.x + stretchY * toward * sq
-        let ampScale = cur.amp * 2.6 * ampBreath * (1 - 0.4 * e)
+        let ampScale = cur.amp * 2.6 * ampBreath * (1 - 0.4 * e) * (1 - 0.65 * cursorK)
+        // Where the tail's point lands this frame — the pen: the outline's tip along
+        // −stretch at 1 + tailStretch·e of the radius, from an outline centre `toward`
+        // off the field's, in points. Columns are `aspect` per row, so a column
+        // offset × cellWidth is a row offset × rowHeight; rows carry the squash.
+        if cursorK > 0.01 {
+            let reach = bodyBase * (1 + Self.tailStretch * e)
+            let tipCol = (cx - Double(cols - 1) / 2) - stretchX * reach * aspect
+            let tipRow = (cy - Double(rows - 1) / 2) - stretchY * reach * sq
+            cursorTip = CGVector(dx: tipCol / aspect * rowHeightPt, dy: tipRow * rowHeightPt)
+        } else {
+            cursorTip = .zero
+        }
         let rampLen = Double(ramp.glyphs.count)
         let maxIdx = UInt8(ramp.glyphs.count - 1)
         let stretching = stretch > 0.004
@@ -1169,7 +1281,44 @@ final class BlobSim {
                 i += 1
             }
         }
+        if cursorK > 0.05 {
+            // The pen stick: glyphs along the axis from the body's surface to the point,
+            // one per cell the line crosses, so the needle always reaches the pen — the
+            // thinned tail above renders only where a cell centre falls inside it, and on
+            // a diagonal or a half-cell offset that left the last finger's width blank.
+            // It fades toward the point and blends in with the form. Same edge fade as the body.
+            let reach = bodyBase * (1 + Self.tailStretch * e)
+            let from = bodyBase * Self.penStickFrom
+            let axisX = -stretchX, axisY = -stretchY
+            var s = from
+            while s <= reach {
+                let col = cx + axisX * s * aspect, row = cy + axisY * s * sq
+                let ci = Int(col.rounded()), ri = Int(row.rounded())
+                if ci >= 0, ci < cols, ri >= 0, ri < rows {
+                    let k = (s - from) / max(0.01, reach - from)
+                    var depth = (Self.penDepthBody + (Self.penDepthTip - Self.penDepthBody) * k) * cursorK
+                    let edge = min(min(ri, rows - 1 - ri), min(ci, cols - 1 - ci))
+                    if edge == 0 { depth *= 0.3 } else if edge == 1 { depth *= 0.65 }
+                    let idx = min(maxIdx, UInt8(depth * rampLen))
+                    let j = ri * cols + ci
+                    if cells[j] < idx { cells[j] = idx }
+                    halo[j] = max(halo[j], UInt8(min(1, 0.55 - 0.3 * k) * cursorK * 255))
+                }
+                s += 0.3
+            }
+        }
         renderEyes(cx: cx, cy: cy, base: bodyBase, sq: sq, bias: bias)
+    }
+
+    /// The pen's stretch axis for a travel along (`dirX`, `dirY`) held on the `hand`
+    /// side: against the travel, swung `cursorPenAngle` round. Screen orientation (y
+    /// down): for a line drawn to the right, hand +1 puts the body up and to the left of
+    /// the point. Shared by the form's easing and `cursorTipTarget`.
+    static func penAxis(dirX: Double, dirY: Double, hand: Double) -> (Double, Double) {
+        let a = cursorPenAngle * (hand >= 0 ? 1 : -1)
+        let c = cos(a), s = sin(a)
+        let bx = -dirX, by = -dirY
+        return (bx * c - by * s, bx * s + by * c)
     }
 
     // MARK: eyes
@@ -1255,6 +1404,12 @@ final class BlobSim {
             wantY = 0
             blinkable = false
             lift = 0.4
+        case .paused:
+            open = 0.3
+            pupil = 0.38
+            wantY = 0
+            blinkable = false
+            lift = 0.4
         case .error:
             shape = .cross
             blinkable = false
@@ -1286,6 +1441,16 @@ final class BlobSim {
                 blinkable = false
                 wantY = 0.2
             }
+        }
+
+        // The pen: narrowed, intent, looking along the travel — over the phase's look
+        // by how far into the form the body is.
+        if cursorK > 0.02, shape == .round {
+            open = open * (1 - cursorK) + 0.56 * cursorK
+            pupil = pupil * (1 - cursorK) + 0.4 * cursorK
+            wantX = wantX * (1 - cursorK) + cursorDirX * cursorK
+            wantY = wantY * (1 - cursorK) + cursorDirY * cursorK
+            if cursorK > 0.5 { blinkable = false }
         }
 
         // Reactions.
@@ -1329,21 +1494,34 @@ final class BlobSim {
         lookY += (wantY - lookY) * lk
 
         // Placement: close-set, on the upper third; stretched, they ride toward the
-        // hand, where the body is (the tail behind is too thin to hold them).
+        // hand, where the body is (the tail behind is too thin to hold them). The pen
+        // keeps them by its outline centre instead, a hair back toward the blunt end —
+        // its body is short, and the blob's placement put them past the blunt end
+        // whenever it pointed up or down; further back than this (a third of the
+        // radius) sat the outer eye on the compressed blunt end's edge while the axis
+        // was still turning out of a corner, and the fit failed — and never closer
+        // together than the discs need (`minEyeSpread`: a compact body's share of the
+        // radius left no gap to fit).
         let e = stretch
-        let spread = base * 0.30 * aspect * (1 - 0.15 * squishing)
-        let centreCol = cx + lookX * 0.9 + leanX * 0.5 + stretchX * e * 2.2 * aspect
-        var row = cy - base * 0.34 * sq + lookY * 0.55 + stretchY * e * 2.2 * sq
+        let spread = max(Self.minEyeSpread, base * 0.30 * aspect * (1 - 0.15 * squishing))
+        let blobCol = cx + lookX * 0.9 + leanX * 0.5 + stretchX * e * 2.2 * aspect
+        let blobRow = cy - base * 0.34 * sq + lookY * 0.55 + stretchY * e * 2.2 * sq
+        let penCol = cx + lookX * 0.4 + stretchX * base * 0.15 * aspect
+        let penRow = cy + lookY * 0.3 + stretchY * base * 0.15 * sq
+        let centreCol = blobCol * (1 - cursorK) + penCol * cursorK
+        var row = blobRow * (1 - cursorK) + penRow * cursorK
         var leftCol = centreCol - spread, rightCol = centreCol + spread
         var placed = false
         // Half a row up first, then down the face (`eyeRowSearch`), until both eyes
         // sit on body with a clear gap between; failing that, anywhere three cells of
-        // body will hold them.
+        // body will hold them. The pen's narrow body gets a hair less gap (the discs
+        // still clear each other at 3.3 columns).
+        let minGap = cursorK > 0.5 ? 3.3 : 3.6
         for pass in 0..<2 {
             for rowTry in Self.eyeRowSearch {
                 let r = row + rowTry
                 if let l = fittedColumn(leftCol, row: r, toward: cx, strict: pass == 0),
-                   let rr = fittedColumn(rightCol, row: r, toward: cx, strict: pass == 0), rr - l >= 3.6 {
+                   let rr = fittedColumn(rightCol, row: r, toward: cx, strict: pass == 0), rr - l >= minGap {
                     leftCol = l; rightCol = rr; row = r
                     placed = true
                     break
@@ -1351,7 +1529,19 @@ final class BlobSim {
             }
             if placed { break }
         }
-        guard placed else { openL = open; openR = open; eyesPlaced = false; return }
+        if !placed, eyesPlaced, cursorK > 0.5, onBody(eyeLeftCol, row: eyeRow), onBody(eyeRightCol, row: eyeRow) {
+            // The pen, mid-stroke: a frame whose fit fails (a corner's wobble pinching
+            // the eye row) keeps the eyes where they were, body still under them,
+            // rather than blinking the face out for that frame.
+            row = eyeRow; leftCol = eyeLeftCol; rightCol = eyeRightCol
+            placed = true
+        }
+        guard placed else {
+            eyeFitNote = String(format: "fit failed: want row %.1f cols %.1f/%.1f, centre %.1f,%.1f, cursorK %.2f stretch %.2f,%.2f, spread %.2f, previously placed %d at row %.1f cols %.1f/%.1f (on body %d/%d)",
+                                row, leftCol, rightCol, cx, cy, cursorK, stretchX, stretchY, spread, eyesPlaced ? 1 : 0, eyeRow, eyeLeftCol, eyeRightCol,
+                                onBody(eyeLeftCol, row: eyeRow) ? 1 : 0, onBody(eyeRightCol, row: eyeRow) ? 1 : 0)
+            openL = open; openR = open; eyesPlaced = false; return
+        }
         // The spot eases (τ ≈ 90 ms) so a lobe or the squish moving under the eyes
         // shifts them rather than jumping them a row; an eased spot that has left the
         // body snaps to the fitted one, which is on body by construction.
@@ -1455,6 +1645,26 @@ final class BlobSim {
     private(set) var eyeLift = 0.85
     /// Seconds since the last field frame, for the eyes' easing.
     private var frameDt = 0.0
+    /// Where the pen's point will be, from the body's centre, once the cursor form has
+    /// fully eased in for a travel along `dir` (unit, CG) held on the current
+    /// `cursorHand` side: `render`'s tip geometry with the form's constants, without
+    /// the wobble. For aiming the flight that carries the pen to a stroke's first
+    /// point; while drawing, the eased `cursorTip` rules.
+    func cursorTipTarget(direction dir: CGVector, squash: Double) -> CGVector {
+        let e = reducedMotion ? Self.cursorStretch * 0.4 : Self.cursorStretch
+        let (sx, sy) = Self.penAxis(dirX: dir.dx, dirY: dir.dy, hand: cursorHand)
+        let base = Double(Self.rows) * 0.38
+        let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * sy * sy) * e) * (1 - Self.cursorShrink)
+        let toward = bodyBase * (Self.tailStretch + Self.leadCompress) / 2 * e
+        let reach = bodyBase * (1 + Self.tailStretch * e)
+        return CGVector(dx: (sx * toward - sx * reach) * rowHeightPt, dy: (sy * toward - sy * reach) * squash * rowHeightPt)
+    }
+
+    /// The in-flight squash the field draws at, for `cursorTipTarget`.
+    var flightSquash: Double { max(phaseTarget.squash, 1.12) }
+
+    /// How far into the cursor form the body is (0…1), for the preview harness.
+    var previewCursorK: Double { cursorK }
     /// The eased elongation, for the preview harness.
     var previewStretch: Double { stretch }
     /// The wobble this frame, for the preview harness: the slosh's displacement (rows) and the ellipse mode (× radius).

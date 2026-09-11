@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
 
@@ -16,7 +16,11 @@ import { REPO_ROOT } from "@jarhead/core";
  */
 
 const OUT = join(REPO_ROOT, "build");
-const APP = join(OUT, "Jarhead.app");
+/** The bundle is assembled and signed here, then installed; build/Jarhead.app becomes a symlink. */
+const STAGE_APP = join(OUT, "stage", "Jarhead.app");
+const APP = STAGE_APP;
+const INSTALLED = "/Applications/Jarhead.app";
+const LINK = join(OUT, "Jarhead.app");
 const MAC = join(REPO_ROOT, "apps", "mac");
 const RESOURCES_SRC = join(MAC, "Resources");
 
@@ -61,8 +65,8 @@ const binDir = run("swift", ["build", "-c", "release", "--package-path", MAC, "-
 const binary = join(binDir, "Jarhead");
 need(binary, "swift build produced no Jarhead binary");
 
-// 3. Assemble the bundle.
-rmSync(APP, { recursive: true, force: true });
+// 3. Assemble the bundle (in a staging dir; the only launchable copy lives in /Applications).
+rmSync(join(OUT, "stage"), { recursive: true, force: true });
 const contents = join(APP, "Contents");
 const macos = join(contents, "MacOS");
 const resources = join(contents, "Resources");
@@ -116,19 +120,24 @@ run("codesign", [...common, "--sign", sign, join(macos, "jarhead-hands")]);
 run("codesign", [...common, "--entitlements", entitlements, "--sign", sign, APP]);
 run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
 
-// An installed copy is kept identical to the fresh build, so the Dock entry, the
-// /Applications entry and TCC all see the same bundle.
-const installed = "/Applications/Jarhead.app";
-let installNote = `install:   cp -R "${APP}" /Applications/`;
-if (existsSync(installed)) {
-  rmSync(installed, { recursive: true, force: true });
-  execFileSync("cp", ["-R", APP, "/Applications/"]);
-  installNote = `installed  ${installed} (refreshed)`;
+// 5. Install. Exactly one launchable Jarhead exists on this Mac — /Applications —
+// so the Dock, LaunchServices' recents and TCC never see two identities.
+// build/Jarhead.app is a symlink to it, for scripts and docs that name that path.
+rmSync(INSTALLED, { recursive: true, force: true });
+execFileSync("cp", ["-R", APP, "/Applications/"]);
+rmSync(join(OUT, "stage"), { recursive: true, force: true });
+try {
+  const st = lstatSync(LINK);
+  if (st.isSymbolicLink() || st.isDirectory()) rmSync(LINK, { recursive: true, force: true });
+} catch {
+  // nothing there
 }
+symlinkSync(INSTALLED, LINK);
+const installNote = `installed  ${INSTALLED} (build/Jarhead.app → symlink)`;
 
-const size = statSync(join(macos, "Jarhead")).size;
+const size = statSync(join(INSTALLED, "Contents", "MacOS", "Jarhead")).size;
 console.log(`
-  built      ${APP}
+  built      ${INSTALLED}
   binary     ${(size / (1024 * 1024)).toFixed(1)} MiB
   daemon     ${manifest.node} ${manifest.tsx} ${manifest.daemon}
   signed     ${identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)"}

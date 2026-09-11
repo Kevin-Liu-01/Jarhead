@@ -16,7 +16,7 @@ import SwiftUI
 struct OnboardingPreviewMain {
     static func main() {
         let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory) // never a Dock tile: previews are throwaway
         let delegate = OnboardingPreviewDelegate()
         app.delegate = delegate
         app.run()

@@ -1,7 +1,7 @@
 # Jarhead v2 — redesign from first principles
 
 Written 2026-09-10, the day GPT-Live-1 landed in the API. This replaces the v1
-architecture in `legacy/DECISION.md` / `legacy/DECISION-AMENDMENTS.md` (kept for history).
+architecture in git history (before `1ff11e2`) / git history (before `1ff11e2`) (kept for history).
 
 ## 1. What v1 got wrong, and why a rewrite
 
@@ -263,7 +263,7 @@ project, request, last reply, and live/idle status, and to continue Claude Code
 sessions headlessly. That is the `sessions` connector. Later the same day Kevin
 was blunter — "its not supposed to link to t3, it just links to anything and
 everything" — so on 2026-09-10 the herdr and T3 Code connectors were retired to
-`legacy/connectors-v2/` (their vendor notes to `legacy/vendor-docs/`), together
+git history (before `1ff11e2`) (their vendor notes to git history (before `1ff11e2`)), together
 with the `t3.pair` command, the `jarhead t3 pair` CLI, the doctor rows, the
 `t3BaseUrl` / `herdrBin` fields of `JarheadConfig` and the Console's pair field.
 `AgentKind` is now `"claude-code" | "sessions"`; the Swift mirror decodes any
@@ -357,13 +357,12 @@ packages/engine     the Engine: session lifecycle, brain selection, snapshots, l
 packages/daemon     jarheadd: the Engine served over a unix socket (binary frames)
 packages/cli        `jarhead` CLI: doctor, live (headless), probe, status, say, agents, hands, ledger, cmd <wake|sleep|mute|unmute|stop|agent.refresh>
 apps/mac            Jarhead.app (Swift): orb, console, overlay, audio, wake word, daemon client, packaging
-legacy/             retired code, kept for reference; not built, typechecked or tested (see below)
 ```
 
 **Retired on 2026-09-10.** Two things were moved out of the live tree the day
 they were superseded, so the launch tree holds only what runs:
 
-- `legacy/shell-electron-v2/` — the Electron shell (`packages/shell`: main
+- git history (before `1ff11e2`) — the Electron shell (`packages/shell`: main
   process, HTML Orb/Console/Overlay, audio worklets, IPC) and its packager
   (`scripts/build-app.ts`, which produced `build/JarheadElectron.app`). Replaced
   by `apps/mac` (§6b): the native app owns the TCC identity, the audio graph and
@@ -371,8 +370,8 @@ they were superseded, so the launch tree holds only what runs:
   `pnpm app` / `build:app` scripts and the doctor's `electron` row went with it;
   the Console preview harness (`apps/mac/Scripts/console-preview.sh`) keeps its
   screenshot fixtures in `apps/mac/Scripts/mock/`.
-- `legacy/connectors-v2/` — the `herdr` (CLI + socket) and `t3` (paired HTTP)
-  connectors, with their vendor notes in `legacy/vendor-docs/`. Kevin: "its not
+- git history (before `1ff11e2`) — the `herdr` (CLI + socket) and `t3` (paired HTTP)
+  connectors, with their vendor notes in git history (before `1ff11e2`). Kevin: "its not
   supposed to link to t3, it just links to anything and everything". The agents
   feature is the generic `sessions` connector plus `claude-code` to continue a
   session; product-specific connectors are not coming back.
@@ -380,7 +379,7 @@ they were superseded, so the launch tree holds only what runs:
 ## 8. Decisions taken without asking (and why)
 
 - **Electron over Swift for the shell** — reversed the same day (§6b; the
-  Electron shell is in `legacy/shell-electron-v2`). What survived: the Orb is a
+  Electron shell is in git history (before `1ff11e2`)). What survived: the Orb is a
   small always-interactive window and the annotation layer a separate fully
   click-through window, so the per-region click-through problem from v1 never
   comes back; screen/input stay in the Swift `jarhead-hands` helper.
@@ -396,7 +395,7 @@ they were superseded, so the launch tree holds only what runs:
   one of "Kevin's agents" — and the `ANTHROPIC_API_KEY` in his shell was
   rejected by the API on 2026-09-10, which is why `anthropic-api` sits behind it.
 - **T3 Code integration via pairing, not by reading its token store** — retired
-  2026-09-10 with the connector (`legacy/connectors-v2/t3`). T3 had a
+  2026-09-10 with the connector (git history (before `1ff11e2`)). T3 had a
   first-class device-pairing flow (`/api/auth/pairing-token` → `/oauth/token`
   exchange) and Jarhead paired like a phone would; the principle — never read
   another app's token store — stands for any future connector.
@@ -646,3 +645,275 @@ each with a redirect to the jarhead tool (`read_file`, `search_files`,
 `Bash` still runs through `run_shell`. The Codex brain runs in Codex's read-only
 sandbox, which stops writes but not reads of `~/.jarhead/env`; its addendum now
 says so and routes every read through the MCP server's tools.
+
+## 11. Latency (2026-09-11, revised after review the same day)
+
+Kevin: "stop button doesnt work"; "tool use needs to be a lot faster and better
+it should be as real time as the voice". Measured first, then cut; everything
+below comes from `pnpm jarhead bench` (a real Engine, a stand-in Live session,
+the Swift helper, a stand-in brain or the real Codex), `packages/engine/src/
+__tests__/stop.test.ts` (a fake Live proving the gate, button and spoken),
+`packages/brain/src/__tests__/{reflex,codex,codex-app-server,batch}.test.ts`,
+and tiny `codex app-server` sessions started and stopped by hand (no thread or
+one tiny turn). Two reviewers re-ran the probes on a loaded Mac (load average
+26–55, another agent's `tsc`, Chrome, a VM); what they found and what changed is
+folded in below — the first version of this section reported idle-Mac numbers
+as the result and made two claims that were wrong (the `codex_apps` runtime,
+the spoken stop).
+
+### Stop that stops
+
+Every Stop entry — the Console button and ⌘., the capsule's Stop, ⌥⎋, the orb
+menu, `jarhead cmd stop`, `jarhead://stop`, and the spoken "stop" through the
+Delegator's `STOP_PATTERN` — reaches `Engine.stopEverything`. (The first version
+of this section claimed the spoken path did too; it did not — the Delegator only
+cancelled the delegation, so a `type` waiting on its `frontmost` gate probe still
+typed after Kevin said stop. Now the Delegator has an `onStop` hook the engine
+wires to `stopEverything(reason, "said")`; it runs on a microtask so the engine's
+own listener for that fragment — which lifts the output gate on Kevin's speech —
+has already run, and the gate the stop sets survives the words that asked for
+it. The delegation's summary reads "Kevin said stop".) Why the button "did not
+work": the path was intact (Swift sends `{type:"stop"}`, `isEngineCommand` accepts
+it, the daemon dispatches it) but the effect was not perceptible. GPT-Live-1 has
+no interrupt or cancel client event, so the sentence already in flight kept
+arriving as output audio and kept being played after the one-off speaker flush;
+the output transcript kept the phase at "speaking"; a hands request in flight
+(the gate's `frontmost`/`element_at` probe, a click) completed and acted; the
+brain's turn ran on until its own cancel landed. Now, within ~1 ms of the
+command (bench: 0–2 ms):
+
+- **Output gate.** `outputGateUntil = now + 2.5 s`: every `session.output_audio.
+  delta` is dropped and output-transcript deltas do not count as speaking, until
+  Kevin's next input-transcript delta lifts it or the window lapses. The API
+  cannot be interrupted, so the mute is local. The transcript still records what
+  the model said (it happened; Kevin did not hear it).
+- **Everything in flight.** `delegator.cancel` finishes the delegation as
+  `cancelled` with the reason *before* awaiting the brain (a brain that settles
+  on the abort signal used to finish it first and lose the reason), then the
+  brain's cancel: `turn/interrupt` on the warm Codex, SIGINT→SIGKILL on `exec`,
+  the Agent SDK interrupt for Claude, a fetch abort for the API brains.
+  `NativeHandsProcess.cancelPending` fails every pending helper request with
+  `cancelled`; the helper is serial and cannot be interrupted mid-op, but its
+  late answer arrives for an id nobody waits on and is dropped, and a gate whose
+  probe was cancelled refuses the action instead of running it with less
+  information. `runner.abortTask` stops the background shell jobs this task
+  started and the arrow heads still to be drawn.
+- One Live instruction ("Kevin pressed stop. Stop speaking now and wait." /
+  "Kevin said stop. …"), a `toast("stopped")`, and the `delegation.finished`
+  ledger row (status `cancelled`, summary "Kevin pressed stop" / "Kevin said
+  stop"). `Delegator.cancel(reason, {quiet: true})` skips its own "Acknowledge
+  with one word" line when the engine owns the stop, so the voice is no longer
+  told both to speak and to stay silent. With nothing running there is nothing to
+  record beyond the log line — a `stop` LedgerRow type is a wanted contract
+  addition.
+- A stop that lands while the warm Codex turn's `turn/start` is still unanswered
+  (a thread's first turn: ~2 s while the MCP servers start; every brain start and
+  every context rollover has one) used to resolve the turn locally and never send
+  `turn/interrupt` — the server-side turn ran on, and its `jarhead.*` calls reached
+  the daemon with no delegation attached. `CodexAppServer.interrupt()` now
+  remembers the request and sends `turn/interrupt` the moment the turn id is
+  known; the turn resolves on the server's `turn/completed{interrupted}`, or
+  locally after a 5 s grace when the server never says so. Defence in depth: the
+  daemon refuses a `tool.run` while the engine's runner has no task attached
+  (`ToolRunner.attached`), so a turn that outlives its delegation gets an error,
+  not a click.
+
+What is not fixable from the engine: the Swift `EngineClient.rawSend` drops a
+command while the socket is reconnecting (daemon restarting) with only a log line.
+
+### Instrumented
+
+`DelegationTimingsExtra` (packages/brain/src/delegator.ts) rides in every
+`delegation.finished` row and in the snapshot beside the contract's timings:
+`firstToolAt` (the brain's first tool step — the eyes' shot excluded),
+`firstActionAt` (the first member that moves or types: `ACTING_MEMBERS` in
+packages/hands), `toolRoundTripMs` (every tool's own round trip, up to 40),
+`eyesMs`, `reflex`. The Swift decoder ignores the extra keys; the contract should
+grow them as optional fields. The log line at finish reads
+`thinking@… tool@… action@… commentary@… [reflex] tools a/b/c ms`.
+
+### Measured (this Mac, `pnpm jarhead bench`, 2026-09-11)
+
+**Conditions matter and the table says them.** The first three columns were
+measured on an idle Mac (load average ≈ 2) with a mostly static display in
+front; the "loaded" column is the reviewers' re-run of the same bench at load
+average 26–44 with Chrome in front (a busy 1280-px shot is a 788–848 KB PNG;
+the idle one was 353 KB). The bench now prints the load average in its header
+so a run is read in context. The Swift-helper numbers are what the display and
+the machine allow; the fake-hands column is Jarhead's own path.
+
+| moment | stand-in brain, fake hands | stand-in brain, Swift helper, idle Mac | same, loaded Mac (reviewers) | real Codex (warm app-server, one turn, idle) | target |
+|---|---|---|---|---|---|
+| tool round trip (`frontmost_app`, runner → toolset → helper) | 0 ms | 5–9 ms median, 38 max | 12–22 ms | 7 ms | < 80 ms |
+| quick screenshot (1280 px long edge) | 0 ms | 111 ms median warm, 286 cold (static display); **169 median / 429 p90 with Chrome in front** | 300–387 ms | 308 cold (1280×360, 353 KB) | < 120 ms — met only on a quiet display; content-dependent |
+| full screenshot (2000 px) | — | 143–250 ms | — | 92 ms | — |
+| eyes: pre-warm shot at delegation | 1 ms | 109–171 ms | 399–441 ms | 97 ms | < 120 ms (same caveat) |
+| delegation → first action | 2 ms | 126–186 ms | 425–605 ms | — (a question; no action) | < 300 ms (stand-in) / < 1.2 s (Codex) |
+| delegation → brain's first tool | 1–2 ms | 124 ms | — | **10.1 s** (first turn on a fresh thread) | — |
+| delegation → spoken result | 2–3 ms | 126 ms | — | 12.1 s | — |
+| reflex "jarhead, screenshot this.", utterance end → tool **issued** (prefired; the quiet window plus Jarhead's path) | **182 ms** (180 ms quiet + 2) | 182 ms | — | — | < 300 ms |
+| reflex, tool issued → done (the shot itself) | 1 ms | = the quick screenshot above | 300–500 ms | — | — (the display's) |
+| reflex, delegation → done (adopted; includes the 50 ms snapshot tick) | 50 ms | 50 ms | — | — | — |
+| stop: command → everything stopped, delegation held by the brain | 0–2 ms | 1 ms | 2–11 ms | — | < 150 ms |
+
+Re-run after the fixes (`pnpm jarhead bench --runs 5`, load average 5.8, Slack
+in front, 1280×360 292 KB shot): tool round trip 5 ms (p90 25); quick screenshot
+58 median / 186 p90; eyes 64; delegation → first action 77; reflex tool issued
+182, done 246; stop 0–1 ms with the delegation held — every target met at that
+load. With `--fake-hands`: 0 / 0 / 0 / 2 / 182 / 183 / 0–2 ms.
+
+The reflex target is restated: the first version measured utterance end → the
+shot *done* (374–392 ms with the helper) and called 300 ms the target, which a
+180 ms quiet window plus a ~170 ms shot can never meet. What Jarhead controls is
+the moment the tool is issued; the shot's duration belongs to the display and
+is reported on its own row. The bench's stop row used to measure "nothing was
+running" (the stand-in brain finished before the stop); it now holds the
+delegation until the stop and says so in its log.
+
+Warm Codex, measured by hand with `app-server` sessions: `initialize` 42–351 ms;
+`thread/start` **1.8–2.6 s idle, 25.6 s at load average 26, and past 60 s at
+load average 44** (the reviewers saw `codex app-server did not start within
+40s` and `thread/start did not answer within 60s`); on a thread's **first** turn
+`turn/start` itself answers only after ~2 s (the MCP servers start before the
+reply: the bridge "ready" at +2.9 s, `codex_apps` — now switched off — at +3.5 s)
+and the skills catalog is assembled, so the first agent message lands 5–7 s
+after `turn/start` at effort low (10 s in the bench at effort medium, with a tool
+call); the **second** turn on the same thread answers in 2.67 s (first token) /
+2.85 s (done), and its `turn/start` in 6–16 ms. `exec` per task was ~6 s to the
+first speakable line (§6c). `turn/interrupt` → `turn/completed{status:
+"interrupted"}` in 34 ms. One tiny turn on the revised production argv
+(`--disable apps`, `-c notify=[]`; prompt "reply pong", ephemeral thread, load
+average 5.8): `initialize` 42 ms, `thread/start` 1.37 s, first `turn/start`
+answered after 1.2 s (the bridge "ready" +415 ms in; no `codex_apps` startup at
+all), "pong" 6.9 s after the session began, clean exit — the skills-budget
+warning ("458 additional skills were not included") still arrives every turn and
+has no knob in 0.153.4. Two consequences were fixed: the app-server's start
+no longer sits on any task's path (`CodexBrain.start()` waits a 4 s patience
+window, then reports ready on `exec` with the warm start continuing in the
+background and `brain.detail` following it; a task that arrives before it is up
+runs on `exec` at once; a failed start is retried a minute later, never awaited
+by a task), and the boot budget is honoured (`thread/start` gets what is left of
+`startTimeoutMs`, not `request()`'s hard-coded minute).
+
+So: the tool path is now ~10 ms and the eyes are ~100 ms; what remains between
+Kevin's words and Codex's first action is the model's own turn (2.7 s warm, more
+on a fresh thread), which no plumbing removes. The one-step commands Kevin says
+most do not wait for it (reflexes, below). The `< 1.2 s` target for Codex is not
+met and will not be by this transport; it is met by the reflex table for the
+utterances that need no reasoning, and the warm thread halves the rest.
+
+### What was cut
+
+- **Warm Codex** (`packages/brain/src/codex-app-server.ts`): a resident
+  `codex app-server --listen stdio://` per brain, JSON-RPC 2.0 newline-delimited
+  over stdio; `initialize` → `initialized` → `thread/start {approvalPolicy:
+  "never", sandbox: "read-only", ephemeral: true, developerInstructions: the
+  standing orders + the Codex addendum, model}` once, then `turn/start {threadId,
+  input: [text, localImage…], effort}` per delegation, `turn/interrupt` on stop,
+  a fresh thread once `thread/tokenUsage/updated` shows the thread past 70 % of
+  the model's context window (the last three exchanges carried over as text).
+  Context continuity is a feature: "do it again" works. Server requests
+  (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+  `item/permissions/requestApproval`, `item/tool/requestUserInput`, `mcpServer/
+  elicitation/request`, `item/tool/call`) are all declined; Jarhead's policy is
+  the runner's. The app-server has no `--ignore-user-config`: Kevin's own MCP
+  servers are switched off with `-c mcp_servers.<name>.enabled=false` for every
+  `[mcp_servers.<name>]` in his config.toml (`-c mcp_servers={…}` does not
+  replace the table; a quoted key fails with "invalid transport"). The plugin
+  runtime `codex_apps` — Kevin's ChatGPT connectors: 134 tools by plugin
+  (google_drive 45, workspace_agents 42, sites 39, …) including
+  `google_drive.delete_file`, `google_drive.share_file`, `sites.delete_site`,
+  `workspace_agents.publish_agent` — is a *feature*, not a server, and **is**
+  switched off: `--disable apps` (= `-c features.apps=false`) is in the argv
+  always (the first version of this section said it could not be; a reviewer
+  showed one tiny turn calling `google_drive.get_profile` under approvalPolicy
+  "never" with nothing in Jarhead judging it). Verified against the real binary:
+  with the production argv `mcpServerStatus/list` shows `jarhead` (55 tools) and
+  Kevin's four servers at 0 tools, and no `codex_apps` at all. His `notify`
+  hook is silenced too (`-c notify=[]`), so Jarhead's turns never fire it. In
+  depth: an `mcpToolCall` to any server but `jarhead` fails the turn ("Codex
+  tried to act around Jarhead"), on both transports. `exec` per task stays as
+  the fallback — when the app-server is not up yet, cannot start within 25 s,
+  dies (retried a minute later), or `transport: "exec"` is asked for — and
+  `brain.detail` says which is live and why, as it changes. `ClaudeBrain` was
+  already warm: one Agent SDK session, one `send` per task.
+- **Pre-warmed eyes**: at delegation the engine takes a quick screenshot (1280 px)
+  through the runner, in parallel with the circled regions, and hands it in as the
+  task's first attachment (`kind: "screen"`, note: "the screen right now … this
+  counts as your last screenshot") — the Screen mapping is set from it, so the
+  model's first move can be a click. Skipped for the Responses brain (already
+  answering). Codex gets it as `localImage`.
+- **Tool path**: the MCP bridge keeps one daemon connection (`SocketToolClient`,
+  multiplexed by id, reconnecting); a tool result's image is parsed once on our
+  side (the runner archives the PNG, the daemon frames it, the bridge passes the
+  base64 through); the helper's `FastPNG` (parallel-strip deflate) is what makes a
+  2000-px shot 90–140 ms; the policy gate's `frontmost`/`element_at`/`focused_text`
+  probes go out together and only the ones the member needs (a scroll probes
+  nothing); a model turn with several tool calls runs the look-only ones
+  concurrently and the acting ones in order (`batch.ts`, Anthropic and
+  Chat Completions; Codex's own parallel MCP calls were already concurrent through
+  the bridge) — and the ordered batch **stops at the first call that did not go
+  through**: a `needs_confirmation` (the question must reach Kevin before anything
+  else happens; one call per turn used to guarantee that), a refusal, or an error
+  (the calls after it assumed it worked), the rest answered "not run: … waiting for
+  Kevin's answer / failed earlier in this turn"; commentary within 600 ms is joined
+  into one append (first line at once, finish flushes, cancel drops).
+- **Reflexes** (`packages/brain/src/reflex.ts`): "scroll up/down", "press
+  enter", "type <words>", "open <app>", "close this window", "go back",
+  "screenshot this", "click <control name>" — the whole utterance must be the
+  command (wake word and politeness stripped); the Delegator runs it through the
+  same ToolRunner and finishes the delegation at once with one spoken line, a
+  `note` step "reflex: …" and `timings.reflex`. A failed reflex hands the task to
+  the brain with the attempt on the timeline. "click <name>" is a System Events
+  click by the **exact** name (AppleScript's `is` ignores case; the `contains`
+  fallback is gone — "ok" must not click "Revoke Token"), pre-checked by
+  `classifyAction` so a Send/Delete stays the brain's (it knows how to ask).
+  Scroll and screenshot may **prefire**, and the rules got stricter after review:
+  the utterance must have clearly ended — a sentence the transcriber closed with
+  `.`/`!`/`?` counts after 180 ms of quiet, an open one only after 450 ms
+  ("jarhead scroll down" — 250 ms pause — "to the footer" used to scroll and then
+  the brain scrolled again) — and Kevin must have named Jarhead; mid-exchange
+  without the wake word only a closed sentence qualifies. A prefire is a
+  **delegation record of its own** from the moment it runs (`liveId:
+  "prefire:<transcript item>"`, created / stepped / finished on the ledger like
+  any delegation — a scroll that happened on Kevin's screen is never only a log
+  line); the delegation that follows adopts it **by transcript item** (its request
+  must end with that very utterance; a text match alone used to let the next
+  identical command claim a stale result) and waits for a tool still in flight
+  instead of running it again; one Live never delegates within 8 s is closed as
+  "never delegated", one outgrown by more words before the delegation as "a
+  longer request followed", and the brain takes the request whole. Reflexes are
+  off when Live's own Responses backend is the brain (it would act on the same
+  words twice).
+- **Marks snap to the largest fit** (`Engine.resolveMarkTarget`): of the
+  element under the stroke's centroid and the windows under it, the candidates
+  that hold the centroid and lie ≥ 60 % inside the padded stroke box are sorted
+  by area **descending** — the thing Kevin surrounded is the biggest thing mostly
+  inside his stroke. The first version took the smallest, so a circled dialog
+  snapped to the label under the centroid ("Are you sure?", 200×40) and the
+  shot, the rect and the blob's outline showed the label. A circled button still
+  wins over its window (the window fails the coverage test); a stroke in the
+  middle of a huge window keeps its own box with the app noted. The element's AX
+  ancestors are not candidates yet (the helper's `element_at` has no ancestor
+  list); a circled group the window list does not know stays the box.
+
+### What remains
+
+- Codex's own turn: 2.7 s warm at effort low, 5–10 s on a fresh thread with the
+  skills catalog (0.153.4 has no knob for it; §6c), and `thread/start` anywhere
+  from 1.8 s to over a minute depending on the machine's load — hence off the
+  critical path now, but a loaded Mac means the first tasks after a start run on
+  `exec` (~6 s to the first line). Effort `low` for the brain is the cheapest
+  lever Kevin has in Settings.
+- The reflex quiet window (180 ms closed sentence, 450 ms open) is the reflex
+  budget; Live's own transcript latency sits in front of it and is not measured
+  here. Whether GPT-Live-1's input transcript reliably closes sentences with
+  punctuation decides how often the short window applies; if it rarely does, the
+  open-sentence window is what Kevin feels.
+- The quick screenshot is content-bound: a busy display is a 800 KB PNG and 300+
+  ms on a loaded Mac whatever the helper does; the < 120 ms figure holds for a
+  quiet display on an idle machine only.
+- Contract wishes: `DelegationTimings.firstToolAt/firstActionAt/toolRoundTripMs/
+  eyesMs`, `Delegation.reflex`, a `stop` LedgerRow (today a stop with nothing
+  running leaves only a log line), `ElementInfo.ancestors` from the helper for
+  mark snapping.

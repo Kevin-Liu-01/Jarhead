@@ -30,6 +30,29 @@ import SwiftUI
 /// home. A fly that arrives while Kevin's own throw is still gliding waits for it to
 /// land. In flight it wears the acting colour, shimmers faster and trails a dotted
 /// wake of itself (`BlobTrail`).
+///
+/// And it draws by hand. An `orb.trace` sends it to a stroke's first point the same
+/// way, but on the wing it morphs into a pen — the cursor form (`BlobSim.cursor`): a
+/// compact teardrop whose point leads, held at an angle so the body rides beside the
+/// line (on the outside of a loop, `TracePath.hand`), eyes narrowed along the travel,
+/// the colour of the line — and, parked with its point on the first point, drags the
+/// line along the stroke at about 700 pt/s (eased in and out, slower round the
+/// corners), publishing the line so far on `state.liveStrokes` — at each vertex, and
+/// otherwise at most 30 times a second, which is as often as the overlay paints —
+/// so the overlay draws it growing from under the tip (`Trace`). At the end the
+/// stroke is sealed (`done`), the pen holds 300 ms, morphs back and drifts home. A
+/// new trace, `orb.home`, Kevin's hand, the capsule opening, a Stop, the phase
+/// falling asleep all cancel it — the half-drawn line is taken down. The overlay's
+/// `clear` (the brain's show_clear, a Stop) takes a line being drawn down too, but
+/// quietly: the pen morphs back and drifts home with none of the Stop's body
+/// language, and a plain fly is left alone. Under reduce motion the line appears
+/// whole and the blob only flies to it.
+///
+/// Stop is felt at once. Every Stop pressed in the app — the capsule, the menu
+/// (`stopPressed`), the Console's button and ⌘. — posts `stopPressedNotification`
+/// in-process, ahead of the engine, and the blob answers it (`reactToStop`): any
+/// flight or trace is cancelled, it shivers with wide eyes, and drifts home; the
+/// pill says "Stopped". None of that waits on the engine.
 @MainActor
 public final class OrbPanelController {
     public let state: AppState
@@ -74,9 +97,11 @@ public final class OrbPanelController {
     private var scanning = false
     private var frozen = false
 
-    // Flights (orb.fly / orb.home).
-    /// Where an `orb.fly` is: on the way out, parked beside the target, on the way back.
-    private enum Flight: Equatable { case none, outbound, hovering, homing }
+    // Flights (orb.fly / orb.home / orb.trace).
+    /// Where an `orb.fly` is: on the way out, parked beside the target, on the way
+    /// back — or, for an `orb.trace`, drawing (`tracing`: parked with the pen on the
+    /// line, led along it).
+    private enum Flight: Equatable { case none, outbound, hovering, homing, tracing }
     private var flight = Flight.none
     /// The CG centre the blob calls home: the last user-placed (persisted) position.
     private var perch: CGPoint?
@@ -96,6 +121,41 @@ public final class OrbPanelController {
     /// sends the blob home instead of making the capsule's spot the perch.
     private var homeAfterCollapse = false
     private let trail: BlobTrail
+
+    // Traces (orb.trace).
+    /// The stroke being drawn: the flight out carries it (`trace` set, `flight`
+    /// outbound), `startTracing` begins the line once parked, `advanceTrace` leads the
+    /// pen along it every physics tick.
+    private var trace: TracePath?
+    /// An `orb.trace` that arrived while Kevin's own motion was still gliding (see `PendingFly`).
+    private var pendingTrace: (cmd: OverlayCommand, expires: Double)?
+    /// The 300 ms the pen holds on the finished line before it morphs back and goes home.
+    private var traceHold: DispatchWorkItem?
+    /// Cruise, pt/s. Eased in and out over `traceEase` pt; corners slow the pen.
+    nonisolated static let traceSpeed = 700.0
+    nonisolated static let traceEase = 110.0
+    static let traceHoldSeconds = 0.3
+    /// The stroke's life on the overlay after it is sealed, when the command names none.
+    static let traceDefaultTTL = 6000.0
+    /// The line so far goes out at most this often (the overlay paints at 30 Hz; a
+    /// publish every physics tick — 120 on a ProMotion panel — repainted the whole
+    /// display's canvas four times per painted frame and cost the trace twice a
+    /// flight's CPU), and only once the pen has moved `tracePublishMinMove`; a new
+    /// vertex, the seal and a cancel always go out at once.
+    /// A hair under a 30th: four ticks of a 120 Hz link (or two of a 60 Hz one) then
+    /// make the interval instead of missing it by a fraction and waiting for a fifth.
+    static let tracePublishInterval = 0.031
+    static let tracePublishMinMove = 2.0
+    private var lastTracePublishAt = 0.0
+    private var lastTracePublishSegment = -1
+    private var lastTracePublishPen = CGPoint.zero
+
+    /// Posted by every Stop pressed in the app — here (`stopPressed`), the Console's
+    /// button and ⌘. (`ConsoleWindowController.handle(.stop)`) — the moment it is
+    /// pressed, so the blob reacts without waiting on the engine. In-process only. The
+    /// Console names it by its string (its preview compiles without UI/Orb); the
+    /// status item and the ⌥⎋ hotkey should post it too.
+    public nonisolated static let stopPressedNotification = Notification.Name("jarhead.stopPressed")
 
     private var sim: BlobSim { blobView.sim }
 
@@ -154,7 +214,7 @@ public final class OrbPanelController {
         capsuleHost.rootView = OrbCapsuleView(model: capsuleModel, actions: OrbCapsuleActions(
             toggleAwake: { [weak self] in self?.toggleAwake() },
             toggleMute: { [weak self] in self?.toggleMute() },
-            stop: { [weak self] in self?.state.send(.stop) },
+            stop: { [weak self] in self?.stopPressed() },
             openConsole: { [weak self] in self?.state.openConsole() },
             collapse: { [weak self] in self?.collapse() },
             submitPassphrase: { [weak self] phrase in self?.state.wakeActions.submitPassphrase(phrase) },
@@ -208,6 +268,7 @@ public final class OrbPanelController {
         deniedPillTimer?.cancel()
         hoverTimer?.cancel()
         takeoff?.cancel()
+        traceHold?.cancel()
     }
 
     // MARK: - Public API (fixed signature)
@@ -223,6 +284,7 @@ public final class OrbPanelController {
     public func hide() {
         collapse()
         pendingFly = nil
+        pendingTrace = nil
         if flight != .none {
             // Cut the flight short and put the body back on its perch now, so it
             // reappears where Kevin left it: a goal spring left armed would fly on
@@ -246,6 +308,7 @@ public final class OrbPanelController {
         if expanded { collapse() }
         cancelFlight()
         pendingFly = nil
+        pendingTrace = nil
         if !positioned { placeInitially() }
         let mouse = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
         let goal = CGPoint(x: mouse.x, y: mouse.y - 40)
@@ -269,6 +332,8 @@ public final class OrbPanelController {
             .removeDuplicates()
             .sink { [weak self] phase in
                 guard let self else { return }
+                // Falling asleep ends whatever it was doing on screen: a Stop, a sleep.
+                if phase == .asleep, self.sim.phase != .asleep, self.flight != .none { self.reactToStop() }
                 self.sim.setPhase(phase)
                 self.blobView.poke()
             }
@@ -314,11 +379,15 @@ public final class OrbPanelController {
 
         // The pill: the first problem, else the gate, else the latest toast. The gate
         // outranks toasts because its lockout toast and countdown arrive together and
-        // the countdown is the one worth the space.
+        // the countdown is the one worth the space. A toast that repeats the showing
+        // one's words (the app's "Stopped", then the engine's "stopped" a moment later)
+        // does not flip the pill.
         Publishers.CombineLatest3(
             state.$snapshot.map(\.problems.first).removeDuplicates(),
             gatePill.removeDuplicates(),
-            state.$toasts.map(\.last).removeDuplicates())
+            state.$toasts.map(\.last).removeDuplicates { a, b in
+                a?.tone == b?.tone && a?.text.lowercased() == b?.text.lowercased()
+            })
             .map { problem, gate, toast -> OrbPill? in
                 if let p = problem { return OrbPill(text: p, tone: .error) }
                 if let g = gate { return g }
@@ -347,7 +416,10 @@ public final class OrbPanelController {
             }
             .store(in: &cancellables)
 
-        // Flights. The overlay layer draws the shapes; the blob answers only these two.
+        // Flights and traces. The overlay layer draws the shapes; the blob answers
+        // these — and `clear`, which takes a line it is drawing down with the shapes.
+        // `clear` is the brain's ordinary show_clear as much as a Stop's, so it is not
+        // a Stop here: the Stop comes on `stopPressedNotification` below.
         state.overlayCommands
             .receive(on: DispatchQueue.main)
             .sink { [weak self] cmd in
@@ -355,8 +427,12 @@ public final class OrbPanelController {
                 switch cmd {
                 case .orbFly(let x, let y, let dwellMs, let reason):
                     self.fly(to: CGPoint(x: x, y: y), dwellMs: dwellMs, reason: reason)
+                case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason):
+                    self.trace(points: points.map { CGPoint(x: $0.x, y: $0.y) }, closed: closed, label: label, ttlMs: ttlMs, tone: tone, reason: reason)
                 case .orbHome:
                     self.flyHome()
+                case .clear:
+                    self.drawingsCleared()
                 default:
                     break
                 }
@@ -364,6 +440,10 @@ public final class OrbPanelController {
             .store(in: &cancellables)
 
         let nc = NotificationCenter.default
+        // A Stop pressed anywhere in the app, the moment it is pressed.
+        observers.append(nc.addObserver(forName: Self.stopPressedNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reactToStop() }
+        })
         observers.append(nc.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.sim.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
         })
@@ -518,6 +598,11 @@ public final class OrbPanelController {
         syncPanelToBody()
         switch flight {
         case .outbound:
+            if trace != nil {
+                // Parked with the pen's point on the first point: draw.
+                startTracing()
+                return
+            }
             // Parked beside the target. The dwell is time spent parked here — it
             // counts from now, not from the arrival splat, so the landing wobble
             // never eats it. Nothing is persisted.
@@ -528,14 +613,19 @@ public final class OrbPanelController {
         case .homing:
             // Home again, on the perch it left: nothing changed, nothing to save.
             endFlight(clearTrail: false)
-        case .hovering:
+        case .hovering, .tracing:
             break
         case .none:
             persistPosition()
-            // Kevin's throw has landed and is the perch; now the fly that waited for it.
+            // Kevin's throw has landed and is the perch; now the fly (or trace) that waited for it.
             if let p = pendingFly {
                 pendingFly = nil
                 if CACurrentMediaTime() < p.expires { fly(to: p.target, dwellMs: p.dwellMs, reason: p.reason) }
+            } else if let p = pendingTrace {
+                pendingTrace = nil
+                if CACurrentMediaTime() < p.expires, case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason) = p.cmd {
+                    trace(points: points.map { CGPoint(x: $0.x, y: $0.y) }, closed: closed, label: label, ttlMs: ttlMs, tone: tone, reason: reason)
+                }
             }
         }
     }
@@ -571,6 +661,9 @@ public final class OrbPanelController {
         guard !body.dragging, panel.isVisible else { return }
         if expanded { collapse() }
         if !positioned { placeInitially() }
+        // A plain fly overtakes a trace: the half-drawn line comes down, the pen morphs back.
+        if trace != nil { cancelTrace() }
+        pendingTrace = nil
         let now = CACurrentMediaTime()
         let dwell = max(0.2, (dwellMs ?? 2000) / 1000)
         if flight == .none, body.isActive {
@@ -620,10 +713,24 @@ public final class OrbPanelController {
         #if JARHEAD_ORB_PREVIEW
         let from = body.center
         #endif
-        let spot = body.flyBeside(target, spring: .flight)
+        let spot: CGPoint
+        if let trace {
+            // A trace lands with the pen's point on the first point, not beside it:
+            // the body parks a tip's length behind it, back along the way it came,
+            // and the pen forms on the wing pointing the way it flies.
+            var dir = CGVector(dx: trace.points[0].x - body.center.x, dy: trace.points[0].y - body.center.y)
+            let len = hypot(dir.dx, dir.dy)
+            dir = len > 1 ? CGVector(dx: dir.dx / len, dy: dir.dy / len) : trace.direction(at: 0)
+            sim.cursor = dir
+            let tip = sim.cursorTipTarget(direction: dir, squash: sim.flightSquash)
+            spot = CGPoint(x: trace.points[0].x - tip.dx, y: trace.points[0].y - tip.dy)
+            body.fly(to: spot, spring: .flight)
+        } else {
+            spot = body.flyBeside(target, spring: .flight)
+        }
         #if JARHEAD_ORB_PREVIEW
-        print(String(format: "takeoff: from CG %.0f,%.0f (after any hop %.0f,%.0f) -> landing CG %.0f,%.0f beside %.0f,%.0f",
-                     from.x, from.y, body.center.x, body.center.y, spot.x, spot.y, target.x, target.y))
+        print(String(format: "takeoff: from CG %.0f,%.0f (after any hop %.0f,%.0f) -> landing CG %.0f,%.0f %@ %.0f,%.0f",
+                     from.x, from.y, body.center.x, body.center.y, spot.x, spot.y, trace == nil ? "beside" : "pen on", target.x, target.y))
         fflush(stdout)
         #endif
         scanObstacles(force: true)
@@ -652,9 +759,18 @@ public final class OrbPanelController {
         }
     }
 
-    /// Back to the perch: at once on `orb.home`, or when the hover runs out.
+    /// Back to the perch: at once on `orb.home`, or when the hover runs out. A trace
+    /// under way is cancelled — its half-drawn line comes down. Never over Kevin's
+    /// hand: not while he drags, and not while his throw still glides (its landing
+    /// is his perch and must be saved as such). Outside a flight only an idle body
+    /// parked off its perch — where a cancelled trace left it — drifts back.
     private func flyHome() {
-        guard flight != .none else { return }
+        pendingTrace = nil
+        guard !body.dragging else { return }
+        if trace != nil { cancelTrace() }
+        if flight == .none {
+            guard !body.isActive, let perch, hypot(body.center.x - perch.x, body.center.y - perch.y) > 2 else { return }
+        }
         driftHome()
     }
 
@@ -684,31 +800,216 @@ public final class OrbPanelController {
         hoverUntil = 0
         sim.flight = false
         sim.flightMoving = false
+        sim.traceColor = nil
+        sim.cursor = nil
         if clearTrail { trail.clear() }
         blobView.poke()
     }
 
-    /// Cut a flight short. Nothing of it outlives this: the launch is called off and
-    /// the body is stopped where it is (a goal spring left armed would fly on and
-    /// settle — and a settle outside a flight is persisted as the perch).
+    /// Cut a flight short. Nothing of it outlives this: the launch is called off, a
+    /// trace comes down, and the body is stopped where it is (a goal spring left armed
+    /// would fly on and settle — and a settle outside a flight is persisted as the
+    /// perch; a led body would keep the link running).
     private func cancelFlight() {
         takeoff?.cancel(); takeoff = nil
-        guard flight != .none else { return }
-        if body.hasGoal { body.teleport(to: body.center) }
+        // Taken before the trace comes down: a drawing pen leaves `flight` at none,
+        // and the teardown (the wake, the target, the hover) is owed all the same.
+        let wasFlying = flight != .none
+        if trace != nil { cancelTrace() }
+        guard wasFlying else { return }
+        if body.hasGoal || body.guided { body.teleport(to: body.center) }
         endFlight(clearTrail: true)
     }
 
     /// One dotted ghost of the blob where it is now, every `BlobTrail.spacing` while a
-    /// flight is actually moving. Never under reduce motion. Always in the flight
-    /// colour: the first ghost drops while the field is still easing from the phase
-    /// colour, and a purple ghost behind a green blob reads as two creatures.
+    /// flight is actually moving — not while it draws: the line is that wake. Never
+    /// under reduce motion. Always in the flight colour: the first ghost drops while
+    /// the field is still easing from the phase colour, and a purple ghost behind a
+    /// green blob reads as two creatures.
     private func dropGhostIfDue() {
-        guard flight != .none, !sim.reducedMotion, body.speed > 240 else { return }
+        guard flight != .none, flight != .tracing, !sim.reducedMotion, body.speed > 240 else { return }
         let now = CACurrentMediaTime()
         guard now - trail.lastDropAt >= BlobTrail.spacing else { return }
-        guard let image = BlobGhostImage.render(cells: sim.cells, ramp: sim.ramp, color: OrbPalette.acting,
+        guard let image = BlobGhostImage.render(cells: sim.cells, ramp: sim.ramp, color: sim.traceColor ?? OrbPalette.acting,
                                                 size: Self.collapsedSize, scale: panel.backingScaleFactor) else { return }
         trail.drop(image: image, frame: panel.frame, below: panel, at: now)
+    }
+
+    // MARK: - Traces (orb.trace)
+
+    /// Draw a stroke by hand: fly to its first point as the pen, then lead the pen
+    /// along it. Refused while Kevin is dragging; an open capsule folds first; with
+    /// the orb hidden, or under reduce motion, the line appears whole (one sealed
+    /// publish) and the blob only flies to it (or not at all). While Kevin's own throw
+    /// still glides the trace waits for it to land, as a fly does. A trace already
+    /// under way comes down first.
+    private func trace(points raw: [CGPoint], closed: Bool, label: String?, ttlMs: Double?, tone: OverlayTone, reason: String?) {
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(raw.count + 1)
+        for p in raw where pts.last.map({ hypot($0.x - p.x, $0.y - p.y) > 0.5 }) ?? true { pts.append(p) }
+        if closed, let first = pts.first, let last = pts.last, hypot(first.x - last.x, first.y - last.y) > 0.5 { pts.append(first) }
+        guard pts.count >= 2 else { return }
+        let path = TracePath(id: "trace-" + UUID().uuidString, points: pts, tone: tone, label: label, ttlMs: ttlMs ?? Self.traceDefaultTTL, reason: reason)
+
+        guard !body.dragging else { return }
+        if trace != nil { cancelTrace() }
+        pendingTrace = nil
+        if !panel.isVisible || sim.reducedMotion {
+            // The line, whole; the blob flies to it if it is on screen.
+            state.liveStrokes.send(path.stroke(upTo: pts.count - 1, pen: nil, done: true, ttlMs: path.ttlMs))
+            if panel.isVisible { fly(to: pts[0], dwellMs: 1500, reason: reason) }
+            return
+        }
+        if expanded { collapse() }
+        if !positioned { placeInitially() }
+        let now = CACurrentMediaTime()
+        if flight == .none, body.isActive {
+            pendingTrace = (.orbTrace(points: pts.map { Point2(x: $0.x, y: $0.y) }, closed: false, label: label, ttlMs: ttlMs, tone: tone, reason: reason), now + 3.0)
+            return
+        }
+        pendingFly = nil
+        if perch == nil { perch = body.center }
+        hoverTimer?.cancel(); hoverTimer = nil
+        hoverUntil = 0
+        trace = path
+        flightTarget = pts[0]
+        flight = .outbound
+        sim.flight = true
+        sim.traceColor = OrbPalette.tone(tone)
+        // Which side of the line the body rides: the outside of the stroke's turn.
+        sim.cursorHand = path.hand
+        blobView.paused = false
+        panel.orderFrontRegardless()
+        if body.isActive { takeOff() } else { scheduleTakeoff() }
+        blobView.poke()
+    }
+
+    /// Parked with the pen on the first point: the line begins. From here the physics
+    /// tick leads the body (`advanceTrace`).
+    private func startTracing() {
+        guard var path = trace else { return }
+        flight = .tracing
+        sim.flightMoving = true
+        sim.cursor = path.direction(at: 0)
+        path.s = 0
+        path.startedAt = CACurrentMediaTime()
+        trace = path
+        let pen = path.points[0]
+        body.lead(to: CGPoint(x: pen.x - sim.cursorTip.dx, y: pen.y - sim.cursorTip.dy), velocity: .zero)
+        state.liveStrokes.send(path.stroke(upTo: 0, pen: pen, done: false, ttlMs: path.ttlMs))
+        lastTracePublishAt = path.startedAt
+        lastTracePublishSegment = 0
+        lastTracePublishPen = pen
+        blobView.poke()
+    }
+
+    /// One physics tick of drawing: the pen moves `speed × dt` along the stroke, the
+    /// body is placed so its point sits on the pen (the tip the field last laid out,
+    /// so a turn swings the body round the pen) every tick, and the line so far is
+    /// published when it has grown by a vertex, when it is whole, and otherwise at
+    /// most every `tracePublishInterval` once the pen has moved `tracePublishMinMove`.
+    private func advanceTrace(_ dt: Double) {
+        guard var path = trace, flight == .tracing, path.s < path.length else { return }
+        path.s = min(path.length, path.s + path.speed(at: path.s) * dt)
+        let (pen, dir, segment) = path.sample(at: path.s)
+        sim.cursor = dir
+        let tip = sim.cursorTip
+        let centre = CGPoint(x: pen.x - tip.dx, y: pen.y - tip.dy)
+        let v = dt > 0 ? CGVector(dx: (centre.x - body.center.x) / dt, dy: (centre.y - body.center.y) / dt) : .zero
+        body.lead(to: centre, velocity: v)
+        let finished = path.s >= path.length
+        let now = CACurrentMediaTime()
+        let moved = hypot(pen.x - lastTracePublishPen.x, pen.y - lastTracePublishPen.y)
+        if finished || segment != lastTracePublishSegment
+            || (now - lastTracePublishAt >= Self.tracePublishInterval && moved > Self.tracePublishMinMove) {
+            state.liveStrokes.send(path.stroke(upTo: finished ? path.points.count - 1 : segment, pen: finished ? nil : pen, done: finished, ttlMs: path.ttlMs))
+            lastTracePublishAt = now
+            lastTracePublishSegment = segment
+            lastTracePublishPen = pen
+        }
+        trace = path
+        if finished { finishTrace() }
+    }
+
+    /// The line is sealed. The pen holds on it a beat, then morphs back and drifts home.
+    private func finishTrace() {
+        traceHold?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.flight == .tracing else { return }
+                self.traceHold = nil
+                self.trace = nil
+                self.sim.cursor = nil
+                self.sim.traceColor = nil
+                self.driftHome()
+            }
+        }
+        traceHold = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.traceHoldSeconds, execute: work)
+    }
+
+    /// Take a trace down: the half-drawn line is removed from the overlay, the pen
+    /// morphs back. A trace still on its way out leaves the flight running (the caller
+    /// decides where it goes); one that was drawing is stopped where it is.
+    private func cancelTrace() {
+        traceHold?.cancel(); traceHold = nil
+        guard let path = trace else { return }
+        trace = nil
+        state.liveStrokes.send(LiveStroke(id: path.id, points: [], tone: path.tone, label: nil, done: true, ttlMs: 0))
+        sim.cursor = nil
+        sim.traceColor = nil
+        if flight == .tracing {
+            body.teleport(to: body.center)
+            flight = .none
+            sim.flight = false
+            sim.flightMoving = false
+        }
+        blobView.poke()
+    }
+
+    /// The overlay's `clear`: the brain's show_clear ("remove every shape you drew"),
+    /// or a Stop taking the shapes down. A line being drawn goes with them, quietly —
+    /// the pen morphs back and drifts home — and a trace still waiting for Kevin's
+    /// throw to land is dropped. Nothing else changes: a plain fly is not the brain's
+    /// drawing, and the Stop's body language belongs to the Stop (`reactToStop`).
+    private func drawingsCleared() {
+        pendingTrace = nil
+        guard trace != nil else { return }
+        // Out to the first point, or drawing: either way the body is off its perch on
+        // the trace's account. (A trace pending behind a plain fly is not; it is dropped above.)
+        let onTheTrace = flight == .outbound || flight == .tracing
+        cancelTrace()
+        if onTheTrace, !expanded { driftHome() }
+    }
+
+    // MARK: - Stop
+
+    /// Stop, from the capsule or the menu: the command, and the in-process signals
+    /// nothing waits on — `stopPressedNotification` (which brings `reactToStop` here),
+    /// the overlay's `clear` (the shapes come down) and the "Stopped" toast that is
+    /// the pill under the blob and the Console's. The capsule's Stop flashes red for the press.
+    private func stopPressed() {
+        capsuleModel.stopFlash += 1
+        state.send(.stop)
+        NotificationCenter.default.post(name: Self.stopPressedNotification, object: nil)
+        state.overlayCommands.send(.clear)
+        state.toast("Stopped")
+    }
+
+    /// The blob's own answer to a Stop, at once: whatever it was doing on screen ends
+    /// — the flight or trace is cancelled, its wake and half-drawn line with it — it
+    /// shivers with wide eyes that settle, and drifts home if it is not there.
+    private func reactToStop() {
+        pendingFly = nil
+        pendingTrace = nil
+        pendingPoke?.cancel(); pendingPoke = nil
+        let wasOut = flight != .none
+        cancelFlight()
+        blobView.paused = false
+        sim.nudge(1.6)
+        sim.poke()
+        if wasOut, !expanded, let perch, hypot(body.center.x - perch.x, body.center.y - perch.y) > 2 { driftHome() }
+        blobView.poke()
     }
 
     // MARK: - Physics loop
@@ -716,11 +1017,13 @@ public final class OrbPanelController {
     /// One display frame while the body moves. Returns true while it still does.
     private func physicsTick(_ dt: Double) -> Bool {
         guard !expanded, !frozen, body.isActive || body.dragging else { return false }
+        if flight == .tracing { advanceTrace(dt) }
         let contacts = body.step(dt)
         sim.setContacts(contacts)
         sim.setMotion(lag: body.lag, grab: body.grab, velocity: body.velocity, dragging: body.dragging)
-        // The acting eyes track the work on a flight; otherwise the direction of motion.
-        if flight != .none, let target = flightTarget {
+        // The acting eyes track the work on a flight; otherwise the direction of
+        // motion. Drawing, the pen's own look (along the line) rules.
+        if flight != .none, flight != .tracing, let target = flightTarget {
             sim.attention = CGVector(dx: target.x - body.center.x, dy: target.y - body.center.y)
         } else {
             sim.attention = nil
@@ -728,7 +1031,8 @@ public final class OrbPanelController {
         sim.leanX = body.leanX
         sim.leanY = body.leanY
         syncPanelToBody()
-        if body.isActive || body.dragging { scanObstacles(force: false) }
+        // Nothing to bounce off while led along a line.
+        if body.isActive || body.dragging, flight != .tracing { scanObstacles(force: false) }
         if body.isActive { dropGhostIfDue() }
         return body.isActive || body.dragging
     }
@@ -917,11 +1221,13 @@ public final class OrbPanelController {
             guard hypot(p.x - down.x, p.y - down.y) >= 4 else { return }
             dragMoved = true
             if expanded { collapse() }
-            // Kevin's hand ends a flight (and one the capsule had parked, which the
-            // collapse just sent home); where he lets go is the new perch. A fly that
-            // was waiting for his throw to land is dropped: he has taken over.
+            // Kevin's hand ends a flight or a trace (and one the capsule had parked,
+            // which the collapse just sent home); where he lets go is the new perch. A
+            // fly or trace that was waiting for his throw to land is dropped: he has
+            // taken over.
             cancelFlight()
             pendingFly = nil
+            pendingTrace = nil
             userMoved = true
             body.beginDrag(pointer: down)
             scanObstacles(force: true)
@@ -995,9 +1301,8 @@ public final class OrbPanelController {
         menu.addItem(menuTarget.item(muted ? "Unmute" : "Mute", symbol: muted ? "mic.slash.fill" : "mic.fill") { [weak self] in
             self?.toggleMute()
         })
-        let stop = menuTarget.item("Stop", symbol: "stop.fill") { [weak self] in self?.state.send(.stop) }
-        stop.isEnabled = awake
-        menu.addItem(stop)
+        // Never disabled: a Stop must land in every phase.
+        menu.addItem(menuTarget.item("Stop", symbol: "stop.fill") { [weak self] in self?.stopPressed() })
         menu.addItem(.separator())
         menu.addItem(menuTarget.item("Console", symbol: "rectangle.3.group.fill") { [weak self] in self?.state.openConsole() })
         menu.addItem(.separator())
@@ -1137,6 +1442,25 @@ extension OrbPanelController {
     public var previewHasPendingFly: Bool { pendingFly != nil }
     /// The capsule interrupted a flight; closing it sends the blob home.
     public var previewHomeAfterCollapse: Bool { homeAfterCollapse }
+    /// A trace is carried or drawn right now.
+    public var previewIsTracing: Bool { trace != nil }
+    /// The pen's arc length so far and the stroke's length (0, 0 without a trace).
+    public var previewTraceProgress: (s: Double, length: Double) { trace.map { ($0.s, $0.length) } ?? (0, 0) }
+    /// Where the pen is on the stroke (CG), while drawing.
+    public var previewPenCG: CGPoint? { trace.flatMap { flight == .tracing ? $0.sample(at: $0.s).0 : nil } }
+    /// Where the field last laid the pen's point (CG): the body's centre plus the tip.
+    public var previewTipCG: CGPoint { CGPoint(x: body.center.x + sim.cursorTip.dx, y: body.center.y + sim.cursorTip.dy) }
+    /// How far into the cursor form the field is (0…1).
+    public var previewCursorK: Double { sim.previewCursorK }
+    /// The stroke's bounds (CG), for framing a shot; nil without a trace.
+    public var previewTraceBounds: CGRect? {
+        guard let t = trace, let first = t.points.first else { return nil }
+        var r = CGRect(origin: first, size: .zero)
+        for p in t.points { r = r.union(CGRect(origin: p, size: .zero)) }
+        return r
+    }
+    /// The capsule's / menu's Stop, as pressed.
+    public func previewStop() { stopPressed() }
     /// The trail's ghosts currently showing (AppKit frames), for framing a screenshot.
     public var previewGhostFrames: [NSRect] { trail.visibleFrames }
     /// Draw the showing ghosts into a context whose origin is `offset` (AppKit screen space).
@@ -1233,6 +1557,23 @@ extension OrbPanelController {
     /// The eyes this frame: "col,row open pupilX,pupilY shape" each.
     public var previewEyes: String {
         sim.eyes.map { String(format: "%.1f,%.1f open %.2f look %.2f,%.2f %@", $0.col, $0.row, $0.open, $0.pupilX, $0.pupilY, String(describing: $0.shape)) }.joined(separator: " | ")
+    }
+    /// Why the last eye fit failed, in numbers (BlobSim.eyeFitNote).
+    public var previewEyeFitNote: String { sim.eyeFitNote }
+    /// The field's body cells this frame as glyphs (one line per row, '·' for empty),
+    /// for seeing why a fit failed.
+    public var previewCellsArt: String {
+        let glyphs = sim.ramp.glyphs
+        var rows: [String] = []
+        for r in 0..<BlobSim.rows {
+            var line = ""
+            for c in 0..<BlobSim.cols {
+                let v = Int(sim.cells[r * BlobSim.cols + c])
+                line.append(v == 0 ? "·" : glyphs[min(glyphs.count - 1, v)])
+            }
+            rows.append(String(format: "%2d %@", r, line))
+        }
+        return rows.joined(separator: "\n")
     }
 
     /// The unit direction and distance from the body's centre to the nearest work-area

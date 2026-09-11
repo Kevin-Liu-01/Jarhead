@@ -65,7 +65,7 @@ test("anthropic brain: one tool round-trip through the runner, then the spoken a
     assert.equal(first.tools.length, ALL_TOOL_SPECS.length);
     assert.deepEqual(first.thinking, { type: "adaptive" });
     assert.deepEqual(first.output_config, { effort: "medium" });
-    assert.deepEqual(first.tool_choice, { type: "auto", disable_parallel_tool_use: true });
+    assert.deepEqual(first.tool_choice, { type: "auto", disable_parallel_tool_use: false }, "several calls per turn are allowed; batch.ts runs look-only ones together and acting ones in order");
     assert.equal(first.messages.length, 1);
     assert.match(String(first.messages[0]!.content), /Kevin said: "what app is in front"/);
 

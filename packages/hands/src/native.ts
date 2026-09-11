@@ -17,7 +17,7 @@ import type { Rect } from "@jarhead/protocol";
 const log = logger("hands.native");
 
 export interface NativeError {
-  readonly code: "bad_request" | "permission_denied" | "capture_failed" | "not_found" | "internal" | "unavailable" | "timeout";
+  readonly code: "bad_request" | "permission_denied" | "capture_failed" | "not_found" | "internal" | "unavailable" | "timeout" | "cancelled";
   readonly message: string;
 }
 
@@ -110,6 +110,8 @@ export interface NativeHandsProcessOptions {
   readonly binPath: string;
   readonly defaultTimeoutMs?: number;
   readonly spawnImpl?: typeof spawn;
+  /** With a stand-in `spawnImpl` there is no binary to find: treat the helper as available. */
+  readonly assumeAvailable?: boolean;
 }
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
@@ -128,14 +130,14 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
   }
 
   get available(): boolean {
-    return existsSync(this.opts.binPath);
+    return this.opts.assumeAvailable === true || existsSync(this.opts.binPath);
   }
 
   private ensure(): Promise<void> {
     if (this.ready) return Promise.resolve();
     if (this.starting) return this.starting;
     this.starting = new Promise<void>((resolve, reject) => {
-      if (!existsSync(this.opts.binPath)) {
+      if (!this.available) {
         reject(new NativeRequestError({ code: "unavailable", message: `hands helper not built at ${this.opts.binPath}; run pnpm build:hands` }));
         return;
       }
@@ -184,6 +186,25 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
       p.reject(new NativeRequestError(error));
       this.pending.delete(id);
     }
+  }
+
+  /** Requests still waiting on the helper right now. */
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
+  /**
+   * Kevin pressed stop: every request in flight is failed now with `cancelled`,
+   * so the toolset awaiting it returns an error instead of acting on the answer.
+   * The helper is serial and cannot be interrupted mid-op — a click already sent
+   * still lands — but its late reply arrives for an id nobody waits on and is
+   * dropped in onLine(), and nothing queued behind it is written. Returns how
+   * many were dropped.
+   */
+  cancelPending(reason = "stopped"): number {
+    const n = this.pending.size;
+    this.failAll({ code: "cancelled", message: reason });
+    return n;
   }
 
   private onLine(line: string): void {

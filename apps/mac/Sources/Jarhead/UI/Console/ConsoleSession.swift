@@ -26,6 +26,8 @@ final class ConsoleSession: ObservableObject {
 
     /// Bumped by the window controller to focus the composer (⌘K).
     @Published var composerFocusRequest = 0
+    /// Bumped on every Stop (the composer's button, ⌘.): the Stop button flashes red for the press.
+    @Published var stopFlash = 0
 
     var isLedgerMode: Bool { ledgerDay != nil }
 
@@ -79,6 +81,9 @@ struct ConsoleLightboxItem: Identifiable, Equatable {
 /// pure value types (and therefore cheap to diff) without observing AppState.
 struct ConsoleActions {
     var send: (EngineCommand) -> Void = { _ in }
+    /// Stop everything — the command plus the feedback that does not wait for the
+    /// engine (ConsoleWindowController.handle(.stop)); the composer's button and ⌘. share it.
+    var stop: () -> Void = {}
     var screenshotURL: (String) -> URL = { URL(fileURLWithPath: $0) }
     var loadLedgerDays: () -> Void = {}
     var pickLedgerDay: (String) -> Void = { _ in }

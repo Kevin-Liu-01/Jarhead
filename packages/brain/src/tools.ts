@@ -23,7 +23,7 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
   screenshot: {
     name: "screenshot",
     description: "Capture the display under the cursor (or a given display id) and return it as an image. Always take a fresh screenshot before clicking on something you have not seen since the screen changed. Coordinates for every other tool are pixels of the LAST screenshot.",
-    parameters: { type: "object", properties: { display: { type: ["number", "string"], description: "display id, 'main', or 'cursor' (default)" } } },
+    parameters: { type: "object", properties: { display: { type: ["number", "string"], description: "display id, 'main', or 'cursor' (default)" }, quick: { type: "boolean", description: "true for a faster, smaller image (1280 px long edge) when you only need to see where things are; zoom for small text" } } },
   },
   zoom: {
     name: "zoom",
@@ -156,6 +156,7 @@ export const SELF_SPECS: readonly ToolSpec[] = [
 const point = { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, y] in pixels of the last screenshot (global points if you have taken none)" };
 const ttlMs = { type: "integer", minimum: 500, maximum: 60000, description: "How long the shape stays, in ms (default 6000)" };
 const label = { type: "string", description: "Short caption drawn next to the shape (a few words)" };
+const quick = { type: "boolean", description: "true to stamp the shape instantly instead of having Jarhead's blob draw it by hand (default false: the blob flies there and traces it)" };
 
 /**
  * Teaching shapes. Nothing here clicks or types: the shapes land on Jarhead's
@@ -167,18 +168,18 @@ const label = { type: "string", description: "Short caption drawn next to the sh
 export const DRAW_SPECS: readonly ToolSpec[] = [
   {
     name: "show_circle",
-    description: "Draw a fading circle on Kevin's screen to point at something while you explain — where a button is, what to click next. Teaching only; it does not click. x, y and radius are pixels of the last screenshot, like every other tool (global points if you have taken none).",
-    parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, radius: { type: "number", description: "in the same pixels as x and y" }, label, ttlMs }, required: ["x", "y", "radius"] },
+    description: "Draw a fading circle on Kevin's screen to point at something while you explain — where a button is, what to click next. Jarhead's blob flies there and traces it by hand (quick: true stamps it instantly). Teaching only; it does not click. x, y and radius are pixels of the last screenshot, like every other tool (global points if you have taken none).",
+    parameters: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, radius: { type: "number", description: "in the same pixels as x and y" }, label, ttlMs, quick }, required: ["x", "y", "radius"] },
   },
   {
     name: "show_arrow",
-    description: "Draw a fading arrow from one point to another on Kevin's screen — 'drag this there', 'then this one'. Teaching only. Points are [x, y] in pixels of the last screenshot.",
-    parameters: { type: "object", properties: { from: point, to: point, label, ttlMs }, required: ["from", "to"] },
+    description: "Draw a fading arrow from one point to another on Kevin's screen — 'drag this there', 'then this one'. The blob traces the line, then the head appears (quick: true stamps it instantly). Teaching only. Points are [x, y] in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { from: point, to: point, label, ttlMs, quick }, required: ["from", "to"] },
   },
   {
     name: "show_rect",
-    description: "Frame a region of Kevin's screen with a fading rectangle — the panel, the field, the row he should look at. Teaching only. rect is [x, y, w, h] in pixels of the last screenshot.",
-    parameters: { type: "object", properties: { rect: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[x, y, w, h] in pixels of the last screenshot" }, label, ttlMs }, required: ["rect"] },
+    description: "Frame a region of Kevin's screen with a fading rectangle — the panel, the field, the row he should look at. The blob traces the frame (quick: true stamps it instantly). Teaching only. rect is [x, y, w, h] in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { rect: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[x, y, w, h] in pixels of the last screenshot" }, label, ttlMs, quick }, required: ["rect"] },
   },
   {
     name: "show_text",
@@ -187,8 +188,8 @@ export const DRAW_SPECS: readonly ToolSpec[] = [
   },
   {
     name: "show_stroke",
-    description: "Draw a fading freehand line through a list of points on Kevin's screen — trace a path, underline something, sketch a shape. Teaching only. points is [[x, y], [x, y], ...] (at least two) in pixels of the last screenshot.",
-    parameters: { type: "object", properties: { points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 2, description: "[[x, y], ...] in pixels of the last screenshot" }, label, ttlMs }, required: ["points"] },
+    description: "Draw a fading freehand line through a list of points on Kevin's screen — trace a path, underline something, sketch a shape. The blob draws it point by point (quick: true stamps it instantly). Teaching only. points is [[x, y], [x, y], ...] (at least two) in pixels of the last screenshot.",
+    parameters: { type: "object", properties: { points: { type: "array", items: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 }, minItems: 2, description: "[[x, y], ...] in pixels of the last screenshot" }, label, ttlMs, quick }, required: ["points"] },
   },
   { name: "show_clear", description: "Remove every shape you drew on Kevin's screen.", parameters: { type: "object", properties: {} } },
 ];

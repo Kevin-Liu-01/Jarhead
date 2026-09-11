@@ -36,6 +36,12 @@ export interface BrainAttachment {
   readonly mediaType: "image/png";
   /** For the model: "Kevin circled this region of his screen: x,y w×h (global points)". */
   readonly note: string;
+  /**
+   * What the image is: a region Kevin circled (the default), or the whole screen
+   * as it was when the task began — the pre-warm shot the engine takes in parallel
+   * with the brain's start so its first move can be an action, not a screenshot.
+   */
+  readonly kind?: "mark" | "screen";
 }
 
 export interface BrainSink {
@@ -65,6 +71,8 @@ export interface Brain {
   /** Stop the current task (Kevin said stop). */
   cancel(): Promise<void>;
   stop(): Promise<void>;
+  /** The current one-line status, when it can change after start() (a warm transport that came up later). The engine shows this over start()'s detail. */
+  readonly detail?: string;
 }
 
 /**

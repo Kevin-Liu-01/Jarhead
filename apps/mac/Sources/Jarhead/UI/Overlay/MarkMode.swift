@@ -3,10 +3,12 @@ import AppKit
 /// One stroke of Kevin's: ⌥⇧C (or the orb menu) makes every overlay window
 /// interactive — crosshair, a faint accent wash and frame, a hint pill on the display
 /// under the cursor — and the first mouse-down starts a stroke drawn live in the mark
-/// tone on every display it crosses. Mouse-up ends it: the padded bounds and the
-/// stroke (≤ 200 points) go to the engine as `mark.add`, the stroke stays on screen
-/// 8 s, and the windows are click-through again. Escape, a click that did not move,
-/// or 20 s of nothing cancels.
+/// tone on every display it crosses. The stroke travels the same channel as the
+/// blob's traces (`AppState.liveStrokes`: one id, more points each time), so his line
+/// and Jarhead's are drawn by one code path. Mouse-up ends it: the padded bounds and
+/// the stroke (≤ 200 points) go to the engine as `mark.add`, the stroke is sealed
+/// with 8 s of life, and the windows are click-through again. Escape, a click that
+/// did not move, or 20 s of nothing cancels (and takes the stroke down).
 ///
 /// Focus: the overlay is a non-activating panel, so the window under the cursor takes
 /// key status — for the one Escape, heard by a local monitor — without activating
@@ -29,6 +31,8 @@ final class MarkModeController {
     private var origin: OverlayWindow?
     /// The stroke so far, global CG points.
     private var points: [CGPoint] = []
+    /// The live stroke's id on the channel while a stroke is down; nil before and after.
+    private var strokeId: String?
     private var keyMonitor: Any?
     private var globalKeyMonitor: Any?
     private var timeout: Timer?
@@ -55,7 +59,6 @@ final class MarkModeController {
         for w in windows {
             w.markEvents = { [weak self] event, window in self?.handle(event, in: window) }
             w.interactive = true
-            w.model.liveStroke = []
             w.model.markMode = true
             w.orderFrontRegardless()
         }
@@ -121,15 +124,16 @@ final class MarkModeController {
         case .leftMouseDown:
             origin = w
             points = [global]
-            // Every display gets the stroke: AppKit keeps delivering the drag to the
-            // window it started in, so a loop that crosses the seam onto the other
-            // display would otherwise vanish there until mouse-up.
-            for win in windows { win.model.liveStroke = [win.local(global)] }
+            // The stroke goes out on the live channel: the manager hands it to every
+            // display it touches (AppKit keeps delivering the drag to the window it
+            // started in, so a loop that crosses the seam would otherwise vanish there).
+            strokeId = "mark-" + UUID().uuidString
+            publish(done: false, ttlMs: 0)
             if !w.isKeyWindow { w.makeKey() }
         case .leftMouseDragged:
             guard let origin, origin === w else { return }
             points.append(global)
-            for win in windows { win.model.liveStroke.append(win.local(global)) }
+            publish(done: false, ttlMs: 0)
         case .leftMouseUp:
             guard let origin, origin === w else { return }
             points.append(global)
@@ -139,6 +143,13 @@ final class MarkModeController {
         }
     }
 
+    /// The stroke so far on `AppState.liveStrokes`, in the mark tone. Sealing it with
+    /// no life (`done`, ttl 0) takes it down.
+    private func publish(done: Bool, ttlMs: Double) {
+        guard let id = strokeId, let state = manager?.state else { return }
+        state.liveStrokes.send(LiveStroke(id: id, points: points.map { Point2(x: $0.x, y: $0.y) }, tone: .mark, label: nil, done: done, ttlMs: ttlMs))
+    }
+
     private func finish() {
         let box = OverlayGeometry.bounds(points)
         guard points.count >= 2, max(box.width, box.height) >= Self.minTravel else {
@@ -146,6 +157,9 @@ final class MarkModeController {
             return
         }
         let stroke = points
+        // Sealed: it stays `echoSeconds`, then fades.
+        publish(done: true, ttlMs: Self.echoSeconds * 1000)
+        strokeId = nil
         end(outcome: "marked \(Int(box.width.rounded()))×\(Int(box.height.rounded())) with \(stroke.count) points")
         manager?.commitMark(points: stroke)
     }
@@ -154,6 +168,8 @@ final class MarkModeController {
         guard active else { return }
         active = false
         self.outcome = outcome
+        // A stroke still down (a cancel mid-drag, a click that did not move) comes down with the mode.
+        if strokeId != nil { publish(done: true, ttlMs: 0); strokeId = nil }
         timeout?.invalidate(); timeout = nil
         poll?.invalidate(); poll = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -167,7 +183,6 @@ final class MarkModeController {
             w.interactive = false
             w.model.markHint = false
             w.model.markMode = false
-            w.model.liveStroke = []
             // Drop key status the way the orb does: re-order with canBecomeKey now false.
             if wasKey { w.orderOut(nil) }
             w.orderFrontRegardless()

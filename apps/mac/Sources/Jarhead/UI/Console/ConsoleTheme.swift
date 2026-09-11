@@ -114,6 +114,7 @@ enum ConsoleTheme {
         case .thinking: return PhaseMeta(label: "Thinking", color: thinking, hint: "The brain is working.")
         case .acting: return PhaseMeta(label: "Acting", color: acting, hint: "Jarhead is using the computer.")
         case .muted: return PhaseMeta(label: "Muted", color: muted, hint: "Mic muted. Session open.")
+        case .paused: return PhaseMeta(label: "Paused", color: muted, hint: "Mic muted. Session open.")
         case .error: return PhaseMeta(label: "Error", color: error, hint: "Something broke. See problems.")
         }
     }

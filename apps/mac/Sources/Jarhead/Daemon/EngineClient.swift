@@ -15,6 +15,10 @@ final class EngineClient: @unchecked Sendable {
     private var reconnectDelay: TimeInterval = 0.3
     private var reconnectScheduled = false
     private var isConnected = false
+    /// Commands sent while the daemon is (re)connecting. Stop, wake, pause must not
+    /// vanish because a reconnect was in flight; they are delivered on `.ready`,
+    /// newest last, dropped after 5 s or beyond 20 entries. On `net`.
+    private var outbox: [(at: Date, json: [String: Any])] = []
 
     /// Speaker frames and flush requests land here. Set before `start()`.
     var audio: AudioEngine?
@@ -73,6 +77,7 @@ final class EngineClient: @unchecked Sendable {
                 self.reconnectDelay = 0.3
                 self.isConnected = true
                 self.sendHello()
+                self.flushOutbox()
                 self.publishConnected(true)
                 if let cb = self.onConnected { DispatchQueue.main.async(execute: cb) }
                 self.receiveLoop(conn)
@@ -164,8 +169,24 @@ final class EngineClient: @unchecked Sendable {
     }
 
     /// Must run on `net`.
+    /// On `net`. Delivers what was queued while disconnected, oldest first.
+    private func flushOutbox() {
+        let now = Date()
+        let due = outbox.filter { now.timeIntervalSince($0.at) < 5 }
+        outbox.removeAll()
+        for item in due { rawSend(json: item.json) }
+        if !due.isEmpty { log("delivered \(due.count) queued command(s) after reconnect") }
+    }
+
     private func rawSend(json: [String: Any]) {
-        guard let conn = connection, isConnected else { return }
+        guard let conn = connection, isConnected else {
+            if json["type"] as? String == "command" {
+                outbox.append((Date(), json))
+                if outbox.count > 20 { outbox.removeFirst(outbox.count - 20) }
+                log("daemon not connected; queued command \((json["command"] as? [String: Any])?["type"] as? String ?? "?")")
+            }
+            return
+        }
         do {
             let frame = try Wire.encodeJSON(json)
             conn.send(content: frame, completion: .contentProcessed { [weak self] err in

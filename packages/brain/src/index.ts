@@ -4,7 +4,7 @@ export { loadAttachments, markNote, attachmentsPreamble, attachmentsRecap } from
 export type { LoadedAttachment } from "./attachments.ts";
 export { ALL_TOOL_SPECS, COMPUTER_TOOL_SPECS, DESKTOP_TOOL_SPECS, AGENT_SPECS, MISC_SPECS, SYSTEM_SPECS, SELF_SPECS, DRAW_SPECS, specByName } from "./tools.ts";
 export type { ToolSpec } from "./tools.ts";
-export { ToolRunner, resultText } from "./runner.ts";
+export { ToolRunner, resultText, circlePoints, rectPoints, traceDurationMs, headStart } from "./runner.ts";
 export type { RunnerOptions, ToolRunnerOptions, RunOutcome } from "./runner.ts";
 export { SelfEditManager, selfEditDoctorRow, selfEditPrompt, railsTouched, railsNamed, saysApplyAnyway, firstFailureLine, RAILS, DEFAULT_CHECKS, SELF_EDIT_BUDGET_MS, STALE_AFTER_MS } from "./selfedit.ts";
 export type { SelfEditOptions, SelfEditRecord, SelfEditCheck, SelfEditAgent, LastApply, CheckCommand, CheckContext } from "./selfedit.ts";
@@ -26,4 +26,13 @@ export { OpenAICompatibleBrain, detectCapabilities, isLoopbackHost, isPrivateHos
 export type { OpenAICompatibleBrainOptions, CompatibleCapabilities, CompatibleKeyChoice, ChatMessage, ChatTool, ChatToolCall } from "./compatible.ts";
 export { CodexBrain, CODEX_MCP_SERVER, codexAddendum, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexHomeDir, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "./codex.ts";
 export type { CodexBinary, CodexBrainOptions, CodexExecOptions, CodexProbe, CodexProbeOptions, FindCodexOptions } from "./codex.ts";
+export { CodexAppServer, appServerArgs, appServerEffort } from "./codex-app-server.ts";
+export type { AppServerOptions, AppServerItem, TurnHandlers, TurnResult, TokenUsage, UserInput } from "./codex-app-server.ts";
+export { codexMcpConfigArgs, codexUserMcpServers, codexDisableUserServersArgs } from "./codex-config.ts";
+export { ReflexRunner, parseReflex, normalizeUtterance, addressesJarhead, clickByNameScript } from "./reflex.ts";
+export type { Reflex, ReflexKind, ReflexOutcome, ReflexRunnerOptions } from "./reflex.ts";
+export { runToolBatch, allReadOnly } from "./batch.ts";
+export type { BatchCall } from "./batch.ts";
+export { screenNote } from "./attachments.ts";
+export type { DelegationTimingsExtra, ReflexSource } from "./delegator.ts";
 // mcp-bridge.ts is a script (the stdio MCP server Codex starts); import it directly, not from here.

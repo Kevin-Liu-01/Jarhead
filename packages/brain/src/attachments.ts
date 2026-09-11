@@ -56,8 +56,17 @@ function markAge(ageMs: number): string {
 export function attachmentsPreamble(attachments: readonly BrainAttachment[] | undefined): string {
   if (!attachments || attachments.length === 0) return "";
   const lines = attachments.map((a, i) => `Attached image ${i + 1}: ${a.note}`);
-  lines.push("Treat the circled region as what Kevin means by \"this\"; look at it before answering.");
+  if (attachments.some((a) => a.kind !== "screen")) lines.push("Treat the circled region as what Kevin means by \"this\"; look at it before answering.");
   return lines.join("\n");
+}
+
+/**
+ * The note on the pre-warm screenshot: the display under the cursor as the task
+ * began. It is the "last screenshot" the toolset maps coordinates through, so the
+ * model can click on it straight away instead of spending its first turn looking.
+ */
+export function screenNote(width: number, height: number, detail = ""): string {
+  return `the screen right now (${width}x${height} px${detail ? `, ${detail}` : ""}), taken as this task began. This counts as your last screenshot: click coordinates are pixels of this image. Act on it directly; take another screenshot only after the screen has changed.`;
 }
 
 /**

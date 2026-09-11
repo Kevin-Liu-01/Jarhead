@@ -35,7 +35,8 @@ class FakeEngine extends EventEmitter implements EngineLike {
   ledger = { read: () => [{ at: 1, type: "problem", text: "x" }], days: () => ["2026-09-09.jsonl", "2026-09-10.jsonl"] };
   config = { stateDir: "/tmp/jh-test" };
   toolCalls: { name: string; input: unknown }[] = [];
-  runner = {
+  /** `attached` undefined = a runner that does not say (older engines); false = no task attached, tool.run is refused. */
+  runner: { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } = {
     run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
       this.toolCalls.push({ name, input });
       if (name === "screenshot") return { result: { kind: "image", pngBase64: Buffer.from("png").toString("base64"), width: 100, height: 50, note: "main display" } };
@@ -62,6 +63,7 @@ class FakeEngine extends EventEmitter implements EngineLike {
   registerOwnPid(pid: number): void {
     this.pids.push(pid);
   }
+  ear(): void {}
   problem(): void {}
 }
 
@@ -134,6 +136,14 @@ test("tool.run goes through the engine's runner and answers the asking client on
   asker.sendJson({ type: "tool.run", id: "t4", name: "zoom", input: { region: [0, 0, 1, 1] } });
   asker.sendJson({ type: "tool.run", id: "t5", name: "format_disk", input: {} });
   await new Promise((r) => setTimeout(r, 80));
+  // No task attached to the runner (a Codex turn that outlived a stop): refused before the runner sees it.
+  engine.runner.attached = false;
+  asker.sendJson({ type: "tool.run", id: "t6", name: "left_click", input: { coordinate: [1, 1] } });
+  await new Promise((r) => setTimeout(r, 40));
+  engine.runner.attached = true;
+  asker.sendJson({ type: "tool.run", id: "t7", name: "left_click", input: { coordinate: [1, 1] } });
+  await new Promise((r) => setTimeout(r, 40));
+  delete engine.runner.attached;
 
   const results = got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
   const byId = new Map(results.map((r) => [r.id, r.result]));
@@ -148,7 +158,10 @@ test("tool.run goes through the engine's runner and answers the asking client on
   // Names outside ALL_TOOL_SPECS never reach the runner.
   assert.equal(byId.get("t5")?.kind, "error");
   assert.match((byId.get("t5") as { message: string }).message, /unknown tool format_disk/);
-  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app", "screenshot", "run_shell", "zoom"]);
+  assert.equal(byId.get("t6")?.kind, "error");
+  assert.match((byId.get("t6") as { message: string }).message, /^refused: no task is running in Jarhead; left_click was not run/);
+  assert.equal(byId.get("t7")?.kind, "text", "with a task attached the same call runs");
+  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app", "screenshot", "run_shell", "zoom", "left_click"], "the refused call never reached the runner");
   assert.equal(seenByBystander.filter((m) => m.type === "tool.result").length, 0, "tool results are not broadcast");
 
   asker.close();

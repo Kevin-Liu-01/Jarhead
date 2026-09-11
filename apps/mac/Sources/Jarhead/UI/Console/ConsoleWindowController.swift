@@ -74,6 +74,7 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         let session = self.session
         let actions = ConsoleActions(
             send: { [state] command in state.send(command) },
+            stop: { [weak self] in _ = self?.handle(.stop) },
             screenshotURL: { [state] path in state.screenshotURL(path) },
             loadLedgerDays: { [state] in Task { await session.loadDays(from: state) } },
             pickLedgerDay: { [state] day in Task { await session.pick(day: day, from: state) } },
@@ -99,7 +100,18 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             close()
             return true
         case .stop:
+            // Every Stop in the Console lands here (the composer's button, ⌘.), in every
+            // phase: the command, then the feedback nothing waits on — the in-process
+            // Stop notification (the orb cancels its flight or trace and shivers; the
+            // name is OrbPanelController.stopPressedNotification, spelled out because
+            // the Console preview compiles without UI/Orb), the overlay's clear (the
+            // shapes come down), a "Stopped" toast (the Console's pill, and the orb's),
+            // and the composer's Stop flashing red for the press.
             state.send(.stop)
+            NotificationCenter.default.post(name: Notification.Name("jarhead.stopPressed"), object: nil)
+            state.overlayCommands.send(.clear)
+            state.toast("Stopped")
+            session.stopFlash += 1
             return true
         case .focusComposer:
             session.composerFocusRequest += 1

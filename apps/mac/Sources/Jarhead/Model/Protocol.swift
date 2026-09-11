@@ -5,7 +5,7 @@ import Foundation
 // enum values decode to a safe default so a newer daemon never crashes the app.
 
 public enum Phase: String, Codable, CaseIterable {
-    case asleep, connecting, listening, speaking, thinking, acting, muted, error
+    case asleep, connecting, listening, speaking, thinking, acting, muted, error, paused
 
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -199,6 +199,13 @@ public struct ScreenMark: Codable, Identifiable, Equatable {
     public var at: Double
     public var screenshotPath: String?
     public var consumed: Bool
+    public var element: MarkElement?
+
+    public struct MarkElement: Codable, Equatable {
+        public var role: String?
+        public var title: String?
+        public var app: String?
+    }
 }
 
 public struct ConnectorHealth: Codable, Equatable {
@@ -302,9 +309,15 @@ public struct Settings: Codable, Equatable {
     public var wake: WakeSettings?
     /// First-run onboarding finished. Optional on the wire for the same reason.
     public var onboarded: Bool?
+    /// Reflexes: act on unambiguous spoken commands without the model.
+    public var reflexes: Bool?
+    /// "free" (float where it last worked) or "notch" (live in the MacBook notch).
+    public var orbHome: String?
 
     public var wakeSettings: WakeSettings { wake ?? .standard }
     public var isOnboarded: Bool { onboarded ?? false }
+    public var reflexesOn: Bool { reflexes ?? true }
+    public var livesInNotch: Bool { (orbHome ?? "notch") == "notch" }
 }
 
 /// Configuration health without secrets: key presence and the last probe.
@@ -380,7 +393,7 @@ public struct Snapshot: Codable, Equatable {
 
     public static let empty = Snapshot(
         phase: .asleep, session: nil, transcript: [], delegations: [], agents: [], connectors: [],
-        settings: Settings(voice: "cedar", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", micDeviceId: nil, idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, onboarded: nil),
+        settings: Settings(voice: "cedar", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", micDeviceId: nil, idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, onboarded: nil, reflexes: nil, orbHome: nil),
         permissions: Permissions(microphone: .unknown, screenRecording: .unknown, accessibility: .unknown),
         problems: [], brainReady: false, handsReady: false, setup: nil, marks: [])
 }
@@ -403,6 +416,9 @@ public enum EngineCommand: Equatable {
     case markClear
     /// Restart the engine process on its current code (the app respawns it).
     case daemonRestart
+    /// Keep the session open but silent (mic muted, output dropped, no delegations) / undo that.
+    case pause
+    case resume
     case openConsole, openLedger
     case requestPermission(String)
     /// Secrets to write to ~/.jarhead/env; nil removes. Keys: OPENAI_API_KEY, ANTHROPIC_API_KEY, JARHEAD_BRAIN_API_KEY.
@@ -431,6 +447,8 @@ public enum EngineCommand: Equatable {
             return o
         case .markClear: return ["type": "mark.clear"]
         case .daemonRestart: return ["type": "daemon.restart"]
+        case .pause: return ["type": "pause"]
+        case .resume: return ["type": "resume"]
         case .openConsole: return ["type": "open-console"]
         case .openLedger: return ["type": "open-ledger"]
         case .requestPermission(let which): return ["type": "request-permission", "which": which]
@@ -458,14 +476,17 @@ public struct SettingsPatch: Equatable {
     public var orbPosition: OrbPosition?
     /// Replaces the whole wake block (the engine fills any field left out with its default).
     public var wake: WakeSettings?
+    public var reflexes: Bool?
+    public var orbHome: String?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
-                wake: WakeSettings? = nil) {
+                wake: WakeSettings? = nil, reflexes: Bool? = nil, orbHome: String? = nil) {
         self.voice = voice; self.brain = brain; self.brainModel = brainModel; self.brainBaseUrl = brainBaseUrl; self.effort = effort
         self.onboarded = onboarded
         self.micDeviceId = micDeviceId; self.idleSleepMinutes = idleSleepMinutes; self.autoWake = autoWake; self.orbPosition = orbPosition
         self.wake = wake
+        self.reflexes = reflexes; self.orbHome = orbHome
     }
 
     public var json: [String: Any] {
@@ -481,6 +502,8 @@ public struct SettingsPatch: Equatable {
         if let v = autoWake { o["autoWake"] = v }
         if let v = orbPosition { o["orbPosition"] = ["x": v.x, "y": v.y] }
         if let v = wake { o["wake"] = v.json }
+        if let v = reflexes { o["reflexes"] = v }
+        if let v = orbHome { o["orbHome"] = v }
         return o
     }
 }
@@ -513,6 +536,8 @@ public enum OverlayCommand: Equatable {
     case stroke(points: [Point2], label: String?, ttlMs: Double?, tone: OverlayTone)
     /// The blob flies to a point and hovers dwellMs (default 2 s) before drifting home.
     case orbFly(x: Double, y: Double, dwellMs: Double?, reason: String?)
+    /// The blob flies to the first point, becomes a cursor, and drags the stroke along the points.
+    case orbTrace(points: [Point2], closed: Bool, label: String?, ttlMs: Double?, tone: OverlayTone, reason: String?)
     case orbHome
     case clear
 
@@ -550,6 +575,11 @@ public enum OverlayCommand: Equatable {
         case "orb.fly":
             guard let x = num("x"), let y = num("y") else { return nil }
             self = .orbFly(x: x, y: y, dwellMs: num("dwellMs"), reason: json["reason"] as? String)
+        case "orb.trace":
+            guard let raw = json["points"] as? [Any] else { return nil }
+            let pts = raw.compactMap(pt)
+            guard pts.count >= 2 else { return nil }
+            self = .orbTrace(points: pts, closed: (json["closed"] as? Bool) ?? false, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone, reason: json["reason"] as? String)
         case "orb.home":
             self = .orbHome
         case "point":

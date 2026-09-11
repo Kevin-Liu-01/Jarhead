@@ -27,11 +27,13 @@ export interface EngineLike {
   reportInputLevel(level: number): void;
   setMicrophonePermission(state: Permissions["microphone"]): void;
   registerOwnPid(pid: number): void;
+  /** On-device partial/final transcript from the app (reflex path). */
+  ear(text: string, isFinal: boolean, segment: number, at: number): void;
   problem(text: string): void;
   readonly ledger: { read(at?: number): unknown[]; days(): string[] };
   readonly config: { readonly stateDir: string };
-  /** The engine's ToolRunner; `tool.run` messages go through it. */
-  readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }> };
+  /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
+  readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
 }
 
 interface Client {
@@ -140,6 +142,9 @@ export class DaemonServer {
       case "mic-level":
         this.engine.reportInputLevel(Number(msg.level) || 0);
         return;
+      case "ear":
+        if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));
+        return;
       case "permission":
         if (msg.which === "microphone") this.engine.setMicrophonePermission(msg.state);
         return;
@@ -167,6 +172,12 @@ export class DaemonServer {
     const requestId = typeof id === "string" ? id : String(id ?? "");
     if (typeof name !== "string" || !specByName(name)) {
       this.send(client, { type: "tool.result", id: requestId, result: { kind: "error", message: `unknown tool ${String(name)}` } });
+      return;
+    }
+    // An out-of-process brain may only act while a delegation has the runner: a Codex
+    // turn that outlived a stop (interrupted before turn/start answered) gets a refusal, not a click.
+    if (this.engine.runner.attached === false) {
+      this.send(client, { type: "tool.result", id: requestId, result: { kind: "error", message: `refused: no task is running in Jarhead; ${name} was not run (Kevin stopped the task, or it finished)` } });
       return;
     }
     let result: ToolResult;

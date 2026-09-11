@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { REPO_ROOT } from "@jarhead/core";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { toMcpContent, toMcpTool, runToolOverSocket } from "../mcp-bridge.ts";
+import { SocketToolClient, toMcpContent, toMcpTool, runToolOverSocket } from "../mcp-bridge.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 
 const BRIDGE = fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url));
@@ -37,6 +37,7 @@ class FakeEngine extends EventEmitter implements EngineLike {
   reportInputLevel(): void {}
   setMicrophonePermission(): void {}
   registerOwnPid(): void {}
+  ear(): void {}
   problem(): void {}
 }
 
@@ -103,6 +104,55 @@ test("mcp bridge: the stdio server lists every tool and routes tools/call over t
     assert.deepEqual(engine.calls[1]?.input, { display: "main" });
   } finally {
     await client.close();
+    await server.close();
+  }
+});
+
+test("mcp bridge: SocketToolClient keeps one connection, multiplexes calls in flight, survives the daemon going away and reconnects on the next call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-bridge-"));
+  const socketPath = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  let server = new DaemonServer(engine, socketPath);
+  await server.listen();
+  const client = new SocketToolClient(socketPath);
+  try {
+    // Two calls at once over the one connection: both answered, matched by id.
+    const [a, b] = await Promise.all([client.run("frontmost_app", {}), client.run("list_windows", { all: true })]);
+    assert.deepEqual(a, { kind: "text", text: "frontmost_app → {}" });
+    assert.deepEqual(b, { kind: "text", text: 'list_windows → {"all":true}' });
+    assert.equal(client.connected, true);
+    assert.equal(client.inFlight, 0);
+    assert.equal(server.clientCount, 1, "one connection for both calls");
+    const shot = await client.run("screenshot", {});
+    assert.equal(shot.kind, "image");
+    assert.equal(server.clientCount, 1, "still the same connection");
+
+    // The daemon goes away mid-call: the call comes back as an error result, not a hang.
+    const slow = new FakeEngine();
+    slow.runner.run = () => new Promise(() => undefined);
+    await server.close();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(client.connected, false);
+    server = new DaemonServer(slow, socketPath);
+    await server.listen();
+    const hanging = client.run("frontmost_app", {}, 5000);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(client.connected, true, "reconnected for the new call");
+    assert.equal(client.inFlight, 1);
+    await server.close();
+    const dropped = await hanging;
+    assert.equal(dropped.kind, "error");
+    assert.match((dropped as { message: string }).message, /closed the connection/);
+
+    // A dead socket: an error result; a daemon back on the path: the next call works.
+    const dead = await client.run("frontmost_app", {}, 500);
+    assert.equal(dead.kind, "error");
+    assert.match((dead as { message: string }).message, /could not reach the Jarhead daemon/);
+    server = new DaemonServer(engine, socketPath);
+    await server.listen();
+    assert.deepEqual(await client.run("frontmost_app", {}), { kind: "text", text: "frontmost_app → {}" });
+  } finally {
+    client.close();
     await server.close();
   }
 });

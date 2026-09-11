@@ -893,7 +893,8 @@ struct LightboxView: View {
 // MARK: - Composer
 
 /// 48pt, owns its top rule: wake/sleep, mute, the field, Send (the one filled
-/// accent, only while there is text), Stop (filled red only while a delegation runs).
+/// accent, only while there is text), Stop (filled red while a delegation runs and
+/// for 300 ms after a press; never disabled — a Stop must land in every phase).
 struct ComposerBar: View {
     let phase: Phase
     let stopHot: Bool
@@ -901,7 +902,10 @@ struct ComposerBar: View {
     @Environment(\.consoleActions) private var actions
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
+    @State private var stopFlashing = false
     @FocusState private var focused: Bool
+
+    static let stopFlashSeconds = 0.3
 
     private var inSession: Bool { ConsoleTheme.sessionPhases.contains(phase) }
     private var muted: Bool { phase == .muted }
@@ -940,18 +944,27 @@ struct ComposerBar: View {
                 .help("Send (Return)")
                 .accessibilityLabel("Send")
 
-                Button { actions.send(.stop) } label: {
+                Button(action: actions.stop) {
                     HStack(spacing: 6) {
                         Image(systemName: "stop.fill").font(.system(size: 10))
                         Text("Stop")
                     }
                 }
-                .buttonStyle(ConsoleButtonStyle(kind: stopHot ? .danger : .ghost, height: 32))
+                .buttonStyle(ConsoleButtonStyle(kind: stopHot || stopFlashing ? .danger : .ghost, height: 32))
                 .help("Stop everything (⌘.)")
+                .accessibilityLabel("Stop")
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
         }
         .onChange(of: session.composerFocusRequest) { focused = true }
+        .onChange(of: session.stopFlash) {
+            // The press is felt at once, whatever the engine does with it.
+            stopFlashing = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(Self.stopFlashSeconds * 1_000_000_000))
+                stopFlashing = false
+            }
+        }
     }
 
     private func submit() {

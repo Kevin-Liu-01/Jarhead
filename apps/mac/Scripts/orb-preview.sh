@@ -31,6 +31,16 @@
 #   … ORB_STICK=1 ORB_STICK_PULL=30 …                                                                 # let go mid-cling (neck ≈ 0.4): prints the sag back onto the patch every 50 ms — the centre eases ~1 pt a step, never jumps
 #   ORB_X=118 ORB_Y=798 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_FLING=-500,500 ORB_EXIT_AFTER=6 Scripts/orb-preview.sh   # a slow throw into the bottom-left corner: "settled … stuck 2" — one patch per wall
 #   ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=3 Scripts/orb-preview.sh   # every expression in one labelled strip → preview-blob-eyes.png
+#   ORB_X=200 ORB_Y=620 ORB_PHASES=acting ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_TRACE="700,300;1060,300;1060,460;700,460" ORB_TRACE_CLOSED=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=9 Scripts/orb-preview.sh
+#                                                                                                     # orb.trace: flies to the first point as the pen (cursor form), drags the line along the points while the
+#                                                                                                     # overlay draws it growing from under the tip, seals it, holds, goes home → preview-blob-trace-cursor.png
+#                                                                                                     # (mid-line) and preview-blob-trace-done.png; prints progress, the pen/tip error and the eyes every 0.25 s.
+#                                                                                                     # ORB_TRACE_LABEL, ORB_TRACE_TONE=accent|ok|warn|mark, ORB_TRACE_AT (default 1.2) tune it
+#   ORB_MARK=1 ORB_TRACE="…" ORB_TRACE_AT=3 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=10 Scripts/orb-preview.sh   # Kevin's mark first (mark tone), then Jarhead's line: both on one layer → preview-overlay-trace.png
+#   ORB_TRACE="…" ORB_STOP_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                            # Stop mid-line: the capsule's Stop as pressed — prints the stop command, the clear, the "Stopped" pill;
+#                                                                                                     # the line comes down, the pen morphs back with a shiver and goes home → preview-blob-stop.png
+#   ORB_TRACE="…" ORB_CLEAR_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                           # the brain's show_clear mid-line: the line comes down and the pen goes home quietly — no Stop, no pill
+#   ORB_FLY="700,300" ORB_CLEAR_AT=2.6 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                       # … and during a plain fly the hover is left alone (a clear is not a Stop)
 #
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's

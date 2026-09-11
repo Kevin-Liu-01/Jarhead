@@ -7,6 +7,7 @@ import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { delegationPrompt, historyPrompt } from "./anthropic.ts";
 import { loadAttachments } from "./attachments.ts";
+import { runToolBatch } from "./batch.ts";
 
 /**
  * The OpenAI-compatible brain: Chat Completions with function tools over plain
@@ -362,12 +363,14 @@ export class OpenAICompatibleBrain implements Brain {
 
       if (text) sink.step({ kind: "note", text: text.slice(0, 1000) });
       const images: Array<{ name: string; result: Extract<ToolResult, { kind: "image" }> }> = [];
-      for (const call of calls) {
-        if (signal.aborted) return { status: "cancelled" };
-        if (++steps > maxSteps) return { status: "failed", error: `I stopped after ${maxSteps} tool calls without finishing` };
-        sink.thinking(progressLine(call.function.name, call.args));
-        const outcome = await this.opts.runner.run(call.function.name, call.args);
-        const r = outcome.result;
+      if (signal.aborted) return { status: "cancelled" };
+      steps += calls.length;
+      if (steps > maxSteps) return { status: "failed", error: `I stopped after ${maxSteps} tool calls without finishing` };
+      // Look-only calls run together, anything that acts runs in order (batch.ts).
+      const outcomes = await runToolBatch(this.opts.runner, calls.map((c) => ({ name: c.function.name, input: c.args })), { signal, before: (c) => sink.thinking(progressLine(c.name, c.input)) });
+      if (signal.aborted) return { status: "cancelled" };
+      for (const [i, call] of calls.entries()) {
+        const r = outcomes[i]?.result ?? { kind: "error" as const, message: "cancelled before it ran" };
         messages.push({ role: "tool", tool_call_id: call.id, content: this.toolText(call.function.name, r) });
         if (r.kind === "image" && this.capabilities.images) images.push({ name: call.function.name, result: r });
       }

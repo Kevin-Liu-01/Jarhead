@@ -15,7 +15,10 @@ import SwiftUI
 //   ORB_MARK=1      enter mark mode at 1 s and synthesise a stroke through the overlay
 //                   window (sendEvent): the harness's fake sender prints the resulting
 //                   mark.add; shoots preview-overlay-mark.png mid-stroke and prints the
-//                   live stroke's point count per window
+//                   live stroke's point count per window (the stroke rides
+//                   AppState.liveStrokes, the blob's own channel). With ORB_TRACE (see
+//                   OrbPreviewApp) at ORB_TRACE_AT=3 or later, Kevin's mark is followed
+//                   by Jarhead's line: both hands on one layer
 //   ORB_MARK=seam   … the stroke centred on the main display's top edge, so it crosses
 //                   onto the display above (when there is one): every window must carry
 //                   the live stroke and the mark.add rect has a negative y
@@ -61,7 +64,7 @@ enum OverlayPreviewDemo {
                 let items = w.model.items
                 let labelled = items.filter { OverlayPainter.label(for: $0.kind) != nil }
                 let drawn = labelled.filter(\.showsLabel).map { OverlayPainter.label(for: $0.kind)!.text }
-                print("overlay: window \(i) CG \(Int(w.cgFrame.minX)),\(Int(w.cgFrame.minY)) \(Int(w.cgFrame.width))×\(Int(w.cgFrame.height)) -> items \(items.count), labelled \(labelled.count), labels drawn here \(drawn.count): \(drawn.joined(separator: " | "))")
+                print("overlay: window \(i) (#\(w.windowNumber), level \(w.level.rawValue), visible \(w.isVisible), on screen \(w.occlusionState.contains(.visible)), sharing \(w.sharingType.rawValue)) CG \(Int(w.cgFrame.minX)),\(Int(w.cgFrame.minY)) \(Int(w.cgFrame.width))×\(Int(w.cgFrame.height)) -> items \(items.count), labelled \(labelled.count), labels drawn here \(drawn.count): \(drawn.joined(separator: " | "))")
             }
             fflush(stdout)
         }
@@ -125,7 +128,9 @@ enum OverlayPreviewDemo {
                     }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(pts.count - 12)) {
-                    let live = manager.windows.map { String($0.model.liveStroke.count) }
+                    // The stroke comes through the live channel (one hop through the main
+                    // queue), so each window's copy is a frame or so behind the hand.
+                    let live = manager.windows.map { String($0.model.strokes.first(where: { !$0.done })?.points.count ?? 0) }
                     let box = OverlayGeometry.bounds(Array(pts.prefix(pts.count - 12)))
                     print("mark: mid-drag, live stroke points per window: \(live.joined(separator: ", ")); stroke so far spans CG y \(Int(box.minY))…\(Int(box.maxY))")
                     fflush(stdout)

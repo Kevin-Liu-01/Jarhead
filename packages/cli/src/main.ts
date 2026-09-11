@@ -7,6 +7,7 @@ import { Engine } from "@jarhead/engine";
 import { DaemonClient } from "@jarhead/daemon";
 import type { Delegation, EngineEvent, TranscriptItem } from "@jarhead/protocol";
 import { render, runChecks } from "./doctor.ts";
+import { bench } from "./bench.ts";
 
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
@@ -20,15 +21,20 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <wake|sleep|mute|unmute|stop>   send a command to the running daemon
+  pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, stop (no API spend)
 
 flags
   --speak        (probe) also play the voice through ffplay
   --timeout N    (probe) seconds to wait after the utterance (default 25)
+  --runs N       (bench) samples per metric (default 5)
+  --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on Kevin's login)
+  --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
+  --json         (bench) print the table as JSON
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -298,6 +304,9 @@ try {
     case "say":
       if (rest.length === 0) throw new Error('usage: jarhead say "hello there"');
       await sendCommand({ type: "say-text", text: rest.join(" ") });
+      break;
+    case "bench":
+      await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json") });
       break;
     case "cmd": {
       const sub = rest[0];

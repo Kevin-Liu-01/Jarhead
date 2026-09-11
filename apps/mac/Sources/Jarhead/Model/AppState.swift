@@ -15,6 +15,10 @@ public final class AppState: ObservableObject {
 
     /// Overlay commands arrive here in global points; each overlay window filters to its own display.
     public let overlayCommands = PassthroughSubject<OverlayCommand, Never>()
+    /// Strokes being drawn right now (by the blob, or by Kevin in mark mode): the same
+    /// id is re-sent with a longer `points` as the line grows; `done` seals it and the
+    /// overlay keeps it for `ttlMs`. Global points, y down. Orb → overlay, in-process.
+    public let liveStrokes = PassthroughSubject<LiveStroke, Never>()
 
     // MARK: wake word gate (owned by the app; the UI only reads and asks)
 
@@ -139,6 +143,19 @@ public struct WakeActions {
     public var submitPassphrase: (String) -> Void = { _ in }
     public var cancelAuth: () -> Void = {}
     public init() {}
+}
+
+/// A stroke in progress on the click-through layer.
+public struct LiveStroke: Equatable {
+    public var id: String
+    public var points: [Point2]
+    public var tone: OverlayTone
+    public var label: String?
+    public var done: Bool
+    public var ttlMs: Double
+    public init(id: String, points: [Point2], tone: OverlayTone, label: String? = nil, done: Bool = false, ttlMs: Double = 6000) {
+        self.id = id; self.points = points; self.tone = tone; self.label = label; self.done = done; self.ttlMs = ttlMs
+    }
 }
 
 public struct Toast: Identifiable, Equatable {

@@ -1,7 +1,14 @@
 {
   "name": "jarhead",
   "version": "2.0.0",
+  "description": "Voice-first Mac assistant that uses the computer for you: GPT-Live-1 voice, vendor-neutral brains (Codex, Claude Code, any API), native hands, a blob that shows its work.",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kevin-Liu-01/Jarhead.git"
+  },
+  "homepage": "https://github.com/Kevin-Liu-01/Jarhead",
   "type": "module",
   "packageManager": "pnpm@10.30.0",
   "engines": {

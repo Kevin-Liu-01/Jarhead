@@ -8,7 +8,7 @@ import { ComputerToolset, ConfirmationState } from "@jarhead/hands";
 import { AgentRegistry } from "@jarhead/agents";
 import { Transcript, type LiveSession } from "@jarhead/live";
 import type { OverlayCommand, Rect, ScreenMark } from "@jarhead/protocol";
-import { ToolRunner, resultText } from "../runner.ts";
+import { ToolRunner, resultText, traceDurationMs } from "../runner.ts";
 import { Delegator } from "../delegator.ts";
 import { AnthropicBrain } from "../anthropic.ts";
 import { OpenAICompatibleBrain } from "../compatible.ts";
@@ -131,7 +131,7 @@ test("delegator: pending marks ride with the next task as absolute paths and are
 
   live.emit("delegation", "item_1", "client", 600);
   await sleep(30);
-  assert.deepEqual(seen[0]?.attachments, [{ path: join(dir, rel), mediaType: "image/png", note: NOTE }]);
+  assert.deepEqual(seen[0]?.attachments, [{ path: join(dir, rel), mediaType: "image/png", note: NOTE, kind: "mark" }]);
   assert.deepEqual(consumed, [["mark_1", "mark_2"]], "every pending mark is consumed, only the one with pixels is attached");
   assert.equal(settledCalls, 1, "an in-flight capture is waited for before the marks are taken");
   assert.deepEqual(released, []);
@@ -199,27 +199,53 @@ test("runner: the show_* tools map screenshot pixels to global points and put sh
   const steps: string[] = [];
   runner.attach({ thinking: () => undefined, commentary: () => undefined, step: (s) => steps.push(`${s.kind}:${s.tool?.name ?? ""}`), screenshot: () => undefined });
 
-  // Before any screenshot the numbers are global points as given.
+  // Before any screenshot the numbers are global points as given. By default the blob
+  // draws the shape by hand: an orb.trace along the shape's points; `quick` stamps it.
   let r = await runner.run("show_circle", { x: 300, y: 200, radius: 40, label: "here" });
   assert.equal(r.result.kind, "text");
-  assert.match(resultText(r.result), /^drew a circle at 300,200 \(global points\), radius 40; fades in 6 s$/);
-  assert.deepEqual(overlays[0], { cmd: "circle", x: 300, y: 200, radius: 40, label: "here", tone: "accent" });
+  assert.match(resultText(r.result), /^drew a circle at 300,200 \(global points\), radius 40; the blob is drawing it; fades in 6 s$/);
+  const traced = overlays[0] as Extract<OverlayCommand, { cmd: "orb.trace" }>;
+  assert.equal(traced.cmd, "orb.trace");
+  assert.equal(traced.points.length, 40, "a circle is sampled to 40 points");
+  assert.equal(traced.closed, true);
+  assert.equal(traced.label, "here");
+  assert.equal(traced.tone, "accent");
+  assert.equal(traced.reason, "show_circle");
+  assert.deepEqual(traced.points[0], { x: 300, y: 160 }, "starts at the top");
+  assert.ok(traced.points.every((pt) => Math.abs(Math.hypot(pt.x - 300, pt.y - 200) - 40) < 1e-6), "every point is on the circle");
+  r = await runner.run("show_circle", { x: 300, y: 200, radius: 40, label: "here", quick: true });
+  assert.deepEqual(overlays[1], { cmd: "circle", x: 300, y: 200, radius: 40, label: "here", tone: "accent" }, "quick: an instant stamp");
+  assert.match(resultText(r.result), /stamped; fades in 6 s$/);
 
   // After a screenshot (FakeHands: 100x50 px covering 200x100 points → 0.5 px per point) pixels become points through the same mapping the clicks use.
   await runner.run("screenshot", {});
-  r = await runner.run("show_circle", { x: 50, y: 25, radius: 10, ttlMs: 2000 });
-  assert.deepEqual(overlays[1], { cmd: "circle", x: 100, y: 50, radius: 20, ttlMs: 2000, tone: "accent" });
+  r = await runner.run("show_circle", { x: 50, y: 25, radius: 10, ttlMs: 2000, quick: true });
+  assert.deepEqual(overlays[2], { cmd: "circle", x: 100, y: 50, radius: 20, ttlMs: 2000, tone: "accent" });
   assert.match(resultText(r.result), /fades in 2 s/);
+  await runner.run("show_arrow", { from: [0, 0], to: [50, 25], label: "drag it here", quick: true });
+  assert.deepEqual(overlays[3], { cmd: "arrow", from: { x: 0, y: 0 }, to: { x: 100, y: 50 }, label: "drag it here", tone: "accent" });
+  // A traced arrow: the shaft is dragged as a line, the head stamped once the trace should have landed.
   await runner.run("show_arrow", { from: [0, 0], to: [50, 25], label: "drag it here" });
-  assert.deepEqual(overlays[2], { cmd: "arrow", from: { x: 0, y: 0 }, to: { x: 100, y: 50 }, label: "drag it here", tone: "accent" });
+  assert.deepEqual(overlays[4], { cmd: "orb.trace", points: [{ x: 0, y: 0 }, { x: 100, y: 50 }], closed: false, tone: "accent", reason: "show_arrow" });
+  assert.equal(overlays.length, 5, "the head waits for the trace");
+  await new Promise((res) => setTimeout(res, traceDurationMs([{ x: 0, y: 0 }, { x: 100, y: 50 }]) + 80));
+  const head = overlays[5] as Extract<OverlayCommand, { cmd: "arrow" }>;
+  assert.equal(head.cmd, "arrow");
+  assert.deepEqual(head.to, { x: 100, y: 50 });
+  assert.equal(head.label, "drag it here");
+  assert.ok(Math.abs(Math.hypot(head.from.x - 100, head.from.y - 50) - 28) < 1e-6, "the head's shaft is 28 points long, ending at the tip");
+  await runner.run("show_rect", { rect: [10, 10, 20, 5], quick: true });
+  assert.deepEqual(overlays[6], { cmd: "rect", rect: { x: 20, y: 20, w: 40, h: 10 }, tone: "accent" });
   await runner.run("show_rect", { rect: [10, 10, 20, 5] });
-  assert.deepEqual(overlays[3], { cmd: "rect", rect: { x: 20, y: 20, w: 40, h: 10 }, tone: "accent" });
-  await runner.run("show_text", { x: 5, y: 5, text: "start here", ttlMs: 100 }); // too short to see; clamped up
-  assert.deepEqual(overlays[4], { cmd: "text", x: 10, y: 10, text: "start here", ttlMs: 500, tone: "accent" });
-  await runner.run("show_stroke", { points: [[0, 0], [10, 0], [10, 10]], ttl_ms: 600_000 }); // and clamped down
-  assert.deepEqual(overlays[5], { cmd: "stroke", points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }], ttlMs: 60_000, tone: "accent" });
+  assert.deepEqual(overlays[7], { cmd: "orb.trace", points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 30 }, { x: 20, y: 30 }], closed: true, tone: "accent", reason: "show_rect" }, "a rect is its corners, closed");
+  await runner.run("show_text", { x: 5, y: 5, text: "start here", ttlMs: 100 }); // too short to see; clamped up; always instant
+  assert.deepEqual(overlays[8], { cmd: "text", x: 10, y: 10, text: "start here", ttlMs: 500, tone: "accent" });
+  await runner.run("show_stroke", { points: [[0, 0], [10, 0], [10, 10]], ttl_ms: 600_000, quick: true }); // and clamped down
+  assert.deepEqual(overlays[9], { cmd: "stroke", points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }], ttlMs: 60_000, tone: "accent" });
+  await runner.run("show_stroke", { points: [[0, 0], [10, 0], [10, 10]] });
+  assert.deepEqual(overlays[10], { cmd: "orb.trace", points: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }], closed: false, tone: "accent", reason: "show_stroke" }, "a stroke is traced as given");
   r = await runner.run("show_clear", {});
-  assert.deepEqual(overlays[6], { cmd: "clear" });
+  assert.deepEqual(overlays[11], { cmd: "clear" });
   assert.equal(resultText(r.result), "cleared the drawings");
 
   // Bad input is an error the model can read, not a crash, and draws nothing.
@@ -228,8 +254,11 @@ test("runner: the show_* tools map screenshot pixels to global points and put sh
   assert.equal((await runner.run("show_circle", { x: "a", y: 1, radius: 2 })).result.kind, "error");
   assert.equal((await runner.run("show_rect", { rect: [1, 2, 3] })).result.kind, "error");
   assert.equal((await runner.run("show_text", { x: 1, y: 2, text: "  " })).result.kind, "error");
-  assert.equal(overlays.length, 7);
+  assert.equal(overlays.length, 12);
   assert.ok(steps.includes("tool:show_circle") && steps.includes("error:show_stroke"), steps.join(" | "));
+  // Every drawing tool but show_text and show_clear takes `quick`.
+  for (const name of ["show_circle", "show_arrow", "show_rect", "show_stroke"]) assert.ok("quick" in specByName(name)!.parameters.properties, `${name} has quick`);
+  assert.ok(!("quick" in specByName("show_text")!.parameters.properties));
 
   // The specs are in the shared table (every brain sees them), the thinking channel has words for them, and the standing orders mention drawing.
   for (const s of DRAW_SPECS) assert.equal(specByName(s.name), s);
@@ -241,7 +270,7 @@ test("runner: the show_* tools map screenshot pixels to global points and put sh
   const shape = zodShape(specByName("show_stroke")!);
   assert.deepEqual(shape["points"]!.parse([[1, 2], [3, 4]]), [[1, 2], [3, 4]]);
   assert.throws(() => shape["points"]!.parse([1, 2]));
-  assert.equal(Object.keys(zodShape(specByName("show_circle")!)).sort().join(","), "label,radius,ttlMs,x,y");
+  assert.equal(Object.keys(zodShape(specByName("show_circle")!)).sort().join(","), "label,quick,radius,ttlMs,x,y");
 
   // Without an overlay hook (a runner-only engine) the tool still answers instead of failing.
   const { runner: bare } = makeRunner();

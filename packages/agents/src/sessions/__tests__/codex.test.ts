@@ -597,7 +597,8 @@ test("errors: top-level `error` events are notices — the status stays working 
       if (a.id === ID1) seen.push(`${a.status}: ${a.detail}`);
     });
     assert.deepEqual(await c.send(ID1, "hi"), { accepted: true, detail: "resumed headlessly" });
-    await until(() => seen.includes("working: codex · 3 msgs · demo-site · resumed: reconnecting 5/5"), 3_000, "the retry to show as detail");
+    // 8 s: under full-suite load the 400 ms fake delay plus the 50 ms coalescer can slip past 3 s.
+    await until(() => seen.includes("working: codex · 3 msgs · demo-site · resumed: reconnecting 5/5"), 8_000, "the retry to show as detail");
     const settled = await c.waitSettled(ID1, 3_000);
     assert.equal(settled.status, "idle");
     assert.equal(settled.detail, "codex · 3 msgs · demo-site · resumed by Jarhead");

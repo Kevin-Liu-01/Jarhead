@@ -161,6 +161,11 @@ final class BlobBody {
     private var ignoreWindows = false
     /// True while a goal spring is pulling the body somewhere (summon, flight, drift home).
     var hasGoal: Bool { goal != nil }
+    /// Led by the controller (a trace: the pen decides where the body is, frame by
+    /// frame); `step` integrates nothing and no wall or window pushes back, the
+    /// contacts still report. Any other motion — a teleport, a drag, a fling, a goal —
+    /// takes the lead back.
+    private(set) var guided = false
 
     private struct Impact { var nx: Double; var ny: Double; var press: Double }
     private var impacts: [Impact] = []
@@ -299,13 +304,35 @@ final class BlobBody {
         impacts.removeAll()
         adhesions.removeAll()
         dragging = false
+        guided = false
         isActive = false
         refreshScreens()
         updateLean()
     }
 
+    /// Put the body where the pen wants it this frame, moving at `v` (pt/s, for the
+    /// renderer's stretch and wobble), and keep it awake so the display link runs at
+    /// full rate. Walls, windows and adhesion are out of the picture until the lead
+    /// is taken back; the last goal and any grip are dropped.
+    func lead(to c: CGPoint, velocity v: CGVector) {
+        if !guided {
+            guided = true
+            dragging = false
+            goal = nil
+            arrived = false
+            lag = .zero
+            impacts.removeAll()
+            adhesions.removeAll()
+            ignoreWindows = true
+        }
+        center = c
+        velocity = v
+        isActive = true
+    }
+
     func beginDrag(pointer p: CGPoint) {
         dragging = true
+        guided = false
         goal = nil
         arrived = false
         ignoreWindows = false
@@ -372,6 +399,7 @@ final class BlobBody {
     /// Throw it. A hard throw tears a stuck body off its wall; a poke's hop leaves it stuck.
     func fling(_ v: CGVector) {
         dragging = false
+        guided = false
         lag = .zero
         goal = nil
         arrived = false
@@ -433,6 +461,7 @@ final class BlobBody {
     }
 
     private func aim(at g: CGPoint, spring: GoalSpring) {
+        guided = false
         goal = g
         goalSpring = spring
         goalArmed = false
@@ -524,6 +553,14 @@ final class BlobBody {
     func step(_ dtRaw: Double) -> [BlobContact] {
         let dt = min(max(dtRaw, 0), 1.0 / 30)
         guard isActive || dragging else { return contacts() }
+        if guided {
+            // Led: the controller already placed the body and set its velocity this
+            // frame. Only the bookkeeping the renderer reads — which display, the lean.
+            area = ScreenArea.containing(center, in: areas)
+            accel = .zero
+            updateLean()
+            return contacts()
+        }
         if dragging, !syntheticDrag, NSEvent.pressedMouseButtons & 1 == 0 {
             // A missed mouse-up would otherwise glue the body to the pointer forever.
             endDrag()

@@ -3,15 +3,18 @@ import Combine
 import SwiftUI
 
 /// The annotation layer: one click-through window per screen, driven by
-/// `state.overlayCommands`. Nothing here ever intercepts a click — except for the
-/// one stroke of mark mode (`beginMarkMode`, see MarkMode.swift), after which every
-/// window is click-through again.
+/// `state.overlayCommands` (the shapes) and `state.liveStrokes` (lines still being
+/// drawn — Kevin's in mark mode, the blob's on a trace — updated in place as they
+/// grow, kept their ttl once sealed). Nothing here ever intercepts a click — except
+/// for the one stroke of mark mode (`beginMarkMode`, see MarkMode.swift), after which
+/// every window is click-through again.
 @MainActor
 public final class OverlayManager {
     public let state: AppState
 
     private(set) var windows: [OverlayWindow] = []
     private var subscription: AnyCancellable?
+    private var strokeSubscription: AnyCancellable?
     /// Live while Kevin is circling something; nil otherwise.
     private(set) var markMode: MarkModeController?
 
@@ -22,6 +25,9 @@ public final class OverlayManager {
         subscription = state.overlayCommands
             .receive(on: DispatchQueue.main)
             .sink { [weak self] cmd in self?.handle(cmd) }
+        strokeSubscription = state.liveStrokes
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] stroke in self?.handle(stroke: stroke) }
         #if JARHEAD_ORB_PREVIEW
         OverlayPreviewDemo.install(on: self)
         #endif
@@ -49,6 +55,8 @@ public final class OverlayManager {
         markMode?.cancel(reason: "stopped")
         subscription?.cancel()
         subscription = nil
+        strokeSubscription?.cancel()
+        strokeSubscription = nil
         for w in windows { w.orderOut(nil); w.close() }
         windows.removeAll()
     }
@@ -79,6 +87,9 @@ public final class OverlayManager {
     private func handle(_ cmd: OverlayCommand) {
         switch cmd {
         case .clear:
+            // Shapes and lines alike: the brain's show_clear, and what a Stop sends
+            // in-process. (The orb only takes a line it is drawing down on this; its
+            // Stop reaction rides the in-process Stop notification instead.)
             windows.forEach { $0.model.clear() }
         case .point(let x, let y, let label, let ttlMs):
             let p = CGPoint(x: x, y: y)
@@ -119,7 +130,7 @@ public final class OverlayManager {
             let bbox = OverlayGeometry.bounds(pts).insetBy(dx: -shapePad, dy: -shapePad)
             spread(bbox, ttl: seconds(ttlMs, default: shapeTTL)) { w in .stroke(pts.map { w.local($0) }, label: label, tone: tone) }
 
-        case .orbFly, .orbHome:
+        case .orbFly, .orbHome, .orbTrace:
             // The orb answers these itself (UI/Orb subscribes to the same commands).
             break
         }
@@ -153,10 +164,39 @@ public final class OverlayManager {
         }
     }
 
+    // MARK: - Live strokes
+
+    /// One update of a line being drawn (global CG points): every display its padded
+    /// bounds touch — and every display that already holds it, since a line only
+    /// grows — gets the whole line in its own coordinates, updated in place by id.
+    /// Its label is drawn by the display holding the label's anchor (the pen while
+    /// drawing, the box's top-left when done), else the one under the line's centre.
+    /// A sealed stroke with no life left (`done`, ttl ≤ 0), or an empty one, is
+    /// removed: that is how a cancelled trace or mark comes down.
+    private func handle(stroke s: LiveStroke) {
+        let pts = s.points.map { CGPoint(x: $0.x, y: $0.y) }
+        if pts.isEmpty || (s.done && s.ttlMs <= 0) {
+            windows.forEach { $0.model.removeStroke(id: s.id) }
+            return
+        }
+        let box = OverlayGeometry.bounds(pts).insetBy(dx: -shapePad, dy: -shapePad)
+        let ttl: TimeInterval = s.done ? max(0.2, s.ttlMs / 1000) : 0
+        let label = (s.label?.isEmpty == false) ? s.label : nil
+        let touching = windows.filter { $0.cgFrame.intersects(box) || $0.model.hasStroke(s.id) }
+        guard !touching.isEmpty else { return }
+        let anchor = label.map { OverlayPainter.liveStrokeLabel(points: pts, done: s.done, text: $0).point }
+        let owner = anchor.flatMap { a in touching.first { $0.cgFrame.contains(a) } }
+            ?? touching.first { $0.cgFrame.contains(CGPoint(x: box.midX, y: box.midY)) } ?? touching[0]
+        for w in touching {
+            w.model.upsertStroke(id: s.id, points: pts.map { w.local($0) }, tone: s.tone, label: label, done: s.done, ttl: ttl, showsLabel: w === owner)
+        }
+    }
+
     // MARK: - Mark mode → engine
 
     /// Kevin finished a stroke (global CG points): tell the engine the padded bounds
-    /// and the stroke (≤ 200 points), and leave the stroke on screen for 8 s.
+    /// and the stroke (≤ 200 points). The stroke itself stays on screen through the
+    /// live-stroke channel (mark mode seals it with `echoSeconds` of life).
     func commitMark(points: [CGPoint]) {
         guard !points.isEmpty else { return }
         let box = OverlayGeometry.bounds(points).insetBy(dx: -MarkModeController.padding, dy: -MarkModeController.padding)
@@ -164,9 +204,6 @@ public final class OverlayManager {
         func r(_ v: CGFloat) -> Double { (v * 2).rounded() / 2 }
         state.send(.markAdd(rect: Rect(x: r(box.minX), y: r(box.minY), w: r(box.width), h: r(box.height)),
                             path: path.map { Point2(x: r($0.x), y: r($0.y)) }))
-        spread(box.insetBy(dx: -shapePad, dy: -shapePad), ttl: MarkModeController.echoSeconds, drawOn: false) { w in
-            .stroke(points.map { w.local($0) }, label: nil, tone: .mark)
-        }
     }
 
     func markModeDidEnd(_ ctl: MarkModeController) {
@@ -209,7 +246,6 @@ final class OverlayWindow: NSPanel {
         host = OverlayHostingView(rootView: OverlayCanvasView(model: model, topInset: topInset))
 
         super.init(contentRect: f, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        level = .screenSaver
         ignoresMouseEvents = true
         isOpaque = false
         backgroundColor = .clear
@@ -222,6 +258,10 @@ final class OverlayWindow: NSPanel {
         animationBehavior = .none
         isExcludedFromWindowsMenu = true
         title = "Jarhead Overlay"
+        // Last: NSPanel's `isFloatingPanel` setter rewrites the level (false → normal),
+        // and a layer at the normal level sits behind whatever app is frontmost — the
+        // lines and shapes were being drawn under Kevin's windows.
+        level = .screenSaver
 
         host.frame = NSRect(origin: .zero, size: f.size)
         host.autoresizingMask = [.width, .height]

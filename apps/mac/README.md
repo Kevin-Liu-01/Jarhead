@@ -50,10 +50,14 @@ Hotkeys (Carbon, no Accessibility grant needed): ⌥⇧J console, ⌥⇧M mute,
 ## Package
 
 ```sh
-pnpm build:mac          # → build/Jarhead.app
-cp -R build/Jarhead.app /Applications/
+pnpm build:mac          # builds, signs, installs /Applications/Jarhead.app; build/Jarhead.app is a symlink to it
 open -a Jarhead
 ```
+
+There is exactly one launchable Jarhead on the Mac — `/Applications/Jarhead.app`
+— so the Dock, LaunchServices' recents and TCC never see two identities. The
+preview harnesses (`Scripts/*-preview.sh`) run as accessory processes and never
+appear in the Dock.
 
 `scripts/build-mac.ts` rebuilds `jarhead-hands` whenever `packages/hands/native`
 is newer than `build/jarhead-hands` (the bundle freezes a copy), builds the icon if
@@ -74,7 +78,7 @@ The engine runs from the checkout through tsx, so changing Jarhead's behaviour i
 editing this checkout (or, once v2 is committed, pulling it); changes under
 `apps/mac` or `packages/hands/native` need a repackage. This app is the only face:
 the Electron shell it replaced was retired on 2026-09-10 to
-`legacy/shell-electron-v2` and is not built.
+git history (before `1ff11e2`) and is not built.
 
 ## Setup (`Sources/Jarhead/UI/Onboarding`)
 
