@@ -142,8 +142,9 @@ final class DaemonProcess {
             }
             let status = proc.terminationStatus
             let reason = proc.terminationReason
+            let owner = self
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.handleExit(status: status, reason: reason, proc: proc) }
+                MainActor.assumeIsolated { owner?.handleExit(status: status, reason: reason, proc: proc) }
             }
         }
 
@@ -191,9 +192,10 @@ final class DaemonProcess {
         setDetail("restarting in \(Int(delay.rounded())) s: \(why)")
         restartTimer?.invalidate()
         restartTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            let owner = self
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, !self.stopping else { return }
+                    guard let self = owner, !self.stopping else { return }
                     // Someone else may have brought a daemon up in the meantime.
                     if DaemonProcess.socketAnswers(self.socketPath) {
                         self.attached = true
@@ -212,9 +214,10 @@ final class DaemonProcess {
     private func scheduleAttachProbe() {
         attachTimer?.invalidate()
         attachTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            let owner = self
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, self.attached, !self.stopping else { return }
+                    guard let self = owner, self.attached, !self.stopping else { return }
                     // A live engine connection is proof enough; only probe the socket
                     // (hello + full snapshot on the daemon side) while disconnected.
                     if self.state.connected { return }

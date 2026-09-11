@@ -6,6 +6,8 @@ import Combine
 struct AppActions {
     var toggleWake: () -> Void = {}
     var toggleMute: () -> Void = {}
+    /// Pause / resume: the session stays open but silent (mic muted, output dropped, no delegations).
+    var togglePause: () -> Void = {}
     var stop: () -> Void = {}
     var openConsole: () -> Void = {}
     var summonOrb: () -> Void = {}
@@ -137,6 +139,15 @@ final class StatusItem: NSObject {
         mute.image = StatusItem.symbol(phase == .muted ? "mic.fill" : "mic.slash.fill")
         menu.addItem(mute)
 
+        let paused = phase == .paused
+        let pause = NSMenuItem(title: paused ? "Resume" : "Pause", action: #selector(doTogglePause), keyEquivalent: "p")
+        pause.keyEquivalentModifierMask = [.option, .shift]
+        pause.target = self
+        pause.isEnabled = connected && awake
+        pause.image = StatusItem.symbol(paused ? "play.fill" : "pause.fill")
+        pause.toolTip = paused ? "Back to listening (⌥⇧P)" : "Keep the session open but silent (⌥⇧P)"
+        menu.addItem(pause)
+
         let stop = NSMenuItem(title: "Stop", action: #selector(doStop), keyEquivalent: "\u{1b}")
         stop.keyEquivalentModifierMask = [.option]
         stop.target = self
@@ -187,6 +198,7 @@ final class StatusItem: NSObject {
 
     @objc private func doToggleWake() { actions.toggleWake() }
     @objc private func doToggleMute() { actions.toggleMute() }
+    @objc private func doTogglePause() { actions.togglePause() }
     @objc private func doStop() { actions.stop() }
     @objc private func doOpenConsole() { actions.openConsole() }
     @objc private func doSummon() { actions.summonOrb() }

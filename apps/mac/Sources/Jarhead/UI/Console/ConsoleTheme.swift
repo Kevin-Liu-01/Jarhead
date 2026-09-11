@@ -114,13 +114,14 @@ enum ConsoleTheme {
         case .thinking: return PhaseMeta(label: "Thinking", color: thinking, hint: "The brain is working.")
         case .acting: return PhaseMeta(label: "Acting", color: acting, hint: "Jarhead is using the computer.")
         case .muted: return PhaseMeta(label: "Muted", color: muted, hint: "Mic muted. Session open.")
-        case .paused: return PhaseMeta(label: "Paused", color: muted, hint: "Mic muted. Session open.")
+        case .paused: return PhaseMeta(label: "Paused", color: titanium, hint: "Paused. Session open, still connected; mic and voice off.")
         case .error: return PhaseMeta(label: "Error", color: error, hint: "Something broke. See problems.")
         }
     }
 
     static let busyPhases: Set<Phase> = [.speaking, .thinking, .acting]
-    static let sessionPhases: Set<Phase> = [.connecting, .listening, .speaking, .thinking, .acting, .muted]
+    /// A live session is open (the composer shows Sleep, Mute is enabled): paused counts — the session is still there.
+    static let sessionPhases: Set<Phase> = [.connecting, .listening, .speaking, .thinking, .acting, .muted, .paused]
     /// Phases whose dot pulses.
     static let livePhases: Set<Phase> = [.listening, .speaking, .thinking, .acting, .connecting]
 
@@ -815,4 +816,6 @@ extension View {
 /// Hook the Console's key equivalents up without a menu bar dependency.
 enum ConsoleKeyCommand {
     case close, stop, focusComposer
+    /// ⌘P: pause the session (silent, still connected) / resume it.
+    case togglePause
 }

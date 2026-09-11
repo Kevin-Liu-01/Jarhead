@@ -43,6 +43,14 @@ struct OrbPill: Equatable {
     var icon: String? = nil
     /// Counting down to this moment: drawn as "<text> · N s", redrawn once a second.
     var until: Date? = nil
+    /// A one-click action the pill offers (the way back to the notch): the pill becomes
+    /// a button, with the accent word `actionTitle` at its end.
+    var action: (() -> Void)? = nil
+    var actionTitle: String = "Notch"
+
+    static func == (a: OrbPill, b: OrbPill) -> Bool {
+        a.text == b.text && a.tone == b.tone && a.icon == b.icon && a.until == b.until && (a.action == nil) == (b.action == nil) && a.actionTitle == b.actionTitle
+    }
 }
 
 /// The small pill under the blob: first problem, else the latest toast.
@@ -56,6 +64,8 @@ final class OrbStatusModel: ObservableObject {
 struct OrbCapsuleActions {
     var toggleAwake: () -> Void = {}
     var toggleMute: () -> Void = {}
+    /// Pause the session (mic muted, output dropped, no delegations; still connected) / resume it.
+    var togglePause: () -> Void = {}
     var stop: () -> Void = {}
     var openConsole: () -> Void = {}
     var collapse: () -> Void = {}
@@ -423,12 +433,15 @@ struct OrbCapsuleView: View {
         .frame(minHeight: OrbTheme.rowHeight, alignment: .leading)
     }
 
-    /// Wake is the one filled accent button, and only while asleep; Stop fills red
-    /// while a delegation runs and for the 300 ms after a press (it is never
-    /// disabled: a Stop must land in every phase); everything else is a ghost.
+    /// Wake is the one filled accent button, and only while asleep; Pause sits beside
+    /// Stop (play while paused); Stop fills red while the snapshot holds a running or
+    /// waiting delegation and for the 300 ms after a press — nothing local keeps it hot
+    /// once the snapshot lets go — and it is never disabled: a Stop must land in every
+    /// phase. Everything else is a ghost.
     private func actionRow(theme: OrbTheme) -> some View {
         let muted = model.phase == .muted
-        let running = model.activeDelegation != nil || stopFlashing
+        let paused = model.phase == .paused
+        let running = (model.activeDelegation != nil && model.phase != .asleep) || stopFlashing
         return HStack(spacing: 6) {
             if model.isAwake {
                 OrbIconButton(icon: "moon.fill", help: "Sleep", theme: theme, action: actions.toggleAwake)
@@ -436,6 +449,7 @@ struct OrbCapsuleView: View {
                 OrbIconButton(icon: "bolt.fill", help: "Wake", style: .accent, theme: theme, action: actions.toggleAwake)
             }
             OrbIconButton(icon: muted ? "mic.slash.fill" : "mic.fill", help: muted ? "Unmute" : "Mute", selected: muted, theme: theme, action: actions.toggleMute)
+            OrbIconButton(icon: paused ? "play.fill" : "pause.fill", help: paused ? "Resume (⌥⇧P)" : "Pause (⌥⇧P)", selected: paused, theme: theme, action: actions.togglePause)
             OrbIconButton(icon: "stop.fill", help: "Stop", style: running ? .danger : .ghost, theme: theme, action: actions.stop)
             Spacer(minLength: 0)
             OrbIconButton(icon: "rectangle.3.group.fill", help: "Console", theme: theme, action: actions.openConsole)
@@ -613,7 +627,7 @@ struct OrbPillView: View {
     var body: some View {
         let theme = OrbTheme(dark: scheme == .dark)
         ZStack(alignment: .bottom) {
-            Color.clear
+            Color.clear.allowsHitTesting(false)
             if let pill = status.pill {
                 pillBody(pill, theme: theme)
                     .padding(.horizontal, 7).padding(.vertical, 3)
@@ -663,6 +677,18 @@ struct OrbPillView: View {
                 // (.numericText) re-rasterised the pill through interpolated display lists
                 // every second and cost more than the whole blob for the lockout minute — in
                 // the one gate state where the blob deliberately holds still.
+            if let action = pill.action {
+                // The one-click way back: the accent word, a button.
+                Button(action: action) {
+                    Text(pill.actionTitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                        .padding(.leading, 3)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(pill.actionTitle)
+            }
         }
     }
 

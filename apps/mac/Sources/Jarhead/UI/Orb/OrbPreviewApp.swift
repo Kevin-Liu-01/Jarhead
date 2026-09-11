@@ -68,9 +68,12 @@ import SwiftUI
 //                          first at ORB_FLY_AT s (default 1.2), then ORB_FLY_EVERY s apart
 //                          (default 2), dwellMs ORB_FLY_DWELL (default 2000). Each target
 //                          gets a small ring window so "beside the target" is visible. With
-//                          ORB_SHOT_DIR, screenshots fly-outbound (in flight, trail behind),
-//                          fly-hover (parked by the target) and fly-home (drifting back),
-//                          framed to take in the perch, the target and the ghosts; prints
+//                          ORB_SHOT_DIR, screenshots fly-outbound (in flight, trail behind), fly-hover
+//                          (parked beside the target), and — free mode — stay 0.6 s after the hover
+//                          ran out: the blob settled where it worked, the perch (a dashed ring, where
+//                          it came from) left empty. With ORB_FLY_HOME (free mode) fly-home: drifting
+//                          back to the perch, framed to take in the perch and the ghosts; notch mode
+//                          shoots notch-return instead — the way back up, framed with the notch. Prints
 //                          the flight phase, speed and ghost count as it goes, each take-off's
 //                          landing spot, and after each command the hover left / whether it is
 //                          waiting for Kevin's own throw to land (ORB_FLING just before it)
@@ -109,6 +112,19 @@ import SwiftUI
 //                          and trace-done (the whole line, the pen still on it), framed to take in
 //                          the stroke, the perch and the label pill. The stroke itself is the
 //                          overlay's: in-process shots paint the overlay windows too
+//   ORB_NOTCH=1            notch mode with a simulated notch (NotchGeometry.simulate: the measured
+//                          185×32 at the top of the main display, under its menu bar). The blob
+//                          starts tucked (asleep, `- -`); the script wakes it at 1.3 s (peeking),
+//                          hovers the island 2.7–3.7 s, and with ORB_FLY (default "1000,420" at
+//                          4.6 s) drops it out, flies, hovers, and tucks it back. With ORB_SHOT_DIR:
+//                          notch-tucked (1.0 s), notch-peek (2.5 s), notch-island (3.4 s) and
+//                          notch-drop (the hop out, just after the fly) — all in-process, over a
+//                          drawn menu bar band and the hardware notch's black, so the island can be
+//                          judged against the bezel. ORB_PHASE_SECONDS defaults to 60 here.
+//                          Without ORB_NOTCH the harness pins orbHome to "free" (this Mac has a
+//                          notch, and every other scenario is a free-mode scenario).
+//   ORB_PAUSE_AT=s         press Pause at that time (the capsule's / menu's): prints the command; the
+//                          harness flips the fake phase to paused 0.1 s later, and back on a second press
 //   ORB_STOP_AT=s          press the capsule's Stop at that time (OrbPanelController.stopPressed):
 //                          the fake sender prints the stop command, the overlay is cleared, the
 //                          "Stopped" toast is the pill; prints what the flight was and what it is
@@ -159,6 +175,13 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var strokePublishes = 0
     var strokeSubscription: AnyCancellable?
 
+    // Notch mode: which notch shots are still owed, and when the blob last dropped out.
+    var notchMode = false
+    var notchShotsOwed: Set<String> = []
+    var wasTucked = false
+    var droppedOutAt = 0.0
+    var lastNotchMode = ""
+
     var shotDir: String?
     var shotPrefix = "preview-blob-"
     var shotPress = 0.3
@@ -198,7 +221,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         let env = ProcessInfo.processInfo.environment
         let x = Double(env["ORB_X"] ?? "") ?? 200
         let y = Double(env["ORB_Y"] ?? "") ?? 200
-        let perPhase = Double(env["ORB_PHASE_SECONDS"] ?? "") ?? 2.5
+        notchMode = env["ORB_NOTCH"] == "1"
+        if notchMode {
+            NotchGeometry.simulate = true
+            if env["ORB_PHASES"] == nil { phases = [.asleep] }
+        }
+        let perPhase = Double(env["ORB_PHASE_SECONDS"] ?? "") ?? (notchMode ? 60 : 2.5)
         if let list = env["ORB_PHASES"] {
             let parsed = list.split(separator: ",").compactMap { Phase(rawValue: String($0).trimmingCharacters(in: .whitespaces)) }
             if !parsed.isEmpty { phases = parsed }
@@ -243,6 +271,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         var snap = Snapshot.empty
         snap.phase = phases[0]
         snap.settings.orbPosition = OrbPosition(x: x, y: y)
+        // This Mac has a notch: every scenario but ORB_NOTCH is a free-mode scenario.
+        snap.settings.orbHome = notchMode ? "notch" : "free"
         let now = Date().timeIntervalSince1970 * 1000
         snap.session = SessionInfo(id: "sess_preview", startedAt: now - 754_000, expiresAt: now + 3_600_000, usageSeconds: 431, contextRatio: 0.2)
         snap.transcript = [
@@ -310,6 +340,45 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         orb.show()
         if env["ORB_HIDE"] == "1" { orb.hide(); overlay.stop() }
         print("orb visible:", orb.isVisible, "at CG", x, y, "backdrop:", backdrop?.frame ?? .zero)
+        if notchMode {
+            print(String(format: "notch: home %@, tucked %d, mode %@, panel CG %@, island CG %@, dock CG %@", orb.previewHomeMode, orb.previewIsTucked ? 1 : 0,
+                         orb.previewNotchMode, orb.previewNotchPanelCG.map { "\($0)" } ?? "nil", orb.previewNotchIslandCG.map { "\($0)" } ?? "nil",
+                         orb.previewNotchDockCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"))
+            wasTucked = orb.previewIsTucked
+            if shotDir != nil { notchShotsOwed = ["tucked", "peek", "island", "drop"] }
+            // The script: tucked, then awake (peeking), then the island under the pointer, then a fly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else { return }
+                self.notchShot("tucked", note: "asleep, tucked, mode \(self.orb.previewNotchMode)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
+                guard let self else { return }
+                self.state.snapshot.phase = .listening
+                self.phaseStart = Date()
+                print(self.stamp, "notch: phase -> listening (mode \(self.orb.previewNotchMode))")
+                fflush(stdout)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                guard let self else { return }
+                self.notchShot("peek", note: "listening, peeking, mode \(self.orb.previewNotchMode)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.7) { [weak self] in
+                guard let self else { return }
+                self.orb.previewNotchHover(true)
+                print(self.stamp, "notch: pointer approaches -> mode \(self.orb.previewNotchMode)")
+                fflush(stdout)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) { [weak self] in
+                guard let self else { return }
+                self.notchShot("island", note: "hovered, island, mode \(self.orb.previewNotchMode)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.7) { [weak self] in
+                guard let self else { return }
+                self.orb.previewNotchHover(false)
+                print(self.stamp, "notch: pointer leaves -> contracts after 600 ms")
+                fflush(stdout)
+            }
+        }
         if let cg = obstacleRect {
             orb.previewSetObstacles([cg])
             print("obstacle at CG", cg)
@@ -567,15 +636,20 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             let at = Double(env["ORB_EYES_AT"] ?? "") ?? 1.0
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in self?.renderExpressionStrip() }
         }
-        if let spec = env["ORB_FLY"] {
+        if let spec = env["ORB_FLY"] ?? (notchMode ? "1000,420" : nil) {
             flyTargets = spec.split(separator: ";").compactMap { pair -> CGPoint? in
                 let p = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
                 return p.count == 2 ? CGPoint(x: p[0], y: p[1]) : nil
             }
-            let at = Double(env["ORB_FLY_AT"] ?? "") ?? 1.2
+            let at = Double(env["ORB_FLY_AT"] ?? "") ?? (notchMode ? 4.6 : 1.2)
             let every = Double(env["ORB_FLY_EVERY"] ?? "") ?? 2.0
             let dwell = Double(env["ORB_FLY_DWELL"] ?? "") ?? 2000
-            if shotDir != nil { flyShotsOwed = ["outbound", "hovering", "homing"] }
+            // Free mode: the blob stays where it worked (stay) — or, with ORB_FLY_HOME, an
+            // orb.home sends it back to the perch (fly-home); notch mode: it goes home to the notch (notch-return).
+            if shotDir != nil {
+                flyShotsOwed = ["outbound", "hovering", notchMode ? "homing" : "stay"]
+                if !notchMode, env["ORB_FLY_HOME"] == "1" { flyShotsOwed.insert("homing") }
+            }
             for (i, target) in flyTargets.enumerated() {
                 // A ring where the target is, so the shots show the blob parked beside it and not on it.
                 let ring = NSWindow(contentRect: NSRect(x: target.x - 14, y: mainMaxY - target.y - 14, width: 28, height: 28),
@@ -660,6 +734,29 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     print(self.stamp, String(format: "  -> flight %@, tracing %d, cursor %.2f, pill %@, overlay strokes [%@]", self.orb.previewFlightPhase,
                                              self.orb.previewIsTracing ? 1 : 0, self.orb.previewCursorK, self.state.toasts.last?.text ?? "none", layer))
                     fflush(stdout)
+                }
+            }
+        }
+        if let at = Double(env["ORB_PAUSE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let was = self.state.snapshot.phase
+                print(self.stamp, "pause pressed (phase \(was.rawValue))")
+                fflush(stdout)
+                self.orb.previewTogglePause()
+                // The engine would answer with the phase; the harness plays the engine.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self else { return }
+                    self.state.snapshot.phase = was == .paused ? .listening : .paused
+                    self.phaseStart = Date()
+                    print(self.stamp, "  -> phase \(self.state.snapshot.phase.rawValue), face [\(self.orb.previewFace)], pill \(self.state.toasts.last?.text ?? "none")")
+                    fflush(stdout)
+                }
+                if let dir = self.shotDir, was != .paused {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                        guard let self else { return }
+                        self.shoot("\(dir)/\(self.shotPrefix)paused.png", note: "paused: \(self.orb.previewFace), eyes [\(self.orb.previewEyes)]")
+                    }
                 }
             }
         }
@@ -955,8 +1052,50 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             print(stamp, String(format: "flight: %@ -> %@ at CG %.0f,%.0f speed %.0f ghosts %d", lastFlightPhase, phase, frame.midX, frame.midY,
                          orb.previewBodySpeed, orb.previewGhostFrames.count))
             fflush(stdout)
+            // Stay: the hover ran out and the flight is over without a way home — where it is, is where it stays.
+            if lastFlightPhase == "hovering", phase == "none", flyShotsOwed.contains("stay") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    guard let self, self.flyShotsOwed.contains("stay"), let dir = self.shotDir else { return }
+                    self.flyShotsOwed.remove("stay")
+                    var extra: CGRect?
+                    if let t = self.flyTargets.last { extra = CGRect(x: t.x - 40, y: t.y - 40, width: 80, height: 80) }
+                    if let perch = self.orb.previewPerchCG {
+                        let s = OrbPanelController.collapsedSize
+                        let r = CGRect(x: perch.x - s.width / 2, y: perch.y - s.height / 2, width: s.width, height: s.height)
+                        extra = extra.map { $0.union(r) } ?? r
+                    }
+                    let c = self.orb.previewCenterCG
+                    self.perchMarker = self.orb.previewPerchCG
+                    self.shoot("\(dir)/\(self.shotPrefix)stay.png", note: String(format: "stayed at CG %.0f,%.0f, moving %d, perch %@", c.x, c.y, self.orb.previewIsMoving ? 1 : 0,
+                                                                                    self.orb.previewPerchCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"), extra: extra)
+                    self.perchMarker = nil
+                }
+            }
             lastFlightPhase = phase
             flightPhaseSince = now
+        }
+        if notchMode {
+            let tucked = orb.previewIsTucked
+            let mode = orb.previewNotchMode
+            if tucked != wasTucked {
+                print(stamp, String(format: "notch: %@ (flight %@, body CG %.0f,%.0f)", tucked ? "tucked in" : "dropped out", phase, orb.previewCenterCG.x, orb.previewCenterCG.y))
+                fflush(stdout)
+                if !tucked { droppedOutAt = now }
+                wasTucked = tucked
+            }
+            if mode != lastNotchMode {
+                print(stamp, "notch: mode \(lastNotchMode.isEmpty ? "-" : lastNotchMode) -> \(mode), island CG \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil")")
+                fflush(stdout)
+                lastNotchMode = mode
+            }
+            // The hop out: the body under the notch, just after the drop, before the spring has it.
+            if notchShotsOwed.contains("drop"), !tucked, phase == "outbound", now - droppedOutAt > 0.14, now - droppedOutAt < 0.6 {
+                notchShotsOwed.remove("drop")
+                var region = orb.previewFrameCG.insetBy(dx: -60, dy: -40)
+                if let p = orb.previewNotchPanelCG { region = region.union(p) }
+                shoot("\(dir(shotDir))/\(shotPrefix)notch-drop.png", note: String(format: "dropped out %.2f s ago, body CG %.0f,%.0f speed %.0f", now - droppedOutAt,
+                                                                            orb.previewCenterCG.x, orb.previewCenterCG.y, orb.previewBodySpeed), region: region)
+            }
         }
         if moving, now - lastLog > 0.25 {
             lastLog = now
@@ -1120,18 +1259,23 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         switch phase {
         case "outbound":
             guard since > 0.12, speed > 500, ghosts.count >= 1 || since > 0.4 else { return false }
-            name = "outbound"
+            name = "fly-outbound"
             if let target { include(target) }
             for g in ghosts { include(cg(g)) }
         case "hovering":
             guard since > 0.45 else { return false }
-            name = "hover"
+            name = "fly-hover"
             if let target { include(target) }
         case "homing":
             guard since > 0.3, speed > 150 || since > 0.8 else { return false }
-            name = "home"
+            // Free mode: drifting back to the perch (fly-home, the perch in frame). Notch
+            // mode: flying back up into the notch (notch-return), framed with the notch
+            // panel so the way home — the menu bar band and the notch's black — shows.
+            name = notchMode ? "notch-return" : "fly-home"
             for g in ghosts { include(cg(g)) }
-            if let perch = orb.previewPerchCG {
+            if notchMode, let np = orb.previewNotchPanelCG {
+                include(np)
+            } else if let perch = orb.previewPerchCG {
                 let s = OrbPanelController.collapsedSize
                 include(CGRect(x: perch.x - s.width / 2, y: perch.y - s.height / 2, width: s.width, height: s.height))
             }
@@ -1140,8 +1284,22 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
         flyShotsOwed.remove(phase)
         lastShotAt = now
-        shoot("\(dir)/\(shotPrefix)fly-\(name).png", note: String(format: "%@, speed %.0f, %d ghosts", phase, speed, ghosts.count), extra: extra)
+        shoot("\(dir)/\(shotPrefix)\(name).png", note: String(format: "%@, speed %.0f, %d ghosts", phase, speed, ghosts.count), extra: extra)
         return true
+    }
+
+    private func dir(_ d: String?) -> String { d ?? "." }
+    /// Drawn into the next in-process shot as a dashed ring ("perch"), then cleared.
+    private var perchMarker: CGPoint?
+
+    /// One of the notch shots (in-process: the hardware notch's black has no pixels to
+    /// capture, and the shot is to be judged against a drawn bezel), framed on the
+    /// notch panel with the island and the menu bar band.
+    private func notchShot(_ name: String, note: String) {
+        guard let dir = shotDir, notchShotsOwed.contains(name), let panel = orb.previewNotchPanelCG else { return }
+        notchShotsOwed.remove(name)
+        let region = CGRect(x: panel.minX - 40, y: 0, width: panel.width + 80, height: panel.maxY + 30)
+        shoot("\(dir)/\(shotPrefix)notch-\(name).png", note: note + ", island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), face [\(orb.previewFace)]", region: region, inProcess: true)
     }
 
     /// Freeze everything, capture the panel plus a margin of desktop, let go.
@@ -1149,11 +1307,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     /// harness; without it (ORB_SHOT_INPROCESS=1, or when screencapture fails) the
     /// shot is drawn by this process instead — the backdrop colour, then the panel's
     /// own layer tree — which shows the orb exactly and nothing of the desktop.
-    /// `extra` (CG) widens the region to take in more than the panel.
-    private func shoot(_ path: String, note: String, extra: CGRect? = nil) {
+    /// `extra` (CG) widens the region to take in more than the panel; `region` replaces
+    /// the panel as the basis (the notch shots, where the panel is hidden).
+    private func shoot(_ path: String, note: String, extra: CGRect? = nil, region: CGRect? = nil, inProcess: Bool = false) {
         orb.previewFreeze(true)
         defer { orb.previewFreeze(false) }
-        var f = orb.previewFrameCG.insetBy(dx: -48, dy: -48)
+        var f = (region ?? orb.previewFrameCG).insetBy(dx: -48, dy: -48)
         if let extra { f = f.union(extra.insetBy(dx: -24, dy: -24)) }
         // Keep the region on the display the orb is on; a region that spills off it comes back at 1x.
         let mainMaxY = NSScreen.screens.first?.frame.maxY ?? 0
@@ -1166,7 +1325,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             f = f.intersection(cg)
         }
         let region = String(format: "%.0f,%.0f,%.0f,%.0f", f.minX, f.minY, f.width, f.height)
-        if ProcessInfo.processInfo.environment["ORB_SHOT_INPROCESS"] != "1" {
+        if ProcessInfo.processInfo.environment["ORB_SHOT_INPROCESS"] != "1", !inProcess, !notchMode {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             p.arguments = ["-x", "-R", region, path]
@@ -1207,6 +1366,23 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             cg.setFillColor(ow.backgroundColor.cgColor)
             cg.fill(ow.frame.offsetBy(dx: -regionAK.minX, dy: -regionAK.minY))
         }
+        // Notch mode: the menu bar band (a lighter grey, as over a dark desktop) and the
+        // hardware notch's black at the top of the main display, where the region reaches them.
+        if notchMode, let main = NSScreen.screens.first, let g = NotchGeometry.current() {
+            let barTop = main.frame.maxY - regionAK.minY, barBottom = g.menuBarBottom - regionAK.minY
+            if barTop > 0, barBottom < f.height {
+                cg.setFillColor(CGColor(srgbRed: 0x2a / 255, green: 0x2b / 255, blue: 0x30 / 255, alpha: 1))
+                cg.fill(CGRect(x: 0, y: barBottom, width: f.width, height: barTop - barBottom))
+                cg.setFillColor(CGColor(gray: 0, alpha: 1))
+                cg.fill(CGRect(x: g.notch.minX - regionAK.minX, y: g.notch.minY - regionAK.minY, width: g.notch.width, height: g.notch.height))
+                // A menu bar's worth of text either side, so the island reads against something.
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = gctx
+                let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor(white: 1, alpha: 0.9)]
+                ("Finder   File   Edit   View   Go   Window   Help" as NSString).draw(at: NSPoint(x: 20 - regionAK.minX + main.frame.minX, y: barBottom + 9), withAttributes: attrs)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
         // Flight targets (rings) and the wake, under the blob, as on screen.
         let acting = OrbPalette.acting
         for t in flyTargets {
@@ -1218,11 +1394,38 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             cg.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
         }
         orb.previewRenderTrail(in: cg, offset: regionAK.origin)
-        let pf = orb.previewPanelFrame
-        cg.saveGState()
-        cg.translateBy(x: pf.minX - regionAK.minX, y: pf.minY - regionAK.minY)
-        orb.previewRender(in: cg)
-        cg.restoreGState()
+        if !orb.previewIsTucked || !notchMode {
+            let pf = orb.previewPanelFrame
+            cg.saveGState()
+            cg.translateBy(x: pf.minX - regionAK.minX, y: pf.minY - regionAK.minY)
+            orb.previewRender(in: cg)
+            cg.restoreGState()
+        }
+        // The notch panel, above the menu bar, as on screen. Its view is flipped (y
+        // down) and CALayer.render(in:) draws in the layer's own y-up space, so the
+        // context is turned over at the panel's top edge first.
+        if notchMode, let np = orb.previewNotchPanelCG {
+            let npAK = NSRect(x: np.minX, y: mainMaxY - np.maxY, width: np.width, height: np.height)
+            cg.saveGState()
+            cg.translateBy(x: npAK.minX - regionAK.minX, y: npAK.maxY - regionAK.minY)
+            cg.scaleBy(x: 1, y: -1)
+            orb.previewRenderNotch(in: cg)
+            cg.restoreGState()
+        }
+        // The perch, when the blob has left it (the stay shot): a dashed grey ring where it came from.
+        if let marker = perchMarker {
+            let c = CGPoint(x: marker.x - f.minX, y: (mainMaxY - marker.y) - regionAK.minY)
+            cg.setStrokeColor(CGColor(gray: 0.55, alpha: 0.7))
+            cg.setLineWidth(1.5)
+            cg.setLineDash(phase: 0, lengths: [4, 4])
+            cg.strokeEllipse(in: CGRect(x: c.x - 30, y: c.y - 30, width: 60, height: 60))
+            cg.setLineDash(phase: 0, lengths: [])
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = gctx
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor(white: 0.6, alpha: 1)]
+            ("perch" as NSString).draw(at: NSPoint(x: c.x - 14, y: c.y - 46), withAttributes: attrs)
+            NSGraphicsContext.restoreGraphicsState()
+        }
         // The screen's edge, where the region reaches it: a grey hairline, so a blob
         // stuck to the border reads against something.
         if let screen = NSScreen.screens.first(where: { s in
@@ -1237,7 +1440,10 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             // Work-area edges in AppKit space, relative to the region.
             if abs(vis.minX - regionAK.minX) < 1.5 || regionAK.minX <= sf.minX + 0.5 { line(CGPoint(x: 0.5, y: 0), CGPoint(x: 0.5, y: f.height)) }
             if abs(vis.maxX - regionAK.maxX) < 1.5 || regionAK.maxX >= sf.maxX - 0.5 { line(CGPoint(x: f.width - 0.5, y: 0), CGPoint(x: f.width - 0.5, y: f.height)) }
-            if regionAK.maxY >= vis.maxY - 0.5 { let y = vis.maxY - regionAK.minY; line(CGPoint(x: 0, y: y - 0.5), CGPoint(x: f.width, y: y - 0.5)) }
+            // Not the top edge in notch mode: the drawn menu bar band is that edge, and a
+            // hairline across the notch's ink would cut the island from the bezel — a seam
+            // the hardware does not have.
+            if !notchMode, regionAK.maxY >= vis.maxY - 0.5 { let y = vis.maxY - regionAK.minY; line(CGPoint(x: 0, y: y - 0.5), CGPoint(x: f.width, y: y - 0.5)) }
             if regionAK.minY <= vis.minY + 0.5 { let y = vis.minY - regionAK.minY; line(CGPoint(x: 0, y: y + 0.5), CGPoint(x: f.width, y: y + 0.5)) }
         }
         // The synthetic hand: a small cross where the pointer is.

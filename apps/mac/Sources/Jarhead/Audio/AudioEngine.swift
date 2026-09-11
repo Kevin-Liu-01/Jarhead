@@ -38,6 +38,13 @@ final class AudioEngine {
     var onMicChunk: ((Data) -> Void)?
     /// RMS 0..1 at ≤ 10 Hz. Called on the audio queue.
     var onMicLevel: ((Double) -> Void)?
+    /// A second consumer of the same microphone tap (the on-device ear): the voice
+    /// channel as mono Float32 at the hardware rate, every tap callback (100 ms of
+    /// audio, see `installTap` below), with the tap's timestamp, before it is converted
+    /// for the wire. Called on AVAudioEngine's tap thread — not the real-time render
+    /// thread (default QoS, so a lock is fine, but keep it cheap: it is the first thread
+    /// to be delayed under load). Set before `start()`.
+    var onMicBuffer: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
     /// Human-readable status/errors. Called on the audio queue.
     var onStatus: ((String) -> Void)?
 
@@ -201,8 +208,14 @@ final class AudioEngine {
         }
 
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: hw) { [weak self] buffer, _ in
-            self?.handleMic(buffer)
+        // AVAudioEngine clamps tap buffers to [100, 400] ms whatever size is asked for
+        // (AVAudioNode.h; measured 4800 frames = 100 ms at 48 kHz here), so 2048 is a
+        // wish, not the period: every word waits 0–100 ms (mean ~50) in the tap before
+        // the wire and the ear see it, plus ~10 ms delivery. Going below that needs a
+        // render-block source (an `AVAudioSinkNode` on the input, ~10 ms slices), not a
+        // tap setting.
+        input.installTap(onBus: 0, bufferSize: 2048, format: hw) { [weak self] buffer, when in
+            self?.handleMic(buffer, at: when)
         }
 
         engine.prepare()
@@ -260,7 +273,7 @@ final class AudioEngine {
         }
     }
 
-    // MARK: - microphone path (audio render thread)
+    // MARK: - microphone path (AVAudioEngine tap thread, not real-time)
 
     /// Per-channel energy over the last second, so a multi-channel input (VoiceIO on a
     /// mic array reports 9 channels here) is reduced to the channel that actually
@@ -271,7 +284,7 @@ final class AudioEngine {
     private var monoConverter: AVAudioConverter?
     private var monoConverterRate: Double = 0
 
-    private func handleMic(_ buffer: AVAudioPCMBuffer) {
+    private func handleMic(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
         guard buffer.frameLength > 0, let floats = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
@@ -280,7 +293,7 @@ final class AudioEngine {
             var acc = 0.0
             let p = floats[c]
             for i in 0..<frames { acc += Double(p[i] * p[i]) }
-            // Leaky integration over ~1 s of 20 ms buffers.
+            // Leaky integration; time constant ≈ 20 buffers ≈ 2 s of the tap's 100 ms buffers.
             channelEnergy[c] = channelEnergy[c] * 0.95 + acc / Double(frames)
         }
         if channels > 1 {
@@ -298,6 +311,9 @@ final class AudioEngine {
         let src = floats[min(chosenChannel, channels - 1)]
         for i in 0..<frames { dst[i] = src[i] }
         mono.frameLength = AVAudioFrameCount(frames)
+        // The ear hears the same buffer the voice gets (echo-cancelled when voice
+        // processing is on), fresh each callback, so appending it elsewhere is safe.
+        onMicBuffer?(mono, when)
 
         if monoConverter == nil || monoConverterRate != buffer.format.sampleRate {
             monoConverter = AVAudioConverter(from: monoFormat, to: wireFormat)

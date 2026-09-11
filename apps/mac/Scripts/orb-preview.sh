@@ -10,8 +10,15 @@
 #   ORB_EXPAND=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=4 Scripts/orb-preview.sh   # Resources/preview-blob-expanded.png
 #   ORB_GATE=authenticating,locked ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=6 Scripts/orb-preview.sh   # the wake gate on the blob + pill
 #   ORB_GATE=authenticating ORB_EXPAND=1 ORB_KEY_TEST=1 ORB_NO_DISMISS=1 ORB_EXIT_AFTER=5 Scripts/orb-preview.sh   # capsule gate row, Cancel, field, key handshake
-#   ORB_X=200 ORB_Y=620 ORB_PHASES=thinking ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY="1000,300" ORB_SHOT_DIR=/tmp/shots ORB_EXIT_AFTER=8 Scripts/orb-preview.sh
-#                                                                                                     # orb.fly: wind-up, out, one squish, parked 2 s beside the ring, drift home → preview-blob-fly-{outbound,hover,home}.png
+#   ORB_X=200 ORB_Y=620 ORB_PHASES=speaking ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY="1000,300" ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 ORB_EXIT_AFTER=8 Scripts/orb-preview.sh
+#                                                                                                     # orb.fly: wind-up, out, one squish, parked 2 s beside the ring, then it STAYS there (free mode: "stay where you
+#                                                                                                     # worked" — the spot is persisted once, the perch is left alone) → preview-blob-fly-{outbound,hover}.png, preview-blob-stay.png
+#   ORB_NOTCH=1 ORB_SHOT_DIR=Resources ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=11 Scripts/orb-preview.sh   # notch mode with a simulated notch: tucked (asleep, `- -`), awake (peeking), the island under the
+#                                                                                                     # pointer, then a fly: drop out, work, fly back up, tuck → preview-blob-notch-{tucked,peek,island,drop,return}.png
+#                                                                                                     # (+ fly-outbound/hover). In-process shots over a drawn menu bar and the notch's black.
+#   ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_PAUSE_AT=1.5 ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 ORB_EXIT_AFTER=4 Scripts/orb-preview.sh
+#                                                                                                     # press Pause (the capsule's): prints the command, the harness answers with the paused phase → preview-blob-paused.png
+#                                                                                                     # (the `u u` face, titanium, the "Paused · still connected" pill; on its own — not over a fly, whose target ring would show)
 #   ORB_FLY="1000,300;1300,700" ORB_FLY_EVERY=2 ORB_FLY_HOME=1 ORB_EXIT_AFTER=9 Scripts/orb-preview.sh   # two flies 2 s apart (retargets mid-hover), then orb.home; prints each flight phase change (stamped in seconds)
 #   ORB_FLY="1000,300;1000,300" ORB_FLY_EVERY=2 ORB_EXIT_AFTER=8 Scripts/orb-preview.sh              # the same work twice: the second only extends the hover (no "hovering -> outbound")
 #   ORB_FLING=600,-300 ORB_FLING_AT=1.0 ORB_FLY="1000,300" ORB_FLY_AT=1.3 ORB_EXIT_AFTER=9 Scripts/orb-preview.sh   # a fly during Kevin's throw waits for it to land, the rest is persisted (send: set-settings), then it flies and comes home to it
@@ -30,16 +37,16 @@
 #                                                                                                     # sticky: thrown at the nearest wall slow enough to stick, parks (→ preview-blob-stick.png), pulled off (→ preview-blob-peel.png: the neck), snaps
 #   … ORB_STICK=1 ORB_STICK_PULL=30 …                                                                 # let go mid-cling (neck ≈ 0.4): prints the sag back onto the patch every 50 ms — the centre eases ~1 pt a step, never jumps
 #   ORB_X=118 ORB_Y=798 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_FLING=-500,500 ORB_EXIT_AFTER=6 Scripts/orb-preview.sh   # a slow throw into the bottom-left corner: "settled … stuck 2" — one patch per wall
-#   ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=3 Scripts/orb-preview.sh   # every expression in one labelled strip → preview-blob-eyes.png
+#   ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=3 Scripts/orb-preview.sh   # every expression (the ASCII faces: `- -` `O O` `^ ^` `u u` `x x` …) in one labelled strip → preview-blob-eyes.png
 #   ORB_X=200 ORB_Y=620 ORB_PHASES=acting ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_TRACE="700,300;1060,300;1060,460;700,460" ORB_TRACE_CLOSED=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=9 Scripts/orb-preview.sh
 #                                                                                                     # orb.trace: flies to the first point as the pen (cursor form), drags the line along the points while the
-#                                                                                                     # overlay draws it growing from under the tip, seals it, holds, goes home → preview-blob-trace-cursor.png
+#                                                                                                     # overlay draws it growing from under the tip, seals it, holds, stays by its line → preview-blob-trace-cursor.png
 #                                                                                                     # (mid-line) and preview-blob-trace-done.png; prints progress, the pen/tip error and the eyes every 0.25 s.
 #                                                                                                     # ORB_TRACE_LABEL, ORB_TRACE_TONE=accent|ok|warn|mark, ORB_TRACE_AT (default 1.2) tune it
 #   ORB_MARK=1 ORB_TRACE="…" ORB_TRACE_AT=3 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=10 Scripts/orb-preview.sh   # Kevin's mark first (mark tone), then Jarhead's line: both on one layer → preview-overlay-trace.png
 #   ORB_TRACE="…" ORB_STOP_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                            # Stop mid-line: the capsule's Stop as pressed — prints the stop command, the clear, the "Stopped" pill;
-#                                                                                                     # the line comes down, the pen morphs back with a shiver and goes home → preview-blob-stop.png
-#   ORB_TRACE="…" ORB_CLEAR_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                           # the brain's show_clear mid-line: the line comes down and the pen goes home quietly — no Stop, no pill
+#                                                                                                     # the line comes down, the pen morphs back with a shiver and stays put → preview-blob-stop.png
+#   ORB_TRACE="…" ORB_CLEAR_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                           # the brain's show_clear mid-line: the line comes down and the pen morphs back quietly — no Stop, no pill
 #   ORB_FLY="700,300" ORB_CLEAR_AT=2.6 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                       # … and during a plain fly the hover is left alone (a clear is not a Stop)
 #
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the

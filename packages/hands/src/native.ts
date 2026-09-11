@@ -94,6 +94,67 @@ export interface ElementInfo {
   readonly app?: string;
 }
 
+/** One node of the frontmost window's accessibility tree, as `ax_tree` / `find_element` report it. */
+export interface AxNodeInfo {
+  readonly i: number;
+  readonly depth: number;
+  readonly role: string;
+  readonly subrole?: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly value?: string;
+  readonly x?: number;
+  readonly y?: number;
+  readonly w?: number;
+  readonly h?: number;
+  readonly pressable?: boolean;
+}
+
+/** `find_element`'s best match: the node plus how it matched and where to click. */
+export interface FoundElement extends AxNodeInfo {
+  readonly app: string;
+  readonly score: number;
+  readonly label: string;
+  readonly center?: { readonly x: number; readonly y: number };
+}
+
+export interface FindElementResult {
+  readonly app: string;
+  readonly window: string;
+  readonly found: boolean;
+  /** Exactly one control carries the name; two candidates mean the caller must not guess. */
+  readonly unique: boolean;
+  readonly candidates: number;
+  readonly tier: "exact" | "fuzzy" | "none";
+  readonly element?: FoundElement;
+  readonly others?: readonly FoundElement[];
+  readonly cached: boolean;
+  readonly treeMs: number;
+  readonly nodes: number;
+  readonly truncated: boolean;
+  readonly ms: number;
+}
+
+export interface AxTreeResult {
+  readonly app: string;
+  readonly pid: number;
+  readonly window: string;
+  readonly count: number;
+  readonly cached: boolean;
+  readonly ageMs: number;
+  readonly treeMs: number;
+  readonly truncated: boolean;
+  /** Absent with `summary: true`. */
+  readonly nodes?: readonly AxNodeInfo[];
+}
+
+export interface BrowserTab {
+  readonly index: number;
+  readonly title: string;
+  readonly url: string;
+  readonly active: boolean;
+}
+
 /** What the toolset needs from the helper. Faked in tests. */
 export interface NativeHands {
   request<T = unknown>(op: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;

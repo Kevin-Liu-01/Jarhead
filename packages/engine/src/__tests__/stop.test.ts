@@ -10,6 +10,7 @@ import type { Brain, BrainResult, BrainTask } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import type { EngineEvent } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
+import { delegate, nextUtterance, settle as settleMs, world as makeWorld } from "./world.ts";
 
 /**
  * Stop that stops. Live has no interrupt, so a stop is local: the speaker is
@@ -258,6 +259,84 @@ test("a spoken \"stop\" is the same stop: the delegation is cancelled, the brain
     clock.t += 10;
   } finally {
     w.hands.hold?.();
+    await engine.stop();
+  }
+});
+
+/**
+ * Kevin: "once we press stop we can't wake; the stop button just stays there."
+ * After a stop during a running delegation: the delegation is cancelled before the
+ * brain's (slow) cancel is awaited, the snapshot shows nothing running or awaiting,
+ * the phase is listening within the gate window, the pending confirmation is
+ * cleared, and wake / say-text / a new delegation work at once — while the old
+ * brain's cancel is still in flight.
+ */
+const _world = makeWorld;
+const _settle = settleMs;
+test("stop aftermath: nothing is left running or armed, the phase is listening at once, and wake, say-text and a new delegation work while the brain's slow cancel is still settling", async () => {
+  const w = _world();
+  const { engine, live, hands, brain } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "jarhead send the email", "item_1");
+    await _settle();
+    assert.equal(brain.tasks.length, 1);
+    // The task asked a question (a Send needs a yes) — the confirmation is pending.
+    engine.confirmations.ask("click Send in Mail", "left_click", { coordinate: [1, 2] });
+    assert.ok(engine.confirmations.pending);
+    // The brain's cancel takes a while (a Codex interrupt on a loaded Mac).
+    let releaseCancel: (() => void) | undefined;
+    const slowCancel = new Promise<void>((r) => (releaseCancel = r));
+    (brain as unknown as { cancelDelayMs: number }).cancelDelayMs = 0;
+    const realBrain = (engine as unknown as { opts: { brain: { cancel: () => Promise<void> } } }).opts.brain;
+    const originalCancel = realBrain.cancel;
+    realBrain.cancel = async () => {
+      brain.cancels++;
+      await slowCancel;
+    };
+
+    const t0 = Date.now();
+    await engine.command({ type: "stop" });
+    assert.ok(Date.now() - t0 < 1700, "stop returned without waiting for the brain's cancel");
+    const snap = engine.snapshot();
+    assert.equal(snap.delegations.filter((d) => d.status === "running" || d.status === "awaiting-confirmation").length, 0, "nothing running or awaiting");
+    assert.equal(snap.delegations[0]!.status, "cancelled");
+    assert.equal(engine.currentPhase, "listening", "listening right after the stop, inside the gate window");
+    assert.equal(engine.confirmations.pending, undefined, "the stopped task's question is not armed for a later yes");
+    assert.equal(engine.outputGated, true);
+
+    // While the old cancel is still in flight: wake is harmless, say-text reaches the voice, a new delegation runs.
+    await engine.command({ type: "wake" });
+    assert.equal(engine.currentPhase, "listening");
+    live.instructions.length = 0;
+    await engine.command({ type: "say-text", text: "open safari" });
+    assert.ok(live.instructions.some((i) => /Kevin just typed/.test(i)));
+    hands.ops.length = 0;
+    nextUtterance(w);
+    delegate(w, "jarhead scroll down", "item_2");
+    await _settle();
+    const second = engine.snapshot().delegations.find((d) => d.liveId === "item_2")!;
+    assert.equal(second.status, "done", "the reflex delegation ran and finished while the brain's cancel was pending");
+    assert.equal(hands.named("scroll").length, 1);
+    nextUtterance(w);
+    delegate(w, "jarhead what is on my screen", "item_3");
+    await _settle();
+    assert.equal(brain.tasks.length, 2, "a brain task was accepted too");
+    releaseCancel?.();
+    realBrain.cancel = originalCancel;
+    await _settle();
+    assert.equal(engine.snapshot().delegations.find((d) => d.liveId === "item_3")!.status, "running");
+    // And sleep does not hang on a brain whose cancel never answers.
+    realBrain.cancel = () => new Promise<void>(() => undefined);
+    const s0 = Date.now();
+    await engine.sleep();
+    assert.ok(Date.now() - s0 < 2000, "sleep is bounded even when the brain's cancel hangs");
+    assert.equal(engine.currentPhase, "asleep");
+    realBrain.cancel = originalCancel;
+  } finally {
     await engine.stop();
   }
 });

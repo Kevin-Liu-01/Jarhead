@@ -181,6 +181,11 @@ export class ClaudeBrain implements Brain {
     }
   }
 
+  /** The Agent SDK session is the warm thread: one process, one `send` per task; there is nothing more to start. */
+  async warmUp(): Promise<{ warm: boolean; detail: string }> {
+    return { warm: this.ready && this.session !== undefined, detail: this.ready ? `${this.readyDetail}; one session reused across tasks` : this.readyDetail };
+  }
+
   private rememberedAt = 0;
 
   private probeFile(): string | undefined {

@@ -8,10 +8,20 @@ class FakeHands implements NativeHands {
   ready = true;
   calls: { op: string; params: Record<string, unknown> }[] = [];
   elementTitle = "Search";
+  elementRole = "AXButton";
+  elementApp: string | undefined;
+  elementFrame: { x: number; y: number; w: number; h: number } | undefined;
   secure = false;
+  /** find_element: which app the tree belongs to (undefined = nothing found). */
+  foundApp: string | undefined;
   async request<T>(op: string, params: Record<string, unknown> = {}): Promise<T> {
     this.calls.push({ op, params });
     switch (op) {
+      case "find_element": {
+        if (!this.foundApp) return { app: "Mail", window: "Inbox", found: false, unique: false, candidates: 0, tier: "none", cached: true, treeMs: 1, nodes: 3, truncated: false, ms: 1 } as T;
+        const label = String(params["name"]);
+        return { app: this.foundApp, window: "Inbox", found: true, unique: true, candidates: 1, tier: "exact", element: { i: 1, depth: 2, role: "AXButton", title: label, app: this.foundApp, score: 1, label, x: 500, y: 400, w: 60, h: 24, center: { x: 530, y: 412 }, pressable: true }, cached: true, treeMs: 1, nodes: 3, truncated: false, ms: 1 } as T;
+      }
       case "screenshot":
         return { displayId: 5, pngBase64: "AAAA", width: 2000, height: 562, points: { x: -1685, y: -1440, w: 5120, h: 1440 }, scale: 2000 / 5120 } as T;
       case "zoom":
@@ -21,7 +31,7 @@ class FakeHands implements NativeHands {
       case "frontmost":
         return { app: "Mail", pid: 1, window: null } as T;
       case "element_at":
-        return { role: "AXButton", title: this.elementTitle } as T;
+        return { role: this.elementRole, title: this.elementTitle, ...(this.elementApp ? { app: this.elementApp } : {}), ...(this.elementFrame ? { frame: this.elementFrame } : {}) } as T;
       case "focused_text":
         return { role: "AXTextField", subrole: this.secure ? "AXSecureTextField" : undefined, secure: this.secure, app: "Mail" } as T;
       default:
@@ -160,4 +170,66 @@ test("screenshot: quick: true asks the helper for the 1280-pixel budget and says
   hands.calls.length = 0;
   await ts.run("scroll", { scroll_direction: "down", scroll_amount: 2 });
   assert.deepEqual(hands.calls.map((c) => c.op), ["scroll"]);
+});
+
+test("click_element: the named control's app must be the one in front, and the element under its point must be that control — a background app's tree, a covering control, or a control of another app under the point clicks nothing", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  const clicks = (): number => hands.calls.filter((c) => c.op === "click").length;
+
+  // The tree is Slack's (an `app` argument, or a browser behind another window); Mail is in front.
+  hands.foundApp = "Slack";
+  const behind = await ts.run("click_element", { name: "Save", app: "Slack" });
+  assert.equal(behind.kind, "error");
+  assert.match((behind as { message: string }).message, /Slack, but Mail is in front/);
+  assert.equal(clicks(), 0, "no global click into whatever is on top");
+
+  // Mail's own control, and the point holds its label (static text inside the button's frame, found at 500,400 60x24): clicked.
+  hands.foundApp = "Mail";
+  hands.elementRole = "AXStaticText";
+  hands.elementTitle = "Save";
+  hands.elementFrame = { x: 512, y: 405, w: 36, h: 14 };
+  assert.equal((await ts.run("click_element", { name: "Save" })).kind, "text");
+  assert.equal(clicks(), 1);
+  assert.deepEqual(hands.calls.filter((c) => c.op === "frontmost" || c.op === "element_at").map((c) => c.op).slice(-2), ["frontmost", "element_at"], "one frontmost and one element_at probe per click");
+
+  // A sheet's button over the point since the tree was built — its frame is its own, and "Don't Save" is not "Save" however the words compare: nothing.
+  hands.elementRole = "AXButton";
+  hands.elementTitle = "Don't Save";
+  hands.elementFrame = { x: 480, y: 380, w: 120, h: 60 };
+  const covered = await ts.run("click_element", { name: "Save" });
+  assert.equal(covered.kind, "error");
+  assert.match((covered as { message: string }).message, /covered at its point \(530,412\) by AXButton "Don't Save"/);
+  assert.equal(clicks(), 1);
+
+  // The point belongs to another app entirely.
+  hands.elementTitle = "Save";
+  hands.elementApp = "Finder";
+  const other = await ts.run("click_element", { name: "Save" });
+  assert.equal(other.kind, "error");
+  assert.match((other as { message: string }).message, /covered by Finder/);
+  assert.equal(clicks(), 1);
+
+  // The button's own icon inside its frame (an image with a different description) is fine; the words still reach the policy.
+  hands.elementApp = undefined;
+  hands.elementRole = "AXImage";
+  hands.elementTitle = "floppy disk";
+  hands.elementFrame = { x: 504, y: 404, w: 16, h: 16 };
+  assert.equal((await ts.run("click_element", { name: "Save" })).kind, "text");
+  assert.equal(clicks(), 2);
+  hands.elementTitle = "Send";
+  hands.elementRole = "AXStaticText";
+  const asks = await ts.run("click_element", { name: "Save" });
+  assert.equal(asks.kind, "needs-confirmation", "a Send under the point is judged even though the tree said Save");
+  assert.equal(clicks(), 2);
+
+  // No frames to compare (an app that reports none): a differently named control under the point is a cover; static text is not.
+  hands.elementFrame = undefined;
+  hands.elementTitle = "Cancel";
+  hands.elementRole = "AXButton";
+  assert.match(((await ts.run("click_element", { name: "Save" })) as { message: string }).message, /not what is under its point: AXButton "Cancel"/);
+  hands.elementRole = "AXStaticText";
+  hands.elementTitle = "Save changes";
+  assert.equal((await ts.run("click_element", { name: "Save" })).kind, "text");
+  assert.equal(clicks(), 3);
 });

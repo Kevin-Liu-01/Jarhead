@@ -235,6 +235,51 @@ secure fields `value` and `selectedText` are always `null`. No focused element �
 `AXUIElementCopyElementAtPosition`; `value` truncated to 400 characters. Nothing there →
 `not_found`.
 
+### Accessibility tree and `find_element` (the reflex path)
+
+**`ax_tree {app?, maxAgeMs?, maxNodes?, maxDepth?, maxMs?, summary?}`** →
+`{app, pid, window, count, cached, ageMs, treeMs, truncated, nodes?: [{i, depth, role, subrole?,
+title?, description?, value?, x?, y?, w?, h?, pressable?}]}`. The focused (else main, else first)
+window of the frontmost app — or of the running app named by `app` — walked breadth-first with
+one `AXUIElementCopyMultipleAttributeValues` per element (0.3 s messaging timeout each), capped by
+`maxNodes` (default 1500), `maxDepth` (14) and a time budget `maxMs` (250; `truncated` says when a
+cap cut the walk — breadth-first, so the toolbar and top-level controls survive a cut, a desktop
+full of icons or a long page is what goes). Cached per app: reused while younger than `maxAgeMs`
+(default 500) and the same window is up; the engine keeps the frontmost one warm every 500 ms
+while awake (`summary: true` returns only the counts). Chromium apps get `AXManualAccessibility`
+set so their web content is exposed; a first walk that finds almost nothing is retried once after
+120 ms. Measured: Chrome 188 nodes in ~70–100 ms cold, 2 ms cached; Finder's desktop hits the
+250 ms budget at ~400 nodes; Slack (Electron) exposes 60 nodes. Needs Accessibility.
+
+**`find_element {name, role?, app?, maxAgeMs?, maxMs?, threshold?}`** →
+`{app, window, found, unique, candidates, tier: "exact"|"fuzzy"|"none", element?: {…node, app,
+score, label, center: {x, y}}, others?: […], cached, treeMs, nodes, truncated, ms}`. The visible,
+clickable controls (an `AXPress` action or a clickable role) of that tree whose title,
+description or short value matches `name`: exact after lowercasing and dropping punctuation and a
+trailing ellipsis, else edit-distance similarity ≥ `threshold` (default 0.85). Candidates whose
+frames coincide (a cell and its label) count once. `unique` is what the reflex path needs: two
+candidates mean "no reflex" — the caller must not guess. 2–14 ms on a cached tree.
+
+### Browser scripting (Apple events, no process spawn)
+
+All four take `app` (a Chrome-family browser or Safari, by localized name) and answer
+`not_found` when it is **not running** — nothing here ever launches a browser. Scripts are
+`NSAppleScript`s compiled once and reused (the JavaScript rides in as the `run` handler's
+argument), sent from the main thread. `permission_denied` when Jarhead may not control the app
+(Automation) or when JavaScript from Apple Events is off — the message names the exact menu
+(Chrome: View › Developer › Allow JavaScript from Apple Events; Safari: Develop › Allow JavaScript
+from Apple Events).
+
+**`browser_js {app, script}`** → `{result, ms}` — the script's result as text (Chrome: `execute
+active tab of front window javascript`; Safari: `do JavaScript … in current tab of front window`).
+
+**`browser_url {app}`** → `{url, title}` of the active tab; needs no JavaScript permission.
+
+**`browser_tabs {app}`** → `{tabs: [{index, title, url, active}], active}` for the front window,
+fetched as two whole lists (75 ms for 80 tabs).
+
+**`browser_navigate {app, url}`** → `{ok: true}`; opens a window when the browser has none.
+
 ## Files
 
 | file | contents |
@@ -246,5 +291,7 @@ secure fields `value` and `selectedText` are always `null`. No focused element �
 | `Input.swift` | mouse and keyboard ops |
 | `Keys.swift` | key-name → `kVK_*` table, combo/modifier parsing |
 | `Windows.swift` | `frontmost`, `windows`, `open_app`, `focus_app` |
-| `AX.swift` | `focused_text`, `element_at` |
+| `AX.swift` | `focused_text`, `element_at`, shared AX helpers |
+| `AXTree.swift` | the cached window tree, `ax_tree`, `find_element` |
+| `Browser.swift` | `browser_js`, `browser_url`, `browser_tabs`, `browser_navigate` via NSAppleScript |
 | `smoke.mjs` | read-only end-to-end check of the built binary |

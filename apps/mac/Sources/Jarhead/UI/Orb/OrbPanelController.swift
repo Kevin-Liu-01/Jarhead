@@ -19,17 +19,19 @@ import SwiftUI
 /// every display frame, so the blob really travels across the screen.
 ///
 /// It also flies to the work. An `orb.fly` on `state.overlayCommands` sends it from
-/// its perch to a point on the screen (parking up-left of it, never on it): a short
-/// wind-up (it turns the acting colour and tenses), then the flight spring — one
-/// overshoot, one squish, a ripple on arrival — and it hovers beside the work for the
-/// command's dwell (counted from being parked; a repeat fly to the same spot only
-/// extends it) before drifting home on a gentler spring; `orb.home` brings it back at
-/// once. The perch is the last spot Kevin put it (the persisted `orbPosition`); a
-/// flight never persists where it landed, opening the capsule mid-flight parks it
-/// until the capsule closes (then it goes home), and only a drag makes a new spot
-/// home. A fly that arrives while Kevin's own throw is still gliding waits for it to
-/// land. In flight it wears the acting colour, shimmers faster and trails a dotted
-/// wake of itself (`BlobTrail`).
+/// wherever it is to a point on the screen (parking up-left of it, never on it): a
+/// short wind-up (it turns the acting colour and tenses), then the flight spring —
+/// one overshoot, one squish, a ripple on arrival — and it hovers beside the work for
+/// the command's dwell (counted from being parked; a repeat fly to the same spot only
+/// extends it). Then it stays where it worked (`stayHere`): it settles there, sticks
+/// if it is touching an edge, and that spot is saved as `orbPosition` exactly as a
+/// drop would be — debounced, once, when settled — so a relaunch finds it there and
+/// it never drifts back to some earlier spot. The perch is different: it is where
+/// Kevin last put it by hand (a drop, a fling, a summon; remembered for the session),
+/// and `orb.home` means "go back there". A user drag mid-flight wins: the flight is
+/// cancelled and where he lets go is the new perch. A fly that arrives while Kevin's
+/// own throw is still gliding waits for it to land. In flight it wears the acting
+/// colour, shimmers faster and trails a dotted wake of itself (`BlobTrail`).
 ///
 /// And it draws by hand. An `orb.trace` sends it to a stroke's first point the same
 /// way, but on the wing it morphs into a pen — the cursor form (`BlobSim.cursor`): a
@@ -40,19 +42,35 @@ import SwiftUI
 /// corners), publishing the line so far on `state.liveStrokes` — at each vertex, and
 /// otherwise at most 30 times a second, which is as often as the overlay paints —
 /// so the overlay draws it growing from under the tip (`Trace`). At the end the
-/// stroke is sealed (`done`), the pen holds 300 ms, morphs back and drifts home. A
-/// new trace, `orb.home`, Kevin's hand, the capsule opening, a Stop, the phase
-/// falling asleep all cancel it — the half-drawn line is taken down. The overlay's
-/// `clear` (the brain's show_clear, a Stop) takes a line being drawn down too, but
-/// quietly: the pen morphs back and drifts home with none of the Stop's body
-/// language, and a plain fly is left alone. Under reduce motion the line appears
-/// whole and the blob only flies to it.
+/// stroke is sealed (`done`), the pen holds 300 ms, morphs back and stays by its
+/// line. A new trace, `orb.home`, Kevin's hand, the capsule opening, a Stop, the
+/// phase falling asleep all cancel it — the half-drawn line is taken down. The
+/// overlay's `clear` (the brain's show_clear, a Stop) takes a line being drawn down
+/// too, but quietly: the pen morphs back with none of the Stop's body language, and
+/// a plain fly is left alone. Under reduce motion the line appears whole and the
+/// blob only flies to it.
+///
+/// Notch mode (`Settings.orbHome == "notch"`, the default on a Mac whose main display
+/// has a notch) makes the notch home: the blob lives and sleeps in it (`NotchDock`,
+/// see NotchPanel.swift — the same `BlobSim`, so the face and colour are continuous),
+/// drops out of it for a fly, a trace or a summon (a hop down with a squish, from
+/// under the ink), does the work, and flies back up and tucks in when it is done —
+/// "stay where you worked" is the free-mode rule. Dragging it out of the notch makes
+/// it free for the rest of the session; the pill offers the way back. Without a notch
+/// (an external display as main, the lid closed) notch mode falls back to free mode
+/// and comes back when the notch returns.
+///
+/// Pause (`.pause` / `.resume`, from the capsule, the notch island, the menu, ⌥⇧P)
+/// keeps the session open but silent; the blob dims to titanium with a `u u` face and
+/// a slow breath, and the pill says so.
 ///
 /// Stop is felt at once. Every Stop pressed in the app — the capsule, the menu
 /// (`stopPressed`), the Console's button and ⌘. — posts `stopPressedNotification`
 /// in-process, ahead of the engine, and the blob answers it (`reactToStop`): any
-/// flight or trace is cancelled, it shivers with wide eyes, and drifts home; the
-/// pill says "Stopped". None of that waits on the engine.
+/// flight or trace is cancelled, it shivers with wide eyes that settle back to its
+/// normal face, and it stays where it is (free) or returns to the notch; the pill
+/// says "Stopped". None of that waits on the engine, and nothing is latched: the
+/// capsule's Stop is hot only while the snapshot holds a running delegation.
 @MainActor
 public final class OrbPanelController {
     public let state: AppState
@@ -121,6 +139,38 @@ public final class OrbPanelController {
     /// sends the blob home instead of making the capsule's spot the perch.
     private var homeAfterCollapse = false
     private let trail: BlobTrail
+    /// A flight ended and the body is settling where it worked (`stayHere`: a stuck
+    /// dome sagging in): the settle saves the spot but leaves the perch alone.
+    private var settlingAfterWork = false
+
+    // Home: free, or the notch.
+    /// The notch dock, built the first time notch mode comes on; nil until then.
+    private var notch: NotchDock?
+    /// Notch mode is on: the setting says notch, the main display has one, and Kevin
+    /// has not dragged the blob out this session.
+    private var notchMode = false
+    /// The blob is parked in the notch: the orb panel is hidden and the notch shows the face.
+    private var tucked = false
+    /// Kevin dragged the blob out of the notch: free for the rest of the session.
+    private var freeForSession = false
+    /// The notch panel is owed a hide once the drag that pulled the blob out lets go:
+    /// it stays ordered in (clear, the island shrunk away) while the drag runs, so
+    /// AppKit keeps delivering the drag's events to the view that took the mouse-down.
+    private var hideNotchAfterDrag = false
+    /// A real snapshot has arrived from the daemon. Until then the settings are the
+    /// empty snapshot's (`orbHome` nil reads as "notch"), so the home is not decided —
+    /// `connected` flips before the first snapshot, and deciding on it flew a free
+    /// user's blob to the notch on every connect and saved that spot as his.
+    private var snapshotArrived = false
+    /// A summon in notch mode: once it lands and has sat a moment, it flies back up.
+    private var returnAfterSummon = false
+    /// When the blob last dropped out of the notch (CACurrentMediaTime): the hop down
+    /// shows for `dropWindup` before a flight's spring takes over.
+    private var droppedAt = -100.0
+    static let dropWindup = 0.26
+    /// The pill's way back to the notch after a drag out ("free — …"); above toasts.
+    private let homePill = CurrentValueSubject<OrbPill?, Never>(nil)
+    private var homePillTimer: Task<Void, Never>?
 
     // Traces (orb.trace).
     /// The stroke being drawn: the flight out carries it (`trace` set, `flight`
@@ -214,6 +264,7 @@ public final class OrbPanelController {
         capsuleHost.rootView = OrbCapsuleView(model: capsuleModel, actions: OrbCapsuleActions(
             toggleAwake: { [weak self] in self?.toggleAwake() },
             toggleMute: { [weak self] in self?.toggleMute() },
+            togglePause: { [weak self] in self?.togglePause() },
             stop: { [weak self] in self?.stopPressed() },
             openConsole: { [weak self] in self?.state.openConsole() },
             collapse: { [weak self] in self?.collapse() },
@@ -269,15 +320,22 @@ public final class OrbPanelController {
         hoverTimer?.cancel()
         takeoff?.cancel()
         traceHold?.cancel()
+        homePillTimer?.cancel()
     }
 
     // MARK: - Public API (fixed signature)
 
     public func show() {
         if !positioned { placeInitially() }
+        // Home first: in notch mode the blob starts tucked, and the panel stays hidden.
+        updateHomeMode(animated: false)
+        statusModel.shown = true
+        if tucked {
+            notch?.show()
+            return
+        }
         blobView.paused = false
         panel.orderFrontRegardless()
-        statusModel.shown = true
         blobView.poke()
     }
 
@@ -286,30 +344,39 @@ public final class OrbPanelController {
         pendingFly = nil
         pendingTrace = nil
         if flight != .none {
-            // Cut the flight short and put the body back on its perch now, so it
-            // reappears where Kevin left it: a goal spring left armed would fly on
-            // after show() and persist its landing spot as the perch.
+            // Cut the flight short and put the body back home now, so it reappears
+            // where Kevin expects it: a goal spring left armed would fly on after
+            // show() and settle somewhere as if it had worked there.
             cancelFlight()
-            if let perch { placeBody(centerCG: perch) }
+            if notchMode { tuckIn(instant: true) } else if let perch { placeBody(centerCG: perch) }
         }
+        notch?.hide()
         blobView.paused = true
         statusModel.shown = false
         panel.orderOut(nil)
     }
 
+    /// The capsule — or, parked in the notch, the notch's island.
     public func toggleExpanded() {
+        if tucked { notch?.toggleIsland(); return }
         if expanded { collapse() } else { expand() }
     }
 
     /// Fling the blob to the cursor (landing slightly above it) with a bounce. Kevin
-    /// calling it over ends any flight: where it lands is the new perch.
+    /// calling it over ends any flight: where it lands is the new perch — in free
+    /// mode; in notch mode it drops out of the notch, sits by the cursor a moment,
+    /// and flies back up.
     public func summon() {
         // A capsule opened mid-flight starts the drift home as it folds; Kevin's call cuts that short too.
         if expanded { collapse() }
         cancelFlight()
+        // Kevin's call takes over a body still settling where it worked: where it lands is his.
+        settlingAfterWork = false
         pendingFly = nil
         pendingTrace = nil
         if !positioned { placeInitially() }
+        if tucked { dropOut() }
+        returnAfterSummon = notchMode
         let mouse = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
         let goal = CGPoint(x: mouse.x, y: mouse.y - 40)
         blobView.paused = false
@@ -322,7 +389,7 @@ public final class OrbPanelController {
         blobView.poke()
     }
 
-    public var isVisible: Bool { panel.isVisible }
+    public var isVisible: Bool { panel.isVisible || (tucked && (notch?.isVisible ?? false)) }
 
     // MARK: - State binding
 
@@ -335,15 +402,52 @@ public final class OrbPanelController {
                 // Falling asleep ends whatever it was doing on screen: a Stop, a sleep.
                 if phase == .asleep, self.sim.phase != .asleep, self.flight != .none { self.reactToStop() }
                 self.sim.setPhase(phase)
+                self.notch?.phaseChanged()
                 self.blobView.poke()
             }
+            .store(in: &cancellables)
+
+        // Home: free or the notch, from the setting (and the display). The payload is
+        // the new value while the snapshot is still the old one in here, so the mode
+        // is read on the next turn of the main queue.
+        state.$snapshot
+            .map(\.settings.orbHome)
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.updateHomeMode(animated: true) } }
+            }
+            .store(in: &cancellables)
+        // The first real snapshot: the settings are the daemon's now, and the home can
+        // be decided — whatever `orbHome` says, even nothing (an older daemon), which
+        // the sink above would not see as a change from the empty snapshot's nil.
+        // `connected` is not that moment: it flips before the first snapshot arrives.
+        state.$snapshot
+            .filter { $0 != .empty }
+            .first()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.snapshotArrived = true
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.updateHomeMode(animated: true) } }
+            }
+            .store(in: &cancellables)
+        // The notch island's one line: the last thing said.
+        state.$snapshot
+            .map { (s: Snapshot) -> String in s.transcript.last?.text ?? "" }
+            .removeDuplicates()
+            .sink { [weak self] line in self?.notch?.view.lastLine = line }
+            .store(in: &cancellables)
+        gatePill
+            .sink { [weak self] pill in self?.notch?.setGatePill(pill) }
             .store(in: &cancellables)
 
         state.$levels
             .sink { [weak self] levels in
                 guard let self else { return }
                 self.sim.setLevels(levels)
-                if levels.input > 0.02 || levels.output > 0.02 { self.blobView.poke() }
+                if levels.input > 0.02 || levels.output > 0.02 {
+                    self.blobView.poke()
+                    if self.tucked { self.notch?.view.wake() }
+                }
             }
             .store(in: &cancellables)
 
@@ -377,21 +481,27 @@ public final class OrbPanelController {
             .sink { [weak self] v in self?.capsuleModel.wakePassphraseSet = v }
             .store(in: &cancellables)
 
-        // The pill: the first problem, else the gate, else the latest toast. The gate
+        // The pill: the first problem, else the gate, else the way back to the notch,
+        // else the latest toast, else "Paused · still connected" while paused. The gate
         // outranks toasts because its lockout toast and countdown arrive together and
         // the countdown is the one worth the space. A toast that repeats the showing
         // one's words (the app's "Stopped", then the engine's "stopped" a moment later)
         // does not flip the pill.
-        Publishers.CombineLatest3(
+        Publishers.CombineLatest4(
             state.$snapshot.map(\.problems.first).removeDuplicates(),
             gatePill.removeDuplicates(),
+            homePill.removeDuplicates(),
             state.$toasts.map(\.last).removeDuplicates { a, b in
                 a?.tone == b?.tone && a?.text.lowercased() == b?.text.lowercased()
             })
-            .map { problem, gate, toast -> OrbPill? in
+            .combineLatest(state.$snapshot.map(\.phase).removeDuplicates())
+            .map { top, phase -> OrbPill? in
+                let (problem, gate, home, toast) = top
                 if let p = problem { return OrbPill(text: p, tone: .error) }
                 if let g = gate { return g }
+                if let h = home { return h }
                 if let t = toast { return OrbPill(text: t.text, tone: t.tone) }
+                if phase == .paused { return OrbPill(text: "Paused · still connected", tone: .info, icon: "pause.fill") }
                 return nil
             }
             .removeDuplicates()
@@ -411,7 +521,7 @@ public final class OrbPanelController {
             .removeDuplicates()
             .compactMap { $0 }
             .sink { [weak self] pos in
-                guard let self, !self.userMoved, !self.expanded, !self.body.isActive, self.flight == .none else { return }
+                guard let self, !self.userMoved, !self.expanded, !self.body.isActive, self.flight == .none, !self.tucked else { return }
                 self.apply(savedPosition: pos)
             }
             .store(in: &cancellables)
@@ -467,6 +577,7 @@ public final class OrbPanelController {
     private func gateChanged(_ gate: WakeGateState) {
         sim.setGate(BlobGate(gate))
         blobView.poke()
+        notch?.view.wake()
         capsuleModel.wakeGate = gate
         deniedPillTimer?.cancel(); deniedPillTimer = nil
         switch gate {
@@ -523,6 +634,9 @@ public final class OrbPanelController {
     /// from the body either way, because the AppKit origin shifts when the primary
     /// display's frame does even though the CG position has not.
     private func screensDidChange() {
+        // The notch may have come or gone (or moved with its display).
+        updateHomeMode(animated: true)
+        if tucked { return }
         let onScreen = ScreenArea.all().contains { $0.frame.contains(body.center) }
         if !onScreen, expanded { collapse() }
         let moved = body.rescueOntoScreens()
@@ -536,6 +650,175 @@ public final class OrbPanelController {
             if moved { persistPosition() }
         }
         blobView.poke()
+    }
+
+    // MARK: - Home (free / notch)
+
+    /// Free or notch. Notch mode needs the setting (`orbHome`, "notch" unless set) and
+    /// a notch on the main display, and ends for the session when Kevin drags the blob
+    /// out. Coming on, it sends an idle blob up into the notch (at once when nothing is
+    /// showing yet); going off, a tucked blob drops out to float under where the notch
+    /// was, and where it lands is the perch — and a blob still on its way up to the
+    /// notch turns round and drifts back to the perch instead, so the spot under the
+    /// notch is never settled on and saved as Kevin's. Until the daemon's first
+    /// snapshot has arrived the setting is unknown (the empty snapshot would read as
+    /// "notch", and `connected` comes before the snapshot), so the blob starts free and
+    /// flies up on the first snapshot that says notch — never dropping a free user's
+    /// blob under the notch and saving that as his spot.
+    private func updateHomeMode(animated: Bool) {
+        let geometry = NotchGeometry.current()
+        let known = snapshotArrived
+        let wants = known && state.snapshot.settings.livesInNotch && !freeForSession && geometry != nil
+        if let geometry { notch?.apply(geometry: geometry) }
+        guard wants != notchMode else { return }
+        notchMode = wants
+        if wants, let geometry {
+            let dock = notch ?? makeDock(geometry)
+            notch = dock
+            hideNotchAfterDrag = false
+            dock.setGatePill(gatePill.value)
+            dock.view.lastLine = state.snapshot.transcript.last?.text ?? ""
+            if flight == .none, !body.dragging, !expanded {
+                if animated, positioned, panel.isVisible { driftHome() } else { tuckIn(instant: true) }
+            }
+        } else {
+            returnAfterSummon = false
+            if tucked {
+                dropOut()
+            } else if flight == .homing {
+                // On its way up to the notch: the notch is not home any more. Back to
+                // the perch (home now) — its settle there is the perch again, not the dock.
+                cancelFlight()
+                if perch != nil { driftHome() }
+            }
+            hideNotchAfterDrag = false
+            notch?.hide()
+        }
+        #if JARHEAD_ORB_PREVIEW
+        print(String(format: "home: %@%@ (notch %@)", notchMode ? "notch" : "free", freeForSession ? " (dragged out)" : "", geometry == nil ? "none" : "present"))
+        fflush(stdout)
+        #endif
+    }
+
+    private func makeDock(_ geometry: NotchGeometry) -> NotchDock {
+        let dock = NotchDock(sim: sim, geometry: geometry)
+        dock.togglePause = { [weak self] in self?.togglePause() }
+        dock.stop = { [weak self] in self?.stopPressed() }
+        dock.toggleMute = { [weak self] in self?.toggleMute() }
+        dock.dragOut = { [weak self] p in self?.dragOutOfNotch(at: p) }
+        dock.dragMoved = { [weak self] p in self?.pointerDragged(to: p) }
+        dock.dragEnded = { [weak self] in self?.pointerUp(clickCount: 1, time: ProcessInfo.processInfo.systemUptime) }
+        return dock
+    }
+
+    /// Where home is: the notch's dock in notch mode, else the perch — the spot Kevin last put it by hand.
+    private var homePoint: CGPoint? { notchMode ? notch?.dockPointCG : perch }
+
+    /// Out of the notch: the body appears under the ink, its top hidden by the menu
+    /// bar, and hops down with a squish (a flight's spring or Kevin's hand takes it
+    /// from there). `toward` puts it under a hand instead of under the notch.
+    private func dropOut(toward hand: CGPoint? = nil) {
+        guard tucked, let notch else { return }
+        tucked = false
+        notch.parked = false
+        placeBody(centerCG: hand ?? notch.dropPointCG)
+        blobView.paused = false
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        droppedAt = CACurrentMediaTime()
+        sim.splat(reducedMotion ? 0.2 : 0.5)
+        sim.nudge(1.0)
+        if hand == nil { body.fling(CGVector(dx: 0, dy: reducedMotion ? 120 : 320)) }
+        scanObstacles(force: true)
+        blobView.poke()
+        #if JARHEAD_ORB_PREVIEW
+        print(String(format: "notch: drop out at CG %.0f,%.0f%@", body.center.x, body.center.y, hand == nil ? "" : " (into the hand)"))
+        fflush(stdout)
+        #endif
+    }
+
+    /// Up into the notch: the flight is over, the notch shows the face, and the orb
+    /// panel slides up under the ink as it fades (140 ms) and is hidden.
+    private func tuckIn(instant: Bool) {
+        guard let notch, !tucked else { return }
+        endFlight(clearTrail: false)
+        returnAfterSummon = false
+        settlingAfterWork = false
+        tucked = true
+        body.teleport(to: notch.dockPointCG)
+        notch.show()
+        notch.parked = true
+        #if JARHEAD_ORB_PREVIEW
+        print("notch: tuck in\(instant ? " (instant)" : "")")
+        fflush(stdout)
+        #endif
+        if instant || reducedMotion {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+            blobView.paused = true
+            return
+        }
+        let up = NSRect(origin: NSPoint(x: panel.frame.minX, y: panel.frame.minY + 26), size: panel.frame.size)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.14
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(up, display: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.tucked else { return }
+                self.panel.orderOut(nil)
+                self.panel.alphaValue = 1
+                self.blobView.paused = true
+            }
+        })
+    }
+
+    /// Kevin pulled the face out of the notch: the blob drops into his hand and is free
+    /// for the rest of the session; the pill offers the way back. The notch panel is
+    /// not hidden yet: it took the mouse-down, and the rest of the drag comes through
+    /// it (`NotchView.mouseDragged` → `pointerDragged`), so it stays ordered in — clear,
+    /// its island shrunk away — until the hand lets go (`hideNotchAfterDrag`).
+    private func dragOutOfNotch(at p: CGPoint) {
+        guard tucked else { return }
+        freeForSession = true
+        dropOut(toward: CGPoint(x: p.x, y: p.y + 30))
+        notchMode = false
+        hideNotchAfterDrag = true
+        userMoved = true
+        downPoint = p
+        dragMoved = true
+        body.beginDrag(pointer: p)
+        scanObstacles(force: true)
+        homePillTimer?.cancel()
+        homePill.send(OrbPill(text: "free — back to the notch from Settings › Home", tone: .info, icon: "arrow.up.to.line",
+                              action: { [weak self] in self?.returnToNotch() }))
+        homePillTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.homePill.send(nil)
+        }
+        blobView.poke()
+    }
+
+    /// The drag out of the notch has let go (`pointerUp`, or the body saw the button
+    /// up in `physicsTick`): the notch panel, kept ordered in for the drag's events, goes now.
+    private func hideNotchIfOwed() {
+        guard hideNotchAfterDrag else { return }
+        hideNotchAfterDrag = false
+        notch?.hide()
+    }
+
+    /// The pill's one click: notch mode again, the blob flies back up.
+    private func returnToNotch() {
+        homePillTimer?.cancel(); homePillTimer = nil
+        homePill.send(nil)
+        freeForSession = false
+        updateHomeMode(animated: true)
+    }
+
+    private func togglePause() {
+        state.send(state.phase == .paused ? .resume : .pause)
     }
 
     // MARK: - Position
@@ -611,12 +894,28 @@ public final class OrbPanelController {
             hoverUntil = max(hoverUntil, CACurrentMediaTime() + flightDwell)
             scheduleHoverEnd()
         case .homing:
-            // Home again, on the perch it left: nothing changed, nothing to save.
+            // Home again: up into the notch in notch mode; on the perch Kevin chose in
+            // free mode (`orb.home`, a Stop on the way) — and the saved spot is that again.
             endFlight(clearTrail: false)
+            if notchMode { tuckIn(instant: false) } else { persistPosition(asPerch: true) }
         case .hovering, .tracing:
             break
         case .none:
-            persistPosition()
+            if settlingAfterWork {
+                // The dome a finished flight sagged into: where it worked is saved, the perch is not moved.
+                settlingAfterWork = false
+                persistPosition(asPerch: false)
+            } else if notchMode, returnAfterSummon {
+                // A summon in notch mode: sit by the cursor a moment, then back up.
+                returnAfterSummon = false
+                flight = .hovering
+                flightTarget = body.center
+                hoverUntil = CACurrentMediaTime() + 2.5
+                scheduleHoverEnd()
+                return
+            } else {
+                persistPosition(asPerch: true)
+            }
             // Kevin's throw has landed and is the perch; now the fly (or trace) that waited for it.
             if let p = pendingFly {
                 pendingFly = nil
@@ -630,14 +929,16 @@ public final class OrbPanelController {
         }
     }
 
-    /// Save where the body rests. Only ever a spot Kevin chose (a drop, a fling, a
-    /// summon, a rescue) — flights do not come through here — so it is also the perch.
-    /// The spot is taken now: a flight that leaves within the debounce (one that was
-    /// waiting for this very landing) must not stop the perch being saved, nor be
-    /// saved itself.
-    private func persistPosition() {
-        guard !expanded, flight == .none else { return }
-        perch = body.center
+    /// Save where the body rests as `orbPosition`, so a relaunch puts it back there. A
+    /// spot Kevin chose (a drop, a fling, a summon, a rescue) is also the perch — where
+    /// `orb.home` returns to; a spot a flight ended on (`stayHere`) is saved but leaves
+    /// the perch alone. The spot is taken now: a flight that leaves within the debounce
+    /// (one that was waiting for this very landing) must not stop the save, nor be saved
+    /// itself. Never while tucked: in notch mode the notch is home, and the saved spot
+    /// is where the blob last floated free.
+    private func persistPosition(asPerch: Bool = true) {
+        guard !expanded, flight == .none, !tucked else { return }
+        if asPerch { perch = body.center }
         let tl = body.topLeft
         persistDebounce?.cancel()
         persistDebounce = Task { @MainActor [weak self] in
@@ -658,20 +959,24 @@ public final class OrbPanelController {
     /// parked beside it), when it only extends the hover: relaunching would swing the
     /// blob round the target for nothing.
     private func fly(to target: CGPoint, dwellMs: Double?, reason: String?) {
-        guard !body.dragging, panel.isVisible else { return }
+        guard !body.dragging, panel.isVisible || tucked else { return }
         if expanded { collapse() }
         if !positioned { placeInitially() }
         // A plain fly overtakes a trace: the half-drawn line comes down, the pen morphs back.
         if trace != nil { cancelTrace() }
         pendingTrace = nil
+        if tucked { dropOut() }
         let now = CACurrentMediaTime()
         let dwell = max(0.2, (dwellMs ?? 2000) / 1000)
-        if flight == .none, body.isActive {
+        // Just out of the notch, the body is hopping down: not Kevin's throw, no waiting.
+        let dropping = now - droppedAt < Self.dropWindup + 0.05
+        if flight == .none, body.isActive, !dropping {
             pendingFly = PendingFly(target: target, dwellMs: dwellMs, reason: reason, expires: now + dwell + 1.0)
             return
         }
         pendingFly = nil
-        if perch == nil { perch = body.center }
+        if perch == nil, !notchMode { perch = body.center }
+        settlingAfterWork = false
         flightDwell = dwell
         hoverUntil = max(hoverUntil, now + dwell)
         if flight == .outbound || flight == .hovering {
@@ -691,17 +996,18 @@ public final class OrbPanelController {
         sim.flight = true
         blobView.paused = false
         panel.orderFrontRegardless()
-        if body.isActive { takeOff() } else { scheduleTakeoff() }
+        if body.isActive, !dropping { takeOff() } else { scheduleTakeoff(after: dropping ? Self.dropWindup : nil) }
         blobView.poke()
     }
 
-    private func scheduleTakeoff() {
+    /// The wind-up before the launch; out of the notch, long enough for the hop down to show.
+    private func scheduleTakeoff(after: Double? = nil) {
         takeoff?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.takeOff() }
         }
         takeoff = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (sim.reducedMotion ? 0 : Self.windup), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (after ?? (sim.reducedMotion ? 0 : Self.windup)), execute: work)
     }
 
     /// Launch (or retarget) the body toward the spot beside the target. Across
@@ -753,39 +1059,78 @@ public final class OrbPanelController {
             while !Task.isCancelled {
                 guard let self, self.flight == .hovering else { return }
                 let remaining = self.hoverUntil - CACurrentMediaTime()
-                if remaining <= 0 { self.flyHome(); return }
+                if remaining <= 0 { self.workDone(); return }
                 try? await Task.sleep(nanoseconds: UInt64(max(0.01, remaining) * 1_000_000_000))
             }
         }
     }
 
-    /// Back to the perch: at once on `orb.home`, or when the hover runs out. A trace
-    /// under way is cancelled — its half-drawn line comes down. Never over Kevin's
-    /// hand: not while he drags, and not while his throw still glides (its landing
-    /// is his perch and must be saved as such). Outside a flight only an idle body
-    /// parked off its perch — where a cancelled trace left it — drifts back.
+    /// The work is over — the hover ran out, the line is sealed, a Stop, the brain's
+    /// clear, the capsule closing on a parked flight. In free mode the blob stays where
+    /// it worked (`stayHere`); in notch mode the notch is home and it flies back up.
+    private func workDone() {
+        if notchMode { driftHome() } else { stayHere() }
+    }
+
+    /// Stay where you worked: the flight ends here. The body parks — still, and stuck
+    /// to any edge its surface is touching (it sags into the dome over the next few
+    /// frames) — and the spot is saved as a drop would be, once it is settled. The
+    /// perch (where `orb.home` goes) is not moved: that stays the spot Kevin last
+    /// chose by hand.
+    private func stayHere() {
+        hoverTimer?.cancel(); hoverTimer = nil
+        takeoff?.cancel(); takeoff = nil
+        if body.hasGoal || body.guided || body.isActive { body.teleport(to: body.center) }
+        endFlight(clearTrail: true)
+        body.park()
+        sim.setContacts(body.contacts())
+        sim.leanX = body.leanX
+        sim.leanY = body.leanY
+        syncPanelToBody()
+        if body.isActive {
+            settlingAfterWork = true
+        } else {
+            persistPosition(asPerch: false)
+        }
+        blobView.poke()
+        #if JARHEAD_ORB_PREVIEW
+        print(String(format: "stay: parked at CG %.0f,%.0f stuck %d (perch %@)", body.center.x, body.center.y, body.stuckCount,
+                     perch.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"))
+        fflush(stdout)
+        #endif
+    }
+
+    /// Back home: at once on `orb.home`. Home is the perch — where Kevin last put it by
+    /// hand — in free mode, the notch in notch mode. A trace under way is cancelled —
+    /// its half-drawn line comes down. Never over Kevin's hand: not while he drags, and
+    /// not while his throw still glides (its landing is his perch and must be saved as
+    /// such). Outside a flight only an idle body off its home drifts back.
     private func flyHome() {
         pendingTrace = nil
         guard !body.dragging else { return }
         if trace != nil { cancelTrace() }
         if flight == .none {
-            guard !body.isActive, let perch, hypot(body.center.x - perch.x, body.center.y - perch.y) > 2 else { return }
+            guard !body.isActive, let home = homePoint, hypot(body.center.x - home.x, body.center.y - home.y) > 2 else { return }
         }
         driftHome()
     }
 
     /// Start the way home from wherever the body is — the tail of a flight, or of one
     /// the capsule interrupted. A gentle spring, no splat: the blob drifting home
-    /// behind the work, not racing.
+    /// behind the work, not racing. In notch mode home is the dock under the notch,
+    /// and the settle there tucks it in.
     private func driftHome() {
         hoverTimer?.cancel(); hoverTimer = nil
         takeoff?.cancel(); takeoff = nil
-        guard let perch else { endFlight(clearTrail: false); return }
+        settlingAfterWork = false
+        guard let home = homePoint else { endFlight(clearTrail: false); return }
+        if tucked { return }
         flight = .homing
         sim.flight = true
         sim.flightMoving = true
         blobView.paused = false
-        body.drift(to: perch)
+        panel.orderFrontRegardless()
+        body.drift(to: home)
         scanObstacles(force: true)
         blobView.poke()
     }
@@ -822,12 +1167,15 @@ public final class OrbPanelController {
     }
 
     /// One dotted ghost of the blob where it is now, every `BlobTrail.spacing` while a
-    /// flight is actually moving — not while it draws: the line is that wake. Never
-    /// under reduce motion. Always in the flight colour: the first ghost drops while
-    /// the field is still easing from the phase colour, and a purple ghost behind a
-    /// green blob reads as two creatures.
+    /// flight is actually moving — not while it draws: the line is that wake, and not
+    /// during the wind-up before the launch (`takeoff` pending): out of the notch the
+    /// body is hopping down then, fast enough to count, and a ghost stamped on it where
+    /// it emerges smeared the hop into a doubled body. Never under reduce motion.
+    /// Always in the flight colour: the first ghost drops while the field is still
+    /// easing from the phase colour, and a purple ghost behind a green blob reads as
+    /// two creatures.
     private func dropGhostIfDue() {
-        guard flight != .none, flight != .tracing, !sim.reducedMotion, body.speed > 240 else { return }
+        guard flight != .none, flight != .tracing, takeoff == nil, !sim.reducedMotion, body.speed > 240 else { return }
         let now = CACurrentMediaTime()
         guard now - trail.lastDropAt >= BlobTrail.spacing else { return }
         guard let image = BlobGhostImage.render(cells: sim.cells, ramp: sim.ramp, color: sim.traceColor ?? OrbPalette.acting,
@@ -854,21 +1202,25 @@ public final class OrbPanelController {
         guard !body.dragging else { return }
         if trace != nil { cancelTrace() }
         pendingTrace = nil
-        if !panel.isVisible || sim.reducedMotion {
+        let shown = panel.isVisible || tucked
+        if !shown || sim.reducedMotion {
             // The line, whole; the blob flies to it if it is on screen.
             state.liveStrokes.send(path.stroke(upTo: pts.count - 1, pen: nil, done: true, ttlMs: path.ttlMs))
-            if panel.isVisible { fly(to: pts[0], dwellMs: 1500, reason: reason) }
+            if shown { fly(to: pts[0], dwellMs: 1500, reason: reason) }
             return
         }
         if expanded { collapse() }
         if !positioned { placeInitially() }
+        if tucked { dropOut() }
         let now = CACurrentMediaTime()
-        if flight == .none, body.isActive {
+        let dropping = now - droppedAt < Self.dropWindup + 0.05
+        if flight == .none, body.isActive, !dropping {
             pendingTrace = (.orbTrace(points: pts.map { Point2(x: $0.x, y: $0.y) }, closed: false, label: label, ttlMs: ttlMs, tone: tone, reason: reason), now + 3.0)
             return
         }
         pendingFly = nil
-        if perch == nil { perch = body.center }
+        if perch == nil, !notchMode { perch = body.center }
+        settlingAfterWork = false
         hoverTimer?.cancel(); hoverTimer = nil
         hoverUntil = 0
         trace = path
@@ -880,7 +1232,7 @@ public final class OrbPanelController {
         sim.cursorHand = path.hand
         blobView.paused = false
         panel.orderFrontRegardless()
-        if body.isActive { takeOff() } else { scheduleTakeoff() }
+        if body.isActive, !dropping { takeOff() } else { scheduleTakeoff(after: dropping ? Self.dropWindup : nil) }
         blobView.poke()
     }
 
@@ -931,7 +1283,8 @@ public final class OrbPanelController {
         if finished { finishTrace() }
     }
 
-    /// The line is sealed. The pen holds on it a beat, then morphs back and drifts home.
+    /// The line is sealed. The pen holds on it a beat, then morphs back and stays by
+    /// its line (free mode) or flies back up into the notch.
     private func finishTrace() {
         traceHold?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -941,7 +1294,7 @@ public final class OrbPanelController {
                 self.trace = nil
                 self.sim.cursor = nil
                 self.sim.traceColor = nil
-                self.driftHome()
+                self.workDone()
             }
         }
         traceHold = work
@@ -969,17 +1322,18 @@ public final class OrbPanelController {
 
     /// The overlay's `clear`: the brain's show_clear ("remove every shape you drew"),
     /// or a Stop taking the shapes down. A line being drawn goes with them, quietly —
-    /// the pen morphs back and drifts home — and a trace still waiting for Kevin's
-    /// throw to land is dropped. Nothing else changes: a plain fly is not the brain's
-    /// drawing, and the Stop's body language belongs to the Stop (`reactToStop`).
+    /// the pen morphs back and stays (or returns to the notch) — and a trace still
+    /// waiting for Kevin's throw to land is dropped. Nothing else changes: a plain fly
+    /// is not the brain's drawing, and the Stop's body language belongs to the Stop
+    /// (`reactToStop`).
     private func drawingsCleared() {
         pendingTrace = nil
         guard trace != nil else { return }
-        // Out to the first point, or drawing: either way the body is off its perch on
-        // the trace's account. (A trace pending behind a plain fly is not; it is dropped above.)
+        // Out to the first point, or drawing: either way the body is out on the
+        // trace's account. (A trace pending behind a plain fly is not; it is dropped above.)
         let onTheTrace = flight == .outbound || flight == .tracing
         cancelTrace()
-        if onTheTrace, !expanded { driftHome() }
+        if onTheTrace, !expanded { workDone() }
     }
 
     // MARK: - Stop
@@ -998,7 +1352,9 @@ public final class OrbPanelController {
 
     /// The blob's own answer to a Stop, at once: whatever it was doing on screen ends
     /// — the flight or trace is cancelled, its wake and half-drawn line with it — it
-    /// shivers with wide eyes that settle, and drifts home if it is not there.
+    /// shivers with wide eyes that settle back to its normal face, and stays where it
+    /// is (free mode) or flies back up into the notch. Nothing about a Stop is latched
+    /// here: the next fly, wake or pause lands as if the Stop never happened.
     private func reactToStop() {
         pendingFly = nil
         pendingTrace = nil
@@ -1008,17 +1364,22 @@ public final class OrbPanelController {
         blobView.paused = false
         sim.nudge(1.6)
         sim.poke()
-        if wasOut, !expanded, let perch, hypot(body.center.x - perch.x, body.center.y - perch.y) > 2 { driftHome() }
+        if wasOut, !expanded { workDone() }
         blobView.poke()
+        notch?.view.wake()
     }
 
     // MARK: - Physics loop
 
     /// One display frame while the body moves. Returns true while it still does.
     private func physicsTick(_ dt: Double) -> Bool {
-        guard !expanded, !frozen, body.isActive || body.dragging else { return false }
+        guard !expanded, !frozen, !tucked, body.isActive || body.dragging else { return false }
         if flight == .tracing { advanceTrace(dt) }
         let contacts = body.step(dt)
+        // The drag out of the notch may end here rather than in `pointerUp`: the body
+        // sees the button up on its own (`BlobBody.step`) when the mouse-up never
+        // reaches the notch view.
+        if hideNotchAfterDrag, !body.dragging { hideNotchIfOwed() }
         sim.setContacts(contacts)
         sim.setMotion(lag: body.lag, grab: body.grab, velocity: body.velocity, dragging: body.dragging)
         // The acting eyes track the work on a flight; otherwise the direction of
@@ -1135,9 +1496,10 @@ public final class OrbPanelController {
         sim.leanY = body.leanY
         blobView.poke()
         if homeAfterCollapse {
-            // Opened beside the work mid-flight: not a spot Kevin chose. Home it goes.
+            // Opened beside the work mid-flight: the work is over — it stays there (free
+            // mode: saved, but not Kevin's perch) or returns to the notch.
             homeAfterCollapse = false
-            driftHome()
+            workDone()
         } else {
             persistPosition()
         }
@@ -1222,10 +1584,12 @@ public final class OrbPanelController {
             dragMoved = true
             if expanded { collapse() }
             // Kevin's hand ends a flight or a trace (and one the capsule had parked,
-            // which the collapse just sent home); where he lets go is the new perch. A
-            // fly or trace that was waiting for his throw to land is dropped: he has
-            // taken over.
+            // which the collapse just sent home); where he lets go is the new perch —
+            // also when he grabs a body still sagging in where it worked, whose settle
+            // would otherwise have left the perch alone. A fly or trace that was
+            // waiting for his throw to land is dropped: he has taken over.
             cancelFlight()
+            settlingAfterWork = false
             pendingFly = nil
             pendingTrace = nil
             userMoved = true
@@ -1240,6 +1604,7 @@ public final class OrbPanelController {
         defer { downPoint = nil }
         if dragMoved {
             body.endDrag()
+            hideNotchIfOwed()
             blobView.poke()
             return
         }
@@ -1275,6 +1640,8 @@ public final class OrbPanelController {
         // Mid-flight a hop would strand it (the goal goes with the fling) or make its
         // hover spot home when it landed; a shiver is enough.
         guard flight == .none else { blobView.poke(); return }
+        // A poke is Kevin's hand: where the hop lands is his spot, perch and all.
+        settlingAfterWork = false
         let dx = Double.random(in: -90 ... 90)
         let dy = Double.random(in: -140 ... -60)
         body.fling(CGVector(dx: dx, dy: dy))
@@ -1301,6 +1668,11 @@ public final class OrbPanelController {
         menu.addItem(menuTarget.item(muted ? "Unmute" : "Mute", symbol: muted ? "mic.slash.fill" : "mic.fill") { [weak self] in
             self?.toggleMute()
         })
+        let paused = state.phase == .paused
+        let pause = menuTarget.item(paused ? "Resume" : "Pause", symbol: paused ? "play.fill" : "pause.fill") { [weak self] in self?.togglePause() }
+        pause.keyEquivalent = "p"
+        pause.keyEquivalentModifierMask = [.option, .shift]
+        menu.addItem(pause)
         // Never disabled: a Stop must land in every phase.
         menu.addItem(menuTarget.item("Stop", symbol: "stop.fill") { [weak self] in self?.stopPressed() })
         menu.addItem(.separator())
@@ -1384,9 +1756,16 @@ final class OrbPanel: NSPanel {
     }
 }
 
-/// Hosts the status pill over the blob; never takes the mouse.
+/// Hosts the status pill over the blob; never takes the mouse — except for the pill's
+/// one-click action (the way back to the notch), and only on the pill's own band at
+/// the foot of the cell, so the blob above it still takes the tap and the drag.
 final class OrbPillHostingView: NSHostingView<OrbPillView> {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard rootView.status.pill?.action != nil else { return nil }
+        let local = convert(point, from: superview)
+        guard local.y <= 30 else { return nil }
+        return super.hitTest(point)
+    }
 }
 
 /// Hosts the capsule; takes the first click even though the panel is never key, so
@@ -1461,6 +1840,24 @@ extension OrbPanelController {
     }
     /// The capsule's / menu's Stop, as pressed.
     public func previewStop() { stopPressed() }
+    /// The capsule's / menu's Pause, as pressed.
+    public func previewTogglePause() { togglePause() }
+    /// "free" / "notch", and whether the blob is parked in the notch right now.
+    public var previewHomeMode: String { notchMode ? "notch" : "free" }
+    public var previewIsTucked: Bool { tucked }
+    /// The notch's mode ("tucked" / "peek" / "island"), or "" without a dock.
+    public var previewNotchMode: String { notch?.previewMode ?? "" }
+    /// Pretend the pointer approached (or left) the notch island.
+    public func previewNotchHover(_ over: Bool) { notch?.previewHover(over) }
+    /// The notch panel's frame and its island (CG), for framing shots; nil without a dock.
+    public var previewNotchPanelCG: CGRect? { notch?.previewPanelCG }
+    public var previewNotchIslandCG: CGRect? { notch.map { $0.previewIslandCG } }
+    /// Where the blob parks under the notch (CG).
+    public var previewNotchDockCG: CGPoint? { notch?.dockPointCG }
+    /// Draw the notch panel's content into a context whose origin is the notch panel's bottom-left (AppKit).
+    public func previewRenderNotch(in ctx: CGContext) { notch?.previewRender(in: ctx) }
+    /// Drag the face out of the notch into the hand at `p` (CG), as the notch view would report it.
+    public func previewDragOutOfNotch(at p: CGPoint) { dragOutOfNotch(at: p) }
     /// The trail's ghosts currently showing (AppKit frames), for framing a screenshot.
     public var previewGhostFrames: [NSRect] { trail.visibleFrames }
     /// Draw the showing ghosts into a context whose origin is `offset` (AppKit screen space).
@@ -1536,6 +1933,7 @@ extension OrbPanelController {
 
     public func previewFling(vx: Double, vy: Double) {
         blobView.paused = false
+        settlingAfterWork = false
         body.fling(CGVector(dx: vx, dy: vy))
         scanObstacles(force: true)
         blobView.poke()
@@ -1554,10 +1952,12 @@ extension OrbPanelController {
     public var previewStuckCount: Int { body.stuckCount }
     public var previewNeck: Double { body.neck }
     public var previewIsDragging: Bool { body.dragging }
-    /// The eyes this frame: "col,row open pupilX,pupilY shape" each.
+    /// The eyes this frame: "col,row 'glyph' open look x,y" each.
     public var previewEyes: String {
-        sim.eyes.map { String(format: "%.1f,%.1f open %.2f look %.2f,%.2f %@", $0.col, $0.row, $0.open, $0.pupilX, $0.pupilY, String(describing: $0.shape)) }.joined(separator: " | ")
+        sim.eyes.map { String(format: "%.1f,%.1f '%@' open %.2f look %.2f,%.2f", $0.col, $0.row, String($0.glyph), $0.open, $0.lookX, $0.lookY) }.joined(separator: " | ")
     }
+    /// The face as the sim shows it (`BlobSim.face`), placed or not: "left right".
+    public var previewFace: String { "\(sim.face.left) \(sim.face.right)" }
     /// Why the last eye fit failed, in numbers (BlobSim.eyeFitNote).
     public var previewEyeFitNote: String { sim.eyeFitNote }
     /// The field's body cells this frame as glyphs (one line per row, '·' for empty),

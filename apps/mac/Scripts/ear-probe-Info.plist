@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Info.plist of the minimal EarProbe.app wrapper that Scripts/ear-probe.sh builds
+       around the probe binary (copied to Contents/Info.plist, then launched through
+       `open` so the app is its own responsible process for TCC). It carries the usage
+       strings a bare command-line tool lacks; without them the Speech Recognition
+       request aborts the process instead of prompting. -->
+  <key>CFBundleIdentifier</key>
+  <string>com.kevinliu.jarhead.ear-probe</string>
+  <key>CFBundleName</key>
+  <string>ear-probe</string>
+  <!-- Without these codesign cannot find the main executable, fails silently, and the
+       stale signature makes `open` report "executable is missing" after a rebuild. -->
+  <key>CFBundleExecutable</key>
+  <string>ear-probe</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>The ear probe listens on the microphone for a few seconds to print on-device partial transcripts.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>The ear probe runs on-device speech recognition on the microphone; nothing leaves the Mac.</string>
+</dict>
+</plist>

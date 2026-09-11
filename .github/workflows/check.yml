@@ -8,7 +8,7 @@ on:
 jobs:
   typescript:
     name: typecheck + tests
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -22,7 +22,7 @@ jobs:
 
   swift:
     name: swift build (apps/mac + hands)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

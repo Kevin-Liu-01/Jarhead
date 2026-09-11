@@ -615,6 +615,13 @@ struct SettingsPanel: View {
                             .help(wake.enabled ? "Wake on launch (the wake word gate owns waking while it is on)" : "Wake on launch")
                             .accessibilityLabel("Auto-wake on launch")
                     }
+                    // Where the orb lives: floating free (it stays where it last worked), or in
+                    // the MacBook notch (it drops out for the work and flies back up).
+                    formRow("Home") {
+                        HomeSegments(notch: settings.livesInNotch) { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) }
+                            .help(settings.livesInNotch ? "The orb lives and sleeps in the notch" : "The orb floats free and stays where it last worked")
+                    }
+                    hint(settings.livesInNotch ? "Lives in the notch; floats free when the main display has none." : "Floats free; stays where it last worked.")
                 }
             }
             RailSection("Wake") {
@@ -810,6 +817,25 @@ struct SettingsPanel: View {
             .padding(.leading, keyWidth + 10)
             .padding(.bottom, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Settings › Home: Free / Notch — the rail tabs' segmented control, two options.
+private struct HomeSegments: View {
+    let notch: Bool
+    let pick: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            SegOption(title: "Free", on: !notch) { pick(false) }
+            Rectangle().fill(ConsoleTheme.hair).frame(width: 1)
+            SegOption(title: "Notch", on: notch) { pick(true) }
+        }
+        .frame(height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Orb home: \(notch ? "Notch" : "Free")")
     }
 }
 

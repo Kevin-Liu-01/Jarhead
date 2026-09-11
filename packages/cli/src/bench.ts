@@ -4,7 +4,7 @@ import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfig, type JarheadConfig } from "@jarhead/core";
 import type { LiveSession } from "@jarhead/live";
-import type { Brain, BrainResult, BrainSink, BrainTask, DelegationTimingsExtra, ToolRunner } from "@jarhead/brain";
+import { parseReflex, type Brain, type BrainResult, type BrainSink, type BrainTask, type DelegationTimingsExtra, type ToolRunner } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import type { Delegation } from "@jarhead/protocol";
@@ -27,6 +27,14 @@ import type { Delegation } from "@jarhead/protocol";
  *   reflex                   "jarhead, screenshot this.": utterance end → the reflex's tool is ISSUED to
  *                            the helper (prefired: the quiet window plus Jarhead's own path — what
  *                            Jarhead controls), and tool issued → done (the shot itself)
+ *   ear                      the 250 ms path (REDESIGN §12): synthetic on-device partials for ten grammar
+ *                            phrases → the moment the acting op is issued to the helper (dispatch) and the
+ *                            moment it answers (ack), as a partial (the 120 ms stability window applies)
+ *                            and as a final (immediate). With the real helper the acting ops are redirected
+ *                            to a harmless cursor read so the bench never scrolls or types on Kevin's Mac;
+ *                            the round trip is still the real one. p95 to dispatch over 250 ms with the
+ *                            real helper fails the bench (exit 1) unless --no-gate.
+ *   browser                  the helper's Apple-event path to a running browser (url, tabs), reads only
  *   stop                     stopEverything() wall time with a delegation the brain is holding
  *
  * and prints one table with medians, p90 and the targets. The numbers depend on
@@ -108,6 +116,13 @@ class FakeHands implements NativeHands {
         return { role: "AXGroup" } as T;
       case "focused_text":
         return { role: "AXTextField", secure: false } as T;
+      case "ax_tree":
+        return { app: "Finder", pid: 1, window: "Desktop", count: 12, cached: true, ageMs: 1, treeMs: 2, truncated: false } as T;
+      case "find_element": {
+        const name = String(params["name"] ?? "").toLowerCase();
+        const hit = name === "save";
+        return { app: "Finder", window: "Desktop", found: hit, unique: hit, candidates: hit ? 1 : 0, tier: hit ? "exact" : "none", ...(hit ? { element: { i: 3, depth: 2, role: "AXButton", title: "Save", app: "Finder", score: 1, label: "Save", x: 100, y: 100, w: 60, h: 24, center: { x: 130, y: 112 }, pressable: true } } : {}), cached: true, treeMs: 2, nodes: 12, truncated: false, ms: 1 } as T;
+      }
       default:
         return {} as T;
     }
@@ -165,9 +180,26 @@ export interface BenchOptions {
   readonly codex: boolean;
   readonly fakeHands: boolean;
   readonly json: boolean;
+  /** Exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper (default true). */
+  readonly gate?: boolean;
 }
 
-export async function bench(opts: BenchOptions): Promise<void> {
+/** The grammar phrases the ear section feeds; each is one acting op through the gated toolset. */
+export const EAR_PHRASES: readonly string[] = ["scroll down", "scroll up a bit", "scroll to the top", "page down", "press enter", "press escape", "select all", "copy", "undo", "zoom in"];
+/** Acting helper ops the bench redirects to a harmless cursor read on the real helper. */
+const ACTING_OPS = new Set(["scroll", "key", "type", "click", "move", "drag", "mouse_down", "mouse_up", "hold_key", "open_app", "focus_app", "browser_navigate", "browser_js"]);
+export const EAR_DISPATCH_TARGET_MS = 250;
+/** The ear's stability windows (packages/engine/src/ear.ts defaults): a prefire kind's partial, and every other kind's. */
+export const EAR_STABLE_MS = 120;
+export const EAR_CAREFUL_MS = 450;
+/**
+ * A careful partial (a key, an edit, a text, a click) waits out the 450 ms window by
+ * design — a prefix of more to come must not fire — so it is judged against that
+ * window plus the same harness allowance the 250 ms target leaves over the 120 ms one.
+ */
+export const EAR_CAREFUL_DISPATCH_TARGET_MS = EAR_CAREFUL_MS + (EAR_DISPATCH_TARGET_MS - EAR_STABLE_MS);
+
+export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
   const base = readConfig();
   const dir = mkdtempSync(join(tmpdir(), "jh-bench-"));
   const useFakeHands = opts.fakeHands || !existsSync(base.handsBin);
@@ -304,6 +336,95 @@ export async function bench(opts: BenchOptions): Promise<void> {
       }
     }
 
+    // The ear: synthetic on-device partials. The acting op is redirected to a harmless
+    // cursor read on the real helper (the bench must never scroll or type on Kevin's Mac);
+    // the round trip is still a real one. Dispatch is the moment the acting op is written
+    // to the helper; ack is its answer.
+    {
+      const hands = engine.hands as unknown as { request: (op: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown> };
+      const original = hands.request.bind(engine.hands);
+      let issuedAt = Number.NaN;
+      let ackAt = Number.NaN;
+      let redirected = 0;
+      hands.request = async (op, params, timeoutMs) => {
+        const acting = ACTING_OPS.has(op);
+        if (acting && Number.isNaN(issuedAt)) issuedAt = performance.now();
+        let r: unknown;
+        if (acting && !useFakeHands) {
+          redirected++;
+          r = await original("cursor", {}, timeoutMs);
+        } else r = await original(op, params, timeoutMs);
+        if (acting && Number.isNaN(ackAt)) ackAt = performance.now();
+        return r;
+      };
+      try {
+        let segment = 100;
+        const phrases = useFakeHands ? [...EAR_PHRASES, "click save"] : EAR_PHRASES;
+        for (let i = 0; i < opts.runs; i++) {
+          for (const phrase of phrases) {
+            for (const final of [false, true]) {
+              issuedAt = Number.NaN;
+              ackAt = Number.NaN;
+              const fired = new Promise<{ earAt: number; matchedAt: number; dispatchedAt: number; doneAt: number; ok: boolean; dropped?: string }>((resolve) => engine.once("reflex.fired", (row) => resolve(row)));
+              const heard = performance.now();
+              engine.ear(phrase, final, segment++, Date.now());
+              const row = await Promise.race([fired, new Promise<undefined>((r) => setTimeout(() => r(undefined), 2000))]);
+              // A partial of a careful kind waits out the long window; its own row, its own target.
+              const careful = !final && parseReflex(phrase)?.prefire !== true;
+              const label = final ? "final" : careful ? "careful partial" : "partial";
+              if (!row) {
+                log(`  ear: "${phrase}" (${label}) did not fire within 2 s`);
+                continue;
+              }
+              if (!row.ok) {
+                if (i === 0) log(`  ear: "${phrase}" (${label}) dropped: ${row.dropped ?? "?"} (no dispatch; the model path would ask)`);
+                continue;
+              }
+              add(`ear: ${label} → dispatch`, issuedAt - heard);
+              add(`ear: ${label} → hands ack`, ackAt - heard);
+              add(`ear: ${label} → done (ledger)`, row.doneAt - row.earAt);
+              if (i === 0 && final) log(`  ear: "${phrase}": partial→dispatch includes the ${parseReflex(phrase)?.prefire ? `${EAR_STABLE_MS} ms stability` : `${EAR_CAREFUL_MS} ms careful`} window; final→dispatch ${Math.round(issuedAt - heard)} ms, ack ${Math.round(ackAt - heard)} ms`);
+              await new Promise((r) => setTimeout(r, 20));
+            }
+          }
+        }
+        if (!useFakeHands) log(`  ear: ${redirected} acting op(s) were redirected to a cursor read on the real helper (nothing scrolled, typed or clicked)`);
+      } finally {
+        hands.request = original;
+      }
+    }
+
+    // The browser fast path through the helper: Apple events to a running browser, reads only.
+    if (!useFakeHands) {
+      for (const app of ["Google Chrome", "Safari"]) {
+        let running = true;
+        for (let i = 0; i < opts.runs && running; i++) {
+          const a = performance.now();
+          try {
+            await engine.hands.request("browser_url", { app }, 4000);
+            add(`browser: ${app} url round trip`, performance.now() - a);
+            const b = performance.now();
+            await engine.hands.request("browser_tabs", { app }, 4000);
+            add(`browser: ${app} tabs round trip`, performance.now() - b);
+          } catch (e) {
+            if (i === 0) log(`  browser: ${app}: ${(e as Error).message}`);
+            running = false;
+          }
+        }
+        if (running) {
+          const js = await engine.runner.browser.jsAvailable(app);
+          log(`  browser: ${app} JavaScript from Apple Events ${js.ok ? "on" : `off (${js.reason ?? ""})`}`);
+          if (js.ok) {
+            for (let i = 0; i < opts.runs; i++) {
+              const c = performance.now();
+              await engine.runner.run("browser_read", { app });
+              add(`browser: ${app} browser_read (JS)`, performance.now() - c);
+            }
+          }
+        }
+      }
+    }
+
     // Stop: with a delegation the brain is holding (it looked once and is waiting), how
     // long until everything perceptible has ended. The run log names the cancelled delegation.
     if (!opts.codex) {
@@ -337,24 +458,43 @@ export async function bench(opts: BenchOptions): Promise<void> {
     "eyes: pre-warm shot": 120,
     "delegation → first action": opts.codex ? 1200 : 300,
     "reflex: utterance end → tool issued (prefired)": 300,
+    "ear: partial → dispatch": EAR_DISPATCH_TARGET_MS,
+    "ear: careful partial → dispatch": EAR_CAREFUL_DISPATCH_TARGET_MS,
+    "ear: final → dispatch": EAR_DISPATCH_TARGET_MS,
+    "browser: Google Chrome url round trip": 80,
+    "browser: Google Chrome tabs round trip": 80,
+    "browser: Safari url round trip": 80,
+    "browser: Safari tabs round trip": 80,
+    "browser: Google Chrome browser_read (JS)": 80,
+    "browser: Safari browser_read (JS)": 80,
     "stop: command → everything stopped": 150,
   };
+  /** The ear rows are judged at p95 (the 250 ms promise is for every command, not the typical one); the rest at the median. */
+  const judgedAtP95 = new Set(["ear: partial → dispatch", "ear: careful partial → dispatch", "ear: final → dispatch"]);
   const metrics = [...new Set(samples.map((s) => s.metric))];
   const rows = metrics.map((metric) => {
     const values = samples.filter((s) => s.metric === metric).map((s) => s.ms);
     const median = percentile(values, 50);
+    const p95 = percentile(values, 95);
     const target = targets[metric];
-    return { metric, n: values.length, median, p90: percentile(values, 90), max: Math.max(...values), target, pass: target === undefined ? undefined : median <= target };
+    return { metric, n: values.length, median, p90: percentile(values, 90), p95, max: Math.max(...values), target, pass: target === undefined ? undefined : (judgedAtP95.has(metric) ? p95 : median) <= target };
   });
+  // The gate: with the real helper, the ear's p95 to dispatch must be under each row's target
+  // (250 ms for finals and prefire partials; the careful window plus the same allowance for the rest).
+  const earRows = rows.filter((r) => judgedAtP95.has(r.metric));
+  const gateFailed = (opts.gate ?? true) && !useFakeHands && (earRows.length === 0 || earRows.some((r) => !(r.p95 <= (r.target ?? EAR_DISPATCH_TARGET_MS))));
   if (opts.json) {
-    console.log(JSON.stringify({ hands: useFakeHands ? "fake" : "helper", brain: opts.codex ? engine.brainInfo.detail : "stand-in", rows }, null, 2));
-    return;
+    console.log(JSON.stringify({ hands: useFakeHands ? "fake" : "helper", brain: opts.codex ? engine.brainInfo.detail : "stand-in", rows, earGate: useFakeHands ? "not judged (fake hands)" : gateFailed ? "FAIL" : "ok" }, null, 2));
+    return { ok: !gateFailed };
   }
   const pad = (s: string, n: number): string => s.padEnd(n);
   const num = (v: number): string => (Number.isFinite(v) ? String(Math.round(v)) : "-").padStart(7);
-  console.log(`\n  ${pad("metric", 44)}${"n".padStart(4)}${"median".padStart(8)}${"p90".padStart(8)}${"max".padStart(8)}${"target".padStart(8)}  result`);
+  console.log(`\n  ${pad("metric", 44)}${"n".padStart(4)}${"median".padStart(8)}${"p90".padStart(8)}${"p95".padStart(8)}${"max".padStart(8)}${"target".padStart(8)}  result`);
   for (const r of rows) {
-    console.log(`  ${pad(r.metric, 44)}${String(r.n).padStart(4)}${num(r.median)} ${num(r.p90)} ${num(r.max)} ${r.target === undefined ? "       -" : num(r.target)}  ${r.pass === undefined ? "" : r.pass ? "ok" : "MISS"}`);
+    console.log(`  ${pad(r.metric, 44)}${String(r.n).padStart(4)}${num(r.median)} ${num(r.p90)} ${num(r.p95)} ${num(r.max)} ${r.target === undefined ? "       -" : num(r.target)}  ${r.pass === undefined ? "" : r.pass ? "ok" : "MISS"}${judgedAtP95.has(r.metric) ? " (p95)" : ""}`);
   }
-  console.log(`\n  hands: ${useFakeHands ? "fake" : "Swift helper"}; brain: ${opts.codex ? engine.brainInfo.detail : "stand-in"}; load average ${load}; state dir ${dir}\n`);
+  console.log(`\n  hands: ${useFakeHands ? "fake" : "Swift helper"}; brain: ${opts.codex ? engine.brainInfo.detail : "stand-in"}; load average ${load}; state dir ${dir}`);
+  if (useFakeHands) console.log(`  ear gate: not judged with fake hands (run without --fake-hands for the real ${EAR_DISPATCH_TARGET_MS} ms check)\n`);
+  else console.log(`  ear gate: p95 partial→dispatch and final→dispatch ≤ ${EAR_DISPATCH_TARGET_MS} ms, careful partial→dispatch ≤ ${EAR_CAREFUL_DISPATCH_TARGET_MS} ms (its ${EAR_CAREFUL_MS} ms window is by design) with the real helper — ${gateFailed ? "FAIL" : "ok"}\n`);
+  return { ok: !gateFailed };
 }

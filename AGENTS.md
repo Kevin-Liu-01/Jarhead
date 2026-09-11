@@ -94,7 +94,8 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
 pnpm run doctor · pnpm run typecheck · pnpm test · pnpm run check
 pnpm build:mac                # native Jarhead.app → build/Jarhead.app (apps/mac, Swift)
 pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps it quiet
-pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep|mute|unmute|stop|agent.refresh
+pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep|mute|unmute|stop|pause|resume|agent.refresh
+pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path; exit 1 when p95 to dispatch > 250 ms with the real helper
 pnpm build:hands              # Swift helper → build/jarhead-hands
 apps/mac/Scripts/console-preview.sh [scenario] [out.png]   # Console with fake data (fixtures in apps/mac/Scripts/mock)
 apps/mac/Scripts/onboarding-preview.sh [step] [out.png]    # Setup window with fake data (welcome … done)
@@ -268,3 +269,68 @@ to his microphone and bills per second.
   their 8 s timers alive; node:test then reports the late timeouts as
   "asynchronous activity after the test ended" — the symptom of the early
   assertion failure, not a client bug.
+- **The 250 ms path is a second source, not a faster model** (REDESIGN §12).
+  Speech → Live → delegation → brain → first tool is 1.5–4 s and stays so; the
+  app's on-device recogniser sends `ear` partials ~100–200 ms behind speech, the
+  engine matches them against the fixed reflex grammar (`packages/brain/src/
+  reflex.ts`, shared with the Delegator) and acts through the gated hands. A
+  partial fires only when it is a final, ends terminally (punctuation, "please",
+  "now"), or has been stable — 120 ms for the reversible `prefire` kinds (scroll,
+  page, screenshot, circle), 450 ms for everything else: the recogniser lands
+  words in ticks, so "copy" of "copy this file…" or "type hello" of "type hello
+  world" sits unchanged for a tick, and only a scroll may fire on a prefix. Finals
+  cannot carry the fast path: the app's recogniser adds no punctuation and finals
+  come at the 50 s roll. Every fired reflex is remembered (`FiredReflexes`, 4 s)
+  so Live's delegation for the same words is finished as "already did it"; a
+  `type` whose words differ is undone with ⌘Z (and Kevin is told either way).
+- The ear must **consume, never forget**: after Stop/Pause (`quiesce`), while the
+  voice speaks, a task runs or the mic is muted, the segment is kept with its words
+  consumed — the recogniser keeps sending partials and a final for the same
+  segment, and a forgotten segment comes back whole with the stopped command at
+  its front. A revision that shortens the text never resets the consumed count.
+- Reconciliation has a **peek** and a **reconcile**: the Delegator's prefire
+  check must only peek; a claim there hides the ear's reflex from the delegation,
+  which then runs it again. Tests of that ordering need Live's real gap between
+  the transcript delta and the delegation (`world.ts`'s `delegate()` emits both
+  in one tick and hides the race). Judge on the request's last transcript item;
+  a request that merely ends with the phrase is "partial", never "done".
+- `click_element` names a control but clicks a point: check the app is frontmost
+  and `element_at` under the point lies inside the found frame (a leaf control
+  around it is a sheet's button over it) before the CGEvent goes out. A label
+  comparison alone cannot tell "Don't Save" from "Save".
+- A reflex the policy would ask about is **dropped**, never asked: the runner
+  had already recorded a `needs-confirmation`, so the engine clears that pending
+  question (`confirmations.clear()` when the id matches) — a later "yes" must not
+  arm a question nobody relayed. The model path asks properly.
+- `AXUIElementCopyMultipleAttributeValues` is the walk: one IPC per element for
+  role/title/description/value/position/size/children instead of seven. Per-node
+  cost is app-bound (Chrome ~0.4 ms, Notes ~2.5 ms, Finder's desktop ~4 ms), so
+  a walk needs a **time budget**, not only a node cap — Finder's desktop ran 10 s
+  to a 2500-node cap. Breadth-first means a cut still keeps the toolbar. Chromium
+  exposes web content only after `AXManualAccessibility` is set on the app
+  element (no resizing side effects, unlike `AXEnhancedUserInterface`), and the
+  first walk right after is sparse: retry once after ~120 ms. Electron apps vary
+  (Slack: 62 nodes).
+- Computing display bounds per node (`activeDisplays()` calls
+  `CGDisplayCopyDisplayMode`) turned a 2 ms `find_element` into 100–600 ms; take
+  the bounds once per query.
+- `NSAppleScript` beats `osascript` for browser scripting: compile once, pass the
+  JavaScript as the `run` handler's argument through `executeAppleEvent` (a
+  `kAEOpenApplication` event with a list direct object), 5 ms on repeat instead
+  of a 30–60 ms process per call. Apple events must go from the main thread
+  (`onMain`). Check `NSRunningApplication` first — an event to a non-running app
+  launches it. Per-tab `repeat with t in tabs` is one event per property per tab
+  (1.5 s for 80 tabs); `title of every tab of w` is one. Chrome's refusal reads
+  "Executing JavaScript through AppleScript is turned off" — map it to
+  `permission_denied` with the menu path, and remember it per app for a minute so
+  Kevin flipping the item is noticed.
+- A `FakeLive.nowMs` that never moves pins `lastDelegationEndMs` (again): the
+  stop-aftermath test's second request carried the first utterance's words and
+  looked like an engine bug. Use `delegate()` / `nextUtterance()` from
+  `packages/engine/src/__tests__/world.ts`.
+- `assert.deepEqual(x, [])` narrows `x` to `never[]` under `@types/node`'s
+  assertion signature; `x.map(r => r.label)` afterwards fails to typecheck. Use
+  `assert.equal(x.length, 0)`.
+- A private field and a method cannot share a name in a class that implements an
+  interface's optional method (`CodexBrain.warm` vs `Brain.warm`): the interface
+  hook is `warmUp()`.

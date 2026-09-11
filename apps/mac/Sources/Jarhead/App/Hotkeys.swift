@@ -9,6 +9,7 @@ import Carbon
 ///   ⌥⎋       stop
 ///   ⌥⇧Space  wake / sleep
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
+///   ⌥⇧P      pause / resume (the session stays open, silent)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -17,6 +18,7 @@ final class Hotkeys {
         case stop = 3
         case toggleWake = 4
         case markScreen = 5
+        case togglePause = 6
 
         var keyCode: UInt32 {
             switch self {
@@ -25,12 +27,13 @@ final class Hotkeys {
             case .stop: return UInt32(kVK_Escape)
             case .toggleWake: return UInt32(kVK_Space)
             case .markScreen: return UInt32(kVK_ANSI_C)
+            case .togglePause: return UInt32(kVK_ANSI_P)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .toggleWake, .markScreen: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .toggleWake, .markScreen, .togglePause: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -43,6 +46,7 @@ final class Hotkeys {
             case .stop: return ("\u{1b}", [.option])
             case .toggleWake: return (" ", [.option, .shift])
             case .markScreen: return ("c", [.option, .shift])
+            case .togglePause: return ("p", [.option, .shift])
             }
         }
     }

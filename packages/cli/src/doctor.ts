@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, type BrainKind, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
 import { defaultConnectors } from "@jarhead/agents";
-import { probeCodex, selfEditDoctorRow } from "@jarhead/brain";
+import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess } from "@jarhead/hands";
 
@@ -190,6 +190,17 @@ export async function runChecks(): Promise<Check[]> {
       add({ group: "hands", name: "jarhead-hands", status: "ok", detail: `v${hello.version} pid ${hello.pid}`, required: false });
       add({ group: "hands", name: "Accessibility", status: hello.permissions.accessibility ? "ok" : "warn", detail: hello.permissions.accessibility ? "granted to this launcher" : "not granted — clicks/typing will silently no-op", required: false, fix: "System Settings → Privacy & Security → Accessibility: switch Jarhead on; if it is already on, remove the row (−) and press Request in Setup — that row was made by an earlier build" });
       add({ group: "hands", name: "Screen Recording", status: hello.permissions.screenRecording ? "ok" : "warn", detail: hello.permissions.screenRecording ? "granted" : "not granted — falls back to `screencapture`", required: false, fix: "System Settings → Privacy & Security → Screen & System Audio Recording" });
+      // The browser fast path: does each running browser allow JavaScript from Apple Events?
+      // A browser that is not running is reported, never launched.
+      for (const app of ["Google Chrome", "Safari"]) {
+        const running = sh("pgrep", ["-x", app]) !== undefined;
+        if (!running) {
+          add({ group: "hands", name: `${app} JS from Apple Events`, status: "warn", detail: "not running — not probed", required: false });
+          continue;
+        }
+        const r = await browserJsDoctor(hands, app);
+        add({ group: "hands", name: `${app} JS from Apple Events`, status: r.status === "ok" ? "ok" : "warn", detail: r.status === "off" ? `off — ${r.detail}` : r.detail, required: false, fix: r.fix });
+      }
     } catch (e) {
       add({ group: "hands", name: "jarhead-hands", status: "fail", detail: (e as Error).message, required: false });
     } finally {

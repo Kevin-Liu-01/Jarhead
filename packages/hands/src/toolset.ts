@@ -1,6 +1,6 @@
 import { classifyAction, logger, type ActionContext, type Decision } from "@jarhead/core";
 import type { OverlayCommand } from "@jarhead/protocol";
-import { NativeRequestError, type ElementInfo, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "./native.ts";
+import { NativeRequestError, type ElementInfo, type FindElementResult, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "./native.ts";
 import { DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET, Screen, type ShotBudget } from "./screen.ts";
 import { screencaptureFallback } from "./fallback.ts";
 import type { DisplayInfo } from "./native.ts";
@@ -24,7 +24,7 @@ export const COMPUTER_MEMBERS = [
 ] as const;
 export type ComputerMember = (typeof COMPUTER_MEMBERS)[number];
 
-export const DESKTOP_TOOLS = ["open_app", "focus_app", "list_windows", "read_focused_text", "element_at", "frontmost_app"] as const;
+export const DESKTOP_TOOLS = ["open_app", "focus_app", "list_windows", "read_focused_text", "element_at", "frontmost_app", "find_element", "click_element"] as const;
 export type DesktopTool = (typeof DESKTOP_TOOLS)[number];
 
 /**
@@ -34,7 +34,7 @@ export type DesktopTool = (typeof DESKTOP_TOOLS)[number];
  */
 export const ACTING_MEMBERS: ReadonlySet<string> = new Set([
   "left_click", "right_click", "middle_click", "double_click", "triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
-  "scroll", "type", "key", "hold_key", "open_app", "focus_app",
+  "scroll", "type", "key", "hold_key", "open_app", "focus_app", "click_element",
 ]);
 
 /**
@@ -42,7 +42,8 @@ export const ACTING_MEMBERS: ReadonlySet<string> = new Set([
  * without one changing what the next one sees. Anything else runs in order.
  */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  "screenshot", "zoom", "cursor_position", "list_windows", "read_focused_text", "element_at", "frontmost_app",
+  "screenshot", "zoom", "cursor_position", "list_windows", "read_focused_text", "element_at", "frontmost_app", "find_element",
+  "browser_read", "browser_find", "browser_tabs",
   "read_file", "list_dir", "search_files", "web_fetch", "web_search", "agents_list", "agent_read", "recall", "clipboard_read", "self_status", "self_review",
   "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke", "show_clear",
 ]);
@@ -156,6 +157,16 @@ export class ComputerToolset {
     this.confirmations = opts.confirmations ?? new ConfirmationState();
     this.policy = opts.policy ?? classifyAction;
     this.now = opts.now ?? Date.now;
+  }
+
+  /** The helper this toolset drives (the browser tools share it). */
+  get hands(): NativeHands {
+    return this.opts.hands;
+  }
+
+  /** The annotation layer, for tools outside this class that still want a click pulse. */
+  get annotate(): ((cmd: OverlayCommand) => void) | undefined {
+    return this.opts.annotate;
   }
 
   isKnown(name: string): boolean {
@@ -364,9 +375,107 @@ export class ComputerToolset {
         const el = await hands.request<ElementInfo>("element_at", p);
         return { kind: "text", text: JSON.stringify(el) };
       }
+      case "find_element": {
+        const name = String(input["name"] ?? "").trim();
+        if (!name) return { kind: "error", message: "find_element needs name: the control's visible label" };
+        const found = await this.findElement(name, input);
+        return { kind: "text", text: JSON.stringify(summarizeFind(found)) };
+      }
+      case "click_element": {
+        // The reflex path's click: the one control on the front window with that name, judged
+        // by its label (no screenshot, no pixel mapping), then a click at its centre.
+        const name = String(input["name"] ?? "").trim();
+        if (!name) return { kind: "error", message: "click_element needs name: the control's visible label" };
+        const found = await this.findElement(name, input);
+        if (!found.found || !found.element) return { kind: "error", message: `no control named "${name}" on the front window of ${found.app}${found.truncated ? " (the window's tree was cut short; try a screenshot and left_click)" : ""}` };
+        if (!found.unique) return { kind: "error", message: `${found.candidates} controls could be "${name}" in ${found.app}: ${[found.element, ...(found.others ?? [])].map((e) => `${e.role} "${e.label}"`).join(", ")}; take a screenshot and left_click the right one` };
+        const el = found.element;
+        const p = el.center ?? (el.x !== undefined && el.y !== undefined ? { x: el.x + (el.w ?? 0) / 2, y: el.y + (el.h ?? 0) / 2 } : undefined);
+        if (!p) return { kind: "error", message: `"${el.label}" has no frame to click` };
+        notePoints(p);
+        // The tree named a control; the click is a global event at a point. Before it
+        // goes out: the control's app must be the one in front (an `app` argument may
+        // name a browser behind another window — its coordinates are real, what is on
+        // top of them is not its), and what is actually under the point must be that
+        // control (a dialog or a sheet may have covered it since the tree was built).
+        const frame = el.x !== undefined && el.y !== undefined ? { x: el.x, y: el.y, w: el.w ?? 0, h: el.h ?? 0 } : undefined;
+        const under = await this.underPoint(found.app, el.label, el.role, p, frame);
+        if (under.stopped) return { kind: "error", message: "stopped: Kevin pressed stop before this action ran" };
+        if (under.problem) return { kind: "error", message: under.problem };
+        const confirmed = this.confirmations.consume("click_element", { name });
+        // The policy judges the name the tree gave and whatever the point itself says.
+        const target = [el.label, el.role, ...under.words].filter(Boolean).join(" · ");
+        const decision = this.policy({ kind: "left_click", app: found.app, target, confirmed });
+        noteDecision(decision);
+        if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
+        if (decision.verdict === "confirm") {
+          const pending = this.confirmations.ask(`click "${el.label}" in ${found.app}`, "click_element", { name });
+          return { kind: "needs-confirmation", pendingId: pending.id, question: `About to click "${el.label}" in ${found.app}. ${decision.reason}. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.` };
+        }
+        const button = input["button"] === "right" ? "right" : "left";
+        const count = Number(input["count"]) === 2 ? 2 : 1;
+        this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: "click_element" });
+        await hands.request("click", { ...p, button, count, modifiers: [] });
+        this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
+        return { kind: "text", text: `clicked "${el.label}" (${el.role}) in ${found.app} at ${Math.round(p.x)},${Math.round(p.y)}${found.tier === "fuzzy" ? ` (matched "${name}" at ${Math.round(el.score * 100)} %)` : ""}` };
+      }
       default:
         return { kind: "error", message: `unknown computer tool ${name}` };
     }
+  }
+
+  /**
+   * Is `app` in front, and is the control named `label` what sits at `p`? One
+   * `frontmost` and one `element_at`, in flight together (a few ms with the helper).
+   * Geometry decides where it can: the element under the point must lie inside the
+   * control's frame (the control itself, or its label / icon) — a sheet's button
+   * over it has a frame of its own that does not. Words decide only when a frame
+   * is missing, and then a control with another name is a cover. `words` is the
+   * text under the point, for the policy. Without accessibility answers the click
+   * is refused, never guessed: `click_element` is the reflex path's click and
+   * nobody looked at a screenshot first.
+   */
+  private async underPoint(app: string, label: string, role: string, p: { x: number; y: number }, frame: { x: number; y: number; w: number; h: number } | undefined): Promise<{ problem?: string; stopped?: boolean; words: string[] }> {
+    const hands = this.opts.hands;
+    let stopped = false;
+    const probe = <T>(q: Promise<T>): Promise<T | undefined> =>
+      q.catch((e: unknown) => {
+        if (e instanceof NativeRequestError && e.detail.code === "cancelled") stopped = true;
+        return undefined;
+      });
+    const [front, el] = await Promise.all([probe(hands.request<FrontmostInfo>("frontmost", {}, 1500)), probe(hands.request<ElementInfo>("element_at", p, 1500))]);
+    if (stopped) return { stopped: true, words: [] };
+    if (!front) return { problem: `could not tell which app is in front; take a screenshot and left_click "${label}" instead`, words: [] };
+    if (front.app.toLowerCase() !== app.toLowerCase()) return { problem: `"${label}" is in ${app}, but ${front.app} is in front: focus_app ${app} first (its window may be behind another), or take a screenshot and left_click`, words: [] };
+    const words = el ? [el.title, el.description, el.value].filter((s): s is string => typeof s === "string" && s.length > 0) : [];
+    if (el?.app && el.app.toLowerCase() !== app.toLowerCase()) return { problem: `the point where "${label}" is (${Math.round(p.x)},${Math.round(p.y)}) is covered by ${el.app}${words.length ? ` ("${words[0]}")` : ""}; take a screenshot and left_click`, words };
+    if (!el) return { words };
+    const what = `${el.role ?? "an element"}${words.length ? ` "${words[0]}"` : ""}`;
+    if (frame && el.frame) {
+      // Inside the control's frame: the control or one of its children, whatever it says.
+      if (within(el.frame, frame)) return { words };
+      // Around it: the point resolved to an enclosing element — the row or group the control
+      // sits in when the app exposes nothing deeper there. A leaf control (a button, a link, a
+      // menu item) enclosing another control is not a thing; it is a sheet's button over it.
+      if (within(frame, el.frame)) {
+        if (LEAF_CONTROL.test(el.role ?? "")) return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words };
+        return { words };
+      }
+      return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words };
+    }
+    // No frame to compare: a control with a name of its own that is not this one is a cover
+    // (a sheet's button, a menu). Static text, images and groups are taken as the control's own.
+    if (words.length > 0 && !words.some((w) => relates(w, label)) && CONTROL_ROLE.test(el.role ?? "")) {
+      return { problem: `"${label}" (${role}) is not what is under its point: ${what} is; take a screenshot and left_click the right one`, words };
+    }
+    return { words };
+  }
+
+  /** The helper's `find_element`: the front window's cached accessibility tree searched by label. */
+  private findElement(name: string, input: Record<string, unknown>): Promise<FindElementResult> {
+    const role = typeof input["role"] === "string" && input["role"].trim() ? { role: input["role"].trim() } : {};
+    const app = typeof input["app"] === "string" && input["app"].trim() ? { app: input["app"].trim() } : {};
+    return this.opts.hands.request<FindElementResult>("find_element", { name, ...role, ...app, maxAgeMs: 500 }, 2500);
   }
 
   /** `screencapture` when ScreenCaptureKit is refused; needs only the display list. */
@@ -455,6 +564,24 @@ export class ComputerToolset {
   }
 }
 
+/** What a model needs from a find: where it is and whether it was the only one, not the helper's timings. */
+function summarizeFind(found: FindElementResult): Record<string, unknown> {
+  const el = (e: FindElementResult["element"]): Record<string, unknown> | undefined =>
+    e ? { role: e.role, label: e.label, ...(e.title ? { title: e.title } : {}), ...(e.description ? { description: e.description } : {}), ...(e.center ? { center: { x: Math.round(e.center.x), y: Math.round(e.center.y) } } : {}), ...(e.x !== undefined ? { frame: { x: Math.round(e.x), y: Math.round(e.y ?? 0), w: Math.round(e.w ?? 0), h: Math.round(e.h ?? 0) } } : {}), score: Math.round(e.score * 100) / 100 } : undefined;
+  return {
+    app: found.app,
+    window: found.window,
+    found: found.found,
+    unique: found.unique,
+    candidates: found.candidates,
+    match: found.tier,
+    ...(found.element ? { element: el(found.element) } : {}),
+    ...(found.others?.length ? { others: found.others.map(el) } : {}),
+    ...(found.truncated ? { note: "the window's accessibility tree was cut short (huge page or slow app); a control deeper in it may be missing" } : {}),
+    coordinates: "global points (not screenshot pixels): click_element by name clicks it; left_click needs screenshot pixels",
+  };
+}
+
 function describe(member: string, input: Record<string, unknown>, app: string, target: string): string {
   const where = app ? ` in ${app}` : "";
   switch (member) {
@@ -465,6 +592,25 @@ function describe(member: string, input: Record<string, unknown>, app: string, t
     default:
       return `${member.replace(/_/g, " ")}${target ? ` on "${target.slice(0, 80)}"` : ""}${where}`;
   }
+}
+
+/** Accessibility roles that are controls of their own (one under a named control's point means the control is covered). */
+const CONTROL_ROLE = /^AX(Button|Link|MenuItem|MenuBarItem|MenuButton|PopUpButton|CheckBox|RadioButton|TextField|TextArea|ComboBox|Tab|Cell|Row|Slider|Incrementor|DisclosureTriangle|ColorWell)$/;
+/** The controls that never enclose another control: found around a control's frame, one of these is a cover. */
+const LEAF_CONTROL = /^AX(Button|Link|MenuItem|MenuBarItem|MenuButton|PopUpButton|CheckBox|RadioButton|TextField|TextArea|ComboBox|Slider|Incrementor|DisclosureTriangle|ColorWell)$/;
+
+/** `a` lies inside `b`, with a couple of points of slack for rounding. */
+function within(a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }, slack = 2): boolean {
+  return a.x >= b.x - slack && a.y >= b.y - slack && a.x + a.w <= b.x + b.w + slack && a.y + a.h <= b.y + b.h + slack;
+}
+
+/** Two labels are about the same control when one contains the other, case and punctuation folded. */
+function relates(a: string, b: string): boolean {
+  const fold = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const x = fold(a);
+  const y = fold(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
 }
 
 function modifiersOf(input: Record<string, unknown>): string[] {

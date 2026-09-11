@@ -396,6 +396,33 @@ final class BlobBody {
         isActive = true
     }
 
+    /// Come to rest here after a flight ("stay where you worked"): the goal and the lead
+    /// are dropped, the velocity with them, and any wall the surface is touching takes
+    /// the body the way a slow arrival does — it sticks, and sags into the parked dome
+    /// over the next few frames (so it stays active until that settles). A body touching
+    /// nothing is at rest at once.
+    func park() {
+        dragging = false
+        guided = false
+        goal = nil
+        arrived = false
+        velocity = .zero
+        lag = .zero
+        accel = .zero
+        ignoreWindows = false
+        impacts.removeAll()
+        refreshScreens()
+        let r = Double(radius)
+        for wall in walls() where adhesions.count < Self.maxAdhesions && wall.d < r * Self.stopFraction + 1 {
+            let surface = Adhesion.Surface.wall(nx: wall.nx, ny: wall.ny)
+            guard adhesion(to: surface) == nil else { continue }
+            stick(to: surface, nx: wall.nx, ny: wall.ny, depth: wall.d)
+        }
+        ignoreTouchingObstacles()
+        isActive = !adhesions.isEmpty
+        updateLean()
+    }
+
     /// Throw it. A hard throw tears a stuck body off its wall; a poke's hop leaves it stuck.
     func fling(_ v: CGVector) {
         dragging = false

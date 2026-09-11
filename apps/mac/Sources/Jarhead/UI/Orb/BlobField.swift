@@ -16,10 +16,14 @@ import QuartzCore
 //    the lag, sheared toward the grab, thinned to keep its volume), then the spun
 //    harmonic outline plus the wobble modes — so the flat face always lies on the
 //    real edge and the stretch always points at the hand.
-//  * The eyes are glyph discs from the same font, sized past the grid: a sclera a
-//    step brighter than the body, ringed in the ground colour, a dark pupil that
-//    looks around, a glint; lids are the disc flattened. Every expression is a
-//    (openness, pupil, look, shape) tuple per phase and gate state (`renderEyes`).
+//  * The eyes are ASCII — Kevin's `^ ^` — a pair of bold glyphs from the field's own
+//    mono family at 1.7× its size, on the upper third of the body, a step brighter
+//    than it and boxed in the ground colour. The expression is the glyph pair
+//    (`- -` asleep, `O O` listening, `^ ^` talking or pleased, `o o` at work turning
+//    `> >` / `< <` toward the target, `u u` paused, `x x` error, `. .` while the gate
+//    asks), the lids a glyph swap (`-` for a blink, for the wall-side squint), the
+//    look a shift of the pair by up to a cell and a half (`renderEyes`). The same
+//    face is drawn in the notch (`NotchPanel`) from `BlobSim.face`.
 //  * `BlobFieldView` runs one CADisplayLink for the whole orb (physics ticks at
 //    display rate, the field re-renders at 10–24 fps like v1) and stops entirely
 //    when nothing moves, when muted, when fast asleep, or when the panel is hidden.
@@ -63,6 +67,8 @@ enum OrbPalette {
     static let error = RGB(hex: 0xff5d6c)
     static let asleep = RGB(hex: 0x7a6a5a)
     static let muted = RGB(hex: 0x6b7280)
+    /// The house meta grey (Prototemplate's titanium): the paused blob wears it.
+    static let titanium = RGB(hex: 0x8a8f98)
     static let connecting = RGB(hex: 0x9fb4c8)
     /// The house accent, spent on exactly one thing here — the wake gate asking who is
     /// there. Light `#2f5ce0`, dark its lift `#5b82ff`: the blob sits on the desktop
@@ -92,7 +98,7 @@ enum OrbPalette {
         case .thinking: return thinking
         case .acting: return acting
         case .muted: return muted
-        case .paused: return muted
+        case .paused: return titanium
         case .error: return error
         }
     }
@@ -447,22 +453,33 @@ final class BlobSim {
 
     // MARK: eyes
 
-    /// One eye, for the view: centre in cell units (fractional), the disc's radius in
-    /// points, how open (0.06 shut … 1 round … 1.3 wide — the disc flattens below 1
-    /// and grows above), where the pupil looks (−1…1 of its travel), the pupil's size
-    /// as a fraction of the eye's, and the shape for the expressions a lid cannot make.
+    /// One eye, for the view: its centre in cell units (fractional), the ASCII glyph
+    /// it is drawn as (`BlobGlyphs.eyeGlyph`), the font size in points, how open the
+    /// lid is (eased; the glyph already reflects it — under `shutOpenness` it is a
+    /// `-`), and where the pair looks (−1…1; the pair is shifted by it).
     struct BlobEye {
-        enum Shape { case round, happy, cross, deniedLeft, deniedRight }
         var col: Double
         var row: Double
-        var radius: Double
+        var glyph: Character
+        var size: Double
         var open: Double
-        var pupilX: Double
-        var pupilY: Double
-        var pupil: Double
-        var shape: Shape
+        var lookX: Double
+        var lookY: Double
+    }
+    /// A glyph pair: left eye, right eye.
+    struct Face: Equatable {
+        var left: Character
+        var right: Character
+        init(_ both: Character) { left = both; right = both }
+        init(left: Character, right: Character) { self.left = left; self.right = right }
     }
     private(set) var eyes: [BlobEye] = []
+    /// The expression this frame, whether or not the pair found body to sit on: the
+    /// glyphs as drawn (lids and squint applied), the eased look, the font size. The
+    /// notch draws its face from this, so the face is one face wherever the blob is.
+    private(set) var face = Face("-")
+    private(set) var faceLookX = 0.0, faceLookY = 0.0
+    private(set) var faceSize = BlobSim.eyeSizePt
     /// Cells under the eyes: the view draws no body glyph there.
     private(set) var eyeFootprint: [Int] = []
     /// Where the eyes look (−1…1), eased so they never snap.
@@ -476,7 +493,9 @@ final class BlobSim {
     static let eyePlaceTau = 0.09
     /// Rows to try around the eyes' nominal row, in order: half a row up first, then down the face.
     static let eyeRowSearch: [Double] = [0, -0.5, 0.5, -1, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5]
-    /// The least the eyes sit apart, in columns: the discs (radius `eyeRadiusPt`) plus a hair of face between.
+    /// The same search on whole rows only, for muted's `_ _` (see `renderEyes`).
+    static let eyeRowSearchWhole: [Double] = eyeRowSearch.filter { $0 == $0.rounded() }
+    /// The least the eyes sit apart, in columns: a glyph (1.8 cells wide) plus a hair of face between.
     static let minEyeSpread = 1.9
     /// Each eye's openness, eased; the lids move fast (a blink is 120 ms) but not instantly.
     private var openL = 0.1, openR = 0.1
@@ -497,11 +516,15 @@ final class BlobSim {
     /// What the acting eyes track (the flight target relative to the centre, pt); nil for the direction of motion.
     var attention: CGVector?
     static let followReach = 300.0
-    /// The disc's radius in points: 17 pt across on a body about 120 — big enough to
-    /// carry an expression, small enough to leave a face around them.
+    /// Half an eye's width in points, for the drag's shear normalisation: about the
+    /// eye glyph's half-advance at `eyeSizePt`.
     static let eyeRadiusPt = 8.6
-    /// The thinnest a lid closes to: a clear bright dash, not a hairline.
-    static let shutOpenness = 0.14
+    /// The eyes' font size: 1.7× the field's cell font, bold — big enough to read as a
+    /// face from across the room, small enough to leave body around them.
+    static let eyeScale = 1.7
+    nonisolated static let eyeSizePt = 10.0 * 1.7
+    /// Under this openness the eye is a `-`: the blink, the squint, a body pressed flat.
+    static let shutOpenness = 0.3
     /// Row height in points, from the view's metrics: the eyes are sized in points.
     var rowHeightPt = 10.5
 
@@ -710,7 +733,12 @@ final class BlobSim {
     var isStatic: Bool {
         guard !isLively, !flight, rawInput < 0.02, rawOutput < 0.02 else { return false }
         switch phase {
-        case .muted, .paused: return t - phaseChangedAt > 1.5
+        case .muted: return t - phaseChangedAt > 1.5
+        // Paused breathes (slowly, at its own 8 fps) for a while, then rests as sleep
+        // does — a session left paused for an hour should not cost frames all hour —
+        // until a poke, sound or a phase change wakes it; at once under reduce motion,
+        // where there is no breath to show.
+        case .paused: return t - phaseChangedAt > (reducedMotion ? 1.5 : 20)
         case .asleep:
             if gateAnimates { return false }
             return t - max(phaseChangedAt, gateChangedAt) > 20
@@ -1337,12 +1365,21 @@ final class BlobSim {
         return input > 0.06 ? (glanceX, glanceY) : (glanceX * 0.3, -0.25)
     }
 
-    /// The eyes. Two discs on the upper third of the body, spaced by its radius,
-    /// shifted with the lean, the look and the stretch (they ride toward the leading
-    /// side), and pulled inward until body lies under them, so neither the squish nor
-    /// a lobe running off the field can clip one. Then the expression: what the phase
-    /// or gate state says, overridden by the reactions (a poke, a flick, a border),
-    /// blinks on a 3–6 s clock (one in ten a double), every quantity eased.
+    /// The eyes: an ASCII glyph pair — Kevin's `^ ^` — big and bold on the upper third
+    /// of the body. The expression is the pair of glyphs (the table below, per phase
+    /// and gate state), the lids a glyph swap (`-` for a blink, for the wall-side
+    /// squint, for a body pressed flat), the look a shift of the pair by up to a cell
+    /// and a half toward what they follow (the hand, the work, the travel) and, at
+    /// work, `> >` / `< <` toward it. The pair is pulled inward until body lies under
+    /// both, so neither the squish nor a lobe running off the field can clip one; the
+    /// spot eases so a lobe moving under them shifts them, never jumps them. Blinks
+    /// on a 3–6 s clock (one in ten a double), 120 ms of `- -`. Every quantity eased.
+    ///
+    ///   asleep `- -` (a sleepy `~ ~` at the top of every other breath)  ·  gate listening `. .`
+    ///   connecting `o o` glancing  ·  listening `O O`  ·  speaking `^ ^`  ·  thinking `- -` / `~ ~` looking up
+    ///   acting `o o`, `> >` / `< <` toward the target  ·  muted `_ _` (small, dim, low, on a whole row)  ·  paused `u u`  ·  error `x x`
+    ///   wake heard `O O` then `^ ^`  ·  authenticating `. .`  ·  granted `^ ^`  ·  denied `> <`  ·  locked `- -`
+    ///   poked `O o` then a blink  ·  flick `O O`  ·  pressed side `- o`  ·  blink `- -`
     private func renderEyes(cx: Double, cy: Double, base: Double, sq: Double, bias: (bx: Double, by: Double, total: Double)) {
         eyes.removeAll(keepingCapacity: true)
         eyeFootprint.removeAll(keepingCapacity: true)
@@ -1356,22 +1393,27 @@ final class BlobSim {
         lastInput = input
         perk *= exp(-dt / 0.5)
 
-        // Expression: openness (1 round), pupil size, look target, shape.
-        var open = 1.0, pupil = 0.42
-        var shape = BlobEye.Shape.round
-        var biasL = 1.0, biasR = 1.0            // asymmetry: the suspicious squint
+        // Expression: the glyph pair, how open the lids are (under `shutOpenness` the
+        // eye is a `-` whatever the pair says), where they look, whether they blink,
+        // how much brighter than the body they are, and whether a sideways look turns
+        // the pair into `> >` / `< <` (at work: the eyes point at the target).
+        var pair = Face("o")
+        var open = 1.0
         var wantX = 0.0, wantY = -0.25
-        var blinkable = true, slowBlink = false
+        var blinkable = true
         var lift = 0.85
+        var aimed = false
+        let breath = sin(2 * .pi * t / Self.breathPeriod)
         switch shown {
         case .asleep:
-            // Closed lids that breathe with the body.
-            open = Self.shutOpenness + 0.04 * (0.5 + 0.5 * sin(2 * .pi * t / Self.breathPeriod))
+            // Shut, breathing with the body; a sleepy `~ ~` at the top of every other breath.
+            let sleepy = breath > 0.92 && Int(t / Self.breathPeriod) % 2 == 1 && !reducedMotion
+            pair = Face(sleepy ? "~" : "-")
+            open = Self.shutOpenness * 0.8
             blinkable = false
             wantY = 0
         case .connecting:
-            open = 0.55
-            pupil = 0.4
+            pair = Face("o")
             if t >= nextGlanceAt {
                 glanceX = Double.random(in: -0.8...0.8)
                 glanceY = Double.random(in: -0.7...0.3)
@@ -1379,88 +1421,103 @@ final class BlobSim {
             }
             wantX = glanceX; wantY = glanceY
         case .listening:
+            pair = Face("O")
             open = 1.0 + 0.25 * perk
-            pupil = 0.42 - 0.12 * perk
             (wantX, wantY) = listeningLook()
         case .speaking:
-            shape = .happy
+            // Kevin's favourite: the happy face, whenever Jarhead talks.
+            pair = Face("^")
             blinkable = false
         case .thinking:
-            open = 0.5
-            pupil = 0.4
+            // Looking up, lids low; `~ ~` as it churns.
+            pair = Face(reducedMotion ? "-" : (Int(t / 1.7) % 3 == 2 ? "~" : "-"))
+            open = Self.shutOpenness * 0.8
             wantX = -0.7; wantY = -0.75
-            slowBlink = true
+            blinkable = false
         case .acting:
-            open = 0.82
-            pupil = 0.36
+            pair = Face("o")
+            aimed = true
             if let a = attention, a.dx * a.dx + a.dy * a.dy > 1 {
                 wantX = min(1, max(-1, a.dx / 220)); wantY = min(1, max(-1, a.dy / 220))
             } else if speed > 80 {
                 wantX = velocity.dx / max(speed, 1); wantY = velocity.dy / max(speed, 1)
             }
         case .muted:
-            open = 0.3
-            pupil = 0.38
-            wantY = 0
+            // Low, dim and small, looking down: `_` is the same bar as `-` in the eye
+            // font, only on a lower baseline, so the pair is also kept to whole rows
+            // (below) — half a row up would put it level with sleep's dashes.
+            pair = Face("_")
+            wantY = 0.35
             blinkable = false
             lift = 0.4
         case .paused:
-            open = 0.3
-            pupil = 0.38
+            pair = Face("u")
             wantY = 0
             blinkable = false
-            lift = 0.4
+            lift = 0.6
         case .error:
-            shape = .cross
+            pair = Face("x")
             blinkable = false
         }
         if phase == .asleep, !flight {
             switch gate {
-            case .off, .listening:
+            case .off:
                 break
+            case .listening:
+                // An ear open: small, still eyes, brighter than sleep's dashes.
+                pair = Face(".")
+                open = 1
+                blinkable = false
             case .heard:
-                // Wide surprise, then just awake.
-                let surprised = gateAge < 0.4
-                open = surprised ? 1.3 : 1.0
-                pupil = surprised ? 0.3 : 0.4
-                blinkable = !surprised
+                // Wide surprise, then pleased to be called.
+                pair = Face(gateAge < 0.4 ? "O" : "^")
+                open = 1
+                blinkable = false
                 wantY = -0.3
             case .authenticating:
-                open = 0.48; biasL = 0.78; biasR = 1.15
-                pupil = 0.44
+                pair = Face(".")
+                open = 1
+                blinkable = false
                 wantX = 0.55; wantY = -0.1
             case .granted:
-                open = 1.05
-                pupil = 0.4
+                pair = Face("^")
+                open = 1
+                blinkable = false
                 wantY = -0.35
             case .denied:
-                if gateAge < 1.0 { shape = .deniedLeft } else { open = Self.shutOpenness }
+                pair = gateAge < 1.0 ? Face(left: ">", right: "<") : Face("-")
+                open = gateAge < 1.0 ? 1 : Self.shutOpenness * 0.8
                 blinkable = false
             case .lockedOut:
-                open = Self.shutOpenness
+                pair = Face("-")
+                open = Self.shutOpenness * 0.8
                 blinkable = false
                 wantY = 0.2
             }
         }
 
-        // The pen: narrowed, intent, looking along the travel — over the phase's look
-        // by how far into the form the body is.
-        if cursorK > 0.02, shape == .round {
-            open = open * (1 - cursorK) + 0.56 * cursorK
-            pupil = pupil * (1 - cursorK) + 0.4 * cursorK
+        // The pen: intent, looking along the travel — `> >` / `< <` along a line drawn
+        // sideways — over the phase's look by how far into the form the body is.
+        if cursorK > 0.02 {
             wantX = wantX * (1 - cursorK) + cursorDirX * cursorK
             wantY = wantY * (1 - cursorK) + cursorDirY * cursorK
-            if cursorK > 0.5 { blinkable = false }
+            if cursorK > 0.5 {
+                blinkable = false
+                aimed = true
+                if pair.left != "x" { pair = Face("o"); open = max(open, 0.8) }
+            }
         }
 
-        // Reactions.
-        if t - pokedAt < 0.24 { open = max(open, 1.3); pupil = min(pupil, 0.32) }
+        // Reactions. A tap: `O o`, then the blink the poke scheduled. A flick (a hard
+        // drag, a fast throw): `O O`, looking ahead — along the stretch (toward the
+        // hand) or the flight. Pressed against a wall the pair looks away from it, by
+        // how hard it presses; pressed flat, the lids come down.
+        if t - pokedAt < 0.24 { pair = Face(left: "O", right: "o"); open = max(open, 1.15) }
         let flick = dragging ? min(1, max(0, (stretch - 0.3) / 0.35)) : min(1, max(0, (speed - 900) / 900))
-        if shape == .round {
-            if flick > 0 {
+        if pair.left != "x" {
+            if flick > 0.35 {
+                pair = Face("O")
                 open = max(open, 1 + 0.22 * flick)
-                pupil = min(pupil, 0.42 - 0.1 * flick)
-                // Look ahead: along the stretch (toward the hand) or the flight.
                 wantX = wantX * (1 - flick) + stretchX * flick
                 wantY = wantY * (1 - flick) + stretchY * flick
             } else if dragging, stretch > 0.05 {
@@ -1468,57 +1525,96 @@ final class BlobSim {
                 wantY = wantY * 0.5 + stretchY * 0.5
             }
         }
-        // Look away from a wall, by how hard it presses; pressed flat, the eyes close most of the way.
         if bias.total > 0.05 {
             let k = min(1, bias.total)
             wantX = wantX * (1 - k) + bias.bx / bias.total * k
             wantY = wantY * (1 - k) + bias.by / bias.total * k
         }
-        if squishing > 0.85 { open = min(open, 0.45) }
+        if squishing > 0.85 { open = min(open, Self.shutOpenness * 0.8) }
 
-        // Blinks.
+        // Blinks: 120 ms of `- -`, one in ten a double.
         if blinkable {
             if t >= nextBlinkAt {
-                blinkLength = slowBlink ? 0.34 : 0.12
+                blinkLength = 0.12
                 blinkUntil = t + blinkLength
-                nextBlinkAt = t + (slowBlink ? Double.random(in: 4...7) : Double.random(in: 3...6))
-                doubleBlinkAt = !slowBlink && Double.random(in: 0..<1) < 0.1 ? blinkUntil + 0.1 : -1
+                nextBlinkAt = t + Double.random(in: 3...6)
+                doubleBlinkAt = Double.random(in: 0..<1) < 0.1 ? blinkUntil + 0.1 : -1
             }
             if doubleBlinkAt > 0, t >= doubleBlinkAt { blinkUntil = t + blinkLength; doubleBlinkAt = -1 }
         }
-        if t < blinkUntil { open = Self.shutOpenness * 0.8 }
+        if t < blinkUntil { open = Self.shutOpenness * 0.6 }
 
         // Where they look, eased.
         let lk = min(1, dt * 9)
         lookX += (wantX - lookX) * lk
         lookY += (wantY - lookY) * lk
+        faceLookX = lookX
+        faceLookY = lookY
 
-        // Placement: close-set, on the upper third; stretched, they ride toward the
-        // hand, where the body is (the tail behind is too thin to hold them). The pen
-        // keeps them by its outline centre instead, a hair back toward the blunt end —
-        // its body is short, and the blob's placement put them past the blunt end
-        // whenever it pointed up or down; further back than this (a third of the
-        // radius) sat the outer eye on the compressed blunt end's edge while the axis
-        // was still turning out of a corner, and the fit failed — and never closer
-        // together than the discs need (`minEyeSpread`: a compact body's share of the
-        // radius left no gap to fit).
+        // At work the pair turns toward what it follows: a strong sideways look is `> >` / `< <`.
+        if aimed, pair.left == "o", abs(lookX) > 0.45, abs(lookX) > abs(lookY) * 1.2 {
+            pair = Face(lookX > 0 ? ">" : "<")
+        }
+
+        // The pressed side squints: the eye nearer the wall, by how far toward it it
+        // sits, in eye-spread units — so at a firm press the wall-side eye is a `-`
+        // while the far one stays open. Measured from the pair's nominal spot: the
+        // spread is what matters, and the fit below only pulls the eyes inward.
         let e = stretch
-        let spread = max(Self.minEyeSpread, base * 0.30 * aspect * (1 - 0.15 * squishing))
-        let blobCol = cx + lookX * 0.9 + leanX * 0.5 + stretchX * e * 2.2 * aspect
-        let blobRow = cy - base * 0.34 * sq + lookY * 0.55 + stretchY * e * 2.2 * sq
-        let penCol = cx + lookX * 0.4 + stretchX * base * 0.15 * aspect
-        let penRow = cy + lookY * 0.3 + stretchY * base * 0.15 * sq
+        let spread = max(Self.minEyeSpread, base * 0.22 * aspect * (1 - 0.12 * squishing))
+        func squint(_ side: Double) -> Double {
+            var k = 1.0
+            let ex = side * spread / aspect
+            let ey = -base * 0.34
+            let unit = max(spread / aspect, 0.5)
+            for c in self.shown where c.press > 0.05 {   // `shown` here is the phase
+                let toward = max(0, -(ex * c.nx + ey * c.ny)) / unit
+                k *= 1 - 0.75 * min(1, c.press) * min(1, toward * 1.6)
+            }
+            return k
+        }
+        let targetL = open * squint(-1), targetR = open * squint(1)
+        let ok = min(1, dt * 26)
+        openL += (targetL - openL) * ok
+        openR += (targetR - openR) * ok
+
+        // The lids as glyphs: under `shutOpenness` an eye is a `-`, unless the pair
+        // is already a low glyph (asleep's `-`, muted's `_`, the sleepy `~`, the gate's `.`).
+        func lidded(_ g: Character, _ o: Double) -> Character {
+            if o < Self.shutOpenness, !["-", "_", "~", "."].contains(g) { return "-" }
+            return g
+        }
+        let drawn = Face(left: lidded(pair.left, openL), right: lidded(pair.right, openR))
+        // Past open the eye grows a little: surprise. Muted's `_ _` is drawn a step smaller.
+        let mutedFace = shown == .muted
+        let size = Self.eyeSizePt * (1 + 0.25 * max(0, min(openL, openR, 1.3) - 1)) * (mutedFace ? 0.8 : 1)
+        face = drawn
+        faceSize = size
+        eyeLift = lift
+
+        // Placement: the pair on the upper third, close-set (a `^ ^` with about a
+        // glyph's width of face between), shifted by the look — a cell and a half
+        // sideways at full look, most of a row up or down — and by the lean; stretched,
+        // they ride toward the hand, where the body is (the tail behind is too thin to
+        // hold them). The pen keeps them by its outline centre instead, a hair back
+        // toward the blunt end — its body is short, and the blob's placement put them
+        // past the blunt end whenever it pointed up or down.
+        let blobCol = cx + lookX * 1.5 + leanX * 0.5 + stretchX * e * 2.2 * aspect
+        let blobRow = cy - base * 0.30 * sq + lookY * 0.7 + stretchY * e * 2.2 * sq
+        let penCol = cx + lookX * 0.6 + stretchX * base * 0.15 * aspect
+        let penRow = cy + lookY * 0.4 + stretchY * base * 0.15 * sq
         let centreCol = blobCol * (1 - cursorK) + penCol * cursorK
         var row = blobRow * (1 - cursorK) + penRow * cursorK
         var leftCol = centreCol - spread, rightCol = centreCol + spread
         var placed = false
         // Half a row up first, then down the face (`eyeRowSearch`), until both eyes
         // sit on body with a clear gap between; failing that, anywhere three cells of
-        // body will hold them. The pen's narrow body gets a hair less gap (the discs
-        // still clear each other at 3.3 columns).
-        let minGap = cursorK > 0.5 ? 3.3 : 3.6
+        // body will hold them. The pen's narrow body gets a hair less gap.
+        let minGap = cursorK > 0.5 ? 3.2 : 3.6
+        // Muted's low bar is kept to whole rows: a half-row up would lift it level with sleep's `-`.
+        let rowSearch = mutedFace ? Self.eyeRowSearchWhole : Self.eyeRowSearch
         for pass in 0..<2 {
-            for rowTry in Self.eyeRowSearch {
+            for rowTry in rowSearch {
                 let r = row + rowTry
                 if let l = fittedColumn(leftCol, row: r, toward: cx, strict: pass == 0),
                    let rr = fittedColumn(rightCol, row: r, toward: cx, strict: pass == 0), rr - l >= minGap {
@@ -1540,7 +1636,7 @@ final class BlobSim {
             eyeFitNote = String(format: "fit failed: want row %.1f cols %.1f/%.1f, centre %.1f,%.1f, cursorK %.2f stretch %.2f,%.2f, spread %.2f, previously placed %d at row %.1f cols %.1f/%.1f (on body %d/%d)",
                                 row, leftCol, rightCol, cx, cy, cursorK, stretchX, stretchY, spread, eyesPlaced ? 1 : 0, eyeRow, eyeLeftCol, eyeRightCol,
                                 onBody(eyeLeftCol, row: eyeRow) ? 1 : 0, onBody(eyeRightCol, row: eyeRow) ? 1 : 0)
-            openL = open; openR = open; eyesPlaced = false; return
+            eyesPlaced = false; return
         }
         // The spot eases (τ ≈ 90 ms) so a lobe or the squish moving under the eyes
         // shifts them rather than jumping them a row; an eased spot that has left the
@@ -1559,47 +1655,27 @@ final class BlobSim {
             rightCol += gaussianRandom() * 0.18
         }
 
-        // The pressed side squints: the eye nearer the wall, by how far toward it it
-        // sits, in eye-spread units — so at a firm press the wall-side eye closes to
-        // about half while the far one stays round.
-        func squint(_ col: Double) -> Double {
-            var k = 1.0
-            let ex = (col - cx) / aspect, ey = (row - cy) / sq
-            let unit = max(spread / aspect, 0.5)
-            for c in self.shown where c.press > 0.05 {   // `shown` here is the phase
-                let side = max(0, -(ex * c.nx + ey * c.ny)) / unit
-                k *= 1 - 0.7 * min(1, c.press) * min(1, side * 1.6)
-            }
-            return k
-        }
-        let targetL = open * biasL * squint(leftCol), targetR = open * biasR * squint(rightCol)
-        let ok = min(1, dt * 26)
-        openL += (targetL - openL) * ok
-        openR += (targetR - openR) * ok
+        eyes.append(BlobEye(col: leftCol, row: row, glyph: drawn.left, size: size, open: openL, lookX: lookX, lookY: lookY))
+        eyes.append(BlobEye(col: rightCol, row: row, glyph: drawn.right, size: size, open: openR, lookX: lookX, lookY: lookY))
 
-        let radius = Self.eyeRadiusPt * (shown == .muted ? 0.9 : 1)
-        // Past round, the lid cannot open further: the eye grows instead (surprise).
-        func make(_ col: Double, _ o: Double, _ shape: BlobEye.Shape) -> BlobEye {
-            BlobEye(col: col, row: row, radius: radius * (1 + 0.5 * max(0, o - 1)), open: min(1, o),
-                    pupilX: lookX, pupilY: lookY, pupil: pupil, shape: shape)
-        }
-        let rightShape: BlobEye.Shape = shape == .deniedLeft ? .deniedRight : shape
-        eyes.append(make(leftCol, openL, shape))
-        eyes.append(make(rightCol, openR, rightShape))
-        eyeLift = lift
-
-        // The cells under each eye (and its rim): the body draws nothing there.
+        // The cells under each glyph (its box on the shared baseline, plus the ground
+        // outline): the body draws nothing there, so the face sits in a slot instead
+        // of on top of the glyph soup — a `-` clears one row, an `O` two.
         let cellW = rowHeightPt / aspect
+        let glyphs = BlobGlyphs.shared
         for eye in eyes {
-            let rc = (eye.radius * 1.2 + 2.5) / cellW
-            let rr = (eye.radius * 1.2 * max(0.45, eye.open) + 2.5) / rowHeightPt
-            let c0 = max(0, Int((eye.col - rc).rounded(.down))), c1 = min(Self.cols - 1, Int((eye.col + rc).rounded(.up)))
-            let r0 = max(0, Int((eye.row - rr).rounded(.down))), r1 = min(Self.rows - 1, Int((eye.row + rr).rounded(.up)))
+            guard glyphs.eyeGlyph(eye.glyph) != nil else { continue }
+            let box = glyphs.eyeBox(eye.glyph, size: eye.size)
+            let ccol = eye.col + box.midX / cellW
+            let crow = eye.row + box.midY / rowHeightPt
+            let halfC = (box.width / 2 + 1.5) / cellW + 0.35
+            let halfR = (box.height / 2 + 1.5) / rowHeightPt + 0.35
+            let c0 = max(0, Int((ccol - halfC).rounded())), c1 = min(Self.cols - 1, Int((ccol + halfC).rounded()))
+            let r0 = max(0, Int((crow - halfR).rounded())), r1 = min(Self.rows - 1, Int((crow + halfR).rounded()))
             guard c0 <= c1, r0 <= r1 else { continue }
             for r in r0...r1 {
-                for c in c0...c1 {
-                    let u = (Double(c) - eye.col) / rc, v = (Double(r) - eye.row) / rr
-                    if u * u + v * v < 1 { eyeFootprint.append(r * Self.cols + c) }
+                for c in c0...c1 where abs(Double(c) - ccol) < halfC && abs(Double(r) - crow) < halfR {
+                    eyeFootprint.append(r * Self.cols + c)
                 }
             }
         }
@@ -1663,6 +1739,13 @@ final class BlobSim {
     /// The in-flight squash the field draws at, for `cursorTipTarget`.
     var flightSquash: Double { max(phaseTarget.squash, 1.12) }
 
+    /// The sim's clock (seconds since it started), for a face drawn elsewhere (the notch's breath).
+    var time: Double { t }
+    /// Sound is arriving: the levels the engine last sent are above the floor.
+    var rawLevelsActive: Bool { rawInput > 0.02 || rawOutput > 0.02 }
+    /// The louder of the eased levels (0…1), for the notch island's widening and pulse.
+    var islandLevel: Double { max(input, output) }
+
     /// How far into the cursor form the body is (0…1), for the preview harness.
     var previewCursorK: Double { cursorK }
     /// The eased elongation, for the preview harness.
@@ -1697,11 +1780,14 @@ enum BlobMetrics {
 /// SF Mono lacks a couple of the wave glyphs; those fall back to Menlo / Apple Symbols
 /// and are centred in their cell so the columns still line up.
 ///
-/// The eyes' glyphs come only from the field's own font (measured with CTFont: ● ^ × >
-/// < are all there at the font's one advance; ◉ ◕ ◠ are not — they fall back to
-/// Menlo at a different advance, so they are not used). They are drawn well past the
-/// grid's size, so what matters is the glyph's shape and its bounding box per unit of
-/// font size, which is what `EyeGlyph` records.
+/// The eyes' glyphs are ASCII from the bold face of the field's own mono family
+/// (`eyeFont`): `- ~ o O ^ > < _ x . u`, measured with CTFont at launch — every one
+/// has the font's single advance (6.18 pt at 10 pt; `eyeAdvancesUniform` says so),
+/// so a pair stays centred whatever it swaps to. They are drawn at `BlobSim.eyeSizePt`,
+/// so what matters is each glyph's box per unit of font size (`EyeGlyph`) and a shared
+/// baseline: the `o`'s box centre (`eyeBaselineCentre`) sits on the eye's row, so `^`
+/// rides high and `_` low the way they do in type, and a blink from `^` to `-` drops
+/// the way a lid does.
 final class BlobGlyphs {
     struct Ref {
         let font: Int
@@ -1713,26 +1799,39 @@ final class BlobGlyphs {
         let cg: CGFont
         let size: CGFloat
     }
-    enum EyeShape { case disc, happy, cross, deniedLeft, deniedRight }
-    /// A glyph in the base font with its bounding box per point of font size: the
-    /// centre (from the glyph origin, y up) and the width and height.
+    /// A glyph in the eye font with its bounding box per point of font size: the
+    /// centre (from the glyph origin, y up), the width and height, and the advance.
     struct EyeGlyph {
         let glyph: CGGlyph
         let centre: CGPoint
         let width: CGFloat
         let height: CGFloat
+        let advance: CGFloat
     }
+
+    /// Every glyph an eye can be.
+    static let eyeCharacters: [Character] = ["-", "~", "o", "O", "^", ">", "<", "_", "x", ".", "u"]
 
     nonisolated(unsafe) static let shared = BlobGlyphs()
 
     private(set) var fonts: [FontEntry] = []
     /// Per ramp, per ramp index; nil for blank.
     private(set) var tables: [[Ref?]] = []
-    private var eyeGlyphs: [EyeShape: EyeGlyph] = [:]
+    /// The eyes' face: the field's mono family, bold, at the field's size (drawn scaled).
+    let eyeFont: FontEntry
+    private var eyeGlyphs: [Character: EyeGlyph] = [:]
+    /// The `o`'s box centre height per unit of font size: the shared baseline reference.
+    private(set) var eyeBaselineCentre: CGFloat = 0.27
+    /// Every eye glyph has the same advance in the eye font (measured at launch).
+    private(set) var eyeAdvancesUniform = true
+    /// That advance, per unit of font size.
+    private(set) var eyeAdvance: CGFloat = 0.62
 
     private init() {
         let base = BlobMetrics.font as CTFont
         fonts.append(FontEntry(ct: base, cg: CTFontCopyGraphicsFont(base, nil), size: BlobMetrics.fontSize))
+        let bold = NSFont.monospacedSystemFont(ofSize: BlobMetrics.fontSize, weight: .bold) as CTFont
+        eyeFont = FontEntry(ct: bold, cg: CTFontCopyGraphicsFont(bold, nil), size: BlobMetrics.fontSize)
         var byChar: [Character: Ref?] = [:]
         for ramp in BlobRamp.allCases {
             var table: [Ref?] = []
@@ -1744,29 +1843,40 @@ final class BlobGlyphs {
             }
             tables.append(table)
         }
-        // The eyes: first candidate the base font has. ASCII stand-ins after each, in
-        // case a future system font drops a symbol.
-        let candidates: [(EyeShape, [Character])] = [
-            (.disc, ["●", "O", "0"]), (.happy, ["^"]), (.cross, ["×", "x"]), (.deniedLeft, [">"]), (.deniedRight, ["<"]),
-        ]
-        for (shape, chars) in candidates {
-            for ch in chars {
-                if let g = eyeGlyph(ch, base: base) { eyeGlyphs[shape] = g; break }
-            }
+        // The eyes: ASCII only, all from the one bold font, measured.
+        var advances: Set<Int> = []
+        for ch in Self.eyeCharacters {
+            guard let g = eyeGlyph(ch, font: bold) else { continue }
+            eyeGlyphs[ch] = g
+            advances.insert(Int((g.advance * 1000).rounded()))
         }
+        if let o = eyeGlyphs["o"] { eyeBaselineCentre = o.centre.y; eyeAdvance = o.advance }
+        eyeAdvancesUniform = advances.count == 1
     }
 
-    func eyeGlyph(_ shape: EyeShape) -> EyeGlyph? { eyeGlyphs[shape] }
+    /// The glyph an eye is drawn as; nil for a character outside `eyeCharacters`.
+    func eyeGlyph(_ ch: Character) -> EyeGlyph? { eyeGlyphs[ch] }
 
-    /// A glyph from the base font only, with its box measured at size 1.
-    private func eyeGlyph(_ ch: Character, base: CTFont) -> EyeGlyph? {
+    /// Where an eye glyph's box lies, in points from the eye's point (x right, y down),
+    /// at `size`: horizontally centred, vertically on the shared baseline.
+    func eyeBox(_ ch: Character, size: Double) -> CGRect {
+        guard let g = eyeGlyphs[ch] else { return .zero }
+        let s = CGFloat(size)
+        let cy = -(g.centre.y - eyeBaselineCentre) * s
+        return CGRect(x: -g.width * s / 2, y: cy - g.height * s / 2, width: g.width * s, height: g.height * s)
+    }
+
+    /// A glyph from one font only, with its box and advance measured per unit of size.
+    private func eyeGlyph(_ ch: Character, font: CTFont) -> EyeGlyph? {
         var utf16 = Array(String(ch).utf16)
         var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
-        guard CTFontGetGlyphsForCharacters(base, &utf16, &glyphs, utf16.count), glyphs[0] != 0 else { return nil }
-        let box = CTFontGetBoundingRectsForGlyphs(base, .horizontal, glyphs, nil, 1)
+        guard CTFontGetGlyphsForCharacters(font, &utf16, &glyphs, utf16.count), glyphs[0] != 0 else { return nil }
+        let box = CTFontGetBoundingRectsForGlyphs(font, .horizontal, glyphs, nil, 1)
         guard box.width > 0, box.height > 0 else { return nil }
-        let s = CTFontGetSize(base)
-        return EyeGlyph(glyph: glyphs[0], centre: CGPoint(x: box.midX / s, y: box.midY / s), width: box.width / s, height: box.height / s)
+        var adv = CGSize.zero
+        CTFontGetAdvancesForGlyphs(font, .horizontal, glyphs, &adv, 1)
+        let s = CTFontGetSize(font)
+        return EyeGlyph(glyph: glyphs[0], centre: CGPoint(x: box.midX / s, y: box.midY / s), width: box.width / s, height: box.height / s, advance: adv.width / s)
     }
 
     private func resolve(_ ch: Character, base: CTFont) -> Ref? {
@@ -2009,13 +2119,12 @@ final class BlobFieldView: NSView {
             show(wetRuns, wetPositions)
         }
 
-        // The eyes, over everything.
+        // The eyes, over everything: the glyph pair, a step brighter than the body.
         if !sim.eyes.isEmpty {
-            let sclera = color.mixed(with: RGB(1, 1, 1), sim.eyeLift)
-            let pupil = OrbPalette.ground.mixed(with: color, 0.22)
+            let ink = color.mixed(with: RGB(1, 1, 1), sim.eyeLift)
             for eye in sim.eyes {
                 let p = CGPoint(x: origin.x + (CGFloat(eye.col) + 0.5) * cw, y: origin.y + (CGFloat(eye.row) + 0.5) * rh)
-                drawEye(cg, eye, at: p, sclera: sclera, pupil: pupil, glyphs: glyphs)
+                Self.drawEye(cg, glyph: eye.glyph, size: eye.size, at: p, ink: ink, glyphs: glyphs)
             }
         }
         cg.restoreGState()
@@ -2024,59 +2133,26 @@ final class BlobFieldView: NSView {
     /// Cells the body must not draw this frame (under the eyes); reused across frames.
     private var skip = [Bool](repeating: false, count: BlobSim.cellCount)
 
-    /// One eye. The disc is the font's ● drawn well past the grid's size and flattened
-    /// by the lid (`open`) through the text matrix; the pupil and the glint are the same
-    /// glyph, smaller, moving with the look. Happy, error and denied eyes are ^ × > <
-    /// from the same font, sized to the disc. Everything is first laid down in the
-    /// ground colour a hair larger, so the eye has an outline against the body's
-    /// glyphs and against any desktop.
-    private func drawEye(_ cg: CGContext, _ eye: BlobSim.BlobEye, at p: CGPoint, sclera: RGB, pupil: RGB, glyphs: BlobGlyphs) {
-        guard let font = glyphs.fonts.first else { return }
-        cg.setFont(font.cg)
-        let vs = CGFloat(max(0.06, min(1, eye.open)))
-        let r = CGFloat(eye.radius)
-        let ground = OrbPalette.ground.cgColor
-        func show(_ g: BlobGlyphs.EyeGlyph, width: CGFloat, scaleY: CGFloat, at c: CGPoint, color: CGColor) {
-            let size = width / g.width
-            cg.setFontSize(size)
+    /// One eye: its ASCII glyph from the bold eye font at `size`, on the baseline every
+    /// eye glyph shares (the `o`'s centre on the eye's point), first a hair larger in
+    /// the ground colour so it reads on the body's glyphs and on any desktop, then in
+    /// the eye colour. `p` is the eye's point in a y-down context whose text matrix is
+    /// flipped (`draw`); the notch's face draws with it too.
+    static func drawEye(_ cg: CGContext, glyph ch: Character, size: Double, at p: CGPoint, ink: RGB, glyphs: BlobGlyphs) {
+        guard let g = glyphs.eyeGlyph(ch) else { return }
+        cg.setFont(glyphs.eyeFont.cg)
+        cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        let s = CGFloat(size)
+        // The glyph's box centre: horizontally on the point, vertically on the shared baseline.
+        let c = CGPoint(x: p.x, y: p.y - (g.centre.y - glyphs.eyeBaselineCentre) * s)
+        func show(_ fs: CGFloat, _ color: CGColor) {
+            cg.setFontSize(fs)
             cg.setFillColor(color)
-            // The text matrix flips (the view is y-down) and flattens; glyph positions
-            // are in text space, so the wanted user-space centre is mapped back through it.
-            cg.textMatrix = CGAffineTransform(scaleX: 1, y: -scaleY)
-            let pos = CGPoint(x: c.x - g.centre.x * size, y: -c.y / scaleY - g.centre.y * size)
-            cg.showGlyphs([g.glyph], at: [pos])
+            // Text space is flipped: the wanted user-space centre is mapped back through it.
+            cg.showGlyphs([g.glyph], at: [CGPoint(x: c.x - g.centre.x * fs, y: -c.y - g.centre.y * fs)])
         }
-        switch eye.shape {
-        case .round:
-            guard let disc = glyphs.eyeGlyph(.disc) else { return }
-            // A shut lid stretches a little wider, so it reads as a lid and not a dot.
-            let lid = vs < 0.3 ? 1 + (0.3 - vs) * 0.6 : 1
-            show(disc, width: (2 * r) * lid + 2.4, scaleY: vs + (vs < 0.3 ? 0.06 : 0), at: p, color: ground)
-            show(disc, width: (2 * r) * lid, scaleY: vs, at: p, color: sclera.cgColor)
-            guard vs > 0.22 else { return }
-            let pr = r * CGFloat(eye.pupil)
-            let travel = (r - pr) * 0.72
-            let pc = CGPoint(x: p.x + CGFloat(eye.pupilX) * travel, y: p.y + CGFloat(eye.pupilY) * travel * vs)
-            show(disc, width: 2 * pr, scaleY: vs, at: pc, color: pupil.cgColor)
-            let gr = max(0.9, pr * 0.42)
-            show(disc, width: 2 * gr, scaleY: max(vs, 0.5), at: CGPoint(x: pc.x - pr * 0.38, y: pc.y - pr * 0.36 * vs), color: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.95))
-        case .happy:
-            guard let g = glyphs.eyeGlyph(.happy) else { return }
-            // A crescent the width of the disc, about two thirds as tall.
-            let sy = (1.3 * r / (g.height * (2 * r / g.width)))
-            show(g, width: 2 * r + 2.4, scaleY: sy, at: p, color: ground)
-            show(g, width: 2 * r, scaleY: sy, at: p, color: sclera.cgColor)
-        case .cross:
-            guard let g = glyphs.eyeGlyph(.cross) else { return }
-            let sy = (2 * r / (g.height * (2 * r / g.width)))
-            show(g, width: 2 * r + 2.4, scaleY: sy, at: p, color: ground)
-            show(g, width: 2 * r, scaleY: sy, at: p, color: sclera.cgColor)
-        case .deniedLeft, .deniedRight:
-            guard let g = glyphs.eyeGlyph(eye.shape == .deniedLeft ? .deniedLeft : .deniedRight) else { return }
-            let sy = (1.7 * r / (g.height * (1.7 * r / g.width)))
-            show(g, width: 1.7 * r + 2.4, scaleY: sy, at: p, color: ground)
-            show(g, width: 1.7 * r, scaleY: sy, at: p, color: sclera.cgColor)
-        }
+        show(s * 1.12 + 1.6, OrbPalette.ground.cgColor)
+        show(s, ink.cgColor)
     }
 
     /// Refine the sim's halo and hand it to the glow layer as one premultiplied image:

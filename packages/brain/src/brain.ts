@@ -73,6 +73,12 @@ export interface Brain {
   stop(): Promise<void>;
   /** The current one-line status, when it can change after start() (a warm transport that came up later). The engine shows this over start()'s detail. */
   readonly detail?: string;
+  /**
+   * Kevin woke Jarhead: have the resident thread / session up before his first
+   * request, without waiting for it. Reports whether it is warm right now and a
+   * one-line detail. Optional; a brain without one is warm by construction or per task.
+   */
+  warmUp?(): Promise<{ readonly warm: boolean; readonly detail: string }>;
 }
 
 /**

@@ -20,8 +20,8 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead ledger [YYYY-MM-DD]    print a day's ledger
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
-  pnpm jarhead cmd <wake|sleep|mute|unmute|stop>   send a command to the running daemon
-  pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, stop (no API spend)
+  pnpm jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume>   send a command to the running daemon
+  pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
 
 flags
   --speak        (probe) also play the voice through ffplay
@@ -29,6 +29,7 @@ flags
   --runs N       (bench) samples per metric (default 5)
   --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on Kevin's login)
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
+  --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
   --json         (bench) print the table as JSON
   --debug        verbose logs
 `;
@@ -306,11 +307,11 @@ try {
       await sendCommand({ type: "say-text", text: rest.join(" ") });
       break;
     case "bench":
-      await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json") });
+      if (!(await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json"), gate: !flags.has("--no-gate") })).ok) process.exit(1);
       break;
     case "cmd": {
       const sub = rest[0];
-      if (!sub || !["wake", "sleep", "mute", "unmute", "stop", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <wake|sleep|mute|unmute|stop|agent.refresh>");
+      if (!sub || !["wake", "sleep", "mute", "unmute", "stop", "pause", "resume", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume|agent.refresh>");
       await sendCommand({ type: sub });
       break;
     }

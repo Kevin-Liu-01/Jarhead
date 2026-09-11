@@ -1,11 +1,12 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type ElementInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
-import { ClaudeBrain, Delegator, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reflex, type ReflexOutcome } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reconciliation, type Reflex, type ReflexOutcome } from "@jarhead/brain";
+import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
@@ -15,6 +16,7 @@ import {
   type Delegation,
   type EngineCommand,
   type EngineEvent,
+  type LedgerRow,
   type OverlayCommand,
   type Permissions,
   type Phase,
@@ -53,6 +55,8 @@ export interface EngineEvents {
   restart: [reason: string];
   /** A reflex ran: its label, how long the tool took, and whether it fired ahead of the delegation. */
   reflex: [label: string, ms: number, prefired: boolean];
+  /** A reflex through the ear finished (or was dropped): the timing chain the ledger keeps. */
+  "reflex.fired": [row: ReflexLedgerRow];
 }
 
 export interface EngineOptions {
@@ -64,6 +68,10 @@ export interface EngineOptions {
   readonly now?: () => number;
   /** Answers the helper's requests instead of the Swift binary (tests, `jarhead bench --fake-hands`). */
   readonly hands?: NativeHands;
+  /** The ear's stability window for a partial of a prefire kind — scroll, page, screenshot, circle (default 120 ms); tests shorten it. */
+  readonly earStableMs?: number;
+  /** The ear's stability window for a partial of every other kind — keys, edits, typing, clicks (default 450 ms); tests shorten it. */
+  readonly earCarefulMs?: number;
 }
 
 const SETTINGS_FILE = "settings.json";
@@ -107,6 +115,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private agentsList: AgentInfo[] = [];
   private connectorHealth: ConnectorHealth[] = [];
   private lastOutputSpeechAt = 0;
+  /** The last output audio frame that reached the speaker (not gated): the voice is audible for a moment after it. */
+  private lastOutputAudioAt = 0;
   private lastAddressedAt = 0;
   /**
    * The output gate: Live has no interrupt, so after a stop the voice's audio is
@@ -116,6 +126,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   private outputGateUntil = 0;
   private gatedFrames = 0;
   private readonly reflexRunner: ReflexRunner;
+  /** Reflexes the ear fired in the last seconds, so Live's delegation for the same words is finished as done, not redone. */
+  private readonly firedReflexes: FiredReflexes;
+  /** The on-device ear: partials matched against the grammar, dictation. */
+  private readonly earReflexes: EarReflexes;
+  /** Kevin pressed pause: mic muted, output gated, delegations refused, until resume. */
+  private paused = false;
+  /** "start dictating": the ear's finals are typed into the focused field until "stop dictating". */
+  private dictating = false;
+  /** The frontmost app as the accessibility warm loop last saw it (avoids a helper round trip on the reflex path). */
+  private frontApp = "";
+  private axWarmTimer: NodeJS.Timeout | undefined;
+  private axWarmBusy = false;
   private outputLevel = 0;
   private inputLevel = 0;
   private snapshotTimer: NodeJS.Timeout | undefined;
@@ -170,7 +192,37 @@ export class Engine extends EventEmitter<EngineEvents> {
       },
     });
     // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up.
-    this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName() });
+    this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName(), browserInFront: async () => BROWSER_APPS.test(this.frontApp || (await this.frontmostAppName())), now: this.now });
+    this.firedReflexes = new FiredReflexes(this.now, Engine.RECONCILE_WINDOW_MS);
+    this.earReflexes = new EarReflexes({
+      now: this.now,
+      enabled: () => this.reflexesOn(),
+      match: (u) => this.matchReflex(u),
+      run: (reflex, phrase) => this.runEarReflex(reflex, phrase),
+      onStop: () => {
+        if (this.delegator?.active || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.stopEverything("ear", "said");
+      },
+      dictation: {
+        active: () => this.dictating,
+        start: () => this.startDictation(),
+        stop: (reason) => this.stopDictation(reason),
+        type: (text) => this.dictateText(text),
+        newline: async (count) => {
+          await this.toolset.run("key", { text: "Return", repeat: count });
+        },
+        deleteWord: async () => {
+          await this.toolset.run("key", { text: "alt+Delete" });
+        },
+      },
+      fired: this.firedReflexes,
+      ledger: (row) => {
+        this.ledger.append(row as unknown as LedgerRow);
+        this.emit("reflex.fired", row);
+      },
+      suppressed: () => this.earHeld(),
+      ...(opts.earStableMs !== undefined ? { stableMs: opts.earStableMs } : {}),
+      ...(opts.earCarefulMs !== undefined ? { carefulMs: opts.earCarefulMs } : {}),
+    });
     this.transcript.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
@@ -184,6 +236,12 @@ export class Engine extends EventEmitter<EngineEvents> {
   static readonly OUTPUT_GATE_MS = 2500;
   /** "Mid-exchange": Jarhead spoke or was delegated to this recently, so a bare reflex without the wake word may fire ahead of the delegation. */
   static readonly EXCHANGE_WINDOW_MS = 8000;
+  /** A reflex the ear fired is "already done" for Live's delegation of the same words within this long. */
+  static readonly RECONCILE_WINDOW_MS = 4000;
+  /** The voice counts as speaking for this long after its last transcript delta or audio frame (the phase uses the same figure). */
+  static readonly SPEAKING_WINDOW_MS = 1200;
+  /** How often the frontmost window's accessibility tree is refreshed while awake, so a spoken click finds its control at once. */
+  static readonly AX_WARM_MS = 500;
 
   // ------------------------------------------------------------- settings
 
@@ -654,6 +712,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
       log.info(`session ${res.id} started (${config.delegation?.type ?? "client"} delegation)`);
+      this.warmStart();
     } catch (e) {
       this.problem(`could not start a Live session: ${(e as Error).message}`);
       this.live = undefined;
@@ -716,11 +775,17 @@ export class Engine extends EventEmitter<EngineEvents> {
         ? {}
         : {
             reflexes: {
-              match: (u) => this.reflexRunner.match(u),
+              match: (u) => this.matchReflex(u),
               run: (reflex, sink) => this.runReflex(reflex, sink),
               inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
+              // The ear may have done these words already; the delegation then only confirms.
+              // The prefire check only peeks: a claim there would hide the reflex from the delegation.
+              reconcile: (u) => this.reconcileReflex(u),
+              peek: (u) => this.firedReflexes.peek(u),
             },
           }),
+      // Paused (or dictating): delegations are recorded and refused, never run.
+      refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : undefined),
       // A spoken "stop" is a Stop like any other: the whole stop, not only the delegation.
       onStop: (reason) => void this.stopEverything(reason, "said"),
     });
@@ -742,6 +807,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         return;
       }
       this.outputLevel = rms(pcm);
+      this.lastOutputAudioAt = this.now();
       this.emit("audio", pcm);
     });
     live.on("inputTranscript", (delta, s, e) => {
@@ -771,6 +837,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     live.on("closed", (reason, usage) => {
       this.ledger.append({ at: this.now(), type: "session.closed", sessionId: live.session?.id ?? "?", reason, usageSeconds: usage });
       this.live = undefined;
+      this.endAwakeState();
       this.delegator?.dispose();
       this.delegator = undefined;
       this.transcript.finalizeOpen();
@@ -785,22 +852,36 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   async sleep(): Promise<void> {
     this.wantAwake = false;
-    await this.delegator?.cancel("going to sleep");
+    // A brain whose cancel hangs must not keep the session open.
+    await Promise.race([this.delegator?.cancel("going to sleep") ?? Promise.resolve(), new Promise((r) => setTimeout(r, 1500))]);
     this.live?.close();
     this.flushSpeaker();
+    this.endAwakeState();
     this.setPhase("asleep");
+  }
+
+  /** The session is gone (sleep, expiry, loss): nothing that only makes sense awake survives it. */
+  private endAwakeState(): void {
+    this.paused = false;
+    if (this.dictating) this.stopDictation("asleep");
+    if (this.outputGateUntil === Number.POSITIVE_INFINITY) this.outputGateUntil = 0;
+    this.stopAxWarm();
+    this.earReflexes.forgetAll();
   }
 
   setMuted(muted: boolean): void {
     this.muted = muted;
-    if (muted) this.live?.mute();
-    else this.live?.unmute();
+    if (muted) {
+      this.live?.mute();
+      // Whatever the ear had half-heard is not a command now; nothing heard while muted is.
+      this.earReflexes.quiesce();
+    } else this.live?.unmute();
     this.recomputePhase();
   }
 
   /** Mic PCM16 mono 24 kHz. */
   feedMic(pcm: Buffer): void {
-    if (this.muted) return;
+    if (this.muted || this.paused) return;
     this.live?.appendAudio(pcm);
   }
 
@@ -835,12 +916,19 @@ export class Engine extends EventEmitter<EngineEvents> {
     const t0 = this.now();
     const running = this.delegator?.active;
     const reason = `Kevin ${how} stop`;
-    // The gate first, so a frame arriving between here and the flush is dropped too.
-    this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+    // The gate first, so a frame arriving between here and the flush is dropped too
+    // (a pause holds it open already and keeps it).
+    if (!this.paused) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
     this.gatedFrames = 0;
     this.flushSpeaker();
     const dropped = this.hands.cancelPending(reason);
     const aborted = this.runner.abortTask("stop");
+    // A question the stopped task asked must not be armed by a later "yes"; a dictation ends too.
+    this.confirmations.clear();
+    if (this.dictating) this.stopDictation("said");
+    // The ear holds its segment with every word consumed (not forgotten): the recogniser's
+    // late partial or final for the words Kevin just stopped must not run them again.
+    this.earReflexes.quiesce();
     // The brain's own cancel may take a moment (SIGINT, an interrupt request); the
     // stop must not wait on it to be felt, so it is capped here. The delegator's own
     // word to the voice is skipped: the one instruction below speaks for the whole stop.
@@ -854,7 +942,7 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** The gate ends early when Kevin speaks; the clock ends it otherwise. */
   private liftOutputGate(why: string): void {
-    if (!this.outputGateUntil) return;
+    if (!this.outputGateUntil || this.paused) return;
     if (this.now() < this.outputGateUntil) log.debug(`output gate lifted (${why}) after dropping ${this.gatedFrames} frame(s)`);
     this.outputGateUntil = 0;
     this.gatedFrames = 0;
@@ -1150,20 +1238,308 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.scheduleSnapshot();
   }
 
-  // ------------------------------------------------------- pause / reflexes
-  // Filled in by the reflex fan-out; stubs keep the contract compiling.
+  // ------------------------------------------------------------- pause
 
+  /**
+   * Pause: the session stays open (no reconnect, no lost context) but Jarhead goes
+   * silent and still — the mic is muted at Live, the output gate is held open so
+   * nothing already in flight is played, the running task is cancelled and new
+   * delegations are refused (recorded, finished as "paused"), and the voice is told
+   * once to stay quiet. Idle-sleep keeps counting: a pause is not attention.
+   */
   async pause(): Promise<void> {
-    log.info("pause (not implemented yet)");
+    if (!this.live) {
+      this.toast("asleep already", "info");
+      return;
+    }
+    if (this.paused) {
+      this.toast("paused already", "info");
+      return;
+    }
+    const t0 = this.now();
+    this.paused = true;
+    this.live.mute();
+    this.outputGateUntil = Number.POSITIVE_INFINITY;
+    this.gatedFrames = 0;
+    this.flushSpeaker();
+    const running = this.delegator?.active;
+    const dropped = this.hands.cancelPending("Kevin paused");
+    this.runner.abortTask("pause");
+    this.confirmations.clear();
+    if (this.dictating) this.stopDictation("said");
+    this.earReflexes.quiesce();
+    const cancel = this.delegator?.cancel("paused", { quiet: true }) ?? Promise.resolve();
+    this.live.appendInstructions(null, "Kevin paused you. Stay silent until he resumes.");
+    this.ledger.append({ at: t0, type: "pause", ...(running ? { cancelled: running.id } : {}) } as unknown as LedgerRow);
+    this.toast("paused", "info");
+    this.recomputePhase();
+    await Promise.race([cancel, new Promise((r) => setTimeout(r, 1500))]);
+    log.info(`paused in ${this.now() - t0}ms: ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped`);
   }
 
   async resume(): Promise<void> {
-    log.info("resume (not implemented yet)");
+    if (!this.live) {
+      this.toast("asleep — wake it instead", "info");
+      return;
+    }
+    if (!this.paused) {
+      this.toast("not paused", "info");
+      return;
+    }
+    this.paused = false;
+    // Kevin's own mute (the mic button) survives a pause; only the pause's mute is undone.
+    if (!this.muted) this.live.unmute();
+    this.outputGateUntil = 0;
+    this.gatedFrames = 0;
+    this.lastAddressedAt = this.now();
+    this.live.appendInstructions(null, "Kevin resumed. Carry on as before; do not recap what you were doing unless he asks.");
+    this.ledger.append({ at: this.now(), type: "resume" } as unknown as LedgerRow);
+    this.toast("resumed", "info");
+    this.recomputePhase();
+    log.info("resumed");
   }
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  // ------------------------------------------------------------- reflexes
+  // The 250 ms path. `ear()` takes the app's on-device partials; the grammar and
+  // the stability rules live in ./ear.ts and packages/brain/src/reflex.ts; every
+  // match runs through the same gated hands as a brain's tool call and is
+  // remembered so Live's delegation for the same words is finished as done.
 
   /** On-device partial/final transcript from the app's ear (the reflex path). */
   ear(text: string, isFinal: boolean, segment: number, at: number): void {
+    if (!this.live) return;
     log.debug(`ear ${isFinal ? "final" : "partial"} #${segment} @${at}: ${text.slice(0, 80)}`);
+    this.earReflexes.hear(text, isFinal, segment, at);
+  }
+
+  /** Reflexes are on: awake, not paused, not muted (the mic button; `feedMic` drops PCM on the same flag), and Settings.reflexes true. */
+  private reflexesOn(): boolean {
+    return this.live !== undefined && !this.paused && !this.muted && this.settings.reflexes !== false;
+  }
+
+  /**
+   * Why the ear must hold still right now, or undefined. While the voice is audible
+   * the recogniser may be hearing Jarhead's own words back through the microphone
+   * (echo cancellation is best effort: the app falls back to plain input when
+   * VoiceIO will not start) — "Now press enter." must not press Return. While a
+   * brain task runs, a scroll under its hands would move what it just looked at.
+   * The words heard meanwhile are consumed by the ear, not queued; "stop" is not
+   * held (it is what Kevin says over Jarhead's voice).
+   */
+  private earHeld(): string | undefined {
+    if (this.muted) return "muted";
+    if (this.delegator?.active) return "a task is running";
+    if (!this.outputGated && (this.now() - this.lastOutputSpeechAt < Engine.SPEAKING_WINDOW_MS || this.now() - this.lastOutputAudioAt < Engine.SPEAKING_WINDOW_MS)) return "the voice is speaking";
+    return undefined;
+  }
+
+  /** The grammar, gated by the setting and by dictation (while dictating, words are text, not commands). */
+  private matchReflex(utterance: string): Reflex | undefined {
+    if (this.settings.reflexes === false || this.dictating) return undefined;
+    return this.reflexRunner.match(utterance);
+  }
+
+  /**
+   * Live's words against the ear's recent reflexes, claimed for the delegation that
+   * asks. A mismatch is undone first (⌘Z for a typed text) and comes back with
+   * `undone`, so the delegator knows whether the effect stands.
+   */
+  private async reconcileReflex(utterance: string): Promise<Reconciliation | undefined> {
+    const r = this.firedReflexes.reconcile(utterance);
+    if (r?.kind === "mismatch") return { ...r, undone: await this.undoMismatch(r.fired.reflex, r.fired.phrase, utterance) };
+    return r;
+  }
+
+  /**
+   * The ear acted on other words than Kevin said (a partial that changed after it
+   * fired). A typed text is taken back with ⌘Z while a text field is still focused;
+   * either way the voice is told, so Kevin hears what happened — when the undo could
+   * not run (the focus is a terminal, a canvas, an Electron view with no text role)
+   * the typed words stand and he has to know. Idempotent reflexes (a scroll, a
+   * screenshot) need nothing. Returns whether the effect was undone.
+   */
+  private async undoMismatch(reflex: Reflex, heard: string, said: string): Promise<boolean> {
+    this.ledger.append({ at: this.now(), type: "reflex.mismatch", action: reflex.label, heard, said } as unknown as LedgerRow);
+    log.warn(`reflex mismatch: the ear heard "${heard}" and ran ${reflex.label}; Kevin said "${normalizeForLog(said)}"`);
+    if (reflex.idempotent) return false;
+    if (reflex.kind !== "type") {
+      this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but Kevin actually said "${normalizeForLog(said).slice(0, 80)}". Tell him in one short sentence what was done, then carry on with what he asked.`);
+      return false;
+    }
+    const typed = String(reflex.input["text"]).slice(0, 60);
+    try {
+      const f = await this.hands.request<FocusedText>("focused_text", {}, 1500);
+      if (f && /AXText(Field|Area)|AXComboBox|AXWebArea/.test(f.role) && !f.secure) {
+        const r = await this.toolset.run("key", { text: "cmd+z" });
+        if (r.kind === "text") {
+          this.live?.appendInstructions(null, `You typed "${typed}" by reflex but Kevin said something else; it has been undone. Tell him in one short sentence.`);
+          return true;
+        }
+      }
+    } catch (e) {
+      log.debug(`undo after mismatch: ${(e as Error).message}`);
+    }
+    this.live?.appendInstructions(null, `You typed "${typed}" by reflex but Kevin said something else, and it could not be undone (the focus is not in a text field). Tell him in one short sentence so he can fix it; do not type it again on top.`);
+    return false;
+  }
+
+  /**
+   * A reflex on the ear's words: the engine-level kinds (circle, dictation) here,
+   * everything else through the ReflexRunner and the gated toolset. A reflex the
+   * policy wants a question for is dropped — the pending question it left is
+   * cleared so a later "yes" cannot arm it — and the model path will ask.
+   */
+  private async runEarReflex(reflex: Reflex, _phrase: string): Promise<ReflexOutcome & { readonly dropped?: string }> {
+    const dispatchedAt = this.now();
+    this.lastAddressedAt = dispatchedAt;
+    switch (reflex.kind) {
+      case "dictate_start":
+      case "dictate_stop":
+        return { reflex, result: { kind: "text", text: "OK" }, ms: 0, ok: true, dispatchedAt };
+      case "circle": {
+        const t0 = this.now();
+        const ok = await this.circleUnderCursor();
+        return { reflex, result: ok ? { kind: "text", text: "OK" } : { kind: "error", message: "nothing to circle" }, ms: this.now() - t0, ok, dispatchedAt };
+      }
+      default: {
+        const outcome = await this.reflexRunner.run(reflex);
+        if (outcome.result.kind === "needs-confirmation") {
+          // The runner recorded a question nobody will relay; the model path asks properly.
+          if (this.confirmations.pending?.id === outcome.result.pendingId) this.confirmations.clear();
+          log.info(`ear reflex ${reflex.label} dropped: the policy wants a yes (${outcome.result.question.slice(0, 80)})`);
+          return { ...outcome, ok: false, dropped: "needs confirmation" };
+        }
+        if (outcome.result.kind === "error" && /^(refused|not a reflex)/.test(outcome.result.message)) {
+          return { ...outcome, ok: false, dropped: outcome.result.message.slice(0, 120) };
+        }
+        if (outcome.ok) this.emit("reflex", reflex.label, outcome.ms, true);
+        return outcome;
+      }
+    }
+  }
+
+  /** "Circle that": the blob traces a frame around the element under the cursor, else the frontmost window. */
+  private async circleUnderCursor(): Promise<boolean> {
+    let rect: Rect | undefined;
+    let label: string | undefined;
+    try {
+      const c = await this.hands.request<{ x: number; y: number }>("cursor", {}, 1000);
+      const el = await this.hands.request<ElementInfo>("element_at", c, 1500).catch(() => undefined);
+      if (el?.frame && el.frame.w >= 4 && el.frame.h >= 4 && el.frame.w * el.frame.h < 4_000_000) {
+        rect = el.frame;
+        label = el.title || el.description || el.role;
+      }
+      if (!rect) {
+        const f = await this.hands.request<FrontmostInfo>("frontmost", {}, 1500);
+        if (f.window) {
+          rect = { x: f.window.x, y: f.window.y, w: f.window.w, h: f.window.h };
+          label = f.window.title || f.app;
+        }
+      }
+    } catch (e) {
+      log.debug(`circle that: ${(e as Error).message}`);
+    }
+    if (!rect) return false;
+    const padded: Rect = { x: rect.x - 6, y: rect.y - 6, w: rect.w + 12, h: rect.h + 12 };
+    this.emit("overlay", { cmd: "orb.trace", points: roundedRectPoints(padded), closed: true, tone: "accent", ttlMs: 6000, ...(label ? { label: label.slice(0, 40) } : {}), reason: "reflex circle" });
+    return true;
+  }
+
+  // ------------------------------------------------------------ dictation
+
+  private startDictation(): void {
+    if (this.dictating) return;
+    this.dictating = true;
+    this.lastAddressedAt = this.now();
+    this.live?.appendInstructions(null, "Kevin is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says \"stop dictating\"; do not delegate what he says.");
+    this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
+    this.toast("dictating — say \"stop dictating\" to end", "info");
+    this.recomputePhase();
+  }
+
+  private stopDictation(reason: "said" | "refused" | "asleep"): void {
+    if (!this.dictating) return;
+    this.dictating = false;
+    this.ledger.append({ at: this.now(), type: "dictation", state: "stopped", reason } as unknown as LedgerRow);
+    if (reason !== "asleep") {
+      this.live?.appendInstructions(null, reason === "refused" ? "Dictation stopped: the focused field is a password field or a hands-off app, so nothing was typed. Tell Kevin in one sentence." : "Kevin stopped dictating. Say \"done\" and carry on.");
+      this.toast(reason === "refused" ? "dictation stopped: that field is off limits" : "dictation ended", reason === "refused" ? "warn" : "info");
+    }
+    this.recomputePhase();
+  }
+
+  /** Type dictated words into the focused field; false when the policy refuses (dictation ends). */
+  private async dictateText(text: string): Promise<boolean> {
+    const app = this.frontApp || (await this.frontmostAppName());
+    if (HANDS_OFF_APPS.test(app)) return false;
+    // The focused field decides: a password field is never typed into.
+    const focused = await this.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined);
+    const decision = classifyAction({ kind: "dictate", app, secureField: focused?.secure === true, text });
+    if (decision.verdict !== "run") return false;
+    const r = await this.toolset.run("type", { text });
+    if (r.kind === "needs-confirmation") {
+      if (this.confirmations.pending?.id === r.pendingId) this.confirmations.clear();
+      return false;
+    }
+    if (r.kind === "error") {
+      log.warn(`dictation type failed: ${r.message}`);
+      return !/^refused/.test(r.message);
+    }
+    this.lastAddressedAt = this.now();
+    return true;
+  }
+
+  get isDictating(): boolean {
+    return this.dictating;
+  }
+
+  // ---------------------------------------------------------- warm starts
+  // At wake, before Kevin's first request: the brain's resident thread, one quick
+  // screenshot (ScreenCaptureKit's first capture is the slow one, and the Screen
+  // mapping is set), and the frontmost window's accessibility tree, kept fresh
+  // every 500 ms so a spoken click finds its control without a walk.
+
+  private warmStart(): void {
+    const brain = this.brain;
+    if (brain?.warmUp) {
+      void brain.warmUp().then((r) => log.info(`brain warm at wake: ${r.warm ? "yes" : "not yet"} (${r.detail})`)).catch((e: Error) => log.debug(`brain warm-up: ${e.message}`));
+    }
+    if (!this.hands.available && !this.hands.ready) return;
+    if (!(this.brain instanceof ResponsesBrain)) {
+      const t0 = this.now();
+      void this.toolset.run("screenshot", { quick: true }).then((r) => log.info(`first screenshot at wake: ${r.kind} in ${this.now() - t0} ms`));
+    }
+    this.startAxWarm();
+  }
+
+  private startAxWarm(): void {
+    if (this.axWarmTimer || this.opts.hands === undefined && !this.hands.available) return;
+    const tick = (): void => {
+      if (!this.live || this.axWarmBusy) return;
+      this.axWarmBusy = true;
+      this.hands
+        .request<AxTreeResult>("ax_tree", { summary: true, maxAgeMs: Engine.AX_WARM_MS - 100, maxMs: 80 }, 1500)
+        .then((r) => {
+          if (r.app) this.frontApp = r.app;
+        })
+        .catch((e: Error) => log.debug(`ax warm: ${e.message}`))
+        .finally(() => {
+          this.axWarmBusy = false;
+        });
+    };
+    tick();
+    this.axWarmTimer = setInterval(tick, Engine.AX_WARM_MS);
+    this.axWarmTimer.unref?.();
+  }
+
+  private stopAxWarm(): void {
+    if (this.axWarmTimer) clearInterval(this.axWarmTimer);
+    this.axWarmTimer = undefined;
+    this.frontApp = "";
   }
 
   /** Ask the host to restart this process on the current code (the app respawns on exit 75). */
@@ -1245,6 +1621,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    this.stopAxWarm();
     this.closeConversations();
     await this.sleep();
     await this.brain?.stop();
@@ -1282,7 +1659,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.phase !== "connecting" && this.phase !== "error") this.setPhase("asleep");
       return;
     }
+    if (this.paused) return this.setPhase("paused");
     if (this.muted) return this.setPhase("muted");
+    if (this.dictating) return this.setPhase("acting");
     const active = this.delegator?.active;
     if (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated) return this.setPhase("speaking");
     if (active) {
@@ -1359,6 +1738,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
     return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brain?.detail ?? this.brainDetail };
   }
+}
+
+function normalizeForLog(s: string): string {
+  return s.replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
 /** A stroke drawn right-to-left gives a negative size; the capture needs a positive box at least a point wide. */

@@ -6,24 +6,24 @@ import ApplicationServices
 //
 // AX frames are already global top-left-origin screen points, the same convention as CGEvent.
 
-private let accessibilityHint =
+let accessibilityHint =
     "Accessibility is not granted. Grant it to the app that launched this helper "
     + "(the terminal or Jarhead.app) in System Settings > Privacy & Security > Accessibility."
 
-private let systemWideElement: AXUIElement = {
+let systemWideElement: AXUIElement = {
     let element = AXUIElementCreateSystemWide()
     // Bound every call so an unresponsive app cannot hang the worker.
     AXUIElementSetMessagingTimeout(element, 2.0)
     return element
 }()
 
-private func axAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+func axAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
     return value
 }
 
-private func axString(_ element: AXUIElement, _ name: String, limit: Int? = nil) -> String? {
+func axString(_ element: AXUIElement, _ name: String, limit: Int? = nil) -> String? {
     guard let value = axAttribute(element, name) else { return nil }
     var string: String?
     if let s = value as? String {
@@ -40,7 +40,7 @@ private func axString(_ element: AXUIElement, _ name: String, limit: Int? = nil)
     return result
 }
 
-private func axFrame(_ element: AXUIElement) -> CGRect? {
+func axFrame(_ element: AXUIElement) -> CGRect? {
     guard let positionRef = axAttribute(element, kAXPositionAttribute),
           CFGetTypeID(positionRef) == AXValueGetTypeID(),
           let sizeRef = axAttribute(element, kAXSizeAttribute),
@@ -52,24 +52,24 @@ private func axFrame(_ element: AXUIElement) -> CGRect? {
     return CGRect(origin: point, size: size)
 }
 
-private func axAppName(_ element: AXUIElement) -> String? {
+func axAppName(_ element: AXUIElement) -> String? {
     var pid: pid_t = 0
     guard AXUIElementGetPid(element, &pid) == .success else { return nil }
     return NSRunningApplication(processIdentifier: pid)?.localizedName
 }
 
-private func requireAccessibility() throws {
+func requireAccessibility() throws {
     guard AXIsProcessTrusted() else { throw HandsError.permissionDenied(accessibilityHint) }
 }
 
-private func axElement(from value: CFTypeRef?) -> AXUIElement? {
+func axElement(from value: CFTypeRef?) -> AXUIElement? {
     guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     let element = value as! AXUIElement
     AXUIElementSetMessagingTimeout(element, 2.0)
     return element
 }
 
-private func axErrorName(_ error: AXError) -> String {
+func axErrorName(_ error: AXError) -> String {
     switch error {
     case .success: return "success"
     case .apiDisabled: return "apiDisabled"

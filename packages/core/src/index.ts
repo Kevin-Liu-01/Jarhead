@@ -6,5 +6,5 @@ export { logger, setLogLevel, addLogSink, replaceDefaultSink } from "./log.ts";
 export type { Logger, LogLevel, LogSink } from "./log.ts";
 export { Marks } from "./marks.ts";
 export { Ledger } from "./ledger.ts";
-export { classifyAction, classifyPath, classifyAppleScript, classifyUrl, expandPath, namedPaths, secretPathReason, secretEnvReason, shellNeverReason, shellDestructiveReason, shellCwdReason, normalizeShell, stripWrappers, foldAppleScriptLiterals, isLoopbackHost, isPrivateHost, HANDS_OFF_APPS, TEMP_ROOTS } from "./policy.ts";
+export { classifyAction, classifyPath, classifyAppleScript, classifyUrl, riskyUrlReason, expandPath, namedPaths, secretPathReason, secretEnvReason, shellNeverReason, shellDestructiveReason, shellCwdReason, normalizeShell, stripWrappers, foldAppleScriptLiterals, isLoopbackHost, isPrivateHost, HANDS_OFF_APPS, TEMP_ROOTS } from "./policy.ts";
 export type { ActionContext, Decision, Verdict, PathAccess, PathContext, AppleScriptContext, UrlContext } from "./policy.ts";

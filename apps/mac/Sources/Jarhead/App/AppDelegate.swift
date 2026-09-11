@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var client: EngineClient!
     private var audio: AudioEngine!
     private var wake: WakeGate!
+    private var ear: ReflexEar!
     private var daemon: DaemonProcess?
     private var statusItem: StatusItem!
     private var menus: Menus!
@@ -59,6 +60,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.state.toast("Microphone isn't working: \(text)", tone: .error) }
             }
         }
+
+        // The on-device ear: while awake (not paused, not muted) it hears Kevin's words
+        // ~100–200 ms after he says them, from the same microphone buffers the voice
+        // gets, and feeds the engine's reflex layer as `ear` messages.
+        ear = ReflexEar(state: state) { [client] text, isFinal, segment, at in
+            client?.sendEar(text: text, isFinal: isFinal, segment: segment, at: at)
+        }
+        audio.onMicBuffer = { [ear] buffer, when in ear?.ingest(buffer, at: when) }
 
         // AppState handlers: UI code only ever talks to AppState. A few commands are
         // ours to act on before (or instead of) the daemon.
@@ -220,6 +229,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.state.send(self.state.phase == .muted ? .unmute : .mute)
         }
+        a.togglePause = { [weak self] in
+            guard let self else { return }
+            self.state.send(self.state.phase == .paused ? .resume : .pause)
+        }
         a.stop = { [weak self] in self?.state.send(.stop) }
         a.openConsole = { [weak self] in
             self?.console.show()
@@ -250,6 +263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.beginMarkMode()
         case .toggleWake:
             state.send(state.isAwake ? .sleep : .wake)
+        case .togglePause:
+            // ⌥⇧P: the session stays open but silent; again to resume.
+            state.send(state.phase == .paused ? .resume : .pause)
         }
     }
 
@@ -268,7 +284,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if wantActive {
             wake.setVoiceAudioActive(true)
             audio.start()
+            ear.setVoiceAudioActive(true)
         } else {
+            ear.setVoiceAudioActive(false)
             audio.stop()
             wake.setVoiceAudioActive(false)
         }
@@ -307,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state.connected { client.send(.sleep) }
         hotkeys?.unregister()
         overlay?.stop()
+        ear?.setVoiceAudioActive(false)
         audio?.stop()
         // Give the sleep command a moment to leave the socket before we tear it down.
         Thread.sleep(forTimeInterval: 0.25)

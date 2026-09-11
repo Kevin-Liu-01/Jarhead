@@ -168,6 +168,16 @@ final class EngineClient: @unchecked Sendable {
         net.async { self.rawSend(json: ["type": "permission", "which": which, "state": grant.rawValue]) }
     }
 
+    /// The on-device ear's partial or final transcript (wire.ts `ear`): `at` is ms
+    /// since epoch when the recogniser produced it. Never queued: a partial from before
+    /// a reconnect is stale by the time the socket is back, so it is simply dropped.
+    func sendEar(text: String, isFinal: Bool, segment: Int, at: Int) {
+        net.async {
+            guard self.connection != nil, self.isConnected else { return }
+            self.rawSend(json: ["type": "ear", "text": text, "isFinal": isFinal, "segment": segment, "at": at])
+        }
+    }
+
     /// Must run on `net`.
     /// On `net`. Delivers what was queued while disconnected, oldest first.
     private func flushOutbox() {

@@ -2,7 +2,7 @@ export type { Brain, BrainTask, BrainSink, BrainResult, BrainAttachment } from "
 export { brainSystemPrompt, SYSTEM_PROMPT_VERSION } from "./brain.ts";
 export { loadAttachments, markNote, attachmentsPreamble, attachmentsRecap } from "./attachments.ts";
 export type { LoadedAttachment } from "./attachments.ts";
-export { ALL_TOOL_SPECS, COMPUTER_TOOL_SPECS, DESKTOP_TOOL_SPECS, AGENT_SPECS, MISC_SPECS, SYSTEM_SPECS, SELF_SPECS, DRAW_SPECS, specByName } from "./tools.ts";
+export { ALL_TOOL_SPECS, COMPUTER_TOOL_SPECS, DESKTOP_TOOL_SPECS, BROWSER_SPECS, AGENT_SPECS, MISC_SPECS, SYSTEM_SPECS, SELF_SPECS, DRAW_SPECS, specByName } from "./tools.ts";
 export type { ToolSpec } from "./tools.ts";
 export { ToolRunner, resultText, circlePoints, rectPoints, traceDurationMs, headStart } from "./runner.ts";
 export type { RunnerOptions, ToolRunnerOptions, RunOutcome } from "./runner.ts";
@@ -29,8 +29,10 @@ export type { CodexBinary, CodexBrainOptions, CodexExecOptions, CodexProbe, Code
 export { CodexAppServer, appServerArgs, appServerEffort } from "./codex-app-server.ts";
 export type { AppServerOptions, AppServerItem, TurnHandlers, TurnResult, TokenUsage, UserInput } from "./codex-app-server.ts";
 export { codexMcpConfigArgs, codexUserMcpServers, codexDisableUserServersArgs } from "./codex-config.ts";
-export { ReflexRunner, parseReflex, normalizeUtterance, addressesJarhead, clickByNameScript } from "./reflex.ts";
-export type { Reflex, ReflexKind, ReflexOutcome, ReflexRunnerOptions } from "./reflex.ts";
+export { ReflexRunner, FiredReflexes, parseReflex, normalizeUtterance, addressesJarhead, endsTerminally, clickByNameScript, similarity, editDistance, BROWSER_APPS, RECONCILE_THRESHOLD } from "./reflex.ts";
+export type { Reflex, ReflexKind, ReflexOutcome, ReflexRunnerOptions, FiredReflex, Reconciliation } from "./reflex.ts";
+export { BrowserTools, browserJsDoctor, SCRIPTABLE_BROWSERS } from "./browser.ts";
+export type { BrowserToolsOptions } from "./browser.ts";
 export { runToolBatch, allReadOnly } from "./batch.ts";
 export type { BatchCall } from "./batch.ts";
 export { screenNote } from "./attachments.ts";

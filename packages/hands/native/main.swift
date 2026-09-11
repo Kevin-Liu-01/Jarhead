@@ -35,6 +35,12 @@ func dispatch(op: String, params: Params) throws -> JSONObject {
     case "focus_app": return try opFocusApp(params)
     case "focused_text": return try opFocusedText()
     case "element_at": return try opElementAt(params)
+    case "find_element": return try opFindElement(params)
+    case "ax_tree": return try opAXTree(params)
+    case "browser_js": return try opBrowserJS(params)
+    case "browser_tabs": return try opBrowserTabs(params)
+    case "browser_navigate": return try opBrowserNavigate(params)
+    case "browser_url": return try opBrowserURL(params)
     case "wait": return try opWait(params)
     default: throw HandsError.badRequest("unknown op '\(op)'")
     }

@@ -74,7 +74,7 @@ test("runner archives screenshots, routes agent tools, and gates shell", async (
 });
 
 test("tool specs are complete and map to zod shapes", () => {
-  assert.equal(ALL_TOOL_SPECS.length, 17 + 6 + 5 + 4 + 11 + 6 + 6, "computer, desktop, agents, misc, system, self, draw");
+  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, misc, system, self, draw");
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   assert.equal(names.size, ALL_TOOL_SPECS.length, "no duplicate tool names");
   const shape = zodShape(specByName("scroll")!);

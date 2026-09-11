@@ -12,6 +12,8 @@ import Speech
 /// request every 50 s and whenever a task ends; each roll starts a new "segment",
 /// signalled through the `segment` counter passed with every transcript. The gate can
 /// also ask for a roll (`rollSegment`) so a passphrase answer starts in a clean segment.
+/// The request/task/roll machinery is `SegmentedRecognizer` (Ear/), shared with the
+/// reflex ear that listens while awake; what is here is the microphone and the status.
 final class WakeWordListener {
     /// What the listener has to say about itself. Typed, so the gate never has to
     /// read error text to know whether recognition is running.
@@ -42,24 +44,32 @@ final class WakeWordListener {
     private let locale = Locale(identifier: "en-US")
     private let engine = AVAudioEngine()
     private let queue = DispatchQueue(label: "jarhead.wake.listener")
-    private var recognizer: SFSpeechRecognizer?
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var task: SFSpeechRecognitionTask?
-    private var rollTimer: DispatchSourceTimer?
-    /// Words to bias recognition toward (the wake phrases). Applied at the next roll. On `queue` only.
-    private var contextualStrings: [String] = []
+    private let recognizer: SFSpeechRecognizer?
+    /// The request/task/segment machinery; nil only when the recogniser could not be made for the locale.
+    private let segments: SegmentedRecognizer?
     /// The caller wants us running (start() without a stop()); the deferred restart
     /// after a configuration change honours it. On `queue` only.
     private var wanted = false
     private var running = false
-    private var segment = 0
     private var configObserver: NSObjectProtocol?
-    private let requestLock = NSLock()
 
-    static let rollInterval: TimeInterval = 50
+    static let rollInterval: TimeInterval = SegmentedRecognizer.rollInterval
 
     init() {
-        recognizer = SFSpeechRecognizer(locale: locale)
+        let recognizer = SFSpeechRecognizer(locale: locale)
+        self.recognizer = recognizer
+        if let recognizer {
+            let segments = SegmentedRecognizer(recognizer: recognizer, queue: queue)
+            self.segments = segments
+            segments.onTranscript = { [weak self] t in
+                DispatchQueue.main.async { self?.onTranscript?(t.text, t.isFinal, t.segment) }
+            }
+            segments.onError = { [weak self] message in
+                self?.status(.recognitionError("recognition: \(message)"))
+            }
+        } else {
+            segments = nil
+        }
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
             self?.queue.async { self?.restartAfterConfigurationChange() }
         }
@@ -123,7 +133,7 @@ final class WakeWordListener {
 
     /// Words to bias recognition toward; takes effect at the next roll.
     func setContextualStrings(_ strings: [String]) {
-        queue.async { self.contextualStrings = strings }
+        queue.async { self.segments?.contextualStrings = strings }
     }
 
     /// End the current recognition task and start a fresh one, so what is said next
@@ -131,19 +141,18 @@ final class WakeWordListener {
     /// or nil when the listener is not running.
     func rollSegment(_ completion: @escaping (Int?) -> Void) {
         queue.async {
-            guard self.running else {
+            guard self.running, let segments = self.segments else {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
-            self.beginTaskLocked()
-            let seg = self.segment
+            let seg = segments.begin()
             DispatchQueue.main.async { completion(seg) }
         }
     }
 
     private func startLocked() {
         guard !running else { return }
-        guard let recognizer, recognizer.isAvailable else {
+        guard let recognizer, recognizer.isAvailable, let segments else {
             status(.unavailable("speech recogniser unavailable for \(locale.identifier)"))
             return
         }
@@ -159,11 +168,7 @@ final class WakeWordListener {
         }
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            self.requestLock.lock()
-            let req = self.request
-            self.requestLock.unlock()
-            req?.append(buffer)
+            self?.segments?.append(buffer)
         }
         engine.prepare()
         do {
@@ -174,13 +179,12 @@ final class WakeWordListener {
             return
         }
         running = true
-        beginTaskLocked()
+        segments.begin()
         status(.started("listening on-device (\(Int(format.sampleRate)) Hz ×\(format.channelCount))"))
     }
 
     private func stopLocked() {
-        rollTimer?.cancel(); rollTimer = nil
-        endTaskLocked()
+        segments?.end()
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
         running = false
@@ -195,70 +199,6 @@ final class WakeWordListener {
             guard let self, self.wanted, !self.running else { return }
             self.startLocked()
         }
-    }
-
-    // MARK: recognition tasks
-
-    /// On `queue`. Starts a fresh request/task and the 50 s roll timer.
-    private func beginTaskLocked() {
-        guard running, let recognizer else { return }
-        endTaskLocked()
-        segment += 1
-        let seg = segment
-        let req = SFSpeechAudioBufferRecognitionRequest()
-        req.shouldReportPartialResults = true
-        req.requiresOnDeviceRecognition = true
-        req.taskHint = .dictation
-        if #available(macOS 13.0, *) { req.addsPunctuation = false }
-        if !contextualStrings.isEmpty { req.contextualStrings = contextualStrings }
-        requestLock.lock(); request = req; requestLock.unlock()
-
-        task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-            guard let self else { return }
-            if let result {
-                let text = result.bestTranscription.formattedString
-                let final = result.isFinal
-                DispatchQueue.main.async { self.onTranscript?(text, final, seg) }
-                if final { self.queue.async { self.rollIfCurrent(seg) } }
-            }
-            if let error {
-                // Cancelled tasks report an error too; only roll when this task is still the live one.
-                let ns = error as NSError
-                let benign = ns.domain == "kAFAssistantErrorDomain" && (ns.code == 216 || ns.code == 1110 || ns.code == 209)
-                if !benign { self.status(.recognitionError("recognition: \(error.localizedDescription)")) }
-                self.queue.async { self.rollIfCurrent(seg, delay: benign ? 0.05 : 0.6) }
-            }
-        }
-
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + WakeWordListener.rollInterval)
-        timer.setEventHandler { [weak self] in self?.rollIfCurrent(seg) }
-        timer.resume()
-        rollTimer?.cancel()
-        rollTimer = timer
-    }
-
-    /// On `queue`. Rolls to a new task only if `seg` is still the live segment.
-    private func rollIfCurrent(_ seg: Int, delay: TimeInterval = 0) {
-        guard running, seg == segment else { return }
-        if delay > 0 {
-            queue.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.running, seg == self.segment else { return }
-                self.beginTaskLocked()
-            }
-        } else {
-            beginTaskLocked()
-        }
-    }
-
-    private func endTaskLocked() {
-        requestLock.lock()
-        let req = request
-        request = nil
-        requestLock.unlock()
-        req?.endAudio()
-        task?.cancel()
-        task = nil
     }
 
     private func status(_ s: Status) {

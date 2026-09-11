@@ -917,3 +917,326 @@ utterances that need no reasoning, and the warm thread halves the rest.
   eyesMs`, `Delegation.reflex`, a `stop` LedgerRow (today a stop with nothing
   running leaves only a log line), `ElementInfo.ancestors` from the helper for
   mark snapping.
+
+## 12. Reflexes and the 250 ms path (2026-09-11)
+
+Kevin: "significantly reduce latency between tool calls and then doing stuff
+like writing and computer use and browser use. make this a super optimized
+harness and <250ms from me saying to the actual action being executed. and this
+will make the live drawing perfect too!"; "ADD A PAUSE BUTTON"; "once we press
+stop we can't wake; the stop button just stays there." Everything below is
+measured by `pnpm jarhead bench` (the ear section, the browser section), the
+engine tests (`packages/engine/src/__tests__/{ear,ear-engine,pause,stop}.test.ts`),
+the grammar tests (`packages/brain/src/__tests__/reflex-grammar.test.ts`) and
+the helper probed by hand against the live desktop.
+
+### Why 250 ms needs a different path
+
+Speech → GPT-Live-1 → `session.delegation.created` → brain (Codex / Claude /
+API) → first tool call is 1.5–4 s and cannot be made 250 ms: the model has to
+think, and §11 already took the plumbing down to ~10 ms per tool and ~100 ms for
+the eyes. So the actions that need no thinking must not wait for a model. Two
+sources of Kevin's words:
+
+1. **Live's input-transcript deltas** — authoritative (this is what the voice
+   heard), ~300–500 ms behind speech, then the Delegator's quiet windows (§11).
+2. **The ear** — new. While awake the app runs Apple's on-device
+   `SFSpeechRecognizer` on the same microphone buffers the voice gets and sends
+   every partial to the daemon as `ear {text, isFinal, segment, at}` (`at` = ms
+   since epoch when the app received it), ~100–200 ms behind speech. The daemon
+   forwards it to `Engine.ear()`.
+
+A **reflex layer** in the engine (`packages/engine/src/ear.ts`) matches
+unambiguous commands on the ear's partials against a fixed grammar and executes
+them through the normal policy-gated hands at once. When Live's transcript and
+delegation for the same words arrive, they are **reconciled**: the delegation is
+finished as done with the reflex's own line spoken ("scrolled down.") and the
+summary "already did it", so the model never redoes it. Everything else keeps
+the model — warm (below).
+
+### When a partial fires
+
+The on-device recogniser accumulates a segment for up to ~50 s and revises the
+last words as it goes, so a partial is judged on the **words not yet acted on**
+(the engine keeps a per-segment consumed count; a silence gap of 1.5 s leaves
+whatever was said before behind, command or not) and fires only when it is
+unambiguous:
+
+- on `isFinal` — at once;
+- on a partial that **ends terminally** — punctuation, or "please" / "now" /
+  "thanks" / the wake word at the end — at once;
+- otherwise once the partial has been **stable** — for **120 ms** (`Engine`'s
+  `earStableMs`) when the command is one of the look-only, reversible kinds the
+  Delegator also runs ahead of Live (scroll, page, screenshot, circle: the
+  `prefire` kinds), for **450 ms** (`earCarefulMs`) for everything else (keys,
+  edits, typing, clicks, tabs, apps, dictation). The recogniser lands words in
+  ticks, and a partial that is a *prefix* of more to come — "copy" of "copy this
+  file to the desktop", "undo" of "undo the last commit", "select all" of "select
+  all the files", "type hello" of "type hello world" — sits unchanged for a tick
+  simply because the next words have not arrived. 120 ms is shorter than a tick;
+  450 ms is longer than one and than a breath (the same figure the Delegator's
+  long quiet window uses: a mid-sentence pause is shorter). A scroll that fires
+  on a prefix costs nothing; a ⌘C, a ⌘W or a typed "hello" does, so those wait
+  out the breath. "scroll down" must still not fire before "… to the footer" can
+  arrive; the grammar excludes the compound, so once the words grow the candidate
+  simply stops matching and the delegation handles the sentence whole.
+
+Finals and terminal tails cannot carry the fast path on their own: the app's
+`SegmentedRecognizer` asks for **no punctuation** (`addsPunctuation = false`) and
+a `SFSpeechAudioBufferRecognitionRequest` produces its final only when the
+request ends — at the 50 s roll — so through the ear a command's "final" arrives
+tens of seconds after the command. The stability window is the mechanism; the
+two figures above are the trade.
+
+The ear **holds still** (words consumed, never queued, never re-judged) while
+the voice is speaking (`lastOutputSpeechAt` / the last output audio frame within
+1.2 s and the gate not set — the recogniser hears Jarhead's own words back
+through the microphone whenever echo cancellation is off, and "Now press enter."
+must not press Return), while a brain task is running (a scroll under its hands
+would move what it just looked at), and while the mic is muted; "stop" is the
+one word that is not held. After a **Stop or a Pause** the ear is `quiesce`d:
+the segment is *kept* with every word consumed, because the recogniser still
+delivers partials and the final for that segment, and a segment forgotten would
+come back whole with the command Kevin just stopped at the front of it. A
+recogniser revision that shortens the text never starts over on words already
+acted on ("press enter please" → "press enter" presses nothing twice).
+
+"stop" (and "cancel", "never mind", "hold on") goes straight to
+`stopEverything` while a task runs or the voice speaks, no window. Leading
+filler ("um", "so", "okay", "yes") and the wake word are stripped — but not
+"right": "right click Save" is a command of its own (not in the grammar), not a
+left click.
+
+### The grammar
+
+One table, `packages/brain/src/reflex.ts`, shared by the ear and the Delegator
+(so Live's transcript is the slower second source through the same matcher, and
+a reflex looks the same on the ledger whichever source ran it). The **whole**
+utterance must be the command after the wake word and politeness are stripped;
+`reflex-grammar.test.ts` pins every row.
+
+| said | tool |
+|---|---|
+| scroll up / down / left / right [a bit \| a lot \| to the top \| to the bottom]; scroll to the top / bottom | `scroll` (2 / 5 / 15 wheel clicks) or `key` ⌘↑ / ⌘↓ |
+| page up / down | `key` Page_Up / Page_Down |
+| press / hit / tap enter · return · escape · tab · space · delete | `key` |
+| select all; copy / cut / paste / undo / redo ("copy that" is excluded: it means "understood") | `key` ⌘A ⌘C ⌘X ⌘V ⌘Z ⇧⌘Z |
+| new tab / close tab / next tab / previous tab / reload / back / forward — **browser in front only** | `key` ⌘T ⌘W ⌃⇥ ⌃⇧⇥ ⌘R ⌘[ ⌘] |
+| zoom in / out; reset zoom | `key` ⌘= ⌘- ⌘0 |
+| close this window | `key` ⌘W |
+| type / write <words> (not "type the address from the email": a description) | `type` |
+| open / launch / switch to <app> | `open_app` |
+| go to <url or site> ("github.com", "github dot com", "hacker news", "localhost 3000") | `browser_navigate` in the browser in front, else `open_url` |
+| click / press / tap <label>; double-click <label> (≤ 4 words; no pronouns, positions or colours) | `click_element {name}` |
+| screenshot this / take a screenshot | `screenshot {quick}` |
+| circle / highlight that | the blob traces the AX element under the cursor, else the front window (`orb.trace`) |
+| start dictating / take dictation; stop dictating / end dictation | dictation (below) |
+
+`click <label>` — a control's name, never a stand-in for one: "click the thing",
+"click the one", "click the link", "click the blue one", "click it" are the
+brain's (a bare "click Link" may be a control called exactly that) — resolves
+through the helper's new **`find_element {name, role?}`**:
+the frontmost window's accessibility tree — walked once with
+`AXUIElementCopyMultipleAttributeValues` (one IPC per element), cached per app
+and refreshed by the engine every 500 ms while awake (`ax_tree {summary:true}`),
+rebuilt when the frontmost window changes — searched over visible clickable
+controls by title / description / short value, exact first (case and
+punctuation folded) then edit-distance ≥ 0.85. **One match only: two candidates
+= no reflex**, and the model path takes it. The click lands at the element's
+centre through the toolset's `click_element`, which judges the label with
+`classifyAction` exactly as `left_click` does — and, because a tree names a
+control while a click is a global event at a point, first checks that the
+control's app is the one **in front** (an `app` argument — `browser_click`'s
+accessibility fallback passes one — may name a browser behind another window;
+the answer is then "focus_app it first", never a click into whatever is on top)
+and that what `element_at` finds **under the point** is that control: inside its
+frame (the control or its label / icon), fine; a leaf control (a button, a link,
+a menu item) around or beside it is a cover — a sheet's "Don't Save" over the
+Save button — and the click is refused with "take a screenshot and left_click".
+Whatever text sits under the point is added to what the policy judges, so a
+"Send" that has slid under a "Save" still asks. Brains get `find_element` and
+`click_element` too (no screenshot, no pixel mapping).
+
+Every reflex runs through `ComputerToolset` + `classifyAction`. A reflex that
+lands on **confirm or refuse is dropped**: the runner had already recorded the
+`needs-confirmation`, so the engine clears that pending question (a later "yes"
+must not arm a question nobody relayed) and the model path asks properly — "click
+Send" never sends by reflex. `Settings.reflexes` off → no reflexes anywhere (ear
+and delegation). Reflexes stay off when Live's own Responses backend is the brain.
+
+### Reconciliation
+
+Each fired reflex is remembered (`FiredReflexes`: words, action, timing; 4 s
+window, claimed once). Live's transcript delta arrives first and the Delegator's
+prefire check looks at it with **`peek`** — a look that claims nothing; the
+delegation, ~200–500 ms later, is the one that **`reconcile`s** and claims. (A
+claim in the prefire check hid the reflex from the delegation, which then ran it
+again: "scroll down" scrolled twice; the shipped test had missed it because the
+harness emitted the transcript and the delegation in the same tick. The test
+now puts Live's real gap between them.) The delegation is judged on the
+request's **last transcript item** — the utterance Live delegated on; earlier
+items are context ("what a nice day" … "jarhead scroll down") — normalised and
+equal, or edit-distance similarity ≥ 0.8. Then:
+
+- **done** — the Delegator finishes the delegation at once: a note ("reflex
+  scroll down already ran 412 ms ago on the ear's words (100 % match)"), the
+  reflex's `said` line as commentary so the voice confirms, status done, summary
+  "already did it"; its own prefire is skipped.
+- **partial** — the last utterance *ends* with the phrase but says more ("read me
+  the headline scroll down": the ear's 1.5 s gap rule had split the clauses and
+  scrolled): never "already did it". A note says the tail was done and must not
+  be repeated, and the **brain takes the rest**. (A plain suffix match used to
+  close the whole request as done and the brain never saw "read me the
+  headline".)
+- **mismatch** — the words differ materially but the command is the same ("type
+  hello there" fired, Live heard "type hello there everyone how are you today"):
+  a `reflex.mismatch` ledger row and a note on the delegation. An idempotent
+  reflex (scroll, screenshot, open) needs nothing more. A **typed** text is undone
+  with ⌘Z while a text field is still focused and Kevin is told ("… by reflex but
+  Kevin said something else; it has been undone"); the request's own reflex then
+  types the whole sentence. When ⌘Z cannot reach — the focus is a terminal, a
+  canvas, an Electron view with no text role — the text **stands**: Kevin is told
+  so ("… could not be undone … do not type it again on top"), the reflex is not
+  run again on top of the ear's, and the brain takes the request with the note,
+  screen first. Any other non-idempotent mismatch (a click) tells the voice what
+  was done and goes to the brain the same way.
+
+`ear-engine.test.ts` proves each, with a fake Live and fake hands.
+
+### Dictation
+
+"start dictating" → the phase shows acting, Live is told to stay silent and
+not to delegate, and delegations that arrive anyway are recorded and refused
+("Kevin is dictating"). Each subsequent ear **final** segment — and any partial
+unchanged for 700 ms, so a 50 s recogniser segment does not hold the words — is
+typed into the focused field with a trailing space, through `classifyAction
+{kind: "dictate"}` (a password field or a hands-off app **refuses**, not asks —
+a question mid-sentence is worse than a no — and dictation ends with a toast and
+a word to the voice) and the toolset's `type`. Inside the words, "new line" /
+"new paragraph" press Return once / twice, "delete that" is ⌥⌫ (a word back),
+"stop dictating" ends it; while dictating, command words are text ("scroll down
+the hill" is typed).
+
+### Pause; nothing stuck after Stop
+
+`pause` (Console, orb, `jarhead cmd pause`): with a session open — `live.mute()`,
+the output gate held open indefinitely (audio dropped, output-transcript deltas
+do not count as speaking, Kevin's own deltas do not lift it), the running
+delegation cancelled, new ones refused (recorded, finished as cancelled /
+"paused"), pending confirmation cleared, dictation ended, Live told once "Kevin
+paused you. Stay silent until he resumes.", phase `paused` held by
+`recomputePhase`, toast, a `pause` ledger row. Mic frames are dropped locally
+too. `resume`: unmute (unless Kevin's own mute is on — that survives), gate
+closed, delegations allowed, "Kevin resumed.", phase listening, `resume` row.
+Pause while asleep → toast "asleep already". Idle-sleep keeps counting while
+paused, and a session that ends unpauses. `pause.test.ts` covers each line.
+
+Stop: `stop.test.ts` now reproduces Kevin's symptom — a running delegation whose
+brain's `cancel()` is slow (a Codex interrupt on a loaded Mac) or never answers.
+After `stop`: the delegation is cancelled *before* the brain's cancel is awaited
+(unchanged), the snapshot shows nothing running or awaiting, the phase is
+listening inside the gate window, and — new — the **pending confirmation is
+cleared** (a question the stopped task asked could be armed by a later "yes"),
+dictation ends, and wake / say-text / a new delegation work at once while the
+old cancel is still in flight. `sleep()` is bounded (1.5 s) so a brain whose
+cancel hangs cannot keep the session open — that hang is the one engine-side way
+"the stop button stays there" could have happened; the rest of that symptom is
+the app's (the Swift side shows Stop from the phase, which the engine now
+guarantees is listening).
+
+### Browser fast path
+
+`browser_read` (url, title, visible text ≤ 30 k), `browser_find {text}` (bounds
+of the first visible element containing the text, in global points and in
+pixels of the last screenshot), `browser_click {text | selector}`, `browser_type
+{text, submit?}`, `browser_navigate {url}`, `browser_tabs` — brain tools
+(`packages/brain/src/browser.ts`) over new helper ops (`browser_js`,
+`browser_url`, `browser_tabs`, `browser_navigate` in `Browser.swift`). The
+helper runs **compiled `NSAppleScript`s** with the JavaScript passed as the
+`run` handler's argument, from the main thread, **never spawning `osascript`**
+(a 30–60 ms process per call) and never launching a browser that is not running
+(`not_found`). Whether a browser allows JavaScript from Apple Events is learned
+by trying `1+1` once and cached per app (re-tried after a minute when off, so
+Kevin flipping the menu item is noticed): Chrome: View › Developer › Allow
+JavaScript from Apple Events; Safari: Develop › Allow JavaScript from Apple
+Events. Without it the same tools work through the accessibility tree
+(`ax_tree`, `find_element`, `click_element`) and the keyboard. The doctor has a
+row per running browser with the exact menu path (Kevin's Chrome: **off**).
+
+Policy (`packages/core/src/policy.ts`, `classifyBrowser`): reads run;
+`browser_click` / `browser_type` / `browser_navigate` run on ordinary pages,
+**confirm** on payment and credential pages by URL keywords on the host and
+path (checkout, pay, billing, login, signin, password, auth, 2fa, bank, wallet,
+… — whole segments, so "payload" and "authors" pass, and the query string is
+not judged) and on irreversible labels, and `browser_type` into a password
+field **refuses**. `browser-policy.test.ts` is the table.
+
+### Warm starts
+
+At `wake`: `Brain.warmUp()` — Codex kicks its resident `app-server` start if it
+is not up (never awaited; the thread is reused across delegations and replaced
+only on context rollover — verified in `CodexBrain.handleWarm`), Claude reports
+its one Agent SDK session; one quick screenshot through the toolset (the first
+ScreenCaptureKit capture is the slow one, and the Screen mapping is set); the
+frontmost window's AX tree cached and refreshed every 500 ms. Between
+delegations the thread stays; between tool calls nothing spawns (the browser
+path and the click-by-name path are helper ops; `open_url` for a bare "go to"
+outside a browser is the one `open` process, and it is not between tool calls).
+
+### Measured (this Mac, `pnpm jarhead bench --runs 5`, 2026-09-11 evening after the review fixes, load average 5–6, Chrome in front)
+
+The bench feeds synthetic `ear` partials for ten grammar phrases (scroll down,
+scroll up a bit, scroll to the top, page down, press enter, press escape, select
+all, copy, undo, zoom in; plus "click save" with fake hands) each as a partial
+and as a final. With the real helper the acting op is redirected to a harmless
+`cursor` read — the bench never scrolls or types on Kevin's Mac — so the round
+trip is the real one without the effect. "dispatch" is the moment the acting op
+is written to the helper; "ack" its answer. A partial of a **prefire** kind
+(the four scroll/page phrases) is the "partial" row; a partial of any other
+kind waits out the 450 ms careful window by design and is its own row, judged
+against that window plus the same allowance (450 + 130 = 580 ms). The gate:
+**p95 to dispatch ≤ 250 ms for finals and prefire partials, ≤ 580 ms for careful
+partials, with the real helper, else exit 1** (`--no-gate` to only report).
+
+| moment | fake hands (Jarhead's own path) | Swift helper, real round trip | target |
+|---|---|---|---|
+| ear: partial → dispatch (prefire kinds; includes the 120 ms window) | 122 median / **123 p95** (n = 20) | 122 median / **126 p95** / 128 max (n = 20) | ≤ 250 p95 — **met** |
+| ear: partial → hands ack | 122 / 123 p95 | 122 / 127 p95 | — |
+| ear: careful partial → dispatch (keys, edits, click; includes the 450 ms window) | 452 median / **453 p95** (n = 35) | 455 median / **457 p95** / 457 max (n = 30) | ≤ 580 p95 — met (the window is 450 of it) |
+| ear: careful partial → hands ack | 452 / 453 p95 | 455 / 457 p95 | — |
+| ear: final → dispatch (no window) | 0 / 1 p95 (n = 55) | 3 median / **6 p95** / 6 max (n = 50) | ≤ 250 p95 — met |
+| ear: final → hands ack | 0 / 1 | 3 / 6 p95 | — |
+| click_element's two new probes (frontmost + element_at, in flight together) | 0 | one `tool round trip` each: 4 median / 16 p95 | inside the same budget |
+| find_element on a cached tree (probe by hand) | — | 2–14 ms (Chrome 188 nodes, Notes 245, Finder 396) | — |
+| ax_tree cold walk (probe by hand, 250 ms budget) | — | Chrome 70–100 ms; Slack 43 ms (62 nodes); Finder / Notes hit the budget (~400 / ~245 nodes, breadth-first so the toolbar is in) | — |
+| browser: Chrome `browser_url` round trip | — | 32 median / 177 p90 (the first call compiles the script) | < 80 |
+| browser: Chrome `browser_tabs` (80 tabs) | — | 61 median / 68 p90 | < 80 |
+| browser: `browser_read` through JavaScript | — | **not measurable here: JavaScript from Apple Events is off in Kevin's Chrome** (the doctor says so with the menu path); the `1+1` probe itself is 5 ms once compiled | < 80 |
+| tool round trip / quick screenshot / eyes / delegation → first action / stop (§11 rows, re-run) | 0 / 0 / 0 / 2 / 0 | 7 / 60 / 66 / 85 / 0–1 | met |
+
+So the promise "< 250 ms from me saying to the action" is met **from the app
+receiving the partial** for the reversible kinds: 3–6 ms on a final, ~125 ms on
+a scroll/page partial (the stability window is the budget). A key, an edit, a
+typed text or a click through the ear takes ~455 ms from the partial: the 450 ms
+careful window that keeps "copy" from firing inside "copy this file to the
+desktop" — a trade made after review, and still 3–8× ahead of the model path. What
+sits in front of both is the recogniser's own latency (~100–200 ms behind speech,
+the app's to measure with the real ear) and the click's own cost in the target app.
+
+### What still needs the model
+
+Anything that is not a whole, unambiguous command in the table: compounds
+("scroll down to the footer and click save"), descriptions ("type the address
+from the email"), pronouns and positions ("click it", "the third row"), a label
+two controls carry, a control not in the accessibility tree (Electron apps
+expose it unevenly; a truncated walk of a huge page), anything the policy wants
+a yes for (Send, Pay, Delete, a payment page), questions, and everything about
+what is on the screen. Those keep the warm brain (§11: Codex ~2.7 s warm, more on
+a fresh thread) — and the bench's `delegation → first action` row is where the
+rest of the latency lives.
+
+Contract wishes: `LedgerRow` types `reflex` `{phrase, action, earAt, matchedAt,
+dispatchedAt, doneAt, ok, dropped?, fired}`, `reflex.mismatch`, `pause`,
+`resume`, `dictation` (written today with a cast; the Console ignores unknown
+rows); a `Snapshot.dictating` flag (the phase shows acting meanwhile);
+`Delegation.reflexSource: "ear" | "live"`.

@@ -614,6 +614,18 @@ export class CodexBrain implements Brain {
     return parts.join("\n\n");
   }
 
+  /**
+   * At wake: the resident app-server and its thread, started now if it is not up
+   * (or its retry is due), never awaited by a task. Reuses the thread across
+   * delegations; a fresh one is opened only when the context rolls over.
+   */
+  async warmUp(): Promise<{ warm: boolean; detail: string }> {
+    if (!this.ready || !this.probe?.bin) return { warm: false, detail: this.readyDetail };
+    const transport = this.ensureTransport();
+    if (transport === "app-server" && this.appServer) return { warm: true, detail: `warm app-server, thread ${this.appServer.thread?.slice(0, 8) ?? "?"} reused across tasks` };
+    return { warm: false, detail: this.appServerStarting ? "app-server starting in the background; the next task runs on exec if it lands first" : this.detail };
+  }
+
   async handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
     const probe = this.probe;
     if (!this.ready || !probe?.bin || !this.toolSocket) return { status: "failed", error: this.readyDetail };

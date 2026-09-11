@@ -116,6 +116,10 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         case .focusComposer:
             session.composerFocusRequest += 1
             return true
+        case .togglePause:
+            // ⌘P, in every phase: the engine answers with the phase (paused, or back).
+            state.send(state.phase == .paused ? .resume : .pause)
+            return true
         }
     }
 
@@ -127,7 +131,8 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-/// Handles ⌘W / ⌘. / ⌘K itself so the Console works whatever the main menu holds.
+/// Handles ⌘W / ⌘. / ⌘K / ⌘P itself so the Console works whatever the main menu holds.
+/// (⌥⇧P, the global Pause hotkey, is Carbon's and never reaches the window.)
 final class ConsoleWindow: NSWindow {
     var commandHandler: ((ConsoleKeyCommand) -> Bool)?
 
@@ -138,6 +143,7 @@ final class ConsoleWindow: NSWindow {
             case "w": if commandHandler?(.close) == true { return true }
             case ".": if commandHandler?(.stop) == true { return true }
             case "k": if commandHandler?(.focusComposer) == true { return true }
+            case "p": if commandHandler?(.togglePause) == true { return true }
             default: break
             }
         }

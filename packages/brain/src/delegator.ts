@@ -6,7 +6,7 @@ import { ACTING_MEMBERS, YES_PATTERN, type ConfirmationState } from "@jarhead/ha
 import type { Delegation, DelegationStep, DelegationTimings, ScreenMark, TranscriptItem } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { markNote } from "./attachments.ts";
-import { addressesJarhead, normalizeUtterance, type Reflex, type ReflexOutcome } from "./reflex.ts";
+import { addressesJarhead, normalizeUtterance, type Reconciliation, type Reflex, type ReflexOutcome } from "./reflex.ts";
 
 /**
  * Where the voice meets the brain.
@@ -61,6 +61,12 @@ export interface DelegatorOptions {
    * the task itself.
    */
   readonly onStop?: ((reason: string) => void) | undefined;
+  /**
+   * A reason to refuse every new delegation right now ("Kevin paused you"), or
+   * undefined to take them. A refused delegation still gets its record: created
+   * and finished as cancelled with that reason, so the ledger says what happened.
+   */
+  readonly refuse?: (() => string | undefined) | undefined;
   /** Consecutive commentary lines within this window go to Live as one append (default 600 ms; 0 sends each at once). */
   readonly commentaryCoalesceMs?: number | undefined;
   /** Quiet after an utterance the transcriber closed with a full stop before a prefire is considered (default 180 ms). */
@@ -78,6 +84,19 @@ export interface ReflexSource {
   run(reflex: Reflex, sink?: BrainSink): Promise<ReflexOutcome>;
   /** True while Jarhead is mid-exchange (spoke or was delegated to a moment ago); a prefire without the wake word needs this and a closed sentence. */
   inExchange?(): boolean;
+  /**
+   * The ear already acted on these words (the 250 ms path): "done" finishes the
+   * delegation at once with the reflex's own line; "partial" says the reflex did
+   * the tail of a longer request and the brain takes the rest; "mismatch" says the
+   * reflex acted on other words than the request carries (the engine has undone
+   * what it can, and says so in `undone`) and the task goes on to the brain with a
+   * note. Undefined: nothing happened yet. **Claims** the match — call it once, from
+   * the delegation that is taking the reflex as its own; it may take a moment (the
+   * undo).
+   */
+  reconcile?(utterance: string): Reconciliation | undefined | Promise<Reconciliation | undefined>;
+  /** The same look without the claim, for the prefire check: a peek must leave the reflex for the delegation to find. */
+  peek?(utterance: string): Reconciliation | undefined;
 }
 
 /** The engine's ScreenMarks as the delegator sees them. */
@@ -246,6 +265,13 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.prefireSeen = key;
     const reflex = reflexes.match(last.text);
     if (!reflex?.prefire) return;
+    // The ear beat Live to it: the delegation that follows will find it done; nothing to
+    // run here. A peek, never a claim — a claim here would hide the reflex from that
+    // delegation, which would then run it a second time.
+    if (reflexes.peek?.(last.text)?.kind === "done") {
+      log.debug(`prefire "${reflex.label}" skipped: the ear already did it`);
+      return;
+    }
     const addressed = addressesJarhead(last.text);
     if (!addressed && !(closed && reflexes.inExchange?.())) return;
 
@@ -411,8 +437,48 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const appendId = target === "responses" ? null : liveId;
     const sink = this.makeSink(id, appendId, marks);
 
+    // Paused: the record exists, nothing runs, the voice was told once when the pause began.
+    const refused = this.opts.refuse?.();
+    if (refused) {
+      this.addStep(id, { kind: "note", text: `not run: ${refused}` });
+      if (prefired) void prefired.outcome.then(() => undefined);
+      this.finish(id, { status: "cancelled", summary: refused });
+      return;
+    }
+
+    // The ear's reflex already did these words: confirm, do not redo. Judged on the
+    // request's LAST utterance — the one Live delegated on; earlier items are
+    // context ("what a nice day" … "jarhead scroll down"). A request whose last
+    // utterance ends with the reflex but says more is the brain's, minus the tail.
+    let brainTakesIt: string | undefined;
+    if (!confirmation && this.opts.reflexes?.reconcile && target === "client") {
+      const lastText = requestItems[requestItems.length - 1]?.text ?? request;
+      const r = await this.opts.reflexes.reconcile(lastText);
+      if (this.running?.delegation.id !== id) return; // cancelled or superseded while the undo ran
+      if (r?.kind === "done") {
+        const lead = this.now() - r.fired.dispatchedAt;
+        this.addStep(id, { kind: "note", text: `reflex ${r.fired.reflex.label} already ran ${lead} ms ago on the ear's words (${Math.round(r.similarity * 100)} % match)` });
+        this.markReflex(id);
+        sink.commentary(r.fired.reflex.said);
+        this.finish(id, { status: "done", summary: "already did it" });
+        this.emit("reflex", r.fired.reflex.label, r.fired.doneAt !== undefined ? r.fired.doneAt - r.fired.dispatchedAt : 0, true);
+        return;
+      }
+      if (r?.kind === "partial") {
+        brainTakesIt = `reflex ${r.fired.reflex.label} already ran on the last words of this request ("${r.fired.phrase}"); the brain takes the rest and must not repeat it`;
+        this.addStep(id, { kind: "note", text: brainTakesIt });
+      }
+      if (r?.kind === "mismatch") {
+        const stands = r.undone === false && !r.fired.reflex.idempotent;
+        this.addStep(id, { kind: "note", text: `reflex mismatch: the ear heard "${r.fired.phrase}" and ran ${r.fired.reflex.label}; the request says "${normalizeUtterance(request)}" (${Math.round(r.similarity * 100)} % alike); ${stands ? "it could not be undone, so the brain takes it and must not repeat it on top" : "the brain takes it"}` });
+        // The effect stands (a text typed where ⌘Z does not reach): running the request's own
+        // reflex now would put the whole text after the ear's; the brain sees the screen first.
+        if (stands) brainTakesIt = `reflex ${r.fired.reflex.label} ran on the ear's words and stands`;
+      }
+    }
+
     // A reflex needs no brain: run it (or take the one that already ran) and finish.
-    if (!confirmation && this.opts.reflexes && target === "client") {
+    if (!confirmation && this.opts.reflexes && target === "client" && !brainTakesIt) {
       const done = await this.tryReflex(id, request, sink, prefired);
       if (done || this.running?.delegation.id !== id) return;
     } else if (prefired) {

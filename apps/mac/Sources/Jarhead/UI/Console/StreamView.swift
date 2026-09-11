@@ -33,8 +33,11 @@ struct StreamPane: View, Equatable {
         ledgerDay == nil ? StreamBuilder.fromSnapshot(transcript: transcript, delegations: delegations) : ledgerEntries
     }
 
+    /// Stop is hot only while the snapshot holds a running or waiting delegation — and
+    /// the session is up: a delegation left "running" by a snapshot that says asleep
+    /// cannot be running, and must not keep the button red. Nothing local latches it.
     private var delegationRunning: Bool {
-        delegations.contains { $0.status == .running || $0.status == .awaitingConfirmation }
+        phase != .asleep && delegations.contains { $0.status == .running || $0.status == .awaitingConfirmation }
     }
 
     var body: some View {
@@ -893,8 +896,11 @@ struct LightboxView: View {
 // MARK: - Composer
 
 /// 48pt, owns its top rule: wake/sleep, mute, the field, Send (the one filled
-/// accent, only while there is text), Stop (filled red while a delegation runs and
-/// for 300 ms after a press; never disabled — a Stop must land in every phase).
+/// accent, only while there is text), Pause (play while paused; ⌘P here, ⌥⇧P
+/// anywhere), Stop (filled red while the snapshot holds a running delegation and for
+/// 300 ms after a press — the flash is the only local state, and it lets go on its
+/// own). Wake / Sleep, Pause, Send and Stop are enabled in every phase: a Stop must
+/// land whatever is happening, and a wake after a Stop must not find the button gone.
 struct ComposerBar: View {
     let phase: Phase
     let stopHot: Bool
@@ -909,6 +915,7 @@ struct ComposerBar: View {
 
     private var inSession: Bool { ConsoleTheme.sessionPhases.contains(phase) }
     private var muted: Bool { phase == .muted }
+    private var paused: Bool { phase == .paused }
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
@@ -943,6 +950,13 @@ struct ComposerBar: View {
                 .disabled(!hasText)
                 .help("Send (Return)")
                 .accessibilityLabel("Send")
+
+                Button { actions.send(paused ? .resume : .pause) } label: {
+                    Image(systemName: paused ? "play.fill" : "pause.fill").font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
+                .help(paused ? "Resume (⌘P)" : "Pause — keep the session, go silent (⌘P)")
+                .accessibilityLabel(paused ? "Resume" : "Pause")
 
                 Button(action: actions.stop) {
                     HStack(spacing: 6) {

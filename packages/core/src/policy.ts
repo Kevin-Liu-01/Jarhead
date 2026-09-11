@@ -51,6 +51,8 @@ export interface ActionContext {
   readonly repoRoot?: string | undefined;
   /** Kevin's home, for tests; defaults to the real one. */
   readonly home?: string | undefined;
+  /** browser_*: the page the action lands on; payment and credential pages ask first. */
+  readonly url?: string | undefined;
 }
 
 export interface Decision {
@@ -897,6 +899,65 @@ export function classifyUrl(ctx: UrlContext): Decision {
 
 // ------------------------------------------------------------------ actions ---
 
+// ---------------------------------------------------------- browser, dictation ---
+
+/** The browser tools that only look. */
+const BROWSER_READS = new Set(["browser_read", "browser_find", "browser_tabs"]);
+/** The browser tools that act on a page. */
+const BROWSER_ACTIONS = new Set(["browser_click", "browser_type", "browser_navigate"]);
+
+/**
+ * Pages where a click or a keystroke moves money or a credential: checkout and payment
+ * flows, logins and password screens, second factors, bank and wallet sites. Matched on
+ * the host and path of the URL (the query string is noise), by whole word or segment.
+ */
+const RISKY_URL = /(^|[\/.\-_?=&#])(checkout|payments?|pay|billing|purchase|order|cart|subscribe|donate|transfer|withdraw|login|log-in|signin|sign-in|signup|sign-up|register|password|passwd|reset|auth|authorize|oauth|sso|saml|2fa|mfa|otp|verify|verification|credentials?|security|bank|banking|wallet|paypal|stripe|venmo|zelle|coinbase|binance|kraken|robinhood|schwab|fidelity|chase|wellsfargo|bankofamerica|citi)([\/.\-_?=&#]|$)/i;
+
+/** Why a page URL asks for a yes before Jarhead clicks or types on it, if it does. */
+export function riskyUrlReason(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  let u: URL;
+  try {
+    u = new URL(url.trim());
+  } catch {
+    return undefined;
+  }
+  const where = `${u.hostname}${u.pathname}`.toLowerCase();
+  const m = RISKY_URL.exec(where);
+  if (!m) return undefined;
+  return `the page looks like a payment or sign-in page (${m[2]} in ${u.hostname}${u.pathname.length > 1 ? u.pathname.slice(0, 40) : ""})`;
+}
+
+/**
+ * The browser fast path. Reading (`browser_read`, `browser_find`, `browser_tabs`) runs.
+ * Clicking, typing and navigating run on ordinary pages; on a payment or credential page
+ * (URL keywords) or onto a control whose label says it is irreversible they ask first, and
+ * typing into a password field is refused, yes or no.
+ */
+function classifyBrowser(kind: string, ctx: ActionContext): Decision {
+  if (BROWSER_READS.has(kind)) return run(`${kind} only reads the page`);
+  if (ctx.secureField && kind === "browser_type") return refuse("the focused field is a password field; Kevin types secrets himself");
+  const app = ctx.app ?? "";
+  if (HANDS_OFF_APPS.test(app)) return ctx.confirmed ? run(`Kevin confirmed acting in ${app}`) : confirm(`${app} holds credentials or system settings; ask before acting there`);
+  const target = ctx.target ?? "";
+  if (IRREVERSIBLE.test(target)) return ctx.confirmed ? run(`Kevin confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
+  const risky = riskyUrlReason(ctx.url);
+  if (risky) return ctx.confirmed ? run(`Kevin confirmed ${kind} on that page`) : confirm(`${risky}; ask first`);
+  return run(`${kind} is reversible on an ordinary page`);
+}
+
+/**
+ * Dictation types Kevin's own words into the focused field as he says them. Never into a
+ * password field, never into a hands-off app (a password manager, System Settings) — both
+ * refused rather than asked, because a question mid-sentence is worse than a no.
+ */
+function classifyDictation(ctx: ActionContext): Decision {
+  if (ctx.secureField) return refuse("the focused field is a password field; Kevin types secrets himself");
+  const app = ctx.app ?? "";
+  if (HANDS_OFF_APPS.test(app)) return refuse(`${app} holds credentials or system settings; Kevin types there himself`);
+  return run("dictation into an ordinary field");
+}
+
 export function classifyAction(ctx: ActionContext): Decision {
   const kind = ctx.kind.trim().toLowerCase();
   const app = ctx.app ?? "";
@@ -904,6 +965,8 @@ export function classifyAction(ctx: ActionContext): Decision {
   const text = ctx.text ?? "";
 
   if (READ_ONLY.has(kind)) return run(`${kind} only observes`);
+  if (BROWSER_READS.has(kind) || BROWSER_ACTIONS.has(kind)) return classifyBrowser(kind, ctx);
+  if (kind === "dictate") return classifyDictation(ctx);
 
   if (ctx.secureField && KEYS.has(kind)) {
     return refuse("the focused field is a password field; Kevin types secrets himself");

@@ -35,7 +35,7 @@ one policy, and can step into every coding-agent session on the Mac.
 
 ## What it does
 
-- **Talks like a person.** Full duplex, sub-second turns, interruptible; asleep it
+- **Talks like a person.** Full duplex, sub-second turns, interruptible, pausable; asleep it
   costs nothing and listens for its wake word on-device, then asks for Touch ID
   or your passphrase before the paid session opens.
 - **Uses the Mac.** Screenshots, clicks, typing, scrolling, apps, files, shell,
@@ -46,10 +46,15 @@ one policy, and can step into every coding-agent session on the Mac.
   watch it grow live, and talk to it as if you were in Codex or Claude Code.
 - **Sees what you circle.** ⌥⇧C, draw around anything: Jarhead works out what you
   surrounded, outlines it by hand, and every brain gets the image with the task.
-- **Shows its work.** The blob flies to where the hands act, hovers, and drifts
-  home; brains draw circles, arrows and labels on the click-through layer to
-  teach. The blob has jelly physics, sticks to screen edges, and has a face for
-  every state.
+- **Shows its work.** The blob flies to where the hands act and stays where it
+  worked; brains draw by hand: the blob becomes a cursor and drags the line.
+  Jelly physics, sticky screen edges, `^ ^` ASCII eyes with a face for every
+  state, and a home in the MacBook notch (tucked asleep, a Dynamic-Island
+  style island when awake).
+- **Under 250 ms for the simple things.** An on-device ear runs beside the voice
+  and a reflex layer executes unambiguous commands (scroll, click a labelled
+  control, type, tabs, open an app, dictation) straight through the policy-gated
+  hands, reconciled with the model afterwards; `pnpm jarhead bench` enforces it.
 - **Rewrites itself, carefully.** `self_edit` runs a coding agent in a git
   worktree of this repo, runs typecheck, tests and the Swift build, tells you
   what changed, and applies and restarts only after you say so. Changes to its
@@ -125,6 +130,7 @@ the git history before `1ff11e2`.
 | `⌥⎋` | stop everything |
 | `⌥⇧Space` | wake / sleep |
 | `⌥⇧C` | circle something on screen for Jarhead |
+| `⌥⇧P` | pause / resume (session stays open, silent) |
 
 ## Permissions and keys
 

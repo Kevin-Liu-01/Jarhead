@@ -11,6 +11,7 @@ import { describeWindow, editText, listTree, readWindow, realPathOf, searchFiles
 import { SelfEditManager, type SelfEditOptions } from "./selfedit.ts";
 import { BackgroundJobs, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS, OUTPUT_CAP, SecretRedactor, describeShellResult, runAppleScript, runShell, truncateOutput } from "./shell.ts";
 import { fetchReadable, searchWeb } from "./web.ts";
+import { BrowserTools } from "./browser.ts";
 
 /**
  * Executes tool calls by name. Every brain routes every call through here so the
@@ -85,6 +86,8 @@ export class ToolRunner {
   private readonly repoRoot: string;
   readonly jobs: BackgroundJobs;
   readonly selfEdit: SelfEditManager;
+  /** The browser fast path (page scripting when the browser allows it, accessibility otherwise). */
+  readonly browser: BrowserTools;
   /** Secret values (Jarhead's keys, everything in ~/.jarhead/env, secret-shaped strings) are struck from every result. */
   readonly redactor: SecretRedactor;
   private lastProgressAt = 0;
@@ -95,6 +98,7 @@ export class ToolRunner {
     this.repoRoot = opts.repoRoot ?? REPO_ROOT;
     this.redactor = new SecretRedactor(opts.env ?? process.env, this.home, this.now);
     this.jobs = new BackgroundJobs(opts.stateDir);
+    this.browser = new BrowserTools({ hands: opts.toolset.hands, toolset: opts.toolset, now: this.now });
     this.selfEdit = new SelfEditManager({
       repoRoot: opts.repoRoot ?? REPO_ROOT,
       worktreesDir: join(opts.stateDir, "worktrees"),
@@ -236,6 +240,18 @@ export class ToolRunner {
         return this.appleScript(args);
       case "open_url":
         return this.openUrl(args);
+      case "browser_read":
+        return this.browser.read(args);
+      case "browser_find":
+        return this.browser.find(args);
+      case "browser_click":
+        return this.browser.click(args);
+      case "browser_type":
+        return this.browser.type(args);
+      case "browser_navigate":
+        return this.browser.navigate(args);
+      case "browser_tabs":
+        return this.browser.tabs(args);
       case "clipboard_read":
         return this.clipboardRead();
       case "clipboard_write":
