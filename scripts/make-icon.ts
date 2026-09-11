@@ -244,16 +244,15 @@ function squircleInset(dx: number, dy: number, bodyR: number, n: number): number
   return rb - dist;
 }
 
-// The orb's own gradient, Kevin's reference: light cyan at the upper left, through
-// the accent blues, to violet at the lower right — the product's phase colours in
-// one sweep — dithered into visible bands, with a glassy highlight.
+// The orb's own gradient, Kevin's reference: light cyan at the upper left through
+// the accent blues to a deep blue at the lower right (no violet — his call),
+// dithered into visible bands, with a glassy highlight.
 const ORB_STOPS: ReadonlyArray<readonly [number, RGB]> = [
-  [0, [150, 236, 255]],        // pale cyan (listening, lit)
-  [0.22, LISTENING],           // #5ad7ff
-  [0.48, LIFT],                // #5b82ff
-  [0.7, ACCENT],               // #2f5ce0
-  [0.86, [124, 92, 235]],      // violet
-  [1, [176, 120, 255]],        // #b48cff-ish, thinking
+  [0, [160, 240, 255]],        // pale cyan (listening, lit)
+  [0.24, LISTENING],           // #5ad7ff
+  [0.5, LIFT],                 // #5b82ff
+  [0.74, ACCENT],              // #2f5ce0
+  [1, [24, 58, 168]],          // deep accent — blue all the way, no violet
 ];
 
 function orbRamp(u: number): RGB {
@@ -330,7 +329,7 @@ export function renderRgba(size: number): Buffer {
         const q = Math.min(bands, Math.floor(g.diag * bands + t)) / bands;
         col = orbRamp(q);
         const rim = smoothstep(0.55, 1.0, g.d / g.R) * clamp01(0.5 + (g.nx + g.ny) / 2) * ORB.rimDarken;
-        col = lerp3(col, [30, 18, 70], quantiseDither(rim, 6, t));
+        col = lerp3(col, [8, 26, 96], quantiseDither(rim, 6, t));
         const hx = g.nx - ORB.highlight.x;
         const hy = g.ny - ORB.highlight.y;
         const hl = ORB.highlight.amp * Math.exp(-(hx * hx + hy * hy) / (2 * ORB.highlight.sigma * ORB.highlight.sigma));

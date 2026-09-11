@@ -161,8 +161,13 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
       });
       child.on("exit", (code, signal) => {
         log.warn(`helper exited (code ${code}, signal ${signal})`);
-        this.child = undefined;
-        this.failAll({ code: "unavailable", message: `hands helper exited (${code ?? signal})` });
+        // After restart() a successor may already be running: only the current child
+        // clears the slot and fails the pending requests; a late exit of an old one
+        // must not orphan the new helper (which then leaks as a second process).
+        if (this.child === child) {
+          this.child = undefined;
+          this.failAll({ code: "unavailable", message: `hands helper exited (${code ?? signal})` });
+        }
         this.emit("exit", code, signal);
       });
       // Spawn is asynchronous; "spawn" fires once the process exists.

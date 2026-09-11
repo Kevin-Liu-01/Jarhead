@@ -615,9 +615,39 @@ public final class OrbPanelController {
         if dragMoved {
             body.endDrag()
             blobView.poke()
-        } else if event.timestamp - downTime < 0.6 {
-            toggleExpanded()
+            return
         }
+        guard event.timestamp - downTime < 0.6 else { return }
+        // A click is play, not a command: it pokes the blob and opens nothing. The
+        // capsule is a double-click (or the right-click menu); an open capsule folds
+        // on a single click. The poke waits one double-click interval so the first
+        // half of a double-click does not send the blob skittering away.
+        if expanded {
+            collapse()
+        } else if event.clickCount >= 2 {
+            pendingPoke?.cancel()
+            pendingPoke = nil
+            expand()
+        } else {
+            pendingPoke?.cancel()
+            let poke = DispatchWorkItem { [weak self] in self?.pokeBlob() }
+            pendingPoke = poke
+            DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: poke)
+        }
+    }
+
+    private var pendingPoke: DispatchWorkItem?
+
+    /// The blob reacts to a tap: a shiver and a small hop that lands where it was.
+    private func pokeBlob() {
+        pendingPoke = nil
+        guard !expanded else { return }
+        blobView.paused = false
+        sim.nudge(1.4)
+        let dx = Double.random(in: -90 ... 90)
+        let dy = Double.random(in: -140 ... -60)
+        body.fling(CGVector(dx: dx, dy: dy))
+        blobView.poke()
     }
 
     /// Built fresh on every right-click; each item carries its own action and dies
