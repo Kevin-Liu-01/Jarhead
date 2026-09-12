@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { logger, newId } from "@jarhead/core";
 import { SECRET_KEYS } from "@jarhead/protocol";
+import { PERMISSIONS_HINT, macOSBlockedLine, tccGrantFor } from "./files.ts";
 
 /**
  * Running commands for the brain: one shell, one AppleScript, one background
@@ -281,11 +282,68 @@ export function runShell(opts: ShellRunOptions): Promise<ShellRunResult> {
   });
 }
 
-/** The text a model reads for a finished command. */
-export function describeShellResult(r: ShellRunResult, cap = OUTPUT_CAP): string {
+/**
+ * The text a model reads for a finished command. When stderr says "Operation not
+ * permitted" about a path macOS guards (Desktop, Documents, Downloads, ~/Library…),
+ * the permission line follows the output so the voice can say what to grant. With
+ * output on stdout the line reads "macOS blocked part of this" — a `find` or `ls -R`
+ * over the home folder without Full Disk Access prints its hits *and* a warning per
+ * skipped folder, and the hits stand — and "macOS blocked this" only when nothing
+ * came back. `command` (optional) is searched for the path when stderr named none.
+ */
+export function describeShellResult(r: ShellRunResult, cap = OUTPUT_CAP, command?: string): string {
   const body = `${r.stdout}${r.stderr ? `${r.stdout ? "\n" : ""}[stderr] ${r.stderr}` : ""}`.trim();
   const status = r.error ? `[could not start: ${r.error}] ` : r.timedOut ? `[stopped after ${Math.round(r.ms / 1000)} s] ` : r.cancelled ? "[cancelled] " : r.code === 0 ? "" : `[exit ${r.code ?? r.signal ?? "?"}] `;
-  return `${status}${truncateOutput(body, cap) || "(no output)"}`;
+  const blocked = macOSBlockInOutput(r.stderr, command, r.stdout.trim().length > 0);
+  return `${status}${truncateOutput(body, cap) || "(no output)"}${blocked ? `\n${blocked}` : ""}`;
+}
+
+/**
+ * The permission line for a shell failure macOS caused, or undefined. Only stderr
+ * lines carrying "Operation not permitted" are read. The path is the one those lines
+ * name ("ls: /Users/k/Desktop: Operation not permitted", "zsh: operation not
+ * permitted: ~/Library/Mail"): a named path that TCC does not guard (`chflags` on
+ * /System) is not a permission problem, whatever else the command mentions. Only
+ * when no line names a path ("kill: … operation not permitted") is the command
+ * read, and a redirect's target (`> ~/Desktop/log.txt`) is skipped there — the
+ * blocked thing was the command, not where its output went. A bare Desktop/
+ * Documents/Downloads/Library token is relative to the home folder, the shell's
+ * default cwd. `partial` words the line for a command that also produced output.
+ */
+export function macOSBlockInOutput(stderr: string, command?: string, partial = false): string | undefined {
+  const lines = stderr.split("\n").filter((l) => /operation not permitted/i.test(l));
+  if (lines.length === 0) return undefined;
+  const named = lines.flatMap((l) => pathTokens(l));
+  const candidates = named.length > 0 ? named : command ? pathTokens(command, true) : [];
+  for (const c of candidates) {
+    const lacks = tccGrantFor(c);
+    if (lacks) return partial ? `macOS blocked part of this: Jarhead lacks ${lacks}. ${PERMISSIONS_HINT}` : macOSBlockedLine(c);
+  }
+  return undefined;
+}
+
+/** The path-shaped words of a line; `skipRedirectTargets` drops the word after `>`, `>>`, `2>`, `&>`, `<` (or glued to one). */
+function pathTokens(text: string, skipRedirectTargets = false): string[] {
+  const out: string[] = [];
+  let afterRedirect = false;
+  for (const raw of text.split(/\s+/)) {
+    if (!raw) continue;
+    if (skipRedirectTargets) {
+      if (/^[0-9&]?>{1,2}\|?$|^<$/.test(raw)) {
+        afterRedirect = true;
+        continue;
+      }
+      if (afterRedirect || /^[0-9&]?>{1,2}\|?\S|^<\S/.test(raw)) {
+        afterRedirect = false;
+        continue;
+      }
+    }
+    const token = raw.replace(/^['"`(]+|['"`):,;]+$/g, "");
+    if (!token) continue;
+    if (token.startsWith("/") || token.startsWith("~") || token.startsWith("$HOME/")) out.push(token);
+    else if (/^(Desktop|Documents|Downloads|Library)(\/|$)/.test(token)) out.push(join(homedir(), token));
+  }
+  return out;
 }
 
 // -------------------------------------------------------------- background ---

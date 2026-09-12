@@ -109,29 +109,80 @@ enum ObstacleScanner {
 // MARK: - Goal springs
 
 /// How the body flies to a goal. The summon is under-damped and quick: it flies past
-/// the point and swings back, splatting on the turn. The drift is the way home after a
-/// flight: slower, nearly critically damped, no splat — it settles like a leaf.
+/// the point and swings back, splatting on the turn. The flight eases in and out: its
+/// speed ramps up over `launchRamp`, is capped by how far there is left to go
+/// (`decel`: never faster than it can brake from), and the last `Landing.distance`
+/// points blend into a stiffer, well-damped catch (`Motion.body`) so it settles once
+/// instead of sailing through the spot and being yanked back. The drift is the way
+/// home in free mode: slower, nearly critically damped, no splat — it settles like a
+/// leaf. The tuck is the approach to the notch (`Motion.approach`): critically damped,
+/// capped under the startle speed, and it does not snap onto its goal — the slip that
+/// follows starts from wherever it came to rest.
 struct GoalSpring: Equatable {
+    /// The catch at the end of a flight: the spring the flight blends into over the
+    /// last `distance` points, and where the arrival is called.
+    struct Landing: Equatable {
+        var stiffness: Double
+        var damping: Double
+        var distance: Double
+    }
+
     var stiffness: Double
     var damping: Double
     var maxSpeed: Double
     /// Record an impact (a squish) the moment the body starts coming back to the goal.
     var splat: Bool
     /// Parked: within this many points of the goal, slower than this (pt/s) — the body
-    /// snaps the rest of the way. Tight for the summon (it is Kevin's cursor); looser
-    /// for a flight, so the last few points of the wobble do not eat into the hover.
+    /// snaps the rest of the way (`snaps`). Tight for the summon (it is Kevin's cursor);
+    /// looser for a flight, so the last few points of the wobble do not eat into the hover.
     var settleDistance: Double
     var settleSpeed: Double
+    /// Seconds over which the speed cap ramps up from the launch: the ease-in. 0 is the
+    /// old shot from a standing start.
+    var launchRamp = 0.0
+    /// Braking (pt/s²): the speed is also capped at √(2·decel·distance left), so the
+    /// body slows into the goal instead of arriving at the cap. Nil: no such cap.
+    var decel: Double? = nil
+    /// The catch on the last stretch; nil keeps one spring the whole way.
+    var landing: Landing? = nil
+    /// Settled, the centre is put exactly on the goal. Off for the tuck: the slip that
+    /// follows begins from the real centre, so nothing jumps.
+    var snaps = true
 
     /// ζ ≈ 0.35: flies past the cursor and swings back. The ceiling is the body's own (`BlobBody.maxSpeed`).
     static let summon = GoalSpring(stiffness: 48, damping: 4.8, maxSpeed: 4500, splat: true, settleDistance: 1.5, settleSpeed: 12)
-    /// An `orb.fly`: as quick as the summon but ζ ≈ 0.65, so it lands once — one
-    /// overshoot (about 5% of the distance, 48 pt on 860), one squish — and is parked
-    /// still about a second after take-off. The summon's ζ 0.35 sailed past by a third
-    /// of the trip and squished four times over 1.8 s, which was the whole hover.
-    static let flight = GoalSpring(stiffness: 48, damping: 9.0, maxSpeed: 4500, splat: true, settleDistance: 8, settleSpeed: 60)
-    /// ζ ≈ 0.8 and a low ceiling, so a long way home is a glide, not a shot.
-    static let drift = GoalSpring(stiffness: 14, damping: 6, maxSpeed: 1400, splat: false, settleDistance: 3, settleSpeed: 30)
+    /// An `orb.fly`: as quick as the summon but ζ ≈ 0.65, eased in over `Motion.quick`
+    /// and braked at 5000 pt/s² so it arrives at a few hundred pt/s, then caught by
+    /// `Motion.body` over the last 70 pt: one small overshoot, one soft squish, parked
+    /// well under a second after take-off. (Before: it hit the goal at the 4500 cap and
+    /// the spring yanked it back — the slam.)
+    static var flight: GoalSpring {
+        let catchSpring = Motion.body
+        return GoalSpring(stiffness: 48, damping: 9.0, maxSpeed: 4500, splat: true, settleDistance: 8, settleSpeed: 60,
+                          launchRamp: Motion.seconds(Motion.quick), decel: 5000,
+                          landing: Landing(stiffness: catchSpring.stiffness, damping: catchSpring.damping, distance: 70))
+    }
+    /// ζ ≈ 0.8 and a low ceiling, so a long way home is a glide, not a shot; braked
+    /// gently so a long glide eases onto the perch rather than overshooting it, and
+    /// caught by `Motion.body` over the last 50 pt so it settles instead of crawling
+    /// the last few points for most of a second.
+    static var drift: GoalSpring {
+        let catchSpring = Motion.body
+        return GoalSpring(stiffness: 14, damping: 6, maxSpeed: 1400, splat: false, settleDistance: 3, settleSpeed: 30,
+                          launchRamp: Motion.seconds(Motion.base), decel: 2600,
+                          landing: Landing(stiffness: catchSpring.stiffness, damping: catchSpring.damping, distance: 50))
+    }
+    /// The approach to the notch (`Motion.approach`): critically damped, so it
+    /// decelerates to rest under the ink with no swing back; eased in over
+    /// `Motion.base` so a sleepy blob is not jolted off its spot; capped well under
+    /// `BlobSim`'s flick threshold (a startled `O O` past ~1200 pt/s), so the sleepy
+    /// `- -` survives the whole way to bed. It settles loosely and without snapping:
+    /// the controller's slip carries the last stretch from wherever it stopped.
+    static var tuck: GoalSpring {
+        let a = Motion.approach
+        return GoalSpring(stiffness: a.stiffness, damping: a.damping, maxSpeed: 760, splat: false, settleDistance: 7, settleSpeed: 90,
+                          launchRamp: Motion.seconds(Motion.base), snaps: false)
+    }
 }
 
 // MARK: - Body
@@ -158,6 +209,14 @@ final class BlobBody {
     private var goalSpring = GoalSpring.summon
     /// `onArrive` has fired for the current goal.
     private var arrived = false
+    /// Seconds since the flight was launched (the launch ramp); a retarget keeps it.
+    private var goalAge = 0.0
+    /// A retarget mid-flight blends the goal from where it was over `retargetBlend`
+    /// instead of snapping the spring to the new point: nil when the goal was set from
+    /// rest. `blendAge` is the seconds into that blend.
+    private var goalFrom: CGPoint?
+    private var blendAge = 0.0
+    static let retargetBlend = Motion.quick
     private var ignoreWindows = false
     /// True while a goal spring is pulling the body somewhere (summon, flight, drift home).
     var hasGoal: Bool { goal != nil }
@@ -300,6 +359,7 @@ final class BlobBody {
         lag = .zero
         accel = .zero
         goal = nil
+        goalFrom = nil
         arrived = false
         impacts.removeAll()
         adhesions.removeAll()
@@ -307,6 +367,21 @@ final class BlobBody {
         guided = false
         isActive = false
         refreshScreens()
+        updateLean()
+    }
+
+    /// Put the still body at a point this frame — the controller's slip into and out
+    /// of the notch places it every frame — without re-reading the displays or
+    /// touching anything else: a teleport's cheap sibling.
+    func place(at c: CGPoint) {
+        center = c
+        velocity = .zero
+        lag = .zero
+        accel = .zero
+        goal = nil
+        goalFrom = nil
+        isActive = false
+        area = ScreenArea.containing(c, in: areas)
         updateLean()
     }
 
@@ -440,12 +515,13 @@ final class BlobBody {
     }
 
     /// Fly to a point (the cursor) with an under-damped spring, so it overshoots and
-    /// bounces back. Across displays it first hops to the far side of the target's
-    /// display, because the edges between displays may not be passable.
+    /// bounces back. Across displays it flies straight when the seam is crossable, and
+    /// hops first (`hop`) when a straight line would leave every screen.
     func summon(to g: CGPoint) { fly(to: g, spring: .summon) }
 
-    /// The way home after a flight: the same path, a gentler spring, no splat.
-    func drift(to g: CGPoint) { fly(to: g, spring: .drift) }
+    /// The way home: the same path, a gentler spring, no splat — `.drift` to the perch,
+    /// `.tuck` up into the notch.
+    func drift(to g: CGPoint, spring: GoalSpring = .drift) { fly(to: g, spring: spring) }
 
     /// Fly to a goal on the given spring. Windows are ignored on the way (the body
     /// passes over them; a flight that bounced off every window would never arrive),
@@ -458,7 +534,7 @@ final class BlobBody {
     }
 
     /// Fly to a spot beside `target` (`landing(for:)`), never onto it. Across displays
-    /// the hop comes first, so the spot is ranked against the approach the body will
+    /// any hop comes first, so the spot is ranked against the approach the body will
     /// actually make from where it lands on the far display — ranked from the origin
     /// display, the chosen side could lie right along the real flight line and the
     /// overshoot swept the target. Returns the spot.
@@ -472,12 +548,17 @@ final class BlobBody {
         return spot
     }
 
-    /// A goal on another display (or the body has fallen off its own): jump to a point
-    /// 320 pt from the goal toward the middle of that display's work area and fly the
-    /// rest, because the seams between displays may not be passable.
+    /// A goal on another display (or the body has fallen off its own). When a straight
+    /// line from here to the goal stays on the displays — the two touch along the seam
+    /// the line crosses (Kevin's second display sits right above the first) — the body
+    /// flies it, one flight across both, and `walls()` lets it through the seam. Only
+    /// when the line would leave every screen (displays that do not touch, a corner, a
+    /// gap) does it jump to a point 320 pt from the goal toward the middle of that
+    /// display's work area and fly the rest.
     private func hop(toward g: CGPoint) {
         let target = ScreenArea.containing(g, in: areas)
         guard let target, let here = area, target.frame != here.frame || !here.frame.contains(center) else { return }
+        if here.frame.contains(center), straightPathStaysOnScreens(to: g) { return }
         let mid = CGPoint(x: target.work.midX, y: target.work.midY)
         var dx = mid.x - g.x, dy = mid.y - g.y
         let len = (dx * dx + dy * dy).squareRoot()
@@ -487,8 +568,35 @@ final class BlobBody {
         area = target
     }
 
+    /// Every point of the segment from the centre to `g`, sampled a few cells apart,
+    /// lies on some display's frame (the menu bar and Dock strips count: only the
+    /// frame matters for passing through). A hairline of slack absorbs the rounding
+    /// at a seam where two frames meet edge to edge.
+    private func straightPathStaysOnScreens(to g: CGPoint) -> Bool {
+        let dx = g.x - center.x, dy = g.y - center.y
+        let steps = max(1, Int((hypot(dx, dy) / 24).rounded(.up)))
+        for i in 0...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let p = CGPoint(x: center.x + dx * t, y: center.y + dy * t)
+            if !areas.contains(where: { $0.frame.insetBy(dx: -1, dy: -1).contains(p) }) { return false }
+        }
+        return true
+    }
+
+    /// Arm the goal spring. A retarget mid-flight — a goal already armed on a body
+    /// still moving — keeps the launch ramp where it is and blends the goal over from
+    /// the old point (`retargetBlend`), so the spring's pull swings round instead of
+    /// snapping to the new heading.
     private func aim(at g: CGPoint, spring: GoalSpring) {
         guided = false
+        let retarget = goal != nil && isActive && !dragging
+        if retarget, let old = goal, hypot(old.x - g.x, old.y - g.y) > 1 {
+            goalFrom = blendedGoal() ?? old
+            blendAge = 0
+        } else {
+            goalFrom = nil
+            if !retarget { goalAge = 0 }
+        }
         goal = g
         goalSpring = spring
         goalArmed = false
@@ -498,6 +606,15 @@ final class BlobBody {
         adhesions.removeAll()
         lag = .zero
         isActive = true
+    }
+
+    /// The goal the spring pulls toward this frame: the retarget blend's in-between point, else the goal.
+    private func blendedGoal() -> CGPoint? {
+        guard let g = goal else { return nil }
+        guard let from = goalFrom else { return g }
+        let u = min(1, blendAge / Self.retargetBlend)
+        let k = u * u * (3 - 2 * u)
+        return CGPoint(x: from.x + (g.x - from.x) * k, y: from.y + (g.y - from.y) * k)
     }
 
     /// Where to park beside an `orb.fly` target so the body never covers it: up-left
@@ -559,8 +676,22 @@ final class BlobBody {
         return off >= reach * 0.9 && off <= reach * 1.6
     }
 
+    /// The speed ceiling this frame: the body's own, or a goal spring's — ramped up from
+    /// the launch (`launchRamp`: the ease-in) and, with `decel`, never more than the
+    /// body could brake from over the distance left (the ease-out).
     private func capSpeed() {
-        let cap = goal != nil && !dragging ? goalSpring.maxSpeed : Self.maxSpeed
+        var cap = Self.maxSpeed
+        if goal != nil, !dragging {
+            cap = goalSpring.maxSpeed
+            if goalSpring.launchRamp > 0 {
+                let u = min(1, goalAge / goalSpring.launchRamp)
+                cap *= 0.12 + 0.88 * u * u * (3 - 2 * u)
+            }
+            if let a = goalSpring.decel, let g = blendedGoal() {
+                let d = Double(hypot(g.x - center.x, g.y - center.y))
+                cap = min(cap, max(90, (2 * a * d).squareRoot()))
+            }
+        }
         let s = (velocity.dx * velocity.dx + velocity.dy * velocity.dy).squareRoot()
         if s > cap { velocity = CGVector(dx: velocity.dx / s * cap, dy: velocity.dy / s * cap) }
     }
@@ -603,15 +734,41 @@ final class BlobBody {
             let ay = Self.dragStiffness * lag.dy - Self.dragDamping * velocity.dy
             velocity.dx += ax * dt
             velocity.dy += ay * dt
-        } else if let g = goal {
-            let ax = goalSpring.stiffness * (g.x - center.x) - goalSpring.damping * velocity.dx
-            let ay = goalSpring.stiffness * (g.y - center.y) - goalSpring.damping * velocity.dy
+        } else if goal != nil, let g = blendedGoal() {
+            goalAge += dt
+            blendAge += dt
+            let dx = g.x - center.x, dy = g.y - center.y
+            let dist = (dx * dx + dy * dy).squareRoot()
+            // The catch: over the last `landing.distance` points the flight spring blends
+            // into the landing spring (Motion.body), so the acceleration turns over
+            // smoothly rather than switching.
+            var k = goalSpring.stiffness, c = goalSpring.damping
+            if let land = goalSpring.landing, dist < land.distance {
+                let u = dist / land.distance
+                let w = u * u * (3 - 2 * u)
+                k = land.stiffness + (goalSpring.stiffness - land.stiffness) * w
+                c = land.damping + (goalSpring.damping - land.damping) * w
+            }
+            let ax = k * dx - c * velocity.dx
+            let ay = k * dy - c * velocity.dy
             velocity.dx += ax * dt
             velocity.dy += ay * dt
-            // The moment it starts coming back is the landing: splat a little.
-            let toward = (g.x - center.x) * velocity.dx + (g.y - center.y) * velocity.dy
+            let toward = dx * velocity.dx + dy * velocity.dy
             if toward > 0 { goalArmed = true }
-            else if goalArmed, toward < 0 {
+            if let land = goalSpring.landing, !arrived, dist < land.distance, toward > 0 {
+                // Entering the catch, still on the way in: the visible arrival. One
+                // soft squish, scaled by how fast it came in — the braking cap keeps
+                // that to a few hundred pt/s, so this is a settle, not a slam.
+                arrived = true
+                let s = speed
+                if goalSpring.splat, s > 60 {
+                    impacts.append(Impact(nx: -velocity.dx / s, ny: -velocity.dy / s, press: min(0.55, 0.16 + s / 3000)))
+                    onImpact?(s)
+                }
+                onArrive?()
+            } else if goalArmed, toward < 0 {
+                // The moment it starts coming back is the landing (the summon's swing
+                // past the cursor; a flight's small overshoot): splat a little.
                 goalArmed = false
                 let s = speed
                 // The splat scales with the swing: the arrival lands hard, the dying
@@ -658,7 +815,7 @@ final class BlobBody {
             if let g = goal {
                 let near = goalSpring.settleDistance
                 if abs(g.x - center.x) < near, abs(g.y - center.y) < near, speed < goalSpring.settleSpeed {
-                    center = g
+                    if goalSpring.snaps { center = g }
                     settle()
                 }
             } else if speed < Self.restSpeed, domeSettled {
@@ -687,6 +844,7 @@ final class BlobBody {
         lag = .zero
         accel = .zero
         goal = nil
+        goalFrom = nil
         ignoreWindows = false
         isActive = false
         arrived = false

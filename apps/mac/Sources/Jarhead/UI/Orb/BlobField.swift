@@ -340,6 +340,14 @@ final class BlobSim {
     private(set) var react = 0.0
 
     private(set) var color = OrbPalette.asleep
+    /// The colour crossfade: from `colorFrom` at `colorFadeStart` toward the target
+    /// over `colorFadeLength` (`Motion.drift` for a phase or gate change, `Motion.base`
+    /// around take-off and touch-down), ease-in-out. A target that changes mid-fade
+    /// starts a new fade from the colour on screen, so nothing ever snaps.
+    private var colorTarget = OrbPalette.asleep
+    private var colorFrom = OrbPalette.asleep
+    private var colorFadeStart = -100.0
+    private var colorFadeLength = Motion.drift
     private(set) var glow = 0.30
     var reducedMotion = false
     /// Dark appearance: picks the accent's lift. Set by the view from its effective appearance.
@@ -504,6 +512,21 @@ final class BlobSim {
     private var blinkLength = 0.12
     private var doubleBlinkAt = -1.0
     private var pokedAt = -100.0
+    /// The expression the phase and gate last asked for (before the reactions), so a
+    /// change of expression goes through a blink (`Motion.blink`): lids down, the new
+    /// glyph behind them, lids up — the paused `u u` and the sleepy `- -` arrive that
+    /// way. Reactions are instant (a poke, a flick, a Stop's shiver, the gate's surprise
+    /// and refusal), and swaps among the low glyphs (`-`, `~`, `_`, `.`: sleep's breath,
+    /// thinking's churn) do not blink — they are the lids already.
+    private var wantedPair = Face("-")
+    static let lowGlyphs: Set<Character> = ["-", "~", "_", "."]
+    /// The crouch before a flight (`Motion.anticipation`): the body squashes toward the
+    /// target — compressed along the heading, a little wider across, leaning in — over
+    /// the last beat of the wind-up, and lets go as the launch's own stretch takes over.
+    /// None under Reduce Motion.
+    private var anticipateAt = -100.0
+    private var anticipateX = 1.0, anticipateY = 0.0
+    static let anticipationRelease = 0.09
     /// A wandering glance (connecting looks around; listening turns to "the last sound").
     private var glanceX = 0.0, glanceY = -0.3
     private var nextGlanceAt = 0.0
@@ -698,6 +721,35 @@ final class BlobSim {
         nextBlinkAt = t + 0.26
     }
 
+    /// The beat before a launch: crouch toward `d` (CG, any length). The squash builds
+    /// over `Motion.anticipation` and releases as the flight's stretch takes over.
+    func anticipate(toward d: CGVector) {
+        guard !reducedMotion else { return }
+        let l = (d.dx * d.dx + d.dy * d.dy).squareRoot()
+        guard l > 0.5 else { return }
+        anticipateX = d.dx / l
+        anticipateY = d.dy / l
+        anticipateAt = t
+    }
+
+    /// How deep the crouch is this frame (0…1).
+    private var anticipation: Double {
+        let age = t - anticipateAt
+        guard age >= 0, age < Motion.anticipation + Self.anticipationRelease * 5 else { return 0 }
+        let u = min(1, age / Motion.anticipation)
+        let up = u * u * (3 - 2 * u)
+        let release = age > Motion.anticipation ? exp(-(age - Motion.anticipation) / Self.anticipationRelease) : 1
+        return up * release
+    }
+
+    /// The end of a flight where it worked (`stayHere`): a small sigh — a ring through
+    /// the low modes and a touch of shiver — while the flight look fades to the phase's.
+    func settleHere() {
+        let k = reducedMotion ? 0.3 : 1.0
+        ring(mode2: 0.08 * k, mode3: 0.04 * k)
+        nudge(0.3)
+    }
+
     private func ring(mode2 a2: Double, mode3 a3: Double) {
         mode2.v += a2 * 2 * .pi * mode2.hz
         mode3.v += a3 * 2 * .pi * mode3.hz
@@ -712,6 +764,7 @@ final class BlobSim {
     var isLively: Bool {
         springsMoving || shiver > 0.03 || flash > 0.02 || pulse > 0.02 || t - rippleAt < Self.rippleLength
             || t - phaseChangedAt < 1.0 || t - gateChangedAt < 1.0 || t - flightChangedAt < 1.0 || t - cursorChangedAt < 1.0
+            || t - colorFadeStart < colorFadeLength || t - anticipateAt < 0.5 || t < blinkUntil + 0.2
             || motionLively
     }
 
@@ -722,7 +775,10 @@ final class BlobSim {
             || abs(sloshX.v) + abs(sloshY.v) + abs(mode2.v) + abs(mode3.v) > 0.08
     }
 
-    var desiredFPS: Double { isLively ? 24 : target.fps }
+    /// A blink asks for 60: the lids are quantised to the frames this view renders, and
+    /// at the lively 24 the `Motion.blink` (90 ms) stayed down 125–165 ms. The link caps
+    /// a still body at 30 (a 33 ms grid: the lids come up at ~100 ms); a moving one runs at 60.
+    var desiredFPS: Double { t < blinkUntil ? 60 : isLively ? 24 : target.fps }
 
     /// Nothing worth a frame: muted and settled, or fast asleep (asleep for a while
     /// with nothing happening — it stops breathing until something pokes it). The
@@ -941,10 +997,25 @@ final class BlobSim {
         cur.spin += (target.spin - cur.spin) * k
         cur.jitter += (target.jitter - cur.jitter) * k
         cur.glow += (target.glow - cur.glow) * k
-        // A flight changes colour on take-off and on touch-down, not over the first
-        // stretch of the trip: the colour eases twice as fast around those moments.
-        let colorK = t - flightChangedAt < 1.0 ? 1 - exp(-dt / (Self.easeTau * 0.45)) : k
-        color = color.mixed(with: targetColor, colorK)
+        // The colour crossfades (`Motion.drift`) instead of snapping or trailing off
+        // exponentially: a phase change is a fade from the colour on screen to the new
+        // one, ease-in-out, done when it is done. Around take-off and touch-down the
+        // fade is `Motion.base`, so the blob is green before the wake starts and back
+        // in its phase colour soon after it parks. Halved under Reduce Motion.
+        let want = targetColor
+        if want != colorTarget {
+            colorTarget = want
+            colorFrom = color
+            colorFadeStart = t
+            let length = t - flightChangedAt < 1.0 ? Motion.base : Motion.drift
+            colorFadeLength = reducedMotion ? length / 2 : length
+        }
+        if t - colorFadeStart < colorFadeLength {
+            let u = (t - colorFadeStart) / colorFadeLength
+            color = colorFrom.mixed(with: colorTarget, Motion.easeInOutCurve.value(at: u))
+        } else {
+            color = colorTarget
+        }
         if rampSwitchAt >= 0, t >= rampSwitchAt { ramp = target.ramp; rampSwitchAt = -1 }
         spinPhase += cur.spin * dt
         shiver *= exp(-dt / Self.shiverTau)
@@ -1235,8 +1306,14 @@ final class BlobSim {
         // The pen is compact (`cursorShrink`) and its surface calm, so its point holds still.
         let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * stretchY * stretchY) * e) * (1 - Self.cursorShrink * cursorK)
         let toward = bodyBase * (Self.tailStretch + Self.leadCompress) / 2 * max(0, e - necking.squareRoot() * 0.5)
+        // The crouch before a launch: the body leans toward the target by up to 0.6 of
+        // a row and is compressed along the heading (below), a coil about to release.
+        let crouch = anticipation
+        let ax = anticipateX, ay = anticipateY
         let cx = Double(cols - 1) / 2 + (leanX * cur.pull + bias.bx * slide) * Double(cols) * 0.16 + jitterX + (sloshX.x + stretchX * toward) * aspect
+            + ax * crouch * 0.6 * aspect
         let cy = Double(rows - 1) / 2 + (leanY * cur.pull + bias.by * slide) * Double(rows) * 0.16 - lift + jitterY + sloshY.x + stretchY * toward * sq
+            + ay * crouch * 0.6 * sq
         let ampScale = cur.amp * 2.6 * ampBreath * (1 - 0.4 * e) * (1 - 0.65 * cursorK)
         // Where the tail's point lands this frame — the pen: the outline's tip along
         // −stretch at 1 + tailStretch·e of the radius, from an outline centre `toward`
@@ -1272,6 +1349,13 @@ final class BlobSim {
                 var density = 1.0
                 var wet = 0.0, neckDepth = -1.0, bodyKeep = 1.0
                 var clipped = false
+                if crouch > 0.001 {
+                    // Squashed along the heading (a fifth at full crouch), a little wider across.
+                    let along = ox * ax + oy * ay, perp = -ox * ay + oy * ax
+                    let a2 = along / (1 - 0.2 * crouch), p2 = perp / (1 + 0.12 * crouch)
+                    ox = a2 * ax - p2 * ay
+                    oy = a2 * ay + p2 * ax
+                }
                 if anyContact {
                     let d = deformed(ox, oy, base: bodyBase, sq: sq)
                     ox = d.x; oy = d.y; wet = d.wet; neckDepth = d.neckDepth; clipped = d.clipped; bodyKeep = d.body
@@ -1459,6 +1543,8 @@ final class BlobSim {
             pair = Face("x")
             blinkable = false
         }
+        // A reaction lands at once, with no blink in front of it.
+        var reaction = false
         if phase == .asleep, !flight {
             switch gate {
             case .off:
@@ -1474,6 +1560,7 @@ final class BlobSim {
                 open = 1
                 blinkable = false
                 wantY = -0.3
+                reaction = true
             case .authenticating:
                 pair = Face(".")
                 open = 1
@@ -1488,12 +1575,32 @@ final class BlobSim {
                 pair = gateAge < 1.0 ? Face(left: ">", right: "<") : Face("-")
                 open = gateAge < 1.0 ? 1 : Self.shutOpenness * 0.8
                 blinkable = false
+                reaction = true
             case .lockedOut:
                 pair = Face("-")
                 open = Self.shutOpenness * 0.8
                 blinkable = false
                 wantY = 0.2
             }
+        }
+
+        // An expression change goes through a blink (`Motion.blink`): the lids come
+        // down on the old glyphs and up on the new — `O O` to the paused `u u`, `^ ^`
+        // to the sleepy `- -` (which is the lids, so they simply stay down). Not for a
+        // reaction (the gate's surprise and refusal here; the poke, the flick and the
+        // Stop's shiver below override the pair after this and are never blinked into),
+        // nor between the low glyphs, which are lids already. Half as long under Reduce
+        // Motion — a plain, quicker blink.
+        if pair != wantedPair {
+            let low = Self.lowGlyphs
+            let bothLow = low.contains(pair.left) && low.contains(pair.right) && low.contains(wantedPair.left) && low.contains(wantedPair.right)
+            if !reaction, !bothLow, t - pokedAt > 0.3 {
+                blinkUntil = max(blinkUntil, t + (reducedMotion ? Motion.blink / 2 : Motion.blink))
+                // Not a lid movement this frame counts against: the lids drop at once.
+                openL = min(openL, Self.shutOpenness * 0.6)
+                openR = min(openR, Self.shutOpenness * 0.6)
+            }
+            wantedPair = pair
         }
 
         // The pen: intent, looking along the travel — `> >` / `< <` along a line drawn
@@ -1943,6 +2050,17 @@ final class BlobFieldView: NSView {
         }
     }
 
+    /// Whether this view steps the shared sim on its frames. Off for the last stretch
+    /// of the slip into the notch, when the notch view has taken the sim's clock
+    /// (`NotchDock.parked`) and this view only fades out its last frame: two clocks on
+    /// one sim would run it at double speed for the hand-off. The ticks (`tick`) go on.
+    var stepsSim = true {
+        didSet {
+            guard stepsSim, !oldValue else { return }
+            lastSimStep = CACurrentMediaTime()
+        }
+    }
+
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -2005,7 +2123,7 @@ final class BlobFieldView: NSView {
 
         // The field re-renders on its own clock (10–24 fps like v1); the body can
         // move every display frame in between so a throw is smooth.
-        if now - lastRender >= 1 / sim.desiredFPS - 0.002 {
+        if stepsSim, now - lastRender >= 1 / sim.desiredFPS - 0.002 {
             sim.step(now - lastSimStep)
             lastSimStep = now
             lastRender = now
@@ -2235,10 +2353,16 @@ final class BlobFieldView: NSView {
         let backingAlpha = Float(min(max(backingAlpha, 0), 1))
         let gr = Float(glow.r), gg = Float(glow.g), gb = Float(glow.b), ga = Float(glowAlpha)
         let br = Float(ground.r), bg = Float(ground.g), bb = Float(ground.b)
+        // Kevin's rule: every shaded surface is dithered. The halo's smooth falloff is
+        // quantised to a few steps with the shared blue-noise tile (UI/Dither.swift), the
+        // way the icon and the notch island are; the layer magnifies it with nearest
+        // sampling so the grain stays grain at the field's size instead of blurring back
+        // into a gradient.
+        let levels: Float = 6
         haloFine.withUnsafeBufferPointer { fine in
             haloPixels.withUnsafeMutableBufferPointer { px in
                 for i in 0..<(w * h) {
-                    let f = fine[i]
+                    let f = Float(Dither.quantise(fine[i], levels, Dither.threshold(x: i % w, y: i / w, cell: 1))) / levels
                     let ag = f * ga
                     let ab = f * backingAlpha * (1 - ag)
                     let a = ag + ab
@@ -2275,7 +2399,8 @@ final class BlobHaloView: NSView {
         wantsLayer = true
         layer?.backgroundColor = .clear
         imageLayer.contentsGravity = .resize
-        imageLayer.magnificationFilter = .linear
+        // Nearest: the halo is dithered at its own resolution and must stay crisp when magnified.
+        imageLayer.magnificationFilter = .nearest
         imageLayer.minificationFilter = .linear
         imageLayer.isOpaque = false
         // A hand-made sublayer would otherwise cross-fade every contents change.

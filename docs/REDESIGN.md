@@ -165,12 +165,18 @@ Claude Code could not authenticate on this machine that day; see the doctor outp
 
 ## 6. Cost control
 
-A Live session bills every second it is open. Jarhead sleeps after 10 minutes
-without an addressed turn (configurable): the session closes, the Orb dims, the
-mic stays local-only. Waking is a tap on the Orb, the hotkey, or the wake
-gesture in the Console — ~1.5 s to `session.started`, with an earcon so the gap
-is felt as intentional. Muting (`session.input_audio.mute`) is instant and does
-not close the session.
+A Live session bills every second it is open — muted or not. Jarhead sleeps
+after 10 minutes without an addressed turn (configurable): the session closes,
+the Orb dims, the mic stays local-only. Go / Pause / Stop are one transport
+(§13; AppState's `// MARK: - Transport` region: `transportToggle()`,
+`transportStop()`, `transportLabel`): Pause and Stop both close the session so
+the meter stops the moment they land; a pause holds the conversation
+(`snapshot.pause`) and decays to asleep at `pause.sleepsAt`; Go — or the wake
+word — resumes it in a new session that carries the transcript as continuity.
+Waking is ~1.5 s to `session.started`. Muting (`session.input_audio.mute`) is
+instant but keeps the meter running; it is for Kevin's side of the room, not
+for cost. The meter (`snapshot.usageToday`, `LIVE_PRICE_PER_MINUTE_USD`) shows in
+the capsule, the Console's right rail and the Jarhead section of the rail.
 
 ## 6b. The native shell (added 2026-09-10, same day)
 
@@ -436,7 +442,9 @@ Three loops share one surface — Kevin's screen — and one presence, the blob.
    and short labels on the click-through layer, fading after a few seconds — so
    "the button is here, then drag this there" is a shape on the screen, not a
    sentence. The blob's flight is the same fluid body: a spring flight, an
-   impact squish on landing, a drift home when it is done.
+   impact squish on landing, and it stays where it worked when it is done (2026-09-11:
+   in both homes — the notch dock is only for the awake↔asleep transitions; the explicit
+   `orb.home` is the one way back mid-session).
 
 ### Architecture
 
@@ -475,6 +483,50 @@ Claude Code — a four-armed asterisk in Anthropic terracotta `#d97757`; Codex �
 Gemini — a four-point sparkle in `#4796e3`; OpenCode — a bracket pair in `#6ee7a0`;
 Amp — a bolt in `#ffb454`; Droid / Hermes / Pi — a monogram in titanium. The glyph
 is the row's icon; the colour is the status dot's ring and the conversation header.
+
+### Built since (2026-09-11 evening)
+
+- **The Console has two sections.** "Jarhead" first: its own conversations — a Now
+  row (the live or paused session: elapsed · billed, "paused · meter stopped",
+  "asleep"), then past conversations newest first under day heads, a resume chain
+  (`session.started.resumedFrom`) folded into one row ("resumed ×n"). A past
+  conversation opens read-only with a Conversation | Log toggle; the Log is every
+  ledger row of the chain, including `pause` / `resume` / `stop`. Then "Agents",
+  as before. The ledger answers `ledger.sessions` / `ledger.session` over the wire
+  (`Ledger.sessions()` / `readSession()`, memoised by file signature).
+- **The notch island is one ink shape** — the notch's column through the menu bar,
+  concave fillets flaring onto the island's top edge, convex 18 pt top corners,
+  12 pt bottom corners — carrying the app icon's dithered orb gradient pooling out
+  of the black notch (`UI/Orb/NotchInk.swift` over `UI/Dither.swift`). The dot
+  left of the phase word is the transport: a 22 pt circle, play while asleep or
+  paused, pause while awake, ellipsis while connecting; Stop and Mute sit right.
+- **Every shaded surface is dithered.** One renderer, `UI/Dither.swift`
+  (`Dither.gradientImage`, `DitheredGradient`), shares its void-and-cluster tile
+  and `orbStops` palette with `scripts/make-icon.ts`, whose icon now shows its
+  grain at every size (6–7 bands, 1 px cells under 128 px). Flat fills stay flat.
+- **The blob stays where it worked** in both homes; the notch dock is only for the
+  awake↔asleep transitions. Into the notch it goes by approach + slip: a
+  critically damped approach (`Motion.approach`) to a staging point 16 pt under
+  the dock, then over `Motion.tuckSlip` the body rises under the ink shrinking to
+  0.55 and fading while the notch face comes up at 60 % — one hand-off, nothing
+  pops; out of the notch is the reverse (`Motion.dropOut`). Flights crouch before
+  they leave (`Motion.anticipation`) and settle on `Motion.body`; expressions
+  change through a blink (`Motion.blink`); the phase colour crossfades.
+- **One motion vocabulary**, `UI/Motion.swift`: durations, curves (as
+  CAMediaTimingFunctions and as numbers for display-link code), SwiftUI springs,
+  `appear` / `swap` transitions, `reduced`. The Console's panes crossfade, the
+  rail selection and segmented thumbs glide, new stream rows fade and rise on
+  their own opacity only (the feed's height never animates, so the sticky scroll
+  holds), toasts and pills arrive bouncy and leave easing in, onboarding steps
+  slide by direction, overlay shapes draw on and fade out.
+- **Harness knobs** (headers of `Scripts/*-preview.sh`, `UI/Orb/OrbPreviewApp.swift`,
+  `Scripts/ConsolePreviewMain.swift`): `ORB_TIMELINE`, `ORB_FACE_LOG`,
+  `ORB_SLEEP_AT` / `ORB_WAKE_AT` / `ORB_SLEEP_PHASE` / `ORB_DRAG_OUT_AT`,
+  `ORB_NOTCH_HOVER` / `ORB_NOTCH_PRESSED` / `ORB_NOTCH_SHOT_TAG` /
+  `ORB_NOTCH_OPENING_SHOTS` / `ORB_NOTCH_NO_POINTER`, `ORB_REDUCE_MOTION`;
+  console scenarios `jarhead`, `jarhead-log`, `paused`, `switch` and the
+  `PREVIEW_ACTION` grammar; onboarding `PREVIEW_GO` / `PREVIEW_SHOT_AT` /
+  `PREVIEW_REDUCE_MOTION`.
 
 ## 10. Anything and everything, gated by policy; and a Jarhead that rewrites itself (2026-09-10)
 
@@ -1240,3 +1292,439 @@ dispatchedAt, doneAt, ok, dropped?, fired}`, `reflex.mismatch`, `pause`,
 `resume`, `dictation` (written today with a cast; the Console ignores unknown
 rows); a `Snapshot.dictating` flag (the phase shows acting meanwhile);
 `Delegation.reflexSource: "ear" | "live"`.
+
+## 13. The transport: Go, Pause, Stop (2026-09-11)
+
+Kevin: "also even though i pressed stop im still getting billed and time is
+still going up. and consolidate pause and go and stop and make this system much
+more resilient and better." The fact under it: GPT-Live-1 bills **$0.05 / min,
+per second, for every second a session is open** (§2; `session.usage.updated`
+carries the seconds). Until today `pause` muted the session and kept it open —
+billed — and the Stop button ran `stopEverything`, which cancelled the task and
+left the session open and listening, so the meter kept going. Both now close the
+session. Everything below is `packages/engine/src/engine.ts`, proved by
+`packages/engine/src/__tests__/{transport,pause,stop}.test.ts` and
+`packages/live/src/__tests__/session.test.ts`.
+
+### The state machine
+
+One transport, four states, no session in any state but two:
+
+| state | session | how you get there |
+|---|---|---|
+| `asleep` | none | start; `stop`; `sleep` (idle, a pause that decayed, a brain swap); a session the server ended without a reason to reconnect |
+| `connecting` | opening | `go` / `wake` from asleep; a resume from paused; a reconnect after `expired` / `connection_lost` |
+| `awake` | open | `session.started` |
+| `paused` | **none** — closed | `pause` from awake |
+
+`Engine.transportState` says which. The verbs (`EngineCommand`):
+
+- **`go`** — asleep → wake (opens the paid session); paused → resume; awake or
+  connecting → nothing (a debug line, no toast). The one button.
+- **`pause`** — only with a session open: everything a stop cuts, then the session
+  is *closed* and the conversation held (below). Asleep: "asleep already";
+  connecting: "still connecting"; paused: "paused already".
+- **`stop`** — the transport's stop (the Stop button, ⌥⎋, `jarhead cmd stop`):
+  cut everything, close the session, asleep. From paused: the pause is let go.
+  From asleep: background jobs are still stopped; "nothing running" only when
+  nothing at all happened.
+- **`interrupt`** (`how: said | pressed`) — the pre-transport stop: cut the work
+  and the speech, stay awake and listening. A spoken "stop" / "cancel" / "never
+  mind" is this, through the ear's and the Delegator's `onStop`.
+- Legacy: `wake` while paused is a resume; `resume` is go-if-paused (otherwise a
+  word: "not paused" / "asleep — wake it instead"); `sleep` is a graceful close
+  to asleep, from paused too.
+
+`recomputePhase` decides `paused` first, before "no session → asleep" (it was the
+other way round, so a pause with no session would have read asleep); while a
+resume is connecting the phase is `connecting`.
+
+### Pause holds the conversation, not the session
+
+`pause()`: cancel like a stop — `hands.cancelPending`, `runner.abortTask("pause")`,
+the delegation cancelled quietly (finished as "paused", the brain's own cancel
+capped at 1.5 s and never awaited before anything perceptible), the pending
+confirmation cleared, dictation ended, the ear quiesced, the speaker flushed —
+then `wantAwake = false`, `pauseInfo = {at, sessionId, usageSeconds, sleepsAt}`,
+a typed `pause` ledger row, the session **detached at once** (`this.live =
+undefined`, the Delegator disposed, its delegations moved to the kept list: the
+very next snapshot has no `session` and `Snapshot.pause` instead), then closed
+with the deadline (below). Toast "paused · meter stopped".
+
+What stays warm: the brain (never stopped — its resident thread is the expensive
+part), the transcript (in memory), the marks, the hands. While paused: `feedMic`
+drops PCM (except during a resume's handshake, when the opening session queues it
+until `session.started` exactly as a wake does, so Kevin's first word after Go is
+not clipped), `ear()` is ignored, reflexes are off, `levels()` reports 0, a
+delegation cannot arrive (there is no session). Typing in the Console resumes
+first and then delivers the text to the new session. `sleepsAt = at + max(1 min,
+idleSleepMinutes)`: a pause nobody resumes decays to `sleep()` in `tick()` — toast
+"paused too long · asleep", the pause cleared, a plain wake afterwards.
+
+### Resume is a new session that remembers
+
+`resume()` (or `go` / `wake` while paused) opens a **new** session through the
+same `connect()` as a wake. `sessionConfig(continuity)` is still the one place the
+config is built; the resume passes a `# Continuity` section appended after
+`buildLiveInstructions({alwaysOn: true})`:
+
+```
+# Continuity
+Kevin paused you N minutes ago and just resumed. This is the same conversation. What was said before the pause, most recent last:
+Kevin: …
+Jarhead: …
+Last task: "<request>" — <status>: <summary>
+Carry on as before; do not recap unless he asks.
+```
+
+The lines are the last 12 final utterances of both speakers, at most ~1200
+characters (the most recent line always makes it); "Last task" only when the last
+delegation had a summary. The `session.started` row carries `resumedFrom`; a
+`resume` row `{sessionId, resumedFrom, pausedMs}` follows; `pauseInfo` is cleared
+once the session has started — so for the whole handshake the transport still
+reads `paused` with `connecting` set, and every rule that would close "a session
+while paused" (the watchdog, the decay) excludes `connecting`; the phase is
+`connecting` meanwhile, then `listening`, or `muted` when Kevin's
+own mute is on (it survives a pause: the new session starts muted). A resume whose
+start fails keeps the pause (Go retries with the continuity) and reports the
+problem; the decay clock still runs.
+
+**One transcript per session.** Session-timeline milliseconds restart with every
+session, and the Delegator's first request window is `transcript.since(0)` — over
+a transcript shared across sessions, a resumed session's first delegation carried
+*every earlier utterance* as its request ("jarhead send the email jarhead scroll
+down"): the reflex did not match and the brain could have redone the old task. The
+engine now gives each session its own `Transcript`; earlier sessions' utterances
+move to `heldTranscript` at detach (settled first, so the last words before a
+pause are on the ledger as `heard` / `said`), and the snapshot and the continuity
+read `[...held, ...current]`. Delegations are kept the same way
+(`lastDelegations`), so a pause and a resume never empty the Console.
+
+### Stop is synchronous and closes the session
+
+`pressStop()`: `wantAwake = false`; cut everything (as above, minus the "Stop
+speaking now and wait" instruction — the session is closing); the pause cleared;
+a `stop` ledger row `{how: "pressed", cancelled?}` (only when something happened:
+a session, a pause, a connect, a running delegation or a background job); the
+session detached and closed with the deadline; `setPhase("asleep")` — all before
+the first `await`. The session's own `session.closed` row lands when the close is
+answered (or the deadline terminates it). Then the brain's cancel is awaited,
+capped. During a connect the stop does not touch the opening socket: `connect()`
+checks `wantAwake` again right after `session.started` and, finding it false,
+records the started row, closes the session at once and stays asleep, with no
+"could not start" problem (a start rejected by a stop is logged, not reported). A
+Go pressed during that same handshake re-arms it (`wantAwake` back to true, phase
+`connecting`, as `wake()` always did): the session that then starts is kept.
+
+`interrupt()` is the old `stopEverything` (kept as an alias) plus a `stop` row
+with its `how`. Only a session that has *started* is spoken to: during a connect
+the interrupt still cuts background jobs, but writes no `stop` row (the session has
+no id yet) and queues no instruction (it would land as the new session's first
+words after `session.started`). "Said" (spoken, through the ear or Live's transcript) means Kevin
+wants Jarhead to shut up and wait, listening; "pressed" through the `stop`
+command means the transport is down. The `interrupt` command's `how` defaults to
+`pressed`; the ear's and the Delegator's calls pass `said`.
+
+### Deadlines: close, then terminate
+
+`LiveSession.close()` sends `session.close` and waits for the server's
+`session.closed` (it finalizes usage); its own fallback (`CLOSE_FALLBACK_MS`,
+**1500 ms**, was 3000) closes the socket if no answer comes. New:
+`LiveSession.terminate()` — an immediate `ws.close()`, state `closed`, and
+`closed("client_closed", usageSeconds)` emitted **exactly once** (the socket's own
+`onclose` and a late `session.closed` frame are swallowed; a terminate while
+connecting rejects `start()`). The engine's `closeWithDeadline(live)` calls
+`close()` and, if the session has not reported closed within **1000 ms**
+(`Engine.CLOSE_DEADLINE_MS`; `EngineOptions.closeDeadlineMs` for tests),
+`terminate()`s it. Every path that ends a session — pause, stop, sleep, a stop
+during connect, the watchdog — goes through it; the timers are cleared at
+shutdown. When the server does answer `session.closed`, the client closes its
+socket too: the fallback only acts while the state is not `closed`, so a graceful
+close the server answered would otherwise leave the socket open for good (a fake
+socket showed it; the real server presumably closes its end as well).
+
+### Race guards
+
+`wire(live)` closes over the session it wired and every handler first asks
+`this.live === live`: audio, transcript deltas, delegations, usage and errors from
+a session that was paused, stopped or replaced do nothing. The `closed` handler is
+the exception: it always folds the final usage into today's base and appends the
+`session.closed` row (for a session that reached `session.started`; a socket that
+never did has no row), then returns unless the session is still current. A
+current session whose socket closed *before* `session.started` (refused, network
+down) is detached and left to `connect()`'s catch, which reports the failed start
+once and reads `error`; it never reconnects — the 500 ms retry would loop against
+the same wall (three attempts in 1.3 s on a fake socket), and Go tries again. A
+current session that the server ended reconnects only for `expired` /
+`connection_lost` and only if `wantAwake && !paused`, re-checked when the 500 ms
+timer fires (a stop in the meantime wins).
+
+### The watchdog
+
+`tick()` enforces the invariants once a second, each incident logged once:
+
+1. `!wantAwake && !paused && !connecting && live` for more than 2 s → the session
+   outlived a stop: `terminate()` and asleep.
+2. `paused && !connecting && live` → a session open while paused: close (with the
+   deadline) and detach. `!connecting` matters: a resume sets `this.live` to the
+   opening session while `pauseInfo` is still held (it is cleared at
+   `session.started`), and a real handshake spans the 1 s tick often — without it
+   the watchdog closed every such resume ("live session closed before it started",
+   the pause kept, typed words dropped).
+3. no session, not connecting, not paused, phase not asleep / error → asleep.
+
+A normal connect never trips it — a wake's or a resume's: every rule that names a
+session excludes `connecting`, which is set for the whole handshake, and a wake
+keeps `wantAwake` true. `connect()` itself cannot wedge `connecting`: `wire()` runs
+inside its try (a brain that is mid-swap used to throw "brain not started" before
+the try, leaving `connecting` true for good), and a brain restart in flight is
+awaited before the session is built.
+
+### The meter: `Snapshot.usageToday`
+
+At construction the engine sums today's ledger (`session.closed` rows'
+`usageSeconds`, `session.started` rows as the count). `usageToday = {seconds: base
++ the open session's seconds, sessions}`. When a session is detached, what it has
+billed so far is folded into the base at once (the meter never dips while the
+close is in flight); when its `closed` event brings the final figure, only the
+difference is added — a `WeakMap<LiveSession, folded>` counts every second once,
+however many times a session reports. The base is re-read when the local day
+changes; a session open across midnight counts as one of the new day's sessions,
+with its cumulative seconds shown against the new day (the ledger's closed row
+lands in the new day's file with the same figure, so a reload agrees).
+`Snapshot.pause.usageSeconds` is what the paused session had billed.
+
+### What the tests pin (node:test, `world.ts`)
+
+`world()` now hands the engine one `FakeLive` per session (`w.lives`, `w.live` is
+the first; `terminate()`, a once-only `closed`, `hangOnClose` for a server that
+never answers, `reportUsage`, `serverClosed`). `transport.test.ts`: pause closes
+the session (state `closed`, no `session` in the snapshot, phase `paused`, the
+typed `pause` row, `PauseInfo` with `sleepsAt`, mic dropped, brain still ready);
+resume opens a second `FakeLive` whose `config.instructions` carry the last heard
+line under `# Continuity`, `resumedFrom` on the started row, a `resume` row; stop
+is asleep synchronously with `stop` then `session.closed` rows and no reconnect,
+from paused and from asleep; stop during connecting closes right after
+`session.started` without a problem line; a late `closed` from the old session
+records its row and its usage delta and leaves the new session alone; the deadline
+terminates a hanging close (stop and pause); the watchdog's three cases; a pause
+decays at `sleepsAt`; `usageToday` across close / pause / resume / stop, a day
+rollover, and a second engine over the same ledger; `go` in every state;
+`interrupt` and the ear's spoken stop keep the session; say-text while paused
+resumes first; a resume's handshake survives ticks (and the decay clock), queues
+the mic and ends awake without a problem line — over `FakeLive` and over a real
+`LiveSession` on a fake socket; stop-then-go within one handshake keeps the
+session; interrupt during a connect writes no row and queues nothing; a socket
+refused before `session.started` fails once with no reconnect and Go retries; a
+wake during `restartBrain` waits for the brain. `stop.test.ts` is the interrupt (gate, cancel, hands, one
+instruction, session kept) and the stop aftermath (asleep at once, a new session
+on wake while the brain's slow cancel is still settling, `sleep()` closes before
+awaiting the cancel). `session.test.ts`: `terminate()` once-only semantics, the
+1500 ms fallback under mock timers, a server that answers in time (and the socket
+closed from this side once it has).
+
+Two call sites outside this section still send the old `stop` for the old
+semantics and belong to the `interrupt` command now:
+`packages/engine/src/__tests__/ear-engine.test.ts` (the "after Stop the
+recogniser's late partial…" test, line ~370 — verified green with `interrupt`)
+and `packages/cli/src/bench.ts` (the `stop` row measures `stopEverything` in a
+loop over one session; with the transport's stop the first iteration closes it).
+
+## 14. Permissions: ask for everything (2026-09-11)
+
+Kevin: "find a way to give it al persmissions and make it ask for allpermisions."
+The fact under it: **macOS TCC cannot be granted programmatically.** There is no
+API that flips a grant; `tccutil` only resets; a configuration profile can
+pre-approve a few services (Accessibility, Full Disk Access, Automation…) but
+only under MDM, which this Mac is not. What an app *can* do is ask — once per
+kind, through the kind's own request API, which shows the system dialog — and,
+for the kinds that have no dialog, deep-link to the exact System Settings pane,
+reveal the bundle in Finder for dragging in, and watch for the change. "Give it
+all permissions" is therefore a **sweep**: every kind with a prompt, in order,
+one dialog at a time (two at once and the second is dismissed with the first),
+then the Settings-only ones, then a re-read. Every grant keys on the app bundle
+`/Applications/Jarhead.app` (signed with the stable "Jarvis Local Signing"
+identity; an ad-hoc signature is cdhash-bound and resets the grants on every
+build — §6b, AGENTS.md). The daemon (`node`/`tsx`) and `jarhead-hands` are its
+children, so their prompts and their grants are the app's. Two more facts that
+bit once each: the bundle carries the hardened runtime, so a protected resource
+also needs its entitlement (`apps/mac/Resources/entitlements.plist`), and every
+prompt needs its usage string in `Info.plist` — a missing usage string does not
+show a dialog, it kills the app on first access.
+
+### The sixteen
+
+`packages/protocol/src/index.ts` — `PERMISSION_KINDS`, `PermissionInfo {kind,
+grant, ask, required, label, why, detail?, checkedAt?}`, `Permissions.all`, the
+`request-permission {which: kind | "all"}` command; the Swift mirror is
+`Model/Protocol.swift`. `ask` says how a kind is obtained: `prompt` (an API shows
+the dialog once), `settings` (System Settings only), `perApp` (Automation: one
+dialog per target app, when that app is running and first scripted).
+
+| kind | ask | required | read by |
+|---|---|---|---|
+| microphone, speechRecognition | prompt | yes | app |
+| screenRecording, accessibility | prompt | yes | **helper** (fresh process) |
+| inputMonitoring | prompt (`IOHIDRequestAccess`, from the app) | yes | **helper** (`IOHIDCheckAccess`) |
+| fullDiskAccess | settings | yes | **helper** (read probe) |
+| automation | perApp | yes | app |
+| notifications, camera, contacts, calendars, reminders, localNetwork | prompt | no | app |
+| filesDesktop, filesDocuments, filesDownloads | prompt | no | app |
+
+`required` is one set in three places — the app's `PermissionsKit.meta`, the
+engine's `PERMISSION_CATALOGUE`, README's table — the seven above, so Setup's
+`missingRequired` and `jarhead status` name the same kinds before and after the
+app's first list; `permissions.test.ts` pins the engine's seven (the app's mirror
+test is P1's).
+
+### Who reads what, and why the split
+
+TCC answers are **per process**, and a resident process keeps the answer it got
+at launch (Screen Recording notoriously; Accessibility too): the only reliable
+read after Kevin flips a switch is a *fresh* process. The app is resident, so
+the four kinds a helper process can read for itself come from `jarhead-hands
+--permissions` (`packages/hands/native/main.swift` `permissionsJSON()`): AX
+(`AXIsProcessTrusted`), SR (`CGPreflightScreenCaptureAccess`), Input Monitoring
+(`IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == granted`) and Full Disk
+Access — which has no API and no prompt, so the probe opens something only FDA
+unlocks (the user `TCC.db`, `~/Library/Safari`) and reads errno: EPERM is "not
+granted", success is "granted", nothing is read and no dialog or Settings row
+results. None of the four reads prompts. The helper's `permissions` op with
+`prompt: true` asks for **one** dialog per call — `which: "accessibility" |
+"screenRecording"`; omitted or `"all"` means the first of the two still missing,
+never both, because two dialogs at once and the second is dismissed with the
+first. Input Monitoring's prompt has to come from the app's own process (the
+grant is for the app's global key monitors,
+`NSEvent.addGlobalMonitorForEvents(.keyDown)` in mark mode, which silently
+receive nothing without it), and FDA has none.
+
+The other twelve are readable only from the app's process (AVCaptureDevice,
+SFSpeechRecognizer, CNContactStore, EKEventStore, UNUserNotificationCenter, the
+folder prompts fire on first access…), so the app reads them and sends
+`{type:"permission", which, state, detail?}` for one and `{type:"permissions",
+all: PermissionInfo[]}` for the list (`packages/daemon/src/wire.ts`;
+`server.ts` routes them to `engine.setPermission` / `setPermissions`).
+
+### Engine (`packages/engine/src/engine.ts`, the permissions region)
+
+- `pollPermissions` runs from `tick()` (`permissionPollInterval`): a fresh helper
+  process every 1.5 s for 90 s after a prompt or an app report that disagrees
+  with the engine's own read (Kevin is in a dialog or System Settings); every
+  3 s while a kind *with a prompt* — AX, SR, Input Monitoring — is missing or
+  unread; every 30 s otherwise, **Full Disk Access alone missing included**: it
+  has no prompt, is dragged in by hand, and the app's watch of that pane reports
+  the change (which reads fresh at the next tick) — Kevin's likely steady state
+  must not cost a process every 3 s for the daemon's life. `applyHelperRead`
+  folds a read — the resident helper's greeting at start, or the poll — into the
+  state: the legacy fields, the rows of `permissions.all` for the four kinds (an
+  app row keeps its label / why / ask / required and moves only `grant` and
+  `checkedAt`; without an app list the four rows *are* the list, from
+  `PERMISSION_CATALOGUE`), the problem lines, the toasts, and `helperGrants` —
+  what the engine has read for itself. An Accessibility or Screen Recording
+  grant that appears restarts the resident helper (its connections were made
+  without the right); FDA and Input Monitoring do not (they are the daemon's
+  reads and the app's monitors, not the helper's).
+- **The engine's fresh read wins for its four kinds**, in `setPermissions(all)`
+  and `setPermission(which, …)` alike (`applyAppWord`): a row keeps the grant
+  the engine read itself, and an app word that disagrees only makes the next
+  tick read fresh — the app's 1.5 s watch usually sees a grant it just asked for
+  a beat before our poll, and that fresh read is what clears the problem line
+  and restarts the helper. (The first cut let the singular `permission` message
+  overwrite the engine's grant; the poll then found nothing changed, so the
+  problem never cleared and the helper kept running without the right. And a
+  stale app word — a resident process's old answer — could toast "revoked" or
+  restart the helper for nothing.) Without a read of its own (the helper not
+  built, or not greeted yet) the engine takes the app's word through the same
+  transition logic, so the problem and the restart follow it. The list is the
+  app's rows in the app's order with the app's labels, one row per kind (a
+  repeated kind keeps its first place and takes the last row); a helper kind the
+  app left out keeps the engine's row, so the list never loses a grant it has.
+  The microphone follows the app's list through `setMicrophonePermission`
+  (problem when denied, cleared when granted). `setPermission` adds the
+  catalogue row for a kind not listed yet, so `jarhead status` sees a single
+  report before the app's first full list. Junk rows (no known kind) are dropped.
+- `PERMISSION_PROBLEMS` covers the four the engine can see: the two that
+  existed plus "Input Monitoring not granted: …" and "Full Disk Access not
+  granted: files under Desktop/Documents/Downloads/Mail/Safari will fail with
+  EPERM until Jarhead.app is added in System Settings › Privacy & Security ›
+  Full Disk Access", each with the "if System Settings already shows Jarhead
+  on, that row is from an earlier build" hint (an ad-hoc build's row shows on
+  and does nothing — remove it and ask again). A problem is raised when the
+  grant is missing and cleared when it appears; a revocation toasts a warning,
+  a grant that appears toasts what works now; a first read toasts nothing.
+- `request-permission` is a **prompt queue**, one dialog at a time:
+  `"accessibility"` or `"screenRecording"` prompts that one kind through the
+  helper (`permissions {prompt: true, which}`); `"all"` queues Accessibility,
+  then Screen Recording, and the next dialog is shown only once the one on
+  screen is granted — the fresh read sees it — or after `PROMPT_WAIT_MS` (30 s:
+  a denied or dismissed dialog leaves nothing to read). Kinds already granted
+  are skipped, a new request replaces the queue, each prompt opens the 1.5 s
+  poll window for 90 s. Every other kind returns at once — the app intercepts
+  the command and shows that prompt itself (the sweep is the app's, and it asks
+  AX and SR from its own process; the engine's queue serves a row's Request on
+  either, which the app forwards, and a caller without the app).
+  `JARHEAD_PERMISSIONS_DRY_RUN=1` logs the queue and asks nothing.
+- Snapshot: `permissions.all` is present once anything is known — an array,
+  possibly partial (the four, until the app reports).
+
+Proved by `packages/engine/src/__tests__/permissions.test.ts` (a fake helper
+answers `hello` and the fresh read through `EngineOptions.probePermissions`; no
+dialog is ever shown) and the daemon round-trips in
+`packages/daemon/src/__tests__/daemon.test.ts`.
+
+### The EPERM line (`packages/brain/src/files.ts`, `shell.ts`)
+
+Without a grant, TCC answers a read or write with `EPERM` ("Operation not
+permitted") and nothing else — no dialog for FDA, a raw errno for the model.
+`files.ts` maps an EPERM on a guarded path — `~/Desktop`, `~/Documents`,
+`~/Downloads` (their own prompt), `~/Library/…`, `~/.Trash` (Full Disk Access) —
+to one line: `macOS blocked this: Jarhead lacks <Full Disk Access | access to
+the Desktop folder>. Setup › Permissions › Ask for everything`. `readWindow`,
+`writeText`, `editText`, `listTree` (a blocked root is the whole result; a
+blocked subfolder is its `[unreadable: …]` line) and `searchFiles` (a blocked
+root says so instead of "no hits") use it; `describeShellResult` appends it
+when stderr carries "Operation not permitted" about a guarded path. The path is
+the one the stderr line names (`ls: ~/Desktop: Operation not permitted`, `zsh:
+operation not permitted: ~/Library/Mail`); a named path TCC does not guard
+(`chflags` on `/System`) is no permission problem whatever else the command
+mentions, and the command is read only when no line names a path (`kill: …
+operation not permitted`), skipping a redirect's target (`> ~/Desktop/log.txt`
+is where the output went, not what was blocked). A bare `Desktop`/`Library`
+token is relative to the home folder, the shell's default cwd. With output on
+stdout the line reads **`macOS blocked part of this: …`** — `find` or `ls -R`
+over the home folder without FDA prints its hits and a warning per skipped
+folder, and the hits stand — and `macOS blocked this` only when nothing came
+back. An EPERM elsewhere and every EACCES stay what they were, and no policy
+decision moves: policy ran before the read. The `read_file` and `run_shell`
+descriptions tell the model which is which: "blocked this" is a missing
+permission, not a bug — say it to Kevin and stop; "blocked part of this" — use
+the output, add the line. Proved by `packages/brain/src/__tests__/
+macos-block.test.ts` on synthesized errors and stderr (no guarded path is
+touched: a folder prompt could fire).
+
+### CLI and doctor
+
+`pnpm jarhead status` prints `permissions  12/16 granted · missing: Full Disk
+Access (System Settings), Contacts (prompt)` from `snapshot.permissions.all`
+(`--permissions` for a row each; a partial list says how many the app still has
+to read). `pnpm run doctor` shows the four the helper can read — marked as *this
+terminal's* grants, since TCC keys them on whoever launched the helper — says the
+rest is read by Jarhead.app (Setup shows it), and, when a daemon answers, prints
+the app's list under a `permissions` group with the required-and-missing kinds
+as the next step.
+
+### Left to the app (P1, `apps/mac`)
+
+The sweep itself: the order (microphone, speech, camera, contacts, calendars,
+reminders, notifications, local network, Input Monitoring, then AX and SR
+through the engine, then the three folders on first access, Automation per app,
+then the FDA pane with the bundle revealed), one dialog at a time, a denied
+prompt deep-linked to its pane, the re-read after each and the `permissions`
+message; every usage string in `Info.plist` and every entitlement in
+`entitlements.plist` for the kinds it asks; the Console rail and the Setup
+step reading `permissions.all` and `missingRequired`. Two seams with the engine
+to keep: a row's Request for Accessibility or Screen Recording is forwarded as
+`request-permission <kind>` and prompts that one kind only (the engine's queue
+never stacks the two), and the app's `PermissionsKit.meta` `required` set is the
+same seven as the engine's catalogue — pin it in a Swift test next to the
+engine's.

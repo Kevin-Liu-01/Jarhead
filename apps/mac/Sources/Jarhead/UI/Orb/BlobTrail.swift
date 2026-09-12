@@ -102,10 +102,11 @@ final class BlobGhostWindow: NSWindow {
 
 @MainActor
 final class BlobTrail {
-    /// Ghosts alive at once. Dropped every `spacing`, each living `life`: 4–5 on screen mid-flight.
+    /// Ghosts alive at once. Dropped every `spacing`, each living `life` (`Motion.drift`,
+    /// fading with `Motion.easeIn`): 4–5 on screen mid-flight.
     static let capacity = 5
     static let spacing = 0.12
-    static let life = 0.55
+    static var life: Double { Motion.seconds(Motion.drift) }
     static let peakOpacity: Float = 0.62
 
     private let size: NSSize
@@ -132,17 +133,18 @@ final class BlobTrail {
         ghost.imageLayer.contents = image
         ghost.imageLayer.contentsScale = orb.backingScaleFactor
         ghost.imageLayer.opacity = 0
+        let life = Self.life
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = Self.peakOpacity
         fade.toValue = 0
-        fade.duration = Self.life
-        fade.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        fade.duration = life
+        fade.timingFunction = Motion.easeIn
         fade.isRemovedOnCompletion = false
         fade.fillMode = .forwards
         ghost.imageLayer.add(fade, forKey: "fade")
         ghost.order(.below, relativeTo: orb.windowNumber)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.life + 0.05) { [weak ghost] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + life + 0.05) { [weak ghost] in
             guard let ghost, ghost.generation == gen else { return }
             ghost.orderOut(nil)
         }

@@ -78,6 +78,8 @@ export type DaemonMessage =
   | { readonly type: "audio"; readonly control: "flush" }
   | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[] }
   | { readonly type: "ledger.days"; readonly id: string; readonly days: string[] }
+  /** Jarhead's own sessions (JarheadSessionSummary[]), newest first. */
+  | { readonly type: "ledger.sessions"; readonly id: string; readonly sessions: unknown[] }
   | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
@@ -93,9 +95,15 @@ export type ClientMessage =
   | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean }
   | { readonly type: "command"; readonly command: unknown }
   | { readonly type: "mic-level"; readonly level: number }
-  | { readonly type: "permission"; readonly which: "microphone" | "screenRecording" | "accessibility"; readonly state: "granted" | "denied" | "unknown" }
+  | { readonly type: "permission"; readonly which: string; readonly state: "granted" | "denied" | "unknown"; readonly detail?: string }
+  /** The app's full read of every permission (PermissionInfo[]), after a sweep or a poll. */
+  | { readonly type: "permissions"; readonly all: unknown[] }
   | { readonly type: "ledger.read"; readonly id: string; readonly date: string }
   | { readonly type: "ledger.days"; readonly id: string }
+  /** List Jarhead's own sessions across the ledger. */
+  | { readonly type: "ledger.sessions"; readonly id: string }
+  /** The rows of one session (its started row through its closed row); answered with `ledger.rows`. */
+  | { readonly type: "ledger.session"; readonly id: string; readonly sessionId: string }
   /**
    * Run one of Jarhead's tools through the engine's ToolRunner (policy, ledger,
    * screenshot archive, confirmation handshake included). Used by the MCP bridge

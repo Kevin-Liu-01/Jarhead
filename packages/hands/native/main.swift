@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import IOKit.hid
 
 // jarhead-hands: resident macOS "hands" helper for Jarhead.
 // Newline-delimited JSON over stdin/stdout. One request per line, one response per request,
@@ -46,16 +47,54 @@ func dispatch(op: String, params: Params) throws -> JSONObject {
     }
 }
 
+// The grants a helper process can read for itself. TCC keys every one of them on
+// the responsible app (Jarhead.app when the daemon spawned us; the terminal when a
+// shell did), so these answers are the app's when run under it. None of the four
+// reads shows a dialog: AXIsProcessTrusted, CGPreflightScreenCaptureAccess and
+// IOHIDCheckAccess only check, and Full Disk Access has no prompt at all — the
+// probe below opens something only that grant unlocks and looks at errno.
 func permissionsJSON() -> JSONObject {
     return [
         "accessibility": AXIsProcessTrusted(),
         "screenRecording": CGPreflightScreenCaptureAccess(),
+        "inputMonitoring": IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
+        "fullDiskAccess": fullDiskAccessGranted(),
     ]
+}
+
+// Full Disk Access is the one permission with neither API nor prompt: the only read
+// is to try. The user TCC database and ~/Library/Safari exist on every account and
+// are FDA-only (no folder prompt covers them); opening one for reading succeeds with
+// the grant and fails with EPERM without it. Nothing is read, the descriptor is
+// closed at once, and a denied open never shows a dialog or a Settings row.
+func fullDiskAccessGranted() -> Bool {
+    let home = NSHomeDirectory()
+    let files = [
+        "\(home)/Library/Application Support/com.apple.TCC/TCC.db",
+        "\(home)/Library/Safari/Bookmarks.plist",
+        "\(home)/Library/Safari/CloudTabs.db",
+    ]
+    for path in files {
+        let fd = open(path, O_RDONLY)
+        if fd >= 0 {
+            close(fd)
+            return true
+        }
+    }
+    // A folder listing is the same test for accounts whose files above are missing.
+    for dir in ["\(home)/Library/Safari", "\(home)/Library/Application Support/com.apple.TCC"] {
+        if let handle = opendir(dir) {
+            closedir(handle)
+            return true
+        }
+    }
+    return false
 }
 
 // `jarhead-hands --permissions`: print the grants and exit. A fresh process is the
 // only reliable way to read TCC after the user changes it — a running process may
-// keep the answer it got at launch (Screen Recording notoriously does).
+// keep the answer it got at launch (Screen Recording notoriously does). Prints all
+// four: accessibility, screenRecording, inputMonitoring, fullDiskAccess.
 if CommandLine.arguments.contains("--permissions") {
     let data = (try? JSONSerialization.data(withJSONObject: permissionsJSON())) ?? Data("{}".utf8)
     FileHandle.standardOutput.write(data)
@@ -71,13 +110,36 @@ func opHello() -> JSONObject {
     ]
 }
 
+// `prompt: true` asks for one of the two grants a helper process can prompt for from
+// here — `which`: "accessibility" or "screenRecording" (the dialogs name the
+// responsible app) — one dialog per call: two at once and the second is dismissed
+// with the first, so the caller (the engine's prompt queue) asks for the next only
+// once this one lands. `which` omitted or "all" asks for the first of the two still
+// missing, never both. Input Monitoring's prompt belongs to the app
+// (IOHIDRequestAccess from its own process, so the grant lands on the app's global
+// key monitors) and Full Disk Access has none; all four are still *read* by every call.
 func opPermissions(_ params: Params) throws -> JSONObject {
     if try params.bool("prompt") ?? false {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        _ = CGRequestScreenCaptureAccess()
+        let which = try params.string("which") ?? "all"
+        switch which {
+        case "accessibility": promptAccessibility()
+        case "screenRecording": promptScreenRecording()
+        case "all":
+            if !AXIsProcessTrusted() { promptAccessibility() }
+            else if !CGPreflightScreenCaptureAccess() { promptScreenRecording() }
+        default: throw HandsError.badRequest("'which' must be accessibility, screenRecording or all")
+        }
     }
     return permissionsJSON()
+}
+
+func promptAccessibility() {
+    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(options)
+}
+
+func promptScreenRecording() {
+    _ = CGRequestScreenCaptureAccess()
 }
 
 func opWait(_ params: Params) throws -> JSONObject {

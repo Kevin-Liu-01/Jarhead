@@ -55,10 +55,12 @@ enum ConsoleTheme {
     static let muted = rgb(0x6b7280)
     static let connecting = rgb(0x9fb4c8)
 
-    // MARK: motion — opacity and transform only
+    // MARK: motion — opacity and transform only, from the one vocabulary (UI/Motion.swift)
 
-    static let motion: Animation = .easeOut(duration: 0.2)
-    static let fast: Animation = .easeOut(duration: 0.12)
+    /// Moves on its own: a view switch, a card arriving (`Motion.gentle`).
+    static var motion: Animation { Motion.gentle }
+    /// Answers the hand: a selection, a toggle (`Motion.snappy`).
+    static var fast: Animation { Motion.snappy }
 
     // MARK: colour helpers
 
@@ -114,14 +116,16 @@ enum ConsoleTheme {
         case .thinking: return PhaseMeta(label: "Thinking", color: thinking, hint: "The brain is working.")
         case .acting: return PhaseMeta(label: "Acting", color: acting, hint: "Jarhead is using the computer.")
         case .muted: return PhaseMeta(label: "Muted", color: muted, hint: "Mic muted. Session open.")
-        case .paused: return PhaseMeta(label: "Paused", color: titanium, hint: "Paused. Session open, still connected; mic and voice off.")
+        case .paused: return PhaseMeta(label: "Paused", color: titanium, hint: "Paused. Session closed, meter stopped; Go resumes with the context.")
         case .error: return PhaseMeta(label: "Error", color: error, hint: "Something broke. See problems.")
         }
     }
 
     static let busyPhases: Set<Phase> = [.speaking, .thinking, .acting]
-    /// A live session is open (the composer shows Sleep, Mute is enabled): paused counts — the session is still there.
-    static let sessionPhases: Set<Phase> = [.connecting, .listening, .speaking, .thinking, .acting, .muted, .paused]
+    /// A live session is open or opening (the composer shows Pause, Mute is enabled).
+    /// Paused is not one: a pause closes the session — the meter stops — and only the
+    /// conversation is kept, so the composer shows Go and the placeholder says so.
+    static let sessionPhases: Set<Phase> = AppState.inSessionPhases.union([.connecting])
     /// Phases whose dot pulses.
     static let livePhases: Set<Phase> = [.listening, .speaking, .thinking, .acting, .connecting]
 
@@ -223,7 +227,7 @@ enum ConsoleTheme {
     /// `auth` is named when it is `.none`, so a gate that opens the session on the
     /// word alone never looks like one that authenticates. `now` feeds the lockout
     /// countdown so a TimelineView can tick it.
-    static func gate(_ g: WakeGateState, phrases: [String], auth: WakeAuth, now: Date = Date()) -> GateMeta {
+    static func gate(_ g: WakeGateState, phrases: [String], auth: WakeAuth, now: Date = Date(), paused: Bool = false) -> GateMeta {
         switch g {
         case .off(let reason):
             // The gate's reason for the plain switch-off is itself "wake word off";
@@ -233,13 +237,15 @@ enum ConsoleTheme {
             return GateMeta(symbol: "ear.trianglebadge.exclamationmark", color: titanium, label: label)
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
+            // Paused: the word resumes without authentication (WakeGate.isPaused); say so, and name the button.
+            if paused { return GateMeta(symbol: "ear.fill", color: listening, label: "paused · say “\(phrase)” or press Go") }
             return GateMeta(symbol: "ear.fill", color: listening, label: "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : ""))
         case .heard:
             return GateMeta(symbol: "waveform.circle.fill", color: acting, label: "Heard you")
         case .authenticating(let method):
             return GateMeta(symbol: "lock.fill", color: speaking, label: "Waiting for \(method)")
         case .granted:
-            return GateMeta(symbol: "waveform.circle.fill", color: acting, label: "Waking…")
+            return GateMeta(symbol: "waveform.circle.fill", color: acting, label: paused ? "Resuming…" : "Waking…")
         case .denied(let reason):
             return GateMeta(symbol: "xmark.circle.fill", color: error, label: "Not this time — \(reason)")
         case .lockedOut(let until):
@@ -247,8 +253,9 @@ enum ConsoleTheme {
         }
     }
 
-    /// The engine takes a `wake` in these phases (WakeGate.isDormant); anywhere else the gate rests.
-    static func gateRests(_ phase: Phase) -> Bool { phase != .asleep && phase != .error }
+    /// The gate holds the microphone while dormant (asleep, error) and while paused
+    /// (WakeGate.listens(in:)); anywhere else the voice engine has it and the gate rests.
+    static func gateRests(_ phase: Phase) -> Bool { phase != .asleep && phase != .error && phase != .paused }
 }
 
 // MARK: - Formatting (pure)
@@ -268,6 +275,13 @@ enum ConsoleFormat {
         let m = seconds / 60
         return m < 10 ? String(format: "%.1f min", m) : "\(Int(m.rounded())) min"
     }
+
+    /// The meter's line: billed seconds → "2.3 min · $0.12" (TransportFormat, shared with the capsule).
+    static func billed(_ seconds: Double) -> String { TransportFormat.billed(seconds) }
+
+    /// The paused line (TransportFormat.pausedLine): the meter stopped, the conversation
+    /// kept, the decay to sleep counting down.
+    static func pausedLine(_ pause: PauseInfo, now: Date) -> String { TransportFormat.pausedLine(pause, now: now) }
 
     /// Milliseconds → "412 ms" | "1.2 s" | "1:04"
     static func ms(_ ms: Double?) -> String {
@@ -382,11 +396,103 @@ enum ConsoleFormat {
     static var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 }
 
+// MARK: - Motion: the Console's bridge onto UI/Motion.swift
+
+/// The shared vocabulary in the shapes SwiftUI asks for here: Motion's Core Animation
+/// curves as `Animation`s, the arrive/leave transition every toast and pill uses, the
+/// hover answer, the content transitions for a symbol that swaps and digits that count.
+/// Every number is Motion's; Reduce Motion is Motion's call (`Motion.reduced`), read
+/// when a body is built — so a toggle of the system setting while the Console is open
+/// takes effect from each view's next state change, not on the frame it flips (the
+/// feeds' scroll trackers and `ConsoleDot`, which watch the SwiftUI environment value,
+/// follow it live). A harness pins it with `Motion.reducedOverride`.
+enum ConsoleMotion {
+    /// A Core Animation curve (`Motion.easeOut` / `easeIn` / `easeInOut`) as a SwiftUI
+    /// animation of `duration`, honouring Reduce Motion the way `Motion.seconds` does.
+    static func animation(_ curve: CAMediaTimingFunction, _ duration: Double) -> Animation {
+        var c1 = [Float](repeating: 0, count: 2), c2 = [Float](repeating: 0, count: 2)
+        curve.getControlPoint(at: 1, values: &c1)
+        curve.getControlPoint(at: 2, values: &c2)
+        return .timingCurve(Double(c1[0]), Double(c1[1]), Double(c2[0]), Double(c2[1]), duration: Motion.seconds(duration))
+    }
+
+    /// Leaving, gaining speed: `Motion.easeIn` over `Motion.base`.
+    static var leave: Animation { animation(Motion.easeIn, Motion.base) }
+
+    /// A hover state or a press being felt: `Motion.instant`, eased out.
+    static var hover: Animation { .easeOut(duration: Motion.seconds(Motion.instant)) }
+
+    /// How far a view rises as it arrives — `Motion.appear`'s insertion offset, for the
+    /// row-level appear that must not touch layout (`ConsoleRowAppear`).
+    static let rise: CGFloat = 6
+
+    /// A toast or a pill: arrives with a fade and a rise (`Motion.bouncy`, a little
+    /// life), leaves with a fade and a drop gaining speed (`Motion.easeIn`). Stacked
+    /// neighbours reflow under the container's own animation. A plain fade under
+    /// Reduce Motion.
+    static var arriveLeave: AnyTransition {
+        if Motion.reduced { return .opacity.animation(Motion.fade) }
+        return .asymmetric(insertion: .opacity.combined(with: .offset(y: 8)).animation(Motion.bouncy),
+                           removal: .opacity.combined(with: .offset(y: 8)).animation(leave))
+    }
+
+    /// A step changing hands: the new one fades in from one side by `distance` (from the
+    /// right going forward, from the left going back) over the old one fading out where
+    /// it stands. The removal is a plain fade on purpose: a view leaving keeps the
+    /// transition it was given when it arrived, so a slide-out would go the wrong way the
+    /// moment the direction flips. A plain fade both ways under Reduce Motion.
+    static func slide(forward: Bool, distance: CGFloat = 12) -> AnyTransition {
+        if Motion.reduced { return .opacity }
+        return .asymmetric(insertion: .opacity.combined(with: .offset(x: forward ? distance : -distance)),
+                           removal: .opacity)
+    }
+
+    /// A symbol whose name changes: the SF Symbol replace effect, a fade under Reduce Motion.
+    static var symbol: ContentTransition { Motion.reduced ? .opacity : .symbolEffect(.replace) }
+
+    /// Digits that count (a meter, a message count): each changed digit rolls; a fade under Reduce Motion.
+    static var numeric: ContentTransition { Motion.reduced ? .opacity : .numericText() }
+}
+
+/// A row arriving in a feed: the fade and 6pt rise of `Motion.appear`, done on the row's
+/// own opacity and offset — never on its layout. The feed's sticky bottom is pinned to
+/// the document's height by an AppKit probe (StreamFeed), and a transition that grew the
+/// document over 0.4 s would move that pin every frame; this way the height is exactly
+/// what it will be from the first frame and only the ink moves. Rows already there when
+/// the feed opened, and the rows a read it opened waiting on (`animated: false` until the
+/// feed has settled with content), show at once — the pane they are in is arriving on
+/// its own. Reduce Motion: a fade, no rise.
+struct ConsoleRowAppear: ViewModifier {
+    let animated: Bool
+    @State private var shown: Bool
+
+    init(animated: Bool) {
+        self.animated = animated
+        _shown = State(initialValue: !animated)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown || Motion.reduced ? 0 : ConsoleMotion.rise)
+            .onAppear {
+                guard !shown else { return }
+                withAnimation(Motion.gentle) { shown = true }
+            }
+    }
+}
+
+extension View {
+    /// Fade in and rise as a new row (see `ConsoleRowAppear`).
+    func rowAppear(animated: Bool = true) -> some View { modifier(ConsoleRowAppear(animated: animated)) }
+}
+
 // MARK: - Shared controls
 
 /// A status dot; pulses while `live`. The pulse starts and stops with the
 /// value (not only on appear) and is absent under reduce motion, so a finished
-/// dot never carries a running repeatForever animation.
+/// dot never carries a running repeatForever animation. A colour change (the
+/// phase turning) crossfades.
 struct ConsoleDot: View {
     let color: Color
     var live = false
@@ -401,6 +507,7 @@ struct ConsoleDot: View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
+            .animation(Motion.fade, value: color)
             .overlay {
                 if pulsing {
                     Circle()
@@ -427,7 +534,9 @@ struct ConsoleDot: View {
     }
 }
 
-/// A solid SF Symbol on the fixed 20pt icon column.
+/// A solid SF Symbol on the fixed 20pt icon column. A name that changes (a grant
+/// landing, Go turning into Pause) swaps with the symbol replace effect; a tint that
+/// changes crossfades — so no glyph in the Console ever cuts.
 struct ConsoleIcon: View {
     let name: String
     var tint: Color = ConsoleTheme.titanium
@@ -438,6 +547,9 @@ struct ConsoleIcon: View {
             .font(.system(size: size, weight: .medium))
             .foregroundStyle(tint)
             .frame(width: 20, height: 20)
+            .contentTransition(ConsoleMotion.symbol)
+            .animation(Motion.fade, value: name)
+            .animation(Motion.fade, value: tint)
     }
 }
 
@@ -448,33 +560,37 @@ struct ConsoleStatusGlyph: View {
 
     var body: some View {
         let meta = ConsoleTheme.status(status)
-        Group {
+        // A ZStack, so the dot and the symbol crossfade when the status settles.
+        ZStack {
             if let symbol = meta.symbol {
-                ConsoleIcon(name: symbol, tint: meta.color)
+                ConsoleIcon(name: symbol, tint: meta.color).transition(.opacity)
             } else {
-                ConsoleDot(color: meta.color, live: meta.live, size: meta.live ? 7 : 6)
+                ConsoleDot(color: meta.color, live: meta.live, size: meta.live ? 7 : 6).transition(.opacity)
             }
         }
         .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: status)
         .help(status.rawValue)
         .accessibilityLabel(status.rawValue)
     }
 }
 
-/// A delegation's status as one glyph: a pulsing dot while live, a symbol once settled.
+/// A delegation's status as one glyph: a pulsing dot while live, a symbol once settled;
+/// the two crossfade as the status changes.
 struct ConsoleDelegationGlyph: View {
     let status: DelegationStatus
 
     var body: some View {
         let meta = ConsoleTheme.delegation(status)
-        Group {
+        ZStack {
             if meta.live {
-                ConsoleDot(color: meta.color, live: true, size: 7)
+                ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)
             } else {
-                ConsoleIcon(name: meta.symbol, tint: meta.color)
+                ConsoleIcon(name: meta.symbol, tint: meta.color).transition(.opacity)
             }
         }
         .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: status)
         .help(meta.label)
         .accessibilityLabel(meta.label)
     }
@@ -496,13 +612,18 @@ struct ConsoleSectionHead<Trailing: View>: View {
         HStack(spacing: 6) {
             Text(title).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium)
             if let count = count {
+                // The count rolls its digits as sessions come and go; the number arriving
+                // or leaving altogether fades.
                 Text("\(count)").font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                    .contentTransition(ConsoleMotion.numeric)
+                    .transition(.opacity)
             }
             Spacer(minLength: 0)
             trailing
         }
         .padding(.horizontal, 12)
         .frame(height: 28)
+        .animation(Motion.snappy, value: count)
     }
 }
 
@@ -534,7 +655,6 @@ private struct ConsoleButtonBody: View {
     let configuration: ButtonStyle.Configuration
 
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -548,8 +668,12 @@ private struct ConsoleButtonBody: View {
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45)
             .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
-            .animation(reduceMotion ? nil : ConsoleTheme.fast, value: configuration.isPressed)
+            // The hover and the press are felt at once; a kind that flips (Stop turning
+            // red, Send filling with text, Go becoming a ghost) crossfades its fill.
+            .animation(ConsoleMotion.hover, value: hovering)
+            .animation(ConsoleMotion.hover, value: configuration.isPressed)
+            .animation(Motion.snappy, value: kind)
+            .animation(Motion.fade, value: enabled)
     }
 
     private var lit: Bool { hovering || configuration.isPressed }
@@ -588,8 +712,6 @@ struct ConsoleFieldModifier: ViewModifier {
     var error = false
     var grows = false
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
@@ -601,7 +723,9 @@ struct ConsoleFieldModifier: ViewModifier {
             .frame(minHeight: height, maxHeight: grows ? nil : height)
             .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(error ? ConsoleTheme.error : (focused ? ConsoleTheme.accent : ConsoleTheme.hair), lineWidth: 1))
-            .animation(reduceMotion ? nil : ConsoleTheme.fast, value: error)
+            // The ring answers focus and a rejection at once.
+            .animation(Motion.snappy, value: error)
+            .animation(Motion.snappy, value: focused)
     }
 }
 
@@ -638,7 +762,6 @@ struct ConsoleMenuField<Value: Hashable>: View {
     var fieldTitle: ((Value) -> String)? = nil
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Menu {
@@ -671,7 +794,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
+        .animation(ConsoleMotion.hover, value: hovering)
     }
 }
 
@@ -815,7 +938,28 @@ extension View {
 
 /// Hook the Console's key equivalents up without a menu bar dependency.
 enum ConsoleKeyCommand {
+    /// ⌘W, ⌘. (AppState.transportStop), ⌘K.
     case close, stop, focusComposer
-    /// ⌘P: pause the session (silent, still connected) / resume it.
-    case togglePause
+    /// ⌘P: the transport's Go / Pause (AppState.transportToggle) — go when asleep or
+    /// paused, pause in session (the session closes, the conversation is kept).
+    case transportToggle
+}
+
+/// The transport for the composer's Go/Pause: AppState's Transport region behind a
+/// closure, installed by ConsoleWindowController, so the composer observes the phase it
+/// is handed and not AppState (whose level stream would re-render it at 60 Hz). Stop
+/// stays on `ConsoleActions.stop`, which lands in the same place.
+struct ConsoleTransport {
+    var toggle: () -> Void = {}
+}
+
+private struct ConsoleTransportKey: EnvironmentKey {
+    static let defaultValue = ConsoleTransport()
+}
+
+extension EnvironmentValues {
+    var consoleTransport: ConsoleTransport {
+        get { self[ConsoleTransportKey.self] }
+        set { self[ConsoleTransportKey.self] = newValue }
+    }
 }

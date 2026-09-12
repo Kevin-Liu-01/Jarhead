@@ -164,8 +164,19 @@ final class EngineClient: @unchecked Sendable {
         net.async { self.rawSend(json: ["type": "mic-level", "level": clamped]) }
     }
 
-    func sendPermission(which: String, state grant: Grant) {
-        net.async { self.rawSend(json: ["type": "permission", "which": which, "state": grant.rawValue]) }
+    /// One permission as this app read it (wire.ts `permission`); `detail` is the row's
+    /// extra line (Automation's targets, a folder's path).
+    func sendPermission(which: String, state grant: Grant, detail: String? = nil) {
+        var json: [String: Any] = ["type": "permission", "which": which, "state": grant.rawValue]
+        if let detail { json["detail"] = detail }
+        net.async { self.rawSend(json: json) }
+    }
+
+    /// The whole list after a read that changed something (wire.ts `permissions`); the
+    /// daemon puts it in `snapshot.permissions.all`.
+    func sendPermissions(all: [PermissionInfo]) {
+        let rows = all.map(\.json)
+        net.async { self.rawSend(json: ["type": "permissions", "all": rows]) }
     }
 
     /// The on-device ear's partial or final transcript (wire.ts `ear`): `at` is ms
@@ -216,6 +227,27 @@ final class EngineClient: @unchecked Sendable {
 
     func ledgerRows(day: String) async -> [LedgerRow] {
         let any = await request(["type": "ledger.read", "date": day])
+        guard let rows = any as? [Any] else { return [] }
+        return EngineClient.decodeRows(rows)
+    }
+
+    /// Jarhead's own Live sessions across the ledger, newest first (`ledger.sessions`).
+    func jarheadSessions() async -> [JarheadSessionSummary] {
+        let any = await request(["type": "ledger.sessions"])
+        guard let list = any as? [Any] else { return [] }
+        // One at a time, like the rows: an odd entry must not hide the list.
+        var out: [JarheadSessionSummary] = []
+        out.reserveCapacity(list.count)
+        for entry in list {
+            guard JSONSerialization.isValidJSONObject(entry), let data = try? JSONSerialization.data(withJSONObject: entry) else { continue }
+            if let s = try? jarheadJSONDecoder.decode(JarheadSessionSummary.self, from: data) { out.append(s) }
+        }
+        return out
+    }
+
+    /// One session's rows, its started row through its closed row (`ledger.session`; answered with `ledger.rows`).
+    func jarheadSessionRows(_ id: String) async -> [LedgerRow] {
+        let any = await request(["type": "ledger.session", "sessionId": id])
         guard let rows = any as? [Any] else { return [] }
         return EngineClient.decodeRows(rows)
     }
@@ -305,6 +337,8 @@ final class EngineClient: @unchecked Sendable {
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["rows"]) }
         case "ledger.days":
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["days"]) }
+        case "ledger.sessions":
+            if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["sessions"]) }
         case "error":
             let message = obj["message"] as? String ?? "daemon error"
             log("daemon error: \(message)")

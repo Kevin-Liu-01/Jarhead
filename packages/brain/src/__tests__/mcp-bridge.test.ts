@@ -18,7 +18,7 @@ const TSX = join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 
 class FakeEngine extends EventEmitter implements EngineLike {
   calls: { name: string; input: unknown }[] = [];
-  ledger = { read: () => [], days: () => [] };
+  ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner = {
     run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {

@@ -35,9 +35,13 @@ one policy, and can step into every coding-agent session on the Mac.
 
 ## What it does
 
-- **Talks like a person.** Full duplex, sub-second turns, interruptible, pausable; asleep it
-  costs nothing and listens for its wake word on-device, then asks for Touch ID
-  or your passphrase before the paid session opens.
+- **Talks like a person.** Full duplex, sub-second turns, interruptible. One
+  transport everywhere — Go / Pause and Stop: pause and stop both *close* the Live
+  session, so the meter stops the moment you press; a pause keeps the conversation
+  and Go (or the wake word, no passphrase asked again) resumes it with that context
+  in a new session, while a stop drops it and sleeps. Asleep it costs nothing and
+  listens for its wake word on-device, then asks for Touch ID or your passphrase
+  before the paid session opens.
 - **Uses the Mac.** Screenshots, clicks, typing, scrolling, apps, files, shell,
   web, AppleScript — 55 tools, gated by policy (run / confirm / refuse), never by
   absence. A confirmation is your own spoken words, for that action, once.
@@ -84,6 +88,7 @@ pnpm jarhead probe "hey jarhead, what app is open right now?"   # end-to-end tes
 pnpm jarhead status                                            # what the running app is doing
 pnpm jarhead agents                                            # sessions found on this Mac
 pnpm jarhead bench                                             # tool latency, no API spend
+pnpm jarhead cmd stop|pause|go|interrupt                       # the transport: stop and pause close the session (the meter stops); go resumes with context
 ```
 
 State lives in `~/.jarhead`: `env` (keys, mode 0600, written by Setup),
@@ -127,18 +132,57 @@ the git history before `1ff11e2`.
 |---|---|
 | `⌥⇧J` | open the Console |
 | `⌥⇧M` | mute / unmute |
-| `⌥⎋` | stop everything |
-| `⌥⇧Space` | wake / sleep |
+| `⌥⎋` | stop — interrupt everything, close the session (the meter stops), sleep |
+| `⌥⇧Space` | go / pause — go wakes, or resumes a pause with its context; pause closes the session (the meter stops) and keeps the conversation |
 | `⌥⇧C` | circle something on screen for Jarhead |
-| `⌥⇧P` | pause / resume (session stays open, silent) |
+| `⌥⇧P` | alias of `⌥⇧Space` (go / pause) |
+
+In the Console the same two are `⌘P` (go / pause) and `⌘.` (stop); the `jarhead://`
+URLs are `go`, `pause` and `stop` (`wake`, `resume` and `sleep` still work as aliases).
 
 ## Permissions and keys
 
-Microphone, Speech Recognition, Screen Recording and Accessibility are granted
-once to **Jarhead** (the bundle is signed with a stable identity, so the grants
-survive rebuilds), re-read live, and shown in Setup and the Console. Keys and
-knobs live in `~/.jarhead/env`; Setup writes it, the doctor reads it, and only
-presence and probe results ever leave the daemon.
+Jarhead asks for **sixteen** macOS permissions, all keyed on the signed bundle
+`/Applications/Jarhead.app` (the daemon and the hands helper are its children,
+so their prompts and grants are the app's; the stable signing identity is what
+makes the grants survive rebuilds). Setup › Permissions › **Ask for everything**
+runs one sweep: every kind with a prompt, in order, one dialog at a time; the
+one only System Settings can grant is deep-linked with the app revealed for
+dragging in, and the change is watched for. Nothing grants a permission
+programmatically — macOS has no API for that — so the sweep asks, and a denied
+prompt turns into the same Settings deep link.
+
+| kind | how | needed for |
+|---|---|---|
+| Microphone, Speech Recognition | prompt · **required** | hearing you; the wake word and the on-device ear |
+| Screen Recording, Accessibility | prompt · **required** | screenshots; clicks, typing, reading controls |
+| Input Monitoring | prompt · **required** | the keys watched while you circle or dictate |
+| Full Disk Access | **System Settings only** — drag the app in by hand · **required** | Mail, Safari, Messages, the Trash and every folder without a prompt of its own; without it those reads fail with `EPERM` |
+| Automation | one prompt per target app, when it is running · **required** | the browser fast path and the AppleScript tool: Chrome, Safari, Finder, … |
+| Notifications, Camera, Contacts, Calendars, Reminders, Local Network | prompt | banners; looking at what you hold up; who, when, what is due; devices on your network |
+| Desktop, Documents, Downloads folders | prompt | files there |
+
+The seven marked required are the same seven in the app, the engine and this
+table: without them the voice, the hands or the tools do not work. The app reads
+twelve of the sixteen and reports the list to the engine; the hands helper — a
+fresh process each time, because a resident process keeps the answer it got at
+launch — reads Accessibility, Screen Recording, Input Monitoring and Full Disk
+Access, and its read is the one the engine trusts for those four. A row's
+**Request** for Accessibility or Screen Recording goes through the helper too,
+one dialog per request (two at once and the second is dismissed with the first).
+`pnpm jarhead status` prints the list as one line (`permissions  12/16 granted ·
+missing: Full Disk Access (System Settings), …`; `--permissions` for a row each),
+`pnpm run doctor` shows what the helper can read from a terminal and that the
+rest is the app's. When a file or shell tool hits a guarded folder without the
+grant, the result says so in one line — `macOS blocked this: Jarhead lacks Full
+Disk Access. Setup › Permissions › Ask for everything` — instead of a raw errno,
+so the voice can tell you what to do; a command that still produced output (a
+`find` over the home folder skipping `~/Library/Safari`) gets `macOS blocked part
+of this: …` under its hits instead. `JARHEAD_PERMISSIONS_DRY_RUN=1` makes the
+engine log what it would ask and ask nothing.
+
+Keys and knobs live in `~/.jarhead/env`; Setup writes it, the doctor reads it,
+and only presence and probe results ever leave the daemon.
 
 | variable | what it is for |
 |---|---|

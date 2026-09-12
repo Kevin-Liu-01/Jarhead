@@ -14,9 +14,13 @@ import SwiftUI
 //                   labels — a shape near the seam must not grow a pill on the other display
 //   ORB_MARK=1      enter mark mode at 1 s and synthesise a stroke through the overlay
 //                   window (sendEvent): the harness's fake sender prints the resulting
-//                   mark.add; shoots preview-overlay-mark.png mid-stroke and prints the
-//                   live stroke's point count per window (the stroke rides
-//                   AppState.liveStrokes, the blob's own channel). With ORB_TRACE (see
+//                   mark.add; shoots preview-overlay-mark-fade.png at 1.1 s (the wash, frame
+//                   and hint easing in), preview-overlay-mark.png mid-stroke, and
+//                   preview-overlay-mark-out.png part way into the fade-out after the mouse-up
+//                   (the three leaving together; prints each window's mode / fading / hint
+//                   flags with the real ms since the mouse-up), and prints the live stroke's point
+//                   count per window (the stroke rides AppState.liveStrokes, the blob's own
+//                   channel). With ORB_TRACE (see
 //                   OrbPreviewApp) at ORB_TRACE_AT=3 or later, Kevin's mark is followed
 //                   by Jarhead's line: both hands on one layer
 //   ORB_MARK=seam   … the stroke centred on the main display's top edge, so it crosses
@@ -69,8 +73,13 @@ enum OverlayPreviewDemo {
             fflush(stdout)
         }
         if let dir = shotDir {
+            let region = CGRect(x: orb.x - 24, y: orb.y - 40, width: 1140, height: 420)
+            // 2.72 s: the stroke (fired at 2.6) is half drawn and has no label yet; the
+            // four shapes before it have landed and their labels have faded in after them.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.72) {
+                shoot(manager, regionCG: region, path: "\(dir)/preview-overlay-drawing.png", note: "mid draw-on: the stroke growing, its label not yet in")
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.6) {
-                let region = CGRect(x: orb.x - 24, y: orb.y - 40, width: 1140, height: 420)
                 shoot(manager, regionCG: region, path: "\(dir)/preview-overlay-shapes.png", note: "teaching shapes")
             }
         }
@@ -90,6 +99,17 @@ enum OverlayPreviewDemo {
             manager.beginMarkMode()
             controller = manager.markMode
             report("begin")
+        }
+        if let dir = shotDir {
+            // 1.1 s: the wash, the frame and the hint pill a third of the way into their
+            // ease-in (Motion.base from 1.0 s) — mark mode arrives, it does not cut.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                // The hint pill sits on the display under the pointer; say which one has it.
+                let faces = manager.windows.map { "mode \($0.model.markMode) hint \($0.model.markHint)" }
+                print("mark: ease-in per window: \(faces.joined(separator: " | "))")
+                let region = CGRect(x: orb.x - 24, y: 0, width: 1000, height: orb.y + 220)
+                shoot(manager, regionCG: region, path: "\(dir)/preview-overlay-mark-fade.png", note: "mark mode easing in")
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             guard manager.isMarking else { print("mark: not marking, skipped"); return }
@@ -141,8 +161,21 @@ enum OverlayPreviewDemo {
                     }
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(pts.count) + 0.25) {
+                    let upAt = Date()
                     send(.leftMouseUp, at: w.windowPoint(w.local(pts[pts.count - 1])), in: w)
-                    print("mark: synthesised a stroke of \(pts.count) samples through window \(w.windowNumber) (CG \(w.cgFrame))")
+                    print("mark: synthesised a stroke of \(pts.count) samples through window \(w.windowNumber) (CG \(w.cgFrame)); mouse-up handled in \(Int(Date().timeIntervalSince(upAt) * 1000)) ms, fade \(OverlayPainter.fadeSeconds) s")
+                    if let dir = shotDir {
+                        // Part way into the fade-out (Motion.base from the mouse-up): the wash,
+                        // the frame and the hint pill leaving together — the pill must not have
+                        // cut on the first frame. Asked for at 40 %; the block lands ~50 ms late
+                        // (the mouse-up's own handling), so the frame is near 60 %, alpha ≈ 0.7.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + OverlayPainter.fadeSeconds * 0.4) {
+                            let faces = manager.windows.map { "mode \($0.model.markMode) fading \($0.model.markFading) hint \($0.model.markHint)" }
+                            print("mark: fade-out per window at +\(Int(Date().timeIntervalSince(upAt) * 1000)) ms after mouse-up: \(faces.joined(separator: " | "))")
+                            let region = CGRect(x: orb.x - 24, y: 0, width: 1000, height: orb.y + 220)
+                            shoot(manager, regionCG: region, path: "\(dir)/preview-overlay-mark-out.png", note: "mark mode easing out, hint pill still riding the alpha")
+                        }
+                    }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { report("after stroke") }
                 }
             }

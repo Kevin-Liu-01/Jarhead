@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Speech
 
 /// First-run setup (and "Set Up…" later): the voice key, the brain, permissions,
 /// the wake word, agents. One titled window, a rail of steps on the left and the
@@ -12,11 +11,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     public let state: AppState
     private let session = OnboardingSession()
     private var window: NSWindow?
-
-    /// Preview/test hook (module-internal): canned TCC answers so screenshots are deterministic.
-    var permissionProbe: OnboardingPermissionProbe = .live
-    /// Preview/test hook: stands in for the calls that prompt or open System Settings.
-    var systemActions: OnboardingSystemActions = .live
 
     public init(state: AppState) {
         self.state = state
@@ -39,6 +33,12 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Open on one step (the status menu's "Permissions: n missing" row lands on Permissions).
+    public func show(at step: OnboardingStep) {
+        show()
+        session.go(step)
+    }
+
     public func close() {
         session.visible = false
         window?.orderOut(nil)
@@ -59,7 +59,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func startStep() -> OnboardingStep {
         guard state.snapshot.settings.isOnboarded else { return .welcome }
-        let report = OnboardingReport(model: OnboardingModel(state: state), permissions: permissionProbe.read())
+        let report = OnboardingReport(model: OnboardingModel(state: state))
         return report.firstProblem ?? .welcome
     }
 
@@ -86,13 +86,20 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             setPassphrase: { state.wakeActions.setPassphrase($0) },
             clearPassphrase: { state.wakeActions.clearPassphrase() },
             draft: { session.draft(dirty: $0, commit: $1) },
-            system: systemActions,
+            permissions: OnboardingPermissionActions(
+                requestAll: { state.requestAll() },
+                request: { state.request($0) },
+                openSettings: { state.openPermissionSettings($0) },
+                refresh: { state.refreshPermissions() },
+                sweepNext: { state.permissionSweepNext() },
+                sweepCancel: { state.permissionSweepCancel() }),
+            openURL: { NSWorkspace.shared.open($0) },
             finish: { [weak self] in
                 state.send(.setSettings(SettingsPatch(onboarded: true)))
                 self?.close()
             })
 
-        let root = OnboardingRootView(actions: actions, probe: permissionProbe)
+        let root = OnboardingRootView(actions: actions)
             .environmentObject(state)
             .environmentObject(session)
         let hosting = NSHostingView(rootView: root)
@@ -112,10 +119,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 // MARK: - Steps
 
 /// The rail, in order. `word` is the one word on the rail; `symbol` a solid SF Symbol.
-enum OnboardingStep: String, CaseIterable, Identifiable {
+public enum OnboardingStep: String, CaseIterable, Identifiable {
     case welcome, voice, brain, permissions, wake, agents, done
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     var word: String {
         switch self {
@@ -153,6 +160,9 @@ enum OnboardingStep: String, CaseIterable, Identifiable {
 @MainActor
 final class OnboardingSession: ObservableObject {
     @Published var step: OnboardingStep = .welcome
+    /// Which way the last step change went — forward (Continue, a later rail row) or
+    /// back — so the step arriving slides in from that side (OnboardingRootView).
+    @Published private(set) var forward = true
     /// The window is on screen; the permissions poll runs only while it is.
     @Published var visible = false
     /// The current step has edits it has not sent yet; the footer says "Save & continue".
@@ -180,7 +190,9 @@ final class OnboardingSession: ObservableObject {
 
     func go(_ to: OnboardingStep) {
         flush()
-        if step != to { step = to }
+        guard step != to else { return }
+        forward = to.index > step.index
+        step = to
     }
 
     func next() { if let n = step.next { go(n) } }
@@ -191,6 +203,7 @@ final class OnboardingSession: ObservableObject {
         commit = nil
         if dirty { dirty = false }
         generation += 1
+        forward = true
         step = start
     }
 }
@@ -215,6 +228,10 @@ struct OnboardingModel: Equatable {
     var wakeGate: WakeGateState
     var wakeHeard: String
     var wakePassphraseSet: Bool
+    /// Every permission as this process last read it (AppState's permissions region).
+    var permissions: [PermissionInfo]
+    /// The "Ask for everything" sweep while it runs (and its summary for a while after).
+    var sweep: PermissionSweepProgress?
 
     @MainActor init(state: AppState) {
         let snap = state.snapshot
@@ -231,50 +248,25 @@ struct OnboardingModel: Equatable {
         wakeGate = state.wakeGate
         wakeHeard = state.wakeHeard
         wakePassphraseSet = state.wakePassphraseSet
+        permissions = state.permissionList
+        sweep = state.permissionSweep
     }
 }
 
-/// TCC as this process sees it right now. Read locally (not from the snapshot):
-/// this process is the one TCC answers for.
-struct OnboardingPermissions: Equatable {
-    var microphone: Grant
-    var screenRecording: Grant
-    var accessibility: Grant
-    /// Speech Recognition, for the on-device wake word.
-    var speech: Grant
-
-    static let unknown = OnboardingPermissions(microphone: .unknown, screenRecording: .unknown, accessibility: .unknown, speech: .unknown)
-
-    var handsGranted: Bool { microphone == .granted && screenRecording == .granted && accessibility == .granted }
-}
-
-struct OnboardingPermissionProbe {
-    var read: () -> OnboardingPermissions
-
-    static let live = OnboardingPermissionProbe {
-        OnboardingPermissions(microphone: PermissionsKit.microphoneStatus(),
-                              screenRecording: PermissionsKit.screenRecordingStatus(),
-                              accessibility: PermissionsKit.accessibilityStatus(),
-                              speech: OnboardingSpeech.status())
-    }
-}
-
-/// Calls that prompt the user or leave the app; swapped out by the preview.
-struct OnboardingSystemActions {
-    var requestScreenRecording: () -> Void
-    var requestAccessibility: () -> Void
-    var requestSpeech: () -> Void
-    var openURL: (URL) -> Void
-
-    static let live = OnboardingSystemActions(
-        requestScreenRecording: {
-            // The first call shows the system prompt; every later one only opens Settings.
-            PermissionsKit.requestScreenRecording()
-            PermissionsKit.openSettings(pane: .screenRecording)
-        },
-        requestAccessibility: { PermissionsKit.requestAccessibility() },
-        requestSpeech: { OnboardingSpeech.request() },
-        openURL: { NSWorkspace.shared.open($0) })
+/// What the Permissions step can ask for. Closures over `AppState`'s permissions region
+/// (the PermissionsCenter behind it), so the views never see `AppState`; the preview
+/// harness installs printers there instead.
+struct OnboardingPermissionActions {
+    /// The sweep: required kinds first, one dialog at a time, then the System Settings walk.
+    var requestAll: () -> Void
+    /// One kind: its prompt, or its pane when only System Settings grants it.
+    var request: (PermissionKind) -> Void
+    var openSettings: (PermissionKind) -> Void
+    /// Re-read every kind (read-only, never a prompt).
+    var refresh: () -> Void
+    /// The settings walk's Next / Cancel.
+    var sweepNext: () -> Void
+    var sweepCancel: () -> Void
 }
 
 /// What the step views can do. Closures, so the views never see `AppState`.
@@ -285,37 +277,11 @@ struct OnboardingActions {
     var clearPassphrase: () -> Void
     /// Tell the session the step has (or no longer has) unsaved edits, and how to send them.
     var draft: (_ dirty: Bool, _ commit: (() -> Void)?) -> Void
-    var system: OnboardingSystemActions
+    var permissions: OnboardingPermissionActions
+    /// Leaves the app for a web page (the key pages); the preview prints instead.
+    var openURL: (URL) -> Void
     /// Marks setup finished and closes the window.
     var finish: () -> Void
-}
-
-/// Speech Recognition status and request. `PermissionsKit.Pane` has no Speech
-/// Recognition case, so the Settings deep link lives here (same scheme).
-enum OnboardingSpeech {
-    static func status() -> Grant {
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized: return .granted
-        case .denied, .restricted: return .denied
-        case .notDetermined: return .unknown
-        @unknown default: return .unknown
-        }
-    }
-
-    /// Prompts when undetermined (needs NSSpeechRecognitionUsageDescription);
-    /// opens System Settings when already denied. Nothing is sent anywhere.
-    static func request() {
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .notDetermined: SFSpeechRecognizer.requestAuthorization { _ in }
-        case .authorized: break
-        default: openSettings()
-        }
-    }
-
-    static func openSettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition")!
-        NSWorkspace.shared.open(url)
-    }
 }
 
 // MARK: - Report: one line per step, for the rail dots, the Done page and where to reopen
@@ -349,7 +315,7 @@ struct OnboardingReport: Equatable {
         return m.isEmpty || detail.contains(m) ? nil : m
     }
 
-    init(model m: OnboardingModel, permissions p: OnboardingPermissions) {
+    init(model m: OnboardingModel) {
         let setup = m.setup
         switch setup.openaiKey {
         case .ok: voice = Line(mark: .ok, text: "OpenAI key works", id: setup.liveModel)
@@ -368,14 +334,20 @@ struct OnboardingReport: Equatable {
         case .unchecked: brain = Line(mark: .neutral, text: "\(name) not checked yet")
         }
 
-        var missing: [String] = []
-        if p.microphone != .granted { missing.append("microphone") }
-        if p.screenRecording != .granted { missing.append("screen recording") }
-        if p.accessibility != .granted { missing.append("accessibility") }
-        if m.wake.enabled, p.speech != .granted { missing.append("speech recognition") }
-        permissions = missing.isEmpty
-            ? Line(mark: .ok, text: "Microphone, screen recording and accessibility granted")
-            : Line(mark: .attention, text: "Missing: " + missing.joined(separator: ", "))
+        // Required kinds decide the mark; the count of everything rides along as detail.
+        // Speech Recognition is required only while the wake word is on.
+        let all = m.permissions
+        let required = all.filter { $0.required && ($0.kind != .speechRecognition || m.wake.enabled) }
+        let missing = required.filter { $0.grant != .granted }
+        let granted = all.filter { $0.grant == .granted }.count
+        if all.isEmpty {
+            permissions = Line(mark: .neutral, text: "Permissions not read yet")
+        } else if missing.isEmpty {
+            permissions = Line(mark: .ok, text: "All \(required.count) required granted", detail: "\(granted) of \(all.count) in all")
+        } else {
+            permissions = Line(mark: .attention, text: "Missing: " + missing.map { $0.label.lowercased() }.joined(separator: ", "),
+                               detail: "\(granted) of \(all.count) granted")
+        }
 
         let phrases = m.wake.phrases.filter { !$0.isEmpty }
         if !m.wake.enabled {

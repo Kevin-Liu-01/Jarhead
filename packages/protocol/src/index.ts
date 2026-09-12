@@ -278,10 +278,51 @@ export type SecretKey = (typeof SECRET_KEYS)[number];
 
 export type Grant = "granted" | "denied" | "unknown";
 
+/**
+ * Every macOS permission Jarhead asks for. The first four are what the voice and the
+ * hands need to work at all; the rest let the brain reach what Kevin asks about
+ * (his files, his apps, his contacts and calendar, the network) without a wall.
+ * TCC keys every grant on the app bundle (the daemon and the hands helper are its
+ * children), so the app is the one that asks and the one that reads.
+ */
+export const PERMISSION_KINDS = [
+  "microphone", "speechRecognition", "screenRecording", "accessibility",
+  "inputMonitoring", "automation", "fullDiskAccess", "notifications", "camera",
+  "contacts", "calendars", "reminders", "localNetwork",
+  "filesDesktop", "filesDocuments", "filesDownloads",
+] as const;
+export type PermissionKind = (typeof PERMISSION_KINDS)[number];
+
+/**
+ * How a permission is obtained: `prompt` — an API shows the system dialog once;
+ * `settings` — only System Settings grants it (Jarhead deep-links to the pane and
+ * watches for the change); `perApp` — Automation: one prompt per target app, shown
+ * when that app is running and first asked.
+ */
+export type PermissionAsk = "prompt" | "settings" | "perApp";
+
+export interface PermissionInfo {
+  readonly kind: PermissionKind;
+  readonly grant: Grant;
+  readonly ask: PermissionAsk;
+  /** Without it the voice or the hands do not work (vs. a capability the brain can do without). */
+  readonly required: boolean;
+  /** Short name for a row. */
+  readonly label: string;
+  /** One line: what stops working without it. */
+  readonly why: string;
+  /** Automation: the target apps granted / denied; files: the folder; anything a row should show. */
+  readonly detail?: string;
+  /** Wall-clock ms of the last read. */
+  readonly checkedAt?: number;
+}
+
 export interface Permissions {
   readonly microphone: Grant;
   readonly screenRecording: Grant;
   readonly accessibility: Grant;
+  /** The whole list, as the app last read it (the process TCC keys on); absent from older apps. */
+  readonly all?: readonly PermissionInfo[];
 }
 
 // --------------------------------------------------------------- snapshot ---
@@ -318,6 +359,51 @@ export interface Snapshot {
   readonly setup: SetupStatus;
   /** Regions Kevin circled, newest last; the next delegation sees the unconsumed ones. */
   readonly marks: readonly ScreenMark[];
+  /**
+   * Present while paused: a pause closes the Live session (the meter stops) and holds
+   * the conversation; `sleepsAt` is when an unresumed pause decays to sleep.
+   */
+  readonly pause?: PauseInfo;
+  /** Live seconds billed today — closed sessions from the ledger plus the open one — for the meter. */
+  readonly usageToday?: UsageToday;
+}
+
+export interface PauseInfo {
+  readonly at: number;
+  /** The session that was closed by the pause; a resume's new session says `resumedFrom` it. */
+  readonly sessionId: string;
+  readonly usageSeconds: number;
+  readonly sleepsAt: number;
+}
+
+export interface UsageToday {
+  readonly seconds: number;
+  readonly sessions: number;
+}
+
+/** GPT-Live-1 list price (docs/REDESIGN.md §1), for the meter. Billed per second. */
+export const LIVE_PRICE_PER_MINUTE_USD = 0.05;
+
+/**
+ * One of Jarhead's own Live sessions as the ledger recorded it — the Console's
+ * "Jarhead" section. A resume opens a new session continuing the paused one;
+ * `resumedFrom` links the chain into one conversation.
+ */
+export interface JarheadSessionSummary {
+  readonly id: string;
+  /** Ledger day (file), YYYY-MM-DD local. */
+  readonly day: string;
+  readonly startedAt: number;
+  /** Absent while the session is still open. */
+  readonly closedAt?: number;
+  readonly reason?: string;
+  readonly usageSeconds: number;
+  readonly heard: number;
+  readonly said: number;
+  readonly delegations: number;
+  /** The first thing Kevin said in it, trimmed; "" when nothing was heard. */
+  readonly title: string;
+  readonly resumedFrom?: string;
 }
 
 // --------------------------------------------------------- shell messages ---
@@ -344,7 +430,22 @@ export type EngineCommand =
   | { readonly type: "sleep" }
   | { readonly type: "mute" }
   | { readonly type: "unmute" }
+  /**
+   * Stop: the transport's stop. Interrupt everything (work, speech, hands), close the
+   * Live session so the meter stops, and sleep. Also from paused. Never a no-op: with
+   * nothing open it still kills background jobs.
+   */
   | { readonly type: "stop" }
+  /**
+   * Go: the transport's one button. Asleep → wake (opens the paid session); paused →
+   * resume (a new session that carries the paused one's context); awake → nothing.
+   */
+  | { readonly type: "go" }
+  /**
+   * Interrupt: cancel the current work and speech but stay awake and listening — what a
+   * spoken "stop" / "cancel" / "never mind" means. The pre-transport `stop`.
+   */
+  | { readonly type: "interrupt"; readonly how?: "pressed" | "said" }
   | { readonly type: "say-text"; readonly text: string }
   | { readonly type: "set-settings"; readonly patch: SettingsPatch }
   | { readonly type: "clear-problems" }
@@ -352,7 +453,8 @@ export type EngineCommand =
   | { readonly type: "agent.refresh" }
   | { readonly type: "open-console" }
   | { readonly type: "open-ledger" }
-  | { readonly type: "request-permission"; readonly which: keyof Permissions }
+  /** Ask for one permission (the app shows the prompt or opens the pane), or "all": the sweep, every prompt in turn. */
+  | { readonly type: "request-permission"; readonly which: PermissionKind | "all" }
   /** Write secrets to ~/.jarhead/env (null removes), reload, restart the brain. */
   | { readonly type: "config.set-secrets"; readonly secrets: Partial<Record<SecretKey, string | null>> }
   /** Check the OpenAI key and the brain; results land in snapshot.setup. */
@@ -420,8 +522,14 @@ export type OverlayCommand =
  * over this. `at` is wall-clock ms.
  */
 export type LedgerRow =
-  | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string }
+  | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string }
   | { readonly at: number; readonly type: "session.closed"; readonly sessionId: string; readonly reason: string; readonly usageSeconds: number }
+  /** A pause closed `sessionId` to stop the meter; the conversation is held. */
+  | { readonly at: number; readonly type: "pause"; readonly sessionId: string; readonly usageSeconds: number }
+  /** A resume opened `sessionId` continuing `resumedFrom` after `pausedMs`. */
+  | { readonly at: number; readonly type: "resume"; readonly sessionId: string; readonly resumedFrom: string; readonly pausedMs: number }
+  /** The transport's stop (pressed) or a spoken interrupt (said); `cancelled` is the delegation it cut. */
+  | { readonly at: number; readonly type: "stop"; readonly how: "pressed" | "said"; readonly cancelled?: string }
   | { readonly at: number; readonly type: "heard"; readonly item: TranscriptItem }
   | { readonly at: number; readonly type: "said"; readonly item: TranscriptItem }
   | { readonly at: number; readonly type: "delegation.created"; readonly delegation: Delegation }
@@ -437,7 +545,7 @@ export function isPhase(value: unknown): value is Phase {
 }
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
-  "wake", "sleep", "mute", "unmute", "stop", "say-text", "set-settings", "clear-problems",
+  "wake", "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
   "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
 ]);
 

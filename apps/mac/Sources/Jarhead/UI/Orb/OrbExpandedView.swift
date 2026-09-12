@@ -25,15 +25,23 @@ final class OrbCapsuleModel: ObservableObject {
     @Published var keyLost = 0
     /// Bumped on every Stop pressed on the capsule or the menu: the Stop button flashes red for the press.
     @Published var stopFlash = 0
+    /// The blob sits on the capsule's right (the capsule grew leftward from a blob near
+    /// the screen's right edge): the capsule pops open from that side.
+    @Published var blobOnRight = false
 
     var phase: Phase { snapshot.phase }
     var lastKevin: TranscriptItem? { snapshot.transcript.last { $0.speaker == .kevin } }
     var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
     var isAwake: Bool { phase != .asleep && phase != .error }
-    /// The gate block shows while the engine is dormant (the gate listens through
-    /// `.error` too) and the wake word is on — the same rule as the status menu's row.
-    var showsGate: Bool { !isAwake && snapshot.settings.wakeSettings.enabled }
+    var paused: Bool { phase == .paused }
+    /// The gate holds the microphone wherever the voice engine does not: dormant (asleep,
+    /// error) and paused — WakeGate.listens(in:), spelled through Model because Wake/ is
+    /// not compiled into the orb preview.
+    var gateListens: Bool { !AppState.voiceAudioRuns(in: phase) }
+    /// The gate block shows while the gate listens and the wake word is on — the same
+    /// rule as the status menu's row. Paused included: the word resumes.
+    var showsGate: Bool { gateListens && snapshot.settings.wakeSettings.enabled }
 }
 
 struct OrbPill: Equatable {
@@ -62,10 +70,18 @@ final class OrbStatusModel: ObservableObject {
 }
 
 struct OrbCapsuleActions {
+    /// Go / Pause — the transport's one button (`AppState.transportToggle`): go when asleep
+    /// or paused, pause in session, stop while connecting. Wire it. Until the controller
+    /// does, the view falls back to the retired `toggleAwake` / `togglePause` by phase
+    /// (`OrbCapsuleView.pressTransport`), so the button keeps working across the change.
+    var transportToggle: (() -> Void)? = nil
+    /// Retired: the capsule has one Go/Pause now. Kept so the controller's memberwise init
+    /// still compiles; the view reads them only as the fallback above.
     var toggleAwake: () -> Void = {}
     var toggleMute: () -> Void = {}
-    /// Pause the session (mic muted, output dropped, no delegations; still connected) / resume it.
     var togglePause: () -> Void = {}
+    /// Stop — `AppState.transportStop` (the command, the stop-pressed notification, the
+    /// overlay clear, the toast); the controller adds only the capsule's red flash (`stopFlash`).
     var stop: () -> Void = {}
     var openConsole: () -> Void = {}
     var collapse: () -> Void = {}
@@ -97,7 +113,8 @@ struct OrbTheme {
     static let radius: CGFloat = 6
     static let iconColumn: CGFloat = 20
     static let rowHeight: CGFloat = 28
-    static let motion = Animation.easeOut(duration: 0.12)
+    /// A hover being felt (`Motion.instant`).
+    static var motion: Animation { .easeOut(duration: Motion.seconds(Motion.instant)) }
 
     private var fg: Color { dark ? .white : Self.ink }
     var ground: Color { dark ? Self.inkRaised : Self.paper }
@@ -148,16 +165,18 @@ enum OrbStyle {
     // preview, so they are mirrored here; change both or neither.
 
     /// `auth` is named when it is `.none`, so a gate that opens the session on the word
-    /// alone never looks like one that authenticates.
-    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date()) -> String {
+    /// alone never looks like one that authenticates. While `paused` the gate listens for
+    /// the word to *resume*, unauthenticated (WakeGate.isPaused), and the row says so.
+    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date(), paused: Bool = false) -> String {
         switch g {
         case .off(let reason): return "Wake word off — \(reason)"
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
+            if paused { return "paused · say “\(phrase)” or press Go" }
             return "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : "")
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
-        case .granted: return "Waking…"
+        case .granted: return paused ? "Resuming…" : "Waking…"
         case .denied(let reason): return "Not this time — \(reason)"
         case .lockedOut(let until): return "Locked for \(max(1, Int(until.timeIntervalSince(now).rounded()))) s"
         }
@@ -209,9 +228,9 @@ enum OrbStyle {
     /// The capsule row's words: the status menu's, except while authenticating, where
     /// the lock already says "waiting" and "Waiting for Touch ID or passphrase" does
     /// not fit beside Cancel — the method alone. The full wording stays in the tooltip.
-    static func gateRowLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date()) -> String {
+    static func gateRowLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, now: Date = Date(), paused: Bool = false) -> String {
         if case .authenticating(let method) = g { return gateMethodLabel(method) }
-        return gateLabel(g, phrases: phrases, auth: auth, now: now)
+        return gateLabel(g, phrases: phrases, auth: auth, now: now, paused: paused)
     }
 }
 
@@ -219,12 +238,21 @@ enum OrbStyle {
 
 /// Header (phase, timers) over its own rule; the last exchange and the running
 /// delegation as icon rows; the actions as icon buttons. One filled button at most.
+///
+/// Motion: the capsule pops open from the blob's side on `Motion.bouncy` the moment
+/// `model.shown` flips, its rows staggering in behind the frame (`Motion.stagger`
+/// apart, each a fade and a 6 pt rise); closing, the content fades and draws in over
+/// `Motion.quick` and the controller shrinks the panel once it has. The transport's
+/// icons crossfade when they swap, the meter's digits roll (`numericText`), and every
+/// hover is `OrbTheme.motion`. Plain fades under Reduce Motion.
 struct OrbCapsuleView: View {
     @ObservedObject var model: OrbCapsuleModel
     let actions: OrbCapsuleActions
     @Environment(\.colorScheme) private var scheme
     /// Stop was just pressed: the button wears the danger fill for 300 ms whatever is running.
     @State private var stopFlashing = false
+    /// The capsule is open on screen (follows `model.shown`, animated).
+    @State private var revealed = false
 
     /// The capsule's coordinate space (its top-left, y down): what `fieldFrame` reports in.
     static let space = "OrbCapsule"
@@ -241,7 +269,14 @@ struct OrbCapsuleView: View {
         .overlay(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).strokeBorder(theme.hair, lineWidth: 1))
         // The one sanctioned shadow in chrome: the capsule floats over other apps.
         .shadow(color: .black.opacity(theme.dark ? 0.45 : 0.18), radius: 14, y: 6)
+        // The frame morphs open from the blob's side with a little life, and folds
+        // back toward it as the content fades; a plain fade under Reduce Motion.
+        .scaleEffect(revealed || Motion.reduced ? 1 : 0.88, anchor: model.blobOnRight ? .trailing : .leading)
+        .opacity(revealed ? 1 : 0)
+        .animation(revealed ? Motion.bouncy : .easeIn(duration: Motion.seconds(Motion.quick)), value: revealed)
         .coordinateSpace(name: Self.space)
+        .onAppear { revealed = model.shown }
+        .onChange(of: model.shown) { revealed = model.shown }
         .onChange(of: model.stopFlash) {
             stopFlashing = true
             Task { @MainActor in
@@ -257,35 +292,52 @@ struct OrbCapsuleView: View {
             header(now: now, theme: theme)
                 .frame(height: 30)
                 .padding(.horizontal, 10)
+                .staggered(revealed, index: 0)
             // The header owns its bottom rule.
             Rectangle().fill(theme.hair).frame(height: 1)
+                .staggered(revealed, index: 0)
 
             // Each row owns its bottom rule (row weight); the last row in the run
             // drops it, so two wrapped lines never read as one four-line block.
             let delegation = model.activeDelegation
             let gate = model.showsGate
-            let field = gate && model.wakePassphraseSet
+            // The typed passphrase only while dormant: paused resumes on the word or Go alone.
+            let field = gate && model.wakePassphraseSet && !model.paused
+            let pause = model.paused ? model.snapshot.pause : nil
             VStack(alignment: .leading, spacing: 0) {
                 if model.lastKevin == nil, model.lastJarhead == nil {
                     row(icon: "mic.fill", tint: theme.text3, text: nil, empty: "Nothing heard yet.", theme: theme)
-                        .ruled(delegation != nil || gate, theme: theme)
+                        .ruled(pause != nil || delegation != nil || gate, theme: theme)
+                        .staggered(revealed, index: 1)
                 } else {
                     row(icon: "mic.fill", tint: theme.text3, text: model.lastKevin?.text, empty: "—", theme: theme)
                         .ruled(true, theme: theme)
+                        .staggered(revealed, index: 1)
                     row(icon: "speaker.wave.2.fill", tint: theme.text3, text: model.lastJarhead?.text, empty: "—", theme: theme)
+                        .ruled(pause != nil || delegation != nil || gate, theme: theme)
+                        .staggered(revealed, index: 2)
+                }
+                // Paused: the session line — the meter stopped, the conversation kept, the
+                // decay to sleep counting down (this view already ticks once a second while shown).
+                if let p = pause {
+                    row(icon: "pause.fill", tint: theme.text3, text: TransportFormat.pausedLine(p, now: now), empty: "—", theme: theme)
                         .ruled(delegation != nil || gate, theme: theme)
+                        .staggered(revealed, index: 3)
                 }
                 if let d = delegation {
                     delegationRow(d, now: now, theme: theme)
                         .ruled(gate, theme: theme)
+                        .staggered(revealed, index: 3)
                 }
                 // Asleep with the wake word on: what the gate is doing, and the typed way in.
                 // The gate row draws no rule: it is either the last row, or the field's own
                 // hairline box below it is the seam — one owner per edge.
                 if gate {
                     gateRow(now: now, theme: theme)
+                        .staggered(revealed, index: 3)
                     if field {
                         passphraseRow(theme: theme)
+                            .staggered(revealed, index: 4)
                     }
                 }
             }
@@ -294,9 +346,11 @@ struct OrbCapsuleView: View {
 
             Spacer(minLength: 6)
 
+            // The actions arrive with the last row, never later: they are what the capsule is for.
             actionRow(theme: theme)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 10)
+                .staggered(revealed, index: 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -311,14 +365,48 @@ struct OrbCapsuleView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(theme.text)
             Spacer(minLength: 4)
+            // The meter. A session open: elapsed, and what it has billed at the list price
+            // ("2.3 min · $0.12"; the word "billed" lives in the tooltip — the header is
+            // ~255pt and label + elapsed + meter must share it). Paused: what the closed
+            // session billed over today's total, two short lines. Asleep: today's total
+            // when there is one, else the plain "no session".
+            let today = TransportFormat.today(model.snapshot.usageToday)
             if let s = model.snapshot.session {
-                Text(OrbStyle.mmss(now.timeIntervalSince1970 - s.startedAt / 1000))
+                let elapsed = OrbStyle.mmss(now.timeIntervalSince1970 - s.startedAt / 1000)
+                let billed = TransportFormat.billed(s.usageSeconds)
+                Text(elapsed)
                     .font(.system(size: 12, design: .monospaced).monospacedDigit())
                     .foregroundStyle(theme.text2)
-                Text(String(format: "%.1fm", s.usageSeconds / 60))
-                    .font(.system(size: 11, design: .monospaced))
+                    .metered(elapsed)
+                    .help("Elapsed")
+                Text(billed)
+                    .font(.system(size: 11, design: .monospaced).monospacedDigit())
                     .foregroundStyle(theme.titanium)
-                    .help("Billed minutes this session")
+                    .lineLimit(1)
+                    .metered(billed)
+                    .help("Billed this session: " + billed + (today.map { " · " + $0 } ?? ""))
+            } else if model.paused, let p = model.snapshot.pause {
+                VStack(alignment: .trailing, spacing: 1) {
+                    let billed = TransportFormat.billed(p.usageSeconds)
+                    Text(billed)
+                        .font(.system(size: 11, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(theme.titanium)
+                        .lineLimit(1)
+                        .metered(billed)
+                    if let today {
+                        Text(today)
+                            .font(.system(size: 10, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(theme.text3)
+                            .lineLimit(1)
+                    }
+                }
+                .help("Billed by the paused session — the meter stopped when it closed" + (today.map { " · " + $0 } ?? ""))
+            } else if model.connected, let today {
+                Text(today)
+                    .font(.system(size: 11, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(theme.titanium)
+                    .lineLimit(1)
+                    .help("Billed today, every session")
             } else {
                 Text(model.connected ? "no session" : model.daemonDetail)
                     .font(.system(size: 11, design: .monospaced))
@@ -369,9 +457,11 @@ struct OrbCapsuleView: View {
                 .truncationMode(.tail)
                 .help(d.request)
             Spacer(minLength: 4)
-            Text(OrbStyle.mmss(now.timeIntervalSince1970 - d.timings.delegatedAt / 1000))
+            let elapsed = OrbStyle.mmss(now.timeIntervalSince1970 - d.timings.delegatedAt / 1000)
+            Text(elapsed)
                 .font(.system(size: 11, design: .monospaced).monospacedDigit())
                 .foregroundStyle(theme.titanium)
+                .metered(elapsed)
         }
         .padding(.vertical, 4)
         .frame(minHeight: OrbTheme.rowHeight, alignment: .leading)
@@ -383,8 +473,8 @@ struct OrbCapsuleView: View {
     private func gateRow(now: Date, theme: OrbTheme) -> some View {
         let gate = model.wakeGate
         let settings = model.snapshot.settings.wakeSettings
-        let full = OrbStyle.gateLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now)
-        let label = OrbStyle.gateRowLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now)
+        let full = OrbStyle.gateLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now, paused: model.paused)
+        let label = OrbStyle.gateRowLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now, paused: model.paused)
         return HStack(alignment: .center, spacing: 8) {
             Image(systemName: OrbStyle.gateSymbol(gate))
                 .font(.system(size: 13, weight: .medium))
@@ -433,26 +523,44 @@ struct OrbCapsuleView: View {
         .frame(minHeight: OrbTheme.rowHeight, alignment: .leading)
     }
 
-    /// Wake is the one filled accent button, and only while asleep; Pause sits beside
-    /// Stop (play while paused); Stop fills red while the snapshot holds a running or
-    /// waiting delegation and for the 300 ms after a press — nothing local keeps it hot
-    /// once the snapshot lets go — and it is never disabled: a Stop must land in every
-    /// phase. Everything else is a ghost.
+    /// The transport: Go/Pause is the one filled accent button, and only while asleep
+    /// (`play.fill`; a ghost play while paused, `pause.fill` in session, a quiet "…" while
+    /// connecting where the press stops — AppState.transportLabel); Mute is enabled only in
+    /// session; Stop fills red while the snapshot holds a running or waiting delegation and
+    /// for the 300 ms after a press — nothing local keeps it hot once the snapshot lets go —
+    /// and it is never disabled: a Stop must land in every phase. Everything else is a ghost.
     private func actionRow(theme: OrbTheme) -> some View {
-        let muted = model.phase == .muted
-        let paused = model.phase == .paused
-        let running = (model.activeDelegation != nil && model.phase != .asleep) || stopFlashing
+        let phase = model.phase
+        let muted = phase == .muted
+        let inSession = AppState.inSessionPhases.contains(phase)
+        // A delegation left "running" by a snapshot that says asleep or paused cannot be
+        // running: the session that carried it is closed.
+        let running = (model.activeDelegation != nil && phase != .asleep && phase != .paused) || stopFlashing
+        let look = AppState.transportLabel(for: phase)
         return HStack(spacing: 6) {
-            if model.isAwake {
-                OrbIconButton(icon: "moon.fill", help: "Sleep", theme: theme, action: actions.toggleAwake)
-            } else {
-                OrbIconButton(icon: "bolt.fill", help: "Wake", style: .accent, theme: theme, action: actions.toggleAwake)
-            }
-            OrbIconButton(icon: muted ? "mic.slash.fill" : "mic.fill", help: muted ? "Unmute" : "Mute", selected: muted, theme: theme, action: actions.toggleMute)
-            OrbIconButton(icon: paused ? "play.fill" : "pause.fill", help: paused ? "Resume (⌥⇧P)" : "Pause (⌥⇧P)", selected: paused, theme: theme, action: actions.togglePause)
-            OrbIconButton(icon: "stop.fill", help: "Stop", style: running ? .danger : .ghost, theme: theme, action: actions.stop)
+            OrbIconButton(icon: look.symbol, help: look.help + " (⌥⇧Space)",
+                          style: AppState.transportFilled(for: phase) ? .accent : .ghost,
+                          dim: phase == .connecting, theme: theme, action: pressTransport)
+            OrbIconButton(icon: muted ? "mic.slash.fill" : "mic.fill", help: muted ? "Unmute" : "Mute", selected: muted, enabled: inSession, theme: theme, action: actions.toggleMute)
+            OrbIconButton(icon: "stop.fill", help: "Stop — close the session, sleep (⌥⎋)", style: running ? .danger : .ghost, theme: theme, action: actions.stop)
             Spacer(minLength: 0)
             OrbIconButton(icon: "rectangle.3.group.fill", help: "Console", theme: theme, action: actions.openConsole)
+        }
+    }
+
+    /// Go/Pause pressed: `actions.transportToggle` (AppState.transportToggle). Transitional
+    /// fallback while the controller still wires the retired closures: the same decision
+    /// table (AppState.transportPress) dispatched onto them — pause / resume through
+    /// `togglePause`, wake through `toggleAwake`, and a stop while connecting.
+    private func pressTransport() {
+        if let toggle = actions.transportToggle {
+            toggle()
+            return
+        }
+        switch AppState.transportPress(for: model.phase) {
+        case .go: if model.paused { actions.togglePause() } else { actions.toggleAwake() }
+        case .pause: actions.togglePause()
+        case .stop: actions.stop()
         }
     }
 
@@ -477,10 +585,37 @@ private extension View {
             self
         }
     }
+
+    /// A row of the capsule arriving: a fade and a 6 pt rise (`Motion.appear`'s
+    /// shape) on `Motion.gentle`, `index × Motion.stagger` behind the frame; leaving,
+    /// every row fades together over `Motion.quick`, ahead of the frame shrinking.
+    func staggered(_ shown: Bool, index: Int) -> some View {
+        modifier(Staggered(shown: shown, index: index))
+    }
+
+    /// Digits that count (the meter, a row's elapsed): each changed digit rolls; a plain fade under Reduce Motion.
+    func metered(_ value: String) -> some View {
+        contentTransition(Motion.reduced ? .opacity : .numericText())
+            .animation(Motion.fade, value: value)
+    }
+}
+
+private struct Staggered: ViewModifier {
+    let shown: Bool
+    let index: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown || Motion.reduced ? 0 : 6)
+            .animation(shown ? Motion.gentle.delay(Double(index) * Motion.stagger) : .easeIn(duration: Motion.seconds(Motion.quick)), value: shown)
+    }
 }
 
 /// A 30×28 icon button: ghost with a structural hairline, or the one accent fill, or red.
 /// Hover moves the ground one alpha step over 120 ms; the tooltip carries the word.
+/// `dim` sits the glyph back (the transport's "…" while connecting); `enabled: false`
+/// greys it and takes no clicks (Mute outside a session).
 private struct OrbIconButton: View {
     enum Style { case ghost, accent, danger }
 
@@ -488,6 +623,8 @@ private struct OrbIconButton: View {
     let help: String
     var style: Style = .ghost
     var selected = false
+    var dim = false
+    var enabled = true
     let theme: OrbTheme
     let action: () -> Void
 
@@ -496,23 +633,33 @@ private struct OrbIconButton: View {
 
     var body: some View {
         Button(action: action) {
+            // The glyph crossfades when it swaps (Go ↔ Pause, Mute ↔ Unmute) instead of
+            // cutting; the fill and the ring follow the state on `Motion.snappy`.
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(foreground)
+                .contentTransition(.opacity)
+                .animation(Motion.fade, value: icon)
+                .opacity(dim ? 0.55 : 1)
                 .frame(width: 30, height: 28)
                 .background(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).fill(background))
                 .overlay(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).strokeBorder(border, lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous))
+                .animation(Motion.snappy, value: style)
+                .animation(Motion.snappy, value: selected)
+                .animation(Motion.snappy, value: enabled)
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
         .help(help)
         .accessibilityLabel(help)
         .onHover { over in
-            withAnimation(reduceMotion ? nil : OrbTheme.motion) { hovering = over }
+            withAnimation(reduceMotion ? nil : OrbTheme.motion) { hovering = over && enabled }
         }
     }
 
     private var foreground: Color {
+        guard enabled else { return theme.text3 }
         switch style {
         case .accent, .danger: return .white
         case .ghost: return selected ? theme.accent : (hovering ? theme.text : theme.text2)
@@ -622,7 +769,6 @@ private struct OrbPassphraseField: View {
 struct OrbPillView: View {
     @ObservedObject var status: OrbStatusModel
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let theme = OrbTheme(dark: scheme == .dark)
@@ -635,13 +781,14 @@ struct OrbPillView: View {
                     .overlay(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).strokeBorder(theme.hair, lineWidth: 1))
                     .padding(.bottom, 2)
                     .help(pill.text)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+                    // Arrives with a fade and a small rise, leaves with a fade (`Motion.appear`).
+                    .transition(Motion.appear)
                     // A counting pill keeps its identity: the number changes in place, the pill does not re-enter.
                     .id(pill.text)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: status.pill)
+        .animation(Motion.gentle, value: status.pill)
     }
 
     @ViewBuilder

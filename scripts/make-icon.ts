@@ -6,23 +6,27 @@ import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
 
 /**
- * Generate the Dock icon: build/Jarhead.icns (+ build/icon.png as a 1024 preview).
+ * Generate the Dock icon: build/Jarhead.icns, build/icon.png (a 1024 preview),
+ * docs/media/icon.png (the README's 256) and apps/mac/Resources/preview-icon-sizes.png
+ * (a contact strip of the 16 … 256 renders, the small ones blown up 4× beside them,
+ * so the dither can be checked by eye).
  *
  * Written as raw pixels rather than shipping a binary asset: an .icns needs
  * seven sizes, and a hand-drawn one would either be a blurry upscale or a file
- * nobody can regenerate. Deterministic and editable — change `P` and re-run.
+ * nobody can regenerate. Deterministic and editable — change `P` / `ORB` and re-run.
  *
- * The mark (chosen from a three-design panel on 2026-09-10): a deep ink Apple
- * squircle holding the Jarhead blob — an amorphous paper-white silhouette of low
- * harmonics, the product's orb — with a radial accent glow behind it. The whole
- * field is quantised to the five canon tones (ink → deep → accent → lift → paper)
- * and dithered with a seeded void-and-cluster blue-noise tile, so the falloff
- * reads as organic grain rather than a grid at 128–1024 and collapses into a clean
- * gradient at 32 and 16. Cells are whole device pixels at every size. A paper
- * hairline at 0.16 alpha sits just inside the edge (the line law, whispered), the
- * lift tone carries a whisper of the listening cyan, the glow leans toward the
- * upper left, and the paper core carries a sparse scatter of lift cells so it has
- * the interior density of the ASCII orb.
+ * The mark: a deep ink Apple squircle holding the orb — Kevin's reference gradient,
+ * pale cyan at the upper left through the listening cyan and the accent blues to a
+ * deep blue at the lower right (no violet), with a glassy highlight and a sphere
+ * shade toward the rim — over a glow of the orb's own colour spilling onto the ink.
+ * Every shaded surface is quantised into a few bands and dithered with a seeded
+ * void-and-cluster blue-noise tile, at EVERY size: 6–7 bands from 1024 down to 16,
+ * cells of whole device pixels (8 px at 1024 … 1 px at 128 and below), so the 16 and
+ * 32 px Dock and menu renders carry the same grain as the big one rather than
+ * collapsing into a smooth ramp (2026-09-11: "make the icon and any gradients or
+ * designs be dithered"). The notch island's gradient (apps/mac/.../UI/Dither.swift)
+ * shares the tile, the palette and the band count. A paper hairline at 0.16 alpha
+ * sits just inside the edge (the line law, whispered; none at 16).
  */
 
 
@@ -39,9 +43,7 @@ const LISTENING: RGB = [90, 215, 255]; // #5ad7ff — the one allowed phase whis
 const P = {
   body: 0.82, // squircle half-extent as a fraction of the canvas half-size
   squircleN: 4.2, // superellipse exponent (Apple-ish)
-  cellDiv: 128, // dither cell = size / cellDiv px (8 @1024, 4 @512, 1 @128)
-  /** Tone steps. 4 steps = the five canon tones; more steps = smoother gradient at small sizes. */
-  levels: (size: number) => (size >= 128 ? 4 : size >= 64 ? 24 : size >= 32 ? 16 : 32),
+  cellDiv: 128, // dither cell = size / cellDiv px (8 @1024, 4 @512, 1 @128 and below)
   blob: {
     r: 0.4, // base radius
     aspect: 1.12, // horizontal stretch — the product's blob is a wide cloud, not a ball
@@ -271,10 +273,13 @@ const ORB = {
   x: 0.0,
   y: 0.0,
   harmonics: [[3, 0.025, 1.4], [2, 0.02, 0.6], [5, 0.008, 2.2]] as ReadonlyArray<readonly [number, number, number]>,
-  bands: (size: number) => (size >= 256 ? 6 : size >= 128 ? 9 : size >= 64 ? 24 : 48), // dither band count (fewer = the dither shows)
+  // Dither band count: few, at every size, so the grain shows at 16 px as at 1024 (it
+  // used to climb to 48 below 128 px, which smoothed the small icons into a plain ramp).
+  bands: (size: number) => (size >= 256 ? 6 : 7),
   highlight: { x: -0.36, y: -0.4, sigma: 0.3, amp: 0.9 }, // glassy top-left spot (orb units)
   rimDarken: 0.42,    // sphere shading toward the lower-right edge
   glowAmp: 0.5, glowLen: 0.28, glowPow: 1.3, // dithered glow spilling onto the ink
+  glowLevels: 3,      // the glow's steps, every size (16 below 128 px used to read smooth)
 };
 
 /** Signed distance to the orb boundary (+ outside), and the diagonal gradient parameter. */
@@ -337,7 +342,7 @@ export function renderRgba(size: number): Buffer {
       } else {
         // Outside: ink, with a dithered glow in the orb's local colour.
         const glow = ORB.glowAmp * Math.exp(-((g.sd / ORB.glowLen) ** ORB.glowPow));
-        const q = quantiseDither(glow, size >= 128 ? 3 : 16, t);
+        const q = quantiseDither(glow, ORB.glowLevels, t);
         col = lerp3(INK, orbRamp(g.diag), q);
       }
 
@@ -377,17 +382,18 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, body, crc]);
 }
 
-/** Minimal PNG encoder: 8-bit RGBA, filter type 0 on every scanline. */
-export function encodePng(size: number, rgba: Buffer): Buffer {
+/** Minimal PNG encoder: 8-bit RGBA, filter type 0 on every scanline. Square when `height` is omitted. */
+export function encodePng(width: number, rgba: Buffer, height = width): Buffer {
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(size, 0);
-  ihdr.writeUInt32BE(size, 4);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8; // bit depth
   ihdr[9] = 6; // colour type: RGBA
-  const raw = Buffer.alloc(size * (size * 4 + 1));
-  for (let y = 0; y < size; y++) {
-    raw[y * (size * 4 + 1)] = 0;
-    rgba.copy(raw, y * (size * 4 + 1) + 1, y * size * 4, (y + 1) * size * 4);
+  const stride = width * 4 + 1;
+  const raw = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y++) {
+    raw[y * stride] = 0;
+    rgba.copy(raw, y * stride + 1, y * width * 4, (y + 1) * width * 4);
   }
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -397,14 +403,50 @@ export function encodePng(size: number, rgba: Buffer): Buffer {
   ]);
 }
 
+/** A canvas to paste renders on: the Console's raised ground, opaque. */
+class Strip {
+  readonly px: Buffer;
+  constructor(readonly width: number, readonly height: number, ground: RGB = [0x10, 0x10, 0x10]) {
+    this.px = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+      this.px[i * 4] = ground[0];
+      this.px[i * 4 + 1] = ground[1];
+      this.px[i * 4 + 2] = ground[2];
+      this.px[i * 4 + 3] = 255;
+    }
+  }
+  /** Source-over `rgba` (size×size) at (x, y), each source pixel `zoom`× (nearest: the dither stays crisp). */
+  paste(rgba: Buffer, size: number, x0: number, y0: number, zoom = 1): void {
+    for (let sy = 0; sy < size; sy++) {
+      for (let sx = 0; sx < size; sx++) {
+        const s = (sy * size + sx) * 4;
+        const a = (rgba[s + 3] ?? 0) / 255;
+        if (a <= 0) continue;
+        for (let zy = 0; zy < zoom; zy++) {
+          for (let zx = 0; zx < zoom; zx++) {
+            const x = x0 + sx * zoom + zx;
+            const y = y0 + sy * zoom + zy;
+            if (x < 0 || y < 0 || x >= this.width || y >= this.height) continue;
+            const d = (y * this.width + x) * 4;
+            for (let c = 0; c < 3; c++) this.px[d + c] = Math.round((rgba[s + c] ?? 0) * a + (this.px[d + c] ?? 0) * (1 - a));
+            this.px[d + 3] = 255;
+          }
+        }
+      }
+    }
+  }
+}
+
 const SIZES = [16, 32, 64, 128, 256, 512, 1024] as const;
 
 const iconset = join(REPO_ROOT, "build", "Jarhead.iconset");
 rmSync(iconset, { recursive: true, force: true });
 mkdirSync(iconset, { recursive: true });
 
+const renders = new Map<number, Buffer>();
 for (const size of SIZES) {
   const rgba = renderRgba(size);
+  renders.set(size, rgba);
   // Corners must be fully transparent and the centre fully opaque at every size.
   if (rgba[3] !== 0 || rgba[(Math.floor(size / 2) * size + Math.floor(size / 2)) * 4 + 3] !== 255) {
     throw new Error(`icon ${size}: silhouette check failed`);
@@ -417,7 +459,38 @@ for (const size of SIZES) {
 
 const icns = join(REPO_ROOT, "build", "Jarhead.icns");
 execFileSync("iconutil", ["-c", "icns", iconset, "-o", icns]);
-writeFileSync(join(REPO_ROOT, "build", "icon.png"), encodePng(1024, renderRgba(1024)));
+writeFileSync(join(REPO_ROOT, "build", "icon.png"), encodePng(1024, renders.get(1024) ?? renderRgba(1024)));
+// The README's icon: the 256 render, as the Dock shows it at 2× on a 128 pt tile.
+const mediaIcon = join(REPO_ROOT, "docs", "media", "icon.png");
+writeFileSync(mediaIcon, encodePng(256, renders.get(256) ?? renderRgba(256)));
+
+// The contact strip: 16 / 32 / 64 / 128 / 256 at 1:1 along the top, then the 16, 32
+// and 64 blown up 4× (nearest neighbour) underneath, so the grain in the small
+// renders can be judged at a glance — every one must show the dither and still read
+// as the orb.
+const pad = 24;
+const stripSizes = [16, 32, 64, 128, 256] as const;
+const zoomed = [16, 32, 64] as const;
+const zoom = 4;
+const rowW = stripSizes.reduce((w, s) => w + s + pad, pad);
+const zoomW = zoomed.reduce((w, s) => w + s * zoom + pad, pad);
+const stripW = Math.max(rowW, zoomW);
+const stripH = pad + 256 + pad + 64 * zoom + pad;
+const strip = new Strip(stripW, stripH);
+let x = pad;
+for (const s of stripSizes) {
+  strip.paste(renders.get(s) ?? renderRgba(s), s, x, pad + 256 - s);
+  x += s + pad;
+}
+x = pad;
+for (const s of zoomed) {
+  strip.paste(renders.get(s) ?? renderRgba(s), s, x, pad + 256 + pad + 64 * zoom - s * zoom, zoom);
+  x += s * zoom + pad;
+}
+const stripPath = join(REPO_ROOT, "apps", "mac", "Resources", "preview-icon-sizes.png");
+writeFileSync(stripPath, encodePng(stripW, strip.px, stripH));
 
 console.log(`  ${icns}`);
 console.log(`  ${join(REPO_ROOT, "build", "icon.png")}`);
+console.log(`  ${mediaIcon}`);
+console.log(`  ${stripPath}`);

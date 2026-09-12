@@ -5,8 +5,8 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient } from "@jarhead/daemon";
-import type { Delegation, EngineEvent, TranscriptItem } from "@jarhead/protocol";
-import { render, runChecks } from "./doctor.ts";
+import type { Delegation, EngineEvent, PermissionInfo, TranscriptItem } from "@jarhead/protocol";
+import { render, runChecks, summarizePermissions } from "./doctor.ts";
 import { bench } from "./bench.ts";
 
 const HELP = `
@@ -18,7 +18,7 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
   pnpm jarhead hands <op> [json]      talk to the native helper directly
   pnpm jarhead ledger [YYYY-MM-DD]    print a day's ledger
-  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state
+  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume>   send a command to the running daemon
   pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
@@ -256,10 +256,15 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; problems: string[]; brainReady: boolean; handsReady: boolean };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] } };
   console.log(`\n  phase      ${s.phase}`);
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
+  // The app's read of every grant (TCC keys them on Jarhead.app); without the app, the four the daemon's helper reads.
+  const perms = s.permissions;
+  if (perms?.all?.length) console.log(`  permissions  ${summarizePermissions(perms.all)}`);
+  else if (perms) console.log(`  permissions  mic ${perms.microphone} · screen recording ${perms.screenRecording} · accessibility ${perms.accessibility} (an older daemon: no list)`);
+  if (flags.has("--permissions") && perms?.all) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
   console.log(`  agents     ${s.agents.length}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
@@ -311,7 +316,7 @@ try {
       break;
     case "cmd": {
       const sub = rest[0];
-      if (!sub || !["wake", "sleep", "mute", "unmute", "stop", "pause", "resume", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume|agent.refresh>");
+      if (!sub || !["go", "pause", "stop", "interrupt", "wake", "sleep", "resume", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|stop|interrupt|wake|sleep|resume|mute|unmute|agent.refresh>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
       await sendCommand({ type: sub });
       break;
     }

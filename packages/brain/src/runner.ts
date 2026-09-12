@@ -414,7 +414,7 @@ export class ToolRunner {
         if (last) this.progress(`${command.split(/\s+/)[0]}: ${last}`);
       },
     });
-    return { kind: "text", text: describeShellResult(r) };
+    return { kind: "text", text: describeShellResult(r, undefined, command) };
   }
 
   // --------------------------------------------------------------- files

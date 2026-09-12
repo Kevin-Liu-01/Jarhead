@@ -4,10 +4,10 @@ import Combine
 /// What the menus can do. The AppDelegate fills these in; the status item, the Dock
 /// menu and the main menu all share them.
 struct AppActions {
-    var toggleWake: () -> Void = {}
+    /// Go / Pause — the transport's one button (AppState.transportToggle).
+    var transportToggle: () -> Void = {}
     var toggleMute: () -> Void = {}
-    /// Pause / resume: the session stays open but silent (mic muted, output dropped, no delegations).
-    var togglePause: () -> Void = {}
+    /// Stop — close the session, sleep (AppState.transportStop). Never disabled.
     var stop: () -> Void = {}
     var openConsole: () -> Void = {}
     var summonOrb: () -> Void = {}
@@ -30,7 +30,7 @@ final class StatusItem: NSObject {
         self.actions = actions
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
-        item.button?.image = StatusItem.glyph(awake: false)
+        item.button?.image = StatusItem.glyph(for: .asleep)
         item.button?.imagePosition = .imageOnly
         item.menu = buildMenu()
         refresh()
@@ -51,6 +51,17 @@ final class StatusItem: NSObject {
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
         state.$wakeGate
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        // The permissions row counts what is missing; a grant landing rebuilds the menu.
+        state.$permissionList
+            .map { (list: [PermissionInfo]) -> [Grant] in list.map(\.grant) }
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        state.$permissionSweep
+            .map { (p: PermissionSweepProgress?) -> Bool in p?.running ?? false }
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
@@ -76,8 +87,7 @@ final class StatusItem: NSObject {
 
     private func refresh() {
         let phase = state.phase
-        let awake = phase != .asleep && phase != .error
-        item.button?.image = StatusItem.glyph(awake: awake)
+        item.button?.image = StatusItem.glyph(for: phase)
         item.button?.appearsDisabled = !state.connected
         item.button?.toolTip = state.connected ? "Jarhead — \(StatusItem.label(for: phase))" : "Jarhead — daemon \(state.daemonDetail)"
         item.menu = buildMenu()
@@ -93,7 +103,7 @@ final class StatusItem: NSObject {
         case .acting: return "acting"
         case .muted: return "muted"
         case .error: return "error"
-        case .paused: return "paused"
+        case .paused: return "paused · meter stopped"
         }
     }
 
@@ -106,27 +116,40 @@ final class StatusItem: NSObject {
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
     }
 
+    /// The Go/Pause row's title: the transport's word for the phase.
+    static func transportTitle(for phase: Phase) -> String {
+        switch AppState.transportPress(for: phase) {
+        case .go: return "Go"
+        case .pause: return "Pause"
+        case .stop: return "Cancel connecting"
+        }
+    }
+
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
         let phase = state.phase
-        let awake = phase != .asleep && phase != .error
+        let inSession = AppState.inSessionPhases.contains(phase)
+        let paused = phase == .paused
         let connected = state.connected
 
         let title = NSMenuItem(title: connected ? "Jarhead — \(StatusItem.label(for: phase))" : "Jarhead — \(state.daemonDetail)", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
 
-        let wake = NSMenuItem(title: awake ? "Sleep" : "Wake", action: #selector(doToggleWake), keyEquivalent: " ")
-        wake.keyEquivalentModifierMask = [.option, .shift]
-        wake.target = self
-        wake.isEnabled = connected
-        wake.image = StatusItem.symbol(awake ? "moon.fill" : "bolt.fill")
-        menu.addItem(wake)
+        // Go / Pause: the transport's one button (⌥⇧Space; ⌥⇧P is the same toggle).
+        let look = AppState.transportLabel(for: phase)
+        let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: " ")
+        transport.keyEquivalentModifierMask = [.option, .shift]
+        transport.target = self
+        transport.isEnabled = connected
+        transport.image = StatusItem.symbol(look.symbol)
+        transport.toolTip = look.help + " (⌥⇧Space)"
+        menu.addItem(transport)
 
-        // The wake word gate, while asleep: what it is doing and, if off, why.
-        if !awake {
+        // The wake word gate, while the engine is dormant or paused: what it is doing and, if off, why.
+        if WakeGate.listens(in: phase) {
             let wakeSettings = state.snapshot.settings.wakeSettings
-            let gate = NSMenuItem(title: StatusItem.gateLabel(state.wakeGate, phrases: wakeSettings.phrases, auth: wakeSettings.auth), action: nil, keyEquivalent: "")
+            let gate = NSMenuItem(title: StatusItem.gateLabel(state.wakeGate, phrases: wakeSettings.phrases, auth: wakeSettings.auth, paused: paused), action: nil, keyEquivalent: "")
             gate.isEnabled = false
             gate.image = StatusItem.symbol(StatusItem.gateSymbol(state.wakeGate))
             menu.addItem(gate)
@@ -135,24 +158,18 @@ final class StatusItem: NSObject {
         let mute = NSMenuItem(title: phase == .muted ? "Unmute" : "Mute", action: #selector(doToggleMute), keyEquivalent: "m")
         mute.keyEquivalentModifierMask = [.option, .shift]
         mute.target = self
-        mute.isEnabled = connected && awake
+        mute.isEnabled = connected && inSession
         mute.image = StatusItem.symbol(phase == .muted ? "mic.fill" : "mic.slash.fill")
         menu.addItem(mute)
 
-        let paused = phase == .paused
-        let pause = NSMenuItem(title: paused ? "Resume" : "Pause", action: #selector(doTogglePause), keyEquivalent: "p")
-        pause.keyEquivalentModifierMask = [.option, .shift]
-        pause.target = self
-        pause.isEnabled = connected && awake
-        pause.image = StatusItem.symbol(paused ? "play.fill" : "pause.fill")
-        pause.toolTip = paused ? "Back to listening (⌥⇧P)" : "Keep the session open but silent (⌥⇧P)"
-        menu.addItem(pause)
-
+        // Stop is never disabled: it must land in every phase, connected or not (the
+        // local speaker flush still happens).
         let stop = NSMenuItem(title: "Stop", action: #selector(doStop), keyEquivalent: "\u{1b}")
         stop.keyEquivalentModifierMask = [.option]
         stop.target = self
-        stop.isEnabled = connected && awake
+        stop.isEnabled = true
         stop.image = StatusItem.symbol("stop.fill")
+        stop.toolTip = "Stop everything — close the session, sleep (⌥⎋)"
         menu.addItem(stop)
 
         menu.addItem(.separator())
@@ -189,6 +206,21 @@ final class StatusItem: NSObject {
         setup.image = StatusItem.symbol("gearshape.fill")
         menu.addItem(setup)
 
+        // Permissions: how many are missing (required ones named first), opening Setup on
+        // that step; and the sweep itself. While the sweep runs the row says so.
+        let perms = NSMenuItem(title: StatusItem.permissionsLabel(state.permissionList, sweep: state.permissionSweep), action: #selector(doPermissions), keyEquivalent: "")
+        perms.target = self
+        perms.image = StatusItem.symbol(StatusItem.permissionsSymbol(state.permissionList))
+        perms.toolTip = "Open Setup on the Permissions step"
+        menu.addItem(perms)
+
+        let askAll = NSMenuItem(title: "Ask for everything…", action: #selector(doAskAll), keyEquivalent: "")
+        askAll.target = self
+        askAll.isEnabled = !(state.permissionSweep?.running ?? false)
+        askAll.image = StatusItem.symbol("checklist")
+        askAll.toolTip = "Ask for every permission Jarhead can use, one dialog at a time, then the System Settings panes"
+        menu.addItem(askAll)
+
         quit.image = StatusItem.symbol("power")
         menu.addItem(quit)
 
@@ -196,9 +228,8 @@ final class StatusItem: NSObject {
         return menu
     }
 
-    @objc private func doToggleWake() { actions.toggleWake() }
+    @objc private func doTransportToggle() { actions.transportToggle() }
     @objc private func doToggleMute() { actions.toggleMute() }
-    @objc private func doTogglePause() { actions.togglePause() }
     @objc private func doStop() { actions.stop() }
     @objc private func doOpenConsole() { actions.openConsole() }
     @objc private func doSummon() { actions.summonOrb() }
@@ -206,20 +237,43 @@ final class StatusItem: NSObject {
     @objc private func doQuit() { actions.quit() }
     @objc private func doSetup() { state.openOnboarding() }
     @objc private func doMark() { state.beginMarkMode() }
+    @objc private func doPermissions() { state.openPermissionsSetup() }
+    @objc private func doAskAll() { state.requestAll() }
+
+    // MARK: - permissions row
+
+    /// "Permissions: 3 missing (2 required)", "Permissions: all 16 granted", "Permissions: asking…".
+    static func permissionsLabel(_ list: [PermissionInfo], sweep: PermissionSweepProgress?) -> String {
+        if let sweep, sweep.running { return "Permissions: asking…" }
+        guard list.contains(where: { $0.checkedAt != nil }) else { return "Permissions: not read yet" }
+        let missing = list.filter { $0.grant != .granted }
+        if missing.isEmpty { return "Permissions: all \(list.count) granted" }
+        let required = missing.filter(\.required).count
+        return "Permissions: \(missing.count) missing" + (required > 0 ? " (\(required) required)" : "")
+    }
+
+    static func permissionsSymbol(_ list: [PermissionInfo]) -> String {
+        if !list.contains(where: { $0.checkedAt != nil }) { return "lock.shield.fill" }
+        if list.contains(where: { $0.required && $0.grant != .granted }) { return "exclamationmark.shield.fill" }
+        return list.allSatisfy { $0.grant == .granted } ? "checkmark.shield.fill" : "lock.shield.fill"
+    }
 
     // MARK: - wake gate
 
     /// `auth` is named when it is `.none`, so a gate that opens the session on the word
-    /// alone never looks like one that authenticates.
-    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either) -> String {
+    /// alone never looks like one that authenticates. While `paused` the gate listens for
+    /// the word to *resume* — no authentication, the pause was authenticated minutes ago
+    /// (WakeGate.heard) — so the row says so, and names the other way back.
+    static func gateLabel(_ g: WakeGateState, phrases: [String], auth: WakeAuth = .either, paused: Bool = false) -> String {
         switch g {
         case .off(let reason): return "Wake word off — \(reason)"
         case .listening:
             let phrase = phrases.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? "the wake word"
+            if paused { return "paused · say “\(phrase)” or press Go" }
             return "Listening for “\(phrase)”" + (auth == .none ? " — no authentication" : "")
         case .heard: return "Heard you"
         case .authenticating(let method): return "Waiting for \(method)"
-        case .granted: return "Waking…"
+        case .granted: return paused ? "Resuming…" : "Waking…"
         case .denied(let reason): return "Not this time — \(reason)"
         case .lockedOut(let until): return "Locked for \(max(1, Int(until.timeIntervalSinceNow.rounded()))) s"
         }
@@ -238,10 +292,14 @@ final class StatusItem: NSObject {
 
     // MARK: - glyph
 
-    /// A monochrome orb: a ring, plus a filled core when awake. Template, so the
-    /// system tints it for light/dark menu bars and Retina scaling is free.
-    static func glyph(awake: Bool) -> NSImage {
+    /// A monochrome orb: a ring, plus a filled core while a session is open or opening,
+    /// a dim ember while asleep, and two bars while paused (the session is closed, the
+    /// conversation kept). Template, so the system tints it for light/dark menu bars and
+    /// Retina scaling is free.
+    static func glyph(for phase: Phase) -> NSImage {
         let size = NSSize(width: 18, height: 18)
+        let paused = phase == .paused
+        let awake = AppState.voiceAudioRuns(in: phase)
         let image = NSImage(size: size, flipped: false) { rect in
             let c = NSPoint(x: rect.midX, y: rect.midY)
             NSColor.black.setStroke()
@@ -249,7 +307,11 @@ final class StatusItem: NSObject {
             let ring = NSBezierPath(ovalIn: NSRect(x: c.x - 6.25, y: c.y - 6.25, width: 12.5, height: 12.5))
             ring.lineWidth = 1.5
             ring.stroke()
-            if awake {
+            if paused {
+                // Paused: two bars at the centre, the transport's own mark.
+                NSBezierPath(rect: NSRect(x: c.x - 2.75, y: c.y - 3, width: 1.75, height: 6)).fill()
+                NSBezierPath(rect: NSRect(x: c.x + 1, y: c.y - 3, width: 1.75, height: 6)).fill()
+            } else if awake {
                 NSBezierPath(ovalIn: NSRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6)).fill()
             } else {
                 // Asleep: a dim ember at the centre.

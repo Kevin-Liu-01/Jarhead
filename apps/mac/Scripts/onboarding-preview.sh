@@ -7,7 +7,17 @@
 #   PREVIEW_SCENARIO=ready|fresh|broken|auto pins the fake state (default ready);
 #   PREVIEW_APPEARANCE=light|dark pins the appearance (default dark, so shots are deterministic);
 #   PREVIEW_SIZE=WxH sets the content size (default 620x520; 560x480 is the window minimum).
-# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Onboarding +
+#   PREVIEW_GO=<step>@<seconds> steps to another step at that moment (inside withAnimation:
+#   the slide runs, the rail's highlight glides); PREVIEW_SHOT_AT=<seconds>:<out.png> takes a
+#   window-only shot at that moment (a frame mid-transition; the harness log stamps the real
+#   time the capture ran); PREVIEW_REDUCE_MOTION=1 pins Motion.reduced on (plain fades, halved
+#   durations, no slide); PREVIEW_SWEEP=asking|waiting|settings|folders|done pins an "Ask for
+#   everything" sweep on the Permissions step (waiting: a dialog that returned at once; folders:
+#   three kinds sharing one pane). Permissions are canned per scenario (all sixteen kinds, mixed
+#   statuses) and every ask prints — nothing here touches TCC. See OnboardingPreviewMain.swift.
+#   `all` also shoots the Permissions step at 620x1500 (preview-onboarding-permissions-all.png)
+#   so every one of the sixteen rows is in a committed picture.
+# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Motion + UI/Onboarding +
 # Scripts/OnboardingPreviewMain.swift into its own output directory (never the
 # shared .build products), shows the window, screenshots it and exits.
 set -euo pipefail
@@ -18,7 +28,7 @@ BUILD=".build/onboarding-preview"
 mkdir -p "$BUILD"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
   -o "$BUILD/onboarding-preview" \
-  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift \
+  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift \
   Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift \
   Scripts/OnboardingPreviewMain.swift
 export PREVIEW_SCENARIO="${PREVIEW_SCENARIO:-ready}"
@@ -48,6 +58,11 @@ if [[ "$STEP" == "all" ]]; then
   for s in welcome voice brain permissions wake agents done; do
     shoot "$s" "Resources/preview-onboarding-$s.png"
   done
+  # The Permissions step mid-sweep, waiting on a dialog, in the System Settings walk, and tall enough for all sixteen rows.
+  PREVIEW_SWEEP=asking shoot permissions "Resources/preview-onboarding-permissions-asking.png"
+  PREVIEW_SWEEP=waiting shoot permissions "Resources/preview-onboarding-permissions-waiting.png"
+  PREVIEW_SWEEP=settings shoot permissions "Resources/preview-onboarding-permissions-settings.png"
+  PREVIEW_SIZE=620x1500 shoot permissions "Resources/preview-onboarding-permissions-all.png"
   # The Brain step again in the aqua appearance: the light palette's one check.
   PREVIEW_APPEARANCE=light shoot brain "Resources/preview-onboarding-light.png"
   exit 0

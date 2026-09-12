@@ -28,9 +28,39 @@ export class NativeRequestError extends Error {
   }
 }
 
+/**
+ * The grants a helper process reads for itself (`jarhead-hands --permissions`). TCC
+ * keys them on the responsible app, so under Jarhead.app these are the app's answers;
+ * from a terminal they are the terminal's. The app reads the other twelve kinds
+ * (microphone, speech, camera, contacts, …) itself and reports them over the wire.
+ */
 export interface Permissions {
   readonly accessibility: boolean;
   readonly screenRecording: boolean;
+  /** Input Monitoring: IOHIDCheckAccess(listen) — the app's global key monitors (mark mode) need it. */
+  readonly inputMonitoring: boolean;
+  /** Full Disk Access: a read probe of an FDA-only path (no API, no prompt exists). */
+  readonly fullDiskAccess: boolean;
+}
+
+/** The kinds the helper reads, in the order `--permissions` prints them. */
+export const HELPER_PERMISSION_KINDS = ["accessibility", "screenRecording", "inputMonitoring", "fullDiskAccess"] as const;
+export type HelperPermissionKind = (typeof HELPER_PERMISSION_KINDS)[number];
+
+/** `hello` from a helper built before Input Monitoring / Full Disk Access were read lacks those two. */
+export type HelloPermissions = Pick<Permissions, "accessibility" | "screenRecording"> & Partial<Permissions>;
+
+/** The helper's JSON (any build) as booleans; a key a build did not print is absent, never false. */
+export function parseHelperPermissions(raw: unknown): HelloPermissions {
+  const o = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const out: Record<string, boolean> = { accessibility: o["accessibility"] === true, screenRecording: o["screenRecording"] === true };
+  for (const kind of ["inputMonitoring", "fullDiskAccess"] as const) if (typeof o[kind] === "boolean") out[kind] = o[kind];
+  return out as unknown as HelloPermissions;
+}
+
+/** Every kind a boolean: what a current `--permissions` run yields (a missing key reads as not granted). */
+export function completeHelperPermissions(p: HelloPermissions): Permissions {
+  return { accessibility: p.accessibility, screenRecording: p.screenRecording, inputMonitoring: p.inputMonitoring === true, fullDiskAccess: p.fullDiskAccess === true };
 }
 
 export interface DisplayInfo {
@@ -173,6 +203,8 @@ export interface NativeHandsProcessOptions {
   readonly spawnImpl?: typeof spawn;
   /** With a stand-in `spawnImpl` there is no binary to find: treat the helper as available. */
   readonly assumeAvailable?: boolean;
+  /** Test seam for the fresh-process read (`--permissions`): what a new helper process would print. */
+  readonly probeImpl?: () => Promise<HelloPermissions>;
 }
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
@@ -311,15 +343,20 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
     });
   }
 
-  async hello(): Promise<{ version: string; pid: number; permissions: Permissions }> {
-    return this.request("hello", {}, 3000);
+  /** The resident helper's greeting: its version, pid and the grants it read at launch (a key an older build did not print is absent). */
+  async hello(): Promise<{ version: string; pid: number; permissions: HelloPermissions }> {
+    const raw = await this.request<{ version: string; pid: number; permissions?: unknown }>("hello", {}, 3000);
+    return { version: raw.version, pid: raw.pid, permissions: parseHelperPermissions(raw.permissions) };
   }
 
   /**
    * Read the grants from a *fresh* helper process (`--permissions`). The resident
-   * helper may still report what it saw at launch; a new process asks TCC now.
+   * helper may still report what it saw at launch; a new process asks TCC now. All
+   * four kinds come back as booleans (a key an older binary did not print reads as
+   * not granted; `pnpm build:hands` fixes that).
    */
   probePermissions(timeoutMs = 3000): Promise<Permissions> {
+    if (this.opts.probeImpl) return this.opts.probeImpl().then(completeHelperPermissions);
     return new Promise((resolve, reject) => {
       if (!existsSync(this.opts.binPath)) {
         reject(new NativeRequestError({ code: "unavailable", message: `hands helper not built at ${this.opts.binPath}` }));
@@ -331,8 +368,7 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
           return;
         }
         try {
-          const parsed = JSON.parse(stdout.trim()) as { accessibility?: unknown; screenRecording?: unknown };
-          resolve({ accessibility: parsed.accessibility === true, screenRecording: parsed.screenRecording === true });
+          resolve(completeHelperPermissions(parseHelperPermissions(JSON.parse(stdout.trim()))));
         } catch (e) {
           reject(new NativeRequestError({ code: "internal", message: `bad --permissions output: ${(e as Error).message}` }));
         }

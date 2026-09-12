@@ -6,34 +6,35 @@ import Carbon
 ///
 ///   ⌥⇧J      open console
 ///   ⌥⇧M      mute / unmute
-///   ⌥⎋       stop
-///   ⌥⇧Space  wake / sleep
+///   ⌥⎋       stop (AppState.transportStop: close the session, sleep)
+///   ⌥⇧Space  go / pause (AppState.transportToggle: wake or resume · pause)
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
-///   ⌥⇧P      pause / resume (the session stays open, silent)
+///   ⌥⇧P      alias of ⌥⇧Space (the old pause key; the same toggle)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
         case openConsole = 1
         case toggleMute = 2
         case stop = 3
-        case toggleWake = 4
+        case transportToggle = 4
         case markScreen = 5
-        case togglePause = 6
+        /// ⌥⇧P: kept registered as a second key for the same Go/Pause toggle.
+        case transportToggleAlias = 6
 
         var keyCode: UInt32 {
             switch self {
             case .openConsole: return UInt32(kVK_ANSI_J)
             case .toggleMute: return UInt32(kVK_ANSI_M)
             case .stop: return UInt32(kVK_Escape)
-            case .toggleWake: return UInt32(kVK_Space)
+            case .transportToggle: return UInt32(kVK_Space)
             case .markScreen: return UInt32(kVK_ANSI_C)
-            case .togglePause: return UInt32(kVK_ANSI_P)
+            case .transportToggleAlias: return UInt32(kVK_ANSI_P)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .toggleWake, .markScreen, .togglePause: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .transportToggle, .markScreen, .transportToggleAlias: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -44,9 +45,9 @@ final class Hotkeys {
             case .openConsole: return ("j", [.option, .shift])
             case .toggleMute: return ("m", [.option, .shift])
             case .stop: return ("\u{1b}", [.option])
-            case .toggleWake: return (" ", [.option, .shift])
+            case .transportToggle: return (" ", [.option, .shift])
             case .markScreen: return ("c", [.option, .shift])
-            case .togglePause: return ("p", [.option, .shift])
+            case .transportToggleAlias: return ("p", [.option, .shift])
             }
         }
     }

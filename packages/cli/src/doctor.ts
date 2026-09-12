@@ -2,12 +2,12 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, type BrainKind, type WakeSettings } from "@jarhead/protocol";
+import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, PERMISSION_KINDS, type BrainKind, type PermissionInfo, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
 import { defaultConnectors } from "@jarhead/agents";
 import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
-import { NativeHandsProcess } from "@jarhead/hands";
+import { NativeHandsProcess, type HelloPermissions } from "@jarhead/hands";
 
 /**
  * Preflight for the things that fail silently. Exits non-zero only on failures
@@ -23,6 +23,47 @@ export interface Check {
   readonly detail: string;
   readonly required: boolean;
   readonly fix?: string | undefined;
+}
+
+/** How a missing grant is obtained, for a row: the sweep's prompt, System Settings, or one prompt per target app. */
+const ASK_WORD: Record<PermissionInfo["ask"], string> = { prompt: "prompt", settings: "System Settings", perApp: "per app" };
+
+/**
+ * One line for a permissions list: "12/16 granted · missing: Full Disk Access (System
+ * Settings), Contacts (prompt)". A partial list (the app has not reported yet, so only
+ * the four the helper reads are known) says how many the app still has to read.
+ */
+export function summarizePermissions(all: readonly PermissionInfo[] | undefined): string {
+  if (!all || all.length === 0) return "not read yet — the app reads them (Setup › Permissions), the daemon's helper reads four";
+  const granted = all.filter((p) => p.grant === "granted");
+  const missing = all.filter((p) => p.grant === "denied");
+  const unknown = all.filter((p) => p.grant === "unknown");
+  const parts = [`${granted.length}/${all.length} granted`];
+  if (missing.length) parts.push(`missing: ${missing.map((p) => `${p.label} (${ASK_WORD[p.ask] ?? p.ask})`).join(", ")}`);
+  if (unknown.length) parts.push(`not asked yet: ${unknown.map((p) => p.label).join(", ")}`);
+  const unlisted = PERMISSION_KINDS.length - all.length;
+  if (unlisted > 0) parts.push(`${unlisted} more read only by the app (open Jarhead.app)`);
+  return parts.join(" · ");
+}
+
+/** A running daemon's permission list (`snapshot.permissions.all`); undefined when none answers within 1.5 s. */
+async function daemonPermissions(socketPath: string): Promise<readonly PermissionInfo[] | undefined> {
+  if (!existsSync(socketPath)) return undefined;
+  const client = new DaemonClient(socketPath);
+  try {
+    const got = new Promise<readonly PermissionInfo[] | undefined>((resolve) => {
+      client.on("message", (m) => {
+        if (m.type === "snapshot") resolve(((m.snapshot as { permissions?: { all?: readonly PermissionInfo[] } }).permissions ?? {}).all);
+      });
+      setTimeout(() => resolve(undefined), 1500);
+    });
+    await client.connect({ pid: process.pid, audio: false });
+    return await got;
+  } catch {
+    return undefined;
+  } finally {
+    client.close();
+  }
 }
 
 function sh(cmd: string, args: readonly string[]): string | undefined {
@@ -188,8 +229,20 @@ export async function runChecks(): Promise<Check[]> {
     try {
       const hello = await hands.hello();
       add({ group: "hands", name: "jarhead-hands", status: "ok", detail: `v${hello.version} pid ${hello.pid}`, required: false });
-      add({ group: "hands", name: "Accessibility", status: hello.permissions.accessibility ? "ok" : "warn", detail: hello.permissions.accessibility ? "granted to this launcher" : "not granted — clicks/typing will silently no-op", required: false, fix: "System Settings → Privacy & Security → Accessibility: switch Jarhead on; if it is already on, remove the row (−) and press Request in Setup — that row was made by an earlier build" });
-      add({ group: "hands", name: "Screen Recording", status: hello.permissions.screenRecording ? "ok" : "warn", detail: hello.permissions.screenRecording ? "granted" : "not granted — falls back to `screencapture`", required: false, fix: "System Settings → Privacy & Security → Screen & System Audio Recording" });
+      // The four grants a helper process reads for itself. TCC keys them on the responsible
+      // app: run from a terminal these are the terminal's answers, not Jarhead.app's — the
+      // running daemon's list (below) is the app's.
+      const perms: HelloPermissions = hello.permissions;
+      const asThis = "(this terminal's grant, not the app's)";
+      add({ group: "hands", name: "Accessibility", status: perms.accessibility ? "ok" : "warn", detail: perms.accessibility ? `granted ${asThis}` : `not granted ${asThis} — clicks/typing will silently no-op`, required: false, fix: "System Settings → Privacy & Security → Accessibility: switch Jarhead on; if it is already on, remove the row (−) and press Request in Setup — that row was made by an earlier build" });
+      add({ group: "hands", name: "Screen Recording", status: perms.screenRecording ? "ok" : "warn", detail: perms.screenRecording ? `granted ${asThis}` : `not granted ${asThis} — falls back to \`screencapture\``, required: false, fix: "System Settings → Privacy & Security → Screen & System Audio Recording" });
+      if (perms.inputMonitoring === undefined || perms.fullDiskAccess === undefined) {
+        add({ group: "hands", name: "Input Monitoring / FDA", status: "warn", detail: "this helper build does not read them", required: false, fix: "pnpm build:hands" });
+      } else {
+        add({ group: "hands", name: "Input Monitoring", status: perms.inputMonitoring ? "ok" : "warn", detail: perms.inputMonitoring ? `granted ${asThis}` : `not granted ${asThis} — the keys watched while circling will not arrive`, required: false, fix: "Setup › Permissions › Ask for everything (the app prompts), or System Settings → Privacy & Security → Input Monitoring" });
+        add({ group: "hands", name: "Full Disk Access", status: perms.fullDiskAccess ? "ok" : "warn", detail: perms.fullDiskAccess ? `granted ${asThis}` : `not granted ${asThis} — Mail, Safari, Messages and every folder without a prompt of its own fail with EPERM`, required: false, fix: "System Settings → Privacy & Security → Full Disk Access: add /Applications/Jarhead.app (no prompt exists; Setup opens the pane and reveals the app)" });
+      }
+      add({ group: "hands", name: "other permissions", status: "ok", detail: "microphone, speech, camera, contacts, calendars, reminders, notifications, local network, Automation and the Desktop/Documents/Downloads folders are read by Jarhead.app itself — Setup › Permissions shows them, `jarhead status` prints the app's list", required: false });
       // The browser fast path: does each running browser allow JavaScript from Apple Events?
       // A browser that is not running is reported, never launched.
       for (const app of ["Google Chrome", "Safari"]) {
@@ -207,6 +260,18 @@ export async function runChecks(): Promise<Check[]> {
       hands.stop();
     }
   }
+
+  // ---- permissions: the app's list, from the running daemon (TCC keys every grant on Jarhead.app)
+  const appPerms = await daemonPermissions(cfg.socketPath);
+  const missingRequired = (appPerms ?? []).filter((p) => p.required && p.grant !== "granted");
+  add({
+    group: "permissions",
+    name: "Jarhead.app",
+    status: appPerms === undefined ? "warn" : missingRequired.length ? "warn" : "ok",
+    detail: appPerms === undefined ? "no daemon answering — start Jarhead.app; Setup › Permissions asks for all sixteen in one sweep" : summarizePermissions(appPerms),
+    required: false,
+    ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
+  });
 
   // ---- agents: the sessions on this Mac and the connector that continues one
   for (const c of defaultConnectors({ claudeBin: cfg.claudeBin })) {

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { secretPathReason } from "@jarhead/core";
 
@@ -32,6 +33,71 @@ export function secretReasonEither(path: string): string | undefined {
   return secretPathReason(path) ?? secretPathReason(realPathOf(path));
 }
 
+// ------------------------------------------------------------ macOS blocks ---
+//
+// TCC answers a read or write it guards with EPERM ("Operation not permitted") and
+// nothing else — no dialog for Full Disk Access, and a raw errno is all a model would
+// see. The three user folders have a prompt of their own (Setup asks for it); Mail,
+// Safari, Messages and the rest of ~/Library and the Trash need Full Disk Access,
+// which only System Settings grants. These helpers turn that errno into
+// the one line the voice can say. They decide nothing: policy ran before the read.
+
+const HOME = homedir();
+const TCC_FOLDERS: readonly { readonly prefix: string; readonly lacks: string }[] = [
+  { prefix: join(HOME, "Desktop"), lacks: "access to the Desktop folder" },
+  { prefix: join(HOME, "Documents"), lacks: "access to the Documents folder" },
+  { prefix: join(HOME, "Downloads"), lacks: "access to the Downloads folder" },
+  { prefix: join(HOME, "Library"), lacks: "Full Disk Access" },
+  { prefix: join(HOME, ".Trash"), lacks: "Full Disk Access" },
+];
+
+/** Where a grant is obtained, for the line's tail. */
+export const PERMISSIONS_HINT = "Setup › Permissions › Ask for everything";
+
+/** `~/x` and `$HOME/x` as absolute paths; anything else unchanged. */
+function expandHome(path: string): string {
+  if (path === "~") return HOME;
+  if (path.startsWith("~/")) return join(HOME, path.slice(2));
+  if (path.startsWith("$HOME/")) return join(HOME, path.slice(6));
+  return path;
+}
+
+/** What Jarhead lacks when macOS blocks `path`, or undefined for a path TCC does not guard. */
+export function tccGrantFor(path: string): string | undefined {
+  const p = expandHome(path).replace(/^\/private(\/|$)/, "/").replace(/\/+$/, "");
+  for (const f of TCC_FOLDERS) if (p === f.prefix || p.startsWith(f.prefix + sep)) return f.lacks;
+  return undefined;
+}
+
+/** The line for a blocked path: "macOS blocked this: Jarhead lacks Full Disk Access. Setup › Permissions › Ask for everything". */
+export function macOSBlockedLine(path: string): string | undefined {
+  const lacks = tccGrantFor(path);
+  return lacks ? `macOS blocked this: Jarhead lacks ${lacks}. ${PERMISSIONS_HINT}` : undefined;
+}
+
+/** EPERM is TCC's answer (a plain Unix denial is EACCES and stays what it is). */
+export function isMacOSBlock(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (code === "EPERM") return true;
+  return /operation not permitted/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
+}
+
+/** An fs error as a model should read it: the permission line for a guarded path, else the message as it was. */
+export function explainFsError(e: unknown, path: string): string {
+  if (isMacOSBlock(e)) {
+    const line = macOSBlockedLine(path);
+    if (line) return line;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Rethrow an fs error with the permission line when macOS blocked a guarded path. */
+function rethrowExplained(e: unknown, path: string): never {
+  const text = explainFsError(e, path);
+  if (e instanceof Error && text === e.message) throw e;
+  throw new Error(text);
+}
+
 /** Characters of file content a single read returns. */
 export const READ_CAP = 40_000;
 export const SEARCH_MAX_RESULTS = 200;
@@ -57,7 +123,12 @@ export interface ReadWindow {
 
 /** Lines `offset` (1-based) through `offset + limit - 1`, capped at READ_CAP characters. */
 export function readWindow(path: string, offset = 1, limit?: number, cap = READ_CAP): ReadWindow | { readonly binary: true; readonly bytes: number } {
-  const buf = readFileSync(path);
+  let buf: Buffer;
+  try {
+    buf = readFileSync(path);
+  } catch (e) {
+    rethrowExplained(e, path);
+  }
   if (isBinary(buf)) return { binary: true, bytes: buf.length };
   const lines = buf.toString("utf8").split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
@@ -84,8 +155,12 @@ export function describeWindow(path: string, w: ReadWindow): string {
 }
 
 export function writeText(path: string, content: string): void {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, content);
+  try {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, content);
+  } catch (e) {
+    rethrowExplained(e, path);
+  }
 }
 
 export type EditOutcome = { readonly ok: true; readonly count: number } | { readonly ok: false; readonly reason: string };
@@ -93,7 +168,12 @@ export type EditOutcome = { readonly ok: true; readonly count: number } | { read
 /** Replace `oldText` with `newText`; exactly once unless `all`. Never writes on failure. */
 export function editText(path: string, oldText: string, newText: string, all = false): EditOutcome {
   if (!oldText) return { ok: false, reason: "old must not be empty" };
-  const before = readFileSync(path, "utf8");
+  let before: string;
+  try {
+    before = readFileSync(path, "utf8");
+  } catch (e) {
+    return { ok: false, reason: explainFsError(e, path) };
+  }
   let count = 0;
   let idx = before.indexOf(oldText);
   while (idx !== -1) {
@@ -103,7 +183,11 @@ export function editText(path: string, oldText: string, newText: string, all = f
   if (count === 0) return { ok: false, reason: `old text not found in ${path}; read the file and copy the exact text (whitespace included)` };
   if (count > 1 && !all) return { ok: false, reason: `old text appears ${count} times in ${path}; include more surrounding lines to make it unique, or set all: true` };
   const after = all ? before.split(oldText).join(newText) : before.replace(oldText, () => newText);
-  writeFileSync(path, after);
+  try {
+    writeFileSync(path, after);
+  } catch (e) {
+    return { ok: false, reason: explainFsError(e, path) };
+  }
   return { ok: true, count };
 }
 
@@ -117,7 +201,9 @@ export function listTree(root: string, depth = 1): string {
     try {
       names = readdirSync(dir).sort((a, b) => a.localeCompare(b));
     } catch (e) {
-      lines.push(`${"  ".repeat(level)}[unreadable: ${(e as Error).message}]`);
+      // The root itself blocked by macOS: the whole result is the one line to say.
+      if (level === 0 && isMacOSBlock(e) && macOSBlockedLine(dir)) throw new Error(explainFsError(e, dir));
+      lines.push(`${"  ".repeat(level)}[unreadable: ${explainFsError(e, dir)}]`);
       return;
     }
     for (const name of names) {
@@ -213,6 +299,12 @@ export async function searchFiles(root: string, pattern: string, opts: SearchOpt
   } catch (e) {
     throw new Error(`pattern is not a valid regular expression: ${(e as Error).message}`);
   }
+  // A root macOS blocks: rg exits 2 and the walk finds nothing — say why instead of "no hits".
+  try {
+    if (statSync(root).isDirectory()) readdirSync(root);
+  } catch (e) {
+    if (isMacOSBlock(e) && macOSBlockedLine(root)) throw new Error(explainFsError(e, root));
+  }
   if (opts.rg !== false) {
     const viaRg = await ripgrep(root, pattern, opts.glob, max, opts.rg, opts.signal);
     if (viaRg) return { hits: viaRg.filter((h) => !secretReasonEither(h.path)), via: "rg" };
@@ -296,7 +388,12 @@ function walkSearch(root: string, regex: RegExp, glob: string | undefined, max: 
   };
   if (existsSync(root) && statSync(root).isFile()) {
     if (secretReasonEither(root)) return hits;
-    const buf = readFileSync(root);
+    let buf: Buffer;
+    try {
+      buf = readFileSync(root);
+    } catch (e) {
+      rethrowExplained(e, root);
+    }
     if (!isBinary(buf)) buf.toString("utf8").split("\n").forEach((l, i) => regex.test(l) && hits.length < max && hits.push({ path: root, line: i + 1, text: l.slice(0, 300) }));
     return hits;
   }

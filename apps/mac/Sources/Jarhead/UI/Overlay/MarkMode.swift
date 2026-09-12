@@ -181,7 +181,8 @@ final class MarkModeController {
             w.markEvents = nil
             let wasKey = w.isKeyWindow
             w.interactive = false
-            w.model.markHint = false
+            // Not `markHint = false` here: the pill fades out with the wash and frame
+            // (OverlayModel clears it when the fade-out ends); clearing it first cut it.
             w.model.markMode = false
             // Drop key status the way the orb does: re-order with canBecomeKey now false.
             if wasKey { w.orderOut(nil) }

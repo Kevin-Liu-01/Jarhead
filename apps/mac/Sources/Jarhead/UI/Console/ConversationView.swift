@@ -23,7 +23,6 @@ struct ConversationPane: View, Equatable {
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (a: ConversationPane, b: ConversationPane) -> Bool {
         a.agent == b.agent && a.transcript == b.transcript
@@ -45,7 +44,9 @@ struct ConversationPane: View, Equatable {
     /// Back to the stream — the live one: a ledger day left open behind the
     /// conversation would otherwise take its place, two clicks from live.
     private func close() {
-        withAnimation(reduceMotion ? nil : ConsoleTheme.fast) {
+        // The pane crossfades under the root's Motion.gentle; the rail's highlight glides
+        // back to Now with Motion.snappy from this transaction.
+        withAnimation(Motion.snappy) {
             session.openAgentId = nil
             if session.isLedgerMode { session.showLive() }
         }
@@ -144,15 +145,20 @@ private struct ConversationHeader: View {
                     .help(agent.detail.map { "\(agent.status.rawValue) · \($0)" } ?? agent.status.rawValue)
                 Spacer(minLength: 8)
                 HStack(spacing: 6) {
+                    // The live dot fades in when the tail starts; the count rolls its digits.
                     if live {
                         ConsoleDot(color: brandColor(tool), live: true, size: 6)
                             .help("Live — following the session as it grows")
                             .accessibilityLabel("Live")
+                            .transition(.opacity)
                     }
                     Text(ConsoleFormat.messageCount(count))
                         .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                         .lineLimit(1)
+                        .contentTransition(ConsoleMotion.numeric)
                 }
+                .animation(Motion.fade, value: live)
+                .animation(Motion.snappy, value: count)
                 .layoutPriority(1)
                 if let url = reveal {
                     // The word while there is room; the folder alone at the pane's minimum,
@@ -202,6 +208,13 @@ private struct ConversationFeed: View {
     /// `agent.open` went out a while ago and nothing came back.
     @State private var stale = false
     @State private var retries = 0
+    /// One turn after the feed has its transcript: rows arriving after that fade in and
+    /// rise on their own ink (`rowAppear`); the ones there from the start show at once —
+    /// and so does the tail `agent.open` brings back, which lands whole a moment after the
+    /// pane opened on nothing (a conversation being stepped into is not "new"). An older
+    /// page prepended above is "there from the start" for its rows too — they land above
+    /// the fold while the feed holds its place, so nothing on screen should stir.
+    @State private var settled = false
 
     private static let bottomId = "conversation-bottom"
 
@@ -215,6 +228,7 @@ private struct ConversationFeed: View {
                     ScrollView(.vertical) {
                         if messages.isEmpty {
                             emptyView.frame(minHeight: outer.size.height)
+                                .transition(.opacity)
                         } else {
                             // Not lazy, like the stream: a stable document is what sticky scrolling needs.
                             VStack(alignment: .leading, spacing: 0) {
@@ -223,6 +237,7 @@ private struct ConversationFeed: View {
                                 }
                                 ForEach(messages) { message in
                                     ConversationRow(message: message, tool: tool)
+                                        .rowAppear(animated: settled && !loadingEarlier)
                                 }
                                 Color.clear.frame(height: 1).id(Self.bottomId)
                             }
@@ -231,8 +246,10 @@ private struct ConversationFeed: View {
                             .background(alignment: .topLeading) {
                                 ConsoleScrollProbe(tracker: tracker).frame(width: 0, height: 0)
                             }
+                            .transition(.opacity)
                         }
                     }
+                    .animation(Motion.fade, value: messages.isEmpty)
                 }
                 if tracker.showJump && !messages.isEmpty {
                     Button {
@@ -245,21 +262,26 @@ private struct ConversationFeed: View {
                     }
                     .buttonStyle(JumpPillStyle())
                     .padding(.bottom, 12)
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    .transition(ConsoleMotion.arriveLeave)
                     .help("Jump to the latest")
                 }
             }
-            .animation(reduceMotion ? nil : ConsoleTheme.motion, value: tracker.showJump)
+            .animation(Motion.gentle, value: tracker.showJump)
             .onAppear {
                 tracker.reduceMotion = reduceMotion
                 tracker.fallback = { animate in
                     if animate {
-                        withAnimation(ConsoleTheme.motion) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
+                        withAnimation(Motion.gentle) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
                     } else {
                         proxy.scrollTo(Self.bottomId, anchor: .bottom)
                     }
                 }
                 tracker.jump(animated: false)
+                // Opened on nothing (agent.open is out): settle when the tail lands (below).
+                if transcript != nil { settle() }
+            }
+            .onChange(of: transcript == nil) { _, isNil in
+                if !isNil { settle() }
             }
             .onChange(of: reduceMotion) { tracker.reduceMotion = reduceMotion }
             .onChange(of: messages) {
@@ -294,25 +316,38 @@ private struct ConversationFeed: View {
     private func loadEarlier(before first: AgentMessage, remaining: Int) -> some View {
         HStack {
             Spacer(minLength: 0)
-            if loadingEarlier {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+            // The button and "Loading…" are both 24pt, so the swap is a crossfade with
+            // no layout under it.
+            ZStack {
+                if loadingEarlier {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                    }
+                    .frame(height: 24)
+                    .transition(.opacity)
+                } else {
+                    Button {
+                        loadingEarlier = true
+                        actions.send(.agentHistory(agentId: agent.id, before: first.id))
+                    } label: {
+                        Label("Load earlier", systemImage: "arrow.up")
+                    }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                    .help(remaining > 0 ? "\(remaining) earlier message\(remaining == 1 ? "" : "s")" : "Earlier messages")
+                    .transition(.opacity)
                 }
-                .frame(height: 24)
-            } else {
-                Button {
-                    loadingEarlier = true
-                    actions.send(.agentHistory(agentId: agent.id, before: first.id))
-                } label: {
-                    Label("Load earlier", systemImage: "arrow.up")
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                .help(remaining > 0 ? "\(remaining) earlier message\(remaining == 1 ? "" : "s")" : "Earlier messages")
             }
+            .animation(Motion.fade, value: loadingEarlier)
             Spacer(minLength: 0)
         }
         .padding(.bottom, 8)
+    }
+
+    /// Rows from the next turn on are "new": the ones in this frame show at once.
+    private func settle() {
+        guard !settled else { return }
+        DispatchQueue.main.async { settled = true }
     }
 
     /// Ask for the tail again. The pane already holds one `agent.open` (onAppear)
@@ -449,7 +484,6 @@ private struct ToolCallCard: View {
     let call: AgentToolCall
 
     @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var dotColor: Color {
         switch call.status {
@@ -471,19 +505,22 @@ private struct ToolCallCard: View {
             ConsoleIcon(name: "terminal.fill").padding(.top, 4)
             VStack(alignment: .leading, spacing: 0) {
                 Button {
-                    withAnimation(reduceMotion ? nil : ConsoleTheme.fast) { expanded.toggle() }
+                    // Unfolds on its own once pressed: Motion.gentle, the chevron turning with it.
+                    withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         Text(call.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
                             .lineLimit(1).truncationMode(.tail).layoutPriority(1)
+                        // Running → done / error: the dot's colour crossfades (ConsoleDot).
                         ConsoleDot(color: dotColor, live: call.status == .running, size: 5)
                             .help(call.status.rawValue)
                             .accessibilityLabel(call.status.rawValue)
                         if !expanded, !preview.isEmpty {
                             Text(preview).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                                 .lineLimit(1).truncationMode(.tail)
+                                .transition(.opacity)
                         }
                         Spacer(minLength: 0)
                     }
@@ -509,7 +546,7 @@ private struct ToolCallCard: View {
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: 10, bottom: 8, trailing: 10))
-                    .transition(.opacity)
+                    .transition(Motion.appear)
                 }
             }
             .overlay(Rectangle().stroke(ConsoleTheme.hair, lineWidth: 1))
@@ -545,14 +582,13 @@ private struct ThinkingRow: View {
     let message: AgentMessage
 
     @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             ConsoleIcon(name: "ellipsis", tint: ConsoleTheme.titanium)
             VStack(alignment: .leading, spacing: 4) {
                 Button {
-                    withAnimation(reduceMotion ? nil : ConsoleTheme.fast) { expanded.toggle() }
+                    withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
@@ -571,7 +607,7 @@ private struct ThinkingRow: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.bottom, 4)
-                        .transition(.opacity)
+                        .transition(Motion.appear)
                 }
             }
             .padding(.leading, iconGap)
@@ -644,6 +680,8 @@ private struct ConversationComposer: View {
         let off = ConversationPane.cannotSendReason(agent)
         VStack(spacing: 0) {
             ConsoleHairline()
+            // A question arriving rises in over the field and drops away once answered;
+            // the field giving way to "why not" crossfades.
             if let question {
                 HStack(alignment: .firstTextBaseline, spacing: iconGap) {
                     ConsoleIcon(name: "hand.raised.fill", tint: ConsoleTheme.speaking)
@@ -653,6 +691,7 @@ private struct ConversationComposer: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .help(agent.detail ?? question)
+                        .contentTransition(.opacity)
                     Spacer(minLength: 8)
                     Button("Allow") { answer("yes") }
                         .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
@@ -666,35 +705,44 @@ private struct ConversationComposer: View {
                 .padding(EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12))
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Permission: \(question)")
+                .transition(Motion.appear)
             }
             HStack(spacing: 8) {
                 if let off {
-                    ConsoleIcon(name: "circle.slash.fill", tint: ConsoleTheme.fg3)
-                    Text(off).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                        .lineLimit(1).truncationMode(.tail)
-                        .help(off)
-                    Spacer(minLength: 0)
-                } else {
-                    TextField("Message \(tool.label)…", text: $text)
-                        .consoleField(height: 32, focused: focused)
-                        .focused($focused)
-                        .onSubmit(submit)
-                        .onExitCommand(perform: close)
-                        .accessibilityLabel("Message \(tool.label)")
-                    // One filled accent per strip: while a permission question is up,
-                    // Allow has it and a typed answer is the secondary path.
-                    Button(action: submit) {
-                        Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
+                    Group {
+                        ConsoleIcon(name: "circle.slash.fill", tint: ConsoleTheme.fg3)
+                        Text(off).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                            .lineLimit(1).truncationMode(.tail)
+                            .help(off)
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
-                    .disabled(!hasText)
-                    .help("Send (Return)")
-                    .accessibilityLabel("Send")
+                    .transition(.opacity)
+                } else {
+                    Group {
+                        TextField("Message \(tool.label)…", text: $text)
+                            .consoleField(height: 32, focused: focused)
+                            .focused($focused)
+                            .onSubmit(submit)
+                            .onExitCommand(perform: close)
+                            .accessibilityLabel("Message \(tool.label)")
+                        // One filled accent per strip: while a permission question is up,
+                        // Allow has it and a typed answer is the secondary path.
+                        Button(action: submit) {
+                            Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
+                        .disabled(!hasText)
+                        .help("Send (Return)")
+                        .accessibilityLabel("Send")
+                    }
+                    .transition(.opacity)
                 }
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             .frame(minHeight: 48)
         }
+        .animation(Motion.gentle, value: question)
+        .animation(Motion.fade, value: off)
         .onChange(of: session.composerFocusRequest) { focused = true }
     }
 

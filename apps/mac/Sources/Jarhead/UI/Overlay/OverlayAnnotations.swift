@@ -1,3 +1,4 @@
+import QuartzCore
 import SwiftUI
 
 // Annotation model + renderer for one overlay window. Coordinates here are LOCAL to
@@ -8,9 +9,14 @@ import SwiftUI
 // teaching shapes — circle / arrow / rect / text / stroke — take a tone: accent for
 // Jarhead pointing, ok / warn for feedback, mark for Kevin's own circles (warm). Every
 // label on the layer is the same pill (`drawLabel`: raised ink, paper text, a dot in
-// the shape's colour) so the two families read as one product. A shape draws itself
-// on over 0.15–0.5 s unless the system asks for reduced motion, lives its ttl (6 s by
-// default) and fades over the last 0.3 s.
+// the shape's colour) so the two families read as one product. Timing is Motion's
+// (UI/Motion.swift), its curves evaluated per frame by `Motion.easeOutCurve` /
+// `easeInCurve` (the same numbers Core Animation gets elsewhere): a shape draws itself on
+// over `Motion.base` along `Motion.easeOut` (a text pill fades in over `Motion.quick`),
+// its label fades in over `Motion.quick` once the shape has landed, it lives its ttl
+// (6 s by default) and fades out over the last `Motion.base` along `Motion.easeIn`,
+// gaining speed. Reduce Motion: no draw-on — the shape fades in whole — and every
+// duration halved (`Motion.seconds`).
 //
 // A shape that touches two displays is handed to both windows; its label is drawn by
 // exactly one of them (`Annotation.showsLabel`, decided in OverlayManager.spread from
@@ -41,7 +47,7 @@ struct Annotation: Identifiable {
     let id = UUID()
     let kind: AnnotationKind
     let createdAt: Date
-    /// Seconds until it is removed. The last 0.3 s fade out.
+    /// Seconds until it is removed. The last `OverlayPainter.fadeSeconds` fade out.
     let ttl: TimeInterval
     /// Animate the shape drawing itself on. Off for a stroke that was already on
     /// screen live (mark mode's echo) so it does not redraw from the start.
@@ -60,7 +66,7 @@ struct LiveStrokeItem: Identifiable {
     var label: String?
     var done = false
     var doneAt: Date?
-    /// Seconds it stays after `doneAt`; the last 0.3 s fade.
+    /// Seconds it stays after `doneAt`; the last `OverlayPainter.fadeSeconds` fade.
     var ttl: TimeInterval = 0
     /// Whether this window draws the label (the one whose display holds its anchor).
     var showsLabel = true
@@ -74,11 +80,44 @@ final class OverlayModel: ObservableObject {
 
     // Mark mode, per window: a faint accent wash and an accent frame while it is on,
     // and the hint pill on the display under the cursor. Kevin's stroke itself comes
-    // through `strokes`, like the blob's.
-    @Published var markMode = false
+    // through `strokes`, like the blob's. The wash, the frame and the pill fade in when
+    // the mode begins and out when it ends (`markModeChangedAt`, `markFading`): the
+    // pill rides the same alpha, so `markHint` is left as it stands when the mode ends
+    // and cleared here once the fade-out has run — a controller that cleared it first
+    // would cut the pill on the frame the wash starts fading.
+    @Published var markMode = false {
+        didSet {
+            guard markMode != oldValue else { return }
+            markModeChangedAt = Date()
+            if markMode {
+                markFading = false
+                fadeTimer?.invalidate(); fadeTimer = nil
+            } else {
+                // Keep painting until the fade-out has run (OverlayCanvasView's clock
+                // watches `markFading`), then let the layer go quiet.
+                markFading = true
+                fadeTimer?.invalidate()
+                fadeTimer = Timer.scheduledTimer(withTimeInterval: OverlayPainter.fadeSeconds + 0.05, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, !self.markMode else { return }
+                        self.markFading = false
+                        self.markHint = false
+                        self.fadeTimer = nil
+                    }
+                }
+            }
+        }
+    }
+    /// The hint pill is on this display. Set by the mark controller while the mode is
+    /// on; it outlives the mode by the fade-out (see `markMode`).
     @Published var markHint = false
+    /// When `markMode` last flipped: the wash and frame ease in or out from here.
+    @Published private(set) var markModeChangedAt = Date.distantPast
+    /// Mark mode has just ended and its frame is still fading out.
+    @Published private(set) var markFading = false
 
     private var pruneTimer: Timer?
+    private var fadeTimer: Timer?
 
     func add(_ kind: AnnotationKind, ttl: TimeInterval, drawOn: Bool = true, showsLabel: Bool = true) {
         items.append(Annotation(kind: kind, createdAt: Date(), ttl: max(0.2, ttl), drawOn: drawOn, showsLabel: showsLabel))
@@ -145,12 +184,12 @@ struct OverlayCanvasView: View {
 
     var body: some View {
         // The clock runs only while something on the layer moves on its own: a shape
-        // drawing itself on or fading, a sealed stroke fading, mark mode's frame. A
-        // line still being drawn has no motion of its own — every change to it arrives
-        // as a publish, which repaints the canvas by itself — so the clock stays
-        // paused for it and the display is painted once per publish, not once per
-        // publish and 30 more times a second besides.
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: model.items.isEmpty && !model.markMode && !model.strokes.contains(where: \.done))) { timeline in
+        // drawing itself on or fading, a sealed stroke fading, mark mode's frame (and
+        // its fade-out after the mode ends). A line still being drawn has no motion of
+        // its own — every change to it arrives as a publish, which repaints the canvas
+        // by itself — so the clock stays paused for it and the display is painted once
+        // per publish, not once per publish and 30 more times a second besides.
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: model.items.isEmpty && !model.markMode && !model.markFading && !model.strokes.contains(where: \.done))) { timeline in
             Canvas(opaque: false, rendersAsynchronously: false) { ctx, size in
                 OverlayCanvasView.paint(model, now: timeline.date, topInset: topInset, size: size, in: ctx)
             }
@@ -171,22 +210,36 @@ struct OverlayCanvasView: View {
         #if JARHEAD_ORB_PREVIEW
         paintCount += 1
         #endif
-        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if model.markMode {
-            OverlayPainter.drawMarkModeFrame(size, in: ctx)
+        let reduced = Motion.reduced
+        // Mark mode's wash and frame ease in (Motion.easeOut over Motion.base) when the
+        // mode begins and out (Motion.easeIn) when it ends; the hint pill rides the same
+        // alpha. Both are fades already, so Reduce Motion only shortens them.
+        let markAlpha: Double
+        if model.markMode || model.markFading {
+            let since = now.timeIntervalSince(model.markModeChangedAt)
+            markAlpha = model.markMode
+                ? OverlayPainter.easeOut(since / OverlayPainter.drawSeconds)
+                : 1 - OverlayPainter.easeIn(since / OverlayPainter.fadeSeconds)
+        } else {
+            markAlpha = 0
+        }
+        if markAlpha > 0 {
+            OverlayPainter.drawMarkModeFrame(size, alpha: markAlpha, in: ctx)
         }
         for a in model.items {
             let age = now.timeIntervalSince(a.createdAt)
-            let fade = min(1, max(0, (a.ttl - age) / 0.3))
+            let fade = OverlayPainter.fadeOut(remaining: a.ttl - age)
             OverlayPainter.draw(a, age: age, fade: fade, reducedMotion: reduced, bounds: size, in: ctx)
         }
         for s in model.strokes {
             OverlayPainter.drawLiveStroke(s, now: now, bounds: size, in: ctx)
         }
-        if model.markMode, model.markHint {
+        if markAlpha > 0, model.markHint {
+            var g = ctx
+            g.opacity = markAlpha
             OverlayPainter.drawLabel("Circle something for Jarhead · Esc to cancel",
                                      at: CGPoint(x: size.width / 2, y: topInset + 12), anchor: .top,
-                                     tone: .mark, mono: false, bounds: size, in: ctx)
+                                     tone: .mark, mono: false, bounds: size, in: g)
         }
     }
 }
@@ -219,7 +272,38 @@ enum OverlayPainter {
         }
     }
 
-    static func easeOut(_ x: Double) -> Double { let k = min(max(x, 0), 1); return 1 - pow(1 - k, 3) }
+    // MARK: - Timing: Motion's, halved under Reduce Motion
+
+    /// A teaching shape drawing itself on (`Motion.base`).
+    static var drawSeconds: Double { Motion.seconds(Motion.base) }
+    /// A text pill fading in; a label following its shape (`Motion.quick`).
+    static var quickSeconds: Double { Motion.seconds(Motion.quick) }
+    /// The fade at the end of a life (`Motion.base`, along `Motion.easeIn`).
+    static var fadeSeconds: Double { Motion.seconds(Motion.base) }
+
+    // The hands' cues (point / highlight / path / click pulse) run on the same curve and
+    // on Motion's durations too — one vocabulary for both families, so a cue landing
+    // next to a teaching shape moves like it. Draw-on is skipped under Reduce Motion.
+    /// The point cue's arrow sliding in (`Motion.base`).
+    static var pointSlideSeconds: Double { Motion.base }
+    /// The highlight's rounded frame drawing itself around a region (`Motion.slow`).
+    static var highlightSeconds: Double { Motion.slow }
+    /// The path's dotted trail growing from → to (`Motion.drift`).
+    static var pathSeconds: Double { Motion.drift }
+    /// The click pulse's ring expanding and fading (`Motion.drift`; its ttl covers it).
+    static var pulseSeconds: Double { Motion.drift }
+
+    /// `Motion.easeOut` at `x` (clamped to 0…1): arrive fast, settle soft.
+    static func easeOut(_ x: Double) -> Double { Motion.easeOutCurve.value(at: x) }
+    /// `Motion.easeIn` at `x` (clamped to 0…1): leave gaining speed.
+    static func easeIn(_ x: Double) -> Double { Motion.easeInCurve.value(at: x) }
+
+    /// Opacity with `remaining` seconds of life left: 1 with time to spare, then a
+    /// fade over the last `fadeSeconds` that starts slow and gains speed (`Motion.easeIn`).
+    static func fadeOut(remaining: TimeInterval) -> Double {
+        guard remaining < fadeSeconds else { return 1 }
+        return 1 - easeIn(1 - max(0, remaining) / fadeSeconds)
+    }
 
     // MARK: - Labels: where each kind's pill hangs
 
@@ -284,6 +368,12 @@ enum OverlayPainter {
         g.opacity = fade
         // No draw-on for reduced motion, or for a shape that was already on screen.
         let still = reducedMotion || !a.drawOn
+        // Reduce Motion: the shape arrives whole, with a plain fade in its place.
+        if reducedMotion, a.drawOn { g.opacity *= easeOut(age / quickSeconds) }
+        // The teaching shapes draw on over Motion.base; their label fades in over
+        // Motion.quick once the shape has landed (at once when there was no draw-on).
+        let progress = still ? 1 : easeOut(age / drawSeconds)
+        let labelProgress = still ? 1 : easeOut((age - drawSeconds) / quickSeconds)
         let label = a.showsLabel ? label(for: a.kind) : nil
         switch a.kind {
         case .point(let p, _):
@@ -293,19 +383,19 @@ enum OverlayPainter {
         case .path(let from, let to):
             drawPath(from: from, to: to, age: age, reducedMotion: reducedMotion, in: g)
         case .clickPulse(let p):
-            drawPulse(p, age: age, in: g)
+            drawPulse(p, age: age, reducedMotion: reducedMotion, in: g)
         case .circle(let c, let r, _, let tone):
-            drawCircle(c, radius: r, label: label, tone: tone, progress: still ? 1 : easeOut(age / 0.45), bounds: bounds, in: g)
+            drawCircle(c, radius: r, label: label, tone: tone, progress: progress, labelProgress: labelProgress, bounds: bounds, in: g)
         case .arrow(let from, let to, _, let tone):
-            drawArrow(from: from, to: to, label: label, tone: tone, progress: still ? 1 : easeOut(age / 0.4), bounds: bounds, in: g)
+            drawArrow(from: from, to: to, label: label, tone: tone, progress: progress, labelProgress: labelProgress, bounds: bounds, in: g)
         case .rect(let r, _, let tone):
-            drawRect(r, label: label, tone: tone, progress: still ? 1 : easeOut(age / 0.4), bounds: bounds, in: g)
+            drawRect(r, label: label, tone: tone, progress: progress, labelProgress: labelProgress, bounds: bounds, in: g)
         case .text(_, _, let tone):
             // The label is the whole shape: only its owning display draws anything.
             guard let label else { return }
-            drawText(label, tone: tone, progress: still ? 1 : easeOut(age / 0.15), bounds: bounds, in: g)
+            drawText(label, tone: tone, progress: still ? 1 : easeOut(age / quickSeconds), bounds: bounds, in: g)
         case .stroke(let pts, _, let tone):
-            drawStroke(pts, label: label, tone: tone, progress: still ? 1 : easeOut(age / 0.5), bounds: bounds, in: g)
+            drawStroke(pts, label: label, tone: tone, progress: progress, labelProgress: labelProgress, bounds: bounds, in: g)
         }
     }
 
@@ -316,7 +406,7 @@ enum OverlayPainter {
     private static let pointArrowLength: CGFloat = 34
 
     private static func drawPoint(_ p: CGPoint, label: LabelSpec?, age: TimeInterval, reducedMotion: Bool, bounds: CGSize, in ctx: GraphicsContext) {
-        let slide = reducedMotion ? 1 : easeOut(age / 0.28)
+        let slide = reducedMotion ? 1 : easeOut(age / pointSlideSeconds)
         let dir = pointArrowDirection
         let len = pointArrowLength
         let offset: CGFloat = 26 * CGFloat(1 - slide)
@@ -360,7 +450,7 @@ enum OverlayPainter {
     // MARK: highlight → rounded rect that draws itself.
 
     private static func drawHighlight(_ r: CGRect, label: LabelSpec?, age: TimeInterval, reducedMotion: Bool, bounds: CGSize, in ctx: GraphicsContext) {
-        let p = reducedMotion ? 1 : easeOut(age / 0.5)
+        let p = reducedMotion ? 1 : easeOut(age / highlightSeconds)
         let rect = r.insetBy(dx: -4, dy: -4)
         let radius = min(8, min(rect.width, rect.height) / 2)
         let full = Path(roundedRect: rect, cornerRadius: radius, style: .continuous)
@@ -378,7 +468,7 @@ enum OverlayPainter {
     // MARK: path → dotted trail growing from → to with a travelling head.
 
     private static func drawPath(from: CGPoint, to: CGPoint, age: TimeInterval, reducedMotion: Bool, in ctx: GraphicsContext) {
-        let p = reducedMotion ? 1 : easeOut(age / 0.65)
+        let p = reducedMotion ? 1 : easeOut(age / pathSeconds)
         var line = Path()
         line.move(to: from)
         line.addLine(to: to)
@@ -393,11 +483,11 @@ enum OverlayPainter {
         ctx.stroke(Path(ellipseIn: CGRect(x: from.x - 4, y: from.y - 4, width: 8, height: 8)), with: .color(green.opacity(0.8)), lineWidth: 1.5)
     }
 
-    // MARK: click pulse → expanding ring, ~600 ms.
+    // MARK: click pulse → expanding ring over Motion.drift (a still ring fading under Reduce Motion).
 
-    private static func drawPulse(_ p: CGPoint, age: TimeInterval, in ctx: GraphicsContext) {
-        let k = min(1, age / 0.6)
-        let r = 6 + 26 * CGFloat(easeOut(k))
+    private static func drawPulse(_ p: CGPoint, age: TimeInterval, reducedMotion: Bool, in ctx: GraphicsContext) {
+        let k = min(1, age / pulseSeconds)
+        let r = 6 + 26 * CGFloat(reducedMotion ? 1 : easeOut(k))
         var g = ctx
         g.opacity *= (1 - k)
         g.stroke(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(green), lineWidth: 2.5)
@@ -423,23 +513,26 @@ enum OverlayPainter {
         ctx.stroke(path, with: .color(c), style: style)
     }
 
-    /// The label of a teaching shape appears over the last 40 % of the draw-on.
-    private static func drawShapeLabel(_ label: LabelSpec?, tone: OverlayTone, progress p: Double, bounds: CGSize, in ctx: GraphicsContext) {
-        guard let label, p > 0.6 else { return }
+    /// The label of a teaching shape: it fades in (and rises 4pt) with `k`, which the
+    /// caller starts once the shape has landed.
+    private static func drawShapeLabel(_ label: LabelSpec?, tone: OverlayTone, progress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
+        guard let label, k > 0 else { return }
         var g = ctx
-        g.opacity *= (p - 0.6) / 0.4
-        drawLabel(label, dot: color(tone), bounds: bounds, in: g)
+        g.opacity *= k
+        let lift: CGFloat = label.edge.y >= 0.5 ? 4 : -4
+        let at = CGPoint(x: label.point.x, y: label.point.y + lift * CGFloat(1 - k))
+        drawLabel(label.text, at: at, anchor: label.edge, dot: color(tone), mono: false, bounds: bounds, in: g)
     }
 
     // circle → 2pt ring drawing itself on from the upper-left, glow, label above.
 
-    private static func drawCircle(_ c: CGPoint, radius r: CGFloat, label: LabelSpec?, tone: OverlayTone, progress p: Double, bounds: CGSize, in ctx: GraphicsContext) {
+    private static func drawCircle(_ c: CGPoint, radius r: CGFloat, label: LabelSpec?, tone: OverlayTone, progress p: Double, labelProgress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
         var ring = Path()
         ring.addArc(center: c, radius: r, startAngle: .degrees(-120), endAngle: .degrees(240), clockwise: false)
         let drawn = p < 1 ? ring.trimmedPath(from: 0, to: CGFloat(p)) : ring
         ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(color(tone).opacity(0.05 * p)))
         strokeTone(drawn, tone: tone, width: 2, in: ctx)
-        drawShapeLabel(label, tone: tone, progress: p, bounds: bounds, in: ctx)
+        drawShapeLabel(label, tone: tone, progress: k, bounds: bounds, in: ctx)
     }
 
     // arrow → gently curved shaft (straight when short) with a filled head; label at the midpoint.
@@ -468,11 +561,12 @@ enum OverlayPainter {
         return ArrowShaft(a: a, b: b, control: control, normal: n, bow: bow)
     }
 
-    private static func drawArrow(from a: CGPoint, to b: CGPoint, label: LabelSpec?, tone: OverlayTone, progress p: Double, bounds: CGSize, in ctx: GraphicsContext) {
+    private static func drawArrow(from a: CGPoint, to b: CGPoint, label: LabelSpec?, tone: OverlayTone, progress p: Double, labelProgress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
         let s = arrowShaft(from: a, to: b)
         var shaft = Path()
         shaft.move(to: a)
         shaft.addQuadCurve(to: b, control: s.control)
+        // The shaft grows from the tail toward the head.
         let drawn = p < 1 ? shaft.trimmedPath(from: 0, to: CGFloat(p)) : shaft
         strokeTone(drawn, tone: tone, width: 2, in: ctx)
         // Origin marker.
@@ -492,22 +586,22 @@ enum OverlayPainter {
             ctx.fill(head, with: .color(color(tone)))
         }
 
-        drawShapeLabel(label, tone: tone, progress: p, bounds: bounds, in: ctx)
+        drawShapeLabel(label, tone: tone, progress: k, bounds: bounds, in: ctx)
     }
 
     // rect → 6pt rounded hairline plus glow, drawing itself on; label above-left.
 
-    private static func drawRect(_ r: CGRect, label: LabelSpec?, tone: OverlayTone, progress p: Double, bounds: CGSize, in ctx: GraphicsContext) {
+    private static func drawRect(_ r: CGRect, label: LabelSpec?, tone: OverlayTone, progress p: Double, labelProgress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
         let rect = r.standardized
         let radius = min(6, min(rect.width, rect.height) / 2)
         let full = Path(roundedRect: rect, cornerRadius: radius, style: .continuous)
         ctx.fill(full, with: .color(color(tone).opacity(0.05 * p)))
         let drawn = p < 1 ? full.trimmedPath(from: 0, to: CGFloat(p)) : full
         strokeTone(drawn, tone: tone, width: 1, in: ctx)
-        drawShapeLabel(label, tone: tone, progress: p, bounds: bounds, in: ctx)
+        drawShapeLabel(label, tone: tone, progress: k, bounds: bounds, in: ctx)
     }
 
-    // text → a label pill anchored top-left at the point; fades in, rises 4pt.
+    // text → a label pill anchored top-left at the point; fades in over Motion.quick, rises 4pt.
 
     private static func drawText(_ label: LabelSpec, tone: OverlayTone, progress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
         var g = ctx
@@ -518,7 +612,7 @@ enum OverlayPainter {
 
     // stroke → freehand line, round caps, slight smoothing; label above its bounds.
 
-    private static func drawStroke(_ pts: [CGPoint], label: LabelSpec?, tone: OverlayTone, progress p: Double, bounds: CGSize, in ctx: GraphicsContext) {
+    private static func drawStroke(_ pts: [CGPoint], label: LabelSpec?, tone: OverlayTone, progress p: Double, labelProgress k: Double, bounds: CGSize, in ctx: GraphicsContext) {
         guard let first = pts.first else { return }
         let path = smoothed(pts)
         let drawn = p < 1 ? path.trimmedPath(from: 0, to: CGFloat(p)) : path
@@ -526,21 +620,22 @@ enum OverlayPainter {
         if pts.count == 1 {
             ctx.fill(Path(ellipseIn: CGRect(x: first.x - 2, y: first.y - 2, width: 4, height: 4)), with: .color(color(tone)))
         }
-        drawShapeLabel(label, tone: tone, progress: p, bounds: bounds, in: ctx)
+        drawShapeLabel(label, tone: tone, progress: k, bounds: bounds, in: ctx)
     }
 
     // MARK: - Live strokes (mark mode's, the blob's)
 
     /// A line as it is drawn: the same treatment as a finished stroke (glow, ink rim,
     /// round caps, its tone — the rim is what keeps a warm line legible on a light
-    /// window) with no draw-on, so it feels like ink following the pen. Sealed, it
-    /// fades over its last 0.3 s. The label rides just ahead of the pen while the
-    /// line grows and settles above the line's box (below when there is no room).
+    /// window) with no draw-on and no easing on the tip, so it feels like ink following
+    /// the pen. Sealed, it fades out over its last `fadeSeconds` (Motion.easeIn). The
+    /// label rides just ahead of the pen while the line grows and settles above the
+    /// line's box (below when there is no room).
     static func drawLiveStroke(_ s: LiveStrokeItem, now: Date, bounds: CGSize, in ctx: GraphicsContext) {
         guard let first = s.points.first else { return }
         var g = ctx
         if s.done, let at = s.doneAt {
-            g.opacity *= min(1, max(0, (s.ttl - now.timeIntervalSince(at)) / 0.3))
+            g.opacity *= fadeOut(remaining: s.ttl - now.timeIntervalSince(at))
         }
         let c = color(s.tone)
         if s.points.count == 1 {
@@ -569,12 +664,15 @@ enum OverlayPainter {
     // MARK: - Mark mode
 
     /// While mark mode is on: a faint accent wash over the display and a 2pt accent
-    /// frame at its edge. The wash alone is lost over a light window and the crosshair
-    /// is only ours while the cursor is over the overlay; the frame reads everywhere.
-    static func drawMarkModeFrame(_ size: CGSize, in ctx: GraphicsContext) {
+    /// frame at its edge, at `alpha` (they ease in as the mode begins and out as it
+    /// ends). The wash alone is lost over a light window and the crosshair is only
+    /// ours while the cursor is over the overlay; the frame reads everywhere.
+    static func drawMarkModeFrame(_ size: CGSize, alpha: Double = 1, in ctx: GraphicsContext) {
         let full = CGRect(origin: .zero, size: size)
-        ctx.fill(Path(full), with: .color(accent.opacity(0.06)))
-        ctx.stroke(Path(full.insetBy(dx: 1, dy: 1)), with: .color(accent.opacity(0.6)), lineWidth: 2)
+        var g = ctx
+        g.opacity = min(1, max(0, alpha))
+        g.fill(Path(full), with: .color(accent.opacity(0.06)))
+        g.stroke(Path(full.insetBy(dx: 1, dy: 1)), with: .color(accent.opacity(0.6)), lineWidth: 2)
     }
 
     // MARK: - Geometry helpers

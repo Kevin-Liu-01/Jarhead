@@ -20,6 +20,10 @@ private struct GateInputs: Equatable {
 /// forever). A spoken passphrase is a static secret — a recording of Kevin saying it
 /// replays — so the owner sheet is the factor that resists replay; `either` offers both.
 ///
+/// Paused is the other place the gate listens. A pause closes the Live session (the
+/// meter stops) and holds the conversation; hearing the word then sends `go`, which
+/// resumes it — without Touch ID or the passphrase (see `isPaused`).
+///
 /// Inputs: microphone grant, Speech Recognition grant, whether the voice audio
 /// engine is running (they never share the mic), and the snapshot (phase, wake
 /// settings, connection). `update()` folds them into: listen, or not, and why.
@@ -169,6 +173,20 @@ final class WakeGate {
     /// there keeps the hands-free path alive, and the next authenticated wake retries.
     static func isDormant(_ phase: Phase) -> Bool { phase == .asleep || phase == .error }
 
+    /// Paused: the session is closed (nothing is billed) and the conversation is held.
+    /// The gate listens here too, and a heard word sends `go` with **no authentication** —
+    /// no Touch ID, no passphrase. The pause was authenticated minutes ago, when the
+    /// session it holds was opened, and it is bounded: an unresumed pause decays to asleep
+    /// on its own (`snapshot.pause.sleepsAt`), after which the word is gated again. Asking
+    /// for the passphrase a second time for the same conversation would only teach Kevin to
+    /// say it into a room. The deliberate ways in (the Go button, ⌥⇧Space, `jarhead://go`)
+    /// resume the same way.
+    static func isPaused(_ phase: Phase) -> Bool { phase == .paused }
+
+    /// Where the gate holds the microphone: dormant (asleep, error) or paused. Anywhere
+    /// else the voice engine has it and the gate rests.
+    static func listens(in phase: Phase) -> Bool { isDormant(phase) || isPaused(phase) }
+
     // MARK: - decide
 
     func update() {
@@ -178,7 +196,7 @@ final class WakeGate {
         if !enabledByEnvironment { return setOff("audio disabled (JARHEAD_NO_AUDIO)") }
         if !settings.enabled { return setOff("wake word off") }
         if normalizedPhrases().isEmpty { return setOff("no wake phrases") }
-        if !WakeGate.isDormant(inputs.phase) {
+        if !WakeGate.listens(in: inputs.phase) {
             leaveGranting()
             return setOff("awake")
         }
@@ -348,19 +366,25 @@ final class WakeGate {
     // MARK: - heard → authenticate
 
     private func heard() {
+        if WakeGate.isPaused(inputs.phase) {
+            // Paused: the word resumes, unauthenticated (see `isPaused`). Straight to the grant.
+            grant()
+            return
+        }
         publish(.heard)
         speaker.earcon("Pop")
         beginAuthentication(inputs.wake.auth)
     }
 
-    /// A wake asked for by something other than the spoken word (the `jarhead://wake`
-    /// URL). While the gate is on and the engine is dormant it goes through the same
-    /// authentication as the word; it never opens the session by itself. Returns false
-    /// when the gate is not in charge (disabled, or the engine is already awake), in
-    /// which case the caller decides what a plain `wake` means.
+    /// A go asked for by something other than the spoken word (the `jarhead://go` URL and
+    /// its old names `wake` / `resume`). While the gate is on and the engine is dormant it
+    /// goes through the same authentication as the word; while paused it resumes as the
+    /// word does; it never opens the session by itself. Returns false when the gate is not
+    /// in charge (disabled, or a session is open or opening), in which case the caller
+    /// decides what a plain go means.
     @discardableResult
     func requestWake(source: String) -> Bool {
-        guard inputs.wake.enabled, WakeGate.isDormant(inputs.phase) else { return false }
+        guard inputs.wake.enabled, WakeGate.listens(in: inputs.phase) else { return false }
         NSLog("Wake: wake requested by %@", source)
         guard connected else {
             state.toast("Can't wake: the daemon is not connected.", tone: .warn)
@@ -533,9 +557,13 @@ final class WakeGate {
 
     // MARK: - outcomes
 
-    /// The only way to the session. Reached from the owner sheet, a verified spoken or
-    /// typed passphrase, or `auth = none`; never from the wake word alone.
+    /// The only way to the session. While dormant it is reached from the owner sheet, a
+    /// verified spoken or typed passphrase, or `auth = none` — never from the wake word
+    /// alone. While paused it is reached from the word itself (`heard`, see `isPaused`).
+    /// Either way the command is the transport's `go`: the engine wakes when asleep and
+    /// resumes the held conversation when paused.
     private func grant() {
+        let resuming = WakeGate.isPaused(inputs.phase)
         cancelTimers()
         ownerAuth?.cancel()
         ownerAuth = nil
@@ -552,13 +580,13 @@ final class WakeGate {
         publish(.granted)
         speaker.earcon("Glass")
         stopListener()
-        state.send(.wake)
+        state.send(.go)
         // If the engine never wakes (daemon trouble), go back to listening rather than hang.
         grantWatchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 12_000_000_000)
             guard !Task.isCancelled, let self, self.mode == .granting else { return }
             self.mode = .idle
-            self.state.toast("Said the word and authenticated, but the engine did not wake.", tone: .warn)
+            self.state.toast(resuming ? "Said the word, but the engine did not resume." : "Said the word and authenticated, but the engine did not wake.", tone: .warn)
             self.update()
         }
     }
@@ -646,12 +674,17 @@ final class WakeGate {
     /// Typed in the capsule or the Console. Answers a pending prompt, or — while
     /// dormant with the gate on — wakes directly without the spoken word. Honours the
     /// configured factor: with Touch ID chosen, the phrase only stands in when the
-    /// sheet is unavailable on this Mac.
+    /// sheet is unavailable on this Mac. While paused anything typed here resumes
+    /// (see `isPaused`): the phrase is not checked because none is asked for.
     private func submitTypedPassphrase(_ phrase: String) {
         let settings = inputs.wake
-        guard settings.enabled, WakeGate.isDormant(inputs.phase), mode != .granting else { return }
+        guard settings.enabled, WakeGate.listens(in: inputs.phase), mode != .granting else { return }
         guard connected else {
             state.toast("Can't wake: the daemon is not connected.", tone: .warn)
+            return
+        }
+        if WakeGate.isPaused(inputs.phase) {
+            grant()
             return
         }
         guard LocalAuth.hasPassphrase else {
@@ -668,7 +701,7 @@ final class WakeGate {
         }
         Task { @MainActor [weak self] in
             let ok = await Task.detached(priority: .userInitiated) { LocalAuth.verify(phrase) }.value
-            guard let self, WakeGate.isDormant(self.inputs.phase), self.connected, self.mode != .granting else { return }
+            guard let self, WakeGate.listens(in: self.inputs.phase), self.connected, self.mode != .granting else { return }
             if ok {
                 self.grant()
             } else {

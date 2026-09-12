@@ -32,7 +32,12 @@ class FakeEngine extends EventEmitter implements EngineLike {
   pids: number[] = [];
   levels: number[] = [];
   micPermission = "unknown";
-  ledger = { read: () => [{ at: 1, type: "problem", text: "x" }], days: () => ["2026-09-09.jsonl", "2026-09-10.jsonl"] };
+  ledger = {
+    read: () => [{ at: 1, type: "problem", text: "x" }],
+    days: () => ["2026-09-09.jsonl", "2026-09-10.jsonl"],
+    sessions: () => [{ id: "sess_a", day: "2026-09-10", startedAt: 1, closedAt: 9, reason: "paused", usageSeconds: 8, heard: 1, said: 1, delegations: 0, title: "hi" }],
+    readSession: (id: string) => (id === "sess_a" ? [{ at: 1, type: "session.started", sessionId: "sess_a", voice: "cedar" }, { at: 9, type: "pause", sessionId: "sess_a", usageSeconds: 8 }] : []),
+  };
   config = { stateDir: "/tmp/jh-test" };
   toolCalls: { name: string; input: unknown }[] = [];
   /** `attached` undefined = a runner that does not say (older engines); false = no task attached, tool.run is refused. */
@@ -59,6 +64,16 @@ class FakeEngine extends EventEmitter implements EngineLike {
   }
   setMicrophonePermission(state: string): void {
     this.micPermission = state;
+  }
+  /** Every `permission` message, as the engine would see it; the microphone still lands in its own field. */
+  permissionCalls: { which: string; state: string; detail?: string }[] = [];
+  permissionLists: unknown[][] = [];
+  setPermission(which: string, state: "granted" | "denied" | "unknown", detail?: string): void {
+    this.permissionCalls.push({ which, state, ...(detail !== undefined ? { detail } : {}) });
+    if (which === "microphone") this.setMicrophonePermission(state);
+  }
+  setPermissions(all: unknown[]): void {
+    this.permissionLists.push(all);
   }
   registerOwnPid(pid: number): void {
     this.pids.push(pid);
@@ -90,6 +105,9 @@ test("server and client round-trip control, audio, and ledger over a unix socket
   client.sendMic(Buffer.alloc(4800));
   client.sendJson({ type: "ledger.read", id: "r1", date: "2026-09-10" });
   client.sendJson({ type: "ledger.days", id: "r2" });
+  client.sendJson({ type: "ledger.sessions", id: "r3" });
+  client.sendJson({ type: "ledger.session", id: "r4", sessionId: "sess_a" });
+  client.sendJson({ type: "ledger.session", id: "r5", sessionId: "nope" });
   await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(engine.commands, [{ type: "wake" }]);
   assert.deepEqual(engine.levels, [0.4]);
@@ -99,6 +117,12 @@ test("server and client round-trip control, audio, and ledger over a unix socket
   assert.ok(types.includes("error") && types.includes("ledger.rows") && types.includes("ledger.days"));
   const days = messages.find((m) => m.type === "ledger.days") as unknown as { days: string[] };
   assert.deepEqual(days.days, ["2026-09-10", "2026-09-09"]);
+  const sessions = messages.find((m) => m.type === "ledger.sessions") as unknown as { id: string; sessions: { id: string }[] };
+  assert.equal(sessions.id, "r3");
+  assert.deepEqual(sessions.sessions.map((s) => s.id), ["sess_a"]);
+  const rowsFor = (id: string) => (messages.find((m) => m.type === "ledger.rows" && (m as unknown as { id: string }).id === id) as unknown as { rows: { type: string }[] }).rows;
+  assert.deepEqual(rowsFor("r4").map((r) => r.type), ["session.started", "pause"]);
+  assert.deepEqual(rowsFor("r5"), []);
 
   engine.emit("event", { type: "snapshot", snapshot: { phase: "listening" } });
   engine.emit("event", { type: "speaker-flush" });
@@ -113,6 +137,58 @@ test("server and client round-trip control, audio, and ledger over a unix socket
 
   client.close();
   await server.close();
+});
+
+test("permission and permissions messages reach the engine as sent; a non-array list is dropped; an older engine still gets the microphone", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const client = new DaemonClient(path);
+  await client.connect({ pid: 7 });
+
+  // The app read one kind: any of the sixteen, with or without a detail line.
+  client.sendJson({ type: "permission", which: "fullDiskAccess", state: "denied", detail: "not in the Full Disk Access list" });
+  client.sendJson({ type: "permission", which: "contacts", state: "granted" });
+  client.sendJson({ type: "permission", which: "microphone", state: "granted" });
+  // The app's full list after a sweep: PermissionInfo rows, passed through untouched (the engine validates them).
+  const all = [
+    { kind: "microphone", grant: "granted", ask: "prompt", required: true, label: "Microphone", why: "hearing you" },
+    { kind: "fullDiskAccess", grant: "denied", ask: "settings", required: true, label: "Full Disk Access", why: "Mail, Safari, every folder", detail: "drag Jarhead.app in", checkedAt: 1 },
+  ];
+  client.sendJson({ type: "permissions", all });
+  client.sendJson({ type: "permissions", all: "nope" } as never);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(engine.permissionCalls, [
+    { which: "fullDiskAccess", state: "denied", detail: "not in the Full Disk Access list" },
+    { which: "contacts", state: "granted" },
+    { which: "microphone", state: "granted" },
+  ]);
+  assert.equal(engine.micPermission, "granted", "the microphone still lands in its own field");
+  assert.deepEqual(engine.permissionLists, [all], "the list arrives as sent; a non-array is dropped");
+
+  // An engine without setPermission (an older fake): the microphone is still delivered, other kinds are dropped.
+  const legacy = new FakeEngine();
+  Object.defineProperty(legacy, "setPermission", { value: undefined });
+  Object.defineProperty(legacy, "setPermissions", { value: undefined });
+  const legacyPath = join(dir, "l.sock");
+  const legacyServer = new DaemonServer(legacy, legacyPath);
+  await legacyServer.listen();
+  const legacyClient = new DaemonClient(legacyPath);
+  await legacyClient.connect({ pid: 8 });
+  legacyClient.sendJson({ type: "permission", which: "contacts", state: "denied" });
+  legacyClient.sendJson({ type: "permission", which: "microphone", state: "denied" });
+  legacyClient.sendJson({ type: "permissions", all });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(legacy.micPermission, "denied");
+  assert.equal(legacy.permissionCalls.length, 0);
+  assert.equal(legacy.permissionLists.length, 0);
+
+  client.close();
+  legacyClient.close();
+  await server.close();
+  await legacyServer.close();
 });
 
 test("tool.run goes through the engine's runner and answers the asking client only; unknown names are refused", async () => {

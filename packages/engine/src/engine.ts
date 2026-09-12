@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, HELPER_PERMISSION_KINDS, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reconciliation, type Reflex, type ReflexOutcome } from "@jarhead/brain";
 import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
@@ -18,6 +18,7 @@ import {
   type EngineEvent,
   type LedgerRow,
   type OverlayCommand,
+  type PauseInfo,
   type Permissions,
   type Phase,
   type Settings,
@@ -29,8 +30,10 @@ import {
   type SetupStatus,
   type Snapshot,
   type TranscriptItem,
+  type UsageToday,
   type WakeSettings,
 } from "@jarhead/protocol";
+import type { Grant, PermissionInfo, PermissionKind } from "@jarhead/protocol";
 
 /**
  * The engine: everything Jarhead is, minus windows and audio devices.
@@ -68,10 +71,14 @@ export interface EngineOptions {
   readonly now?: () => number;
   /** Answers the helper's requests instead of the Swift binary (tests, `jarhead bench --fake-hands`). */
   readonly hands?: NativeHands;
+  /** What a fresh helper process would print for `--permissions` (tests; the real client runs the binary). */
+  readonly probePermissions?: () => Promise<HelloPermissions>;
   /** The ear's stability window for a partial of a prefire kind — scroll, page, screenshot, circle (default 120 ms); tests shorten it. */
   readonly earStableMs?: number;
   /** The ear's stability window for a partial of every other kind — keys, edits, typing, clicks (default 450 ms); tests shorten it. */
   readonly earCarefulMs?: number;
+  /** How long a graceful `close()` may go unanswered before the session is `terminate()`d (default 1000 ms); tests shorten it. */
+  readonly closeDeadlineMs?: number;
 }
 
 const SETTINGS_FILE = "settings.json";
@@ -80,7 +87,15 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Re-read after `config.set-secrets`; everything else treats it as constant. */
   config: JarheadConfig;
   readonly ledger: Ledger;
-  readonly transcript = new Transcript();
+  /**
+   * The open session's transcript. Session-timeline ms restart with every session,
+   * so each gets its own: a Delegator's request window (`since(lastDelegationEnd)`)
+   * over a shared one would carry every earlier utterance into a resumed session's
+   * first request. Earlier sessions' utterances live in `heldTranscript`.
+   */
+  private transcript: Transcript = this.newTranscript();
+  /** Earlier sessions' utterances, kept across a pause and a sleep: the Console shows them and a resume is reminded of them. */
+  private heldTranscript: readonly TranscriptItem[] = [];
   readonly confirmations = new ConfirmationState();
   readonly hands: NativeHandsProcess;
   readonly toolset: ComputerToolset;
@@ -102,6 +117,12 @@ export class Engine extends EventEmitter<EngineEvents> {
   private permissionPollAt = 0;
   private permissionFastUntil = 0;
   private permissionPolling = false;
+  /** What a fresh helper process last said, per kind — the engine's own reads; the app's reports never land here. */
+  private helperGrants: Partial<Record<HelperPermissionKind, Grant>> = {};
+  /** Helper kinds still to prompt for, one dialog at a time; the one on screen now and how long to wait for it. */
+  private promptQueue: HelperPermissionKind[] = [];
+  private prompting: HelperPermissionKind | undefined;
+  private promptDeadline = 0;
   private brainRestart: Promise<void> | undefined;
   private live: LiveSession | undefined;
   private delegator: Delegator | undefined;
@@ -130,8 +151,25 @@ export class Engine extends EventEmitter<EngineEvents> {
   private readonly firedReflexes: FiredReflexes;
   /** The on-device ear: partials matched against the grammar, dictation. */
   private readonly earReflexes: EarReflexes;
-  /** Kevin pressed pause: mic muted, output gated, delegations refused, until resume. */
-  private paused = false;
+  /**
+   * Kevin pressed pause: the Live session is closed (the meter stops) and the
+   * conversation is held here — transcript, marks, brain and hands stay warm —
+   * until a resume opens a new session with the continuity, or the pause decays to
+   * sleep at `sleepsAt`. Present exactly while the transport state is `paused`.
+   */
+  private pauseInfo: PauseInfo | undefined;
+  /** Live seconds billed today by sessions already closed (from the ledger, folded as sessions close), and how many started. */
+  private usageBase: UsageToday = { seconds: 0, sessions: 0 };
+  /** The ledger day `usageBase` was summed for; the base is re-read when the local day changes. */
+  private usageDay = "";
+  /** How much of each session's usage has already been folded into `usageBase` (provisionally at detach, finally at close). */
+  private readonly usageFolded = new WeakMap<LiveSession, number>();
+  /** Close deadlines in flight (close() → terminate()); cleared at shutdown. */
+  private readonly closeTimers = new Set<NodeJS.Timeout>();
+  /** Watchdog: since when a session has been open with nobody wanting it. */
+  private outlivedSince = 0;
+  /** Watchdog incidents already logged (one line each). */
+  private readonly watchdogSeen = new Map<string, number>();
   /** "start dictating": the ear's finals are typed into the focused field until "stop dictating". */
   private dictating = false;
   /** The frontmost app as the accessibility warm loop last saw it (avoids a helper round trip on the reflex path). */
@@ -155,10 +193,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.config = opts.config ?? readConfig();
     mkdirSync(this.config.stateDir, { recursive: true });
     this.ledger = new Ledger(this.config.stateDir);
+    this.loadUsageToday();
     this.settings = this.loadSettings();
     // The seam: a stand-in answers the helper's request lines as a fake child, so the
     // real client (pending map, timeouts, a stop's cancelPending) runs unchanged.
-    this.hands = new NativeHandsProcess({ binPath: this.config.handsBin, ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}) });
+    this.hands = new NativeHandsProcess({ binPath: this.config.handsBin, ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}), ...(opts.probePermissions ? { probeImpl: opts.probePermissions } : {}) });
     this.toolset = new ComputerToolset({
       hands: this.hands,
       confirmations: this.confirmations,
@@ -199,8 +238,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       enabled: () => this.reflexesOn(),
       match: (u) => this.matchReflex(u),
       run: (reflex, phrase) => this.runEarReflex(reflex, phrase),
+      // A spoken "stop" interrupts: work and speech end, the session stays open and listening.
       onStop: () => {
-        if (this.delegator?.active || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.stopEverything("ear", "said");
+        if (this.delegator?.active || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
       },
       dictation: {
         active: () => this.dictating,
@@ -223,14 +263,28 @@ export class Engine extends EventEmitter<EngineEvents> {
       ...(opts.earStableMs !== undefined ? { stableMs: opts.earStableMs } : {}),
       ...(opts.earCarefulMs !== undefined ? { carefulMs: opts.earCarefulMs } : {}),
     });
-    this.transcript.onChange((item, kind) => {
+  }
+
+  /** A session's transcript: every finalized utterance goes on the ledger (heard / said) and out as an event. */
+  private newTranscript(): Transcript {
+    const t = new Transcript();
+    t.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
         this.emit("utterance", item);
       }
       this.scheduleSnapshot();
     });
+    return t;
   }
+
+  /** Everything said so far, earlier sessions first: what the Console shows and a resume is reminded of. */
+  private wholeTranscript(): readonly TranscriptItem[] {
+    return [...this.heldTranscript, ...this.transcript.all()];
+  }
+
+  /** How many earlier utterances are kept across sessions. */
+  static readonly HELD_TRANSCRIPT_ITEMS = 400;
 
   /** How long the voice stays muted locally after a stop when Kevin says nothing. */
   static readonly OUTPUT_GATE_MS = 2500;
@@ -242,6 +296,16 @@ export class Engine extends EventEmitter<EngineEvents> {
   static readonly SPEAKING_WINDOW_MS = 1200;
   /** How often the frontmost window's accessibility tree is refreshed while awake, so a spoken click finds its control at once. */
   static readonly AX_WARM_MS = 500;
+  /** A graceful close() unanswered for this long is terminate()d: the session bills per second while it is open. */
+  static readonly CLOSE_DEADLINE_MS = 1000;
+  /** The watchdog terminates a session still open this long after nobody wanted it awake. */
+  static readonly WATCHDOG_OUTLIVED_MS = 2000;
+  /** A pause holds the conversation at least this long before it decays to sleep (longer when idleSleepMinutes says so). */
+  static readonly PAUSE_MIN_MS = 60_000;
+  /** How long a stop / pause / sleep waits on the brain's own cancel before moving on. */
+  static readonly CANCEL_CAP_MS = 1500;
+  /** How many finished delegations the snapshot keeps across sessions (a pause and resume must not empty the Console). */
+  static readonly MAX_DELEGATIONS = 50;
 
   // ------------------------------------------------------------- settings
 
@@ -333,92 +397,355 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     try {
       const hello = await this.hands.hello();
-      this.permissions = {
-        ...this.permissions,
-        accessibility: hello.permissions.accessibility ? "granted" : "denied",
-        screenRecording: hello.permissions.screenRecording ? "granted" : "denied",
-      };
-      if (!hello.permissions.accessibility) this.problem(Engine.PERMISSION_PROBLEMS.accessibility);
-      if (!hello.permissions.screenRecording) this.problem(Engine.PERMISSION_PROBLEMS.screenRecording);
+      // The greeting is a fresh process's read (the helper was just spawned): fold it like a poll.
+      this.applyHelperRead(hello.permissions);
     } catch (e) {
+      // A restart (a grant appeared while the greeting was pending) ends the first helper on
+      // purpose; the successor greets again. Only a second failure is a problem.
+      if (/hands helper stopped/.test((e as Error).message) && this.hands.available) {
+        try {
+          const hello = await this.hands.hello();
+          this.applyHelperRead(hello.permissions);
+          this.scheduleSnapshot();
+          return;
+        } catch (again) {
+          this.problem(`hands helper failed: ${(again as Error).message}`);
+          this.scheduleSnapshot();
+          return;
+        }
+      }
       this.problem(`hands helper failed: ${(e as Error).message}`);
     }
     this.scheduleSnapshot();
   }
 
+  // ---------------------------------------------------------- permissions
+  //
+  // macOS TCC keys every grant on the app bundle; the daemon and the hands helper
+  // are its children, so their prompts and grants are Jarhead.app's. Nothing can
+  // grant a permission programmatically: "give it all permissions" is a sweep that
+  // asks for every kind with a prompt, one at a time, and deep-links to System
+  // Settings for the rest. The *app* runs that sweep and reads the twelve kinds only
+  // its process can (microphone, speech, camera, contacts, calendars, reminders,
+  // notifications, local network, Automation, the three folders); it reports them
+  // here as `permission` / `permissions` messages. The engine owns the four a fresh
+  // helper process can read reliably — Accessibility, Screen Recording, Input
+  // Monitoring, Full Disk Access — because a resident process keeps the answer it
+  // got at launch, and the app is resident.
+
+  /** How long one prompted dialog is waited for before the next kind is asked (a denied dialog leaves no trace to read). */
+  static readonly PROMPT_WAIT_MS = 30_000;
+
+  /** The two kinds the helper can prompt for from a fresh process, in the order they are asked. */
+  private static readonly HELPER_PROMPT_KINDS: readonly HelperPermissionKind[] = ["accessibility", "screenRecording"];
+
   /** Ask macOS for the grants (prompts appear for the responsible app). */
-  async requestPermission(which: keyof Permissions): Promise<void> {
-    if (which === "microphone") return; // the app owns the microphone prompt and reports the grant itself
-    try {
-      await this.hands.request("permissions", { prompt: true }, 5000);
-    } catch (e) {
-      log.warn(`permission prompt failed: ${(e as Error).message}`);
+  async requestPermission(which: PermissionKind | "all"): Promise<void> {
+    // The app owns every prompt TCC keys on it (the microphone, speech, camera, contacts,
+    // calendars, reminders, notifications, the folders, Automation, and the panes that
+    // only System Settings grants); it reports the grants itself. The hands helper — a
+    // child of the app, so the same TCC identity — asks for the two the engine tracks
+    // in-process and can prompt for from a fresh process: Accessibility and Screen
+    // Recording. "all" queues those two here, one dialog at a time (two at once and the
+    // second is dismissed with the first): the next is asked once the one on screen is
+    // granted, or after PROMPT_WAIT_MS. The app runs the rest of the sweep.
+    const kinds: HelperPermissionKind[] = which === "all" ? [...Engine.HELPER_PROMPT_KINDS] : which === "accessibility" || which === "screenRecording" ? [which] : [];
+    if (kinds.length === 0) return;
+    this.promptQueue = kinds.filter((k) => this.grantOf(k) !== "granted");
+    this.prompting = undefined;
+    if (process.env["JARHEAD_PERMISSIONS_DRY_RUN"] === "1" && this.promptQueue.length === 0) log.info(`permissions dry run: ${kinds.map((k) => Engine.PERMISSION_CATALOGUE[k].label).join(" and ")} already granted; nothing to ask`);
+    await this.promptNext();
+  }
+
+  /**
+   * Show the next queued dialog (or say what it would be, under JARHEAD_PERMISSIONS_DRY_RUN=1,
+   * which asks nothing), then read fresh at once and closely for the next minute and a half.
+   */
+  private async promptNext(): Promise<void> {
+    const next = this.promptQueue.shift();
+    this.prompting = next;
+    if (next) {
+      this.promptDeadline = this.now() + Engine.PROMPT_WAIT_MS;
+      const label = Engine.PERMISSION_CATALOGUE[next].label;
+      const then = this.promptQueue.length ? `, then ${this.promptQueue.map((k) => Engine.PERMISSION_CATALOGUE[k].label).join(", then ")} once it lands (${Engine.PROMPT_WAIT_MS / 1000} s at most)` : "";
+      if (process.env["JARHEAD_PERMISSIONS_DRY_RUN"] === "1") {
+        log.info(`permissions dry run: would prompt ${label} through the hands helper${then}, then poll every 1.5 s for 90 s`);
+      } else {
+        try {
+          await this.hands.request("permissions", { prompt: true, which: next }, 5000);
+        } catch (e) {
+          log.warn(`permission prompt for ${label} failed: ${(e as Error).message}`);
+        }
+      }
     }
-    // Kevin is in System Settings now: watch closely for the next minute and a half.
+    // Kevin is in a dialog or System Settings now: watch closely.
     this.permissionFastUntil = this.now() + 90_000;
     this.permissionPollAt = 0;
     await this.pollPermissions();
   }
 
-  private static readonly PERMISSION_PROBLEMS: Record<"accessibility" | "screenRecording", string> = {
+  /**
+   * The problem line for each kind the engine reads itself, raised when the grant
+   * is missing and cleared when it appears. The "earlier build" hint: a System
+   * Settings row made by an ad-hoc build is bound to the old cdhash — it shows on
+   * and does nothing until it is removed and the app asks again.
+   */
+  static readonly PERMISSION_PROBLEMS: Record<HelperPermissionKind, string> = {
     accessibility: "Accessibility not granted: clicks and typing will silently do nothing until it is (if System Settings already shows Jarhead on, that row is from an earlier build — remove it and press Request)",
     screenRecording: "Screen Recording not granted: screenshots will fail until it is (if System Settings already shows Jarhead on, remove that row and press Request)",
+    inputMonitoring: "Input Monitoring not granted: the keys Jarhead watches for while you circle or dictate will not arrive until it is (System Settings › Privacy & Security › Input Monitoring; if it already shows Jarhead on, that row is from an earlier build — remove it and ask again)",
+    fullDiskAccess: "Full Disk Access not granted: files under Desktop/Documents/Downloads/Mail/Safari will fail with EPERM until Jarhead.app is added in System Settings › Privacy & Security › Full Disk Access (if it already shows Jarhead on, that row is from an earlier build — remove it and add the app again)",
   };
+
+  /** What a grant that just appeared means, for the toast. */
+  private static readonly GRANTED_NOTE: Record<HelperPermissionKind, string> = {
+    accessibility: "hands can click and type now",
+    screenRecording: "screenshots will work now",
+    inputMonitoring: "the keys you press while circling reach Jarhead now",
+    fullDiskAccess: "Mail, Safari and every folder are readable now",
+  };
+
+  /**
+   * Every kind Jarhead asks for, as the engine describes it when the app has not
+   * sent its own list (`jarhead status` without the app, a `permission` message for
+   * a kind not yet listed). The app's rows win the moment they arrive. `required`
+   * mirrors the app's `PermissionsKit.meta` (apps/mac/.../Permissions/Permissions.swift)
+   * — the seven without which the voice, the hands or the tools do not work — so
+   * `jarhead status` and Setup's `missingRequired` name the same kinds.
+   */
+  static readonly PERMISSION_CATALOGUE: Record<PermissionKind, Omit<PermissionInfo, "kind" | "grant" | "checkedAt">> = {
+    microphone: { ask: "prompt", required: true, label: "Microphone", why: "without it Jarhead cannot hear you" },
+    speechRecognition: { ask: "prompt", required: true, label: "Speech Recognition", why: "the wake word and the on-device ear run on it" },
+    screenRecording: { ask: "prompt", required: true, label: "Screen Recording", why: "screenshots, and the screen Jarhead looks at" },
+    accessibility: { ask: "prompt", required: true, label: "Accessibility", why: "clicks, typing, reading controls" },
+    inputMonitoring: { ask: "prompt", required: true, label: "Input Monitoring", why: "the keys watched while you circle or dictate" },
+    automation: { ask: "perApp", required: true, label: "Automation", why: "the browser fast path and the AppleScript tool" },
+    fullDiskAccess: { ask: "settings", required: true, label: "Full Disk Access", why: "Mail, Safari, Messages and every folder without a prompt of its own" },
+    notifications: { ask: "prompt", required: false, label: "Notifications", why: "a banner when a task finishes in the background" },
+    camera: { ask: "prompt", required: false, label: "Camera", why: "looking at something you hold up" },
+    contacts: { ask: "prompt", required: false, label: "Contacts", why: "names and addresses when you say who" },
+    calendars: { ask: "prompt", required: false, label: "Calendars", why: "what is on today, adding events" },
+    reminders: { ask: "prompt", required: false, label: "Reminders", why: "reading and adding reminders" },
+    localNetwork: { ask: "prompt", required: false, label: "Local Network", why: "devices and servers on your network" },
+    filesDesktop: { ask: "prompt", required: false, label: "Desktop folder", why: "files on your Desktop" },
+    filesDocuments: { ask: "prompt", required: false, label: "Documents folder", why: "files in Documents" },
+    filesDownloads: { ask: "prompt", required: false, label: "Downloads folder", why: "files in Downloads" },
+  };
+
+  private static isPermissionKind(kind: string): kind is PermissionKind {
+    return Object.prototype.hasOwnProperty.call(Engine.PERMISSION_CATALOGUE, kind);
+  }
+
+  private static isHelperKind(kind: string): kind is HelperPermissionKind {
+    return (HELPER_PERMISSION_KINDS as readonly string[]).includes(kind);
+  }
+
+  /** The grant the engine currently holds for a kind: its own field for the three legacy ones, else the row. */
+  private grantOf(kind: PermissionKind): Grant {
+    if (kind === "microphone" || kind === "screenRecording" || kind === "accessibility") return this.permissions[kind];
+    return this.permissions.all?.find((p) => p.kind === kind)?.grant ?? "unknown";
+  }
+
+  /**
+   * Fold grants for the helper's kinds into the permission state: the legacy fields,
+   * the rows of `permissions.all` (an app row keeps its label, why, ask and required;
+   * only the grant and checkedAt move; a kind the app has not listed gets the
+   * catalogue row), the problem lines and the toasts. Rows the app owns are not
+   * touched. `source` is "helper" for the engine's own reads — the resident helper's
+   * greeting at start, or a fresh `--permissions` process on the poll — which are
+   * remembered in `helperGrants` and win over the app's word from then on; it is
+   * "app" for a `permission` / `permissions` message about a kind the engine has not
+   * read itself yet (the helper not built, or not yet greeted), taken at face value
+   * so the problem line and the restart follow it too. Returns what flipped and
+   * whether an Accessibility or Screen Recording grant appeared (the resident helper
+   * must be restarted to use it).
+   */
+  private applyHelperRead(fresh: Partial<Record<HelperPermissionKind, boolean>>, source: "helper" | "app" = "helper"): { changed: boolean; regained: boolean } {
+    const at = this.now();
+    let changed = this.permissions.all === undefined;
+    let regained = false;
+    const rows: PermissionInfo[] = [...(this.permissions.all ?? [])];
+    const fields = { microphone: this.permissions.microphone, screenRecording: this.permissions.screenRecording, accessibility: this.permissions.accessibility };
+    for (const kind of HELPER_PERMISSION_KINDS) {
+      const seen = fresh[kind];
+      if (seen === undefined) continue;
+      const state: Grant = seen ? "granted" : "denied";
+      if (source === "helper") this.helperGrants[kind] = state;
+      const before = this.grantOf(kind);
+      const i = rows.findIndex((r) => r.kind === kind);
+      const base: Omit<PermissionInfo, "grant" | "checkedAt"> = i >= 0 ? rows[i]! : { kind, ...Engine.PERMISSION_CATALOGUE[kind] };
+      const row: PermissionInfo = { ...base, grant: state, checkedAt: at };
+      if (i >= 0) rows[i] = row;
+      else rows.push(row);
+      if (kind === "accessibility" || kind === "screenRecording") fields[kind] = state;
+      if (before === state) continue;
+      changed = true;
+      const text = Engine.PERMISSION_PROBLEMS[kind];
+      if (state === "granted") {
+        // A grant that APPEARED (denied → granted) needs a fresh helper process; the first
+        // read of the daemon's life (unknown → granted) does not — restarting then would
+        // cut the helper's own greeting short and report a failure that never happened.
+        if ((kind === "accessibility" || kind === "screenRecording") && before === "denied") regained = true;
+        this.problems = this.problems.filter((p) => p !== text);
+        if (before !== "unknown") this.toast(`${base.label} granted — ${Engine.GRANTED_NOTE[kind]}`, "info");
+      } else {
+        this.problem(text);
+        if (before === "granted") this.toast(`${base.label} was revoked`, "warn");
+      }
+    }
+    this.permissions = { ...fields, all: rows };
+    return { changed, regained };
+  }
+
+  /** A grant appeared for a connection the resident helper made without it: restart it (no relaunch of anything else). */
+  private async restartHandsAfterGrant(): Promise<void> {
+    if (!this.hands.available) return;
+    try {
+      await this.hands.restart();
+    } catch (e) {
+      log.warn(`hands restart after grant failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * How often a fresh helper process is asked, from the last read: 1.5 s for 90 s
+   * after a prompt or an app report that disagrees with us (Kevin is in a dialog or
+   * System Settings); 3 s while a kind *with a prompt* — Accessibility, Screen
+   * Recording, Input Monitoring — is missing or unread; 30 s otherwise, including
+   * when only Full Disk Access is missing: it has no prompt, is dragged in by hand
+   * (the app watches that pane and reports the change, which reads fresh at once),
+   * and a process every 3 s for the daemon's life would be the wrong price for it.
+   */
+  private permissionPollInterval(now: number): number {
+    if (now < this.permissionFastUntil) return 1500;
+    const promptKindMissing = HELPER_PERMISSION_KINDS.some((k) => Engine.PERMISSION_CATALOGUE[k].ask === "prompt" && this.grantOf(k) !== "granted");
+    return promptKindMissing ? 3000 : 30_000;
+  }
 
   /**
    * Grants change while we run — Kevin flips a switch in System Settings — and a
    * running process may never notice. So: ask a fresh helper process on a timer
-   * (3 s while something is missing, 1.5 s right after a prompt, 30 s when all is
-   * well) and, when a grant appears, restart the resident helper so its capture
-   * and accessibility connections are made with the new rights. No relaunch.
+   * (`permissionPollInterval`) and, when a grant appears, restart the resident helper
+   * so its capture and accessibility connections are made with the new rights. No
+   * relaunch. The read also moves the prompt queue on: the next queued dialog is
+   * shown once the one on screen is granted, or after PROMPT_WAIT_MS.
    */
   private async pollPermissions(): Promise<void> {
     if (this.permissionPolling || !this.hands.available) return;
     const now = this.now();
-    const allGranted = this.permissions.accessibility === "granted" && this.permissions.screenRecording === "granted";
-    const interval = now < this.permissionFastUntil ? 1500 : allGranted ? 30_000 : 3000;
-    if (now - this.permissionPollAt < interval) return;
+    if (now - this.permissionPollAt < this.permissionPollInterval(now)) return;
     this.permissionPollAt = now;
     this.permissionPolling = true;
+    let advance = false;
     try {
       const fresh = await this.hands.probePermissions();
-      let changed = false;
-      let regained = false;
-      for (const which of ["accessibility", "screenRecording"] as const) {
-        const state: Permissions[typeof which] = fresh[which] ? "granted" : "denied";
-        if (this.permissions[which] === state) continue;
-        changed = true;
-        const label = which === "accessibility" ? "Accessibility" : "Screen Recording";
-        const problemText = Engine.PERMISSION_PROBLEMS[which];
-        if (state === "granted") {
-          regained = true;
-          this.problems = this.problems.filter((p) => p !== problemText);
-          this.toast(`${label} granted${which === "accessibility" ? " — hands can click and type now" : " — screenshots will work now"}`, "info");
-        } else if (this.permissions[which] === "granted") {
-          this.problem(problemText);
-          this.toast(`${label} was revoked`, "warn");
-        }
-        this.permissions = { ...this.permissions, [which]: state };
-      }
-      if (regained) {
-        try {
-          await this.hands.restart();
-        } catch (e) {
-          log.warn(`hands restart after grant failed: ${(e as Error).message}`);
-        }
-      }
+      const { changed, regained } = this.applyHelperRead(fresh, "helper");
+      if (regained) await this.restartHandsAfterGrant();
       if (changed) this.scheduleSnapshot();
+      if (this.prompting && (this.grantOf(this.prompting) === "granted" || this.now() >= this.promptDeadline)) {
+        this.prompting = undefined;
+        advance = this.promptQueue.length > 0;
+      }
     } catch (e) {
       log.debug(`permission probe failed: ${(e as Error).message}`);
     } finally {
       this.permissionPolling = false;
     }
+    if (advance) await this.promptNext();
   }
+
+  private static readonly MICROPHONE_PROBLEM = "Microphone access denied; Jarhead cannot hear you";
 
   setMicrophonePermission(state: Permissions["microphone"]): void {
     this.permissions = { ...this.permissions, microphone: state };
-    if (state === "denied") this.problem("Microphone access denied; Jarhead cannot hear you");
+    if (state === "denied") this.problem(Engine.MICROPHONE_PROBLEM);
+    else if (state === "granted") this.problems = this.problems.filter((p) => p !== Engine.MICROPHONE_PROBLEM);
     this.scheduleSnapshot();
+  }
+
+  /**
+   * The app's word on one of the helper's kinds. The engine's own fresh read wins
+   * whenever it has one (a resident app can be reading a stale answer, and the
+   * grant's problem line, toast and helper restart must follow *our* read, not the
+   * app's): the row keeps the engine's grant, and a report that disagrees with it
+   * makes the next tick (within a second) read fresh, then closely for a while — the
+   * app usually sees a grant it just asked for a beat before our poll, and that read
+   * is what clears the problem and restarts the helper. Without a read of its own
+   * (the helper not built, or not greeted yet) the engine takes the app's word
+   * through the same transition logic, so the problem and the restart follow it.
+   */
+  private applyAppWord(kind: HelperPermissionKind, state: Grant): { regained: boolean } {
+    if (state === "unknown") return { regained: false };
+    if (this.helperGrants[kind] === undefined) return this.applyHelperRead({ [kind]: state === "granted" }, "app");
+    if (this.helperGrants[kind] !== state) {
+      this.permissionFastUntil = Math.max(this.permissionFastUntil, this.now() + 90_000);
+      this.permissionPollAt = 0;
+    }
+    return { regained: false };
+  }
+
+  /**
+   * One permission as the app read it (any kind). The three legacy fields follow;
+   * the row in `permissions.all` takes the grant (a kind not listed yet gets the
+   * catalogue row, so `jarhead status` sees it before the app's first full list).
+   * For the four helper kinds see `applyAppWord`: the row's grant is the engine's
+   * own when it has read one; the detail and checkedAt are the app's.
+   */
+  setPermission(which: string, state: Grant, detail?: string): void {
+    if (which === "microphone") this.setMicrophonePermission(state);
+    if (!Engine.isPermissionKind(which)) {
+      log.debug(`permission message for an unknown kind ${which}; ignored`);
+      this.scheduleSnapshot();
+      return;
+    }
+    const word = Engine.isHelperKind(which) ? this.applyAppWord(which, state) : { regained: false };
+    const rows: PermissionInfo[] = [...(this.permissions.all ?? [])];
+    const i = rows.findIndex((p) => p.kind === which);
+    const base: Omit<PermissionInfo, "grant" | "checkedAt"> = i >= 0 ? rows[i]! : { kind: which, ...Engine.PERMISSION_CATALOGUE[which] };
+    const grant = Engine.isHelperKind(which) ? this.grantOf(which) : state;
+    const row: PermissionInfo = { ...base, grant, ...(detail !== undefined ? { detail } : {}), checkedAt: this.now() };
+    if (i >= 0) rows[i] = row;
+    else rows.push(row);
+    this.permissions = { ...this.permissions, all: rows };
+    this.scheduleSnapshot();
+    if (word.regained) void this.restartHandsAfterGrant();
+  }
+
+  /**
+   * The app's full read after a sweep or a poll: its rows become the list, in its
+   * order, with its labels, one row per kind (the last wins). For the four kinds the
+   * helper reads, a grant the engine knows from a fresh process wins over the app's
+   * (`applyAppWord`; a disagreement reads fresh at the next tick); a helper kind the app left out
+   * keeps the engine's row so the list never loses a grant it has. The microphone is
+   * the app's to know.
+   */
+  setPermissions(all: unknown[]): void {
+    const byKind = new Map<PermissionKind, PermissionInfo>();
+    for (const p of all) {
+      if (typeof p === "object" && p !== null && typeof (p as PermissionInfo).kind === "string" && Engine.isPermissionKind((p as PermissionInfo).kind)) {
+        const info = p as PermissionInfo;
+        byKind.set(info.kind, info); // a repeated kind keeps its first place and takes the last row
+      }
+    }
+    let regained = false;
+    for (const [kind, info] of byKind) if (Engine.isHelperKind(kind) && this.applyAppWord(kind, info.grant).regained) regained = true;
+    const rows: PermissionInfo[] = [...byKind.values()].map((p) => (Engine.isHelperKind(p.kind) ? { ...p, grant: this.grantOf(p.kind) } : p));
+    for (const kind of HELPER_PERMISSION_KINDS) {
+      if (byKind.has(kind)) continue;
+      const kept = this.permissions.all?.find((r) => r.kind === kind);
+      if (kept) rows.push(kept);
+    }
+    const pick = (kind: PermissionKind): Grant | undefined => rows.find((p) => p.kind === kind)?.grant;
+    const mic = pick("microphone");
+    if (mic !== undefined && mic !== this.permissions.microphone) this.setMicrophonePermission(mic);
+    this.permissions = {
+      ...this.permissions,
+      all: rows,
+      screenRecording: pick("screenRecording") ?? this.permissions.screenRecording,
+      accessibility: pick("accessibility") ?? this.permissions.accessibility,
+    };
+    this.scheduleSnapshot();
+    if (regained) void this.restartHandsAfterGrant();
   }
 
   /** Stop the current brain (cancelling any running task) and start the configured one. */
@@ -666,22 +993,72 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   // -------------------------------------------------------------- session
 
-  private sessionConfig(): SessionConfig {
+  // The transport: one state machine — asleep / connecting / awake / paused — and
+  // three verbs. Go opens (or resumes), Pause closes the session and holds the
+  // conversation, Stop closes the session and sleeps. GPT-Live-1 bills every second
+  // a session is open (docs/REDESIGN.md §13), so every state but `awake` and
+  // `connecting` has NO session; the watchdog in tick() enforces it.
+
+  /** The one place a session's config is built; `continuity` is the "# Continuity" section a resume appends. */
+  private sessionConfig(continuity?: string): SessionConfig {
     const brain = this.brain;
     const delegation =
       brain instanceof ResponsesBrain
         ? responsesDelegationConfig({ model: this.settings.brain === "openai-responses" ? this.settings.brainModel : undefined, effort: "low" })
         : ({ type: "client" } as const);
+    const base = buildLiveInstructions({ alwaysOn: true });
     return {
       model: this.config.liveModel,
-      instructions: buildLiveInstructions({ alwaysOn: true }),
+      instructions: continuity ? `${base}\n\n${continuity}` : base,
       audio: { format: { type: "audio/pcm", rate: 24000 }, output: { voice: this.settings.voice } },
       delegation,
     };
   }
 
-  /** Open a Live session. Idempotent while one is open or opening. */
+  /** Where the transport is. `paused` wins (a resume in flight is still "paused" until its session starts). */
+  get transportState(): "asleep" | "connecting" | "awake" | "paused" {
+    if (this.pauseInfo) return "paused";
+    if (this.live && !this.connecting) return "awake";
+    if (this.connecting) return "connecting";
+    return "asleep";
+  }
+
+  /**
+   * Go: wake when asleep, resume when paused, nothing when awake or connecting —
+   * the transport's one button. A Go pressed after a Stop landed during the
+   * handshake re-arms the connect (`wantAwake` back to true, as `wake()` does), so
+   * the session that is about to start is kept instead of closed at once.
+   */
+  async go(): Promise<void> {
+    if (this.pauseInfo) return this.resume();
+    if (this.live || this.connecting) {
+      if (!this.wantAwake) {
+        log.info(`go: re-armed the ${this.connecting ? "connect" : "session"} a stop had disarmed`);
+        this.wantAwake = true;
+        if (this.connecting) this.setPhase("connecting");
+        else this.recomputePhase();
+        return;
+      }
+      log.debug(`go: already ${this.connecting ? "connecting" : "awake"}`);
+      return;
+    }
+    return this.connect("go");
+  }
+
+  /** Open a Live session (legacy verb). While paused it is a resume. Idempotent while one is open or opening. */
   async wake(reason = "command"): Promise<void> {
+    if (this.pauseInfo) return this.resume();
+    return this.connect(reason);
+  }
+
+  /**
+   * Open a session. `resume` carries the pause it continues: the config gets the
+   * continuity section, the started row says `resumedFrom`, and a `resume` row
+   * follows. A stop or sleep that lands while the socket opens sets `wantAwake`
+   * false; the session is then closed the moment it exists (it billed for the
+   * handshake, nothing more) and the transport stays asleep.
+   */
+  private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string }): Promise<void> {
     log.info(`wake requested (${reason})`);
     this.wantAwake = true;
     if (this.live || this.connecting) return;
@@ -694,34 +1071,165 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.lastAddressedAt = this.now();
     this.setPhase("connecting");
     await this.ready();
+    // A brain swap in flight (keys changed, settings changed) leaves `this.brain` undefined for a moment; wire() needs it.
+    if (this.brainRestart) await this.brainRestart.catch(() => undefined);
     if (!this.wantAwake) {
       this.connecting = false;
       this.setPhase("asleep");
       return;
     }
-    const config = this.sessionConfig();
-    const live = this.opts.makeLive ? this.opts.makeLive(config) : new LiveSession({ apiKey: this.config.openaiApiKey, config });
-    this.live = live;
-    this.wire(live);
+    const config = this.sessionConfig(resume?.continuity);
+    let live: LiveSession | undefined;
     try {
+      live = this.opts.makeLive ? this.opts.makeLive(config) : new LiveSession({ apiKey: this.config.openaiApiKey, config });
+      this.live = live;
+      // Inside the try: a wire() that throws (no brain) must not leave `connecting` set and a never-started session attached.
+      this.wire(live);
       const res = await live.start();
-      this.sessionStartedAt = this.now();
-      this.lastAddressedAt = this.now();
+      const at = this.now();
+      this.sessionStartedAt = at;
+      this.lastAddressedAt = at;
       this.usageSeconds = 0;
-      this.ledger.append({ at: this.now(), type: "session.started", sessionId: res.id, voice: this.settings.voice });
+      this.contextRatio = undefined;
+      this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
+      this.usageBase = { ...this.usageBase, sessions: this.usageBase.sessions + 1 };
+      if (!this.wantAwake) {
+        // Stop (or sleep) landed while the socket was opening: close the session the moment it exists.
+        log.info(`session ${res.id} started after a stop; closing it at once`);
+        this.detachLive(live);
+        this.closeWithDeadline(live, "stopped while connecting");
+        this.setPhase("asleep");
+        return;
+      }
+      if (resume) {
+        this.ledger.append({ at, type: "resume", sessionId: res.id, resumedFrom: resume.pause.sessionId, pausedMs: at - resume.pause.at });
+        this.pauseInfo = undefined;
+        this.toast("resumed", "info");
+      }
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
-      log.info(`session ${res.id} started (${config.delegation?.type ?? "client"} delegation)`);
+      log.info(`session ${res.id} started (${config.delegation?.type ?? "client"} delegation${resume ? `; resumed from ${resume.pause.sessionId}` : ""})`);
       this.warmStart();
     } catch (e) {
-      this.problem(`could not start a Live session: ${(e as Error).message}`);
-      this.live = undefined;
-      this.delegator?.dispose();
-      this.delegator = undefined;
-      this.setPhase("error");
+      if (live && this.live === live) this.detachLive(live);
+      if (!this.wantAwake) {
+        // Closed on purpose (a stop while connecting): not a problem.
+        log.info(`session start abandoned: ${(e as Error).message}`);
+        this.setPhase("asleep");
+      } else {
+        this.problem(`could not start a Live session: ${(e as Error).message}`);
+        this.setPhase("error");
+      }
     } finally {
       this.connecting = false;
     }
+  }
+
+  /**
+   * Close a session and make sure it closes: a graceful `close()` (the server
+   * finalizes usage and answers `session.closed`), and if that answer has not come
+   * within the deadline, `terminate()` — the socket is dropped and the meter stops
+   * regardless. The session must already be detached from `this.live`.
+   */
+  private closeWithDeadline(live: LiveSession, why: string): void {
+    // Read through a call each time: close() changes the state under the type checker's nose.
+    const closed = (): boolean => live.currentState === "closed";
+    if (closed()) return;
+    try {
+      live.close();
+    } catch (e) {
+      log.warn(`${why}: close failed (${(e as Error).message}); terminating`);
+      live.terminate();
+      return;
+    }
+    if (closed()) return;
+    const deadline = this.opts.closeDeadlineMs ?? Engine.CLOSE_DEADLINE_MS;
+    const timer = setTimeout(() => {
+      this.closeTimers.delete(timer);
+      if (closed()) return;
+      log.warn(`${why}: the session did not close within ${deadline} ms; terminating it so the meter stops`);
+      live.terminate();
+    }, deadline);
+    timer.unref?.();
+    this.closeTimers.add(timer);
+    live.once("closed", () => {
+      clearTimeout(timer);
+      this.closeTimers.delete(timer);
+    });
+  }
+
+  /**
+   * The session is no longer ours: the very next snapshot has no `session`, its
+   * events are ignored (the `closed` handler still records the row), its
+   * delegations move to the kept list, and everything that only makes sense with
+   * a session open ends. The pause, when there is one, survives this — it is the
+   * conversation being held, not the session.
+   */
+  private detachLive(live: LiveSession): void {
+    if (this.live !== live) return;
+    // The meter never dips: what the session has billed so far counts now; the closed row adds the rest.
+    this.foldUsage(live, this.usageSeconds);
+    this.live = undefined;
+    this.usageSeconds = 0;
+    this.contextRatio = undefined;
+    this.outputLevel = 0;
+    this.outlivedSince = 0;
+    if (this.delegator) {
+      this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
+      this.delegator.dispose();
+      this.delegator = undefined;
+    }
+    // Whatever was still open is an utterance now (on the ledger, out as an event), and
+    // this session's words move to the held record; the next session starts its own clock.
+    this.transcript.settle(Number.MAX_SAFE_INTEGER);
+    this.heldTranscript = [...this.heldTranscript, ...this.transcript.all()].slice(-Engine.HELD_TRANSCRIPT_ITEMS);
+    this.transcript = this.newTranscript();
+    if (this.dictating) this.stopDictation("asleep");
+    this.outputGateUntil = 0;
+    this.gatedFrames = 0;
+    this.stopAxWarm();
+    this.earReflexes.forgetAll();
+    this.scheduleSnapshot();
+  }
+
+  /** Fold a session's billed seconds into today's base, counting each second once however many times it is reported. */
+  private foldUsage(live: LiveSession, total: number): void {
+    const before = this.usageFolded.get(live) ?? 0;
+    if (!(total > before)) return;
+    this.usageBase = { ...this.usageBase, seconds: this.usageBase.seconds + (total - before) };
+    this.usageFolded.set(live, total);
+  }
+
+  /** Today's Live seconds from the ledger: closed sessions' usage, and how many sessions started. */
+  private loadUsageToday(): void {
+    const now = this.now();
+    let seconds = 0;
+    let sessions = 0;
+    for (const row of this.ledger.read(now)) {
+      if (row.type === "session.closed") seconds += Number(row.usageSeconds) || 0;
+      else if (row.type === "session.started") sessions += 1;
+    }
+    // A session open across midnight is one of today's sessions too.
+    if (this.live?.session) sessions += 1;
+    this.usageBase = { seconds, sessions };
+    this.usageDay = Ledger.fileNameFor(now);
+  }
+
+  /** The meter: today's closed sessions plus what the open one has billed so far. */
+  private usageToday(): UsageToday {
+    const live = this.live;
+    const open = live ? Math.max(0, this.usageSeconds - (this.usageFolded.get(live) ?? 0)) : 0;
+    return { seconds: this.usageBase.seconds + open, sessions: this.usageBase.sessions };
+  }
+
+  /** The brain's own cancel may take a while (a Codex interrupt on a loaded Mac); nothing perceptible waits on it. */
+  private bounded(p: Promise<unknown>): Promise<unknown> {
+    return Promise.race([
+      p,
+      new Promise((r) => {
+        setTimeout(r, Engine.CANCEL_CAP_MS).unref?.();
+      }),
+    ]);
   }
 
   /** A restarted brain must talk to the open Live session (Responses delegation is bound per session). */
@@ -786,8 +1294,8 @@ export class Engine extends EventEmitter<EngineEvents> {
           }),
       // Paused (or dictating): delegations are recorded and refused, never run.
       refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : undefined),
-      // A spoken "stop" is a Stop like any other: the whole stop, not only the delegation.
-      onStop: (reason) => void this.stopEverything(reason, "said"),
+      // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
+      onStop: (reason) => void this.interrupt(reason, "said"),
     });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
@@ -798,7 +1306,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     this.delegator = delegator;
 
+    // A session that was paused, stopped or replaced still emits for a moment (its
+    // closed event, a last frame): nothing from it may touch the transport's state.
+    const current = (): boolean => this.live === live;
     live.on("audio", (pcm) => {
+      if (!current()) return;
       // After a stop the voice is muted here until Kevin speaks or the gate lapses:
       // the API has no interrupt, so a sentence already in flight is simply not played.
       if (this.now() < this.outputGateUntil) {
@@ -811,10 +1323,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.emit("audio", pcm);
     });
     live.on("inputTranscript", (delta, s, e) => {
+      if (!current()) return;
       if (this.outputGateUntil) this.liftOutputGate("Kevin spoke");
       this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
     });
     live.on("outputTranscript", (delta, s, e) => {
+      if (!current()) return;
       // What the model said goes on the record even when the gate kept it off the speaker.
       this.transcript.push({ speaker: "jarhead", delta, startMs: s, endMs: e });
       if (this.now() < this.outputGateUntil) return; // muted locally: not "speaking"
@@ -823,50 +1337,72 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.recomputePhase();
     });
     live.on("delegation", () => {
+      if (!current()) return;
       this.lastAddressedAt = this.now();
     });
     live.on("usage", (seconds, ratio) => {
+      if (!current()) return;
       this.usageSeconds = seconds;
       this.contextRatio = ratio;
       this.scheduleSnapshot();
     });
     live.on("error", (e, cid) => {
+      if (!current()) return;
       log.warn(`live error${cid ? ` (${cid})` : ""}: ${e.message}`);
       if (!/context_injection_incomplete/.test(e.message)) this.problem(`voice: ${e.message}`);
     });
     live.on("closed", (reason, usage) => {
-      this.ledger.append({ at: this.now(), type: "session.closed", sessionId: live.session?.id ?? "?", reason, usageSeconds: usage });
-      this.live = undefined;
-      this.endAwakeState();
-      this.delegator?.dispose();
-      this.delegator = undefined;
-      this.transcript.finalizeOpen();
-      if (this.wantAwake && (reason === "expired" || reason === "connection_lost")) {
+      // The record and the meter, whichever session this was. A socket that never
+      // reached session.started has no started row and gets no closed row.
+      this.foldUsage(live, usage);
+      const id = live.session?.id;
+      if (id) this.ledger.append({ at: this.now(), type: "session.closed", sessionId: id, reason, usageSeconds: usage });
+      if (!current()) {
+        log.debug(`session ${id ?? "(never started)"} closed (${reason}, ${usage}s) after it was detached`);
+        this.scheduleSnapshot();
+        return;
+      }
+      // The open session ended under us: expired, the connection dropped, or the server closed it.
+      this.detachLive(live);
+      if (!id) {
+        // The socket closed before session.started (refused, network down): start() rejects and connect()'s
+        // catch reports the failed start once. No reconnect — it would loop every 500 ms against the same wall.
+        log.debug(`session closed before it started (${reason}); leaving the failed start to connect()`);
+        return;
+      }
+      if (this.wantAwake && !this.pauseInfo && (reason === "expired" || reason === "connection_lost")) {
         this.toast(reason === "expired" ? "session expired; reconnecting" : "connection lost; reconnecting", "warn");
-        setTimeout(() => void this.wake(`reconnect after ${reason}`), 500);
+        // Re-checked when it fires: a stop or a pause in the meantime wins over the reconnect.
+        setTimeout(() => {
+          if (this.wantAwake && !this.pauseInfo) void this.connect(`reconnect after ${reason}`);
+        }, 500).unref?.();
       } else {
         this.setPhase("asleep");
       }
     });
   }
 
+  /**
+   * Sleep: a graceful close and asleep (idle sleep, a brain swap, shutdown, a
+   * pause that decayed). From paused, the held conversation is let go. The session
+   * is detached at once — the next snapshot has none — and closed with the deadline.
+   */
   async sleep(): Promise<void> {
     this.wantAwake = false;
-    // A brain whose cancel hangs must not keep the session open.
-    await Promise.race([this.delegator?.cancel("going to sleep") ?? Promise.resolve(), new Promise((r) => setTimeout(r, 1500))]);
-    this.live?.close();
+    const live = this.live;
+    const wasPaused = this.pauseInfo !== undefined;
+    this.pauseInfo = undefined;
+    // Quiet: nothing appended to a session about to close (context_injection_incomplete otherwise).
+    const cancel = this.delegator?.cancel("going to sleep", { quiet: true }) ?? Promise.resolve();
+    if (live && !this.connecting) {
+      this.detachLive(live);
+      this.closeWithDeadline(live, "sleep");
+    }
     this.flushSpeaker();
-    this.endAwakeState();
     this.setPhase("asleep");
-  }
-
-  /** The session is gone (sleep, expiry, loss): nothing that only makes sense awake survives it. */
-  private endAwakeState(): void {
-    this.paused = false;
-    if (this.dictating) this.stopDictation("asleep");
-    if (this.outputGateUntil === Number.POSITIVE_INFINITY) this.outputGateUntil = 0;
-    this.stopAxWarm();
-    this.earReflexes.forgetAll();
+    if (wasPaused) log.info("pause ended: asleep");
+    // A brain whose cancel hangs must not hold anything up; the session is closing already.
+    await this.bounded(cancel);
   }
 
   setMuted(muted: boolean): void {
@@ -879,9 +1415,13 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.recomputePhase();
   }
 
-  /** Mic PCM16 mono 24 kHz. */
+  /**
+   * Mic PCM16 mono 24 kHz. Dropped while muted or paused — except during a resume's
+   * handshake, when the opening session queues it until `session.started` exactly as a
+   * wake does, so the first word Kevin says after pressing Go is not clipped.
+   */
   feedMic(pcm: Buffer): void {
-    if (this.muted || this.paused) return;
+    if (this.muted || (this.paused && !this.connecting)) return;
     this.live?.appendAudio(pcm);
   }
 
@@ -890,54 +1430,101 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.inputLevel = level;
   }
 
-  /** Text Kevin typed in the Console. */
-  sayText(text: string): void {
+  /** Text Kevin typed in the Console. Typing while paused resumes first: the words then reach the new session. */
+  async sayText(text: string): Promise<void> {
     const t = text.trim();
-    if (!t || !this.live) return;
+    if (!t) return;
+    if (this.pauseInfo) await this.resume();
+    if (!this.live) return;
     this.lastAddressedAt = this.now();
     if (YES_PATTERN.test(t)) this.confirmations.arm();
     this.live.appendInstructions(null, `Kevin just typed (treat it exactly like speech): "${t}". Respond to it now; delegate if it asks for anything the backend does.`);
   }
 
   /**
-   * Every Stop entry lands here — the Console's button and ⌘., the capsule's Stop,
-   * ⌥⎋, the orb menu, `jarhead cmd stop`, and a spoken "stop" (the Delegator's
-   * `onStop`, which runs after the fragment's other listeners so the gate set here
-   * is not lifted by the words that asked for it). Within a frame or two
-   * everything Kevin can perceive ends: the speaker is flushed and the voice gated
-   * locally (Live cannot be interrupted), the running delegation is cancelled and
-   * its brain turn interrupted, the hands' pending request is dropped so a late
-   * answer never acts, background jobs this task started are stopped, the voice
-   * is told once, and a toast says "stopped". The delegation's `finished` ledger
-   * row (status cancelled, summary "Kevin pressed/said stop") is the record; with
-   * nothing running there is nothing to record beyond the log line.
+   * What every stop begins with, whichever verb it is: within a frame or two
+   * everything Kevin can perceive ends. The speaker is flushed, the hands' pending
+   * request is dropped so a late answer never acts, background jobs this task
+   * started are stopped, the question the task asked is cleared (a later "yes"
+   * must not arm it), a dictation ends, the ear holds its segment with every word
+   * consumed (the recogniser's late partial for the words he just stopped must not
+   * run them again), and the running delegation is cancelled — finished before the
+   * brain's own cancel is awaited, which the caller caps.
    */
-  async stopEverything(source = "stop", how: "pressed" | "said" = "pressed"): Promise<void> {
-    const t0 = this.now();
+  private cutEverything(reason: string, abortReason: string): { running: Delegation | undefined; dropped: number; jobs: number; cancel: Promise<unknown> } {
     const running = this.delegator?.active;
-    const reason = `Kevin ${how} stop`;
-    // The gate first, so a frame arriving between here and the flush is dropped too
-    // (a pause holds it open already and keeps it).
-    if (!this.paused) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
     this.gatedFrames = 0;
     this.flushSpeaker();
     const dropped = this.hands.cancelPending(reason);
-    const aborted = this.runner.abortTask("stop");
-    // A question the stopped task asked must not be armed by a later "yes"; a dictation ends too.
+    const { jobs } = this.runner.abortTask(abortReason);
     this.confirmations.clear();
     if (this.dictating) this.stopDictation("said");
-    // The ear holds its segment with every word consumed (not forgotten): the recogniser's
-    // late partial or final for the words Kevin just stopped must not run them again.
     this.earReflexes.quiesce();
-    // The brain's own cancel may take a moment (SIGINT, an interrupt request); the
-    // stop must not wait on it to be felt, so it is capped here. The delegator's own
-    // word to the voice is skipped: the one instruction below speaks for the whole stop.
+    // Quiet: the caller's one instruction (interrupt) or the closing session (stop, pause) speaks for the whole stop.
     const cancel = this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve();
-    this.live?.appendInstructions(null, `${reason}. Stop speaking now and wait.`);
-    this.toast("stopped", "info");
+    return { running, dropped, jobs, cancel };
+  }
+
+  /**
+   * Interrupt — a spoken "stop" / "cancel" / "never mind" (the ear's and the
+   * Delegator's `onStop`, which run after the fragment's other listeners so the
+   * gate set here is not lifted by the words that asked for it) and the
+   * `interrupt` command. Work and speech end, the session stays open and
+   * listening: the voice is gated locally (Live cannot be interrupted) until Kevin
+   * speaks or OUTPUT_GATE_MS pass, told once to stop speaking and wait, and a toast
+   * says "stopped". A `stop` ledger row (how said/pressed) names the cut delegation.
+   */
+  async interrupt(source = "interrupt", how: "pressed" | "said" = "said"): Promise<void> {
+    const t0 = this.now();
+    const reason = `Kevin ${how} stop`;
+    // Only a session that has started is spoken to: one still opening has no id for the row and would
+    // hear "stop speaking" as its first instruction after session.started.
+    const open = !this.connecting && this.live?.session ? this.live : undefined;
+    // The gate first, so a frame arriving between here and the flush is dropped too.
+    if (open) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+    const { running, dropped, jobs, cancel } = this.cutEverything(reason, "stop");
+    if (open || running) this.ledger.append({ at: t0, type: "stop", how, ...(running ? { cancelled: running.id } : {}) });
+    open?.appendInstructions(null, `${reason}. Stop speaking now and wait.`);
+    this.toast(open || running || jobs ? "stopped" : "nothing running", "info");
     this.recomputePhase();
-    await Promise.race([cancel, new Promise((r) => setTimeout(r, 1500))]);
-    log.info(`stop (${source}) in ${this.now() - t0}ms: ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${aborted.jobs} background job(s) stopped; voice gated for ${Engine.OUTPUT_GATE_MS} ms`);
+    await this.bounded(cancel);
+    log.info(`interrupt (${source}, ${how}) in ${this.now() - t0}ms: ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${jobs} background job(s) stopped; voice gated for ${Engine.OUTPUT_GATE_MS} ms`);
+  }
+
+  /** The pre-transport name of `interrupt`; the bench and older notes say it. */
+  stopEverything(source = "stop", how: "pressed" | "said" = "pressed"): Promise<void> {
+    return this.interrupt(source, how);
+  }
+
+  /**
+   * Stop — the transport's stop: the Stop button, ⌥⎋, `jarhead cmd stop`, the
+   * `stop` command. Everything an interrupt cuts, then the session is closed so
+   * the meter stops and the transport is asleep — synchronously: the phase is
+   * `asleep` and the snapshot has no session before anything is awaited. From
+   * paused the held conversation is let go. From asleep it still stops background
+   * jobs; "nothing running" is the toast only when nothing at all happened. During
+   * a connect, `wantAwake` false makes connect() close the session the moment it
+   * starts. Ledger: a `stop` row (how pressed, the cut delegation), then the
+   * session's own `session.closed` row when the close is answered.
+   */
+  async pressStop(source = "stop"): Promise<void> {
+    const t0 = this.now();
+    const live = this.live;
+    const wasPaused = this.pauseInfo !== undefined;
+    const wasConnecting = this.connecting;
+    this.wantAwake = false;
+    const { running, dropped, jobs, cancel } = this.cutEverything("Kevin pressed stop", "stop");
+    this.pauseInfo = undefined;
+    const happened = live !== undefined || wasConnecting || wasPaused || running !== undefined || jobs > 0;
+    if (happened) this.ledger.append({ at: t0, type: "stop", how: "pressed", ...(running ? { cancelled: running.id } : {}) });
+    if (live && !wasConnecting) {
+      this.detachLive(live);
+      this.closeWithDeadline(live, "stop");
+    }
+    this.setPhase("asleep");
+    this.toast(happened ? "stopped" : "nothing running", "info");
+    await this.bounded(cancel);
+    log.info(`stop (${source}) in ${this.now() - t0}ms: ${live ? `session ${live.session?.id ?? "(connecting)"} closed` : wasPaused ? "pause ended" : "no session"}; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${jobs} background job(s) stopped`);
   }
 
   /** The gate ends early when Kevin speaks; the clock ends it otherwise. */
@@ -1241,62 +1828,95 @@ export class Engine extends EventEmitter<EngineEvents> {
   // ------------------------------------------------------------- pause
 
   /**
-   * Pause: the session stays open (no reconnect, no lost context) but Jarhead goes
-   * silent and still — the mic is muted at Live, the output gate is held open so
-   * nothing already in flight is played, the running task is cancelled and new
-   * delegations are refused (recorded, finished as "paused"), and the voice is told
-   * once to stay quiet. Idle-sleep keeps counting: a pause is not attention.
+   * Pause: the session is CLOSED — GPT-Live-1 bills every second it is open, and a
+   * muted session is an open one — and the conversation is held here instead: the
+   * transcript (in memory), the marks, the brain (warm, not stopped) and the hands
+   * stay. Everything perceptible ends as a stop does; then the session is detached
+   * at once (the next snapshot has none) and closed with the deadline. While
+   * paused: mic PCM is dropped, the ear ignored, reflexes off, levels 0; typing in
+   * the Console resumes first. Unresumed, the pause decays to sleep at `sleepsAt`
+   * (idleSleepMinutes, at least a minute).
    */
   async pause(): Promise<void> {
-    if (!this.live) {
-      this.toast("asleep already", "info");
-      return;
-    }
-    if (this.paused) {
+    if (this.pauseInfo) {
       this.toast("paused already", "info");
       return;
     }
+    const live = this.live;
+    if (!live?.session || this.connecting) {
+      this.toast(this.connecting ? "still connecting" : "asleep already", "info");
+      return;
+    }
     const t0 = this.now();
-    this.paused = true;
-    this.live.mute();
-    this.outputGateUntil = Number.POSITIVE_INFINITY;
-    this.gatedFrames = 0;
-    this.flushSpeaker();
-    const running = this.delegator?.active;
-    const dropped = this.hands.cancelPending("Kevin paused");
-    this.runner.abortTask("pause");
-    this.confirmations.clear();
-    if (this.dictating) this.stopDictation("said");
-    this.earReflexes.quiesce();
-    const cancel = this.delegator?.cancel("paused", { quiet: true }) ?? Promise.resolve();
-    this.live.appendInstructions(null, "Kevin paused you. Stay silent until he resumes.");
-    this.ledger.append({ at: t0, type: "pause", ...(running ? { cancelled: running.id } : {}) } as unknown as LedgerRow);
-    this.toast("paused", "info");
-    this.recomputePhase();
-    await Promise.race([cancel, new Promise((r) => setTimeout(r, 1500))]);
-    log.info(`paused in ${this.now() - t0}ms: ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped`);
+    const sessionId = live.session.id;
+    // The meter bills per second of open session; `session.usage.updated` arrives late,
+    // so the figure at the pause is at least the seconds the session has been open.
+    const usageSeconds = Math.max(this.usageSeconds, Math.floor((t0 - this.sessionStartedAt) / 1000));
+    const { running, dropped, cancel } = this.cutEverything("paused", "pause");
+    this.wantAwake = false;
+    this.pauseInfo = { at: t0, sessionId, usageSeconds, sleepsAt: t0 + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000) };
+    this.ledger.append({ at: t0, type: "pause", sessionId, usageSeconds });
+    this.detachLive(live);
+    this.closeWithDeadline(live, "pause");
+    this.setPhase("paused");
+    this.toast("paused · meter stopped", "info");
+    await this.bounded(cancel);
+    log.info(`paused in ${this.now() - t0}ms: session ${sessionId} closed at ${usageSeconds}s; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; sleeps at +${Math.round((this.pauseInfo?.sleepsAt ?? t0) - t0) / 60_000} min unless resumed`);
   }
 
+  /**
+   * Resume: a NEW session whose instructions carry the continuity — what was said
+   * before the pause and the last task — so the voice picks up where it left off.
+   * The started row says `resumedFrom`; a `resume` row follows. Not paused: a word.
+   */
   async resume(): Promise<void> {
-    if (!this.live) {
-      this.toast("asleep — wake it instead", "info");
+    const pause = this.pauseInfo;
+    if (!pause) {
+      this.toast(this.live ? "not paused" : "asleep — wake it instead", "info");
       return;
     }
-    if (!this.paused) {
-      this.toast("not paused", "info");
-      return;
+    if (this.connecting) return; // the resume is already opening its session
+    await this.connect("resume", { pause, continuity: this.continuityFor(pause) });
+  }
+
+  /** The "# Continuity" section a resumed session starts with: the last lines of the conversation and the last task. */
+  private continuityFor(pause: PauseInfo): string {
+    const minutes = Math.round((this.now() - pause.at) / 60_000);
+    const when = minutes < 1 ? "less than a minute ago" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
+    const lines: string[] = [];
+    let chars = 0;
+    const whole = this.wholeTranscript();
+    for (let i = whole.length - 1; i >= 0 && lines.length < Engine.CONTINUITY_LINES; i--) {
+      const item = whole[i];
+      const text = item?.text.trim();
+      if (!item || !text) continue;
+      const line = `${item.speaker === "kevin" ? "Kevin" : "Jarhead"}: ${text}`;
+      if (chars + line.length > Engine.CONTINUITY_CHARS) {
+        // The most recent line always makes it, cut if it must.
+        if (lines.length === 0) lines.unshift(line.slice(0, Engine.CONTINUITY_CHARS));
+        break;
+      }
+      lines.unshift(line);
+      chars += line.length + 1;
     }
-    this.paused = false;
-    // Kevin's own mute (the mic button) survives a pause; only the pause's mute is undone.
-    if (!this.muted) this.live.unmute();
-    this.outputGateUntil = 0;
-    this.gatedFrames = 0;
-    this.lastAddressedAt = this.now();
-    this.live.appendInstructions(null, "Kevin resumed. Carry on as before; do not recap what you were doing unless he asks.");
-    this.ledger.append({ at: this.now(), type: "resume" } as unknown as LedgerRow);
-    this.toast("resumed", "info");
-    this.recomputePhase();
-    log.info("resumed");
+    const last = this.lastDelegations[this.lastDelegations.length - 1];
+    const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : undefined;
+    return [
+      "# Continuity",
+      `Kevin paused you ${when} and just resumed. This is the same conversation. What was said before the pause, most recent last:`,
+      lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
+      ...(task ? [task] : []),
+      "Carry on as before; do not recap unless he asks. Say nothing now: stay silent until Kevin speaks to you again.",
+    ].join("\n");
+  }
+
+  /** How much of the conversation a resumed session is reminded of. */
+  static readonly CONTINUITY_LINES = 12;
+  static readonly CONTINUITY_CHARS = 1200;
+
+  /** True while the transport is paused (the session closed, the conversation held). */
+  private get paused(): boolean {
+    return this.pauseInfo !== undefined;
   }
 
   get isPaused(): boolean {
@@ -1569,7 +2189,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "unmute":
         return this.setMuted(false);
       case "stop":
-        return this.stopEverything("stop command");
+        return this.pressStop("stop command");
+      case "go":
+        return this.go();
+      case "interrupt":
+        return this.interrupt("interrupt command", cmd.how ?? "pressed");
       case "say-text":
         return this.sayText(cmd.text);
       case "set-settings":
@@ -1624,6 +2248,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.stopAxWarm();
     this.closeConversations();
     await this.sleep();
+    // The process is going away with the session; no deadline may fire into a gone engine.
+    for (const t of this.closeTimers) clearTimeout(t);
+    this.closeTimers.clear();
     await this.brain?.stop();
     this.hands.stop();
   }
@@ -1636,13 +2263,22 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   private tick(): void {
+    const now = this.now();
     // Speaking decays when the transcript stops arriving; levels alone lie (silence frames).
     this.recomputePhase();
     this.pruneMarks();
+    if (Ledger.fileNameFor(now) !== this.usageDay) this.loadUsageToday();
+    this.watchdog();
     const idleMs = this.settings.idleSleepMinutes * 60_000;
-    if (this.live && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && this.now() - this.lastAddressedAt > idleMs) {
+    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && now - this.lastAddressedAt > idleMs) {
       log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
       this.toast("asleep — tap the orb to wake", "info");
+      void this.sleep();
+    }
+    // A pause nobody resumed decays to sleep: the held conversation is let go.
+    if (this.pauseInfo && !this.connecting && now >= this.pauseInfo.sleepsAt) {
+      log.info(`paused ${Math.round((now - this.pauseInfo.at) / 60_000)} min without a resume; sleeping`);
+      this.toast("paused too long · asleep", "info");
       void this.sleep();
     }
     if (this.live) this.transcript.settle(this.live.nowMs);
@@ -1650,16 +2286,69 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.emit("event", { type: "levels", levels: this.levels() });
   }
 
+  /**
+   * The transport's invariants, enforced once a second: no session while paused
+   * (a resume's opening session excepted: the pause is held until it starts); no
+   * session that outlived a stop (nobody wants it awake, it is not connecting, and
+   * it is still here after WATCHDOG_OUTLIVED_MS); no phase but asleep / error
+   * without a session, a connect or a pause. A normal connect never trips it — a
+   * wake's or a resume's: every rule that names a session excludes `connecting`,
+   * which is set for the whole handshake. Each incident is logged once.
+   */
+  private watchdog(): void {
+    const now = this.now();
+    const live = this.live;
+    // A session mid-handshake is never the watchdog's to close: `connecting` covers it,
+    // and so does its state, so a stale flag can never cut a resume short. A session
+    // already asked to close (state closing) is still its business: that is the one
+    // that outlives a stop when the server never answers.
+    const handshaking = live !== undefined && (live.currentState === "idle" || live.currentState === "connecting");
+    if (live && !handshaking && this.pauseInfo && !this.connecting) {
+      this.incident(`paused-open:${live.session?.id ?? "?"}`, "watchdog: a session was open while paused; closing it");
+      this.detachLive(live);
+      this.closeWithDeadline(live, "watchdog (paused)");
+      return;
+    }
+    if (live && !handshaking && !this.wantAwake && !this.connecting) {
+      if (!this.outlivedSince) this.outlivedSince = now;
+      else if (now - this.outlivedSince > Engine.WATCHDOG_OUTLIVED_MS) {
+        const id = live.session?.id ?? "?";
+        this.incident(`outlived:${id}`, `watchdog: session ${id} outlived stop; terminating it`);
+        this.detachLive(live);
+        live.terminate();
+        this.setPhase("asleep");
+      }
+    } else {
+      this.outlivedSince = 0;
+    }
+    if (!live && !this.connecting && !this.pauseInfo && this.phase !== "asleep" && this.phase !== "error") {
+      this.incident(`phase:${this.phase}`, `watchdog: phase ${this.phase} with no session; asleep`);
+      this.setPhase("asleep");
+    }
+  }
+
+  private incident(key: string, text: string): void {
+    // Once a minute per kind: a repeat is worth knowing about, a storm is not.
+    const last = this.watchdogSeen.get(key) ?? 0;
+    if (this.now() - last < 60_000) return;
+    this.watchdogSeen.set(key, this.now());
+    log.warn(text);
+  }
+
   private levels(): AudioLevels {
-    return { input: this.inputLevel, output: this.live ? this.outputLevel : 0 };
+    return { input: this.inputLevel, output: this.live && !this.pauseInfo ? this.outputLevel : 0 };
   }
 
   private recomputePhase(): void {
-    if (!this.live) {
+    // Paused is decided first: there is no session while paused, and that is not asleep.
+    if (this.pauseInfo) {
+      if (!this.connecting) this.setPhase("paused");
+      return;
+    }
+    if (!this.live || this.connecting) {
       if (this.phase !== "connecting" && this.phase !== "error") this.setPhase("asleep");
       return;
     }
-    if (this.paused) return this.setPhase("paused");
     if (this.muted) return this.setPhase("muted");
     if (this.dictating) return this.setPhase("acting");
     const active = this.delegator?.active;
@@ -1715,8 +2404,12 @@ export class Engine extends EventEmitter<EngineEvents> {
             },
           }
         : {}),
-      transcript: this.transcript.all().slice(-200),
-      delegations: (this.delegator?.all() ?? this.pastDelegations()).slice(-50),
+      // Present exactly while paused; the meter counts today's closed sessions plus the open one.
+      ...(this.pauseInfo ? { pause: this.pauseInfo } : {}),
+      usageToday: this.usageToday(),
+      transcript: this.wholeTranscript().slice(-200),
+      // Delegations survive a pause and resume (and a sleep): the Console keeps the day's work, newest last.
+      delegations: [...this.pastDelegations(), ...(this.delegator?.all() ?? [])].slice(-Engine.MAX_DELEGATIONS),
       agents: this.agentsList,
       connectors: this.connectorHealth,
       settings: this.settings,

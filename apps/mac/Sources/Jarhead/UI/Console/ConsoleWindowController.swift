@@ -39,8 +39,12 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         Task { await session.loadDays(from: state); await session.pick(day: day, from: state) }
     }
     func openAgent(_ id: String?) { session.openAgentId = id }
+    /// Back to Now (no conversation, no ledger day), for the preview harness's scripted actions.
+    func showNow() { session.showNow() }
     /// The conversation on screen, for the preview harness's scripted actions.
     var openAgentIdForPreview: String? { session.openAgentId }
+    /// The Jarhead conversation on screen, for the preview harness's scripted actions.
+    var openJarheadIdForPreview: String? { session.openJarheadSessionId }
 
     // MARK: - window
 
@@ -84,10 +88,14 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             beginMarkMode: { [state] in state.beginMarkMode() },
             reveal: { url in NSWorkspace.shared.activateFileViewerSelecting([url]) })
 
+        // The composer's Go/Pause: the one transport (AppState's Transport region).
+        let transport = ConsoleTransport(toggle: { [state] in state.transportToggle() })
+
         let root = ConsoleRootView()
             .environmentObject(state)
             .environmentObject(session)
             .environment(\.consoleActions, actions)
+            .environment(\.consoleTransport, transport)
         let hosting = NSHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]
         window.contentView = hosting
@@ -101,24 +109,20 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             return true
         case .stop:
             // Every Stop in the Console lands here (the composer's button, ⌘.), in every
-            // phase: the command, then the feedback nothing waits on — the in-process
-            // Stop notification (the orb cancels its flight or trace and shivers; the
-            // name is OrbPanelController.stopPressedNotification, spelled out because
-            // the Console preview compiles without UI/Orb), the overlay's clear (the
-            // shapes come down), a "Stopped" toast (the Console's pill, and the orb's),
-            // and the composer's Stop flashing red for the press.
-            state.send(.stop)
-            NotificationCenter.default.post(name: Notification.Name("jarhead.stopPressed"), object: nil)
-            state.overlayCommands.send(.clear)
-            state.toast("Stopped")
+            // phase: the transport's stop — the command, the in-process stop-pressed
+            // notification the orb reacts to, the overlay's clear and the one "Stopped"
+            // toast (AppState.transportStop) — plus the composer's Stop flashing red for
+            // the press, which is the Console's own.
+            state.transportStop()
             session.stopFlash += 1
             return true
         case .focusComposer:
             session.composerFocusRequest += 1
             return true
-        case .togglePause:
-            // ⌘P, in every phase: the engine answers with the phase (paused, or back).
-            state.send(state.phase == .paused ? .resume : .pause)
+        case .transportToggle:
+            // ⌘P, in every phase: go when asleep or paused, pause in session, stop while
+            // connecting. The engine answers with the phase.
+            state.transportToggle()
             return true
         }
     }
@@ -132,7 +136,7 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
 }
 
 /// Handles ⌘W / ⌘. / ⌘K / ⌘P itself so the Console works whatever the main menu holds.
-/// (⌥⇧P, the global Pause hotkey, is Carbon's and never reaches the window.)
+/// (⌥⇧Space and ⌥⇧P, the global Go/Pause hotkeys, are Carbon's and never reach the window.)
 final class ConsoleWindow: NSWindow {
     var commandHandler: ((ConsoleKeyCommand) -> Bool)?
 
@@ -143,7 +147,7 @@ final class ConsoleWindow: NSWindow {
             case "w": if commandHandler?(.close) == true { return true }
             case ".": if commandHandler?(.stop) == true { return true }
             case "k": if commandHandler?(.focusComposer) == true { return true }
-            case "p": if commandHandler?(.togglePause) == true { return true }
+            case "p": if commandHandler?(.transportToggle) == true { return true }
             default: break
             }
         }

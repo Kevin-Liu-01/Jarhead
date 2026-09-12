@@ -16,9 +16,9 @@ import SwiftUI
 //   ORB_EXPAND=1           expand the capsule after ORB_EXPAND_AT s (default 1; screenshot 1.2 s later)
 //   ORB_TOGGLE_AT=s        toggle the capsule again at that time (with ORB_EXPAND: collapse it), printing
 //                          the flight phase and the perch — with ORB_FLY: expand mid-hover, collapse,
-//                          and the blob must go home, not adopt the hover spot
+//                          and the blob must stay where it is (saved, not the perch), not go anywhere
 //   ORB_HIDE_AT / ORB_SHOW_AT=s   hide() / show() the orb at those times, printing the flight phase and
-//                          where the body is (hide mid-flight: it must reappear on its perch, flight over)
+//                          where the body is (hide mid-flight: it must reappear where it was, flight over)
 //   ORB_CLICK_TEST=1       synthetic clicks at 1.5 s: the blob (expects expand), then the
 //                          capsule's Stop and Console buttons (expects a stop command and
 //                          openConsole()); prints each result
@@ -71,14 +71,19 @@ import SwiftUI
 //                          ORB_SHOT_DIR, screenshots fly-outbound (in flight, trail behind), fly-hover
 //                          (parked beside the target), and — free mode — stay 0.6 s after the hover
 //                          ran out: the blob settled where it worked, the perch (a dashed ring, where
-//                          it came from) left empty. With ORB_FLY_HOME (free mode) fly-home: drifting
-//                          back to the perch, framed to take in the perch and the ghosts; notch mode
-//                          shoots notch-return instead — the way back up, framed with the notch. Prints
+//                          it came from) left empty (notch mode: notch-stay, the empty notch in frame
+//                          too). With ORB_FLY_HOME (free mode) fly-home: drifting back to the perch,
+//                          framed to take in the perch and the ghosts; a sleep (ORB_SLEEP_AT, on by
+//                          default in notch mode) shoots notch-return — the way back up, framed with the
+//                          notch. Targets may be on any display (this Mac: the Samsung above the
+//                          built-in is CG y < 0). Prints
 //                          the flight phase, speed and ghost count as it goes, each take-off's
 //                          landing spot, and after each command the hover left / whether it is
 //                          waiting for Kevin's own throw to land (ORB_FLING just before it)
 //   ORB_FLY_HOME=1         send orb.home ORB_FLY_HOME_AT s after the last orb.fly (default 1.0)
-//   ORB_REDUCE_MOTION=1    pretend the system's reduce-motion is on (no trail, softer cues)
+//   ORB_REDUCE_MOTION=1    pretend the system's reduce-motion is on, for the sim and for every Motion
+//                          token (Motion.reducedOverride): no trail, softer cues, plain fades, halved
+//                          durations, the instant tuck
 //   ORB_DRAG="x0,y0->x1,y1@ms"  a synthetic drag through the panel's own mouse path: the hand
 //                          comes down at CG x0,y0 (put it on the blob: its centre is ORB_X+82,
 //                          ORB_Y+82), sweeps to x1,y1 over ms (default 700) with an ease-in-out,
@@ -116,13 +121,52 @@ import SwiftUI
 //                          185×32 at the top of the main display, under its menu bar). The blob
 //                          starts tucked (asleep, `- -`); the script wakes it at 1.3 s (peeking),
 //                          hovers the island 2.7–3.7 s, and with ORB_FLY (default "1000,420" at
-//                          4.6 s) drops it out, flies, hovers, and tucks it back. With ORB_SHOT_DIR:
+//                          4.6 s) drops it out, flies, hovers, and STAYS where it worked; then the
+//                          phase falls asleep (ORB_SLEEP_AT, default 2 s after the hover) and it
+//                          drifts back up and tucks in — the dock is for sleeping and waking. With ORB_SHOT_DIR:
 //                          notch-tucked (1.0 s), notch-peek (2.5 s), notch-island (3.4 s) and
 //                          notch-drop (the hop out, just after the fly) — all in-process, over a
 //                          drawn menu bar band and the hardware notch's black, so the island can be
 //                          judged against the bezel. ORB_PHASE_SECONDS defaults to 60 here.
 //                          Without ORB_NOTCH the harness pins orbHome to "free" (this Mac has a
 //                          notch, and every other scenario is a free-mode scenario).
+//   ORB_NOTCH_NO_POINTER=1 the real pointer never opens or closes the island (only the script's
+//                          previewNotchHover does): for the shots when the mouse sits under the notch
+//   ORB_FACE_LOG=1         print the face (`BlobSim.face`, the drawn glyph pair) every time it changes,
+//                          stamped: an expression change must read as a ~90 ms `- -` blink between the
+//                          old pair and the new (`O O` → `- -` → `u u` on a pause), except the reactions
+//   ORB_TIMELINE=1         one line per display frame through the way into the notch and out of it
+//                          ("timeline <stage> t centre speed scale alpha face"): the approach (an
+//                          ease-out to a staging point 16 pt under the dock — the peak speed and the
+//                          speed at the staging point are the proof of the deceleration), the slip (the
+//                          body rising under the ink over Motion.tuckSlip, scale 1 → 0.55, alpha 1 → 0,
+//                          the notch handed the face at 60%) and the drop (0.6 → 1, clear → solid, the
+//                          hop). With ORB_SHOT_DIR the tuck is shot mid-slip too: notch-tuck-staging (the
+//                          slip's first frame), notch-tuck-slip-mid (~35%), notch-tuck-slip-late (~75%,
+//                          the notch face up under the vanishing body) and notch-drop-early (the drop
+//                          ~20% grown in) — in-process, framed with the notch
+//   ORB_NOTCH_PHASE=name   the awake phase the notch script wakes into at 1.3 s (default listening):
+//                          the peek and island shots in that phase's colour
+//   ORB_NOTCH_HOVER=name   notch mode: draw that island button hovered in the shots (pause|stop|mute;
+//                          "pause" is the transport circle) — the hover lift, for judging it
+//   ORB_NOTCH_PRESSED=name notch mode: draw that island button pressed (the accent fill)
+//   ORB_NOTCH_SHOT_TAG=tag notch mode: the notch shots are named notch-<what>-<tag>.png, so a hover or
+//                          pressed variant sits beside the plain one instead of replacing it. With
+//                          ORB_REDUCE_MOTION=1 the notch's fades, stagger and spring follow the knob
+//                          too (NotchView reads the sim's flag, not NSWorkspace): a true reduced pass
+//   ORB_NOTCH_OPENING_SHOTS=1  notch mode, with ORB_SHOT_DIR: four more shots off the mode flips (from
+//                          `watch()`, 60 Hz — the script's own clock drifts): notch-island-opening-1/-2
+//                          (40–100 ms and 100–180 ms after the island opens: the ink and the content
+//                          mid-way in, the transport ahead of the word ahead of the buttons) and
+//                          notch-island-closing-1/-2 (the same windows into the contraction). The
+//                          content's fade and rise caught in flight; the glyphs must sit at their
+//                          boxes' alpha in every frame
+//   ORB_NOTCH_PHASES=list  with ORB_NOTCH and ORB_SHOT_DIR: after the script's hover (from 4.4 s),
+//                          re-open the island and hold it, then step through these phases
+//                          (comma list; default every awake one) ORB_NOTCH_PHASE_SECONDS apart
+//                          (default 1.1), shooting notch-island-<phase>.png 0.85 s into each — the
+//                          eyes, the dot and the words in every phase colour over the gradient.
+//                          Pass ORB_FLY_AT=99 so the default fly does not drop the blob out first
 //   ORB_PAUSE_AT=s         press Pause at that time (the capsule's / menu's): prints the command; the
 //                          harness flips the fake phase to paused 0.1 s later, and back on a second press
 //   ORB_STOP_AT=s          press the capsule's Stop at that time (OrbPanelController.stopPressed):
@@ -132,6 +176,25 @@ import SwiftUI
 //   ORB_CLEAR_AT=s         send the overlay's `clear` (the brain's show_clear) at that time: a line
 //                          being drawn comes down and the pen goes home quietly — no Stop, no pill;
 //                          a plain fly (ORB_FLY) is left alone. Prints the flight before and after
+//   ORB_SLEEP_AT=s         flip the fake phase to asleep at that time (what the engine sends after a
+//                          Stop, a sleep, the idle timer): the one transition that tucks the blob in.
+//                          Prints the flight / tucked / home / body at the flip, 0.1 s and 1.2 s after.
+//                          Notch mode schedules one by default 2 s after its fly's hover ends
+//   ORB_WAKE_AT=s          flip the fake phase to listening at that time (the wake): a blob left out in
+//                          notch mode drifts back up and tucks in first. Same prints
+//   ORB_SLEEP_PHASE=name   the dormant phase ORB_SLEEP_AT flips to (default asleep; `error` is the other
+//                          one — a failed session — and counts as asleep for the way home: asleep → error
+//                          moves nothing, awake → error tucks, error → listening at ORB_WAKE_AT is a wake)
+//   ORB_DRAG_OUT_AT=s      notch mode: pull the face out of the notch into the hand at CG
+//                          ORB_DRAG_OUT_TO (default 700,400) over 600 ms and let go — free until the
+//                          next sleep (ORB_SLEEP_AT then tucks it in); prints the home mode and the pill.
+//                          The tuck put off, then found again (the mode must read notch at the wake):
+//                            ORB_NOTCH=1 ORB_DRAG_OUT_AT=2 ORB_EXPAND=1 ORB_EXPAND_AT=3.5 ORB_NO_DISMISS=1 ORB_SLEEP_AT=4 ORB_TOGGLE_AT=5.5 ORB_WAKE_AT=7 ORB_FLY_AT=99 ORB_EXIT_AFTER=9
+//                              (capsule open through the sleep beat: closing it at 5.5 s drifts it up asleep)
+//                            ORB_NOTCH=1 ORB_DRAG_OUT_AT=2 ORB_SLEEP_AT=4 ORB_DRAG="644,529->900,650@600" ORB_DRAG_AT=4.2 ORB_WAKE_AT=7 ORB_FLY_AT=99 ORB_EXIT_AFTER=9
+//                              (a drag cancels the sleep beat: the wake at 7 s drifts it up)
+//                            ORB_NOTCH=1 ORB_NOTCH_PHASE=asleep ORB_FLY_AT=2 ORB_SLEEP_AT=5.5 ORB_SLEEP_PHASE=error ORB_WAKE_AT=7 ORB_EXIT_AFTER=9.5
+//                              (a fly while asleep leaves it out; asleep → error moves nothing; error → listening is the wake: it drifts up)
 
 @main
 struct OrbPreviewMain {
@@ -175,12 +238,26 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var strokePublishes = 0
     var strokeSubscription: AnyCancellable?
 
+    // ORB_FACE_LOG: the drawn face, printed as it changes.
+    var faceLog = false
+    var lastFace = ""
+    var lastFaceAt = 0.0
+
     // Notch mode: which notch shots are still owed, and when the blob last dropped out.
     var notchMode = false
+    /// When the fake phase falls asleep (ORB_SLEEP_AT; notch mode's script sets one after its fly).
+    var sleepAt: Double?
+    /// The dormant phase it falls to (ORB_SLEEP_PHASE: asleep, or error).
+    var sleepPhase = Phase.asleep
     var notchShotsOwed: Set<String> = []
+    /// ORB_NOTCH_SHOT_TAG: "-<tag>" appended to every notch shot's name ("" without).
+    var notchShotTag = ""
     var wasTucked = false
     var droppedOutAt = 0.0
     var lastNotchMode = ""
+    /// When the notch's mode last became / stopped being "island" (ORB_NOTCH_OPENING_SHOTS).
+    var notchIslandOpenedAt = -1.0
+    var notchIslandClosedAt = -1.0
 
     var shotDir: String?
     var shotPrefix = "preview-blob-"
@@ -222,10 +299,13 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         let x = Double(env["ORB_X"] ?? "") ?? 200
         let y = Double(env["ORB_Y"] ?? "") ?? 200
         notchMode = env["ORB_NOTCH"] == "1"
+        notchShotTag = env["ORB_NOTCH_SHOT_TAG"].map { "-\($0)" } ?? ""
         if notchMode {
             NotchGeometry.simulate = true
             if env["ORB_PHASES"] == nil { phases = [.asleep] }
         }
+        sleepAt = Double(env["ORB_SLEEP_AT"] ?? "")
+        sleepPhase = Phase(rawValue: env["ORB_SLEEP_PHASE"] ?? "") ?? .asleep
         let perPhase = Double(env["ORB_PHASE_SECONDS"] ?? "") ?? (notchMode ? 60 : 2.5)
         if let list = env["ORB_PHASES"] {
             let parsed = list.split(separator: ",").compactMap { Phase(rawValue: String($0).trimmingCharacters(in: .whitespaces)) }
@@ -335,6 +415,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         orb = OrbPanelController(state: state)
+        orb.previewTimeline = env["ORB_TIMELINE"] == "1"
+        faceLog = env["ORB_FACE_LOG"] == "1"
+        lastFaceAt = CACurrentMediaTime()
         overlay = OverlayManager(state: state)
         overlay.start()
         orb.show()
@@ -345,18 +428,53 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                          orb.previewNotchMode, orb.previewNotchPanelCG.map { "\($0)" } ?? "nil", orb.previewNotchIslandCG.map { "\($0)" } ?? "nil",
                          orb.previewNotchDockCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"))
             wasTucked = orb.previewIsTucked
-            if shotDir != nil { notchShotsOwed = ["tucked", "peek", "island", "drop"] }
+            if shotDir != nil { notchShotsOwed = ["tucked", "peek", "island", "drop", "tuck-staging", "tuck-slip-mid", "tuck-slip-late", "drop-early"] }
+            // ORB_NOTCH_OPENING_SHOTS: the island mid-way through opening and closing, for
+            // judging the content's fade and rise (the glyphs must fade with their boxes).
+            // Shot from `watch()` off the mode flip itself (the script's clock drifts).
+            if shotDir != nil, env["ORB_NOTCH_OPENING_SHOTS"] == "1" {
+                notchShotsOwed.formUnion(["island-opening-1", "island-opening-2", "island-closing-1", "island-closing-2"])
+            }
             // The script: tucked, then awake (peeking), then the island under the pointer, then a fly.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 guard let self else { return }
                 self.notchShot("tucked", note: "asleep, tucked, mode \(self.orb.previewNotchMode)")
             }
+            let awakePhase = Phase(rawValue: env["ORB_NOTCH_PHASE"] ?? "") ?? .listening
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
                 guard let self else { return }
-                self.state.snapshot.phase = .listening
+                self.state.snapshot.phase = awakePhase
                 self.phaseStart = Date()
-                print(self.stamp, "notch: phase -> listening (mode \(self.orb.previewNotchMode))")
+                print(self.stamp, "notch: phase -> \(awakePhase.rawValue) (mode \(self.orb.previewNotchMode))")
                 fflush(stdout)
+            }
+            // ORB_NOTCH_PHASES: the island held open, one phase colour after another.
+            if shotDir != nil, let spec = env["ORB_NOTCH_PHASES"] {
+                let all: [Phase] = [.listening, .speaking, .thinking, .acting, .connecting, .muted, .error, .paused]
+                let list = spec.isEmpty || spec == "1" ? all : spec.split(separator: ",").compactMap { Phase(rawValue: String($0).trimmingCharacters(in: .whitespaces)) }
+                let per = Double(env["ORB_NOTCH_PHASE_SECONDS"] ?? "") ?? 1.1
+                let start = 4.4
+                DispatchQueue.main.asyncAfter(deadline: .now() + start) { [weak self] in
+                    guard let self else { return }
+                    self.orb.previewNotchHover(true)
+                    print(self.stamp, "notch: phases — island held open, mode \(self.orb.previewNotchMode)")
+                    fflush(stdout)
+                }
+                for (i, phase) in list.enumerated() {
+                    let at = start + 0.1 + Double(i) * per
+                    DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                        guard let self else { return }
+                        self.state.snapshot.phase = phase
+                        self.phaseStart = Date()
+                        self.notchShotsOwed.insert("island-\(phase.rawValue)")
+                        print(self.stamp, "notch: phase -> \(phase.rawValue)")
+                        fflush(stdout)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + at + per * 0.77) { [weak self] in
+                        guard let self else { return }
+                        self.notchShot("island-\(phase.rawValue)", note: "\(phase.rawValue), island held open, mode \(self.orb.previewNotchMode)")
+                    }
+                }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 guard let self else { return }
@@ -464,7 +582,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + expandAt) { [weak self] in
                 guard let self else { return }
                 self.orb.toggleExpanded()
-                print("expanded (flight was \(self.lastFlightPhase); goes home on collapse: \(self.orb.previewHomeAfterCollapse))")
+                print("expanded (flight was \(self.lastFlightPhase); stays where it is on collapse: \(self.orb.previewStayAfterCollapse))")
                 fflush(stdout)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + expandAt + 1.2) { [weak self] in
@@ -644,11 +762,16 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             let at = Double(env["ORB_FLY_AT"] ?? "") ?? (notchMode ? 4.6 : 1.2)
             let every = Double(env["ORB_FLY_EVERY"] ?? "") ?? 2.0
             let dwell = Double(env["ORB_FLY_DWELL"] ?? "") ?? 2000
-            // Free mode: the blob stays where it worked (stay) — or, with ORB_FLY_HOME, an
-            // orb.home sends it back to the perch (fly-home); notch mode: it goes home to the notch (notch-return).
+            // Both modes: the blob stays where it worked (stay / notch-stay). A way home is
+            // shot only when one is scheduled: ORB_FLY_HOME's orb.home (fly-home, free mode)
+            // or the sleep transition (notch-return: ORB_SLEEP_AT, on by default in notch mode).
             if shotDir != nil {
-                flyShotsOwed = ["outbound", "hovering", notchMode ? "homing" : "stay"]
-                if !notchMode, env["ORB_FLY_HOME"] == "1" { flyShotsOwed.insert("homing") }
+                flyShotsOwed = ["outbound", "hovering", "stay"]
+                if env["ORB_FLY_HOME"] == "1" || env["ORB_SLEEP_AT"] != nil || notchMode { flyShotsOwed.insert("homing") }
+            }
+            // Notch mode's script: the fly, the hover, the stay — then sleep, and the way up.
+            if notchMode, env["ORB_SLEEP_AT"] == nil, !flyTargets.isEmpty {
+                sleepAt = at + every * Double(flyTargets.count - 1) + dwell / 1000 + 2.0
             }
             for (i, target) in flyTargets.enumerated() {
                 // A ring where the target is, so the shots show the blob parked beside it and not on it.
@@ -749,8 +872,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     self.state.snapshot.phase = was == .paused ? .listening : .paused
                     self.phaseStart = Date()
-                    print(self.stamp, "  -> phase \(self.state.snapshot.phase.rawValue), face [\(self.orb.previewFace)], pill \(self.state.toasts.last?.text ?? "none")")
-                    fflush(stdout)
+                    // The pill is derived on the next turn of the run loop; read it then.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self else { return }
+                        print(self.stamp, "  -> phase \(self.state.snapshot.phase.rawValue), face [\(self.orb.previewFace)], pill \(self.orb.previewPillText ?? "none"), toast \(self.state.toasts.last?.text ?? "none")")
+                        fflush(stdout)
+                    }
                 }
                 if let dir = self.shotDir, was != .paused {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
@@ -780,6 +907,73 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                         self.shoot("\(dir)/\(self.shotPrefix)stop.png", note: "0.45 s after Stop, flight \(self.orb.previewFlightPhase)", extra: self.traceRegion)
                     }
                 }
+            }
+        }
+        // The awake↔asleep transitions, as the engine's phase would deliver them: the
+        // only moves back to the dock. Prints the flight, whether it is tucked and where
+        // the body is at the flip, 0.1 s after (the tuck scheduled, a Stop's shiver) and
+        // 1.2 s after (the way up under way, or tucked in).
+        if let at = sleepAt {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let c = self.orb.previewCenterCG
+                print(self.stamp, String(format: "phase -> %@ (was %@; flight %@, tucked %d, home %@%@, body CG %.0f,%.0f)", self.sleepPhase.rawValue, self.state.snapshot.phase.rawValue,
+                                         self.orb.previewFlightPhase, self.orb.previewIsTucked ? 1 : 0, self.orb.previewHomeMode,
+                                         self.orb.previewFreeForSession ? " (dragged out)" : "", c.x, c.y))
+                fflush(stdout)
+                self.state.snapshot.phase = self.sleepPhase
+                self.phaseStart = Date()
+                for delay in [0.1, 1.2] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self else { return }
+                        let c = self.orb.previewCenterCG
+                        print(self.stamp, String(format: "  -> %.1f s: flight %@, tuck pending %d, tucked %d, home %@, body CG %.0f,%.0f, face [%@]", delay,
+                                                 self.orb.previewFlightPhase, self.orb.previewSleepTuckPending ? 1 : 0, self.orb.previewIsTucked ? 1 : 0,
+                                                 self.orb.previewHomeMode, c.x, c.y, self.orb.previewFace))
+                        fflush(stdout)
+                    }
+                }
+            }
+        }
+        if let at = Double(env["ORB_WAKE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                let c = self.orb.previewCenterCG
+                print(self.stamp, String(format: "phase -> listening (was %@; flight %@, tucked %d, home %@%@, body CG %.0f,%.0f)", self.state.snapshot.phase.rawValue,
+                                         self.orb.previewFlightPhase, self.orb.previewIsTucked ? 1 : 0, self.orb.previewHomeMode,
+                                         self.orb.previewFreeForSession ? " (dragged out)" : "", c.x, c.y))
+                fflush(stdout)
+                self.state.snapshot.phase = .listening
+                self.phaseStart = Date()
+                for delay in [0.1, 1.2] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self else { return }
+                        let c = self.orb.previewCenterCG
+                        print(self.stamp, String(format: "  -> %.1f s: flight %@, tucked %d, home %@, body CG %.0f,%.0f", delay, self.orb.previewFlightPhase,
+                                                 self.orb.previewIsTucked ? 1 : 0, self.orb.previewHomeMode, c.x, c.y))
+                        fflush(stdout)
+                    }
+                }
+            }
+        }
+        if let spec = env["ORB_DRAG_OUT_AT"], let at = Double(spec) {
+            // Kevin pulls the face out of the notch into his hand (CG ORB_DRAG_OUT_TO, default
+            // 700,400) and lets go: free until the next sleep; the pill offers the way back.
+            let to = (env["ORB_DRAG_OUT_TO"] ?? "700,400").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            let hand = to.count == 2 ? CGPoint(x: to[0], y: to[1]) : CGPoint(x: 700, y: 400)
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self, let dock = self.orb.previewNotchDockCG else { return }
+                print(self.stamp, String(format: "drag out of the notch -> CG %.0f,%.0f (tucked %d)", hand.x, hand.y, self.orb.previewIsTucked ? 1 : 0))
+                fflush(stdout)
+                self.orb.previewDragOutOfNotch(at: CGPoint(x: dock.x, y: dock.y + 20))
+                self.orb.previewDrag(from: CGPoint(x: dock.x, y: dock.y + 20), to: hand, ms: 600, done: { [weak self] in
+                    guard let self else { return }
+                    let c = self.orb.previewCenterCG
+                    print(self.stamp, String(format: "  -> let go: home %@%@, tucked %d, body CG %.0f,%.0f, pill %@", self.orb.previewHomeMode,
+                                             self.orb.previewFreeForSession ? " (dragged out)" : "", self.orb.previewIsTucked ? 1 : 0, c.x, c.y,
+                                             self.orb.previewPillText ?? "none"))
+                    fflush(stdout)
+                })
             }
         }
         if env["ORB_OVERLAY"] == "1" {
@@ -1048,6 +1242,15 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         let moving = orb.previewIsMoving
         let frame = orb.previewFrameCG
         let phase = orb.previewFlightPhase
+        if faceLog {
+            let face = orb.previewFace
+            if face != lastFace {
+                print(stamp, String(format: "face: [%@] -> [%@] after %.0f ms", lastFace, face, (now - lastFaceAt) * 1000))
+                fflush(stdout)
+                lastFace = face
+                lastFaceAt = now
+            }
+        }
         if phase != lastFlightPhase {
             print(stamp, String(format: "flight: %@ -> %@ at CG %.0f,%.0f speed %.0f ghosts %d", lastFlightPhase, phase, frame.midX, frame.midY,
                          orb.previewBodySpeed, orb.previewGhostFrames.count))
@@ -1066,8 +1269,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     }
                     let c = self.orb.previewCenterCG
                     self.perchMarker = self.orb.previewPerchCG
-                    self.shoot("\(dir)/\(self.shotPrefix)stay.png", note: String(format: "stayed at CG %.0f,%.0f, moving %d, perch %@", c.x, c.y, self.orb.previewIsMoving ? 1 : 0,
-                                                                                    self.orb.previewPerchCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"), extra: extra)
+                    // Notch mode: the notch panel in frame too, empty — the blob stayed out.
+                    if self.notchMode, let np = self.orb.previewNotchPanelCG { extra = extra.map { $0.union(np) } ?? np }
+                    self.shoot("\(dir)/\(self.shotPrefix)\(self.notchMode ? "notch-stay" : "stay").png",
+                               note: String(format: "stayed at CG %.0f,%.0f, moving %d, home %@, tucked %d, perch %@", c.x, c.y, self.orb.previewIsMoving ? 1 : 0,
+                                            self.orb.previewHomeMode, self.orb.previewIsTucked ? 1 : 0,
+                                            self.orb.previewPerchCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"), extra: extra)
                     self.perchMarker = nil
                 }
             }
@@ -1078,15 +1285,48 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             let tucked = orb.previewIsTucked
             let mode = orb.previewNotchMode
             if tucked != wasTucked {
-                print(stamp, String(format: "notch: %@ (flight %@, body CG %.0f,%.0f)", tucked ? "tucked in" : "dropped out", phase, orb.previewCenterCG.x, orb.previewCenterCG.y))
+                print(stamp, String(format: "notch: %@ (flight %@, body CG %.0f,%.0f%@)", tucked ? "tucked in" : "dropped out", phase, orb.previewCenterCG.x, orb.previewCenterCG.y,
+                                    tucked ? String(format: ", peak approach speed %.0f pt/s", orb.previewTimelinePeakSpeed) : ""))
                 fflush(stdout)
                 if !tucked { droppedOutAt = now }
                 wasTucked = tucked
             }
+            // The slip into the notch, mid-way: the body shrinking and fading under the ink
+            // as the notch face comes up — framed with the notch. And the drop's first beat.
+            let slipKind = orb.previewSlipKind, slipU = orb.previewSlipProgress
+            if slipKind == "tuck" || slipKind == "drop" {
+                var region = orb.previewFrameCG.insetBy(dx: -60, dy: -40)
+                if let p = orb.previewNotchPanelCG { region = region.union(p) }
+                let note = String(format: "%@ %.0f%%, body CG %.0f,%.0f, scale %.2f, alpha %.2f, notch mode %@, face [%@]", slipKind, slipU * 100,
+                                  orb.previewCenterCG.x, orb.previewCenterCG.y, orb.previewScale, orb.previewAlpha, mode, orb.previewFace)
+                var name: String?
+                if slipKind == "tuck" {
+                    if notchShotsOwed.contains("tuck-staging"), slipU < 0.12 { name = "tuck-staging" }
+                    else if notchShotsOwed.contains("tuck-slip-mid"), slipU >= 0.3, slipU < 0.5 { name = "tuck-slip-mid" }
+                    else if notchShotsOwed.contains("tuck-slip-late"), slipU >= 0.68, slipU < 0.9 { name = "tuck-slip-late" }
+                } else if notchShotsOwed.contains("drop-early"), slipU >= 0.12, slipU < 0.4 {
+                    name = "drop-early"
+                }
+                if let name, let dir = shotDir {
+                    notchShotsOwed.remove(name)
+                    shoot("\(dir)/\(shotPrefix)notch-\(name).png", note: note, region: region, inProcess: true)
+                }
+            }
             if mode != lastNotchMode {
                 print(stamp, "notch: mode \(lastNotchMode.isEmpty ? "-" : lastNotchMode) -> \(mode), island CG \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil")")
                 fflush(stdout)
+                if mode == "island" { notchIslandOpenedAt = now } else if lastNotchMode == "island" { notchIslandClosedAt = now }
                 lastNotchMode = mode
+            }
+            // ORB_NOTCH_OPENING_SHOTS: the content caught mid-fade — two frames into the
+            // open (the transport ahead of the word ahead of the buttons: the stagger) and
+            // two into the close (everything leaving together on Motion.quick).
+            for (kind, at) in [("opening", notchIslandOpenedAt), ("closing", notchIslandClosedAt)] where at > 0 {
+                let dt = now - at
+                let name = dt >= 0.04 && dt < 0.10 ? "island-\(kind)-1" : dt >= 0.10 && dt < 0.18 ? "island-\(kind)-2" : nil
+                if let name, notchShotsOwed.contains(name) {
+                    notchShot(name, note: String(format: "%.0f ms into the %@, mode %@", dt * 1000, kind, mode))
+                }
             }
             // The hop out: the body under the notch, just after the drop, before the spring has it.
             if notchShotsOwed.contains("drop"), !tucked, phase == "outbound", now - droppedOutAt > 0.14, now - droppedOutAt < 0.6 {
@@ -1284,7 +1524,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
         flyShotsOwed.remove(phase)
         lastShotAt = now
-        shoot("\(dir)/\(shotPrefix)\(name).png", note: String(format: "%@, speed %.0f, %d ghosts", phase, speed, ghosts.count), extra: extra)
+        // The face at the shot instant, drawn glyphs and lids: a quiet drift to bed must read `- -`, not a startled `O O`.
+        shoot("\(dir)/\(shotPrefix)\(name).png", note: String(format: "%@, speed %.0f, %d ghosts, face [%@], eyes [%@]", phase, speed, ghosts.count, orb.previewFace, orb.previewEyes), extra: extra)
         return true
     }
 
@@ -1299,7 +1540,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         guard let dir = shotDir, notchShotsOwed.contains(name), let panel = orb.previewNotchPanelCG else { return }
         notchShotsOwed.remove(name)
         let region = CGRect(x: panel.minX - 40, y: 0, width: panel.width + 80, height: panel.maxY + 30)
-        shoot("\(dir)/\(shotPrefix)notch-\(name).png", note: note + ", island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), face [\(orb.previewFace)]", region: region, inProcess: true)
+        shoot("\(dir)/\(shotPrefix)notch-\(name)\(notchShotTag).png", note: note + ", island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), face [\(orb.previewFace)]", region: region, inProcess: true)
     }
 
     /// Freeze everything, capture the panel plus a margin of desktop, let go.

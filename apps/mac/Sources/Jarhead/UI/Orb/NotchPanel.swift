@@ -15,16 +15,28 @@ import QuartzCore
 //   peeking  awake: a 26 pt island hanging under the notch, the face centred, widening
 //            by up to 30 pt and pulsing with the audio while listening or speaking,
 //            the phase colour as a hairline along its bottom edge, never a wash.
-//   island   hover (or the capsule toggle): ~360×92, sprung open over ~180 ms — the
-//            face left, the phase word and the last transcript line centre, and the
-//            Pause / Stop / Mute micro-buttons right; contracts 600 ms after the
-//            pointer leaves. A global mouse-moved monitor (no Accessibility grant
-//            needed) sees the pointer approach while the island is small.
+//            The island body carries the app icon's dithered orb gradient (NotchInk.swift
+//            over UI/Dither.swift), pooling out of the pure-black notch — unmistakably
+//            the orb's colour even in this strip, the eyes on their ground under-copy.
+//   island   hover (or the capsule toggle): ~360×92, sprung open (`Motion.island`) —
+//            the face left; then the transport as a 22 pt circle (a hairline ring in the
+//            phase colour, a solid play / pause / ellipsis), the phase word right after
+//            it and the last transcript line under the word; Stop and Mute as square
+//            hairline boxes at the right (Mute dimmed and dead outside a session). The
+//            content fades in and rises a few points with a ≤ 40 ms stagger as the island
+//            opens and fades on close (none of the rise or stagger under Reduce Motion);
+//            it contracts 600 ms after the pointer leaves. A global mouse-moved monitor
+//            (no Accessibility grant needed) sees the pointer approach while the island
+//            is small. Its top corners are generously rounded where it hangs from the
+//            bar, with concave fillets into the notch's column (NotchInk.shape).
 //
 // Geometry comes from NSScreen (`auxiliaryTopLeftArea` / `auxiliaryTopRightArea`:
 // the notch is the gap between them; on Kevin's 14" it is x 771…956, 185×32 pt, under
-// a 33 pt menu bar) and is recomputed on every screen change. Without a notch on the
-// main display the dock reports no geometry and the controller falls back to free mode.
+// a 33 pt menu bar) on whichever display has one — the built-in, main or not — and is
+// recomputed on every screen change. With no notch on any display (the lid closed) the
+// dock reports no geometry and the controller falls back to free mode.
+//
+// Every duration, curve and spring here is `Motion`'s (UI/Motion.swift).
 
 // MARK: - Geometry
 
@@ -60,18 +72,23 @@ struct NotchGeometry: Equatable {
     /// on the main display whether or not the hardware has one.
     nonisolated(unsafe) static var simulate = false
 
-    /// The main display's notch, or nil when it has none (an external display as main,
-    /// the lid closed). "Main" is the display with the menu bar: `NSScreen.screens.first`.
+    /// The notch, on whichever connected display has one (`auxiliaryTopLeftArea` /
+    /// `auxiliaryTopRightArea` are set only on such a screen) — the built-in display
+    /// whether or not it is the main one, so the panel, the dock and the drop points sit
+    /// on it even when an external display carries the menu bar. Nil when no display
+    /// has a notch (the lid closed, a desktop Mac), or the simulated one on the main
+    /// display for the harness.
     @MainActor
     static func current() -> NotchGeometry? {
-        guard let screen = NSScreen.screens.first else { return nil }
-        let frame = screen.frame
-        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+        for screen in NSScreen.screens {
+            guard let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { continue }
+            let frame = screen.frame
             let notch = NSRect(x: left.maxX, y: left.minY, width: right.minX - left.maxX, height: frame.maxY - left.minY)
-            guard notch.width > 20, notch.height > 8 else { return simulated(on: screen) }
+            guard notch.width > 20, notch.height > 8 else { continue }
             return NotchGeometry(notch: notch, menuBarBottom: menuBarBottom(of: screen, notchHeight: notch.height), screen: frame)
         }
-        return simulated(on: screen)
+        guard let main = NSScreen.screens.first else { return nil }
+        return simulated(on: main)
     }
 
     private static func simulated(on screen: NSScreen) -> NotchGeometry? {
@@ -81,8 +98,10 @@ struct NotchGeometry: Equatable {
         return NotchGeometry(notch: notch, menuBarBottom: menuBarBottom(of: screen, notchHeight: 32), screen: frame)
     }
 
-    /// The menu bar's bottom: `visibleFrame.maxY` while a menu bar is showing; with the
-    /// menu bar hidden the island hangs straight from the notch.
+    /// The menu bar's bottom on the notch's display: `visibleFrame.maxY` while a menu
+    /// bar is showing there; with none (the menu bar hidden, or a secondary display
+    /// without one — `visibleFrame.maxY == frame.maxY`) the island hangs straight from
+    /// the notch, a notch's height under the top edge.
     private static func menuBarBottom(of screen: NSScreen, notchHeight: CGFloat) -> CGFloat {
         let frame = screen.frame
         let bar = frame.maxY - screen.visibleFrame.maxY
@@ -112,6 +131,16 @@ final class NotchDock {
     private var pointerNear = false
 
     /// The blob is in the notch: the face shows and the sim is stepped from here.
+    ///
+    /// The hand-off is a crossfade, not a pop: flipping this fades the notch's face,
+    /// gradient, hairline and the island's content (glyphs included) in or out over
+    /// `Motion.base` (the ink itself grows or shrinks on `Motion.island`). Contract with
+    /// the blob's tuck (OrbPanelController,
+    /// the body slipping up into the notch scaled and fading): the controller sets
+    /// `parked = true` at about 60 % of that slip, so this fade-in overlaps the last
+    /// 40 % of the vanishing body and there is always one face on screen; on the drop
+    /// out it sets `parked = false` as the body appears under the ink, and the notch's
+    /// face fades while the body's comes on. Nothing here waits for the other panel.
     var parked = false {
         didSet {
             guard parked != oldValue else { return }
@@ -138,6 +167,7 @@ final class NotchDock {
     }
 
     // Actions, wired by the controller.
+    /// The transport (the circle): the controller routes it to `AppState.transportToggle`.
     var togglePause: () -> Void = {}
     var stop: () -> Void = {}
     var toggleMute: () -> Void = {}
@@ -148,6 +178,8 @@ final class NotchDock {
 
     init(sim: BlobSim, geometry: NotchGeometry) {
         self.geometry = geometry
+        // The gradient's blue-noise tile, on the render queue before the first island asks.
+        NotchInk.prewarm()
         let frame = geometry.panelFrame
         panel = NotchPanel(contentRect: frame, styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView], backing: .buffered, defer: false)
         view = NotchView(frame: NSRect(origin: .zero, size: frame.size), sim: sim)
@@ -273,6 +305,11 @@ final class NotchDock {
     /// opens it; leaving the open island (with slop) starts the 600 ms contraction.
     /// Either way the panel takes the mouse only while the pointer is about the island.
     private func pointer(at p: NSPoint) {
+        #if JARHEAD_ORB_PREVIEW
+        // The harness's shots are scripted (`previewHover`); Kevin's own pointer, which
+        // may well be sitting under the notch, must not open the island in them.
+        if Self.previewIgnoresPointer { return }
+        #endif
         guard parked else { pointerNear = false; refreshMouseAcceptance(); return }
         let island = view.islandScreenRect(in: panel)
         // Approach: within 8 pt of the small island, or in the menu bar over the notch.
@@ -307,6 +344,12 @@ final class NotchDock {
     }
 
     #if JARHEAD_ORB_PREVIEW
+    /// ORB_NOTCH_NO_POINTER=1: the real pointer never opens or closes the island.
+    nonisolated(unsafe) static var previewIgnoresPointer = ProcessInfo.processInfo.environment["ORB_NOTCH_NO_POINTER"] == "1"
+    /// ORB_NOTCH_HOVER / ORB_NOTCH_PRESSED = pause|stop|mute: draw that island button as
+    /// hovered / pressed in the harness's shots (the hover lift, the accent press fill).
+    nonisolated(unsafe) static var previewHoveredButton = ProcessInfo.processInfo.environment["ORB_NOTCH_HOVER"]
+    nonisolated(unsafe) static var previewPressedButton = ProcessInfo.processInfo.environment["ORB_NOTCH_PRESSED"]
     /// Pretend the pointer approached (or left) the island.
     func previewHover(_ over: Bool) { pointer(over: over) }
     var previewMode: String { mode.rawValue }
@@ -356,12 +399,22 @@ final class NotchPanel: NSPanel {
 /// this one steps the shared `BlobSim` (at the sim's own cadence) and animates the
 /// island's spring. Flipped: y down, like the field.
 @MainActor
-final class NotchView: NSView {
+final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
+    /// The island's controls. `.pause` is the transport — the circle: Go while asleep,
+    /// in error or paused, Pause in a session, a stop while connecting (the dock's
+    /// `togglePause` → `AppState.transportToggle` decides).
     enum Press { case pause, stop, mute, face }
 
     private let sim: BlobSim
     var geometry: NotchGeometry? { didSet { needsDisplay = true } }
-    var parked = false { didSet { needsDisplay = true } }
+    /// See `NotchDock.parked`: the face crossfades over `Motion.base` on a flip.
+    var parked = false {
+        didSet {
+            guard parked != oldValue else { return }
+            parkedChangedAt = window == nil ? -1 : CACurrentMediaTime()
+            needsDisplay = true
+        }
+    }
     var gatePill: OrbPill? { didSet { needsDisplay = true } }
     var onPress: ((Press) -> Void)?
     var onDragOut: ((CGPoint) -> Void)?
@@ -384,16 +437,54 @@ final class NotchView: NSView {
     private var dragging = false
     private var tracking: NSTrackingArea?
 
-    /// A critically-ish damped spring: ~180 ms to settle with a hint of overshoot.
+    // The time-based fades (CACurrentMediaTime; < 0 = never / snapped).
+    /// When `parked` last flipped: the face crossfades from here over `Motion.base`.
+    private var parkedChangedAt = -1.0
+    /// The island's content is wanted (parked and the mode is island).
+    private var contentShown = false
+    /// When the content began appearing / leaving.
+    private var contentOpenedAt = -1.0
+    private var contentClosedAt = -1.0
+    /// The button whose press is still glowing accent, and when it was released.
+    private var flashPress: Press?
+    private var flashAt = -1.0
+    /// The transport circle's diameter.
+    static let transportDiameter: CGFloat = 22
+
+    /// Reduce Motion, from the one flag the controller keeps in step with the system
+    /// setting (`BlobSim.reducedMotion`; the harness's ORB_REDUCE_MOTION sets the same
+    /// flag), so the fades, the stagger and the spring agree with the face's own
+    /// stillness — never half from `Motion.reduced` and half from the sim.
+    private var reduced: Bool { sim.reducedMotion }
+    /// `Motion.seconds` on that flag: durations halve under Reduce Motion.
+    private func seconds(_ d: Double) -> Double { reduced ? d / 2 : d }
+    /// `Motion.island`; critically damped under Reduce Motion (its stiffness, no overshoot).
+    private var islandSpring: Motion.SpringSpec { reduced ? .of(stiffness: Motion.island.stiffness, ratio: 1) : Motion.island }
+
+    /// The island's symbols, tinted once per (name, size, tint): three a frame while the
+    /// island is open would otherwise be three fresh images a frame.
+    private static var symbolCache: [String: NSImage] = [:]
+
+    /// A solid SF Symbol at `pointSize` (semibold) in `tint` (white at some alpha), cached.
+    private static func symbol(_ name: String, pointSize: CGFloat, tint: NSColor) -> NSImage? {
+        let key = "\(name)|\(pointSize)|\(tint.alphaComponent)"
+        if let hit = symbolCache[key] { return hit }
+        guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: pointSize, weight: .semibold)) else { return nil }
+        let tinted = img.tinted(tint)
+        symbolCache[key] = tinted
+        return tinted
+    }
+
+    /// A display-link spring on `Motion.island` (critically damped under Reduce Motion:
+    /// the island still grows and shrinks, without the overshoot).
     private struct Spring {
         var value: Double
         var target: Double
         var velocity = 0.0
         init(value: Double) { self.value = value; target = value }
-        static let stiffness = 520.0
-        static let damping = 2 * (520.0).squareRoot() * 0.78
-        mutating func step(_ dt: Double) {
-            let a = Self.stiffness * (target - value) - Self.damping * velocity
+        mutating func step(_ dt: Double, _ spec: Motion.SpringSpec) {
+            let a = spec.stiffness * (target - value) - spec.damping * velocity
             velocity += a * dt
             value += velocity * dt
         }
@@ -410,14 +501,21 @@ final class NotchView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Jarhead, in the notch")
+        NotchInk.Cache.shared.addObserver(self)
     }
 
     required init?(coder: NSCoder) { fatalError("NotchView is code-only") }
+
+    /// A gradient image landed (rendered in the background): draw it.
+    func notchInkRendered() { wake() }
 
     override var isFlipped: Bool { true }
 
     /// Awake: the phase is not asleep (the gate faces belong to the tucked lip).
     var awake: Bool { sim.phase != .asleep }
+
+    /// Mute has something to mute only with a session open (`AppState.inSessionPhases`).
+    private var muteEnabled: Bool { AppState.inSessionPhases.contains(sim.phase) }
 
     // MARK: geometry
 
@@ -441,6 +539,13 @@ final class NotchView: NSView {
         return NSRect(x: n.midX - w / 2, y: barBottom, width: w, height: h)
     }
 
+    /// The open island's rect (view coordinates): the content is laid out in it and
+    /// revealed by the ink as the spring opens, so nothing re-truncates or slides.
+    private var islandOpenRect: NSRect {
+        let n = notchRect
+        return NSRect(x: n.midX - NotchGeometry.islandWidth / 2, y: barBottom, width: NotchGeometry.islandWidth, height: NotchGeometry.islandHeight)
+    }
+
     /// The island in screen coordinates (AppKit), for the pointer.
     func islandScreenRect(in panel: NSWindow) -> NSRect {
         let r = islandRect
@@ -448,8 +553,9 @@ final class NotchView: NSView {
         return NSRect(x: f.minX + r.minX, y: f.maxY - r.maxY, width: r.width, height: r.height)
     }
 
-    /// Set the island's size for a mode, sprung (or snapped under reduce motion). With
-    /// the blob out (not parked) the island shrinks away to nothing: it left.
+    /// Set the island's size for a mode, sprung (or snapped when not animated). With
+    /// the blob out (not parked) the island shrinks away to nothing: it left. The
+    /// content's fade clock starts here.
     func setMode(_ m: NotchDock.Mode, animated: Bool) {
         mode = m
         let n = geometry?.notch.width ?? 185
@@ -473,7 +579,16 @@ final class NotchView: NSView {
                 openSpring.target = 1
             }
         }
-        if !animated || sim.reducedMotion {
+        let wantsContent = parked && m == .island
+        if wantsContent != contentShown {
+            contentShown = wantsContent
+            if animated, window != nil {
+                if wantsContent { contentOpenedAt = CACurrentMediaTime() } else { contentClosedAt = CACurrentMediaTime() }
+            } else {
+                contentOpenedAt = -1; contentClosedAt = -1
+            }
+        }
+        if !animated {
             widthSpring.snap(); heightSpring.snap(); openSpring.snap()
         }
         if m != .island { hoveredButton = nil }
@@ -488,6 +603,7 @@ final class NotchView: NSView {
         let t = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
         addTrackingArea(t)
         tracking = t
+        installToolTip()
         guard window != nil, link == nil else { return }
         let l = displayLink(target: self, selector: #selector(onFrame(_:)))
         l.add(to: .main, forMode: .common)
@@ -509,7 +625,19 @@ final class NotchView: NSView {
         lastTick = 0
     }
 
-    private var animating: Bool { !(widthSpring.settled && heightSpring.settled && openSpring.settled) }
+    private var springsSettled: Bool { widthSpring.settled && heightSpring.settled && openSpring.settled }
+
+    /// Something time-based is mid-flight: the springs, a crossfade, the content's
+    /// stagger, a press glow.
+    private func isAnimating(_ now: Double) -> Bool {
+        if !springsSettled { return true }
+        let base = seconds(Motion.base)
+        if parkedChangedAt >= 0, now - parkedChangedAt < base { return true }
+        if contentShown, contentOpenedAt >= 0, now - contentOpenedAt < base + 3 * Motion.stagger { return true }
+        if !contentShown, contentClosedAt >= 0, now - contentClosedAt < seconds(Motion.quick) { return true }
+        if flashPress != nil, now - flashAt < base { return true }
+        return false
+    }
 
     @objc private func onFrame(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
@@ -522,23 +650,22 @@ final class NotchView: NSView {
         if parked, mode == .peek, let n = geometry?.notch.width {
             widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * sim.islandLevel)
         }
-        if animating {
+        if !springsSettled {
             let step = min(dt, 1.0 / 30)
-            widthSpring.step(step); heightSpring.step(step); openSpring.step(step)
-            if !animating { widthSpring.snap(); heightSpring.snap(); openSpring.snap() }
+            let spec = islandSpring
+            widthSpring.step(step, spec); heightSpring.step(step, spec); openSpring.step(step, spec)
+            if springsSettled { widthSpring.snap(); heightSpring.snap(); openSpring.snap() }
         }
+        let animating = isAnimating(now)
         // The shared sim is stepped here only while the blob is parked (the field's
         // own link is paused then); at the sim's cadence, so a parked blob costs what
         // a resting blob costs.
         let wantRate = animating ? 60.0 : (parked ? max(10, sim.desiredFPS) : 10)
-        var rendered = false
         if now - lastRender >= 1 / wantRate - 0.002 {
             if parked { sim.step(now - max(lastRender, now - 0.1)) }
             lastRender = now
             needsDisplay = true
-            rendered = true
         }
-        _ = rendered
         let busy = animating || (parked && !sim.isStatic) || (parked && sim.rawLevelsActive)
         if busy {
             idleSince = -1
@@ -550,56 +677,143 @@ final class NotchView: NSView {
         }
     }
 
+    // MARK: fades
+
+    /// How present the notch's face is: 1 parked, 0 out, crossfading over `Motion.base`
+    /// (`Motion.easeOut` in, `Motion.easeIn` out) from the last flip.
+    private func parkLevel(_ now: Double) -> CGFloat {
+        guard parkedChangedAt >= 0 else { return parked ? 1 : 0 }
+        let t = min(1, max(0, (now - parkedChangedAt) / seconds(Motion.base)))
+        return CGFloat(parked ? Motion.easeOutCurve.value(at: t) : 1 - Motion.easeInCurve.value(at: t))
+    }
+
+    /// The island content's element `i` (0 the transport, 1 the phase word, 2 the last
+    /// line, 3 the buttons): its alpha and rise (pt, + is down) this frame — appearing
+    /// over `Motion.base` on `Motion.easeOut`, from 6 pt below, `Motion.stagger` after
+    /// the one before (a plain fade, together, under Reduce Motion); leaving over
+    /// `Motion.quick` on `Motion.easeIn`, drifting 4 pt up into the bar. Nil: not drawn.
+    private func contentAppearance(_ i: Int, now: Double) -> (alpha: CGFloat, dy: CGFloat)? {
+        if contentShown {
+            guard contentOpenedAt >= 0 else { return (1, 0) }
+            let delay = reduced ? 0 : Double(i) * Motion.stagger
+            let t = min(1, max(0, (now - contentOpenedAt - delay) / seconds(Motion.base)))
+            let e = Motion.easeOutCurve.value(at: t)
+            return (CGFloat(e), reduced ? 0 : CGFloat(6 * (1 - e)))
+        }
+        guard contentClosedAt >= 0 else { return nil }
+        let t = min(1, max(0, (now - contentClosedAt) / seconds(Motion.quick)))
+        if t >= 1 { return nil }
+        let e = Motion.easeInCurve.value(at: t)
+        return (CGFloat(1 - e), reduced ? 0 : CGFloat(-4 * e))
+    }
+
+    /// The accent left on a button after its press: full at the release, gone
+    /// `Motion.base` later on `Motion.easeIn` (held, then let go).
+    private func flashLevel(_ which: Press, now: Double) -> CGFloat {
+        guard flashPress == which, flashAt >= 0 else { return 0 }
+        let t = min(1, max(0, (now - flashAt) / seconds(Motion.base)))
+        return CGFloat(1 - Motion.easeInCurve.value(at: t))
+    }
+
     // MARK: drawing
+
+    /// The face's place this frame: sliding from the island's centre (tucked, peek) to
+    /// its left end (island) with `open`, growing a little on the way.
+    private struct FaceLayout {
+        let centre: CGPoint
+        let size: Double
+        let gap: CGFloat
+        /// Where the face ends, for what follows it.
+        var right: CGFloat { centre.x + gap / 2 + CGFloat(size) * 0.6 }
+    }
+
+    private func faceLayout(island: NSRect, open: CGFloat, lipFace: Bool) -> FaceLayout {
+        let size = (lipFace ? BlobSim.eyeSizePt * 0.85 : BlobSim.eyeSizePt) * Double(1 + 0.45 * open)
+        let gap = CGFloat(size) * 0.95
+        let x = island.minX + (island.width / 2) * (1 - open) + (14 + gap + 10) * open
+        let y = island.minY + island.height / 2 + (lipFace ? -1 : 0)
+        return FaceLayout(centre: CGPoint(x: x, y: y), size: size, gap: gap)
+    }
+
+    /// The open island's content, laid out in `island` (the open rect): the transport
+    /// circle after the face, the phase word right after it with the last line under
+    /// the word, Stop and Mute at the right.
+    private struct ContentLayout {
+        let transport: NSRect
+        let word: NSRect
+        let line: NSRect
+        let stop: NSRect
+        let mute: NSRect
+    }
+
+    private func contentLayout(in island: NSRect) -> ContentLayout {
+        let face = faceLayout(island: island, open: 1, lipFace: false)
+        let d = Self.transportDiameter
+        let transport = NSRect(x: face.right + 6, y: island.minY + 25, width: d, height: d)
+        let w: CGFloat = 26, h: CGFloat = 24, gap: CGFloat = 6
+        let by = island.midY - h / 2
+        let mute = NSRect(x: island.maxX - 14 - w, y: by, width: w, height: h)
+        let stop = NSRect(x: mute.minX - gap - w, y: by, width: w, height: h)
+        let textLeft = transport.maxX + 8
+        let width = max(20, stop.minX - 12 - textLeft)
+        let word = NSRect(x: textLeft, y: island.minY + 27, width: width, height: 18)
+        let line = NSRect(x: textLeft, y: island.minY + 49, width: width, height: 16)
+        return ContentLayout(transport: transport, word: word, line: line, stop: stop, mute: mute)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let cg = NSGraphicsContext.current?.cgContext, geometry != nil else { return }
+        let now = CACurrentMediaTime()
         let n = notchRect
-        let island = islandRect
         let open = CGFloat(min(1, max(0, openSpring.value)))
+        let scale = window?.backingScaleFactor ?? 2
 
-        // The ink, one shape from the bezel down: the hardware notch, pure black
-        // (nothing lives behind it), its column through the menu bar band, and the
-        // island hanging from the bar's bottom edge. The island's bottom corners are
-        // the notch's radius. Where the island is wider than the notch the join is a
-        // concave fillet either side — the ink curving inward from the notch's side out
-        // onto the island's top, the way the Dynamic Island grows out of the bezel — so
-        // the island reads as the notch grown, not a pill hung under the bar with
-        // shoulders and the bar showing above them. An island the notch's width joins
-        // square, and its outer top corners are square too: they meet the bar's edge.
+        // The ink, one shape from the bezel down (`NotchInk.shape`): the hardware notch,
+        // pure black (nothing lives behind it), its column through the menu bar band,
+        // concave fillets curving out of the column onto the island's top edge, the
+        // island's convex rounded top corners where it hangs from the bar, and the
+        // notch's radius on its bottom corners — the notch grown into an island, not a
+        // rectangle hung under the bar. Radii follow the island's size each frame, so
+        // the spring never kinks; at the notch's width it is the column with rounded
+        // bottom corners. Snapped to device pixels: no seam against the real notch.
+        let shape = NotchInk.shape(column: n.minX...n.maxX, island: islandRect, scale: scale)
+        let island = shape.island
         cg.setFillColor(CGColor(gray: 0, alpha: 1))
-        if island.height < 1 {
-            cg.fill(n)
-        } else {
-            let r = min(NotchGeometry.radius, island.height / 2)
-            let topR = min(NotchGeometry.radius, max(0, (island.width - n.width) / 2), max(0, island.minY))
-            let x0 = island.minX, x1 = island.maxX, y0 = island.minY, y1 = island.maxY
-            let path = CGMutablePath()
-            path.move(to: CGPoint(x: n.minX, y: 0))
-            if topR > 0.5 {
-                path.addLine(to: CGPoint(x: n.minX, y: y0 - topR))
-                path.addArc(tangent1End: CGPoint(x: n.minX, y: y0), tangent2End: CGPoint(x: n.minX - topR, y: y0), radius: topR)
-            } else {
-                path.addLine(to: CGPoint(x: n.minX, y: y0))
-            }
-            path.addLine(to: CGPoint(x: x0, y: y0))
-            path.addLine(to: CGPoint(x: x0, y: y1 - r))
-            path.addArc(tangent1End: CGPoint(x: x0, y: y1), tangent2End: CGPoint(x: x0 + r, y: y1), radius: r)
-            path.addLine(to: CGPoint(x: x1 - r, y: y1))
-            path.addArc(tangent1End: CGPoint(x: x1, y: y1), tangent2End: CGPoint(x: x1, y: y1 - r), radius: r)
-            path.addLine(to: CGPoint(x: x1, y: y0))
-            if topR > 0.5 {
-                path.addLine(to: CGPoint(x: n.maxX + topR, y: y0))
-                path.addArc(tangent1End: CGPoint(x: n.maxX, y: y0), tangent2End: CGPoint(x: n.maxX, y: y0 - topR), radius: topR)
-            } else {
-                path.addLine(to: CGPoint(x: n.maxX, y: y0))
-            }
-            path.addLine(to: CGPoint(x: n.maxX, y: 0))
-            path.closeSubpath()
-            cg.addPath(path)
-            cg.fillPath()
+        cg.addPath(shape.path)
+        cg.fillPath()
+        let park = parkLevel(now)
+        guard park > 0.005, island.height >= 1 else { return }
+
+        // Everything on the island is clipped to the ink and fades with the park level:
+        // the hand-off with the body is a crossfade, and a shrinking island never shows
+        // a face outside its ink.
+        cg.saveGState()
+        cg.addPath(shape.path)
+        cg.clip()
+
+        // The orb's gradient pooling out of the notch, clipped to the island (the column
+        // and the band through the menu bar stay black), drawn at the mode's intensity:
+        // a breath of it along the tucked lip, unmistakably in the peek, fully on the
+        // island. The image is the island's size rounded up to 2 pt, centred on it, its
+        // top at the island's, the excess clipped: the dither stays 1:1. Until this size
+        // has rendered (in the background) the nearest rendered one is stretched over it,
+        // and `notchInkRendered` redraws when the exact one lands.
+        let breath = 0.5 + 0.5 * sin(2 * .pi * sim.time / BlobSim.breathPeriod)
+        let level = gradientLevel(height: island.height, open: open, breath: sim.reducedMotion ? 0.5 : breath)
+        if level > 0.005, let g = geometry,
+           let gradient = NotchInk.gradient(size: island.size, notchWidth: g.notch.width, scale: scale) {
+            cg.saveGState()
+            cg.clip(to: island)
+            cg.setAlpha(level * park)
+            cg.interpolationQuality = gradient.exact ? .none : .low
+            let size = gradient.size
+            let x = ((island.midX - size.width / 2) * scale).rounded() / scale
+            // The view is flipped; the image's first row is the island's top.
+            cg.translateBy(x: 0, y: island.minY + size.height)
+            cg.scaleBy(x: 1, y: -1)
+            cg.draw(gradient.image, in: CGRect(x: x, y: 0, width: size.width, height: size.height))
+            cg.restoreGState()
         }
-        guard parked, island.height >= 1 else { return }
 
         let color = sim.displayColor
         let glyphs = BlobGlyphs.shared
@@ -609,19 +823,18 @@ final class NotchView: NSView {
         cg.setShouldSmoothFonts(false)
         cg.setAllowsFontSubpixelPositioning(true)
         cg.setShouldSubpixelPositionFonts(true)
+        cg.setAlpha(park)
 
         // The face. Tucked: dark grey dashes at the lip, the sim's face (the gate's
         // while it listens or asks). Peeking: the phase colour a step up, centred.
-        // Island: the face at the left, larger.
+        // Island: the face at the left, larger. It slides with the spring; its ground
+        // under-copy (`drawEye`) keeps it readable over the gradient's light end.
         let face = sim.face
         let lipFace = mode == .tucked && open < 0.5
-        let size = (lipFace ? BlobSim.eyeSizePt * 0.85 : BlobSim.eyeSizePt) * Double(1 + 0.45 * open)
-        let gap = CGFloat(size) * 0.95
-        let faceCentreX: CGFloat = island.minX + (island.width / 2) * (1 - open) + (14 + gap + 10) * open
-        let faceCentreY: CGFloat = island.minY + island.height / 2 + (lipFace ? -1 : 0)
+        let fl = faceLayout(island: island, open: open, lipFace: lipFace)
         // Cell shift: the look moves the pair by up to a glyph's third.
-        let shiftX = CGFloat(sim.faceLookX) * CGFloat(size) * 0.3
-        let shiftY = CGFloat(sim.faceLookY) * CGFloat(size) * 0.18
+        let shiftX = CGFloat(sim.faceLookX) * CGFloat(fl.size) * 0.3
+        let shiftY = CGFloat(sim.faceLookY) * CGFloat(fl.size) * 0.18
         let ink: RGB
         if lipFace, sim.gate == .off || sim.gate == .lockedOut {
             ink = RGB(hex: 0x4a4d55)
@@ -630,16 +843,15 @@ final class NotchView: NSView {
         } else {
             ink = color.mixed(with: RGB(1, 1, 1), sim.eyeLift)
         }
-        let left = CGPoint(x: faceCentreX - gap / 2 + shiftX, y: faceCentreY + shiftY)
-        let right = CGPoint(x: faceCentreX + gap / 2 + shiftX, y: faceCentreY + shiftY)
+        let left = CGPoint(x: fl.centre.x - fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
+        let right = CGPoint(x: fl.centre.x + fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
         cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-        BlobFieldView.drawEye(cg, glyph: face.left, size: size, at: left, ink: ink, glyphs: glyphs)
-        BlobFieldView.drawEye(cg, glyph: face.right, size: size, at: right, ink: ink, glyphs: glyphs)
+        BlobFieldView.drawEye(cg, glyph: face.left, size: fl.size, at: left, ink: ink, glyphs: glyphs)
+        BlobFieldView.drawEye(cg, glyph: face.right, size: fl.size, at: right, ink: ink, glyphs: glyphs)
 
         // The phase colour: a hairline along the island's bottom edge (peeking, island),
         // a one-pixel glow that breathes along the lip (tucked). Peeking, the hairline
         // pulses with the sound as the island widens with it (`onFrame`).
-        let breath = 0.5 + 0.5 * sin(2 * .pi * sim.time / BlobSim.breathPeriod)
         let hairAlpha: Double
         if lipFace {
             hairAlpha = 0.18 + 0.22 * (sim.reducedMotion ? 0.5 : breath)
@@ -648,20 +860,19 @@ final class NotchView: NSView {
         } else {
             hairAlpha = 0.9
         }
-        let inset = NotchGeometry.radius
+        let inset = max(shape.bottomRadius, 2)
         cg.setStrokeColor(color.cgColor(alpha: hairAlpha))
         cg.setLineWidth(1)
         cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
         cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
         cg.strokePath()
 
-        // The island's words and buttons, fading in with the spring.
-        if open > 0.05 {
-            cg.saveGState()
-            cg.setAlpha(open)
-            drawIslandContent(cg, island: island, faceRight: faceCentreX + gap / 2 + CGFloat(size) * 0.6, color: color)
-            cg.restoreGState()
+        // The island's transport, words and buttons: laid out in the open island's rect,
+        // revealed by the ink as it opens, each fading in and rising on its own beat.
+        if contentAppearance(0, now: now) != nil || contentAppearance(3, now: now) != nil {
+            drawIslandContent(cg, layout: contentLayout(in: islandOpenRect), color: color, park: park, now: now)
         }
+        cg.restoreGState()
         cg.restoreGState()
 
         // The gate's pill under the island while it asks (the lock), or says no.
@@ -670,56 +881,148 @@ final class NotchView: NSView {
         }
     }
 
-    /// Phase word and the last transcript line centre, Pause / Stop / Mute right.
-    private func drawIslandContent(_ cg: CGContext, island: NSRect, faceRight: CGFloat, color: RGB) {
+    /// How much of the gradient shows: a breath along the tucked lip (≤ 12%), all but
+    /// fully in the peek (pulsing with the sound — it must be unmistakable in a 26 pt
+    /// strip), fully on the open island; eased with the island's height and the
+    /// spring's openness so a transition fades, never steps.
+    private func gradientLevel(height: CGFloat, open: CGFloat, breath: Double) -> CGFloat {
+        let tucked = 0.08 + 0.04 * breath
+        let peek = 0.92 + 0.08 * (sim.reducedMotion ? 0.5 : sim.islandLevel)
+        let lip = NotchGeometry.lipHeight, peekH = NotchGeometry.peekHeight
+        let t = peekH > lip ? min(1, max(0, (height - lip) / (peekH - lip))) : 1
+        let eased = t * t * (3 - 2 * t)
+        var level = tucked + (peek - tucked) * eased
+        level += (1 - level) * open
+        return CGFloat(min(1, max(0, level)))
+    }
+
+    /// The accent, for a press.
+    private static let accent = NSColor(srgbRed: 0x5b / 255, green: 0x82 / 255, blue: 0xff / 255, alpha: 1)
+
+    /// The transport circle, the phase word and the last line, then Stop and Mute — each
+    /// at its own fade and rise (`contentAppearance`), all under the park level.
+    ///
+    /// Alpha is one product per element — park × appearance × (a third for a dead Mute)
+    /// — set on the context for the fills, strokes and words and passed as `fraction:`
+    /// to the symbol draws: `NSImage.draw(…fraction:)` replaces the context's alpha
+    /// rather than multiplying it (as does a nested `setAlpha`), which is how the glyphs
+    /// once popped in at full white while everything around them faded.
+    private func drawIslandContent(_ cg: CGContext, layout l: ContentLayout, color: RGB, park: CGFloat, now: Double) {
         NSGraphicsContext.saveGraphicsState()
         let ctx = NSGraphicsContext(cgContext: cg, flipped: true)
         NSGraphicsContext.current = ctx
-        let buttons = buttonRects(in: island)
-        let textLeft = faceRight + 6
-        let textRight = (buttons.first?.1.minX ?? island.maxX - 12) - 12
-        let width = max(20, textRight - textLeft)
+        var hovered = hoveredButton
+        var pressed = pressing
+        #if JARHEAD_ORB_PREVIEW
+        if hovered == nil, let name = NotchDock.previewHoveredButton { hovered = Press(previewName: name) }
+        if pressed == nil, let name = NotchDock.previewPressedButton { pressed = Press(previewName: name) }
+        #endif
         let white = NSColor.white
-        let phaseAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: white]
-        let phaseWord = OrbStyle.label(sim.phase)
-        let style = NSMutableParagraphStyle()
-        style.lineBreakMode = .byTruncatingTail
-        var lineAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: white.withAlphaComponent(0.72), .paragraphStyle: style]
-        let line = lastLine
-        if line.isEmpty { lineAttrs[.foregroundColor] = white.withAlphaComponent(0.42) }
-        let dot = NSBezierPath(ovalIn: NSRect(x: textLeft, y: island.minY + 30, width: 6, height: 6))
-        NSColor(srgbRed: color.r, green: color.g, blue: color.b, alpha: 1).setFill()
-        dot.fill()
-        (phaseWord as NSString).draw(in: NSRect(x: textLeft + 12, y: island.minY + 24, width: width - 12, height: 18), withAttributes: phaseAttrs)
-        ((line.isEmpty ? "—" : line) as NSString).draw(in: NSRect(x: textLeft, y: island.minY + 48, width: width, height: 16), withAttributes: lineAttrs)
 
-        // Buttons: 26×24 hairline boxes, a solid symbol each; hover one alpha step;
-        // the pressed one filled with the accent.
-        for (which, rect) in buttons {
-            let box = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-            let hot = hoveredButton == which
-            let down = pressing == which
+        // 0: the transport — a 22 pt circle: translucent ink under a hairline ring in the
+        // phase colour, a solid play (Go: asleep, error, paused) / pause (in a session) /
+        // ellipsis (connecting) centred; hover lifts it, a press fills it accent and the
+        // fill lets go over `Motion.base`.
+        if let a = contentAppearance(0, now: now) {
+            let alpha = park * a.alpha
+            cg.saveGState()
+            cg.setAlpha(alpha)
+            let rect = l.transport.offsetBy(dx: 0, dy: a.dy)
+            let hot = hovered == .pause
+            let down = pressed == .pause
+            let flash = flashLevel(.pause, now: now)
+            let circle = NSBezierPath(ovalIn: rect)
             if down {
-                NSColor(srgbRed: 0x5b / 255, green: 0x82 / 255, blue: 0xff / 255, alpha: 1).setFill(); box.fill()
-            } else if hot {
-                NSColor(white: 1, alpha: 0.10).setFill(); box.fill()
+                Self.accent.setFill(); circle.fill()
+            } else {
+                NSColor(white: 0, alpha: 0.40).setFill(); circle.fill()
+                if hot { NSColor(white: 1, alpha: 0.12).setFill(); circle.fill() }
+                if flash > 0 { Self.accent.withAlphaComponent(flash).setFill(); circle.fill() }
             }
-            NSColor(white: 1, alpha: 0.22).setStroke()
-            box.lineWidth = 1
-            box.stroke()
-            let name: String
-            switch which {
-            case .pause: name = sim.phase == .paused ? "play.fill" : "pause.fill"
-            case .stop: name = "stop.fill"
-            case .mute: name = sim.phase == .muted ? "mic.slash.fill" : "mic.fill"
-            case .face: name = ""
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
+            ring.lineWidth = 1
+            let ringTone = hot || down ? color.mixed(with: RGB(1, 1, 1), 0.35) : color
+            NSColor(srgbRed: ringTone.r, green: ringTone.g, blue: ringTone.b, alpha: hot || down ? 1 : 0.9).setStroke()
+            ring.stroke()
+            let symbol = AppState.transportLabel(for: sim.phase).symbol
+            if let img = Self.symbol(symbol, pointSize: 10, tint: down || hot ? white : white.withAlphaComponent(0.92)) {
+                let s = img.size
+                // A play glyph sits a hair right of its box's centre to look centred.
+                let nudge: CGFloat = symbol == "play.fill" ? 0.5 : 0
+                img.draw(in: NSRect(x: rect.midX - s.width / 2 + nudge, y: rect.midY - s.height / 2, width: s.width, height: s.height),
+                         from: .zero, operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
             }
-            if let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold)) {
-                let tinted = img.tinted(down || hot ? .white : NSColor(white: 1, alpha: 0.78))
-                let s = tinted.size
-                tinted.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2, width: s.width, height: s.height),
-                            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            cg.restoreGState()
+        }
+
+        // 1, 2: the words — a one-pixel ink shadow under each, then the white, so they
+        // read where the gradient runs light.
+        let phaseAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: white]
+        var phaseShadow = phaseAttrs
+        phaseShadow[.foregroundColor] = NSColor(white: 0, alpha: 0.6)
+        if let a = contentAppearance(1, now: now) {
+            cg.saveGState()
+            cg.setAlpha(park * a.alpha)
+            let word = OrbStyle.label(sim.phase) as NSString
+            let rect = l.word.offsetBy(dx: 0, dy: a.dy)
+            word.draw(in: rect.offsetBy(dx: 0, dy: 1), withAttributes: phaseShadow)
+            word.draw(in: rect, withAttributes: phaseAttrs)
+            cg.restoreGState()
+        }
+        if let a = contentAppearance(2, now: now) {
+            cg.saveGState()
+            cg.setAlpha(park * a.alpha)
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = .byTruncatingTail
+            let line = lastLine
+            let lineAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                                                            .foregroundColor: white.withAlphaComponent(line.isEmpty ? 0.46 : 0.78), .paragraphStyle: style]
+            var lineShadow = lineAttrs
+            lineShadow[.foregroundColor] = NSColor(white: 0, alpha: 0.55)
+            let text = (line.isEmpty ? "—" : line) as NSString
+            let rect = l.line.offsetBy(dx: 0, dy: a.dy)
+            text.draw(in: rect.offsetBy(dx: 0, dy: 1), withAttributes: lineShadow)
+            text.draw(in: rect, withAttributes: lineAttrs)
+            cg.restoreGState()
+        }
+
+        // 3: Stop and Mute — 26×24 boxes, a translucent ink fill under a hairline so they
+        // sit on the gradient, a solid symbol each; hover one alpha step; the pressed one
+        // filled with the accent, letting go over `Motion.base`. Mute dims to a third
+        // and takes nothing outside a session: there is no microphone to mute.
+        if let a = contentAppearance(3, now: now) {
+            for (which, rect0) in [(Press.stop, l.stop), (.mute, l.mute)] {
+                let rect = rect0.offsetBy(dx: 0, dy: a.dy)
+                let enabled = which != .mute || muteEnabled
+                let alpha = park * a.alpha * (enabled ? 1 : 0.35)
+                let box = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+                let hot = enabled && hovered == which
+                let down = enabled && pressed == which
+                let flash = enabled ? flashLevel(which, now: now) : 0
+                cg.saveGState()
+                cg.setAlpha(alpha)
+                if down {
+                    Self.accent.setFill(); box.fill()
+                } else {
+                    NSColor(white: 0, alpha: 0.42).setFill(); box.fill()
+                    if hot { NSColor(white: 1, alpha: 0.10).setFill(); box.fill() }
+                    if flash > 0 { Self.accent.withAlphaComponent(flash).setFill(); box.fill() }
+                }
+                NSColor(white: 1, alpha: 0.26).setStroke()
+                box.lineWidth = 1
+                box.stroke()
+                let name: String
+                switch which {
+                case .stop: name = "stop.fill"
+                case .mute: name = sim.phase == .muted ? "mic.slash.fill" : "mic.fill"
+                case .pause, .face: name = ""
+                }
+                if let img = Self.symbol(name, pointSize: 11, tint: down || hot ? white : white.withAlphaComponent(0.78)) {
+                    let s = img.size
+                    img.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2, width: s.width, height: s.height),
+                             from: .zero, operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
+                }
+                cg.restoreGState()
             }
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -728,17 +1031,51 @@ final class NotchView: NSView {
     /// The last transcript line, set by the controller (mono, one line).
     var lastLine = "" { didSet { if lastLine != oldValue { needsDisplay = true } } }
 
-    /// The three micro-buttons, right-aligned in the island: Pause, Stop, Mute.
-    private func buttonRects(in island: NSRect) -> [(Press, NSRect)] {
-        let w: CGFloat = 26, h: CGFloat = 24, gap: CGFloat = 6
-        let y = island.midY - h / 2
-        var x = island.maxX - 14 - w
-        var out: [(Press, NSRect)] = []
-        for which in [Press.mute, .stop, .pause] {
-            out.append((which, NSRect(x: x, y: y, width: w, height: h)))
-            x -= w + gap
+    /// The buttons' help text (a tooltip when the pointer rests on one; the whole view
+    /// is one tooltip rect, the string chosen by the point): the transport's word for
+    /// the phase (`AppState.transportPress`), Stop, Mute / Unmute.
+    func helpText(for which: Press) -> String {
+        switch which {
+        case .pause:
+            switch AppState.transportPress(for: sim.phase) {
+            case .go: return "Go"
+            case .pause: return "Pause"
+            case .stop: return "Connecting"
+            }
+        case .stop: return "Stop"
+        case .mute: return sim.phase == .muted ? "Unmute" : "Mute"
+        case .face: return ""
         }
-        return out.reversed()
+    }
+
+    /// `NSViewToolTipOwner`'s requirement is not main-actor in the SDK; AppKit asks on
+    /// the main thread, so the isolation is assumed rather than inherited (an error in
+    /// the Swift 6 language mode otherwise).
+    nonisolated func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        MainActor.assumeIsolated {
+            guard let b = button(at: point) else { return "" }
+            return helpText(for: b)
+        }
+    }
+
+    private func installToolTip() {
+        removeAllToolTips()
+        addToolTip(bounds, owner: self, userData: nil)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        installToolTip()
+    }
+
+    /// The island's live controls and where they are (the open island's layout): the
+    /// transport circle, Stop, and Mute only while it can mute. Hit-testing, hover,
+    /// tooltips and presses all read this one list.
+    private func buttonRects(in island: NSRect) -> [(Press, NSRect)] {
+        let l = contentLayout(in: island)
+        var out: [(Press, NSRect)] = [(.pause, l.transport), (.stop, l.stop)]
+        if muteEnabled { out.append((.mute, l.mute)) }
+        return out
     }
 
     /// The gate's pill: ground, hairline, a solid symbol or a tone dot, the words.
@@ -791,9 +1128,14 @@ final class NotchView: NSView {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// The control under `p`, once the island is (nearly) open. The circle gets a
+    /// point more slop than the boxes: it is the one most reached for.
     private func button(at p: NSPoint) -> Press? {
         guard mode == .island, openSpring.value > 0.8 else { return nil }
-        return buttonRects(in: islandRect).first { $0.1.insetBy(dx: -2, dy: -2).contains(p) }?.0
+        return buttonRects(in: islandOpenRect).first { which, rect in
+            let slop: CGFloat = which == .pause ? 3 : 2
+            return rect.insetBy(dx: -slop, dy: -slop).contains(p)
+        }?.0
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -835,12 +1177,30 @@ final class NotchView: NSView {
         }
         let p = convert(event.locationInWindow, from: nil)
         if let b = pressing, button(at: p) == b {
+            // The press is felt: the accent stays on the button and lets go over `Motion.base`.
+            flashPress = b
+            flashAt = CACurrentMediaTime()
+            wake()
             onPress?(b)
         } else if islandRect.contains(p) || notchRect.contains(p) {
             onPress?(.face)
         }
     }
 }
+
+#if JARHEAD_ORB_PREVIEW
+extension NotchView.Press {
+    /// The harness's names for the island's buttons (ORB_NOTCH_HOVER / ORB_NOTCH_PRESSED).
+    init?(previewName: String) {
+        switch previewName.lowercased() {
+        case "pause", "go", "transport": self = .pause
+        case "stop": self = .stop
+        case "mute": self = .mute
+        default: return nil
+        }
+    }
+}
+#endif
 
 private extension NSImage {
     /// A template symbol in one colour.

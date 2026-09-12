@@ -65,9 +65,10 @@ struct OnboardingVoiceStep: View, Equatable {
                     HStack(spacing: 14) {
                         if setup.secrets.openai {
                             OnboardingNote("A key is on file.")
+                                .transition(Motion.appear)
                         }
                         Button {
-                            actions.system.openURL(URL(string: "https://platform.openai.com/api-keys")!)
+                            actions.openURL(URL(string: "https://platform.openai.com/api-keys")!)
                         } label: {
                             HStack(spacing: 4) {
                                 Text("Get a key")
@@ -81,6 +82,8 @@ struct OnboardingVoiceStep: View, Equatable {
             }
             status
         }
+        // The saved key's note arrives with the probe's answer (OnboardingStatusLine fades itself).
+        .animation(Motion.gentle, value: setup.secrets.openai)
         .onChange(of: setup) { pending = false }
         // A typed key is a draft: Continue saves it rather than dropping it.
         .onChange(of: canSave) { actions.draft(canSave, canSave ? save : nil) }
@@ -178,14 +181,19 @@ struct OnboardingBrainStep: View, Equatable {
                             .frame(height: onboardingRowHeight)
                             .accessibilityLabel("Brain: \(kind.label)")
                         OnboardingNote(kind.needs)
+                            .contentTransition(.opacity)
                     }
                 }
+                // The fields a kind wants arrive and leave with the pick (Motion.appear); the
+                // Apply row below them moves to make room.
                 fields
+                    .transition(Motion.appear)
                 OnboardingFormRow("") {
                     Button("Apply", action: apply)
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost))
                 }
             }
+            .animation(Motion.gentle, value: kind)
             status
         }
         .onAppear { if loadedFrom == nil { load() } }
@@ -357,7 +365,6 @@ struct OnboardingAgentsStep: View, Equatable {
     static func == (a: OnboardingAgentsStep, b: OnboardingAgentsStep) -> Bool { a.agents == b.agents && a.connectors == b.connectors }
 
     @State private var refreshSpin = 0.0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct Group: Identifiable {
         let kind: AgentKind
@@ -386,7 +393,8 @@ struct OnboardingAgentsStep: View, Equatable {
                            "Jarhead finds your Claude Code and Codex sessions on this Mac and can continue them.") {
                 Button {
                     actions.send(.agentRefresh)
-                    if !reduceMotion { withAnimation(.easeOut(duration: 0.5)) { refreshSpin += 360 } }
+                    // One turn of the arrow per press (Motion.gentle); none under Reduce Motion.
+                    if !Motion.reduced { withAnimation(Motion.gentle) { refreshSpin += 360 } }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
@@ -397,26 +405,34 @@ struct OnboardingAgentsStep: View, Equatable {
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                 .accessibilityLabel("Refresh agents")
             }
+            // Groups arriving with a refresh fade in and rise; the count rolls its digits.
             if !groups.isEmpty {
                 VStack(spacing: 0) {
                     ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                         if index > 0 { ConsoleHairline(weight: .row) }
-                        row(group)
+                        row(group).transition(Motion.appear)
                     }
                 }
                 .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+                .transition(Motion.appear)
             }
             if agents.isEmpty {
                 // The connectors are there; the sessions are not. Say what to do, once.
                 OnboardingNote("No sessions on this Mac right now. Start one in a terminal and refresh.")
+                    .transition(Motion.appear)
             } else {
                 HStack(spacing: 6) {
                     Text("\(agents.count)").font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
+                        .contentTransition(ConsoleMotion.numeric)
                     Text(agents.count == 1 ? "agent found" : "agents found").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                        .contentTransition(.opacity)
                 }
+                .transition(Motion.appear)
             }
         }
+        .animation(Motion.gentle, value: agents.map(\.id))
+        .animation(Motion.gentle, value: connectors)
     }
 
     private func row(_ group: Group) -> some View {
@@ -462,6 +478,8 @@ struct OnboardingDoneStep: View, Equatable {
         }
     }
 
+    /// A line whose verdict changes while the page is up (a grant landing, a probe
+    /// answering) crossfades: the dot's colour and the words.
     private func row(_ symbol: String, _ name: String, _ line: OnboardingReport.Line) -> some View {
         HStack(alignment: .top, spacing: onboardingIconGap) {
             ConsoleIcon(name: symbol)
@@ -473,11 +491,13 @@ struct OnboardingDoneStep: View, Equatable {
                 .lineLimit(3).truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(minHeight: 20, alignment: .leading)
+                .contentTransition(.opacity)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(minHeight: 36)
+        .animation(Motion.fade, value: line)
         .accessibilityElement(children: .combine)
     }
 }

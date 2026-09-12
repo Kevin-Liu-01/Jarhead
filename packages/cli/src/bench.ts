@@ -437,7 +437,7 @@ export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
         await Promise.race([held, new Promise((r) => setTimeout(r, 3000))]);
         const running = engine.snapshot().delegations.find((d) => d.liveId === `stop_${i}`)?.status === "running";
         const a = performance.now();
-        await engine.command({ type: "stop" });
+        await engine.command({ type: "interrupt" });
         add("stop: command → everything stopped", performance.now() - a);
         if (i === 0) log(`  stop: the delegation was ${running ? "running (the brain held it)" : "NOT running"} when the stop arrived`);
         // Kevin speaks: the gate lifts so the next run's speech is not muted.

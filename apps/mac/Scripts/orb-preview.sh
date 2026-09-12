@@ -13,12 +13,12 @@
 #   ORB_X=200 ORB_Y=620 ORB_PHASES=speaking ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY="1000,300" ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 ORB_EXIT_AFTER=8 Scripts/orb-preview.sh
 #                                                                                                     # orb.fly: wind-up, out, one squish, parked 2 s beside the ring, then it STAYS there (free mode: "stay where you
 #                                                                                                     # worked" — the spot is persisted once, the perch is left alone) → preview-blob-fly-{outbound,hover}.png, preview-blob-stay.png
-#   ORB_NOTCH=1 ORB_SHOT_DIR=Resources ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=11 Scripts/orb-preview.sh   # notch mode with a simulated notch: tucked (asleep, `- -`), awake (peeking), the island under the
-#                                                                                                     # pointer, then a fly: drop out, work, fly back up, tuck → preview-blob-notch-{tucked,peek,island,drop,return}.png
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_SHOT_DIR=Resources ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=12 Scripts/orb-preview.sh   # notch mode with a simulated notch: tucked (asleep, `- -`), awake (peeking), the island under the
+#                                                                                                     # pointer, then a fly: drop out, work, STAY where it worked, then sleep at ~8.6 s and tuck → preview-blob-notch-{tucked,peek,island,drop,stay,return}.png
 #                                                                                                     # (+ fly-outbound/hover). In-process shots over a drawn menu bar and the notch's black.
 #   ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_PAUSE_AT=1.5 ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 ORB_EXIT_AFTER=4 Scripts/orb-preview.sh
 #                                                                                                     # press Pause (the capsule's): prints the command, the harness answers with the paused phase → preview-blob-paused.png
-#                                                                                                     # (the `u u` face, titanium, the "Paused · still connected" pill; on its own — not over a fly, whose target ring would show)
+#                                                                                                     # (the `u u` face, titanium, the "Paused · meter stopped" pill; on its own — not over a fly, whose target ring would show)
 #   ORB_FLY="1000,300;1300,700" ORB_FLY_EVERY=2 ORB_FLY_HOME=1 ORB_EXIT_AFTER=9 Scripts/orb-preview.sh   # two flies 2 s apart (retargets mid-hover), then orb.home; prints each flight phase change (stamped in seconds)
 #   ORB_FLY="1000,300;1000,300" ORB_FLY_EVERY=2 ORB_EXIT_AFTER=8 Scripts/orb-preview.sh              # the same work twice: the second only extends the hover (no "hovering -> outbound")
 #   ORB_FLING=600,-300 ORB_FLING_AT=1.0 ORB_FLY="1000,300" ORB_FLY_AT=1.3 ORB_EXIT_AFTER=9 Scripts/orb-preview.sh   # a fly during Kevin's throw waits for it to land, the rest is persisted (send: set-settings), then it flies and comes home to it
@@ -64,6 +64,7 @@ swiftc -parse-as-library -O -D JARHEAD_ORB_PREVIEW \
   -target arm64-apple-macosx14.0 \
   -framework AppKit -framework SwiftUI -framework Combine \
   Sources/Jarhead/Model/*.swift \
+  Sources/Jarhead/UI/*.swift \
   Sources/Jarhead/UI/Orb/*.swift \
   Sources/Jarhead/UI/Overlay/*.swift \
   -o "$BIN"

@@ -334,3 +334,53 @@ to his microphone and bills per second.
 - A private field and a method cannot share a name in a class that implements an
   interface's optional method (`CodexBrain.warm` vs `Brain.warm`): the interface
   hook is `warmUp()`.
+- **GPT-Live-1 bills per second of open session, muted or not**, so "pause" that
+  mutes and "stop" that keeps listening both keep the meter running (Kevin saw the
+  timer climb after pressing Stop). The transport (REDESIGN §13) therefore closes
+  the session on pause (the conversation is held in the engine: transcript,
+  marks, brain, hands; a resume opens a new session with a `# Continuity` section)
+  and on stop (asleep synchronously); only a spoken "stop" — the `interrupt`
+  command — keeps it. A graceful `close()` unanswered for 1 s is `terminate()`d,
+  and `tick()`'s watchdog ends any session that outlived a stop — never one that
+  is `connecting`: a resume's opening session is still "paused" until
+  `session.started`, and a rule without that guard closed every resume whose
+  handshake spanned the tick. Session-timeline ms restart with every session, so
+  the engine keeps one `Transcript` per session — a Delegator's `since(0)` over a
+  shared one would replay every earlier utterance as the resumed session's first
+  request.
+- The app runs the daemon from the working tree (`tsx packages/daemon/src/main.ts`)
+  and ATTACHES to one already listening on `~/.jarhead/jarhead.sock` instead of
+  spawning its own — and the daemon outlives the app. After editing `packages/`,
+  a relaunch of Jarhead.app does not pick the change up; quit the app fully and
+  make sure the old daemon is gone (`pgrep -fl daemon/src/main.ts`) before
+  testing. A whole evening of "the fix does not work" was a 21:15 daemon still
+  running the pre-review engine at 22:19.
+- A SwiftUI view being removed keeps the `.transition` it had when it last
+  rendered, so a direction-dependent slide (forward/back) must not put the
+  direction in the removal half — `ConsoleMotion.slide` uses a plain fade for
+  removal and only the insertion picks a side.
+- Never animate a feed's layout under the sticky-scroll probe: a transition or
+  `.animation(value:)` that grows the VStack moves the pinned bottom every frame.
+  New rows animate only their own opacity/offset (`ConsoleRowAppear`) and the
+  document takes its final height on the first frame; the console harness's
+  `switch` scenario proves the distance stays 0.
+- A window's alpha and its ordering are separate window-server calls: order a
+  panel out before restoring its alpha/scale, and set a small transparent
+  presentation before ordering it in — otherwise one composite can show the
+  whole body for a frame (`finishTuckSlip` / `dropOut` in OrbPanelController).
+- `NSImage.draw(in:from:operation:fraction:)` replaces the CGContext alpha set by
+  `cg.setAlpha` instead of multiplying it; pass the product as `fraction:`.
+- Preview harnesses compile a hand-picked file list (`Scripts/*-preview.sh`);
+  a new shared file under `UI/` (Motion.swift, Dither.swift) must be added to
+  every script's swiftc inputs or the harness fails with "cannot find X in scope".
+- Full Disk Access has no API and no prompt: the only read is to open an FDA-only
+  path (`~/Library/Application Support/com.apple.TCC/TCC.db`, `~/Library/Safari`)
+  and look at errno; a denied open creates no System Settings row, so the pane
+  must be deep-linked and the app revealed in Finder for dragging in.
+- `UNUserNotificationCenter.current()` aborts a process that is not inside a
+  `.app` bundle; guard on the bundle before touching it (harness binaries, the
+  CLI). The Desktop/Documents/Downloads and Local Network readers must not touch
+  their resource until the sweep asks: the first `opendir` / browse IS the prompt.
+- Engine tests that follow a permission change should wait for
+  `snapshot().permissions.all` to carry the row rather than a fixed settle(): the
+  fresh-helper poll is on a timer.

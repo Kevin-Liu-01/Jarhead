@@ -427,6 +427,29 @@ private struct AmpBolt: Shape {
     }
 }
 
+/// Jarhead's own mark on the icon column: the orb — a solid accent disc carrying the
+/// blob's highlight — at 14pt like the tool marks, so Jarhead's conversations sit
+/// beside the agents' as siblings. Not a ring (the working status glyph is one) and
+/// not an SF Symbol the stream uses for a row kind.
+struct JarheadMark: View {
+    var size: CGFloat = 14
+
+    var body: some View {
+        ZStack {
+            Circle().fill(ConsoleTheme.accent)
+            // The highlight the blob wears: a faint paper disc, up and to the left.
+            Circle().fill(Color.white.opacity(0.34))
+                .frame(width: size * 0.42, height: size * 0.42)
+                .offset(x: -size * 0.15, y: -size * 0.17)
+        }
+        .frame(width: size, height: size)
+        .frame(width: 20, height: 20)
+        .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 5 }
+        .alignmentGuide(.lastTextBaseline) { d in d[.bottom] - 5 }
+        .accessibilityLabel("Jarhead")
+    }
+}
+
 /// An agent's status on the icon column. Working is the pulsing dot inside a
 /// 1pt ring in the tool's colour — the ring says whose work it is. Idle is the
 /// plain titanium dot, as `ConsoleStatusGlyph` draws it: ringed, a settled dot
@@ -437,19 +460,22 @@ struct BrandStatusGlyph: View {
 
     var body: some View {
         let meta = ConsoleTheme.status(status)
-        Group {
+        // A ZStack, so a status that changes crossfades the glyph it had into the one it gets.
+        ZStack {
             if let symbol = meta.symbol {
-                ConsoleIcon(name: symbol, tint: meta.color)
+                ConsoleIcon(name: symbol, tint: meta.color).transition(.opacity)
             } else if meta.live {
                 ZStack {
                     Circle().stroke(brandColor(tool), lineWidth: 1).frame(width: 12, height: 12)
                     ConsoleDot(color: meta.color, live: true, size: 6)
                 }
+                .transition(.opacity)
             } else {
-                ConsoleDot(color: meta.color, live: false, size: 6)
+                ConsoleDot(color: meta.color, live: false, size: 6).transition(.opacity)
             }
         }
         .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: status)
         .help(status.rawValue)
         .accessibilityLabel(status.rawValue)
     }

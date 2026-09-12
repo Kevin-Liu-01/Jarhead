@@ -4,7 +4,19 @@ import SwiftUI
 // Throwaway preview harness: builds an AppState full of realistic fake data and
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
-//   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex
+//   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
+//     jarhead      = live data with a past Jarhead conversation stepped into — the paused → resumed
+//                    chain (two sessions folded into one row, "resumed ×1"), read-only, Conversation view
+//     jarhead-log  = the same conversation as its ledger log (time · type · text)
+//     paused       = the live session paused: the rail's Now row says "paused · meter stopped"
+//     switch       = the motion pass's scenario: live data, then (PREVIEW_ACTION's default for it)
+//                    the Jarhead chain is stepped into at 1.2 s and shot mid-crossfade at 1.36 s
+//                    (<PREVIEW_OUT_DIR>/preview-console-switch-mid.png: both panes half there, the
+//                    rail's highlight between rows), Now is shown again at 2.6 s, the stream's
+//                    scroll geometry is printed, two transcript lines are appended, and the
+//                    geometry is printed again: `distance` must still be 0 (the bottom stays
+//                    pinned — rows fade in on their own ink, the document never animates). The
+//                    script's own shot at PREVIEW_SETTLE (5.2 s) is the settled second moment.
 //     settings     = asleep, Settings tab, the wake gate listening (heard "hey jarhead")
 //     wake-locked  = asleep, Settings tab, the gate locked out, no passphrase, Anthropic API brain without its key
 //     conversation = live data with the blocked Claude Code session (gt · api auth) stepped into:
@@ -17,12 +29,22 @@ import SwiftUI
 //   PREVIEW_WINDOW_SIZE=WxH         window frame (default 1180x760; clamped to the minimum)
 //   PREVIEW_BRAIN=<BrainKind raw>   swap the brain (openai-compatible shows the Server row)
 //   PREVIEW_GATE=off|awake          the gate switched off, or resting because the engine is awake
+//   PREVIEW_REDUCE_MOTION=1         pin Motion.reduced on (Motion.reducedOverride): plain fades, halved
+//                                   durations, no rise/slide — the Reduce Motion path for real
 //   PREVIEW_ACTION=scroll-up,append drive the feed after it settles (use PREVIEW_SETTLE>=3)
 //     scroll-top,history   in a conversation: scroll to the top, then prepend an older page
 //                          (the feed must keep the row on screen where it was)
 //     drop-open,restore-agents   take the open session off the rail, then put the rail
 //                          back: the stream must stay (one agent.close in the log, no
 //                          second agent.open — the root forgets an orphaned id)
+//     open-jarhead / show-now / open-agent:<id> / tab:now|settings|ledger / pick-day:<yyyy-mm-dd>
+//                          step around the Console the way clicks would (each inside
+//                          withAnimation, so the transitions run)
+//     geometry             print the stream's scroll geometry (minY, viewport, content, distance)
+//     shot:<name>          screenshot the window now → <PREVIEW_OUT_DIR>/<name>.png (a moment
+//                          mid-transition, where the script's own shot comes too late)
+//     Every action may carry `@<seconds>` (from launch): "open-jarhead@1.2,shot:mid@1.36";
+//     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s).
 
 @main
 struct ConsolePreviewMain {
@@ -44,6 +66,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     /// The fixtures, kept for scripted actions that put a rail back together.
     var fake: FakeData?
+    /// When the harness came up; the action trail is stamped against it.
+    let launchedAt = Date()
+    /// How many `append` actions have run (they alternate Kevin / Jarhead).
+    var appended = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let env = ProcessInfo.processInfo.environment
@@ -53,6 +79,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // harness pins the appearance; the real window follows the system.
         let appearance = env["PREVIEW_APPEARANCE"] ?? (scenario == "light" ? "light" : "dark")
         NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+        // PREVIEW_REDUCE_MOTION=1: the Reduce Motion path for real, whatever the Mac is set to.
+        if env["PREVIEW_REDUCE_MOTION"] == "1" {
+            Motion.reducedOverride = true
+            print("reduce motion: pinned on")
+        }
 
         state.stateDir = URL(fileURLWithPath: env["PREVIEW_STATE_DIR"] ?? FileManager.default.currentDirectoryPath)
         state.connected = true
@@ -62,9 +93,20 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         self.fake = fake
         state.ledgerDaysHandler = { ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"] }
         state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : [] }
+        // Jarhead's own sessions, as `ledger.sessions` / `ledger.session` would answer:
+        // the list is set outright so the rail has it before the window opens.
+        state.jarheadSessions = fake.jarheadSessions()
+        state.jarheadSessionsHandler = { fake.jarheadSessions() }
+        state.jarheadSessionRowsHandler = { id in fake.jarheadRows(for: id) }
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
+        case "paused":
+            state.snapshot = fake.live()
+            state.snapshot.phase = .paused
+            state.snapshot.pause = PauseInfo(at: fake.ago(40), sessionId: fake.session().id, usageSeconds: 758, sleepsAt: fake.now + 9 * 60 * 1000)
+            state.snapshot.session = nil
+            state.snapshot.problems = []
         case "confirm": state.snapshot = fake.confirm()
         case "settings":
             state.snapshot = fake.asleep()
@@ -140,19 +182,33 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.toast("Waiting for your confirmation", tone: .warn)
         case "conversation": console.openAgent("sessions:claude:w1p2")
         case "conversation-codex": console.openAgent("sessions:codex:1")
+        case "jarhead", "jarhead-log":
+            // The root view listens for this once it is on screen; a turn later is enough.
+            let view = scenario == "jarhead-log" ? "log" : "conversation"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                NotificationCenter.default.post(name: ConsoleSession.openJarheadSessionNotification, object: nil,
+                                                userInfo: ["sessionId": FakeData.chainResumedId, "view": view])
+            }
         case "live", "light": state.toast("Delegation failed: Codex session refused input", tone: .error)
         default: break
         }
 
         // PREVIEW_ACTION=scroll-up,append,… drives the feed after it has settled
-        // (one action every 0.8 s from t=1.2 s) so the sticky auto-scroll and the
-        // jump pill can be checked from a screenshot: `scroll-up` scrolls the
-        // stream 300pt toward older rows like a trackpad would; `append` adds a
-        // transcript line to the snapshot. Use PREVIEW_SETTLE=3 or more.
-        if let actions = env["PREVIEW_ACTION"] {
-            for (index, action) in actions.split(separator: ",").enumerated() {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2 + 0.8 * Double(index)) { [weak self] in
-                    self?.perform(String(action))
+        // (one action every 0.8 s from t=1.2 s, or at the `@seconds` each carries) so
+        // the sticky auto-scroll, the jump pill and the transitions can be checked from
+        // a screenshot: `scroll-up` scrolls the stream 300pt toward older rows like a
+        // trackpad would; `append` adds a transcript line to the snapshot. Use
+        // PREVIEW_SETTLE=3 or more. The `switch` scenario has its own default script.
+        let defaultActions = scenario == "switch"
+            ? "open-jarhead@1.2,shot:preview-console-switch-mid@1.36,show-now@2.6,geometry@3.4,append@3.6,append@3.9,geometry@4.7"
+            : nil
+        if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
+            for (index, spec) in actions.split(separator: ",").enumerated() {
+                let parts = spec.split(separator: "@", maxSplits: 1).map(String.init)
+                let action = parts[0]
+                let at = parts.count == 2 ? (Double(parts[1]) ?? 0) : 1.2 + 0.8 * Double(index)
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                    self?.perform(action)
                 }
             }
         }
@@ -173,6 +229,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func perform(_ action: String) {
+        let stamp = String(format: "%.2f", Date().timeIntervalSince(launchedAt))
         switch action {
         case "scroll-up":
             guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
@@ -183,9 +240,76 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "append":
             var snap = state.snapshot
             let now = Date().timeIntervalSince1970 * 1000
-            snap.transcript.append(TranscriptItem(id: "u-appended-\(Int(now))", speaker: .kevin,
-                                                  text: "Appended after the window opened.", startMs: 0, endMs: 900, at: now, final: true))
+            appended += 1
+            snap.transcript.append(TranscriptItem(id: "u-appended-\(Int(now))", speaker: appended % 2 == 1 ? .kevin : .jarhead,
+                                                  text: appended % 2 == 1 ? "Appended after the window opened." : "And a second line, appended a moment later — the bottom stays pinned.",
+                                                  startMs: 0, endMs: 900, at: now, final: true))
             state.snapshot = snap
+            print("action: append #\(appended) at \(stamp)s")
+        case "open-jarhead":
+            // The root view listens for this; it opens the paused → resumed chain.
+            withAnimation(Motion.snappy) {
+                NotificationCenter.default.post(name: ConsoleSession.openJarheadSessionNotification, object: nil,
+                                                userInfo: ["sessionId": FakeData.chainResumedId, "view": "conversation"])
+            }
+            print("action: open-jarhead at \(stamp)s")
+        case "show-now":
+            withAnimation(Motion.snappy) { console?.showNow() }
+            print("action: show-now at \(stamp)s → openAgentId=\(console?.openAgentIdForPreview ?? "nil") openJarheadId=\(console?.openJarheadIdForPreview ?? "nil")")
+        case "geometry":
+            guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
+                  let scroll = Self.widestScrollView(in: window.contentView), let doc = scroll.documentView else {
+                print("action: geometry at \(stamp)s → no stream scroll view")
+                return
+            }
+            let clip = scroll.contentView
+            let distance = doc.frame.height - (clip.bounds.minY + clip.bounds.height)
+            print(String(format: "action: geometry at %@s → minY=%.1f viewport=%.1f content=%.1f distance=%.1f", stamp, clip.bounds.minY, clip.bounds.height, doc.frame.height, distance))
+        default:
+            if action.hasPrefix("open-agent:") {
+                let id = String(action.dropFirst("open-agent:".count))
+                withAnimation(Motion.snappy) { console?.openAgent(id) }
+                print("action: open-agent \(id) at \(stamp)s")
+            } else if action.hasPrefix("tab:") {
+                let raw = String(action.dropFirst("tab:".count))
+                if let tab = ConsoleSession.Tab.allCases.first(where: { $0.rawValue.lowercased() == raw.lowercased() }) {
+                    withAnimation(Motion.snappy) { console?.selectTab(tab) }
+                    print("action: tab \(tab.rawValue) at \(stamp)s")
+                }
+            } else if action.hasPrefix("pick-day:") {
+                let day = String(action.dropFirst("pick-day:".count))
+                withAnimation(Motion.snappy) { console?.pickLedgerDay(day) }
+                print("action: pick-day \(day) at \(stamp)s")
+            } else if action.hasPrefix("shot:") {
+                let name = String(action.dropFirst("shot:".count))
+                let dir = ProcessInfo.processInfo.environment["PREVIEW_OUT_DIR"] ?? FileManager.default.currentDirectoryPath
+                let path = (dir as NSString).appendingPathComponent(name.hasSuffix(".png") ? name : name + ".png")
+                shoot(to: path, stamp: stamp)
+            } else {
+                performFeed(action)
+            }
+        }
+    }
+
+    /// A window-only screenshot of the Console right now (`screencapture -l`), for a
+    /// moment mid-transition. Needs the Screen Recording grant of whatever launched us,
+    /// like the script's own shot.
+    private func shoot(to path: String, stamp: String) {
+        guard let win = console?.windowNumber else { print("shot: no window"); return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        p.arguments = ["-x", "-o", "-l", String(win), path]
+        do {
+            try p.run()
+            p.waitUntilExit()
+            print("shot: \(path) at \(stamp)s (status \(p.terminationStatus))")
+        } catch {
+            print("shot failed: \(error)")
+        }
+    }
+
+    private func performFeed(_ action: String) {
+        switch action {
         case "scroll-top":
             guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
                   let scroll = Self.widestScrollView(in: window.contentView) else { return }
@@ -420,6 +544,115 @@ struct FakeData {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: [],
                  connectors: [ConnectorHealth(kind: .sessions, ok: false, detail: "No Claude Code or Codex session store under ~"), ConnectorHealth(kind: .claudeCode, ok: true, detail: "Agent SDK · ready")],
                  settings: settings, permissions: Permissions(microphone: .unknown, screenRecording: .granted, accessibility: .granted), problems: [], brainReady: true, handsReady: true, setup: setup)
+    }
+
+    // MARK: Jarhead's own sessions (the ledger's `sessions()` / `readSession()`)
+
+    /// The paused → resumed chain the `jarhead` scenarios step into.
+    static let chainPausedId = "live_u7_EN2HiSxSGcjkzAI8uPHQj"
+    static let chainResumedId = "live_u7_EN2KpQ4mWvB8xRtZaYc3L"
+    static let yesterdayId = "live_u7_EMzfmCLOp7XvtmJ3RJTTs"
+    static let lostId = "live_u7_EMz1thmn1cGwzD4Cpbp6P"
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+    func day(_ ms: Double) -> String { Self.dayFormatter.string(from: Date(timeIntervalSince1970: ms / 1000)) }
+
+    /// Newest first, the way `ledger.sessions` answers: the live session (open — the rail
+    /// shows it as Now, not here), the chain (B resumed from A), and yesterday's two —
+    /// one closed by a lost connection, one never closed at all (lost when the next began).
+    func jarheadSessions() -> [JarheadSessionSummary] {
+        let live = session()
+        let a0 = ago(3 * 3600 + 5 * 60), aClosed = ago(3 * 3600 - 3 * 60)
+        let b0 = ago(3 * 3600 - 3 * 60 - 8 * 60), bClosed = ago(2 * 3600 + 31 * 60)
+        let y0 = ago(26 * 3600 + 12 * 60), yClosed = ago(26 * 3600 + 2 * 60)
+        let l0 = ago(27 * 3600 + 40 * 60)
+        return [
+            JarheadSessionSummary(id: live.id, day: day(live.startedAt), startedAt: live.startedAt, closedAt: nil, reason: nil, usageSeconds: 0,
+                                  heard: 4, said: 4, delegations: 3, title: "Hey Jarhead, what's the Claude session doing on the auth", resumedFrom: nil),
+            // An idle sleep is the engine closing the session with no transport row before it: the ledger keeps the server's word, the view says "closed".
+            JarheadSessionSummary(id: Self.chainResumedId, day: day(b0), startedAt: b0, closedAt: bClosed, reason: "close_requested", usageSeconds: 140,
+                                  heard: 2, said: 2, delegations: 1, title: "Okay, carry on — what did Codex do?", resumedFrom: Self.chainPausedId),
+            JarheadSessionSummary(id: Self.chainPausedId, day: day(a0), startedAt: a0, closedAt: aClosed, reason: "paused", usageSeconds: 312,
+                                  heard: 3, said: 3, delegations: 1, title: "Pull up my sessions and tell me who's stuck.", resumedFrom: nil),
+            JarheadSessionSummary(id: Self.yesterdayId, day: day(y0), startedAt: y0, closedAt: yClosed, reason: "connection_lost", usageSeconds: 252,
+                                  heard: 2, said: 2, delegations: 1, title: "Open the PR for the landing refresh and read me the diff summ", resumedFrom: nil),
+            JarheadSessionSummary(id: Self.lostId, day: day(l0), startedAt: l0, closedAt: y0, reason: "lost", usageSeconds: 0,
+                                  heard: 0, said: 0, delegations: 0, title: "", resumedFrom: nil),
+        ]
+    }
+
+    /// One session's rows, its started row through its closed row, the transport rows included.
+    func jarheadRows(for id: String) -> [LedgerRow] {
+        func row(_ at: Double, _ type: String) -> LedgerRow {
+            LedgerRow(at: at, type: type, item: nil, delegation: nil, delegationId: nil, step: nil, status: nil, summary: nil, text: nil, sessionId: nil, reason: nil, usageSeconds: nil, agent: nil)
+        }
+        func heard(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "heard"); r.item = TranscriptItem(id: id, speaker: .kevin, text: text, startMs: 0, endMs: 2000, at: at, final: true); return r
+        }
+        func said(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "said"); r.item = TranscriptItem(id: id, speaker: .jarhead, text: text, startMs: 0, endMs: 3000, at: at, final: true); return r
+        }
+        /// A finished delegation as its created / step / finished rows.
+        func delegationRows(_ delId: String, at t0: Double, request: String, summary: String, steps: [DelegationStep]) -> [LedgerRow] {
+            let created = Delegation(id: delId, liveId: "live_\(delId)", createdAt: t0, offsetMs: 100, request: request, status: .running, steps: [], summary: nil,
+                                     timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: nil, firstCommentaryAt: nil, doneAt: nil))
+            var rows: [LedgerRow] = []
+            var r = row(t0, "delegation.created"); r.delegation = created; rows.append(r)
+            for s in steps { r = row(s.at, "delegation.step"); r.delegationId = delId; r.step = s; rows.append(r) }
+            let done = (steps.last?.at ?? t0) + 900
+            r = row(done, "delegation.finished"); r.delegationId = delId; r.status = .done; r.summary = summary; rows.append(r)
+            return rows
+        }
+        guard let s = jarheadSessions().first(where: { $0.id == id }) else { return [] }
+        var rows: [LedgerRow] = []
+        var r = row(s.startedAt, "session.started"); r.sessionId = s.id; r.resumedFrom = s.resumedFrom; rows.append(r)
+        let t = s.startedAt
+        switch id {
+        case Self.chainPausedId:
+            rows.append(heard(t + 9_000, "ja1", "Pull up my sessions and tell me who's stuck."))
+            rows += delegationRows("del_7q2wz", at: t + 10_200, request: "Kevin asked which sessions are stuck.", summary: "Found one stuck session (gt · sdk).", steps: [
+                DelegationStep(id: "ja-s1", at: t + 10_840, kind: .thinking, text: "Listing sessions across ~/.claude and ~/.codex…", tool: nil, screenshotPath: nil),
+                DelegationStep(id: "ja-s2", at: t + 11_700, kind: .tool, text: nil, tool: ToolStep(name: "agents_list", input: .object(["project": .string("gt")]), output: nil, ok: true, ms: 188), screenshotPath: nil),
+                DelegationStep(id: "ja-s3", at: t + 12_300, kind: .commentary, text: "One session is stuck: gt · sdk, waiting on a prompt.", tool: nil, screenshotPath: nil),
+            ])
+            rows.append(said(t + 14_000, "ja2", "The gt · sdk session is waiting for you — it wants to know whether to delete the old migrations."))
+            rows.append(heard(t + 61_000, "ja3", "Tell it yes, keep going."))
+            rows.append(said(t + 63_500, "ja4", "Told it yes. It is running the migration now."))
+            var stop = row(t + 4 * 60_000, "stop"); stop.how = "said"; stop.cancelled = "del_9x1vk"; rows.append(stop)
+            rows.append(heard(t + 4 * 60_000 + 900, "ja5", "Stop — pause for a bit, I'll be right back."))
+            rows.append(said(t + 4 * 60_000 + 2_600, "ja6", "Pausing."))
+            var pause = row(s.closedAt! - 400, "pause"); pause.sessionId = s.id; pause.usageSeconds = 312; rows.append(pause)
+            // The server's word for the close the pause asked for; the summary (and the view) say "paused".
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 312; rows.append(closed)
+        case Self.chainResumedId:
+            var resume = row(t - 600, "resume"); resume.sessionId = s.id; resume.resumedFrom = Self.chainPausedId; resume.pausedMs = 8 * 60_000; rows.insert(resume, at: 0)
+            rows.append(heard(t + 6_000, "jb1", "Okay, carry on — what did Codex do?"))
+            rows += delegationRows("del_2m8hd", at: t + 7_100, request: "Kevin asked what Codex did while he was away.", summary: "Codex opened PR #412 and passed the api suite.", steps: [
+                DelegationStep(id: "jb-s1", at: t + 7_600, kind: .thinking, text: "Reading the Codex rollout for gt · api hotfix…", tool: nil, screenshotPath: nil),
+                DelegationStep(id: "jb-s2", at: t + 8_400, kind: .tool, text: nil, tool: ToolStep(name: "agent_transcript", input: .object(["agentId": .string("sessions:codex:1"), "last": .number(12)]), output: nil, ok: true, ms: 412), screenshotPath: nil),
+            ])
+            rows.append(said(t + 11_000, "jb2", "Codex finished the api hotfix and opened PR #412; 85 tests pass."))
+            var problem = row(t + 40_000, "problem"); problem.text = "Accessibility permission denied — hands can click but cannot read the UI tree."; rows.append(problem)
+            rows.append(heard(t + 95_000, "jb3", "Great, that's all for now."))
+            rows.append(said(t + 97_000, "jb4", "Going quiet."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 140; rows.append(closed)
+        case Self.yesterdayId:
+            rows.append(heard(t + 5_000, "jy1", "Open the PR for the landing refresh and read me the diff summary."))
+            rows += delegationRows("del_4kq0p", at: t + 6_300, request: "Kevin asked for the landing refresh PR and its diff summary.", summary: "Read the summary of PR #398 aloud.", steps: [
+                DelegationStep(id: "jy-s1", at: t + 7_000, kind: .tool, text: nil, tool: ToolStep(name: "browser_read", input: .object(["url": .string("https://github.com/generaltranslation/gt/pull/398")]), output: nil, ok: true, ms: 1_240), screenshotPath: nil),
+            ])
+            rows.append(said(t + 12_000, "jy2", "PR #398 replaces the hero with the new blob and trims the pricing table to three tiers."))
+            rows.append(heard(t + 40_000, "jy3", "Thanks."))
+            rows.append(said(t + 41_500, "jy4", "Anytime."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "connection_lost"; closed.usageSeconds = 252; rows.append(closed)
+        default:
+            break
+        }
+        return rows
     }
 
     func ledgerRows() -> [LedgerRow] {

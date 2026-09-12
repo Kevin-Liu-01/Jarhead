@@ -344,7 +344,7 @@ public struct SetupStatus: Codable, Equatable {
     public static let unknown = SetupStatus(openaiKey: .unchecked, brain: .unchecked, brainDetail: "", brainResolved: nil, liveModel: "gpt-live-1", secrets: Secrets(openai: false, anthropic: false, brainApiKey: false))
 }
 
-public enum Grant: String, Codable {
+public enum Grant: String, Codable, Sendable {
     case granted, denied, unknown
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -352,10 +352,53 @@ public enum Grant: String, Codable {
     }
 }
 
+/// Every macOS permission Jarhead asks for (mirror of PERMISSION_KINDS). The first four
+/// are what the voice and the hands need; the rest let the brain reach what Kevin asks
+/// about.
+public enum PermissionKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case microphone, speechRecognition, screenRecording, accessibility
+    case inputMonitoring, automation, fullDiskAccess, notifications, camera
+    case contacts, calendars, reminders, localNetwork
+    case filesDesktop, filesDocuments, filesDownloads
+}
+
+/// How a permission is obtained: a system prompt, System Settings only, or one prompt per target app (Automation).
+public enum PermissionAsk: String, Codable, Equatable, Sendable {
+    case prompt, settings, perApp
+}
+
+public struct PermissionInfo: Codable, Equatable, Identifiable, Sendable {
+    public var kind: PermissionKind
+    public var grant: Grant
+    public var ask: PermissionAsk
+    public var required: Bool
+    public var label: String
+    public var why: String
+    public var detail: String?
+    public var checkedAt: Double?
+    public var id: PermissionKind { kind }
+    public init(kind: PermissionKind, grant: Grant, ask: PermissionAsk, required: Bool, label: String, why: String, detail: String? = nil, checkedAt: Double? = nil) {
+        self.kind = kind; self.grant = grant; self.ask = ask; self.required = required; self.label = label; self.why = why; self.detail = detail; self.checkedAt = checkedAt
+    }
+    public var json: [String: Any] {
+        var o: [String: Any] = ["kind": kind.rawValue, "grant": grant.rawValue, "ask": ask.rawValue, "required": required, "label": label, "why": why]
+        if let detail { o["detail"] = detail }
+        if let checkedAt { o["checkedAt"] = checkedAt }
+        return o
+    }
+}
+
 public struct Permissions: Codable, Equatable {
     public var microphone: Grant
     public var screenRecording: Grant
     public var accessibility: Grant
+    /// The whole list as the app last read it; optional on the wire for older daemons.
+    public var all: [PermissionInfo]?
+    public init(microphone: Grant, screenRecording: Grant, accessibility: Grant, all: [PermissionInfo]? = nil) {
+        self.microphone = microphone; self.screenRecording = screenRecording; self.accessibility = accessibility; self.all = all
+    }
+    /// Required permissions that are not granted, by kind.
+    public var missingRequired: [PermissionKind] { (all ?? []).filter { $0.required && $0.grant != .granted }.map(\.kind) }
 }
 
 public struct AudioLevels: Codable, Equatable {
@@ -370,6 +413,45 @@ public struct SessionInfo: Codable, Equatable {
     public var expiresAt: Double
     public var usageSeconds: Double
     public var contextRatio: Double?
+}
+
+/// Present while paused: the pause closed `sessionId` (the meter stopped) and holds the
+/// conversation; `sleepsAt` (ms) is when an unresumed pause decays to sleep.
+public struct PauseInfo: Codable, Equatable {
+    public var at: Double
+    public var sessionId: String
+    public var usageSeconds: Double
+    public var sleepsAt: Double
+}
+
+/// Live seconds billed today: closed sessions from the ledger plus the open one.
+public struct UsageToday: Codable, Equatable {
+    public var seconds: Double
+    public var sessions: Int
+}
+
+/// GPT-Live-1 list price, for the meter. Billed per second.
+public enum LivePrice {
+    public static let perMinuteUSD = 0.05
+    public static func dollars(seconds: Double) -> Double { seconds / 60 * perMinuteUSD }
+}
+
+/// One of Jarhead's own Live sessions as the ledger recorded it (the Console's "Jarhead"
+/// section). A resume opens a new session continuing the paused one; `resumedFrom` links
+/// the chain into one conversation.
+public struct JarheadSessionSummary: Codable, Equatable, Identifiable {
+    public var id: String
+    public var day: String
+    public var startedAt: Double
+    public var closedAt: Double?
+    public var reason: String?
+    public var usageSeconds: Double
+    public var heard: Int
+    public var said: Int
+    public var delegations: Int
+    public var title: String
+    public var resumedFrom: String?
+    public var isOpen: Bool { closedAt == nil }
 }
 
 public struct Snapshot: Codable, Equatable {
@@ -387,6 +469,10 @@ public struct Snapshot: Codable, Equatable {
     /// Optional on the wire for older daemons.
     public var setup: SetupStatus?
     public var marks: [ScreenMark]?
+    /// While paused: which session the pause closed and when the pause decays to sleep.
+    public var pause: PauseInfo?
+    /// Today's billed seconds (for the meter). Optional on the wire for older daemons.
+    public var usageToday: UsageToday?
 
     public var setupStatus: SetupStatus { setup ?? .unknown }
     public var screenMarks: [ScreenMark] { marks ?? [] }
@@ -395,13 +481,17 @@ public struct Snapshot: Codable, Equatable {
         phase: .asleep, session: nil, transcript: [], delegations: [], agents: [], connectors: [],
         settings: Settings(voice: "cedar", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", micDeviceId: nil, idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, onboarded: nil, reflexes: nil, orbHome: nil),
         permissions: Permissions(microphone: .unknown, screenRecording: .unknown, accessibility: .unknown),
-        problems: [], brainReady: false, handsReady: false, setup: nil, marks: [])
+        problems: [], brainReady: false, handsReady: false, setup: nil, marks: [], pause: nil, usageToday: nil)
 }
 
 // MARK: - Commands (app → engine). Encoded as {"type": ..., ...} exactly like EngineCommand.
 
 public enum EngineCommand: Equatable {
-    case wake, sleep, mute, unmute, stop
+    /// `stop` is the transport's stop: interrupt everything, close the session (the meter
+    /// stops), sleep. `go` is its one button: wake when asleep, resume when paused.
+    /// `interrupt` cancels the current work and speech but stays awake (a spoken "stop").
+    case wake, sleep, mute, unmute, stop, go
+    case interrupt(how: String)
     case sayText(String)
     case setSettings(SettingsPatch)
     case clearProblems
@@ -433,6 +523,8 @@ public enum EngineCommand: Equatable {
         case .mute: return ["type": "mute"]
         case .unmute: return ["type": "unmute"]
         case .stop: return ["type": "stop"]
+        case .go: return ["type": "go"]
+        case .interrupt(let how): return ["type": "interrupt", "how": how]
         case .sayText(let text): return ["type": "say-text", "text": text]
         case .setSettings(let patch): return ["type": "set-settings", "patch": patch.json]
         case .clearProblems: return ["type": "clear-problems"]
@@ -623,6 +715,11 @@ public struct LedgerRow: Codable, Identifiable {
     public var reason: String?
     public var usageSeconds: Double?
     public var agent: AgentInfo?
+    /// `stop` rows: pressed | said, and the delegation cut. `resume` rows: the paused session and how long it was paused.
+    public var how: String?
+    public var cancelled: String?
+    public var resumedFrom: String?
+    public var pausedMs: Double?
     public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? "")" }
 }
 

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItem!
     private var menus: Menus!
     private var hotkeys: Hotkeys!
+    private var permissions: PermissionsCenter!
     private var cancellables = Set<AnyCancellable>()
 
     private var micGrant: Grant = .unknown
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         console = ConsoleWindowController(state: state)
         onboarding = OnboardingWindowController(state: state)
         state.openOnboardingHandler = { [weak self] in self?.onboarding.show() }
+        state.openPermissionsSetupHandler = { [weak self] in self?.onboarding.show(at: .permissions) }
         state.beginMarkModeHandler = { [weak self] in self?.overlay.beginMarkMode() }
 
         let socketPath = AppDelegate.socketPath()
@@ -69,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         audio.onMicBuffer = { [ear] buffer, when in ear?.ingest(buffer, at: when) }
 
+        // Permissions: this process is the one TCC keys the grants on, so every read,
+        // every prompt and the "ask for everything" sweep happen here; the daemon only
+        // hears the results (`permission` / `permissions` frames → snapshot.permissions).
+        permissions = PermissionsCenter(state: state)
+        permissions.onOne = { [weak self] kind, grant, detail in self?.client.sendPermission(which: kind.rawValue, state: grant, detail: detail) }
+        permissions.onList = { [weak self] all in self?.client.sendPermissions(all: all) }
+
         // AppState handlers: UI code only ever talks to AppState. A few commands are
         // ours to act on before (or instead of) the daemon.
         state.sendHandler = { [weak self] cmd in
@@ -77,8 +86,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .requestPermission(let which) where which == "microphone":
                 // The daemon cannot grant the mic; only this process can ask TCC.
                 self.refreshMicrophoneGrant(openSettingsIfDenied: true)
-            case .stop:
-                self.audio.flush() // instant, before the daemon's own flush arrives
+            case .requestPermission(let which) where which == "all":
+                // The sweep runs here, in order, one dialog at a time — the daemon's own
+                // helper prompt for Accessibility / Screen Recording is not asked for as
+                // well, or the two dialogs would stack.
+                self.permissions.requestAll()
+            case .requestPermission(let which) where which != "accessibility" && which != "screenRecording":
+                // Every other kind the app owns. Accessibility and Screen Recording keep
+                // going to the daemon, whose fresh helper process prompts and then polls.
+                if let kind = PermissionKind(rawValue: which) { self.permissions.requestOne(kind) } else { self.client.send(cmd) }
+            case .stop, .pause:
+                // Both close the session: drop the queued speech here, instantly, before
+                // the daemon's own flush arrives — speech dies at the press.
+                self.audio.flush()
                 self.client.send(cmd)
             default:
                 self.client.send(cmd)
@@ -86,12 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         state.ledgerDaysHandler = { [weak self] in await self?.client.ledgerDays() ?? [] }
         state.ledgerReadHandler = { [weak self] day in await self?.client.ledgerRows(day: day) ?? [] }
+        state.installJarheadSessions(list: { [weak self] in await self?.client.jarheadSessions() ?? [] },
+                                     rows: { [weak self] id in await self?.client.jarheadSessionRows(id) ?? [] })
         state.openConsoleHandler = { [weak self] in self?.console.show() }
 
         // A (re)started daemon knows nothing about us: re-send what it must know.
         client.onConnected = { [weak self] in
             guard let self else { return }
             if self.micGrant != .unknown { self.client.sendPermission(which: "microphone", state: self.micGrant) }
+            // The list, once it has been read (placeholders would tell the daemon "unknown").
+            if self.permissions.hasRead { self.client.sendPermissions(all: self.permissions.list) }
         }
 
         // The daemon: start or attach, then connect.
@@ -158,6 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] uid in MainActor.assumeIsolated { self?.audio.setPreferredInputDevice(uid: uid) } }
             .store(in: &cancellables)
 
+        // The first read of every permission (read-only; the daemon gets the list on connect).
+        permissions.start()
+
         // Microphone: ask once, tell the daemon, and never start audio before we know.
         // JARHEAD_NO_AUDIO=1 skips the request entirely (headless test launches).
         if ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] == "1" {
@@ -177,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let previous = self.micGrant
             self.micGrant = grant
             self.client.sendPermission(which: "microphone", state: grant)
+            self.permissions.set(.microphone, grant: grant)
             self.wake.setMicrophone(granted: grant == .granted)
             if grant == .granted, !self.speechRequested {
                 // Second prompt, once, right after the first: the wake word needs the
@@ -184,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.speechRequested = true
                 WakeWordListener.requestAuthorization { [weak self] ok, detail in
                     self?.wake.setSpeechRecognition(authorized: ok, detail: detail)
+                    self?.permissions.set(.speechRecognition, grant: ok ? .granted : PermissionsKit.speechRecognitionStatus())
                     if !ok { self?.state.toast("Wake word off: \(detail)", tone: .warn) }
                 }
             }
@@ -208,6 +237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Back from System Settings, most likely: every grant is re-read, fresh.
+        permissions?.appActivated()
         if micGrant != .granted { refreshMicrophoneGrant(openSettingsIfDenied: false) }
         // Speech Recognition is asked once, but a grant made later in System Settings
         // must count without a relaunch: re-read the status (no prompt) on activation.
@@ -221,19 +252,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeActions() -> AppActions {
         var a = AppActions()
-        a.toggleWake = { [weak self] in
-            guard let self else { return }
-            self.state.send(self.state.isAwake ? .sleep : .wake)
-        }
+        // The transport (AppState's Transport region): the menus press the same two
+        // buttons as the capsule, the notch, the Console and the hotkeys.
+        a.transportToggle = { [weak self] in self?.state.transportToggle() }
         a.toggleMute = { [weak self] in
             guard let self else { return }
             self.state.send(self.state.phase == .muted ? .unmute : .mute)
         }
-        a.togglePause = { [weak self] in
-            guard let self else { return }
-            self.state.send(self.state.phase == .paused ? .resume : .pause)
-        }
-        a.stop = { [weak self] in self?.state.send(.stop) }
+        a.stop = { [weak self] in self?.state.transportStop() }
         a.openConsole = { [weak self] in
             self?.console.show()
             NSApp.activate(ignoringOtherApps: true)
@@ -257,28 +283,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .toggleMute:
             state.send(state.phase == .muted ? .unmute : .mute)
         case .stop:
-            state.send(.stop)
-            audio.flush()
+            // ⌥⎋: the speaker flush rides in the send handler above, before the command leaves.
+            state.transportStop()
         case .markScreen:
             state.beginMarkMode()
-        case .toggleWake:
-            state.send(state.isAwake ? .sleep : .wake)
-        case .togglePause:
-            // ⌥⇧P: the session stays open but silent; again to resume.
-            state.send(state.phase == .paused ? .resume : .pause)
+        case .transportToggle, .transportToggleAlias:
+            // ⌥⇧Space (and ⌥⇧P, the same toggle): go when asleep or paused, pause in session.
+            state.transportToggle()
         }
     }
 
     // MARK: - audio activity
 
-    /// The mic and speaker run while a session is open (anything but asleep/error) and
-    /// the microphone is granted. Asleep means nothing is captured and nothing is billed.
-    /// The gate and the voice engine never hold the microphone together: the gate is
-    /// told to let go before the voice engine starts, and told it may listen only after
-    /// the voice engine has been asked to stop.
+    /// The mic and speaker run while a session is open or opening (anything but asleep,
+    /// error and paused — `AppState.voiceAudioRuns(in:)`) and the microphone is granted.
+    /// Asleep and paused both mean nothing is captured and nothing is billed: a pause
+    /// closes the session, so the orange mic dot goes out and the wake gate takes the
+    /// microphone back to listen for the word that resumes. The gate and the voice
+    /// engine never hold the microphone together: the gate is told to let go before the
+    /// voice engine starts, and told it may listen only after the voice engine has been
+    /// asked to stop.
     private func updateAudioActivity() {
-        let awake = phaseSeen != .asleep && phaseSeen != .error
-        let wantActive = micGrant == .granted && connectedSeen && awake
+        let wantActive = micGrant == .granted && connectedSeen && AppState.voiceAudioRuns(in: phaseSeen)
         guard wantActive != audioActive else { return }
         audioActive = wantActive
         if wantActive {
@@ -305,13 +331,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme == "jarhead" {
-            switch url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) {
-            case "wake":
-                // Anything on this Mac (or a browser) can open a URL: while the gate is on
-                // and the engine is dormant, the URL authenticates like the spoken word.
-                if !wake.requestWake(source: "jarhead://wake") { state.send(.wake) }
-            case "sleep": state.send(.sleep)
-            case "stop": state.send(.stop)
+            let verb = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            switch verb {
+            case "go", "wake", "resume":
+                // The transport's Go (`wake` and `resume` are the old names for it). Anything
+                // on this Mac (or a browser) can open a URL: while the gate is on and the
+                // engine is dormant, the URL authenticates like the spoken word; while
+                // paused it resumes like the word does, without authentication (WakeGate.heard).
+                if !wake.requestWake(source: "jarhead://\(verb)") { state.transportGo() }
+            case "pause": state.transportPause()
+            case "stop", "sleep": state.transportStop()
             case "orb": orb.summon()
             default: console.show()
             }
@@ -321,8 +350,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Put the engine to sleep first so the Live session (which bills by the second) closes.
-        if state.connected { client.send(.sleep) }
+        // Stop the engine first so the Live session (which bills by the second) closes:
+        // the transport's stop interrupts whatever runs, closes the session and sleeps.
+        if state.connected { client.send(.stop) }
         hotkeys?.unregister()
         overlay?.stop()
         ear?.setVoiceAudioActive(false)

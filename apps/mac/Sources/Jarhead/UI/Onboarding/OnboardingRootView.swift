@@ -20,23 +20,29 @@ struct OnboardingRootView: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var session: OnboardingSession
     let actions: OnboardingActions
-    let probe: OnboardingPermissionProbe
-
-    @State private var permissions = OnboardingPermissions.unknown
 
     var body: some View {
         let model = OnboardingModel(state: state)
-        let report = OnboardingReport(model: model, permissions: permissions)
+        let report = OnboardingReport(model: model)
         HStack(spacing: 0) {
-            OnboardingRail(step: session.step, report: report) { session.go($0) }
+            OnboardingRail(step: session.step, report: report) { step in withAnimation(Motion.snappy) { session.go(step) } }
                 .equatable()
                 .frame(width: 168)
             ConsoleHairline(vertical: true)
             VStack(spacing: 0) {
                 ScrollView(.vertical) {
-                    content(model: model, report: report)
-                        .padding(onboardingInset)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    // A step changing hands: the new one slides in 12pt from the side it
+                    // came from (right going forward, left going back) over the old one
+                    // fading where it stands — a ZStack so the two overlap.
+                    ZStack(alignment: .topLeading) {
+                        content(model: model, report: report)
+                            .padding(onboardingInset)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .id(session.step)
+                            .transition(ConsoleMotion.slide(forward: session.forward))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .animation(Motion.gentle, value: session.step)
                 }
                 .scrollIndicators(.automatic)
                 // Reopening rebuilds the steps so a draft typed before the window
@@ -44,23 +50,24 @@ struct OnboardingRootView: View {
                 .id(session.generation)
                 ConsoleHairline()
                 OnboardingFooter(step: session.step, dirty: session.dirty,
-                                 back: { session.back() },
-                                 next: { session.step == .done ? actions.finish() : session.next() })
+                                 back: { withAnimation(Motion.snappy) { session.back() } },
+                                 next: { withAnimation(Motion.snappy) { session.step == .done ? actions.finish() : session.next() } })
                     .equatable()
             }
         }
         .background(ConsoleTheme.ground)
         .frame(minWidth: 560, minHeight: 480)
         .task(id: PollKey(step: session.step, visible: session.visible)) {
-            // TCC has no change notification: read it on every step change, and every
-            // 2 s while the two steps that show it are on screen, so a grant made in
-            // System Settings appears without a relaunch.
-            permissions = probe.read()
+            // TCC has no change notification: re-read (never a prompt) on every step
+            // change, and every 2 s while the two steps that show it are on screen, so a
+            // grant made in System Settings appears without a relaunch. The list itself
+            // is AppState's (the PermissionsCenter publishes it).
+            actions.permissions.refresh()
             guard session.visible, session.step == .permissions || session.step == .done else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled { break }
-                permissions = probe.read()
+                actions.permissions.refresh()
             }
         }
     }
@@ -80,7 +87,7 @@ struct OnboardingRootView: View {
         case .brain:
             OnboardingBrainStep(setup: model.setup, brain: model.brain, brainModel: model.brainModel, brainBaseUrl: model.brainBaseUrl, actions: actions).equatable()
         case .permissions:
-            OnboardingPermissionsStep(permissions: permissions, actions: actions).equatable()
+            OnboardingPermissionsStep(permissions: model.permissions, sweep: model.sweep, actions: actions).equatable()
         case .wake:
             OnboardingWakeStep(wake: model.wake, gate: model.wakeGate, heard: model.wakeHeard, passphraseSet: model.wakePassphraseSet, actions: actions).equatable()
         case .agents:
@@ -94,24 +101,30 @@ struct OnboardingRootView: View {
 // MARK: - Rail
 
 /// Steps as icon + one word; the current one in the accent. A 5pt dot on the
-/// right says whether the step is settled (ok) or wants attention.
+/// right says whether the step is settled (ok) or wants attention. The current
+/// row's ground is one view on a matched geometry id, so it glides between rows
+/// (Motion.snappy); a dot changing its mind crossfades.
 struct OnboardingRail: View, Equatable {
     let step: OnboardingStep
     let report: OnboardingReport
     let select: (OnboardingStep) -> Void
+
+    @Namespace private var selection
 
     static func == (a: OnboardingRail, b: OnboardingRail) -> Bool { a.step == b.step && a.report == b.report }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(OnboardingStep.allCases) { s in
-                OnboardingRailRow(step: s, current: s == step, mark: report.mark(s)) { select(s) }
+                OnboardingRailRow(step: s, current: s == step, mark: report.mark(s), selection: selection) { select(s) }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.top, 14)
         .padding(.bottom, 10)
+        .animation(Motion.snappy, value: step)
+        .animation(Motion.fade, value: report)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Steps")
     }
@@ -121,10 +134,10 @@ private struct OnboardingRailRow: View {
     let step: OnboardingStep
     let current: Bool
     let mark: OnboardingReport.Mark?
+    let selection: Namespace.ID
     let pick: () -> Void
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: pick) {
@@ -140,16 +153,25 @@ private struct OnboardingRailRow: View {
                         .fill(OnboardingMarkStyle.color(mark))
                         .frame(width: 5, height: 5)
                         .accessibilityLabel(mark == .ok ? "ok" : "needs attention")
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, 8)
             .frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 6).fill(current ? ConsoleTheme.active : (hovering ? ConsoleTheme.hover : .clear)))
+            .background {
+                if current {
+                    RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active)
+                        .matchedGeometryEffect(id: "step", in: selection)
+                } else if hovering {
+                    RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.hover)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
+        .animation(ConsoleMotion.hover, value: hovering)
+        .animation(Motion.snappy, value: current)
         .accessibilityAddTraits(current ? .isSelected : [])
     }
 }
@@ -175,18 +197,26 @@ struct OnboardingFooter: View, Equatable {
 
     var body: some View {
         HStack(spacing: 10) {
+            // Back fades in once there is somewhere to go back to; the count rolls its
+            // digit; Continue's wording crossfades as the step picks up edits.
             Button("Back", action: back)
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost))
                 .opacity(step.previous == nil ? 0 : 1)
                 .disabled(step.previous == nil)
                 .accessibilityHidden(step.previous == nil)
+                .animation(Motion.fade, value: step.previous == nil)
             Spacer(minLength: 0)
             Text("\(step.index + 1) / \(OnboardingStep.allCases.count)")
                 .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
+                .contentTransition(ConsoleMotion.numeric)
+                .animation(Motion.snappy, value: step)
                 .accessibilityLabel("Step \(step.index + 1) of \(OnboardingStep.allCases.count)")
             Spacer(minLength: 0)
-            Button(nextTitle, action: next)
-                .buttonStyle(ConsoleButtonStyle(kind: .primary))
+            Button(action: next) {
+                Text(nextTitle).contentTransition(.opacity)
+            }
+            .buttonStyle(ConsoleButtonStyle(kind: .primary))
+            .animation(Motion.fade, value: nextTitle)
         }
         .padding(.horizontal, 20)
         .frame(height: 56)
@@ -282,6 +312,7 @@ enum OnboardingLine {
 
 /// A dot on the icon column and one line: "Key works · gpt-live-1". Wraps to
 /// two lines rather than hiding the detail, which is where the fix usually is.
+/// A probe's answer fades in: the dot's colour and the words crossfade.
 struct OnboardingStatusLine: View {
     let color: Color
     var live = false
@@ -289,15 +320,20 @@ struct OnboardingStatusLine: View {
     var id: String? = nil
     var detail: String? = nil
 
+    /// Everything the line says, as one value the crossfade watches.
+    private var said: String { [text, id ?? "", detail ?? ""].joined(separator: "\u{1f}") }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: onboardingIconGap) {
             ConsoleDot(color: color, live: live, size: 6).frame(width: 20, height: 16, alignment: .center)
             OnboardingLine.text(text, id: id, detail: detail)
                 .lineLimit(2).truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
             Spacer(minLength: 0)
         }
         .frame(minHeight: 20)
+        .animation(Motion.fade, value: said)
         .accessibilityElement(children: .combine)
     }
 }
@@ -313,24 +349,30 @@ struct OnboardingNote: View {
 }
 
 /// A segmented control drawn like the Console's tabs: hairline box, the chosen
-/// segment inverted. Segments size to their titles.
+/// segment inverted. Segments size to their titles; the filled thumb is one view on
+/// a matched geometry id, so it glides between them (Motion.snappy).
 struct OnboardingSegments<Value: Hashable>: View {
     let value: Value
     let options: [Value]
     let title: (Value) -> String
     let pick: (Value) -> Void
 
+    @Namespace private var thumb
+
     var body: some View {
         HStack(spacing: 0) {
             ForEach(Array(options.enumerated()), id: \.element) { index, option in
                 if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
-                OnboardingSegment(title: title(option), on: option == value) { pick(option) }
+                OnboardingSegment(title: title(option), on: option == value, thumb: thumb) {
+                    withAnimation(Motion.snappy) { pick(option) }
+                }
             }
         }
         .frame(height: 26)
         .fixedSize()
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+        .animation(Motion.snappy, value: value)
         .accessibilityElement(children: .contain)
     }
 }
@@ -338,10 +380,10 @@ struct OnboardingSegments<Value: Hashable>: View {
 private struct OnboardingSegment: View {
     let title: String
     let on: Bool
+    let thumb: Namespace.ID
     let action: () -> Void
 
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: action) {
@@ -350,13 +392,19 @@ private struct OnboardingSegment: View {
                 .foregroundStyle(on ? ConsoleTheme.ground : ConsoleTheme.fg2)
                 .padding(.horizontal, 10)
                 .frame(height: 26)
-                .background(on ? ConsoleTheme.fg : (hovering ? ConsoleTheme.hover : Color.clear))
+                .background {
+                    if on {
+                        Rectangle().fill(ConsoleTheme.fg).matchedGeometryEffect(id: "thumb", in: thumb)
+                    } else if hovering {
+                        Rectangle().fill(ConsoleTheme.hover)
+                    }
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
-        .animation(reduceMotion ? nil : ConsoleTheme.fast, value: on)
+        .animation(ConsoleMotion.hover, value: hovering)
+        .animation(Motion.snappy, value: on)
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 }

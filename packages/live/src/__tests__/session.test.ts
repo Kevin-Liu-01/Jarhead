@@ -105,3 +105,94 @@ test("a socket that closes before starting rejects start", async () => {
   sock.close();
   await assert.rejects(p, /closed before start/);
 });
+
+/**
+ * The meter runs every second the socket is open, so the two ways of ending a
+ * session are exact: close() asks the server (it finalizes usage and answers
+ * session.closed) and gives up on it after CLOSE_FALLBACK_MS; terminate() drops
+ * the socket now. Either way `closed` fires exactly once.
+ */
+
+test("terminate(): the socket closes at once, the state is closed, `closed` fires exactly once with client_closed and the billed seconds; a late session.closed frame and a second terminate add nothing", async () => {
+  const sock = new FakeSocket();
+  const s = new LiveSession({ apiKey: "k", config: { model: "gpt-live-1" }, webSocketFactory: () => sock });
+  const p = s.start();
+  sock.open();
+  sock.receive({ type: "session.started", event_id: "e1", session: resource });
+  await p;
+  sock.receive({ type: "session.usage.updated", event_id: "u", usage: { seconds: 7 } });
+  const closed: [string, number][] = [];
+  s.on("closed", (reason, usage) => closed.push([reason, usage]));
+  s.terminate();
+  assert.equal(s.currentState, "closed");
+  assert.equal(sock.readyState, 3, "the socket was closed at once");
+  assert.deepEqual(closed, [["client_closed", 7]]);
+  assert.equal(sock.sent.some((l) => (JSON.parse(l) as { type: string }).type === "session.close"), false, "no graceful close was asked for");
+  // Stragglers: the socket's own onclose ran inside terminate(); a late frame and a second terminate change nothing.
+  sock.receive({ type: "session.closed", event_id: "g", reason: "close_requested", session: resource, usage: { seconds: 8 } });
+  s.terminate();
+  assert.deepEqual(closed, [["client_closed", 7]]);
+  assert.equal(s.currentState, "closed");
+});
+
+test("close() asks the server first and closes the socket itself after CLOSE_FALLBACK_MS (1500 ms) when no session.closed comes — reported once, as a lost connection", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sock = new FakeSocket();
+  const s = new LiveSession({ apiKey: "k", config: { model: "gpt-live-1" }, webSocketFactory: () => sock });
+  const p = s.start();
+  sock.open();
+  sock.receive({ type: "session.started", event_id: "e1", session: resource });
+  await p;
+  const closed: string[] = [];
+  s.on("closed", (reason) => closed.push(reason));
+  s.close();
+  assert.equal(s.currentState, "closing");
+  assert.equal((JSON.parse(sock.sent.at(-1) ?? "{}") as { type: string }).type, "session.close");
+  assert.equal(LiveSession.CLOSE_FALLBACK_MS, 1500);
+  t.mock.timers.tick(1499);
+  assert.equal(sock.readyState, 1, "still waiting for the server");
+  assert.deepEqual(closed, []);
+  t.mock.timers.tick(1);
+  assert.equal(sock.readyState, 3, "the socket was closed from this side");
+  assert.equal(s.currentState, "closed");
+  assert.deepEqual(closed, ["connection_lost"]);
+  // A second close() is a no-op.
+  s.close();
+  assert.deepEqual(closed, ["connection_lost"]);
+});
+
+test("a server that answers close() in time: closed fires once with the server's reason and usage, the socket is closed from this side at once, and the fallback never closes anything", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const sock = new FakeSocket();
+  const s = new LiveSession({ apiKey: "k", config: { model: "gpt-live-1" }, webSocketFactory: () => sock });
+  const p = s.start();
+  sock.open();
+  sock.receive({ type: "session.started", event_id: "e1", session: resource });
+  await p;
+  const closed: [string, number][] = [];
+  s.on("closed", (reason, usage) => closed.push([reason, usage]));
+  s.close();
+  assert.equal(sock.readyState, 1, "closing: the socket waits for the server's answer");
+  sock.receive({ type: "session.closed", event_id: "g", reason: "close_requested", session: resource, usage: { seconds: 13 } });
+  assert.deepEqual(closed, [["close_requested", 13]], "the server's reason, once — not the socket's connection_lost");
+  assert.equal(s.currentState, "closed");
+  // The answered close does not leave the socket open behind a closed session (the fallback would never touch it).
+  assert.equal(sock.readyState, 3, "the socket is closed from this side once the server has finalized");
+  t.mock.timers.tick(5000);
+  // The fallback fired into a closed session; the fake's onclose would have reported connection_lost otherwise.
+  assert.deepEqual(closed, [["close_requested", 13]]);
+  assert.equal(s.billedSeconds, 13);
+});
+
+test("terminate() while connecting rejects start and reports closed once", async () => {
+  const sock = new FakeSocket();
+  const s = new LiveSession({ apiKey: "k", config: { model: "gpt-live-1" }, webSocketFactory: () => sock });
+  const p = s.start();
+  sock.open();
+  const closed: string[] = [];
+  s.on("closed", (reason) => closed.push(reason));
+  s.terminate();
+  await assert.rejects(p, /terminated before it started/);
+  assert.deepEqual(closed, ["client_closed"]);
+  assert.equal(s.currentState, "closed");
+});

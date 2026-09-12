@@ -194,12 +194,24 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
       case "session.instructions.appended":
         this.emit("appended", "instructions", ev.client_event_id, ev.start_ms);
         return;
-      case "session.closed":
+      case "session.closed": {
         this.usageSeconds = ev.usage.seconds;
-        this.closedEmitted = true;
         this.setState("closed");
-        this.emit("closed", ev.reason, ev.usage.seconds);
+        // `closed` fires exactly once per session, with the server's reason: terminate() or the
+        // socket's own close may have reported it already, and the socket close below must not.
+        const report = !this.closedEmitted;
+        this.closedEmitted = true;
+        // The session is over; the socket goes with it from this side too (the server closes it
+        // as well, normally). Otherwise a graceful close the server answered would leave the socket
+        // open for good: close()'s fallback only acts while the state is not `closed`.
+        try {
+          this.ws?.close();
+        } catch {
+          // ignore
+        }
+        if (report) this.emit("closed", ev.reason, ev.usage.seconds);
         return;
+      }
       case "error":
         this.emit("error", new Error(`${ev.error.code}: ${ev.error.message}`), ev.error.client_event_id);
         return;
@@ -267,6 +279,13 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
     this.raw({ type: "response.create", event_id: this.nextEventId("resp") });
   }
 
+  /**
+   * How long a graceful close() waits for the server's `session.closed` before the
+   * socket is closed from this side. The session bills per second while it is open,
+   * so this is short; the engine's own deadline (1 s) usually terminate()s first.
+   */
+  static readonly CLOSE_FALLBACK_MS = 1500;
+
   /** Ask the server to finalize; `closed` fires with the reason. */
   close(): void {
     if (this.state === "closed" || this.state === "closing") return;
@@ -277,7 +296,7 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
       } catch {
         // Socket already gone; the close handler reports it.
       }
-      // If the server never answers, do not hang forever.
+      // If the server never answers, do not hang forever (and do not keep billing).
       setTimeout(() => {
         if (this.state !== "closed") {
           try {
@@ -286,7 +305,7 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
             // ignore
           }
         }
-      }, 3000).unref?.();
+      }, LiveSession.CLOSE_FALLBACK_MS).unref?.();
       return;
     }
     const wasConnecting = this.state === "connecting";
@@ -297,6 +316,32 @@ export class LiveSession extends EventEmitter<LiveSessionEvents> {
       // ignore
     }
     // A socket closed mid-handshake may never fire onclose; settle the caller ourselves.
-    if (wasConnecting) this.rejectStart?.(new Error("live session closed before it started"));
+    if (wasConnecting) {
+      // Who closes a session that has not started is always a bug somewhere above; name the caller.
+      log.warn(`close() during the handshake, from:\n${(new Error().stack ?? "").split("\n").slice(2, 8).join("\n")}`);
+      this.rejectStart?.(new Error("live session closed before it started"));
+    }
+  }
+
+  /**
+   * Close the socket now, without asking the server to finalize. For when a
+   * graceful close() has not been answered and the meter must stop: the state is
+   * `closed` at once and `closed("client_closed", usageSeconds)` fires exactly
+   * once — the socket's own onclose (if it still fires) and any late
+   * `session.closed` frame are swallowed. Harmless when already closed.
+   */
+  terminate(): void {
+    if (this.state === "closed") return;
+    const wasConnecting = this.state === "connecting";
+    this.setState("closed");
+    const report = !this.closedEmitted;
+    this.closedEmitted = true;
+    try {
+      this.ws?.close();
+    } catch {
+      // ignore
+    }
+    if (wasConnecting) this.rejectStart?.(new Error("live session terminated before it started"));
+    if (report) this.emit("closed", "client_closed", this.usageSeconds);
   }
 }

@@ -1107,7 +1107,7 @@ function runnerOnlyEngine(runner: ToolRunner, stateDir: string): EngineLike {
     setMicrophonePermission: () => undefined,
     registerOwnPid: () => undefined,
     problem: (text) => log.warn(text),
-    ledger: { read: () => [], days: () => [] },
+    ledger: { read: () => [], days: () => [], sessions: () => [], readSession: () => [] },
     config: { stateDir },
     runner,
   };

@@ -26,11 +26,14 @@ export interface EngineLike {
   feedMic(pcm: Buffer): void;
   reportInputLevel(level: number): void;
   setMicrophonePermission(state: Permissions["microphone"]): void;
+  /** One permission as the app read it (any kind); the full list after a sweep. Optional: older fakes lack them. */
+  setPermission?(which: string, state: Permissions["microphone"], detail?: string): void;
+  setPermissions?(all: unknown[]): void;
   registerOwnPid(pid: number): void;
   /** On-device partial/final transcript from the app (reflex path). */
   ear(text: string, isFinal: boolean, segment: number, at: number): void;
   problem(text: string): void;
-  readonly ledger: { read(at?: number): unknown[]; days(): string[] };
+  readonly ledger: { read(at?: number): unknown[]; days(): string[]; sessions(): unknown[]; readSession(sessionId: string): unknown[] };
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
@@ -146,7 +149,11 @@ export class DaemonServer {
         if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));
         return;
       case "permission":
-        if (msg.which === "microphone") this.engine.setMicrophonePermission(msg.state);
+        if (this.engine.setPermission) this.engine.setPermission(msg.which, msg.state, msg.detail);
+        else if (msg.which === "microphone") this.engine.setMicrophonePermission(msg.state);
+        break;
+      case "permissions":
+        if (Array.isArray(msg.all)) this.engine.setPermissions?.(msg.all);
         return;
       case "ledger.read": {
         const t = Date.parse(`${msg.date}T12:00:00`);
@@ -155,6 +162,12 @@ export class DaemonServer {
       }
       case "ledger.days":
         this.send(client, { type: "ledger.days", id: msg.id, days: this.engine.ledger.days().map((f) => f.replace(/\.jsonl$/, "")).reverse() });
+        break;
+      case "ledger.sessions":
+        this.send(client, { type: "ledger.sessions", id: msg.id, sessions: this.engine.ledger.sessions() });
+        break;
+      case "ledger.session":
+        this.send(client, { type: "ledger.rows", id: msg.id, rows: typeof msg.sessionId === "string" ? this.engine.ledger.readSession(msg.sessionId) : [] });
         return;
       case "tool.run":
         void this.runTool(client, msg.id, msg.name, msg.input);

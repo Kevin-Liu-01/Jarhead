@@ -3,18 +3,19 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfig, type JarheadConfig } from "@jarhead/core";
-import type { LiveSession } from "@jarhead/live";
+import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainTask } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import type { EngineEvent, OverlayCommand } from "@jarhead/protocol";
 import { Engine, type EngineOptions } from "../engine.ts";
 
 /**
- * A stand-in world for engine tests: a fake Live session (records instructions,
- * mutes, emits what a real one would), hands that answer every op with a canned
- * result and record the ops (a held op can be released later), a brain that holds
- * its task until the abort signal or the test resolves it, and a clock the test
- * moves by hand.
+ * A stand-in world for engine tests: a fake Live session per wake (records the
+ * config it was opened with, instructions, mutes; emits what a real one would;
+ * closes once, or hangs on close when told to), hands that answer every op with a
+ * canned result and record the ops (a held op can be released later), a brain that
+ * holds its task until the abort signal or the test resolves it, and a clock the
+ * test moves by hand.
  */
 
 export class FakeLive extends EventEmitter {
@@ -23,12 +24,39 @@ export class FakeLive extends EventEmitter {
   mutes: string[] = [];
   currentState = "idle";
   session: { id: string; expires_at: number } | undefined;
+  /** The config the engine opened this session with (instructions, voice, delegation). */
+  config: SessionConfig | undefined;
   nowMs = 1000;
   audioIn = 0;
+  /** What the server has billed so far (a `usage` emit updates it; the closed event carries it). */
+  usage = 0;
+  closes = 0;
+  terminates = 0;
+  closedEmitted = false;
+  /** The server never answers `session.close`: close() leaves the session closing. The engine's deadline / watchdog must end it. */
+  hangOnClose = false;
+  /** The server refuses the socket: start() reports `closed("connection_lost")` and rejects, as the real session does when the socket closes before `session.started`. */
+  failStart = false;
+  constructor(readonly id = "sess_1") {
+    super();
+  }
   async start(): Promise<{ id: string; expires_at: number }> {
+    if (this.failStart) {
+      // Same order as LiveSession's onclose: state closed, `closed` emitted, then the start rejects.
+      this.finish("connection_lost");
+      throw new Error("live socket closed before start (code 1000)");
+    }
     this.currentState = "started";
-    this.session = { id: "sess_1", expires_at: Math.floor(Date.now() / 1000) + 3600 };
+    this.session = { id: this.id, expires_at: Math.floor(Date.now() / 1000) + 3600 };
     return this.session;
+  }
+  get billedSeconds(): number {
+    return this.usage;
+  }
+  /** `session.usage.updated`: the meter moved. */
+  reportUsage(seconds: number): void {
+    this.usage = seconds;
+    this.emit("usage", seconds, undefined);
   }
   appendInstructions(_id: string | null, content: string): string {
     this.instructions.push(content);
@@ -54,9 +82,31 @@ export class FakeLive extends EventEmitter {
   }
   createResponseItem(): void {}
   createResponse(): void {}
+  /** A graceful close: the server answers at once (unless `hangOnClose`). */
   close(): void {
+    this.closes++;
+    if (this.currentState === "closed") return;
+    if (this.hangOnClose) {
+      this.currentState = "closing";
+      return;
+    }
+    this.finish("client_closed");
+  }
+  /** The socket dropped now; `closed` fires once whatever came before. */
+  terminate(): void {
+    this.terminates++;
+    this.finish("client_closed");
+  }
+  /** The server ended the session (expired, connection_lost, …) with a final usage figure. */
+  serverClosed(reason: string, usage = this.usage): void {
+    this.usage = usage;
+    this.finish(reason);
+  }
+  private finish(reason: string): void {
     this.currentState = "closed";
-    this.emit("closed", "client_closed", 0);
+    if (this.closedEmitted) return;
+    this.closedEmitted = true;
+    this.emit("closed", reason, this.usage);
   }
 }
 
@@ -126,7 +176,10 @@ export interface BrainState {
 
 export interface World {
   engine: Engine;
+  /** The first session's Live (the one a single-wake test talks to). */
   live: FakeLive;
+  /** Every session the engine opened, in order; a resume or a re-wake appends one. `lives.at(-1)` is the current. */
+  lives: FakeLive[];
   hands: RecordingHands;
   events: EngineEvent[];
   overlays: OverlayCommand[];
@@ -136,8 +189,9 @@ export interface World {
   dir: string;
 }
 
-export function world(extra: Partial<EngineOptions> = {}): World {
-  const dir = mkdtempSync(join(tmpdir(), "jh-engine-"));
+/** `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine over the same day. */
+export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string } = {}): World {
+  const dir = where.dir ?? mkdtempSync(join(tmpdir(), "jh-engine-"));
   const config: JarheadConfig = {
     ...readConfig(),
     openaiApiKey: "sk-test-not-used",
@@ -167,33 +221,55 @@ export function world(extra: Partial<EngineOptions> = {}): World {
     },
     stop: async () => undefined,
   };
-  const live = new FakeLive();
+  // One FakeLive per session: the first exists before the wake (tests hold it as `live`);
+  // every wake after that — a resume, a re-wake — gets a fresh one, as the engine does.
+  const live = new FakeLive("sess_1");
+  const lives: FakeLive[] = [live];
+  let opened = 0;
+  const makeLive = (config: SessionConfig): LiveSession => {
+    const l = lives[opened] ?? new FakeLive(`sess_${opened + 1}`);
+    if (!lives.includes(l)) lives.push(l);
+    opened++;
+    l.config = config;
+    return l as unknown as LiveSession;
+  };
   const hands = new RecordingHands();
   const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
-  const engine = new Engine({ config, connectors: [], brain, hands, makeLive: () => live as unknown as LiveSession, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, ...extra });
+  const engine = new Engine({ config, connectors: [], brain, hands, makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, ...extra });
   const events: EngineEvent[] = [];
   const overlays: OverlayCommand[] = [];
   const audio: Buffer[] = [];
   engine.on("event", (e) => events.push(e));
   engine.on("overlay", (c) => overlays.push(c));
   engine.on("audio", (pcm) => audio.push(pcm));
-  return { engine, live, hands, events, overlays, audio, brain: brainState, clock, dir };
+  return { engine, live, lives, hands, events, overlays, audio, brain: brainState, clock, dir };
 }
 
 export const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));
 export const frame = (): Buffer => Buffer.alloc(480, 7);
 
-/** Live heard Kevin and delegated: one fragment, then the delegation for it. */
+/** The session the engine is talking to now (the latest opened). */
+export function current(w: World): FakeLive {
+  return w.lives[w.lives.length - 1] ?? w.live;
+}
+
+/** Live heard Kevin and delegated: one fragment, then the delegation for it — on the current session. */
 export function delegate(w: World, text: string, liveId: string): void {
-  const s = w.live.nowMs;
-  w.live.nowMs += 900;
-  w.live.emit("inputTranscript", ` ${text}`, s, w.live.nowMs);
-  w.live.emit("delegation", liveId, "client", w.live.nowMs);
+  const live = current(w);
+  const s = live.nowMs;
+  live.nowMs += 900;
+  live.emit("inputTranscript", ` ${text}`, s, live.nowMs);
+  live.emit("delegation", liveId, "client", live.nowMs);
 }
 
 /** Spaced well past the transcript's merge gap so the next words are a new utterance. */
 export function nextUtterance(w: World): void {
-  w.live.nowMs += 3000;
+  current(w).nowMs += 3000;
+}
+
+/** Ledger rows of one type for the world's day, in order. */
+export function rows<T extends { type: string }>(w: World, type: string): T[] {
+  return (w.engine.ledger.read(w.clock.t) as unknown as T[]).filter((r) => r.type === type);
 }

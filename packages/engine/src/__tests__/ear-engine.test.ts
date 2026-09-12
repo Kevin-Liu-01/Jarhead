@@ -367,7 +367,7 @@ test("after Stop the recogniser's late partial or final for the same segment run
     assert.equal(hands.named("type").length, 0, "a typed text waits out the careful window, not the short one");
     await settle(60);
     assert.equal(hands.named("type").length, 1);
-    await engine.command({ type: "stop" });
+    await engine.command({ type: "interrupt" });
     engine.ear("type hello", true, 7, clock.t + 300);
     await settle(100);
     assert.equal(hands.named("type").length, 1, "the late final did not type it again");

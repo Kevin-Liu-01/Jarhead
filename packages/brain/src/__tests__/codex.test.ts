@@ -339,7 +339,7 @@ test("codex brain: not ready without a login or a binary, and reports why", asyn
 
 class ToolOnlyEngine extends EventEmitter implements EngineLike {
   calls: string[] = [];
-  ledger = { read: () => [], days: () => [] };
+  ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner = { run: async (name: string): Promise<{ result: ToolResult }> => (this.calls.push(name), { result: { kind: "text", text: `${name} ok` } }) };
   snapshot(): unknown {

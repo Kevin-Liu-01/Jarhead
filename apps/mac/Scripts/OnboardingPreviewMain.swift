@@ -11,6 +11,19 @@ import SwiftUI
 //                                          auto: brain "auto" resolved to Claude Code)
 //   PREVIEW_APPEARANCE=dark|light         (default dark, so shots are deterministic)
 //   PREVIEW_SIZE=WxH                      (content size, e.g. 560x480 for the minimum; default 620x520)
+//   PREVIEW_GO=<step>@<seconds>           go to another step at that moment (inside withAnimation,
+//                                         so the slide runs; the rail's highlight glides)
+//   PREVIEW_SHOT_AT=<seconds>:<out.png>   a window-only screenshot at that moment (screencapture -l),
+//                                         for a frame mid-transition; the script's own shot comes later
+//   PREVIEW_REDUCE_MOTION=1               pin Motion.reduced on (Motion.reducedOverride): plain fades,
+//                                         halved durations, no slide — the Reduce Motion path for real
+//   PREVIEW_SWEEP=asking|waiting|settings|folders|done    pin an "Ask for everything" sweep on the Permissions step
+//                                         (the progress line, the Next/Cancel controls, the summary)
+// Permissions are a canned list of all sixteen kinds with mixed statuses (per scenario); every
+// ask — the sweep, a row's Request, Open Settings — prints instead of prompting.
+// Both `go:` and `shot:` lines are stamped with the REAL time since launch (a timer and a
+// screencapture spawn land late under a step rebuild), so a "mid-transition" frame can be
+// trusted from the log: compare the stamp with the step change's own stamp.
 
 @main
 struct OnboardingPreviewMain {
@@ -28,6 +41,10 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
     let state = AppState()
     var onboarding: OnboardingWindowController?
     var timer: Timer?
+    /// When the harness came up; every `go:` / `shot:` line is stamped against it.
+    let launchedAt = Date()
+
+    private func stamp() -> String { String(format: "%.2f", Date().timeIntervalSince(launchedAt)) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let env = ProcessInfo.processInfo.environment
@@ -35,6 +52,11 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
         let scenario = env["PREVIEW_SCENARIO"] ?? "ready"
         let appearance = env["PREVIEW_APPEARANCE"] ?? "dark"
         NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+        // PREVIEW_REDUCE_MOTION=1: the Reduce Motion path for real, whatever the Mac is set to.
+        if env["PREVIEW_REDUCE_MOTION"] == "1" {
+            Motion.reducedOverride = true
+            print("reduce motion: pinned on")
+        }
 
         state.connected = true
         state.daemonDetail = "engine · pid 48213"
@@ -66,25 +88,58 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
             state.wakePassphraseSet = true
         }
 
+        // Permissions: a canned list with mixed statuses per scenario; the actions print.
+        state.permissionList = OnboardingFakePermissions.list(scenario: scenario)
+        var perms = PermissionActions()
+        perms.requestAll = { print("permissions.requestAll") }
+        perms.request = { print("permissions.request(\($0.rawValue))") }
+        perms.openSettings = { print("permissions.openSettings(\($0.rawValue))") }
+        perms.refresh = {}
+        perms.sweepNext = { print("permissions.sweepNext") }
+        perms.sweepCancel = { print("permissions.sweepCancel") }
+        state.permissionActions = perms
+        if let sweep = env["PREVIEW_SWEEP"] { state.permissionSweep = OnboardingFakePermissions.sweep(sweep) }
+
         let controller = OnboardingWindowController(state: state)
-        controller.permissionProbe = OnboardingPermissionProbe {
-            switch scenario {
-            case "fresh": return OnboardingPermissions(microphone: .unknown, screenRecording: .denied, accessibility: .denied, speech: .unknown)
-            case "broken": return OnboardingPermissions(microphone: .denied, screenRecording: .granted, accessibility: .denied, speech: .denied)
-            default: return OnboardingPermissions(microphone: .granted, screenRecording: .granted, accessibility: .denied, speech: .granted)
-            }
-        }
-        controller.systemActions = OnboardingSystemActions(
-            requestScreenRecording: { print("requestScreenRecording") },
-            requestAccessibility: { print("requestAccessibility") },
-            requestSpeech: { print("requestSpeech") },
-            openURL: { print("openURL:", $0.absoluteString) })
         self.onboarding = controller
         controller.show()
         if let step = OnboardingStep(rawValue: stepName) { controller.select(step) }
         if let size = env["PREVIEW_SIZE"] {
             let parts = size.lowercased().split(separator: "x").compactMap { Double($0) }
             if parts.count == 2 { controller.resize(to: CGSize(width: parts[0], height: parts[1])) }
+        }
+
+        // PREVIEW_GO=brain@1.0: a step change the way Continue or the rail would make it.
+        if let spec = env["PREVIEW_GO"] {
+            let parts = spec.split(separator: "@", maxSplits: 1).map(String.init)
+            if let step = OnboardingStep(rawValue: parts[0]) {
+                let at = parts.count == 2 ? (Double(parts[1]) ?? 1) : 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { [self] in
+                    withAnimation(Motion.snappy) { controller.select(step) }
+                    print("go: \(step.rawValue) at \(stamp())s (asked for \(at)s)")
+                    fflush(stdout)
+                }
+            }
+        }
+        // PREVIEW_SHOT_AT=1.12:/path/mid.png: the window as it is at that moment.
+        if let spec = env["PREVIEW_SHOT_AT"] {
+            let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
+            if parts.count == 2, let at = Double(parts[0]) {
+                let path = parts[1]
+                DispatchQueue.main.asyncAfter(deadline: .now() + at) { [self] in
+                    guard let win = controller.windowNumber else { return }
+                    // Stamped when the capture is asked for: the frame screencapture grabs
+                    // is the one on screen a few ms after this, never before it.
+                    let asked = stamp()
+                    let p = Process()
+                    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                    p.arguments = ["-x", "-o", "-l", String(win), path]
+                    try? p.run()
+                    p.waitUntilExit()
+                    print("shot: \(path) asked at \(asked)s, done at \(stamp())s (wanted \(at)s; status \(p.terminationStatus))")
+                    fflush(stdout)
+                }
+            }
         }
 
         // Fake audio levels at 20 Hz: the wizard must not care.
@@ -98,6 +153,75 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
         if let n = controller.windowNumber {
             print("WINDOW_NUMBER=\(n)")
             fflush(stdout)
+        }
+    }
+}
+
+/// Every kind with a status, per scenario. `ready`: the hands lack Accessibility and Full
+/// Disk Access, most capabilities never asked; `fresh`: nothing asked yet; `broken`: the
+/// microphone denied, Automation with a denied target.
+enum OnboardingFakePermissions {
+    static func list(scenario: String) -> [PermissionInfo] {
+        let grants: [PermissionKind: (Grant, String?)]
+        switch scenario {
+        case "fresh":
+            grants = [
+                .screenRecording: (.denied, nil), .accessibility: (.denied, nil), .inputMonitoring: (.denied, nil),
+                .automation: (.unknown, "nothing scriptable running · 11 not running"), .fullDiskAccess: (.denied, nil),
+                .filesDesktop: (.unknown, "~/Desktop"), .filesDocuments: (.unknown, "~/Documents"), .filesDownloads: (.unknown, "~/Downloads"),
+            ]
+        case "broken":
+            grants = [
+                .microphone: (.denied, nil), .speechRecognition: (.denied, nil), .screenRecording: (.granted, nil), .accessibility: (.denied, nil),
+                .inputMonitoring: (.granted, nil), .automation: (.denied, "granted: Finder, System Events · denied: Google Chrome · 8 not running"),
+                .fullDiskAccess: (.denied, nil), .notifications: (.denied, nil), .camera: (.denied, nil), .contacts: (.granted, nil),
+                .calendars: (.denied, "write only · needs full access"), .reminders: (.granted, nil), .localNetwork: (.denied, nil),
+                .filesDesktop: (.granted, "~/Desktop"), .filesDocuments: (.denied, "~/Documents"), .filesDownloads: (.granted, "~/Downloads"),
+            ]
+        case "auto":
+            grants = Dictionary(uniqueKeysWithValues: PermissionKind.allCases.map { ($0, (Grant.granted, $0 == .automation ? "granted: Finder, Google Chrome, System Events · 8 not running" : nil)) })
+        default:
+            grants = [
+                .microphone: (.granted, nil), .speechRecognition: (.granted, nil), .screenRecording: (.granted, nil), .accessibility: (.denied, nil),
+                .inputMonitoring: (.unknown, nil), .automation: (.unknown, "granted: Finder, System Events · not asked: Google Chrome · 7 not running"),
+                .fullDiskAccess: (.denied, nil), .notifications: (.granted, nil), .camera: (.unknown, nil), .contacts: (.denied, nil),
+                .calendars: (.granted, nil), .reminders: (.unknown, nil), .localNetwork: (.unknown, nil),
+                .filesDesktop: (.granted, "~/Desktop"), .filesDocuments: (.unknown, "~/Documents"), .filesDownloads: (.denied, "~/Downloads"),
+            ]
+        }
+        let now = Date().timeIntervalSince1970 * 1000
+        return PermissionKind.allCases.map { kind in
+            let m = PermissionsKit.meta(kind)
+            let (grant, detail) = grants[kind] ?? (.unknown, nil)
+            return PermissionInfo(kind: kind, grant: grant, ask: m.ask, required: m.required, label: m.label, why: m.why, detail: detail, checkedAt: now)
+        }
+    }
+
+    /// PREVIEW_SWEEP=asking|waiting|settings|folders|done.
+    static func sweep(_ stage: String) -> PermissionSweepProgress? {
+        switch stage {
+        case "asking":
+            return PermissionSweepProgress(stage: .asking, total: 16, index: 6, current: .automation, line: "6 of 16 · asking for Automation…")
+        case "waiting":
+            // A dialog that returned at once: the sweep waits for the grant, Next or Cancel.
+            return PermissionSweepProgress(stage: .waiting, total: 16, index: 3, current: .screenRecording,
+                                           line: "3 of 16 · Screen Recording · allow it, or switch Jarhead on in Privacy & Security › Screen & System Audio Recording",
+                                           remaining: [.screenRecording], group: [.screenRecording])
+        case "settings":
+            return PermissionSweepProgress(stage: .settings, total: 16, index: 7, current: .fullDiskAccess,
+                                           line: "7 of 16 · Full Disk Access · switch Jarhead on in Privacy & Security › Full Disk Access",
+                                           remaining: [.fullDiskAccess, .filesDocuments], group: [.fullDiskAccess])
+        case "folders":
+            // Kinds that share a pane walk as one step.
+            return PermissionSweepProgress(stage: .settings, total: 16, index: 14, current: .filesDesktop,
+                                           line: "14 of 16 · Desktop folder, Documents folder, Downloads folder · switch Jarhead on for each in Privacy & Security › Files and Folders",
+                                           remaining: [.filesDesktop, .filesDocuments, .filesDownloads], group: [.filesDesktop, .filesDocuments, .filesDownloads])
+        case "done":
+            return PermissionSweepProgress(stage: .done, total: 16, index: 16, current: nil,
+                                           line: "14 of 16 granted · Full Disk Access needs System Settings",
+                                           summary: "14 of 16 granted · Full Disk Access needs System Settings")
+        default:
+            return nil
         }
     }
 }

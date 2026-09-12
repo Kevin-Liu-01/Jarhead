@@ -2,14 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- What the app does: hears you, and drives other apps. -->
+  <!--
+    The bundle is signed with the hardened runtime (scripts/build-mac.ts: codesign
+    the runtime option with this file), which blocks a protected resource unless its
+    entitlement is here. One per protected resource the app touches
+    (Permissions/PermissionsRequests.swift): hears you, sees you, drives other apps,
+    reads your contacts and your calendars. Reminders ride on EventKit, which the
+    calendars entitlement covers — the hardened runtime has no reminders key.
+    Screen Recording, Accessibility, Input Monitoring, Speech Recognition, Full Disk
+    Access, Notifications, Local Network and the folders are TCC-only: no entitlement.
+  -->
   <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.device.camera</key><true/>
   <key>com.apple.security.automation.apple-events</key><true/>
+  <key>com.apple.security.personal-information.addressbook</key><true/>
+  <key>com.apple.security.personal-information.calendars</key><true/>
 
   <!--
     No hardened-runtime exceptions: spawning node (jarheadd) and the jarhead-hands
     helper is unaffected by the hardened runtime, which only governs what loads into
-    this process. The children run with their own, separate protections.
+    this process. The children run with their own, separate protections. The helper
+    is signed without entitlements and still reads Accessibility and Screen Recording:
+    those are TCC checks on the responsible process (this app), not entitlements.
   -->
 
   <!--

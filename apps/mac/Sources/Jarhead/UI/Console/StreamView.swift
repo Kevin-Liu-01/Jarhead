@@ -41,13 +41,25 @@ struct StreamPane: View, Equatable {
     }
 
     var body: some View {
+        // The feed's identity is the day on screen: a ledger day arriving or the way back
+        // to live crossfades one feed into the next (Motion.swap) under the banner, which
+        // itself fades and rises in; the composer stays put with whatever was typed.
+        let feedKey = ledgerDay ?? "live"
         VStack(spacing: 0) {
             if let day = ledgerDay {
-                LedgerBanner(day: day) { session.showLive() }
+                LedgerBanner(day: day) { withAnimation(Motion.gentle) { session.showLive() } }
+                    .transition(Motion.appear)
             }
-            StreamFeed(entries: entries, modeKey: ledgerDay ?? "live", emptyState: emptyState)
+            ZStack {
+                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState)
+                    .id(feedKey)
+                    .transition(Motion.swap)
+            }
+            .clipped()
+            .animation(Motion.gentle, value: feedKey)
             ComposerBar(phase: phase, stopHot: delegationRunning)
         }
+        .animation(Motion.gentle, value: ledgerDay == nil)
     }
 
     private var emptyState: StreamEmptyState {
@@ -55,14 +67,16 @@ struct StreamPane: View, Equatable {
             if ledgerLoading { return StreamEmptyState(text: "Reading…", loading: true) }
             return StreamEmptyState(text: "Nothing recorded.")
         }
-        if !hasSession { return StreamEmptyState(text: "Asleep. Wake me.", wake: true) }
+        if phase == .paused { return StreamEmptyState(text: "Paused. Press Go or type to resume.", go: true) }
+        if !hasSession { return StreamEmptyState(text: "Asleep. Press Go.", go: true) }
         return StreamEmptyState(text: "Nothing heard yet.")
     }
 }
 
 struct StreamEmptyState: Equatable {
     let text: String
-    var wake = false
+    /// Offer the transport's Go (wake, or resume with the context).
+    var go = false
     var loading = false
 }
 
@@ -173,9 +187,8 @@ final class ConsoleScrollProbeView: NSView {
         let y = doc.isFlipped ? max(0, doc.frame.height - clip.bounds.height) : 0
         let origin = NSPoint(x: clip.bounds.origin.x, y: y)
         if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            // The jump to the latest: a view moving on its own, Motion.base, arriving soft.
+            Motion.animate(Motion.base, curve: Motion.easeOut) {
                 clip.animator().setBoundsOrigin(origin)
             }
         } else {
@@ -284,8 +297,16 @@ struct StreamFeed: View {
     let emptyState: StreamEmptyState
 
     @Environment(\.consoleActions) private var actions
+    @Environment(\.consoleTransport) private var transport
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var tracker = ConsoleFeedTracker()
+    /// True one turn after the feed has its first content: rows there from the start
+    /// show at once (the pane they are in is arriving on its own), and so do the rows a
+    /// read the feed opened waiting on (a Jarhead conversation, a ledger day: they open
+    /// with `emptyState.loading` and land whole a moment later — a past conversation is
+    /// not "new"); rows appended after that fade in and rise (`rowAppear`, on the row's
+    /// ink only — the document's height never animates).
+    @State private var settled = false
 
     private static let bottomId = "stream-bottom"
 
@@ -296,6 +317,7 @@ struct StreamFeed: View {
                     ScrollView(.vertical) {
                         if entries.isEmpty {
                             emptyView.frame(minHeight: outer.size.height)
+                                .transition(.opacity)
                         } else {
                             // Not lazy on purpose: a lazy stack re-estimates the height of rows it
                             // has dropped, so the content height jitters by tens of points after
@@ -304,6 +326,7 @@ struct StreamFeed: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 ForEach(entries) { entry in
                                     StreamRow(entry: entry)
+                                        .rowAppear(animated: settled)
                                 }
                                 Color.clear.frame(height: 1).id(Self.bottomId)
                             }
@@ -313,8 +336,12 @@ struct StreamFeed: View {
                             .background(alignment: .topLeading) {
                                 ConsoleScrollProbe(tracker: tracker).frame(width: 0, height: 0)
                             }
+                            .transition(.opacity)
                         }
                     }
+                    // The empty line and the first rows crossfade; nothing else on the
+                    // document is ever animated from here (see ConsoleRowAppear).
+                    .animation(Motion.fade, value: entries.isEmpty)
                 }
                 if tracker.showJump && !entries.isEmpty {
                     Button {
@@ -327,21 +354,27 @@ struct StreamFeed: View {
                     }
                     .buttonStyle(JumpPillStyle())
                     .padding(.bottom, 12)
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    .transition(ConsoleMotion.arriveLeave)
                     .help("Jump to the latest")
                 }
             }
-            .animation(reduceMotion ? nil : ConsoleTheme.motion, value: tracker.showJump)
+            .animation(Motion.gentle, value: tracker.showJump)
             .onAppear {
                 tracker.reduceMotion = reduceMotion
                 tracker.fallback = { animate in
                     if animate {
-                        withAnimation(ConsoleTheme.motion) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
+                        withAnimation(Motion.gentle) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
                     } else {
                         proxy.scrollTo(Self.bottomId, anchor: .bottom)
                     }
                 }
                 tracker.jump(animated: false)
+                // A feed still reading settles when the read lands (below), so the rows it
+                // was waiting on show at once like rows there from the start.
+                if !emptyState.loading { settle() }
+            }
+            .onChange(of: emptyState.loading) { _, loading in
+                if !loading { settle() }
             }
             .onChange(of: reduceMotion) { tracker.reduceMotion = reduceMotion }
             .onChange(of: entries) {
@@ -351,13 +384,20 @@ struct StreamFeed: View {
         }
     }
 
+    /// Rows from the next turn on are "new": the ones in this frame show at once.
+    private func settle() {
+        guard !settled else { return }
+        DispatchQueue.main.async { settled = true }
+    }
+
     private var emptyView: some View {
         ConsoleEmpty(emptyState.text) {
             if emptyState.loading {
                 ProgressView().controlSize(.small)
-            } else if emptyState.wake {
-                Button { actions.send(.wake) } label: { Label("Wake", systemImage: "bolt.fill") }
+            } else if emptyState.go {
+                Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
+                    .help("Go (⌘P)")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -376,6 +416,7 @@ struct JumpPillStyle: ButtonStyle {
             .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
             .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(ConsoleMotion.hover, value: configuration.isPressed)
     }
 }
 
@@ -473,8 +514,15 @@ struct SystemRow: View {
 
 // MARK: - Delegation card
 
+/// The status glyph and the timeline's last mark crossfade as the delegation settles;
+/// steps and the summary arriving after the card fade in and rise on their own ink
+/// (`rowAppear`), so the card — and the document under it — takes its new height at
+/// once and the feed's pinned bottom never chases an animated layout.
 struct DelegationCard: View {
     let delegation: Delegation
+
+    /// One turn after the card appeared; what was there from the start shows at once.
+    @State private var settled = false
 
     var body: some View {
         let d = delegation
@@ -503,6 +551,7 @@ struct DelegationCard: View {
                     ForEach(Array(d.steps.enumerated()), id: \.element.id) { index, step in
                         StepRow(step: step, delegatedAt: d.timings.delegatedAt,
                                 waiting: d.status == .awaitingConfirmation && index == d.steps.count - 1)
+                            .rowAppear(animated: settled)
                     }
                 }
                 .padding(EdgeInsets(top: 2, leading: 10, bottom: 6, trailing: 10))
@@ -511,19 +560,23 @@ struct DelegationCard: View {
             }
 
             if let summary = d.summary, !summary.isEmpty {
-                ConsoleHairline(weight: .row)
-                HStack(alignment: .firstTextBaseline, spacing: iconGap) {
-                    ConsoleIcon(name: meta.symbol, tint: meta.color)
-                    Text(summary).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 0) {
+                    ConsoleHairline(weight: .row)
+                    HStack(alignment: .firstTextBaseline, spacing: iconGap) {
+                        ConsoleIcon(name: meta.symbol, tint: meta.color)
+                        Text(summary).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(EdgeInsets(top: 7, leading: 10, bottom: 8, trailing: 10))
                 }
-                .padding(EdgeInsets(top: 7, leading: 10, bottom: 8, trailing: 10))
+                .rowAppear(animated: settled)
             }
         }
         .overlay(Rectangle().stroke(ConsoleTheme.hair, lineWidth: 1))
         .padding(.leading, stampWidth + stampGap)
         .padding(.vertical, 8)
+        .onAppear { DispatchQueue.main.async { settled = true } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Delegation, \(meta.label)")
     }
@@ -578,9 +631,16 @@ struct DelegationTimeline: View {
         return ConsoleFlow(hSpacing: 12, vSpacing: 3) {
             ForEach(marks) { mark in
                 HStack(spacing: 5) {
+                    // The last mark turns from "running" to how it ended: the dot's colour
+                    // and the word crossfade; the figure keeps its digits rolling.
                     Circle().fill(mark.color).frame(width: 5, height: 5)
+                        .animation(Motion.fade, value: mark.color)
                     Text(mark.label).foregroundStyle(ConsoleTheme.fg2)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: mark.label)
                     Text(mark.delta).foregroundStyle(ConsoleTheme.titanium)
+                        .contentTransition(ConsoleMotion.numeric)
+                        .animation(Motion.snappy, value: mark.delta)
                 }
                 .lineLimit(1)
                 .fixedSize()
@@ -683,14 +743,14 @@ struct ToolStepRow: View {
     let tool: ToolStep
     let delegatedAt: Double
     @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: iconGap) {
                 ConsoleIcon(name: "terminal.fill")
                 Button {
-                    withAnimation(reduceMotion ? nil : ConsoleTheme.fast) { expanded.toggle() }
+                    // Unfolds on its own once pressed: Motion.gentle, the chevron turning with it.
+                    withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
@@ -726,7 +786,7 @@ struct ToolStepRow: View {
                     if let output = tool.output { ioBlock("output", ConsoleFormat.pretty(output)) }
                 }
                 .padding(EdgeInsets(top: 2, leading: 20 + iconGap, bottom: 6, trailing: deltaWidth + iconGap))
-                .transition(.opacity)
+                .transition(Motion.appear)
             }
         }
     }
@@ -816,7 +876,6 @@ struct ScreenshotThumb: View {
     @State private var image: CGImage?
     @State private var failed = false
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -833,7 +892,7 @@ struct ScreenshotThumb: View {
         }
         .frame(width: width)
         .overlay(Rectangle().stroke(hovering && image != nil ? ConsoleTheme.fg : ConsoleTheme.hairFrame, lineWidth: 1))
-        .animation(reduceMotion ? nil : ConsoleTheme.fast, value: hovering)
+        .animation(ConsoleMotion.hover, value: hovering)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { if image != nil { onTap() } }
@@ -895,49 +954,81 @@ struct LightboxView: View {
 
 // MARK: - Composer
 
-/// 48pt, owns its top rule: wake/sleep, mute, the field, Send (the one filled
-/// accent, only while there is text), Pause (play while paused; ⌘P here, ⌥⇧P
-/// anywhere), Stop (filled red while the snapshot holds a running delegation and for
-/// 300 ms after a press — the flash is the only local state, and it lets go on its
-/// own). Wake / Sleep, Pause, Send and Stop are enabled in every phase: a Stop must
-/// land whatever is happening, and a wake after a Stop must not find the button gone.
+/// 48pt, owns its top rule: Go/Pause (the transport's one button — `play.fill` as the
+/// filled accent while asleep, a ghost while paused, `pause.fill` in session, a quiet
+/// "…" while connecting where a press stops; ⌘P here, ⌥⇧Space anywhere), Mute (enabled
+/// only in session), the field, Send (filled accent only while there is text), Stop
+/// (filled red while the snapshot holds a running delegation and for Motion.slow
+/// (400 ms) after a press — the flash is the only local state, and it lets go on its
+/// own). Go/Pause,
+/// Send and Stop are enabled in every phase: a Stop must land whatever is happening,
+/// and a Go after a Stop must not find the button gone. Pause and Stop both close the
+/// session (the meter stops); a pause keeps the conversation, and typing while paused
+/// just sends — the engine resumes first.
 struct ComposerBar: View {
     let phase: Phase
     let stopHot: Bool
 
     @Environment(\.consoleActions) private var actions
+    @Environment(\.consoleTransport) private var transport
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
     @State private var stopFlashing = false
     @FocusState private var focused: Bool
 
-    static let stopFlashSeconds = 0.3
+    /// How long Stop stays red for a press: a larger change of state, Motion.slow.
+    static let stopFlashSeconds = Motion.slow
 
     private var inSession: Bool { ConsoleTheme.sessionPhases.contains(phase) }
     private var muted: Bool { phase == .muted }
     private var paused: Bool { phase == .paused }
+    private var connecting: Bool { phase == .connecting }
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
 
+    private var placeholder: String {
+        if paused { return "Paused — press Go or type to resume" }
+        return inSession ? "Say something…" : "Type to Jarhead…"
+    }
+
+    /// The Go/Pause button's spoken name, for accessibility.
+    private var transportWord: String {
+        switch AppState.transportPress(for: phase) {
+        case .go: return "Go"
+        case .pause: return "Pause"
+        case .stop: return "Connecting — press to stop"
+        }
+    }
+
     var body: some View {
+        let look = AppState.transportLabel(for: phase)
         VStack(spacing: 0) {
             ConsoleHairline()
             HStack(spacing: 8) {
-                Button { actions.send(inSession ? .sleep : .wake) } label: {
-                    Image(systemName: inSession ? "moon.fill" : "bolt.fill").font(.system(size: 13, weight: .medium))
+                Button(action: transport.toggle) {
+                    // Go ↔ Pause ↔ "…": the glyph swaps with the symbol replace effect while the
+                    // button style crossfades its fill (ConsoleButtonBody animates `kind`).
+                    Image(systemName: look.symbol).font(.system(size: 13, weight: .medium))
+                        .contentTransition(ConsoleMotion.symbol)
+                        // Connecting: the "…" sits back; the press is a stop.
+                        .opacity(connecting ? 0.55 : 1)
+                        .animation(Motion.fade, value: look.symbol)
+                        .animation(Motion.fade, value: connecting)
                 }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
-                .help(inSession ? "Sleep" : "Wake")
-                .accessibilityLabel(inSession ? "Sleep" : "Wake")
+                .buttonStyle(ConsoleButtonStyle(kind: AppState.transportFilled(for: phase) ? .primary : .ghost, iconOnly: true, height: 32))
+                .help(look.help + " (⌘P)")
+                .accessibilityLabel(transportWord)
 
                 Button { actions.send(muted ? .unmute : .mute) } label: {
                     Image(systemName: muted ? "mic.slash.fill" : "mic.fill").font(.system(size: 13, weight: .medium))
+                        .contentTransition(ConsoleMotion.symbol)
+                        .animation(Motion.fade, value: muted)
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
                 .disabled(!inSession)
                 .help(muted ? "Unmute" : "Mute")
                 .accessibilityLabel(muted ? "Unmute" : "Mute")
 
-                TextField(inSession ? "Say something…" : "Type to Jarhead…", text: $text)
+                TextField(placeholder, text: $text)
                     .consoleField(height: 32, focused: focused)
                     .focused($focused)
                     .onSubmit(submit)
@@ -951,13 +1042,6 @@ struct ComposerBar: View {
                 .help("Send (Return)")
                 .accessibilityLabel("Send")
 
-                Button { actions.send(paused ? .resume : .pause) } label: {
-                    Image(systemName: paused ? "play.fill" : "pause.fill").font(.system(size: 13, weight: .medium))
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
-                .help(paused ? "Resume (⌘P)" : "Pause — keep the session, go silent (⌘P)")
-                .accessibilityLabel(paused ? "Resume" : "Pause")
-
                 Button(action: actions.stop) {
                     HStack(spacing: 6) {
                         Image(systemName: "stop.fill").font(.system(size: 10))
@@ -965,7 +1049,7 @@ struct ComposerBar: View {
                     }
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: stopHot || stopFlashing ? .danger : .ghost, height: 32))
-                .help("Stop everything (⌘.)")
+                .help("Stop everything — close the session, sleep (⌘.)")
                 .accessibilityLabel("Stop")
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))

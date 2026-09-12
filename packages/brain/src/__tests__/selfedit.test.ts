@@ -358,7 +358,7 @@ test("self_status and doctor row with nothing pending", async (t: TestContext) =
 /** An engine that only records the commands the daemon hands it. */
 class RecordingEngine extends EventEmitter implements EngineLike {
   commands: unknown[] = [];
-  ledger = { read: () => [], days: () => [] };
+  ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner = { run: async (name: string): Promise<{ result: ToolResult }> => ({ result: { kind: "text", text: `${name} ok` } }) };
   snapshot(): unknown {

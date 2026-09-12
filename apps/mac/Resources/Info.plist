@@ -6,7 +6,7 @@
   <key>CFBundleName</key><string>Jarhead</string>
   <key>CFBundleDisplayName</key><string>Jarhead</string>
   <key>CFBundleExecutable</key><string>Jarhead</string>
-  <!-- TCC keys microphone / screen recording / accessibility grants to this identifier. -->
+  <!-- TCC keys every grant (microphone, screen recording, accessibility, automation, the folders…) to this identifier. -->
   <key>CFBundleIdentifier</key><string>com.kevinliu.jarhead</string>
   <key>CFBundleIconFile</key><string>Jarhead</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -20,14 +20,48 @@
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+
+  <!--
+    Usage strings, one per prompt the app fires (Permissions/PermissionsRequests.swift).
+    A prompt without its string kills the app on first access, so every API called
+    there has its key here. Input Monitoring, Screen Recording, Accessibility and
+    Notifications have no key: their dialogs are the system's own words.
+  -->
   <key>NSMicrophoneUsageDescription</key>
-  <string>Jarhead listens so you can talk to it. Audio goes only to the voice model while a session is open.</string>
+  <string>Jarhead listens so you can talk to it. Audio goes to the voice model only while a session is open; asleep, nothing leaves this Mac.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Jarhead listens for its wake word with on-device speech recognition while it is asleep. Nothing is sent anywhere until you authenticate.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Jarhead drives other apps to do what you ask.</string>
+  <string>Jarhead drives other apps to do what you ask: the browser, Finder, System Events. Only while you are talking to it.</string>
   <key>NSSystemAdministrationUsageDescription</key>
   <string>Jarhead needs accessibility access to move the cursor, click, and type for you.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Jarhead looks through the camera only when you ask it to. Nothing is recorded or kept.</string>
+  <key>NSContactsUsageDescription</key>
+  <string>Jarhead reads Contacts only when you ask for a name or an address.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Jarhead reads and adds calendar events when you ask. Nothing is synced anywhere else.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Jarhead reads and adds calendar events when you ask. Nothing is synced anywhere else.</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>Jarhead reads and adds reminders when you ask.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>Jarhead reads and adds reminders when you ask.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Jarhead finds devices and servers on your network when you ask it to reach one.</string>
+  <key>NSBonjourServices</key>
+  <array><string>_http._tcp</string></array>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Jarhead reads and writes files on your Desktop when you ask.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Jarhead reads and writes files in Documents when you ask.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Jarhead reads and writes files in Downloads when you ask.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Jarhead reaches files on network volumes when you ask.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Jarhead reaches files on external drives when you ask.</string>
+
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

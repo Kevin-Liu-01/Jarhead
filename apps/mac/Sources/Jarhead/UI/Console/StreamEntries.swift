@@ -61,16 +61,36 @@ enum StreamBuilder {
         var out: [StreamEntry] = []
         var delegations: [String: Delegation] = [:]
         var order: [String] = []
+        // The last transport row: what a close the engine asked for meant (ConsoleFormat.closeReason).
+        var transport: String?
 
         for (index, row) in rows.enumerated() {
             switch row.type {
             case "session.started":
+                transport = nil
                 out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: "bolt.fill", text: "Session started",
-                                               mono: ConsoleFormat.shortId(row.sessionId), trailing: nil)))
+                                               mono: ConsoleFormat.shortId(row.sessionId),
+                                               trailing: row.resumedFrom.map { "resumed from \(ConsoleFormat.shortId($0))" })))
             case "session.closed":
-                let reason = row.reason ?? "closed"
-                out.append(.system(SystemEntry(id: "c:\(row.at):\(index)", at: row.at, symbol: "moon.fill", text: "Session closed · \(reason)",
-                                               trailing: "\(ConsoleFormat.minutes(row.usageSeconds ?? 0)) billed")))
+                let reason = ConsoleFormat.closeReason(row.reason, after: transport)
+                out.append(.system(SystemEntry(id: "c:\(row.at):\(index)", at: row.at, symbol: "moon.fill",
+                                               text: reason == "closed" ? "Session closed" : "Session closed · \(reason)",
+                                               trailing: "\(TransportFormat.minutes(row.usageSeconds ?? 0)) billed")))
+            case "pause":
+                // A pause closes the Live session: the meter stops, the conversation is held.
+                transport = "pause"
+                out.append(.system(SystemEntry(id: "pz:\(row.at):\(index)", at: row.at, symbol: "pause.fill", text: "Paused · meter stopped",
+                                               trailing: row.usageSeconds.map { "\(TransportFormat.minutes($0)) billed" })))
+            case "resume":
+                out.append(.system(SystemEntry(id: "rs:\(row.at):\(index)", at: row.at, symbol: "play.fill",
+                                               text: ConsoleFormat.sentence(ConsoleFormat.resumedAfter(row.pausedMs)),
+                                               mono: row.resumedFrom.map { ConsoleFormat.shortId($0) })))
+            case "stop":
+                // Only a pressed stop closes the session; a spoken one keeps it listening.
+                if row.how == "pressed" { transport = "stop" }
+                out.append(.system(SystemEntry(id: "st:\(row.at):\(index)", at: row.at, symbol: "stop.fill",
+                                               text: ConsoleFormat.sentence(ConsoleFormat.stopped(row.how)),
+                                               trailing: row.cancelled.map { "cancelled \(ConsoleFormat.shortId($0))" })))
             case "heard", "said":
                 if let item = row.item { out.append(.utterance(item)) }
             case "delegation.created":
@@ -122,5 +142,57 @@ enum StreamBuilder {
             }
         }
         return s
+    }
+}
+
+// MARK: - The transport rows' words (pure)
+
+extension ConsoleFormat {
+    /// "resumed after 3 min" · "resumed after 12 s" · "resumed" when the row does not say.
+    static func resumedAfter(_ pausedMs: Double?) -> String {
+        guard let ms = pausedMs, ms.isFinite, ms >= 0 else { return "resumed" }
+        return "resumed after \(pausedFor(ms))"
+    }
+
+    /// A pause's length in words: "12 s", "3 min", "1 h 5 min".
+    static func pausedFor(_ ms: Double) -> String {
+        let s = Int((ms / 1000).rounded())
+        if s < 60 { return "\(s) s" }
+        let m = s / 60
+        if m < 60 { return "\(m) min" }
+        let h = m / 60, rest = m % 60
+        return rest == 0 ? "\(h) h" : "\(h) h \(rest) min"
+    }
+
+    /// "stopped (pressed)" · "interrupted (said)".
+    static func stopped(_ how: String?) -> String {
+        how == "said" ? "interrupted (said)" : "stopped (pressed)"
+    }
+
+    /// The server's word for a close the engine asked for (`close_requested`) — or ours
+    /// when it had to force one (`client_closed`) — says nothing about why; the
+    /// transport row before it does. Mirrors `Ledger.sessions()`: "paused" after a
+    /// `pause`, "stopped" after a pressed `stop`, "closed" with neither (an idle sleep);
+    /// every other reason (idle, connection_lost, …) is kept as recorded.
+    static func closeReason(_ reason: String?, after transport: String? = nil) -> String {
+        guard let reason, !reason.isEmpty else { return "closed" }
+        guard reason == "close_requested" || reason == "client_closed" else { return reason }
+        switch transport {
+        case "pause": return "paused"
+        case "stop": return "stopped"
+        default: return "closed"
+        }
+    }
+
+    /// "HH:mm" — the rail's meta line has no room for seconds.
+    static func clock(_ ms: Double) -> String {
+        let t = time(ms)
+        return t.count > 5 ? String(t.prefix(5)) : t
+    }
+
+    /// First letter up, for the stream's system lines; the log keeps them lower.
+    static func sentence(_ s: String) -> String {
+        guard let first = s.first else { return s }
+        return first.uppercased() + s.dropFirst()
     }
 }

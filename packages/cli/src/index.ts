@@ -1,2 +1,2 @@
-export { runChecks, render } from "./doctor.ts";
+export { runChecks, render, summarizePermissions } from "./doctor.ts";
 export type { Check, Status } from "./doctor.ts";
