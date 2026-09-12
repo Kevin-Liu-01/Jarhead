@@ -92,9 +92,10 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
 
 ```bash
 pnpm run doctor · pnpm run typecheck · pnpm test · pnpm run check
-pnpm build:mac                # native Jarhead.app → build/Jarhead.app (apps/mac, Swift)
+pnpm build:mac                # builds, signs, installs /Applications/Jarhead.app IN PLACE (rsync; the bundle directory and its inode never change); build/Jarhead.app is a symlink to it. JARHEAD_INSTALL_HYGIENE=0 skips the Dock/LaunchServices audit, =fix also repairs the Dock
+pnpm jarhead dock [--fix]     # one Jarhead: Dock tiles + LaunchServices records for /Applications/Jarhead.app, read-only; --fix drops recent tiles, rebuilds the pin, unregisters stale bundle paths, restarts the Dock only on a change
 pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps it quiet
-pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep|mute|unmute|stop|pause|resume|agent.refresh
+pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep [cause]|mute|unmute|stop|pause|resume|agent.refresh|worker.stop <id>
 pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path; exit 1 when p95 to dispatch > 250 ms with the real helper
 pnpm jarhead bench --brain [--runs N] [--effort low] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
@@ -514,3 +515,105 @@ to his microphone and bills per second.
   Date.now while later ones used the injected clock — pass clocks lazily.
 - The hands helper is serial, so a cancel line queues behind the op it means to
   stop; the out-of-band stop is a signal whose default action is ignore (SIGURG).
+- **The Dock's pinned tile is a bookmark keyed on the bundle directory's inode.**
+  `rm -rf /Applications/Jarhead.app && cp -R` gave the directory a new inode every
+  build; the pin's `book` blob stopped resolving and the running app came back as a
+  second, "recent" tile. `pnpm build:mac` now rsyncs INTO the existing directory
+  (`-rlptD -c --delay-updates --delete-after --itemize-changes`, each changed file
+  renamed in, so the running app keeps its mapped inodes), verifies the INSTALLED
+  copy (`codesign --verify --strict --deep`, the designated requirement's
+  `identifier "com.kevinliu.jarhead"`, a sha256 parity walk against the stage, the
+  directory inode unchanged), snapshots the last good bundle to gitignored
+  `build/previous/`, refreshes LaunchServices (`lsregister -f`) and unregisters stale
+  Jarhead bundle paths (the database only — the Trash's contents are never touched),
+  then only READS the Dock. The Dock repair (`defaults export` → drop Jarhead's
+  recent tiles, keep one pin stripped to bundle-identifier / file-data / file-label /
+  file-type → `defaults import` behind a `mod-count` race check → `killall Dock` only
+  when something was written) is `pnpm jarhead dock --fix` or
+  `JARHEAD_INSTALL_HYGIENE=fix`; `=0` skips the audit. `planInstall` refuses a
+  symlink, a regular file or another uid at the target before anything is written.
+  Library: `@jarhead/cli/install` (pure functions over parsed plists and lsregister
+  dumps, one injectable `exec`; every test runs in CI without a Dock).
+- **lsregister waits on lsd.** `lsregister -dump Bundle` is ~2 s on an idle Mac and
+  66–85 s at load average 300 (a self-edit build under a running test suite); a
+  20 s cap made the LaunchServices half of the one-Jarhead pass silently do nothing
+  exactly when a build was slow, and the reason was dropped. Every lsregister call
+  now gets 120 s (`LSREGISTER_TIMEOUT_MS`), a failed dump carries its stderr into
+  the line, and a build dumps once — the `-u` exit codes are the report; only
+  `dock --fix` re-dumps to prove the records went.
+- **openrsync `-E` emits AppleDouble.** `/usr/bin/rsync` is openrsync (protocol 29,
+  "2.6.9 compatible"); `-E` (xattrs) with `--delay-updates` writes `._*` entries and
+  `.~tmp~` errors into the destination, and FinderInfo/ResourceFork sideband inside
+  a bundle fails `--strict`. The signature is embedded (the Mach-O and
+  `Contents/_CodeSignature/CodeResources`), the bundle has no xattr but
+  `com.apple.provenance`, and a copy without xattrs verifies strict — so never `-E`,
+  never `-a` (owner/group rewrite), never `--inplace` (writes into the running app's
+  mapped, signed binary); `parseItemized` fails the build if a `._` entry appears.
+  `-c` (checksum) because two files of equal size in the same second were skipped by
+  the quick check once.
+- **Workers are not agents.** Agents (`agents_*`, the Console's Sessions rail) are
+  Kevin's coding sessions on this Mac. Workers (`worker_start` / `worker_wait` /
+  `worker_read` / `worker_stop`, `Snapshot.workers`, `WORKER_MAX` 2, budgets 25
+  steps / 180 s, caps 40 / 300) are the brain's second hands: a **background** lane
+  (Apple events, `browser_*`, files, shell, web; the pointer and keyboard are refused
+  in `LaneRunner`, not in policy.ts) or a **screen** lane that waits for the pointer.
+  Their `BrainTask.request` is Kevin's words (the brief rides in the dialogue), their
+  steps land on the PARENT delegation with `step.worker = name`, and they never
+  narrate: one split line at the first `worker_start` ("<Name> alongside."), one
+  finish line per worker, both Jarhead's own speech through the parent's
+  `queueCommentary`. `worker_*` and `self_*` are denied to workers (depth 1). Live
+  stays open while a worker runs; the idle guard is `!delegator.active &&
+  workers.running() === 0`.
+- **The desk.** The engine's root `ConfirmationState` stays; every toolset — the
+  main lane too — gets `desk.lane(id, name)`. A question posts to the root when the
+  floor is free, otherwise it queues ("Queued behind <Floor>'s question … stop and
+  wait (worker_wait), do not retry"); `consume` is true only for the floor's lane;
+  `promote()` re-asks the next queued question on the root and SPEAKS it with its
+  worker's name. Kevin's yes is one action on the floor, never a grant to the queue;
+  `dropQuestion()` / `clear()` drop floor and queue together. A "yes" while a worker
+  holds the floor is relayed to it in `onDelegation` before any supersede.
+- **The lease.** `FocusLease` is the one holder of pointer, keyboard and frontmost.
+  Hand-over only at the holder's turn end, a confirm question, or 3 s of no acting
+  call; a priority taker (main brain, dictation) waits `MIN_HOLD_MS` 1500 and never
+  cuts mid-op, then re-fronts its remembered app after 300 ms settle. A worker tool
+  waits at most 8 s then returns "waiting for the screen: …" (status waiting-screen);
+  three waits fail it. Kevin's hands win inside the helper, atomically before the
+  first `CGEvent.post`: `busy` when his own key/click/scroll was within 1500 ms
+  (`secondsSinceLastEventType`, own posts excluded), `focus_moved` when the
+  frontmost pid is not the `expectFront` one. STALE_FOCUS: a front app no lane
+  activated means Kevin switched — nothing is ever pulled back in front of him. Two
+  helper processes (`HandsPool { focus, background }`, same TCC identity, both with
+  `SECRET_KEYS` stripped): screen actors use `focus`, background workers and the
+  engine's own reads use `background`.
+- **`fallAsleep(cause)` is the only closer.** `sleep()` (cause command), the idle
+  tick (idle), pause decay (pause-decayed), a brain swap (brain-changed), the blob
+  dropped into the notch (dock), `Engine.stop()` (shutdown) and `pressStop` (its
+  `stop` row, then cause stop) all end there, idempotently: typed `sleep` row →
+  `cutEverything` (both helpers, lease, workers, confirmations) → for `farewell`
+  only, `FAREWELL_LINE` appended when the voice has not just said "night." and a
+  wait for the first output delta + 300 ms quiet, cap 1800 ms → `detachLive` +
+  `closeWithDeadline(live, "sleep:<cause>")` → phase asleep → toast →
+  `workers.stopAll()`. Non-farewell causes flip the phase synchronously before the
+  first await (pressStop needs that). The orb needs nothing: asleep already
+  converges on `goHomeForTransition()`.
+- **The sleep grammar is one regex with three entries.** `SLEEP` in `reflex.ts`
+  sits after the dictation rows and BEFORE `OPEN` (so "go to sleep" is no longer
+  `open_app Sleep` and "go to bed" no longer `open_app Bed`), anchored `^…$` over
+  `normalizeUtterance` output: "go (back) to sleep/bed", "sleep now", "shut off",
+  "shut yourself off/down", "turn yourself off", "power down/off", "good night",
+  "night night", "that's all (for now/today/tonight)", "that's it for now",
+  "(you're) dismissed", "you can/may rest", "stand down", "go dormant". Bare "shut
+  down", "sleep", "night" and "stop" are NOT cues; "turn off the lights" and "shut
+  down my Mac" are tasks. The ear checks it after STOP_WORDS and before the hold,
+  only when `addressesJarhead` or within the 8 s exchange window (a "goodnight" to
+  someone in the room never sleeps it); the Delegator checks it before
+  supersede/refuse; `ReflexRunner.match` never runs it as a tool. The voice says
+  exactly "night." and delegates the words unchanged (`# Sleep` in
+  `instructions.ts`).
+
+## Learnings (2026-09-12, workers / sleep / dither pass)
+
+- The helper's `busy` check lives in `packages/hands/native/Input.swift` because only the posting process knows the timestamp of every event it posted: own posts are subtracted per kind with 30 ms slack, `mouseMoved` is not counted, `ownDriver` (dictation) skips it, `mouse_up` skips busy but not `expectFront`. `user_idle.foreignMs` is therefore per helper process — the lease reads it from the acting helper.
+- `type` with a pre-post `expectFront` mismatch is an error `focus_moved` like a click's; a mid-text switch is a cancelled result with reason `focus_moved` and the characters landed.
+- In the lease nothing decided before an `await` stands after it (the worker gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it — only `consume` and `drop(laneId)` promote.
+- Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands. Blue noise at one device pixel with seven bands read as a smooth gradient; the pattern has to be big enough to see. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:icon` after any change to `scripts/make-icon.ts` (docs/media/icon.png and apps/mac/Resources/preview-icon-sizes.png are tracked).

@@ -952,7 +952,7 @@ public final class OrbPanelController {
         freeForSession = false
         if !notchMode { updateHomeMode(animated: true) }
         if !isDormant {
-            state.send(.sleep)
+            state.send(.sleepCause("dock"))
         } else if !tucked {
             goHomeForTransition()
         }

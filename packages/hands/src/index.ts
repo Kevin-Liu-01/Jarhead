@@ -1,8 +1,14 @@
-export { NativeHandsProcess, NativeRequestError, HELPER_PERMISSION_KINDS, TYPE_CANCEL_SIGNAL, parseHelperPermissions, completeHelperPermissions } from "./native.ts";
-export type { NativeHands, NativeError, Permissions, HelloPermissions, HelperPermissionKind, DisplayInfo, ScreenshotResult, FrontmostInfo, WindowInfo, FocusedText, ElementInfo, NativeHandsProcessOptions, AxNodeInfo, FoundElement, FindElementResult, AxTreeResult, BrowserTab, TypeResult } from "./native.ts";
+export { NativeHandsProcess, NativeRequestError, HELPER_PERMISSION_KINDS, TYPE_CANCEL_SIGNAL, USER_IDLE_NONE_MS, HANDS_BUSY_PREFIX, parseHelperPermissions, completeHelperPermissions, scrubHandsEnv } from "./native.ts";
+export type { NativeHands, NativeError, Permissions, HelloPermissions, HelperPermissionKind, DisplayInfo, ScreenshotResult, FrontmostInfo, WindowInfo, FocusedText, ElementInfo, NativeHandsProcessOptions, AxNodeInfo, FoundElement, FindElementResult, AxTreeResult, BrowserTab, TypeResult, TypeCancelReason, UserIdle } from "./native.ts";
 export { Screen, fitScale, DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET } from "./screen.ts";
 export type { ScreenMapping, ShotBudget } from "./screen.ts";
 export { ComputerToolset, ConfirmationState, COMPUTER_MEMBERS, DESKTOP_TOOLS, ACTING_MEMBERS, READ_ONLY_TOOLS, YES_PATTERN, GRANT_TTL_MS, HOLD_ID, STALE_FRAME } from "./toolset.ts";
 export type { ToolResult, ActionEvent, PendingConfirmation, Grantable, ConfirmationGrant, ArmedConfirmation, ToolsetOptions, ComputerMember, DesktopTool } from "./toolset.ts";
 export { screencaptureFallback, screencaptureIndex } from "./fallback.ts";
-export { fakeHandsSpawn } from "./fake.ts";
+export { fakeHandsSpawn, FakeHands, FAKE_ACTING_OPS } from "./fake.ts";
+export { HandsPool } from "./pool.ts";
+export type { HandsPoolOptions } from "./pool.ts";
+export { FocusLease, isBusyResult, LEASE_IDLE_MS, MIN_HOLD_MS, SETTLE_MS, WAIT_MAX_MS, KEVIN_QUIET_MS, USER_IDLE_POLL_MS, ACTIVATED_TTL_MS } from "./lease.ts";
+export type { LeaseOutcome, LeaseGrant, LeaseRelease, LeaseReleaseWhy, AcquireOptions, FocusLeaseOptions } from "./lease.ts";
+export { ConfirmationDesk, LaneConfirmationState, queuedText, spokenQuestion, QUEUED_ID_PREFIX } from "./lanes.ts";
+export type { QueuedQuestion, Floor } from "./lanes.ts";

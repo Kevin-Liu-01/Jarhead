@@ -21,6 +21,11 @@ import { resultText } from "./runner.ts";
  *
  * Run it as: node node_modules/tsx/dist/cli.mjs packages/brain/src/mcp-bridge.ts
  *
+ * A worker's brain gets its own bridge process, started with `JARHEAD_WORKER=<id>`
+ * (codex-config.ts puts it in the MCP server's env): every tool.run then names the
+ * worker and the daemon routes it to that worker's lane runner — never to the main
+ * brain's, which holds the pointer. Without it the bridge is the main brain's.
+ *
  * stdout is the MCP transport, so this process must never log there; the
  * default log sink is replaced with stderr before anything can speak.
  */
@@ -29,6 +34,12 @@ const log = logger("brain.mcp-bridge");
 
 /** agent_wait may legitimately take ten minutes; everything else is far below this. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 660_000;
+
+/** The worker id a bridge process acts for, from its environment; unset, empty or blank = the main brain. */
+export function workerFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const worker = env["JARHEAD_WORKER"]?.trim();
+  return worker ? worker : undefined;
+}
 
 /** The spec's JSON Schema goes to the client verbatim; MCP's Tool shape is the same vocabulary. */
 export function toMcpTool(spec: ToolSpec): Tool {
@@ -70,12 +81,28 @@ export function toMcpContent(r: ToolResult): CallToolResult {
  * on the next call. Saves a connect/hello handshake per call and, more to the
  * point, never lets a call fail because the daemon was between two connects.
  */
+export interface SocketToolClientOptions {
+  /** The worker this client acts for: rides on every tool.run so the daemon routes to that worker's lane runner. Absent or empty: the main brain. */
+  readonly worker?: string | undefined;
+}
+
 export class SocketToolClient {
   private client: DaemonClient | undefined;
   private connecting: Promise<DaemonClient> | undefined;
   private readonly waiting = new Map<string, { resolve: (r: ToolResult) => void; timer: NodeJS.Timeout }>();
+  private readonly worker: string | undefined;
 
-  constructor(private readonly socketPath: string) {}
+  constructor(
+    private readonly socketPath: string,
+    opts: SocketToolClientOptions = {},
+  ) {
+    this.worker = opts.worker || undefined;
+  }
+
+  /** The worker every call names, if any. */
+  get workerId(): string | undefined {
+    return this.worker;
+  }
 
   get connected(): boolean {
     return this.client !== undefined;
@@ -150,7 +177,7 @@ export class SocketToolClient {
         resolve({ kind: "error", message: `${name} did not answer within ${Math.round(timeoutMs / 1000)}s` });
       }, timeoutMs);
       this.waiting.set(id, { resolve, timer });
-      client.sendJson({ type: "tool.run", id, name, input });
+      client.sendJson({ type: "tool.run", id, name, input, ...(this.worker ? { worker: this.worker } : {}) });
     });
   }
 
@@ -167,7 +194,7 @@ export class SocketToolClient {
  * matching `tool.result`, disconnect. The bridge itself keeps one connection
  * (SocketToolClient); this stays for one-off callers and tests.
  */
-export function runToolOverSocket(socketPath: string, name: string, input: unknown, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS): Promise<ToolResult> {
+export function runToolOverSocket(socketPath: string, name: string, input: unknown, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS, worker?: string): Promise<ToolResult> {
   const client = new DaemonClient(socketPath);
   const id = newId("tool");
   return new Promise<ToolResult>((resolve) => {
@@ -187,7 +214,7 @@ export function runToolOverSocket(socketPath: string, name: string, input: unkno
     client.on("error", (e) => finish({ kind: "error", message: `could not reach the Jarhead daemon at ${socketPath}: ${e.message}` }));
     client
       .connect({ pid: process.pid, audio: false })
-      .then(() => client.sendJson({ type: "tool.run", id, name, input }))
+      .then(() => client.sendJson({ type: "tool.run", id, name, input, ...(worker ? { worker } : {}) }))
       .catch(() => undefined); // the "error" listener above has already finished the call
   });
 }
@@ -195,12 +222,14 @@ export function runToolOverSocket(socketPath: string, name: string, input: unkno
 export interface BridgeOptions {
   readonly socketPath: string;
   readonly toolTimeoutMs?: number | undefined;
+  /** The worker this bridge acts for (the entry script passes `workerFromEnv()`); every tool.run carries it. */
+  readonly worker?: string | undefined;
   /** Test seam: replaces the socket round-trip. */
   readonly run?: ((name: string, input: unknown) => Promise<ToolResult>) | undefined;
 }
 
 export function createBridgeServer(opts: BridgeOptions): Server {
-  const socket = opts.run ? undefined : new SocketToolClient(opts.socketPath);
+  const socket = opts.run ? undefined : new SocketToolClient(opts.socketPath, { worker: opts.worker });
   const run = opts.run ?? ((name: string, input: unknown) => socket!.run(name, input, opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS));
   const server = new Server(
     { name: "jarhead", version: "2.0.0" },
@@ -236,7 +265,8 @@ function isEntryScript(): boolean {
 if (isEntryScript()) {
   replaceDefaultSink((level, scope, message) => process.stderr.write(`${new Date().toISOString().slice(11, 23)} ${level.padEnd(5)} ${scope}: ${message}\n`));
   const socketPath = readConfig().socketPath;
-  const server = createBridgeServer({ socketPath });
+  const worker = workerFromEnv();
+  const server = createBridgeServer({ socketPath, worker });
   const onClose = server.onclose;
   server.onclose = () => {
     onClose?.();
@@ -244,5 +274,5 @@ if (isEntryScript()) {
   };
   process.stdin.on("end", () => process.exit(0));
   await server.connect(new StdioServerTransport());
-  log.debug(`serving ${ALL_TOOL_SPECS.length} tools over stdio; daemon at ${socketPath}`);
+  log.debug(`serving ${ALL_TOOL_SPECS.length} tools over stdio; daemon at ${socketPath}${worker ? `; worker ${worker}` : ""}`);
 }

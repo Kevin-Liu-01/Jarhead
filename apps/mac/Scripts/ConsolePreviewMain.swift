@@ -5,7 +5,15 @@ import SwiftUI
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
 //   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
-//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared
+//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers
+//     workers      = the split: the main brain handed Notes and Spotify to background hands and Slack
+//                    to a screen hand (Snapshot.workers) under one running delegation — the rail's
+//                    Workers section (glyph · name · status · Stop; elapsed · lane; the last line), the
+//                    card's chips under its timeline, and the [Name] tag on the steps a worker ran;
+//                    Notes finished a moment ago and lingers. The `ledger` and `jarhead-log` scenarios
+//                    carry the ledger side: `worker` rows as system lines (a hand's first "working" and
+//                    its end; the log lists every row) and a `sleep` row (the moon, "asleep · idle" /
+//                    "asleep · said “that's all for now”") before the close it explains
 //     cleanup      = the rail with a pinned chain above the days, "Archived (2)" folded and
 //                    "Trash (2)" open with Restore on each row and the folder on its head; the
 //                    Agents section with "Hidden (1)" open; the trash figures in Settings › Retention
@@ -71,6 +79,10 @@ import SwiftUI
 //                          scrolled to the row and lit); hit:<sessionId>:<atMs> names one outright
 //     probe                print the open conversation's state (open / loaded / entries / scroll
 //                          target / the entry it resolves to) so a landed hit is checked, not reasoned
+//     check-sleep          print the sleep / worker word checks (close reasons, tombstones, remedy decoding,
+//                          the stream from ledger rows end to end, the feed's redraw seams) as
+//                          `check: ok|FAIL …` lines; worker-stop:<workerId> sends one worker.stop the
+//                          way the rail row's Stop does (the `send:` line must not be a transport stop)
 //     key:<char>           send ⌘<char> to the window (key:f must open the search); undo runs the
 //                          window's undo manager once (the last cleanup's inverse must be sent);
 //                          undo-toast presses the toast's Undo (AppState.undoCleanup(id:)); redo
@@ -180,6 +192,18 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
             state.transcripts = fake.transcripts()
+        case "workers":
+            // The split. The parent delegation stays running while its hands work (the notch and
+            // the phase read from it as ever); the workers ride on the snapshot beside it.
+            var snap = fake.live()
+            snap.marks = fake.marks()
+            snap.phase = .acting
+            snap.problems = []
+            let split = fake.splitDelegation()
+            snap.delegations.append(split)
+            snap.workers = fake.workers(parent: split.id)
+            snap.transcript += fake.splitTranscript(from: split.createdAt)
+            state.snapshot = snap
         default:
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
@@ -273,6 +297,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // One hit only (the resumed session's delegation request), in a past chain: the hit path proper.
         case "search-hit": defaultActions = "search:codex did while@0.4,hit-first@1.2,probe@2.2"
         case "cleared": defaultActions = "clear-now@0.5"
+        // The pure words behind the sleep and worker rows, checked into run.log (the package has no
+        // test target), then Spotify's Stop the way the rail's button sends it (`send: worker.stop`).
+        case "workers": defaultActions = "check-sleep@0.3,worker-stop:w_sp0t1fy@0.5"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -360,6 +387,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 shoot(to: path, stamp: stamp)
             } else if keyAction(action) {
                 // printed by keyAction
+            } else if action == "check-sleep" {
+                checkSleepAndWorkerWords(stamp: stamp)
+            } else if action.hasPrefix("worker-stop:") {
+                // The rail row's Stop, through AppState's helper: one `worker.stop`, never the transport.
+                let id = String(action.dropFirst("worker-stop:".count))
+                state.workerStop(id)
+                print("action: worker-stop \(id) at \(stamp)s (the line above must be worker.stop, not stop)")
             } else if let info = cleanupAction(action) {
                 // The rail's cleanup state (ConsoleSession.previewNotification; the root view applies it).
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
@@ -368,6 +402,138 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 performFeed(action)
             }
         }
+    }
+
+    /// `check-sleep`: the pure words behind the sleep and worker rows, each named and compared
+    /// (run.log: `check: ok` / `check: FAIL`) — the Swift package has no test target, so this is
+    /// where the behaviour is pinned. A close after a `sleep` row reads "asleep · why"; a pressed
+    /// Stop's sleep stays "stopped" (its stop row is the record); the engine's own "sleep:<cause>"
+    /// label reads the same; a server word that is not a requested close is kept; the sleep
+    /// tombstone is the moon with the cue quoted; a worker row is "Name · status" with its lane;
+    /// the remedy decoder yields `worker.stop` and `sleep {cause}` (and refuses a stop without an id).
+    /// Then the stream built from ledger rows end to end (the sleep row's close, a hand's seven
+    /// rows as two lines, a pressed Stop's silent sleep row, no leak across sessions) and the
+    /// feed's redraw seams (StreamPane / StreamRow equality over workers; a card's own workers).
+    private func checkSleepAndWorkerWords(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func row(_ type: String) -> LedgerRow {
+            LedgerRow(at: 0, type: type, item: nil, delegation: nil, delegationId: nil, step: nil, status: nil, summary: nil, text: nil, sessionId: nil, reason: nil, usageSeconds: nil, agent: nil)
+        }
+        expect("close after sleep:said", ConsoleFormat.closeReason("close_requested", after: "sleep:said"), "asleep · said")
+        expect("forced close after sleep:dock", ConsoleFormat.closeReason("client_closed", after: "sleep:dock"), "asleep · dropped in the dock")
+        expect("close after sleep:pause-decayed", ConsoleFormat.closeReason("close_requested", after: "sleep:pause-decayed"), "asleep · pause decayed")
+        expect("close after sleep:stop stays stopped", ConsoleFormat.closeReason("close_requested", after: "sleep:stop"), "stopped")
+        expect("close after pause", ConsoleFormat.closeReason("close_requested", after: "pause"), "paused")
+        expect("close with no transport", ConsoleFormat.closeReason("close_requested"), "closed")
+        expect("engine label as the reason", ConsoleFormat.closeReason("sleep:idle"), "asleep · idle")
+        expect("bare sleep label is the command", ConsoleFormat.closeReason("sleep"), "asleep · sleep command")
+        expect("server word kept", ConsoleFormat.closeReason("connection_lost", after: "sleep:said"), "connection_lost")
+        expect("unknown cause kept as recorded", SleepCauseFormat.words("solar-flare"), "solar-flare")
+        expect("shutdown reads quit", SleepCauseFormat.line("shutdown"), "asleep · quit")
+
+        var slept = row("sleep"); slept.sessionId = "live_u7_abcdefgh1234"; slept.cause = "said"; slept.phrase = "go to sleep"; slept.farewell = true
+        let sleepLine = ConsoleFormat.tombstone(slept)
+        expect("sleep tombstone symbol", sleepLine?.symbol ?? "", "moon.zzz.fill")
+        expect("sleep tombstone text", sleepLine?.text ?? "", "asleep · said")
+        expect("sleep tombstone session", sleepLine?.mono ?? "", "abcdefgh")
+        expect("sleep tombstone cue quoted", sleepLine?.trailing ?? "", "“go to sleep”")
+        var quiet = row("sleep"); quiet.cause = "idle"
+        expect("idle sleep has no cue", ConsoleFormat.tombstone(quiet)?.trailing ?? "nil", "nil")
+        var old = row("sleep")
+        expect("older engine's sleep row is the command", ConsoleFormat.tombstone(old)?.text ?? "", "asleep · sleep command")
+        old.cause = ""
+        expect("an empty cause is the command too", old.sleepCause ?? "nil", "command")
+        expect("sleepCause of a non-sleep row", row("pause").sleepCause ?? "nil", "nil")
+
+        let hand = Worker(id: "w_1", name: "Spotify", delegationId: "d", task: "play Focus", lane: .background, status: .waitingScreen, detail: "Kevin is typing", startedAt: 0, doneAt: nil, steps: 2)
+        var workerRow = row("worker"); workerRow.worker = hand
+        let workerLine = ConsoleFormat.tombstone(workerRow)
+        expect("worker tombstone", [workerLine?.symbol, workerLine?.text, workerLine?.mono, workerLine?.trailing].compactMap { $0 }.joined(separator: " | "),
+               "person.2.fill | Spotify · waiting for the screen | background | Kevin is typing")
+        expect("worker row without a record is ignored", ConsoleFormat.tombstone(row("worker")) == nil ? "nil" : "some", "nil")
+        expect("worker meta ticks", ConsoleFormat.workerMeta(hand, now: 3_400), "00:03 · background")
+        var done = hand; done.status = .done; done.doneAt = 65_000
+        expect("worker meta frozen at doneAt", ConsoleFormat.workerMeta(done, now: 999_999), "01:05 · background")
+        let statuses: [WorkerStatus] = [.starting, .working, .waitingScreen, .awaitingConfirmation, .done, .failed, .cancelled]
+        expect("status words", statuses.map(\.words).joined(separator: ", "), "starting, working, waiting for the screen, waiting for Kevin, done, failed, cancelled")
+        expect("running statuses", statuses.map { $0.isRunning ? "1" : "0" }.joined(), "1111000")
+        expect("glyphs: dot while alive, hourglass and hand for the waits, settled symbols after",
+               statuses.map { ConsoleTheme.worker($0).live ? "dot" : ConsoleTheme.worker($0).symbol }.joined(separator: ","),
+               "dot,dot,hourglass.tophalf.filled,hand.raised.fill,checkmark.circle.fill,xmark.octagon.fill,slash.circle.fill")
+
+        expect("remedy worker.stop", EngineCommand(remedyJSON: ["type": .string("worker.stop"), "workerId": .string("w_1")]) == .workerStop(workerId: "w_1") ? "workerStop(w_1)" : "other", "workerStop(w_1)")
+        expect("remedy worker.stop without an id", EngineCommand(remedyJSON: ["type": .string("worker.stop")]) == nil ? "nil" : "some", "nil")
+        expect("remedy sleep with a cause", EngineCommand(remedyJSON: ["type": .string("sleep"), "cause": .string("dock")]) == .sleepCause("dock") ? "sleepCause(dock)" : "other", "sleepCause(dock)")
+        expect("remedy bare sleep", EngineCommand(remedyJSON: ["type": .string("sleep")]) == .sleep ? "sleep" : "other", "sleep")
+        expect("worker.stop on the wire", (EngineCommand.workerStop(workerId: "w_1").json["type"] as? String ?? "") + " " + (EngineCommand.workerStop(workerId: "w_1").json["workerId"] as? String ?? ""), "worker.stop w_1")
+        expect("sleep cause on the wire", (EngineCommand.sleepCause("dock").json["type"] as? String ?? "") + " " + (EngineCommand.sleepCause("dock").json["cause"] as? String ?? ""), "sleep dock")
+        expect("workers slice", state.workers.map(\.name).joined(separator: ","), "Notes,Spotify,Slack")
+        expect("running workers slice", state.runningWorkers.map(\.name).joined(separator: ","), "Spotify,Slack")
+
+        // The stream from the ledger, end to end. A `sleep` row threads the close reason and a
+        // `session.started` after a close-less sleep resets it; a hand's seven rows read as two
+        // lines; a pressed Stop's sleep row is silent (its stop row is the record).
+        func at(_ ms: Double, _ type: String) -> LedgerRow { var r = row(type); r.at = ms; return r }
+        func systemLines(_ rows: [LedgerRow]) -> [SystemEntry] {
+            StreamBuilder.fromLedger(rows).compactMap { if case .system(let s) = $0 { return s }; return nil }
+        }
+        func texts(_ rows: [LedgerRow]) -> String { systemLines(rows).map(\.text).joined(separator: " | ") }
+        var started = at(1_000, "session.started"); started.sessionId = "live_u7_abcdefgh1234"
+        var farewell = at(2_000, "sleep"); farewell.sessionId = started.sessionId; farewell.cause = "said"; farewell.phrase = "that's all for now"; farewell.farewell = true
+        var closed = at(3_000, "session.closed"); closed.sessionId = started.sessionId; closed.reason = "close_requested"; closed.usageSeconds = 140
+        expect("fromLedger: the sleep row, then the close it explains", texts([started, farewell, closed]), "Session started | Asleep · said | Session closed · asleep · said")
+        expect("fromLedger: the cue rides the sleep line", systemLines([started, farewell, closed]).first { $0.symbol == "moon.zzz.fill" }?.trailing ?? "nil", "“that's all for now”")
+        var decayed = at(1_000, "sleep"); decayed.cause = "pause-decayed"
+        var next = at(2_000, "session.started"); next.sessionId = "live_u7_next"
+        var nextClosed = at(3_000, "session.closed"); nextClosed.sessionId = next.sessionId; nextClosed.reason = "close_requested"
+        expect("fromLedger: a close-less sleep never leaks into the next session", texts([decayed, next, nextClosed]), "Asleep · pause decayed | Session started | Session closed")
+        var pressed = at(1_000, "stop"); pressed.how = "pressed"
+        var stopSleep = at(2_000, "sleep"); stopSleep.cause = "stop"
+        var stopClosed = at(3_000, "session.closed"); stopClosed.reason = "close_requested"
+        expect("fromLedger: a pressed Stop's sleep row is silent, the close says stopped", texts([pressed, stopSleep, stopClosed]), "Stopped (pressed) | Session closed · stopped")
+        // A screen-lane hand's life as the engine writes it: one row per status change.
+        var life = Worker(id: "w_sl4ck00", name: "Slack", delegationId: "d", task: "tell Ben", lane: .screen, status: .starting, detail: nil, startedAt: 1_000, doneAt: nil, steps: 0)
+        let lifeStatuses: [(Double, WorkerStatus, String?)] = [
+            (1_000, .starting, nil), (2_000, .working, nil), (3_000, .waitingScreen, "waiting for the screen: Kevin is typing"),
+            (4_000, .working, nil), (5_000, .awaitingConfirmation, "send it?"), (6_000, .working, nil), (7_000, .done, "told Ben"),
+        ]
+        var lifeRows: [LedgerRow] = []
+        for (ms, status, detail) in lifeStatuses {
+            life.status = status; life.detail = detail; life.doneAt = status.isRunning ? nil : ms
+            var r = at(ms, "worker"); r.worker = life; lifeRows.append(r)
+        }
+        expect("fromLedger: seven worker rows, two lines", texts(lifeRows), "Slack · working | Slack · done")
+        expect("fromLedger: the end line carries the last detail", systemLines(lifeRows).map { $0.trailing ?? "-" }.joined(separator: " | "), "- | told Ben")
+        var quick = life; quick.status = .starting; quick.detail = nil; quick.doneAt = nil
+        var q1 = at(1_000, "worker"); q1.worker = quick
+        quick.status = .failed; quick.detail = "no Slack"; quick.doneAt = 2_000
+        var q2 = at(2_000, "worker"); q2.worker = quick
+        expect("fromLedger: a hand that failed before working reads its end only", texts([q1, q2]), "Slack · failed")
+        expect("fromLedger: a worker row without a record is ignored", String(systemLines([at(1_000, "worker")]).count), "0")
+        expect("JarheadLog keeps every worker row", String(JarheadLog.lines(lifeRows).filter { $0.kind == "worker" }.count), "7")
+
+        // The feed's redraw seams: a worker's status alone makes the pane and its card unequal
+        // (the rail and the card redraw on it), and only the card that owns the hand is handed it.
+        let fake = self.fake ?? FakeData(shot: "preview.png")
+        let hand0 = Worker(id: "w_sp0t1fy", name: "Spotify", delegationId: "del_spl1t", task: "play Focus", lane: .background, status: .working, detail: nil, startedAt: 0, doneAt: nil, steps: 1)
+        var hand1 = hand0; hand1.status = .done
+        func pane(_ ws: [Worker]) -> StreamPane {
+            StreamPane(transcript: [], delegations: [], phase: .acting, hasSession: true, ledgerDay: nil, ledgerEntries: [], ledgerLoading: false, clearedAt: nil, workers: ws)
+        }
+        expect("StreamPane: equal with the same workers", pane([hand0]) == pane([hand0]) ? "equal" : "differ", "equal")
+        expect("StreamPane: a worker's status alone makes it redraw", pane([hand0]) == pane([hand1]) ? "equal" : "differ", "differ")
+        let card = StreamEntry.delegation(fake.splitDelegation())
+        expect("StreamRow: a worker's status alone makes the card redraw", StreamRow(entry: card, workers: [hand0]) == StreamRow(entry: card, workers: [hand1]) ? "equal" : "differ", "differ")
+        let all = fake.workers(parent: "del_spl1t")
+        expect("a card is handed its own workers", card.workers(from: all).map(\.name).joined(separator: ","), "Notes,Spotify,Slack")
+        expect("another delegation's card is handed none", String(StreamEntry.delegation(fake.doneDelegation()).workers(from: all).count), "0")
+        expect("an utterance row is handed none", String(StreamEntry.utterance(fake.splitTranscript(from: 0)[0]).workers(from: all).count), "0")
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") at \(stamp)s")
     }
 
     /// `key:<char>` sends ⌘<char> to the window the way the keyboard would (⌘F must open the
@@ -645,6 +811,73 @@ struct FakeData {
         return Delegation(id: "del_l4m0c", liveId: "live_77", createdAt: t0, offsetMs: 300, request: "Kevin asked Codex to pick the landing refresh back up.", status: .failed, steps: steps, summary: "Codex sessions are read-only.", timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: t0 + 233, firstCommentaryAt: nil, doneAt: t0 + 741))
     }
 
+    // MARK: workers (Snapshot.workers, DelegationStep.worker)
+
+    /// When the split's parent delegation was created: 8 s ago, so the hands are a few seconds in.
+    var splitAt: Double { ago(8) }
+
+    /// The main brain's own steps for a three-app errand: it thought, started Notes and Spotify
+    /// in the background lane and Slack in the screen lane, and waits on them. The steps a hand
+    /// ran carry its name (`worker`), so the card tags them `[Spotify]`. Still running: the
+    /// parent drains its workers before it finishes.
+    func splitDelegation() -> Delegation {
+        let t0 = splitAt
+        func start(_ id: String, _ at: Double, _ name: String, _ task: String, _ lane: String) -> DelegationStep {
+            DelegationStep(id: id, at: at, kind: .tool, text: nil,
+                           tool: ToolStep(name: "worker_start", input: .object(["name": .string(name), "task": .string(task), "lane": .string(lane)]),
+                                          output: .string("\(name) started (\(lane))"), ok: true, ms: 41), screenshotPath: nil)
+        }
+        let steps: [DelegationStep] = [
+            DelegationStep(id: "w-s1", at: t0 + 420, kind: .thinking, text: "Three independent things: the Notes line and Spotify need no screen — Apple events; Slack needs the pointer. Split them.", tool: nil, screenshotPath: nil),
+            start("w-s2", t0 + 800, "Notes", "append today's standup line to the Notes daily page", "background"),
+            DelegationStep(id: "w-s3", at: t0 + 1500, kind: .commentary, text: "Notes alongside.", tool: nil, screenshotPath: nil),
+            DelegationStep(id: "w-s4", at: t0 + 2300, kind: .tool, text: nil,
+                           tool: ToolStep(name: "applescript", input: .string("tell application \"Notes\" to tell note \"Daily\" of folder \"Standup\" to set body to body & \"<div>…\""), output: .string("ok"), ok: true, ms: 612),
+                           screenshotPath: nil, worker: "Notes"),
+            start("w-s5", t0 + 3500, "Spotify", "play the playlist Focus in Spotify", "background"),
+            DelegationStep(id: "w-s6", at: t0 + 4000, kind: .note, text: "appended one line to Daily", tool: nil, screenshotPath: nil, worker: "Notes"),
+            start("w-s7", t0 + 4500, "Slack", "tell Ben on Slack that Kevin is running late", "screen"),
+            DelegationStep(id: "w-s8", at: t0 + 5200, kind: .tool, text: nil,
+                           tool: ToolStep(name: "applescript", input: .string("tell application \"Spotify\" to play track \"spotify:playlist:37i9dQZF1DWZeKCadgRdKQ\""), output: .string("ok"), ok: true, ms: 388),
+                           screenshotPath: nil, worker: "Spotify"),
+            DelegationStep(id: "w-s9", at: t0 + 5600, kind: .screenshot, text: "Slack — Ben", tool: nil, screenshotPath: shot, worker: "Slack"),
+            DelegationStep(id: "w-s10", at: t0 + 6100, kind: .note, text: "waiting for the screen: Kevin is typing", tool: nil, screenshotPath: nil, worker: "Slack"),
+            DelegationStep(id: "w-s11", at: t0 + 6400, kind: .tool, text: nil,
+                           tool: ToolStep(name: "worker_wait", input: .object(["name": .string("all"), "timeout": .number(120)]), output: nil, ok: true, ms: 0), screenshotPath: nil),
+        ]
+        return Delegation(id: "del_spl1t", liveId: "live_9f8e7d", createdAt: t0, offsetMs: 400,
+                          request: "Kevin asked to add today's standup line to Notes, put on Focus on Spotify and tell Ben on Slack he is running late.",
+                          status: .running, steps: steps, summary: nil,
+                          timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: t0 + 420, firstCommentaryAt: t0 + 1500, doneAt: nil))
+    }
+
+    /// The split's hands (Snapshot.workers): Notes done a moment ago and lingering (the snapshot
+    /// keeps a finished worker half a minute), Spotify working in the background lane, Slack in
+    /// the screen lane waiting for the pointer while Kevin types. Never more than two alive at
+    /// once (WORKER_MAX): Notes was done before Slack started.
+    func workers(parent: String) -> [Worker] {
+        let t0 = splitAt
+        return [
+            Worker(id: "w_n0tes01", name: "Notes", delegationId: parent, task: "append today's standup line to the Notes daily page", lane: .background,
+                   status: .done, detail: "appended one line to Daily", startedAt: t0 + 800, doneAt: t0 + 4000, steps: 3),
+            Worker(id: "w_sp0t1fy", name: "Spotify", delegationId: parent, task: "play the playlist Focus in Spotify", lane: .background,
+                   status: .working, detail: "tell application \"Spotify\" to play …", startedAt: t0 + 3500, doneAt: nil, steps: 2),
+            Worker(id: "w_sl4ck00", name: "Slack", delegationId: parent, task: "tell Ben on Slack that Kevin is running late", lane: .screen,
+                   status: .waitingScreen, detail: "waiting for the screen: Kevin is typing", startedAt: t0 + 4500, doneAt: nil, steps: 2),
+        ]
+    }
+
+    /// What was heard and said around the split: the ask, "on it", the one split line when the
+    /// first hand started, and Notes' one finish line.
+    func splitTranscript(from t0: Double) -> [TranscriptItem] {
+        [
+            TranscriptItem(id: "w-u1", speaker: .kevin, text: "Jarhead, add today's standup line to my Notes, put on Focus on Spotify, and tell Ben on Slack I'm running late.", startMs: 0, endMs: 4200, at: t0 - 1200, final: true),
+            TranscriptItem(id: "w-u2", speaker: .jarhead, text: "On it.", startMs: 4400, endMs: 4800, at: t0 - 500, final: true),
+            TranscriptItem(id: "w-u3", speaker: .jarhead, text: "Notes alongside.", startMs: 6000, endMs: 6900, at: t0 + 1500, final: true),
+            TranscriptItem(id: "w-u4", speaker: .jarhead, text: "Notes: appended one line to Daily.", startMs: 8500, endMs: 10200, at: t0 + 4100, final: true),
+        ]
+    }
+
     func session() -> SessionInfo {
         SessionInfo(id: "sess_7f3a9c2e41b0", startedAt: ago(14 * 60 + 35), expiresAt: now + 45 * 60 * 1000 + 46_000, usageSeconds: 758, contextRatio: 0.31)
     }
@@ -862,7 +1095,10 @@ struct FakeData {
             rows.append(said(t + 11_000, "jb2", "Codex finished the api hotfix and opened PR #412; 85 tests pass."))
             var problem = row(t + 40_000, "problem"); problem.text = "Accessibility permission denied — hands can click but cannot read the UI tree."; rows.append(problem)
             rows.append(heard(t + 95_000, "jb3", "Great, that's all for now."))
-            rows.append(said(t + 97_000, "jb4", "Going quiet."))
+            // The dismissal: the voice's one-word farewell, the sleep row (why, the cue, that the
+            // farewell was said) before the close, then the server's word for the close it asked for.
+            rows.append(said(t + 97_000, "jb4", "night."))
+            var slept = row(s.closedAt! - 300, "sleep"); slept.sessionId = s.id; slept.cause = "said"; slept.phrase = "that's all for now"; slept.farewell = true; rows.append(slept)
             var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 140; rows.append(closed)
         case Self.yesterdayId:
             rows.append(heard(t + 5_000, "jy1", "Open the PR for the landing refresh and read me the diff summary."))
@@ -931,7 +1167,16 @@ struct FakeData {
         r = row(sameMs, "problem"); r.text = "Screen recording permission was revoked by the system."; rows.append(r)
         r = row(sameMs, "problem"); r.text = "Accessibility permission denied — hands can click but cannot read the UI tree."; rows.append(r)
         r = row(ago(583), "agent"); r.agent = agents()[6]; rows.append(r)
-        r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "idle"; r.usageSeconds = 1020; rows.append(r)
+        // A worker's life as the ledger writes it: one row per status change, the whole record each
+        // time (the stream keeps the first "working" and the end; the log lists both rows).
+        var hand = Worker(id: "w_r0ll0ut", name: "Rollouts", delegationId: d.id, task: "read the Codex rollouts for threads waiting on a prompt", lane: .background,
+                          status: .working, detail: nil, startedAt: ago(602), doneAt: nil, steps: 0)
+        r = row(ago(602), "worker"); r.worker = hand; rows.append(r)
+        hand.status = .done; hand.detail = "one thread waiting: gt · sdk"; hand.doneAt = ago(597); hand.steps = 3
+        r = row(ago(597), "worker"); r.worker = hand; rows.append(r)
+        // An idle sleep: the sleep row says why, then the server's word for the close it asked for.
+        r = row(ago(61), "sleep"); r.sessionId = "sess_7f3a9c2e41b0"; r.cause = "idle"; rows.append(r)
+        r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "close_requested"; r.usageSeconds = 1020; rows.append(r)
         return rows
     }
 }

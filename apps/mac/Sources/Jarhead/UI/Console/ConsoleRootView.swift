@@ -66,7 +66,7 @@ struct ConsoleRootView: View {
                         StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
                                    hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                                    ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
-                                   clearedAt: state.nowClearedAt)
+                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers)
                             .equatable()
                             .transition(Motion.swap)
                     }

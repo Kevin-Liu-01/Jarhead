@@ -15,6 +15,10 @@ enum HandsError: Error {
     case captureFailed(String)
     case notFound(String)
     case internalError(String)
+    /// Kevin used the keyboard or mouse within the quiet window: nothing was posted (Input.swift).
+    case busy(String)
+    /// The app in front is not the one the caller judged the action against (`expectFront`): nothing was posted.
+    case focusMoved(String)
 
     var code: String {
         switch self {
@@ -23,13 +27,15 @@ enum HandsError: Error {
         case .captureFailed: return "capture_failed"
         case .notFound: return "not_found"
         case .internalError: return "internal"
+        case .busy: return "busy"
+        case .focusMoved: return "focus_moved"
         }
     }
 
     var message: String {
         switch self {
         case .badRequest(let m), .permissionDenied(let m), .captureFailed(let m),
-             .notFound(let m), .internalError(let m):
+             .notFound(let m), .internalError(let m), .busy(let m), .focusMoved(let m):
             return m
         }
     }

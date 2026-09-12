@@ -5,8 +5,9 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient } from "@jarhead/daemon";
-import type { Delegation, Effort, EngineEvent, PermissionInfo, TranscriptItem } from "@jarhead/protocol";
+import type { Delegation, Effort, EngineEvent, PermissionInfo, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
 import { render, runChecks, summarizePermissions } from "./doctor.ts";
+import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
 import { benchBrain } from "./bench-brain.ts";
 
@@ -24,9 +25,14 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead ledger restore <day>   move a day back from the Trash
   pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
   pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
-  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row)
+  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; workers: the second hands at work)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
-  pnpm jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume>   send a command to the running daemon
+  pnpm jarhead cmd <go|pause|stop|interrupt|wake|resume|mute|unmute|agent.refresh>   send a command to the running daemon
+  pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
+  pnpm jarhead cmd worker.stop <id>   stop one worker (its id from \`jarhead status\`); the others and the session carry on
+  pnpm jarhead dock [--fix] [--json]  one Jarhead: the Dock tiles and LaunchServices records for /Applications/Jarhead.app, read-only.
+                                      --fix removes Jarhead's recent tiles, rebuilds the pin, unregisters stale bundle paths (the Trash's contents are not touched)
+                                      and restarts the Dock only when it changed something
   pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
   pnpm jarhead bench --brain          the five representative commands on the REAL brain (Codex here) with a stand-in Live and canned hands:
                                       delegation → first thinking / first tool / first action / done, model steps, tool calls, rollovers,
@@ -361,7 +367,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; workers?: Worker[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
   console.log(`\n  phase      ${s.phase}`);
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
@@ -372,11 +378,24 @@ async function status(): Promise<void> {
   if (flags.has("--permissions") && perms?.all) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
   console.log(`  agents     ${s.agents.length}${s.hiddenAgents?.length ? ` (${s.hiddenAgents.length} hidden)` : ""}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
+  // Workers are the brain's second hands (not agents: those are Kevin's coding sessions); running ones and those finished within the linger window.
+  const workers = s.workers ?? [];
+  console.log(`  workers    ${workers.length}${workers.length ? ` (${workers.filter((w) => !["done", "failed", "cancelled"].includes(w.status)).length} running)` : ""}`);
+  for (const w of workers) console.log(`    ${w.status === "done" ? "✔" : w.status === "failed" ? "✘" : w.status === "cancelled" ? "–" : "⟳"} ${w.name.padEnd(16)} ${w.status.padEnd(22)} ${w.lane.padEnd(10)} ${w.steps} step${w.steps === 1 ? "" : "s"} · ${w.id}${w.detail ? ` · ${w.detail}` : ""}`);
   // The Trash: whole day files Jarhead moved out of the way; emptying it is Kevin's, in Finder.
   if (s.trash) console.log(`  trash      ${s.trash.days === 0 ? "empty" : `${s.trash.days} ${s.trash.days === 1 ? "day" : "days"} · ${human(s.trash.bytes)}`} · ${s.trash.path}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
   if (s.problems.length) console.log(`  problems\n    - ${s.problems.join("\n    - ")}`);
   console.log("");
+}
+
+/** Every SleepCause, checked against the protocol's union so a new cause cannot go unlisted here. */
+const SLEEP_CAUSES: readonly SleepCause[] = Object.keys({ said: 0, idle: 0, "pause-decayed": 0, "brain-changed": 0, dock: 0, command: 0, stop: 0, shutdown: 0 } satisfies Record<SleepCause, 0>) as SleepCause[];
+
+/** The hygiene report for --json without the parsed plist trees (a Dock document is thousands of nodes). */
+function jsonReport(r: HygieneReport): unknown {
+  const audit = (a: DockAudit | undefined): unknown => (a ? { jarhead: a.jarhead, pinned: a.pinned, recent: a.recent, changes: a.changes, modCount: a.modCount } : undefined);
+  return { ...r, dock: { ...r.dock, before: audit(r.dock.before), after: audit(r.dock.after) } };
 }
 
 /** Send one command; stay `listenMs` for the toasts it raises (a move says what moved and why anything stayed). */
@@ -437,8 +456,27 @@ try {
       break;
     case "cmd": {
       const sub = rest[0];
-      if (!sub || !["go", "pause", "stop", "interrupt", "wake", "sleep", "resume", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|stop|interrupt|wake|sleep|resume|mute|unmute|agent.refresh>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
+      const arg = rest[1];
+      if (sub === "sleep") {
+        // A cause names why in the `sleep` ledger row; the app's dropIntoDock sends "dock", a bare command is "command".
+        if (arg !== undefined && !SLEEP_CAUSES.includes(arg as SleepCause)) throw new Error(`usage: jarhead cmd sleep [${SLEEP_CAUSES.join("|")}]`);
+        await sendCommand(arg ? { type: "sleep", cause: arg } : { type: "sleep" }, 800);
+        break;
+      }
+      if (sub === "worker.stop") {
+        if (!arg) throw new Error("usage: jarhead cmd worker.stop <workerId>  (the id is on `jarhead status`; the other workers and the session carry on)");
+        await sendCommand({ type: "worker.stop", workerId: arg }, 800);
+        break;
+      }
+      if (!sub || !["go", "pause", "stop", "interrupt", "wake", "resume", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|stop|interrupt|wake|sleep [cause]|resume|mute|unmute|agent.refresh|worker.stop <id>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
       await sendCommand({ type: sub });
+      break;
+    }
+    case "dock": {
+      // Read-only unless --fix; talks to no daemon and sends no EngineCommand.
+      const report = runHygiene({ mode: flags.has("--fix") ? "fix" : "audit", ...(flags.has("--json") ? {} : { log: (line) => console.log(`  ${line}`) }) });
+      if (flags.has("--json")) console.log(JSON.stringify(jsonReport(report), null, 2));
+      else if (report.dock.before && report.dock.before.changes.length > 0 && !report.dock.imported) console.log(`  run \`pnpm jarhead dock --fix\` to repair it (restarts the Dock once)`);
       break;
     }
     case undefined:

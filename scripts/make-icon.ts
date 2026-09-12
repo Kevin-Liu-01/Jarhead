@@ -295,7 +295,8 @@ const ORB = {
   r: 0.62,            // orb radius in bodyR units — fills most of the squircle, like the reference
   x: 0.0,
   y: 0.0,
-  harmonics: [[3, 0.025, 1.4], [2, 0.02, 0.6], [5, 0.008, 2.2]] as ReadonlyArray<readonly [number, number, number]>,
+  // Kevin (2026-09-12): "make the logo more of a perfect circle" — no harmonics: the Dock orb is a true circle.
+  harmonics: [] as ReadonlyArray<readonly [number, number, number]>,
   // Dither band count: five at every size — the same as UI/Dither.swift — so each band
   // step is a wide zone the Bayer pattern has to carry (seven read as a plain ramp).
   bands: (_size: number) => 5,

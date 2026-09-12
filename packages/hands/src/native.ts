@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { LineSplitter, logger } from "@jarhead/core";
-import type { Rect } from "@jarhead/protocol";
+import { SECRET_KEYS, type Rect } from "@jarhead/protocol";
 
 /**
  * Client for the resident Swift helper (packages/hands/native).
@@ -16,9 +16,48 @@ import type { Rect } from "@jarhead/protocol";
 
 const log = logger("hands.native");
 
+/**
+ * The helper's codes plus the client's own (`unavailable`, `timeout`, `cancelled`).
+ * `busy` and `focus_moved` are the helper's two refusals on behalf of Kevin's hands:
+ * he used the keyboard or mouse within the last 1.5 s, or the app in front is not the
+ * one the action was judged against. Both mean nothing was posted.
+ */
 export interface NativeError {
-  readonly code: "bad_request" | "permission_denied" | "capture_failed" | "not_found" | "internal" | "unavailable" | "timeout" | "cancelled";
+  readonly code: "bad_request" | "permission_denied" | "capture_failed" | "not_found" | "internal" | "unavailable" | "timeout" | "cancelled" | "busy" | "focus_moved";
   readonly message: string;
+}
+
+/** The `type` op's cancel reasons: the client's stop (SIGURG) or the front app changing under the keystrokes. */
+export type TypeCancelReason = "stop" | "focus_moved";
+
+/**
+ * `user_idle`: milliseconds since the session's last key press, click, scroll and pointer
+ * move, and since the last one of those (moves excluded) that THIS helper did not post —
+ * Kevin's own input, as far as the helper can tell. A huge number when there was none.
+ */
+export interface UserIdle {
+  readonly keyMs: number;
+  readonly clickMs: number;
+  readonly scrollMs: number;
+  readonly moveMs: number;
+  readonly foreignMs: number;
+}
+
+/** What `user_idle` reports when the session has never seen that kind of event (JSON has no Infinity). */
+export const USER_IDLE_NONE_MS = 1e12;
+
+/** The first words of every `busy` message, so a runner can spot the refusal in a ToolResult without the code. */
+export const HANDS_BUSY_PREFIX = "Kevin used the keyboard/mouse";
+
+/**
+ * The environment a helper is spawned with: the daemon's minus Jarhead's keys. The
+ * helper needs no key, and a resident process's environ is readable by anyone at the
+ * Mac (`ps -E`); the shell and Codex children already get the same scrub.
+ */
+export function scrubHandsEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const key of SECRET_KEYS) delete env[key];
+  return env;
 }
 
 export class NativeRequestError extends Error {
@@ -110,6 +149,8 @@ export interface TypeResult {
   readonly field?: string;
   /** A stop landed between two graphemes: `characters` were typed, the rest were not. */
   readonly cancelled?: boolean;
+  /** Why it stopped: Kevin's stop, or the front app changed under the keystrokes (`focus_moved`). Absent on older helpers (a stop). */
+  readonly reason?: TypeCancelReason;
 }
 
 export interface WindowInfo {
@@ -244,6 +285,8 @@ export interface NativeHandsProcessOptions {
   readonly assumeAvailable?: boolean;
   /** Test seam for the fresh-process read (`--permissions`): what a new helper process would print. */
   readonly probeImpl?: () => Promise<HelloPermissions>;
+  /** The environment to spawn from (default `process.env`). Jarhead's keys are stripped from it either way. */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
@@ -274,7 +317,8 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
         return;
       }
       const spawnFn = this.opts.spawnImpl ?? spawn;
-      const child = spawnFn(this.opts.binPath, [], { stdio: ["pipe", "pipe", "pipe"] });
+      // Never the keys: the helper has no use for them and its environ is readable.
+      const child = spawnFn(this.opts.binPath, [], { stdio: ["pipe", "pipe", "pipe"], env: scrubHandsEnv(this.opts.env ?? process.env) });
       this.child = child;
       this.splitter = new LineSplitter();
       child.stdout?.on("data", (chunk: Buffer) => {

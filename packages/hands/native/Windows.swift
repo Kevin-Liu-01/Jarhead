@@ -85,6 +85,31 @@ func opFrontmost() throws -> JSONObject {
     ]
 }
 
+// MARK: - expectFront: the app in front, read right before an event goes out
+
+/// The frontmost app's pid and name now (a main-thread read; nil when nothing is in front).
+func frontmostNow() -> (pid: pid_t, name: String)? {
+    guard let app = onMain({ NSWorkspace.shared.frontmostApplication }) else { return nil }
+    return (app.processIdentifier, app.localizedName ?? "an app")
+}
+
+/// `expectFront: {pid}` on an acting op: the caller judged the action against the app it saw in
+/// front; if another one is in front now, nothing is posted. Read on the worker queue immediately
+/// before the first CGEvent.post — the gap between the caller's probe and the post is where a
+/// Kevin's click or a dialog moves the focus, and only this process can close it.
+func requireFront(_ params: Params) throws {
+    guard let expect = try params.object("expectFront") else { return }
+    let pid = try expect.requireInt("pid")
+    try requireFront(pid: pid_t(truncatingIfNeeded: pid))
+}
+
+func requireFront(pid: pid_t) throws {
+    let front = frontmostNow()
+    if let front, front.pid == pid { return }
+    let name = front.map { "\($0.name) (pid \($0.pid))" } ?? "nothing"
+    throw HandsError.focusMoved("the front app is \(name), not pid \(pid); nothing was posted")
+}
+
 // MARK: - open_app / focus_app
 
 private let applicationDirectories: [String] = {

@@ -11,6 +11,8 @@ import { CARRY_MAX_CHARS, CARRY_RESULT_MAX_CHARS, CodexBrain, carriedResult, car
 import { PRIMER_TEXT, appServerArgs } from "../codex-app-server.ts";
 import { codexPromptTrimArgs, codexUserMcpServers, prepareCodexHome } from "../codex-config.ts";
 import { brainSystemPrompt } from "../brain.ts";
+import { runToolOverSocket } from "../mcp-bridge.ts";
+import { resultText } from "../runner.ts";
 import { makeRunner, makeSink, makeTask } from "./fakes.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/codex-exec.jsonl", import.meta.url));
@@ -145,7 +147,7 @@ interface AppServerLog {
   requests: Array<{ id?: number; method: string; params?: Record<string, unknown> }>;
 }
 
-function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; authFile?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; lastTokens?: number; transport?: "auto" | "app-server" | "exec"; prime?: boolean; effort?: "low" | "medium"; simpleEffort?: "low"; env?: Record<string, string> }) {
+function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; authFile?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; lastTokens?: number; transport?: "auto" | "app-server" | "exec"; prime?: boolean; worker?: string; effort?: "low" | "medium"; simpleEffort?: "low"; env?: Record<string, string> }) {
   const dir = mkdtempSync(join(tmpdir(), "jh-codex-"));
   const bin = fakeCodex(dir);
   const codexHome = fakeCodexHome(dir, { ...(opts.configModel ? { model: opts.configModel } : {}), ...(opts.signedIn !== undefined ? { signedIn: opts.signedIn } : {}), ...(opts.authFile !== undefined ? { authFile: opts.authFile } : {}) });
@@ -167,6 +169,7 @@ function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socket
     appServerStartTimeoutMs: opts.appServerStartTimeoutMs,
     appServerPatienceMs: opts.appServerPatienceMs,
     transport: opts.transport,
+    worker: opts.worker,
     // The primer is one more turn on the fake; the tests that want it say so.
     primeThreads: opts.prime ?? false,
     // Jarhead's secrets are in the daemon's environment; none of them may reach Codex.
@@ -177,7 +180,7 @@ function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socket
   const appServerLog = (): AppServerLog => JSON.parse(readFileSync(`${logFile}.appserver`, "utf8")) as AppServerLog;
   /** The home the brain builds for Codex: `<stateDir>/codex-home`. */
   const privateHome = join(dir, "codex-home");
-  return { brain, dir, bin, codexHome, privateHome, execLog, appServerLog };
+  return { brain, dir, bin, codexHome, privateHome, execLog, appServerLog, runner };
 }
 
 test("codex: the finder walks JARHEAD_CODEX_BIN, PATH, then the app bundles; auth.json and config.toml are read without a subprocess", async () => {
@@ -397,6 +400,37 @@ test("codex brain: a daemon that belongs to another process is not trusted with 
   assert.ok(existsSync(join(stateDir, "codex-tools.sock")));
   assert.equal((await brain.handle(makeTask("x"), makeSink().sink)).status, "done");
   assert.ok(execLog().args.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(stateDir, "codex-tools.sock"))}}`));
+  assert.deepEqual(foreign.calls, [], "nothing was routed into the other daemon");
+});
+
+test("codex brain: a worker's brain on its private socket still serves its own worker's tool.run — the server there knows exactly that lane; another id is refused; nothing reaches the foreign daemon", async (t) => {
+  // The pid check failed (a foreign daemon, or the 1 s self-ping timed out under wake load): the
+  // worker's brain serves its own socket. Its bridge stamps every call with the worker id, and
+  // the daemon routes a stamped call through `runnerFor` only — without a lane for that id the
+  // worker would be refused every tool for its whole life.
+  const dir = mkdtempSync(join(tmpdir(), "jh-codex-worker-private-"));
+  const socketPath = join(dir, "d.sock");
+  const foreign = new ToolOnlyEngine();
+  const server = new DaemonServer(foreign, socketPath);
+  await server.listen();
+  t.after(() => server.close());
+  const { brain, dir: stateDir, runner } = makeBrain(t, { socketPath, ownPid: process.pid + 1, worker: "w_spotify" });
+  const started = await brain.start();
+  assert.equal(started.ready, true, started.detail);
+  assert.match(started.detail, /tools over a private socket/);
+  const sock = join(stateDir, "codex-tools.sock");
+  // The worker's turn is running: its lane runner has the task.
+  runner.attach(makeSink().sink, makeTask("play Focus on Spotify"));
+  try {
+    const mine = await runToolOverSocket(sock, "frontmost_app", {}, 3000, "w_spotify");
+    assert.equal(mine.kind, "text", `the worker's own call runs on its lane: ${resultText(mine)}`);
+    const other = await runToolOverSocket(sock, "frontmost_app", {}, 3000, "w_other");
+    assert.match(resultText(other), /^error: refused: no worker w_other is running in Jarhead; frontmost_app was not run/);
+  } finally {
+    runner.attach(undefined);
+  }
+  const after = await runToolOverSocket(sock, "frontmost_app", {}, 3000, "w_spotify");
+  assert.match(resultText(after), /^error: refused: no task is running in Jarhead/, "the turn is over: the same refusal the main runner gives");
   assert.deepEqual(foreign.calls, [], "nothing was routed into the other daemon");
 });
 
@@ -756,6 +790,32 @@ test("codex brain: a slow app-server never sits on a task's path — start() rep
   assert.equal(r2.status, "done");
   assert.equal(appServerLog().requests.filter((r) => r.method === "turn/start").length, 1);
   assert.match(brain.detail, /warm app-server/);
+});
+
+test("codex brain: a worker's brain — the worker id rides to the bridge as JARHEAD_WORKER on both transports, and its thread is never primed even when asked", async (t) => {
+  // exec argv: the bridge env names the worker; the main brain's line is byte-identical to before.
+  const base = { cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "/s.sock" };
+  const main = codexExecArgs(base).filter((_, i, a) => a[i - 1] === "-c");
+  const worker = codexExecArgs({ ...base, worker: "w_spotify" }).filter((_, i, a) => a[i - 1] === "-c");
+  assert.ok(main.includes('mcp_servers.jarhead.env={JARHEAD_SOCKET="/s.sock"}'), main.join(" | "));
+  assert.ok(worker.includes('mcp_servers.jarhead.env={JARHEAD_SOCKET="/s.sock", JARHEAD_WORKER="w_spotify"}'), worker.join(" | "));
+  assert.equal(main.length, worker.length, "the same -c pairs, only the env differs");
+
+  // The warm transport: the app-server's argv carries it too, and thread/start is not followed by a primer turn.
+  const { brain, dir, appServerLog } = makeBrain(t, { appServer: "ok", worker: "w_spotify", prime: true });
+  assert.equal((await brain.start()).ready, true);
+  await new Promise((r) => setTimeout(r, 150));
+  const log = appServerLog();
+  const configs = log.args.filter((_, i) => log.args[i - 1] === "-c");
+  assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}, JARHEAD_WORKER="w_spotify"}`), configs.join(" | "));
+  assert.deepEqual(log.requests.map((r) => r.method), ["initialize", "initialized", "thread/start"], "no primer: a worker's thread runs one task and costs nothing more");
+  // One task, one turn, as for the main brain; still no primer after it.
+  const result = await brain.handle(makeTask("play Focus on Spotify"), makeSink().sink);
+  assert.equal(result.status, "done");
+  const turns = appServerLog().requests.filter((r) => r.method === "turn/start");
+  assert.equal(turns.length, 1);
+  assert.ok(!(turns[0]!.params!["input"] as Array<{ text: string }>)[0]!.text.includes(PRIMER_TEXT));
+  await brain.stop();
 });
 
 test("carried history is compacted: a tool result over 200 chars (or bytes, images included) becomes one size line, Kevin's words stay verbatim, the block is capped near 2 KB with the oldest exchanges dropped first and the newest request never cut", () => {

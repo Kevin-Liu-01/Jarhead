@@ -443,6 +443,88 @@ public final class AppState: ObservableObject {
     public var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     public var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
     public var isAwake: Bool { snapshot.phase != .asleep && snapshot.phase != .error }
+    /// The delegation's workers as the snapshot lists them — running, and finished within
+    /// the last half minute (WORKER_LINGER_MS) so a finish line has a row to land on; []
+    /// from a daemon without workers.
+    public var workers: [Worker] { snapshot.allWorkers }
+    /// The workers still alive: starting, working, waiting for the screen or for Kevin's yes.
+    public var runningWorkers: [Worker] { snapshot.runningWorkers }
+}
+
+// MARK: - Workers
+
+extension AppState {
+    /// Stop one worker — the Console row's Stop. `worker.stop` cuts that hand alone: the
+    /// other worker, the main brain and the paid session carry on. Never `transportStop()`,
+    /// which closes the session and sleeps, and never the stop-pressed notification, which
+    /// the blob shivers on: nothing of Jarhead's own stopped.
+    public func workerStop(_ workerId: String) { send(.workerStop(workerId: workerId)) }
+}
+
+extension WorkerStatus {
+    /// The status as Kevin reads it, everywhere a worker is drawn: the rail row, the card's
+    /// chip, the ledger's line. The two waits say what is being waited for.
+    public var words: String {
+        switch self {
+        case .starting: return "starting"
+        case .working: return "working"
+        case .waitingScreen: return "waiting for the screen"
+        case .awaitingConfirmation: return "waiting for Kevin"
+        case .done: return "done"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        }
+    }
+}
+
+// MARK: - Sleep
+
+/// The sleep row's words, once, for every surface: the stream's tombstone, the log line, a
+/// session's close reason. The engine records a `SleepCause` ("dock", "pause-decayed"); Kevin
+/// reads why it slept.
+public enum SleepCauseFormat {
+    /// "said" → "said", "dock" → "dropped in the dock", "shutdown" → "quit"; a cause this
+    /// build does not know is kept as recorded rather than guessed at.
+    public static func words(_ cause: String) -> String {
+        switch cause {
+        case "said": return "said"
+        case "idle": return "idle"
+        case "dock": return "dropped in the dock"
+        case "pause-decayed": return "pause decayed"
+        case "brain-changed": return "brain changed"
+        case "command": return "sleep command"
+        case "stop": return "stopped"
+        case "shutdown": return "quit"
+        default: return cause
+        }
+    }
+
+    /// "asleep · dropped in the dock"
+    public static func line(_ cause: String) -> String { "asleep · " + words(cause) }
+
+    /// The engine's close label for a sleep, "sleep:<cause>" (Engine.fallAsleep → closeWithDeadline),
+    /// → its cause; a bare "sleep" is the command; nil for any other reason.
+    public static func cause(fromCloseReason reason: String) -> String? {
+        if reason == "sleep" { return "command" }
+        guard reason.hasPrefix("sleep:") else { return nil }
+        let cause = String(reason.dropFirst("sleep:".count))
+        return cause.isEmpty ? "command" : cause
+    }
+}
+
+extension LedgerRow {
+    /// A `sleep` row's cause; nil for any other row. A row without one (an older engine's, or an
+    /// empty string) is the command.
+    public var sleepCause: String? {
+        guard type == "sleep" else { return nil }
+        guard let cause, !cause.isEmpty else { return "command" }
+        return cause
+    }
+    /// A `sleep` row's spoken cue in quotes — “go to sleep” — when there was one.
+    public var quotedPhrase: String? {
+        guard let phrase = phrase?.trimmingCharacters(in: .whitespacesAndNewlines), !phrase.isEmpty else { return nil }
+        return "“\(phrase)”"
+    }
 }
 
 // MARK: - Cleanup (types)

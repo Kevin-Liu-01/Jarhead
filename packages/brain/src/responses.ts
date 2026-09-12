@@ -319,6 +319,15 @@ export function progressLine(name: string, args: unknown): string {
       return `Waiting on ${String(a["agent"] ?? "an agent")}.`;
     case "agent_read":
       return `Reading ${String(a["agent"] ?? "an agent")}'s output.`;
+    // The worker tools are silent as a first tool (the pool's own split line speaks); these lines are for the timeline.
+    case "worker_start":
+      return `Starting ${String(a["name"] ?? "a second hand")} on the side.`;
+    case "worker_wait":
+      return `Waiting for ${a["name"] === "all" || a["name"] === undefined ? "the other hands" : String(a["name"])}.`;
+    case "worker_read":
+      return `Checking on ${String(a["name"] ?? "the other hand")}.`;
+    case "worker_stop":
+      return `Stopping ${String(a["name"] ?? "the other hand")}.`;
     case "frontmost_app":
       return "Checking which app is in front.";
     case "list_windows":

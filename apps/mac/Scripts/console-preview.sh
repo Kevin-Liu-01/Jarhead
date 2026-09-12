@@ -4,7 +4,13 @@
 # scenario: live | confirm | empty | settings | wake-locked | ledger | light |
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
-#           search | search-hit | problems | cleared (default live)
+#           search | search-hit | problems | cleared | workers (default live)
+#   `workers` is the split: three hands under one running delegation (Snapshot.workers) — the
+#   Now tab's Workers section (status glyph, name, Stop, elapsed · lane, the last line), the
+#   delegation card's chips and the [Name] tag on a worker's steps; `ledger` and `jarhead-log`
+#   carry the `worker` rows (the stream: a hand's first "working" and its end; the log: every row)
+#   and the `sleep` row ("asleep · idle", "asleep · said “…”"). Its default actions print the
+#   `check:` pins into .build/console-preview/run.log and Spotify's Stop as `send: worker.stop`.
 #   The cleanup scenarios: `cleanup` is the rail with a pinned chain above the days, "Archived (2)"
 #   folded, "Trash (2)" open with Restore on each row and the folder on its head, and the Agents
 #   section's "Hidden (1)" open; `cleanup-select` adds two ⌘-picked chains and the strip under the

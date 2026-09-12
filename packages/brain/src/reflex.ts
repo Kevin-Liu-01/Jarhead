@@ -45,7 +45,8 @@ export type ReflexKind =
   | "circle"
   | "dictate_start"
   | "dictate_stop"
-  | "search";
+  | "search"
+  | "sleep";
 
 /** One tool call of an ordered batch, and what it did once it ran ("focused Safari", "clicked the search field"). */
 export interface ReflexStep {
@@ -140,6 +141,26 @@ const SHOT = /^(?:take a )?(?:screenshot|screen shot|capture)(?: (?:this|that|th
 const CIRCLE = /^(?:circle|highlight|outline) (?:that|this|it|here)(?: (?:one|for me))?$/;
 const DICTATE_START = /^(?:start|begin) (?:dictating|dictation)$|^(?:dictation mode|take dictation|dictate)$/;
 const DICTATE_STOP = /^(?:stop|end|finish) (?:dictating|dictation)$|^(?:end|exit) dictation mode$/;
+/**
+ * The dismissals (Kevin's request 2: "go to sleep or shut off or things like that are
+ * cues to return to dock and go to sleep"). The whole utterance, anchored, so a
+ * negation ("don't go to sleep"), a trailing clause ("turn yourself off after this",
+ * "that is all wrong") or an object ("shut down my Mac", "turn off the lights") never
+ * matches. Bare "shut down", "sleep", "night" and "stop" are not cues: "stop" is the
+ * interrupt, the others are too common in room talk. Judged BEFORE the OPEN row —
+ * at f6c3b40 "go to sleep" read as `open_app Sleep` and "go to bed" as `open_app Bed`.
+ */
+const SLEEP = /^(?:go (?:back )?to (?:sleep|bed)|back to sleep|sleep now|shut off|shut yourself (?:off|down)|turn (?:yourself|your self) off|power (?:down|off)|good ?night(?: night)?|night night|that(?:'s| is| will be|'ll be) all(?: for (?:now|today|tonight))?|that'?s it for (?:now|today|tonight)|(?:you(?:'re| are) )?dismissed|you (?:can|may) rest(?: now)?|stand down|go dormant)$/;
+/** The politeness tail without "now": "sleep now" is a cue only with its "now", which `normalizeUtterance` strips. */
+const POLITE_TAIL_KEEP_NOW = /(?:[,\s]+(?:please|for me|thanks|thank you|jarhead|jar head))+$/i;
+
+/** Whether the utterance is a dismissal: the normalised words, or the same with a trailing "now" kept. */
+function isSleepCue(utterance: string, normalized: string): boolean {
+  const fold = (s: string): string => s.replace(/[’‘]/g, "'");
+  if (SLEEP.test(fold(normalized))) return true;
+  const keptNow = fold(utterance.trim().replace(/\s+/g, " ").replace(WAKE, "").replace(POLITE_HEAD, "").replace(/[.!?,;:]+$/g, "").replace(POLITE_TAIL_KEEP_NOW, "").replace(/[.!?,;:]+$/g, "").trim().toLowerCase());
+  return SLEEP.test(keptNow);
+}
 /** At most four words: a control's name, not a description of where to find it. */
 const CLICK = /^(?:click|press|tap|hit)(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon))?$/;
 const DOUBLE_CLICK = /^double[- ]?click(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon|file|folder))?$/;
@@ -208,11 +229,15 @@ function urlOf(raw: string): string | undefined {
   return undefined;
 }
 
-/** The apps a bare "open X" may name: a single capitalised word or two, not a sentence. */
+/**
+ * The apps a bare "open X" may name: a single capitalised word or two, not a sentence.
+ * "sleep" and "bed" never name one: the bare forms are the dismissal's (SLEEP), and a
+ * longer "go to sleep mode" / "go to bed early" is the brain's, not a phantom app.
+ */
 function appName(raw: string): string | undefined {
   const name = raw.trim().replace(/\s+/g, " ");
   if (!name || name.split(" ").length > 3) return undefined;
-  if (/\b(the|a|my|file|folder|door|window|tab|link|page|it|this|that|website|site|url|settings)\b/.test(name)) return undefined;
+  if (/\b(the|a|my|file|folder|door|window|tab|link|page|it|this|that|website|site|url|settings|sleep|bed)\b/.test(name)) return undefined;
   if (/[/:]/.test(name)) return undefined;
   return name.replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -227,6 +252,9 @@ export function parseReflex(utterance: string): Reflex | undefined {
   // Dictation first: "stop dictating" must never read as a stop or a "dictating" of anything.
   if (DICTATE_START.test(t)) return { kind: "dictate_start", tool: "dictate", input: { on: true }, said: "dictating.", label: "start dictating", prefire: false, idempotent: true };
   if (DICTATE_STOP.test(t)) return { kind: "dictate_stop", tool: "dictate", input: { on: false }, said: "done dictating.", label: "stop dictating", prefire: false, idempotent: true };
+  // The dismissal, before OPEN takes "go to sleep" for an app. Never a tool: `ReflexRunner.match`
+  // leaves it out and the ear / the Delegator hand the phrase to the engine's one sleep function.
+  if (isSleepCue(utterance, t)) return { kind: "sleep", tool: "sleep", input: { phrase: utterance.trim().replace(/\s+/g, " ") }, said: "night.", label: "go to sleep", prefire: false, idempotent: true };
   if ((m = SCROLL.exec(t))) {
     const dir = m[1] as "up" | "down" | "left" | "right";
     const tail = m[2] ?? "";
@@ -735,9 +763,14 @@ export class ReflexRunner {
     this.now = opts.now ?? Date.now;
   }
 
-  /** The reflex for an utterance, or undefined. Pure; cheap enough to call on every transcript fragment. */
+  /**
+   * The reflex for an utterance, or undefined. Pure; cheap enough to call on every
+   * transcript fragment. A sleep cue is not a reflex to run: `parseReflex` still parses
+   * it (the ear and the Delegator ask it directly), but nothing here runs it as a tool.
+   */
   match(utterance: string): Reflex | undefined {
-    return parseReflex(utterance);
+    const reflex = parseReflex(utterance);
+    return reflex?.kind === "sleep" ? undefined : reflex;
   }
 
   private async frontmost(): Promise<string> {

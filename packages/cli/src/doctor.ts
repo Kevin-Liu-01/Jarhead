@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, PERMISSION_KINDS, type BrainKind, type PermissionInfo, type Problem, type WakeSettings } from "@jarhead/protocol";
@@ -8,6 +8,7 @@ import { defaultConnectors } from "@jarhead/agents";
 import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess, type HelloPermissions } from "@jarhead/hands";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, defaultExec, describeDock, planInstall, probeTarget, requirementHasIdentifier, runHygiene, type Exec, type TargetProbe } from "./install/index.ts";
 
 /**
  * Preflight for the things that fail silently. Exits non-zero only on failures
@@ -159,6 +160,107 @@ async function daemonBrain(socketPath: string): Promise<{ resolved: string | und
     });
   } finally {
     client.close();
+  }
+}
+
+/** Seams for the install rows: every shell-out and stat goes through these so the rows run in CI without a Mac. */
+export interface InstallCheckDeps {
+  readonly exec?: Exec;
+  readonly probe?: (path: string) => TargetProbe;
+  readonly uid?: number;
+  readonly installed?: string;
+  readonly bundleId?: string;
+  readonly staleRoots?: readonly string[];
+  readonly exists?: (path: string) => boolean;
+  /** Where `build/Jarhead.app` points, for the note; undefined when the link is missing. */
+  readonly linkTarget?: string | undefined;
+}
+
+/**
+ * The `app` group's install rows, all read-only: `Jarhead.app` (the installed bundle,
+ * never the build/ symlink — a dangling link used to read as "not built"), `signing
+ * identity`, `install` (target sane, strict verify, designated requirement), `launch
+ * services` and `dock` (the one-Jarhead audit; the fix is a command Kevin runs).
+ */
+export function installChecks(deps: InstallCheckDeps = {}): Check[] {
+  const exec = deps.exec ?? defaultExec;
+  const installed = deps.installed ?? INSTALLED_APP;
+  const bundleId = deps.bundleId ?? JARHEAD_BUNDLE_ID;
+  const probe = (deps.probe ?? probeTarget)(installed);
+  const uid = deps.uid ?? process.getuid?.() ?? -1;
+  const out: Check[] = [];
+  const add = (c: Check): void => void out.push(c);
+  const rebuild = "pnpm build:mac";
+
+  if (!probe.exists) {
+    add({ group: "app", name: "Jarhead.app", status: "warn", detail: `${installed} not installed`, required: false, fix: rebuild });
+    add({ group: "app", name: "install", status: "warn", detail: "nothing to verify", required: false, fix: rebuild });
+  } else {
+    const linkNote = deps.linkTarget === undefined ? linkTargetNote(installed) : deps.linkTarget === installed ? " (build/Jarhead.app → symlink)" : ` (build/Jarhead.app → ${deps.linkTarget}, not this bundle)`;
+    add({ group: "app", name: "Jarhead.app", status: "ok", detail: `${installed}${linkNote}`, required: false });
+    // codesign -dvv reports on stderr; an ad-hoc signature means TCC forgets the grants on every rebuild.
+    const dvv = exec(CODESIGN, ["-dvv", installed], { timeoutMs: 8000 });
+    const signature = `${dvv.stderr}${dvv.stdout}`;
+    const adhoc = /Signature=adhoc/.test(signature);
+    const authority = signature.match(/^Authority=(.+)$/m)?.[1];
+    add({ group: "app", name: "signing identity", status: adhoc ? "warn" : "ok", detail: adhoc ? "ad-hoc — microphone/screen/accessibility grants reset on every rebuild" : (authority ?? "signed with a real identity"), required: false, fix: adhoc ? "Keychain Access → Certificate Assistant → Create a Certificate (Code Signing), then pnpm build:mac; or set JARHEAD_SIGN_IDENTITY" : undefined });
+
+    const plan = planInstall(probe, uid, installed);
+    if (plan.kind === "refuse") {
+      add({ group: "app", name: "install", status: "warn", detail: `${plan.reason} — the next pnpm build:mac refuses`, required: false, fix: plan.hint });
+    } else {
+      const verify = exec(CODESIGN, [...CODESIGN_VERIFY_ARGS, installed], { timeoutMs: 8000 });
+      const req = exec(CODESIGN, [...CODESIGN_REQUIREMENT_ARGS, installed], { timeoutMs: 8000 });
+      const hasId = requirementHasIdentifier(`${req.stdout}${req.stderr}`, bundleId);
+      const problems: string[] = [];
+      if (verify.code !== 0) problems.push(`codesign --verify --strict --deep failed: ${(verify.stderr || verify.stdout).trim().split("\n")[0] ?? verify.code}`);
+      if (!hasId) problems.push(`designated requirement lacks identifier "${bundleId}"`);
+      add({
+        group: "app",
+        name: "install",
+        status: problems.length ? "warn" : "ok",
+        detail: problems.length ? problems.join("; ") : `${installed} · inode ${plan.kind === "update" ? plan.inode : "?"} · strict ok · requirement identifier ${bundleId}`,
+        required: false,
+        fix: problems.length ? rebuild : undefined,
+      });
+    }
+  }
+
+  const audit = runHygiene({ mode: "audit", exec, installed, bundleId, ...(deps.staleRoots ? { staleRoots: deps.staleRoots } : {}), ...(deps.exists ? { exists: deps.exists } : {}) });
+  const ls = audit.launchServices;
+  const repair = "pnpm jarhead dock --fix";
+  if (ls.skipped) add({ group: "app", name: "launch services", status: "warn", detail: ls.skipped, required: false });
+  else {
+    const registered = ls.records.some((r) => r.path === installed);
+    const others = ls.remaining.map((r) => r.path);
+    add({
+      group: "app",
+      name: "launch services",
+      status: registered && others.length === 0 ? "ok" : "warn",
+      detail: !registered ? `${installed} is not registered${others.length ? ` — but ${others.join(", ")} ${others.length === 1 ? "is" : "are"}` : ""}` : others.length ? `${others.length + 1} Jarhead records — also ${others.join(", ")} (a name-lookup like open -a Jarhead can pick one of them)` : `1 record: ${installed}`,
+      required: false,
+      fix: registered && others.length === 0 ? undefined : !registered ? rebuild : repair,
+    });
+  }
+  const dock = audit.dock;
+  if (dock.skipped) add({ group: "app", name: "dock", status: "warn", detail: dock.skipped, required: false });
+  else {
+    const before = dock.before;
+    const needsFix = (before?.changes.length ?? 0) > 0;
+    // No pin is nothing the fix can do (pinning is Kevin's), but a row that asks him to drag the app is not "ok".
+    const unpinned = before !== undefined && before.pinned === 0;
+    add({ group: "app", name: "dock", status: needsFix || unpinned ? "warn" : "ok", detail: describeDock(before).replace(/^Dock: /, ""), required: false, fix: needsFix ? repair : undefined });
+  }
+  return out;
+}
+
+/** " (build/Jarhead.app → symlink)" when the checkout's link points at the installed bundle. */
+function linkTargetNote(installed: string): string {
+  try {
+    const target = readlinkSync(join(REPO_ROOT, "build", "Jarhead.app"));
+    return target === installed ? " (build/Jarhead.app → symlink)" : ` (build/Jarhead.app → ${target}, not this bundle)`;
+  } catch {
+    return "";
   }
 }
 
@@ -320,30 +422,8 @@ export async function runChecks(): Promise<Check[]> {
     }
   }
 
-  // ---- native app
-  const appPath = join(REPO_ROOT, "build", "Jarhead.app");
-  if (existsSync(appPath)) {
-    const signed = sh("codesign", ["--verify", "--strict", appPath]) !== undefined || sh("codesign", ["-dv", appPath]) !== undefined;
-    const installed = existsSync("/Applications/Jarhead.app");
-    add({ group: "app", name: "Jarhead.app", status: signed ? "ok" : "warn", detail: `${appPath}${installed ? " (also in /Applications)" : ""}${signed ? "" : " — signature does not verify"}`, required: false, fix: installed ? undefined : "cp -R build/Jarhead.app /Applications/ && open -a Jarhead" });
-    // codesign -dvv reports on stderr; an ad-hoc signature means TCC forgets the grants on every rebuild.
-    let signature = "unknown";
-    try {
-      execFileSync("codesign", ["-dvv", appPath], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 8000 });
-    } catch (e) {
-      const err = e as { stderr?: string; stdout?: string };
-      signature = `${err.stderr ?? ""}${err.stdout ?? ""}`;
-    }
-    if (signature === "unknown") {
-      const out = sh("sh", ["-c", `codesign -dvv "${appPath}" 2>&1`]) ?? "";
-      signature = out;
-    }
-    const adhoc = /Signature=adhoc/.test(signature);
-    const authority = signature.match(/^Authority=(.+)$/m)?.[1];
-    add({ group: "app", name: "signing identity", status: adhoc ? "warn" : "ok", detail: adhoc ? "ad-hoc — microphone/screen/accessibility grants reset on every rebuild" : (authority ?? "signed with a real identity"), required: false, fix: adhoc ? "Keychain Access → Certificate Assistant → Create a Certificate (Code Signing), then pnpm build:mac; or set JARHEAD_SIGN_IDENTITY" : undefined });
-  } else {
-    add({ group: "app", name: "Jarhead.app", status: "warn", detail: "not built", required: false, fix: "pnpm build:mac" });
-  }
+  // ---- native app: the installed bundle, its signature, and the one-Jarhead audit (read-only)
+  for (const c of installChecks()) add(c);
   // ---- wake word gate (the app enforces it; doctor reports the configuration)
   try {
     const settingsPath = join(cfg.stateDir, "settings.json");

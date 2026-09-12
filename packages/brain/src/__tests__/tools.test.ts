@@ -11,7 +11,7 @@ import { htmlToText, parseDuckDuckGo } from "../web.ts";
 import { globToRegExp } from "../files.ts";
 import { redactSecrets, runShell, secretValues, truncateOutput } from "../shell.ts";
 import { zodShape } from "../claude.ts";
-import { ALL_TOOL_SPECS, SELF_SPECS, SYSTEM_SPECS, specByName } from "../tools.ts";
+import { ALL_TOOL_SPECS, AGENT_SPECS, SELF_SPECS, SYSTEM_SPECS, WORKER_SPECS, specByName } from "../tools.ts";
 import { progressLine } from "../responses.ts";
 import { FakeHands, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -347,6 +347,60 @@ test("tool table: the new specs are complete, zod-shaped, and have progress line
   assert.match(specByName("focus_app")!.description, /only echoes the name; frontmost_app confirms/);
   assert.match(specByName("browser_navigate")!.description, /loading, not loaded; browser_read confirms/);
   assert.ok(!/\b1280\b/.test(JSON.stringify(specByName("screenshot"))), "no stale quick-shot size in the screenshot spec");
+});
+
+test("tool table: the four worker specs sit after the agents, are zod-shaped, carry the split rule and the lane text, cap worker_wait at 240 s, have progress lines, and are not the runner's without a pool", async () => {
+  assert.deepEqual(WORKER_SPECS.map((s) => s.name), ["worker_start", "worker_wait", "worker_read", "worker_stop"]);
+  const names = ALL_TOOL_SPECS.map((s) => s.name);
+  assert.equal(names.indexOf("worker_start"), names.indexOf("agent_start") + 1, "WORKER_SPECS follow AGENT_SPECS in the table");
+  assert.equal(ALL_TOOL_SPECS.length, 67);
+  assert.equal(AGENT_SPECS.length, 5, "a Worker is not an Agent: the agent tools are unchanged");
+  // The rule the standing orders do not carry: keep the screen part, split only independent work,
+  // background hands use Apple events / browser / files / shell / web — and Jarhead speaks the split.
+  const start = specByName("worker_start")!;
+  assert.match(start.description, /Keep the part that needs the screen yourself/);
+  assert.match(start.description, /split off only work that does not depend on yours/);
+  assert.match(start.description, /never touches the pointer, keyboard or front app/);
+  assert.match(start.description, /applescript \(Apple events/);
+  assert.match(start.description, /browser_\* tools, files, run_shell and the web/);
+  assert.match(start.description, /lane 'screen' waits its turn for the pointer and keyboard/);
+  assert.match(start.description, /At most 2 at once/);
+  assert.match(start.description, /Jarhead tells Kevin the split in one line, so do not announce it/);
+  assert.match(start.description, /finish line is spoken for you, so never repeat it/);
+  const startShape = zodShape(start);
+  assert.deepEqual(Object.keys(startShape).sort(), ["budget", "lane", "name", "task"]);
+  assert.ok(startShape["lane"]!.safeParse("background").success && startShape["lane"]!.safeParse("screen").success && !startShape["lane"]!.safeParse("both").success);
+  assert.ok(startShape["budget"]!.safeParse(undefined).success, "budget is optional");
+  // zodShape mirrors the nested `budget` object (claude.ts's object case), so the Claude MCP path validates the caps too.
+  assert.ok(startShape["budget"]!.safeParse({ steps: 10, seconds: 60 }).success, "budget parses as an object");
+  assert.ok(!startShape["budget"]!.safeParse("10").success, "budget is not a string");
+  assert.ok(!startShape["budget"]!.safeParse({ steps: "ten" }).success, "steps must be a number");
+  const startBudget = start.parameters.properties["budget"] as { type: string; properties: Record<string, { minimum: number; maximum: number }> };
+  assert.equal(startBudget.type, "object");
+  assert.deepEqual([startBudget.properties["steps"]!.minimum, startBudget.properties["steps"]!.maximum, startBudget.properties["seconds"]!.minimum, startBudget.properties["seconds"]!.maximum], [1, 40, 10, 300], "the engine's caps, as the model sees them");
+  const wait = specByName("worker_wait")!;
+  assert.match(wait.description, /default 120, at most 240/);
+  assert.match(wait.description, /'all'/);
+  assert.match(wait.description, /what Kevin was already told so you do not repeat it/);
+  const waitTimeout = wait.parameters.properties["timeout"] as { minimum: number; maximum: number };
+  assert.deepEqual([waitTimeout.minimum, waitTimeout.maximum], [1, 240], "shorter than the 300 s wall clock the main brain runs under");
+  assert.ok(zodShape(wait)["timeout"]!.safeParse(240).success && zodShape(wait)["timeout"]!.safeParse(undefined).success, "timeout is a number, optional (zodShape carries no bounds; the JSON schema above does)");
+  assert.match(specByName("worker_stop")!.description, /Kevin hears one line that it stopped/);
+  for (const n of ["worker_read", "worker_stop"]) assert.deepEqual(Object.keys(zodShape(specByName(n)!)), ["name"], n);
+  // Progress lines for the timeline (never voiced as a first tool: SILENT_TOOLS in the delegator).
+  assert.equal(progressLine("worker_start", { name: "Spotify", task: "play Focus" }), "Starting Spotify on the side.");
+  assert.equal(progressLine("worker_wait", { name: "all" }), "Waiting for the other hands.");
+  assert.equal(progressLine("worker_wait", { name: "Spotify" }), "Waiting for Spotify.");
+  assert.equal(progressLine("worker_read", { name: "Slack" }), "Checking on Slack.");
+  assert.equal(progressLine("worker_stop", { name: "Slack" }), "Stopping Slack.");
+  // A plain ToolRunner has no pool: the worker tools are the engine's WorkerAwareRunner's, not its.
+  const { runner } = makeRunner();
+  runner.attach(makeSink().sink, makeTask("play focus on spotify"));
+  for (const n of ["worker_start", "worker_wait", "worker_read", "worker_stop"]) {
+    const r = await runner.run(n, { name: "Spotify", task: "play Focus" });
+    assert.equal(r.result.kind, "error", n);
+    assert.match(resultText(r.result), new RegExp(`unknown tool ${n}`), `${n} is not available here`);
+  }
 });
 
 test("gates read what Kevin said, never what Jarhead said: named folders and named hosts", async (t) => {

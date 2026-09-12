@@ -10,14 +10,20 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { REPO_ROOT } from "@jarhead/core";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { SocketToolClient, toMcpContent, toMcpTool, runToolOverSocket } from "../mcp-bridge.ts";
+import { SocketToolClient, toMcpContent, toMcpTool, runToolOverSocket, workerFromEnv } from "../mcp-bridge.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 
 const BRIDGE = fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url));
 const TSX = join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 
+/** The four specs WORKER_SPECS adds to the table (tools.ts); the bridge serves them like any other. */
+const WORKER_TOOLS = ["worker_start", "worker_wait", "worker_read", "worker_stop"] as const;
+
 class FakeEngine extends EventEmitter implements EngineLike {
   calls: { name: string; input: unknown }[] = [];
+  /** Calls that arrived with a worker id, by the lane runner `runnerFor` handed out. */
+  workerCalls: { worker: string; name: string; input: unknown }[] = [];
+  workers = new Set<string>();
   ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner = {
@@ -29,6 +35,16 @@ class FakeEngine extends EventEmitter implements EngineLike {
       return { result: { kind: "text", text: `${name} → ${JSON.stringify(input)}` } };
     },
   };
+  runnerFor(worker: string): EngineLike["runner"] | undefined {
+    if (!this.workers.has(worker)) return undefined;
+    return {
+      attached: true,
+      run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
+        this.workerCalls.push({ worker, name, input });
+        return { result: { kind: "text", text: `${worker}: ${name} → ${JSON.stringify(input)}` } };
+      },
+    };
+  }
   snapshot(): unknown {
     return { phase: "asleep" };
   }
@@ -47,7 +63,11 @@ test("mcp bridge: tool specs become MCP tools verbatim and results become MCP co
   assert.equal(scroll.inputSchema.type, "object");
   assert.deepEqual(scroll.inputSchema.required, ["scroll_direction", "scroll_amount"]);
   assert.deepEqual((scroll.inputSchema.properties as Record<string, { enum?: string[] }>)["scroll_direction"]?.enum, ["up", "down", "left", "right"]);
-  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 17 + 8 + 6 + 5 + 4 + 11 + 6 + 6);
+  // Pinned at 67: the 63 of f6c3b40 (17 + 8 + 6 + 5 + 4 + 11 + 6 + 6) plus the four worker_* specs
+  // (WORKER_SPECS, tools.ts). A tool added or lost anywhere in the table moves this number on purpose.
+  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 67);
+  const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
+  for (const n of WORKER_TOOLS) assert.ok(names.has(n), `${n} is in the table the bridge serves`);
 
   assert.deepEqual(toMcpContent({ kind: "text", text: "hi" }), { content: [{ type: "text", text: "hi" }] });
   const img = toMcpContent({ kind: "image", pngBase64: "AAAA", width: 10, height: 5, note: "n" });
@@ -102,6 +122,108 @@ test("mcp bridge: the stdio server lists every tool and routes tools/call over t
     assert.match((unknown.content as Array<{ text: string }>)[0]?.text ?? "", /unknown tool format_disk/);
     assert.deepEqual(engine.calls.map((c) => c.name), ["frontmost_app", "screenshot", "run_shell", "zoom"], "the unknown name never reached the runner");
     assert.deepEqual(engine.calls[1]?.input, { display: "main" });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("mcp bridge: a worker's bridge names its worker on every tool.run, the daemon routes to that worker's lane runner, and an unknown worker is refused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-bridge-"));
+  const socketPath = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  engine.workers.add("w_spotify");
+  const server = new DaemonServer(engine, socketPath);
+  await server.listen();
+  const worker = new SocketToolClient(socketPath, { worker: "w_spotify" });
+  const main = new SocketToolClient(socketPath);
+  const gone = new SocketToolClient(socketPath, { worker: "w_gone" });
+  const blank = new SocketToolClient(socketPath, { worker: "" });
+  try {
+    assert.equal(worker.workerId, "w_spotify");
+    assert.equal(main.workerId, undefined);
+    assert.equal(blank.workerId, undefined, "an empty id is no worker: the frame carries none");
+    const play = { script: 'tell application "Spotify" to play' };
+    assert.deepEqual(await worker.run("applescript", play), { kind: "text", text: `w_spotify: applescript → ${JSON.stringify(play)}` });
+    assert.deepEqual(await main.run("frontmost_app", {}), { kind: "text", text: "frontmost_app → {}" });
+    assert.deepEqual(await blank.run("frontmost_app", {}), { kind: "text", text: "frontmost_app → {}" });
+    const refused = await gone.run("left_click", { coordinate: [1, 1] });
+    assert.equal(refused.kind, "error");
+    assert.match((refused as { message: string }).message, /^refused: no worker w_gone is running in Jarhead; left_click was not run/);
+    // The one-off path carries the worker too.
+    assert.deepEqual(await runToolOverSocket(socketPath, "list_windows", {}, 2000, "w_spotify"), { kind: "text", text: "w_spotify: list_windows → {}" });
+    assert.deepEqual(engine.workerCalls, [
+      { worker: "w_spotify", name: "applescript", input: play },
+      { worker: "w_spotify", name: "list_windows", input: {} },
+    ]);
+    assert.deepEqual(engine.calls.map((c) => c.name), ["frontmost_app", "frontmost_app"], "the main runner never saw a worker's call");
+  } finally {
+    worker.close();
+    main.close();
+    gone.close();
+    blank.close();
+    await server.close();
+  }
+});
+
+test("mcp bridge: workerFromEnv reads JARHEAD_WORKER and treats unset, empty and blank as the main brain", () => {
+  assert.equal(workerFromEnv({}), undefined);
+  assert.equal(workerFromEnv({ JARHEAD_WORKER: "" }), undefined);
+  assert.equal(workerFromEnv({ JARHEAD_WORKER: "   " }), undefined);
+  assert.equal(workerFromEnv({ JARHEAD_WORKER: " w_7f3a\n" }), "w_7f3a");
+});
+
+test("mcp bridge: the stdio server started with JARHEAD_WORKER routes every tools/call to that worker's lane", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-bridge-"));
+  const socketPath = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  engine.workers.add("w_slack");
+  const server = new DaemonServer(engine, socketPath);
+  await server.listen();
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [TSX, BRIDGE],
+    env: { ...(process.env as Record<string, string>), JARHEAD_SOCKET: socketPath, JARHEAD_WORKER: "w_slack" },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(transport);
+  try {
+    const listed = await client.listTools();
+    assert.equal(listed.tools.length, ALL_TOOL_SPECS.length, "a worker's bridge lists the same table; the lane runner does the refusing");
+    const text = await client.callTool({ name: "frontmost_app", arguments: {} });
+    assert.deepEqual(text.content, [{ type: "text", text: "w_slack: frontmost_app → {}" }]);
+    assert.deepEqual(engine.workerCalls, [{ worker: "w_slack", name: "frontmost_app", input: {} }]);
+    assert.equal(engine.calls.length, 0, "nothing reached the main runner");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("mcp bridge: the stdio server started with a blank JARHEAD_WORKER lists and routes as the main brain", async () => {
+  // A launcher that sets the variable to whitespace (an empty TOML string, a template left
+  // blank) is not a worker: the frames carry no `worker` and the main runner answers.
+  const dir = mkdtempSync(join(tmpdir(), "jh-bridge-"));
+  const socketPath = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, socketPath);
+  await server.listen();
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [TSX, BRIDGE],
+    env: { ...(process.env as Record<string, string>), JARHEAD_SOCKET: socketPath, JARHEAD_WORKER: "   " },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(transport);
+  try {
+    const listed = await client.listTools();
+    assert.equal(listed.tools.length, ALL_TOOL_SPECS.length);
+    const text = await client.callTool({ name: "frontmost_app", arguments: {} });
+    assert.deepEqual(text.content, [{ type: "text", text: "frontmost_app → {}" }]);
+    assert.deepEqual(engine.calls, [{ name: "frontmost_app", input: {} }], "the main runner answered");
+    assert.equal(engine.workerCalls.length, 0, "no lane runner was asked for");
   } finally {
     await client.close();
     await server.close();

@@ -176,9 +176,13 @@ export function codexPromptTrimArgs(): string[] {
   return ["-c", "skills.include_instructions=false", "-c", "include_permissions_instructions=false", "-c", "include_collaboration_mode_instructions=false", "-c", "features.plugins=false"];
 }
 
-/** A TOML basic string; JSON's escapes are a subset of TOML's. */
+/**
+ * A TOML basic string; JSON's escapes are a subset of TOML's. The one character JSON
+ * leaves raw and TOML forbids in a basic string is DEL (U+007F): escaped here so no
+ * path or id can make the `-c` value unparseable.
+ */
 export function toml(value: string): string {
-  return JSON.stringify(value);
+  return JSON.stringify(value).replace(/\u007f/g, "\\u007F");
 }
 
 export interface CodexMcpConfig {
@@ -188,9 +192,24 @@ export interface CodexMcpConfig {
   readonly bridgePath: string;
   /** Where the bridge's tool.run messages go. */
   readonly socketPath: string;
+  /**
+   * The worker this Codex process is the brain of (its `w_…` id). Rides into the bridge's
+   * env as `JARHEAD_WORKER`, so every tool.run names the worker and the daemon routes it to
+   * that worker's lane runner instead of the main brain's. Absent (or empty) for the main brain.
+   */
+  readonly worker?: string | undefined;
   /** MCP server start / per-tool budgets, in seconds. */
   readonly startupTimeoutSec?: number | undefined;
   readonly toolTimeoutSec?: number | undefined;
+}
+
+/**
+ * The bridge's environment as a TOML inline table: the daemon socket, and the worker id
+ * when this brain is a worker's. The one-key form is byte-identical to what it always was.
+ */
+export function codexBridgeEnv(o: Pick<CodexMcpConfig, "socketPath" | "worker">): string {
+  const pairs = [`JARHEAD_SOCKET=${toml(o.socketPath)}`, ...(o.worker ? [`JARHEAD_WORKER=${toml(o.worker)}`] : [])];
+  return `{${pairs.join(", ")}}`;
 }
 
 /** The `-c` pairs that mount the bridge as the `jarhead` MCP server, in the order the exec argv always had them. */
@@ -201,7 +220,7 @@ export function codexMcpConfigArgs(o: CodexMcpConfig): string[] {
     "-c",
     `mcp_servers.${CODEX_MCP_SERVER}.args=[${toml(o.tsxCli)}, ${toml(o.bridgePath)}]`,
     "-c",
-    `mcp_servers.${CODEX_MCP_SERVER}.env={JARHEAD_SOCKET=${toml(o.socketPath)}}`,
+    `mcp_servers.${CODEX_MCP_SERVER}.env=${codexBridgeEnv(o)}`,
     "-c",
     `mcp_servers.${CODEX_MCP_SERVER}.startup_timeout_sec=${o.startupTimeoutSec ?? 30}`,
     // agent_wait may take ten minutes.

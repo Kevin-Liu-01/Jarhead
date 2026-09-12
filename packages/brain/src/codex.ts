@@ -253,6 +253,8 @@ export interface CodexExecOptions {
   readonly serviceTier?: string | undefined;
   /** Switch off the coding-session prompt blocks (default true; see codexPromptTrimArgs). */
   readonly trimPrompt?: boolean | undefined;
+  /** A worker's brain: its bridge stamps every tool.run with this id (env JARHEAD_WORKER), so the daemon routes to that worker's lane. */
+  readonly worker?: string | undefined;
 }
 
 /** The argv of one delegation; the prompt itself arrives on stdin (`-`). */
@@ -334,7 +336,8 @@ Browser pages in Safari, Chrome, Arc or Edge (Apple events, tens of milliseconds
 Files: read_file {path, offset?, limit?}; list_dir {path, depth?}; search_files {root, pattern, glob?} — a regular expression, (?i) accepted, case-insensitive when all lowercase, ripgrep when installed and otherwise a JavaScript regex walk (no PCRE-only syntax), at most 200 hits; edit_file {path, old, new}; write_file {path, content}.
 Shell and web: run_shell {command, cwd?, background?, timeout?} is a login shell and slow (seconds); applescript {script} runs osascript, often seconds — never for the front app (frontmost_app) or a browser page (the browser tools); web_search {query}; web_fetch {url}; open_url {url}.
 Voice and drawing: speak_progress {text} says one sentence now; show_circle {x, y, radius, label?}, show_arrow {from, to}, show_rect {rect: [x, y, w, h]}, show_text {x, y, text}, show_stroke {points}, show_clear {} draw fading shapes on his screen.
-Agents and self: agents_list {}, agent_send {agent, text}, agent_read {agent}, agent_wait {agent, timeout?}, agent_start {tool, cwd, prompt}; self_edit {task}, self_review {id}, self_apply {id}, self_discard {id}, self_status {}.`;
+Agents and self: agents_list {}, agent_send {agent, text}, agent_read {agent}, agent_wait {agent, timeout?}, agent_start {tool, cwd, prompt}; self_edit {task}, self_review {id}, self_apply {id}, self_discard {id}, self_status {}.
+Workers: worker_start {name, task, lane?, budget?} (a second hand; background = Apple events/browser/files/shell/web only, screen = waits for the pointer); worker_wait {name|"all", timeout?}; worker_read {name}; worker_stop {name}.`;
 }
 
 // ------------------------------------------------------------ carried history
@@ -514,6 +517,13 @@ export interface CodexBrainOptions {
   readonly serviceTier?: string | undefined;
   /** Which base prompt the thread gets: Jarhead's (`codexBaseInstructions`, default) or Codex's own (env JARHEAD_CODEX_BASE=codex). */
   readonly baseInstructions?: "jarhead" | "codex" | undefined;
+  /**
+   * This brain is a worker's (the engine's pool builds one per worker over that
+   * worker's lane runner): the worker id rides to the bridge as JARHEAD_WORKER so the
+   * daemon routes its tool calls to the right lane, and the thread is never primed —
+   * it runs one task and costs Kevin's plan nothing more.
+   */
+  readonly worker?: string | undefined;
 }
 
 /** One `codex exec --json` event, as far as this brain reads it. */
@@ -631,6 +641,8 @@ export class CodexBrain implements Brain {
   }
 
   private primeThreads(): boolean {
+    // A worker's thread runs one task: a primer would be a paid request for nothing.
+    if (this.opts.worker) return false;
     if (this.opts.primeThreads !== undefined) return this.opts.primeThreads;
     const v = (this.env()["JARHEAD_CODEX_PRIME"] ?? "").trim().toLowerCase();
     return !(v === "0" || v === "false" || v === "off" || v === "no");
@@ -638,6 +650,11 @@ export class CodexBrain implements Brain {
 
   private serviceTier(): string | undefined {
     return this.opts.serviceTier ?? (this.env()["JARHEAD_CODEX_SERVICE_TIER"]?.trim() || undefined);
+  }
+
+  /** The worker id for the bridge's env (`codexMcpConfigArgs` reads `worker`), or nothing for the main brain. */
+  private workerConfig(): { readonly worker?: string } {
+    return this.opts.worker ? { worker: this.opts.worker } : {};
   }
 
   private baseInstructions(): string | undefined {
@@ -732,6 +749,7 @@ export class CodexBrain implements Brain {
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
+      ...this.workerConfig(),
       developerInstructions: `${brainSystemPrompt(this.opts.userName)}\n\n${codexAddendum(this.opts.userName)}`,
       baseInstructions: this.baseInstructions(),
       primeThreads: this.primeThreads(),
@@ -836,7 +854,7 @@ export class CodexBrain implements Brain {
       return this.toolSocket;
     }
     const path = join(this.opts.stateDir, "codex-tools.sock");
-    const server = new DaemonServer(runnerOnlyEngine(this.opts.runner, this.opts.stateDir), path);
+    const server = new DaemonServer(runnerOnlyEngine(this.opts.runner, this.opts.stateDir, this.opts.worker), path);
     await server.listen();
     this.privateServer = server;
     this.toolSocket = path;
@@ -1046,6 +1064,7 @@ export class CodexBrain implements Brain {
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
+      ...this.workerConfig(),
       images: attached.map((a) => a.path),
       serviceTier: this.serviceTier(),
     });
@@ -1348,8 +1367,15 @@ export async function socketAnswers(socketPath: string, timeoutMs = 1000): Promi
   return (await daemonPidAt(socketPath, timeoutMs)) !== undefined;
 }
 
-/** An EngineLike that only has a runner: enough for `tool.run`, nothing else answers. */
-function runnerOnlyEngine(runner: ToolRunner, stateDir: string): EngineLike {
+/**
+ * An EngineLike that only has a runner: enough for `tool.run`, nothing else answers.
+ * A worker's brain lands here when the daemon's pid check fails (a 1 s self-ping under
+ * wake load): its bridge stamps every call with the worker id, and the daemon routes a
+ * stamped call through `runnerFor` only — so the private server answers for exactly
+ * that id with the worker's own lane runner, or the worker would be refused every tool
+ * for its whole life. Any other id is not this brain's.
+ */
+function runnerOnlyEngine(runner: ToolRunner, stateDir: string, worker?: string): EngineLike {
   return {
     on: () => undefined,
     snapshot: () => ({ phase: "asleep", note: "codex tool socket" }),
@@ -1363,5 +1389,6 @@ function runnerOnlyEngine(runner: ToolRunner, stateDir: string): EngineLike {
     ledger: { read: () => [], days: () => [], sessions: () => [], readSession: () => [] },
     config: { stateDir },
     runner,
+    runnerFor: (id) => (worker !== undefined && id === worker ? runner : undefined),
   };
 }

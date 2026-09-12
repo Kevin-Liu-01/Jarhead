@@ -29,6 +29,9 @@
 #   ORB_MARK=1 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=4 Scripts/orb-preview.sh      # overlay: mark mode, a synthesised stroke → prints mark.add, preview-overlay-mark.png
 #   ORB_MARK=seam ORB_EXIT_AFTER=4 Scripts/orb-preview.sh                                             # overlay: the stroke crosses the main display's top edge → live stroke on every window, mark.add with y < 0
 #   ORB_MARK=click / ORB_MARK=cancel …                                                                # overlay: the cancel paths (no movement / Escape); see UI/Overlay/OverlayPreviewDemo.swift
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_DRAG_OUT_AT=1.5 ORB_DRAG="644,529->864,60@600" ORB_DRAG_AT=4.0 ORB_FLY_AT=99 ORB_EXIT_AFTER=6.5 Scripts/orb-preview.sh
+#                                                                                                     # drop into the dock: the face pulled out of the notch, then dragged back into its column — prints
+#                                                                                                     # `send: {"type":"sleep","cause":"dock"}` (never a stop) and tucks in. Points assume the 1728×1117 built-in display.
 #   ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_DRAG="282,282->700,420@700" ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=5 Scripts/orb-preview.sh
 #                                                                                                     # jelly: a synthetic drag from the blob's centre; prints lag/stretch/wobble/eyes (and the jiggle for 1 s after release), → preview-blob-drag.png (the teardrop mid-sweep)
 #   ORB_X=60 ORB_Y=300 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_DRAG="142,382->20,382@900" ORB_EXIT_AFTER=5 Scripts/orb-preview.sh

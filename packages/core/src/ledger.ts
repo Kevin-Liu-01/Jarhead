@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { ConversationState, JarheadSessionSummary, LedgerRow } from "@jarhead/protocol";
+import type { ConversationState, JarheadSessionSummary, LedgerRow, SleepCause } from "@jarhead/protocol";
 
 /** How much of the first heard line becomes a session's title. */
 const TITLE_CHARS = 60;
@@ -96,8 +96,8 @@ interface BuiltSession {
   usageSeconds: number;
   /** The last `pause` row's usage: what a session with no closed row was billed. */
   lastUsage: number;
-  /** The last transport row inside the session: what a client-requested close meant. */
-  lastTransport?: "pause" | "stop";
+  /** The last transport row inside the session: what a client-requested close meant (`sleep:<cause>` for a sleep). */
+  lastTransport?: "pause" | "stop" | `sleep:${SleepCause}`;
   heard: number;
   said: number;
   delegations: number;
@@ -547,6 +547,13 @@ export class Ledger {
             // Only a pressed stop closes the session (a spoken one keeps it listening).
             if (open && row.how === "pressed") open.lastTransport = "stop";
             break;
+          case "sleep": {
+            // Written before the close it explains: "sleep:said", "sleep:idle", "sleep:dock"…; a pressed
+            // Stop's sleep row keeps the stop's word.
+            const target = (typeof row.sessionId === "string" ? byId.get(row.sessionId) : undefined) ?? open;
+            if (target) target.lastTransport = row.cause === "stop" ? "stop" : `sleep:${row.cause}`;
+            break;
+          }
           case "heard":
             if (open) {
               open.heard += 1;
@@ -642,10 +649,12 @@ export class Ledger {
     return this.walked;
   }
 
-  /** "paused" / "stopped" for a close the engine asked for after that row; the server's word otherwise. */
+  /** "paused" / "stopped" / "sleep:<cause>" for a close the engine asked for after that row; the server's word otherwise. */
   private static closeReason(reason: string, lastTransport: BuiltSession["lastTransport"]): string {
     if (!CLIENT_CLOSE_REASONS.has(reason) || !lastTransport) return reason;
-    return lastTransport === "pause" ? "paused" : "stopped";
+    if (lastTransport === "pause") return "paused";
+    if (lastTransport === "stop") return "stopped";
+    return lastTransport;
   }
 
   private static title(text: string): string {

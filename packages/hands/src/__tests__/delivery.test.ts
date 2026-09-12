@@ -417,12 +417,12 @@ test("type: the result says how the text was delivered and where; the failure na
   assert.equal(r.kind, "text");
   assert.equal((r as { text: string }).text, 'typed 5 characters by accessibility insertion into the "Subject" text field in Mail (verified)');
   const sent = hands.calls.find((c) => c.op === "type");
-  assert.deepEqual(sent?.params, { text: "hello" }, "no strategy unless asked");
+  assert.deepEqual(sent?.params, { text: "hello", expectFront: { pid: 1 } }, "no strategy unless asked; the front app the gate saw rides along");
 
   hands.typeResult = { characters: 5, events: 5, via: "keystrokes", attempts: 2, verified: false };
   r = await ts.run("type", { text: "hello", strategy: "keystrokes" });
   assert.equal((r as { text: string }).text, 'typed 5 characters by keystrokes into the "Subject" text field in Mail (not verifiable in this field, 2 attempts)');
-  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "hello", strategy: "keystrokes" });
+  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "hello", strategy: "keystrokes", expectFront: { pid: 1 } });
 
   hands.typeResult = { characters: 5, events: 1, via: "paste", attempts: 3, verified: true, field: "the note in Notes" };
   r = await ts.run("type", { text: "hello" });
@@ -444,7 +444,127 @@ test("type: the result says how the text was delivered and where; the failure na
   hands.typeError = undefined;
   hands.typeResult = { characters: 1, events: 1, via: "ax", attempts: 1, verified: true };
   await ts.run("type", { text: "x", strategy: "telepathy" });
-  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "x" });
+  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "x", expectFront: { pid: 1 } });
+});
+
+// ------------------------------------------------------------- Kevin's hands win ---
+
+test("expectFront: every gated acting op carries the pid the gate's own frontmost probe saw, so the helper posts nothing if the front app moved; ungated ops carry none", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  await ts.run("screenshot", {});
+  hands.elementTitle = "Search";
+  const sent = (op: string): Record<string, unknown> | undefined => hands.calls.filter((c) => c.op === op).at(-1)?.params;
+
+  await ts.run("left_click", { coordinate: [100, 100] });
+  assert.deepEqual(sent("click")?.["expectFront"], { pid: 1 });
+  await ts.run("left_mouse_down", {});
+  assert.deepEqual(sent("mouse_down")?.["expectFront"], { pid: 1 });
+  await ts.run("left_click_drag", { start_coordinate: [10, 10], coordinate: [100, 100] });
+  assert.deepEqual(sent("drag")?.["expectFront"], { pid: 1 });
+  await ts.run("type", { text: "hello" });
+  assert.deepEqual(sent("type"), { text: "hello", expectFront: { pid: 1 } });
+  await ts.run("key", { text: "Return" });
+  assert.deepEqual(sent("key")?.["expectFront"], { pid: 1 });
+  // No gate, no probe, no expectation.
+  await ts.run("left_mouse_up", {});
+  assert.equal(sent("mouse_up")?.["expectFront"], undefined);
+  await ts.run("scroll", { scroll_direction: "down" });
+  assert.equal(sent("scroll")?.["expectFront"], undefined);
+  await ts.run("hold_key", { text: "shift", duration: 0 });
+  assert.equal(sent("hold_key")?.["expectFront"], undefined);
+  await ts.run("mouse_move", { coordinate: [5, 5] });
+  assert.equal(sent("move")?.["expectFront"], undefined);
+
+  // A probe that failed (no frontmost): no expectation rather than a wrong one.
+  const orig = hands.request.bind(hands);
+  hands.request = (async (op: string, params: Record<string, unknown> = {}) => {
+    if (op === "frontmost") throw new Error("no frontmost application");
+    return orig(op, params);
+  }) as FakeHands["request"];
+  await ts.run("type", { text: "x" });
+  assert.deepEqual(sent("type"), { text: "x" });
+  hands.request = FakeHands.prototype.request;
+
+  // click_element: the pid from its own underPoint probe.
+  hands.request = (async (op: string, params: Record<string, unknown> = {}) => {
+    hands.calls.push({ op, params });
+    if (op === "find_element") return { app: "Mail", window: "Inbox", found: true, unique: true, candidates: 1, tier: "exact", element: { i: 1, depth: 1, role: "AXButton", title: "Save", app: "Mail", score: 1, label: "Save", x: 500, y: 400, w: 60, h: 24, center: { x: 530, y: 412 } }, cached: true, treeMs: 1, nodes: 3, truncated: false, ms: 1 };
+    if (op === "frontmost") return { app: "Mail", bundleId: "com.apple.mail", pid: 42, window: null };
+    if (op === "element_at") return { role: "AXStaticText", title: "Save", app: "Mail", frame: { x: 512, y: 405, w: 36, h: 14 } };
+    return {};
+  }) as FakeHands["request"];
+  assert.equal((await ts.run("click_element", { name: "Save" })).kind, "text");
+  assert.deepEqual(sent("click")?.["expectFront"], { pid: 42 });
+});
+
+test("focus_moved: the helper's refusal before the first post is an error result (no click, no type result); a type stopped part way says the front app changed", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  await ts.run("screenshot", {});
+  const focusMoved = Object.assign(new Error("focus_moved: the front app is Safari (pid 9), not pid 1; nothing was posted"), { name: "NativeRequestError", detail: { code: "focus_moved", message: "the front app is Safari (pid 9), not pid 1; nothing was posted" } });
+  Object.setPrototypeOf(focusMoved, (await import("../native.ts")).NativeRequestError.prototype);
+  const orig = hands.request.bind(hands);
+  hands.request = (async (op: string, params: Record<string, unknown> = {}) => {
+    if (op === "click" || op === "type" || op === "key") {
+      hands.calls.push({ op, params });
+      throw focusMoved;
+    }
+    return orig(op, params);
+  }) as FakeHands["request"];
+
+  const click = await ts.run("left_click", { coordinate: [100, 100] });
+  assert.equal(click.kind, "error");
+  assert.match((click as { message: string }).message, /^focus_moved: the front app is Safari \(pid 9\), not pid 1; nothing was posted$/);
+  const typed = await ts.run("type", { text: "hello" });
+  assert.equal(typed.kind, "error", "no type result to describe");
+  assert.match((typed as { message: string }).message, /the front app is Safari .*nothing was posted/);
+  const key = await ts.run("key", { text: "Return" });
+  assert.equal(key.kind, "error");
+
+  // Mid-text: the helper answers a cancelled result with the reason; the words say what happened.
+  hands.request = FakeHands.prototype.request;
+  hands.typeResult = { characters: 3, events: 3, via: "keystrokes", attempts: 1, cancelled: true, reason: "focus_moved", field: "the note in Notes" };
+  const part = await ts.run("type", { text: "hello" });
+  assert.equal(part.kind, "text");
+  assert.equal((part as { text: string }).text, "stopped after 3 of 5 characters in the note in Notes: the front app changed, so the rest was not typed; look at the screen before typing again");
+  // A plain stop (Kevin's) reads as before.
+  hands.typeResult = { characters: 2, events: 2, via: "keystrokes", attempts: 1, cancelled: true, reason: "stop", field: "the note in Notes" };
+  assert.equal(((await ts.run("type", { text: "hello" })) as { text: string }).text, "stopped after 2 of 5 characters in the note in Notes");
+});
+
+test("busy: the helper's refusal keeps its code in front on every acting member (a runner retries it silently); dictation's ownDriver rides through type", async () => {
+  const hands = new FakeHands();
+  const ts = new ComputerToolset({ hands });
+  await ts.run("screenshot", {});
+  const busy = Object.assign(new Error("busy: Kevin used the keyboard/mouse 300 ms ago; nothing was posted"), { name: "NativeRequestError", detail: { code: "busy", message: "Kevin used the keyboard/mouse 300 ms ago; nothing was posted" } });
+  Object.setPrototypeOf(busy, (await import("../native.ts")).NativeRequestError.prototype);
+  const orig = hands.request.bind(hands);
+  hands.request = (async (op: string, params: Record<string, unknown> = {}) => {
+    if (op === "click" || op === "type" || op === "key" || op === "scroll") {
+      hands.calls.push({ op, params });
+      if (params["ownDriver"] !== true) throw busy;
+      return op === "type" ? hands.typeResult : {};
+    }
+    return orig(op, params);
+  }) as FakeHands["request"];
+  for (const [member, input] of [
+    ["left_click", { coordinate: [100, 100] }],
+    ["type", { text: "hello" }],
+    ["key", { text: "Return" }],
+    ["scroll", { scroll_direction: "down" }],
+  ] as const) {
+    const r = await ts.run(member, input);
+    assert.equal(r.kind, "error", member);
+    assert.match((r as { message: string }).message, /^busy: Kevin used the keyboard\/mouse 300 ms ago; nothing was posted$/, member);
+  }
+  const dictated = await ts.run("type", { text: "hello", ownDriver: true });
+  assert.equal(dictated.kind, "text");
+  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "hello", ownDriver: true, expectFront: { pid: 1 } });
+  // Not asked for: not forwarded.
+  hands.request = FakeHands.prototype.request;
+  await ts.run("type", { text: "x", ownDriver: "yes" });
+  assert.deepEqual(hands.calls.filter((c) => c.op === "type").at(-1)?.params, { text: "x", expectFront: { pid: 1 } });
 });
 
 // ---------------------------------------------------------------- the stop signal ---

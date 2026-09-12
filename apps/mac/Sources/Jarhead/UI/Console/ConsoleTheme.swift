@@ -164,6 +164,35 @@ enum ConsoleTheme {
         }
     }
 
+    struct WorkerMeta: Equatable {
+        let label: String
+        let color: Color
+        /// A pulsing dot instead of the symbol.
+        let live: Bool
+        let symbol: String
+    }
+
+    /// A worker's status as the rail row and the card's chip draw it: a pulsing dot while it
+    /// works (the acting green; the connecting grey while its brain spins up), an hourglass
+    /// while it waits for the screen — Kevin's hands, or the other lane's turn — in the third
+    /// text step, the raised hand while it waits for Kevin's yes, and the delegation's own
+    /// settled symbols once it is done, failed or cancelled.
+    static func worker(_ s: WorkerStatus) -> WorkerMeta {
+        switch s {
+        case .starting: return WorkerMeta(label: s.words, color: connecting, live: true, symbol: "circle.fill")
+        case .working: return WorkerMeta(label: s.words, color: acting, live: true, symbol: "circle.fill")
+        case .waitingScreen: return WorkerMeta(label: s.words, color: fg3, live: false, symbol: "hourglass.tophalf.filled")
+        case .awaitingConfirmation: return WorkerMeta(label: s.words, color: speaking, live: false, symbol: "hand.raised.fill")
+        case .done: return WorkerMeta(label: s.words, color: acting, live: false, symbol: "checkmark.circle.fill")
+        case .failed: return WorkerMeta(label: s.words, color: error, live: false, symbol: "xmark.octagon.fill")
+        case .cancelled: return WorkerMeta(label: s.words, color: fg3, live: false, symbol: "slash.circle.fill")
+        }
+    }
+
+    /// The lane's word on a worker's mono meta line: "background" (Apple events, browser,
+    /// files, shell, web — the pointer is never its) or "screen" (waits for the pointer).
+    static func lane(_ l: WorkerLane) -> String { l.rawValue }
+
     struct GrantMeta {
         let label: String
         let color: Color
@@ -312,7 +341,9 @@ extension EngineCommand {
         }
         switch type {
         case "wake": self = .wake
-        case "sleep": self = .sleep
+        case "sleep":
+            // With a cause the ledger records it ("dock", "command"); without, today's bare sleep.
+            if let cause = str("cause"), !cause.isEmpty { self = .sleepCause(cause) } else { self = .sleep }
         case "mute": self = .mute
         case "unmute": self = .unmute
         case "stop": self = .stop
@@ -340,6 +371,10 @@ extension EngineCommand {
         case "agent.hide":
             guard let id = str("agentId") else { return nil }
             self = .agentHide(agentId: id, hidden: bool("hidden") ?? true)
+        case "worker.stop":
+            // One worker, never the transport: the session stays open.
+            guard let id = str("workerId"), !id.isEmpty else { return nil }
+            self = .workerStop(workerId: id)
         case "ledger.restore-day":
             guard let day = str("day") else { return nil }
             self = .ledgerRestoreDay(day: day)
@@ -505,6 +540,13 @@ enum ConsoleFormat {
     /// The Trash row: "3 days · 129 MB"; "empty" when nothing is there.
     static func trashLine(_ t: TrashInfo) -> String {
         t.days <= 0 && t.bytes <= 0 ? "empty" : "\(days(t.days)) · \(bytes(t.bytes))"
+    }
+
+    /// A worker's mono meta: "00:03 · background" — how long it has had its hands on the
+    /// work (ticking while it runs, frozen at `doneAt` after) and its lane.
+    static func workerMeta(_ w: Worker, now: Double) -> String {
+        let end = w.doneAt ?? now
+        return "\(duration(max(0, end - w.startedAt) / 1000)) · \(ConsoleTheme.lane(w.lane))"
     }
 }
 
@@ -694,6 +736,28 @@ struct ConsoleDelegationGlyph: View {
 
     var body: some View {
         let meta = ConsoleTheme.delegation(status)
+        ZStack {
+            if meta.live {
+                ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)
+            } else {
+                ConsoleIcon(name: meta.symbol, tint: meta.color).transition(.opacity)
+            }
+        }
+        .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: status)
+        .help(meta.label)
+        .accessibilityLabel(meta.label)
+    }
+}
+
+/// A worker's status as one glyph on the icon column: a pulsing dot while it works, a solid
+/// symbol while it waits (the hourglass, the raised hand) and once it settles; the two
+/// crossfade as the status turns, so a hand finishing never cuts.
+struct ConsoleWorkerGlyph: View {
+    let status: WorkerStatus
+
+    var body: some View {
+        let meta = ConsoleTheme.worker(status)
         ZStack {
             if meta.live {
                 ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)

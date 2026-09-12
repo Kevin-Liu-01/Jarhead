@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { delegate, nextUtterance, settle, world } from "./world.ts";
-import { earHintsFrom } from "../engine.ts";
+import { delegate, nextUtterance, rows, settle, until, world } from "./world.ts";
+import { Engine, earHintsFrom } from "../engine.ts";
 
 /**
  * The 250 ms path end to end inside the engine: an ear partial becomes a hands
@@ -82,7 +82,8 @@ test("ear: a final fires at once; \"click send\" is dropped by the policy with n
     await settle();
     assert.equal(hands.named("find_element").length, 1);
     assert.equal(hands.named("click").length, 1, "the one Save button was clicked at its centre");
-    assert.deepEqual(hands.named("click")[0]!.params, { x: 530, y: 412, button: "left", count: 1, modifiers: [] });
+    // `expectFront`: the pid the gate's own probe saw in front rides on the click, so the helper posts nothing if the app moved.
+    assert.deepEqual(hands.named("click")[0]!.params, { x: 530, y: 412, button: "left", count: 1, modifiers: [], expectFront: { pid: 1 } });
     assert.equal(rows[1]?.ok, true);
 
     hands.labels = ["Save", "Save", "Cancel"];
@@ -507,8 +508,9 @@ test("the ear is not held by output audio that is silence: GPT-Live-1 streams fr
 
 test("ear hints: the AX warm tick turns the front window into `ear.hints` — app first, then the window, then the controls' titles (controls only, deduped) — once per change of the tree, never twice within 500 ms; asleep sends nothing", async () => {
   const w = world();
-  const { engine, hands } = w;
-  const original = hands.request.bind(hands);
+  const { engine, handsBg } = w;
+  // The AX warm tick and the hints read the tree on the READING helper; the acting one stays free for a click.
+  const original = handsBg.request.bind(handsBg);
   let nodes: Record<string, unknown>[] = [
     { i: 1, depth: 1, role: "AXButton", title: "Save" },
     { i: 2, depth: 1, role: "AXButton", title: "Add Folder" },
@@ -517,11 +519,11 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     { i: 5, depth: 2, role: "AXGroup", pressable: true, description: "Close" },
     { i: 6, depth: 2, role: "AXButton", title: "save" },
   ];
-  const tree = (): Record<string, unknown> => ({ app: hands.frontApp, pid: 1, window: "Meeting notes", count: nodes.length, cached: true, ageMs: 1, treeMs: 3, truncated: false });
-  hands.request = async <T,>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
-    hands.ops.push({ op, params, at: hands.now() });
+  const tree = (): Record<string, unknown> => ({ app: handsBg.frontApp, pid: 1, window: "Meeting notes", count: nodes.length, cached: true, ageMs: 1, treeMs: 3, truncated: false });
+  handsBg.request = async <T,>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
+    handsBg.ops.push({ op, params, at: handsBg.now() });
     if (op === "ax_tree") return (params["summary"] ? tree() : { ...tree(), nodes }) as T;
-    hands.ops.pop();
+    handsBg.ops.pop();
     return original<T>(op, params);
   };
   const sent: { at: number; strings: readonly string[] }[] = [];
@@ -538,12 +540,12 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     for (const want of ["Save", "Add Folder", "Add to Reading", "Close"]) assert.ok(first.includes(want), `${want} in ${JSON.stringify(first)}`);
     assert.ok(!first.some((s) => /prose/i.test(s)), "static text is not a control");
     assert.equal(first.filter((s) => s.toLowerCase() === "save").length, 1, "deduped case-insensitively");
-    assert.ok(hands.named("ax_tree").some((o) => !o.params["summary"]), "the nodes were read from the cache");
+    assert.ok(handsBg.named("ax_tree").some((o) => !o.params["summary"]), "the nodes were read from the cache");
     // The next tick sees the same tree: nothing new goes out, and the nodes are not re-read.
-    const reads = hands.named("ax_tree").filter((o) => !o.params["summary"]).length;
+    const reads = handsBg.named("ax_tree").filter((o) => !o.params["summary"]).length;
     await settle(600);
     assert.equal(sent.length, 1);
-    assert.equal(hands.named("ax_tree").filter((o) => !o.params["summary"]).length, reads, "same summary: no node read");
+    assert.equal(handsBg.named("ax_tree").filter((o) => !o.params["summary"]).length, reads, "same summary: no node read");
     // The tree changes: a new set, at least 500 ms after the first, carrying the new control.
     nodes = [...nodes, { i: 7, depth: 1, role: "AXButton", title: "Send" }];
     await settle(600);
@@ -556,7 +558,7 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     await settle(600);
     assert.equal(sent.length, 2);
   } finally {
-    hands.request = original as typeof hands.request;
+    handsBg.request = original as typeof handsBg.request;
     await engine.stop();
   }
 });
@@ -586,4 +588,59 @@ test("ear hints: earHintsFrom keeps controls only, three words at most, trims el
   assert.deepEqual(cleaned, ["Save", "Close window now", "Add Folder"]);
   const capped = earHintsFrom(many, "App", "Win", Array.from({ length: 40 }, (_, i) => `Agent ${i}`));
   assert.equal(capped.length, 100, "total capped at 100");
+});
+
+test("ear: a dismissal is judged before the hold and only to Jarhead — a final 'goodnight jarhead' sleeps it at once; a bare 'goodnight' with no exchange does nothing; 3 s after Jarhead spoke it fires; 'that is all' → 'that is all wrong' fires nothing; a stop is still a stop", async () => {
+  const w = world();
+  const { engine, live, hands, brain, clock } = w;
+  type SleepRow = { type: "sleep"; phrase?: string; cause: string };
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.ops.length = 0;
+    // Past the exchange window: a bare "goodnight" is to someone in the room.
+    clock.t += 9000;
+    engine.ear("goodnight", true, 1, clock.t);
+    await settle(120);
+    assert.equal(rows<SleepRow>(w, "sleep").length, 0);
+    assert.equal(live.currentState, "started");
+    // A prefix that grows within the careful window never fires.
+    live.emit("outputTranscript", " all done.", live.nowMs, live.nowMs + 300);
+    engine.ear("that is all", false, 2, clock.t);
+    await settle(20);
+    engine.ear("that is all wrong", false, 2, clock.t);
+    await settle(150);
+    assert.equal(rows<SleepRow>(w, "sleep").length, 0);
+    // "stop" is the interrupt, even now.
+    delegate(w, "jarhead what is on my screen", "item_1");
+    await settle();
+    assert.equal(brain.tasks.length, 1);
+    engine.ear("stop", true, 3, clock.t);
+    await settle();
+    assert.equal(engine.snapshot().delegations[0]!.status, "cancelled");
+    assert.equal(rows<SleepRow>(w, "sleep").length, 0);
+    assert.equal(live.currentState, "started");
+    // Mid-exchange, a bare "goodnight" 3 s after Jarhead spoke is to Jarhead — and a held ear still hears it.
+    clock.t += 3000;
+    live.emit("outputTranscript", " stopped.", live.nowMs + 100, live.nowMs + 400);
+    clock.t += 3000;
+    engine.ear("goodnight", true, 4, clock.t);
+    await settle();
+    assert.equal(rows<SleepRow>(w, "sleep").length, 1);
+    assert.equal(rows<SleepRow>(w, "sleep")[0]!.phrase, "goodnight");
+    assert.equal(rows<SleepRow>(w, "sleep")[0]!.cause, "said");
+    assert.ok(live.instructions.includes(Engine.FAREWELL_LINE));
+    live.emit("outputTranscript", " night.", live.nowMs + 500, live.nowMs + 800);
+    await until(() => live.closes === 1, 1000);
+    assert.equal(engine.currentPhase, "asleep");
+    // Asleep, the ear is off: a final "goodnight jarhead" sleeps nothing twice.
+    engine.ear("goodnight jarhead", true, 5, clock.t);
+    await settle();
+    assert.equal(rows<SleepRow>(w, "sleep").length, 1);
+  } finally {
+    await engine.stop();
+  }
 });

@@ -12,6 +12,7 @@ import { Delegator } from "../delegator.ts";
 import { ResponsesBrain, responsesDelegationConfig } from "../responses.ts";
 import { zodShape, ClaudeBrain } from "../claude.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
+import { codexAddendum } from "../codex.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt, type Brain, type BrainResult, type BrainSink, type BrainTask } from "../brain.ts";
 
 class FakeHands implements NativeHands {
@@ -74,7 +75,9 @@ test("runner archives screenshots, routes agent tools, and gates shell", async (
 });
 
 test("tool specs are complete and map to zod shapes", () => {
-  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, misc, system, self, draw");
+  // 67: the 63 of f6c3b40 plus the four worker_* specs (pinned again in mcp-bridge.test.ts).
+  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, workers, misc, system, self, draw");
+  assert.equal(ALL_TOOL_SPECS.length, 67);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   assert.equal(names.size, ALL_TOOL_SPECS.length, "no duplicate tool names");
   const shape = zodShape(specByName("scroll")!);
@@ -254,6 +257,22 @@ test("the standing orders: precedence stated, secrets on the never list, every n
   assert.match(p, q);
   assert.match(buildLiveInstructions(), q);
   assert.match(specByName("self_apply")!.description, q);
+});
+
+test("the Codex addendum's cheat-sheet names real tools and their parameters only, and carries the one Workers line", () => {
+  const addendum = codexAddendum();
+  const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
+  // A parameter may be spelled in the cheat-sheet too (scroll_direction, start_coordinate): those are the specs' own words.
+  const params = new Set(ALL_TOOL_SPECS.flatMap((t) => Object.keys(t.parameters.properties)));
+  const tokens = [...new Set(addendum.match(/\b[a-z]+_[a-z_]+\b/g) ?? [])].filter((t) => t !== "needs_confirmation");
+  assert.ok(tokens.length > 40, tokens.join(","));
+  for (const t of tokens) assert.ok(names.has(t) || params.has(t), `${t} is in the addendum but is neither a tool nor a parameter`);
+  for (const t of ["worker_start", "worker_wait", "worker_read", "worker_stop"]) assert.ok(tokens.includes(t), `${t} is in the cheat-sheet (MCP schemas are not inlined for Codex)`);
+  // Exactly the line DECISIONS names (the named rail hunk), after the agents line.
+  const line = addendum.split("\n").find((l) => l.startsWith("Workers: "));
+  assert.equal(line, 'Workers: worker_start {name, task, lane?, budget?} (a second hand; background = Apple events/browser/files/shell/web only, screen = waits for the pointer); worker_wait {name|"all", timeout?}; worker_read {name}; worker_stop {name}.');
+  assert.ok(addendum.indexOf("Agents and self:") < addendum.indexOf("Workers: "));
+  assert.equal(addendum.split("\n").filter((l) => l.startsWith("Workers: ")).length, 1, "one line, not a section");
 });
 
 test("the voice instructions mirror the orders: a yes comes from Kevin, refusals are relayed with the alternative, secrets are never, rails need his naming, and the capabilities name real tools only", () => {

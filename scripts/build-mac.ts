@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
+import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/cli/install";
 
 /**
  * Package the native macOS app: build/Jarhead.app.
@@ -120,20 +121,53 @@ run("codesign", [...common, "--sign", sign, join(macos, "jarhead-hands")]);
 run("codesign", [...common, "--entitlements", entitlements, "--sign", sign, APP]);
 run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
 
-// 5. Install. Exactly one launchable Jarhead exists on this Mac — /Applications —
-// so the Dock, LaunchServices' recents and TCC never see two identities.
-// build/Jarhead.app is a symlink to it, for scripts and docs that name that path.
-rmSync(INSTALLED, { recursive: true, force: true });
-execFileSync("cp", ["-R", APP, "/Applications/"]);
-rmSync(join(OUT, "stage"), { recursive: true, force: true });
-try {
-  const st = lstatSync(LINK);
-  if (st.isSymbolicLink() || st.isDirectory()) rmSync(LINK, { recursive: true, force: true });
-} catch {
-  // nothing there
+// 5. Install IN PLACE. Exactly one launchable Jarhead exists on this Mac — /Applications —
+// so the Dock, LaunchServices' recents and TCC never see two identities. Its directory
+// is never recreated: the Dock's pinned tile keeps a bookmark keyed on that directory's
+// inode, and rm + cp gave it a new one every build (that was the second Dock tile).
+// rsync renames each changed file over the old name (never --inplace: the running app
+// keeps its mapped, signed Mach-O), --delete-after drops what the stage no longer has,
+// and it is the INSTALLED copy that is verified. build/Jarhead.app stays a symlink to it.
+// The order (plan → snapshot → rsync → verify → parity → inode → unstage → relink) and
+// every fail path live in performInstall, pinned by install-bundle.test.ts with a
+// scripted exec; this file only supplies the real commands and filesystem.
+const PREVIOUS = join(OUT, "previous", "Jarhead.app");
+const io: InstallIO = {
+  exec: (cmd, args) => {
+    console.log(`[build-mac] ${cmd} ${args.join(" ")}`);
+    return defaultExec(cmd, args, { timeoutMs: 120_000 });
+  },
+  probe: probeTarget,
+  mkdirp: (p) => mkdirSync(p, { recursive: true }),
+  rmTree: (p) => rmSync(p, { recursive: true, force: true }),
+  relink: (target, link) => {
+    try {
+      const st = lstatSync(link);
+      if (st.isSymbolicLink() || st.isDirectory()) rmSync(link, { recursive: true, force: true });
+    } catch {
+      // nothing there
+    }
+    symlinkSync(target, link);
+  },
+  compare: compareTrees,
+  warn: (line) => console.warn(`[build-mac] ${line}`),
+};
+const outcome = performInstall({ stage: APP, installed: INSTALLED, previous: PREVIOUS, link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
+if (!outcome.ok) {
+  console.error(`[build-mac] ${outcome.what}`);
+  for (const l of outcome.lines) console.error(`           ${l}`);
+  console.error(`           the signed stage is kept at ${APP} for inspection`);
+  process.exit(1);
 }
-symlinkSync(INSTALLED, LINK);
-const installNote = `installed  ${INSTALLED} (build/Jarhead.app → symlink)`;
+const installNote = outcome.line;
+
+// 6. One Jarhead: refresh the LaunchServices record, unregister stale Jarhead bundle
+// paths (the database only — nothing in the Trash is touched), and READ the Dock. The
+// Dock is only rewritten by `pnpm jarhead dock --fix` or JARHEAD_INSTALL_HYGIENE=fix;
+// JARHEAD_INSTALL_HYGIENE=0 skips the whole pass (headless CI, or a Dock left alone).
+const hygiene = process.env["JARHEAD_INSTALL_HYGIENE"];
+let oneJarhead = "one jarhead  skipped (JARHEAD_INSTALL_HYGIENE=0)";
+if (hygiene !== "0") oneJarhead = runHygiene({ mode: hygiene === "fix" ? "fix" : "install", log: (line) => console.log(`[build-mac] ${line}`) }).line;
 
 const size = statSync(join(INSTALLED, "Contents", "MacOS", "Jarhead")).size;
 console.log(`
@@ -143,6 +177,8 @@ console.log(`
   signed     ${identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)"}
 
   ${installNote}
+  ${oneJarhead}
+  link:      build/Jarhead.app → ${INSTALLED}${outcome.rollback ? `\n  ${outcome.rollback}` : ""}
   run:       open -a Jarhead
   logs:      tail -f ~/.jarhead/daemon.log
 `);

@@ -5,8 +5,9 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcess } from "node:child_process";
-import { NativeHandsProcess, NativeRequestError } from "../native.ts";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { SECRET_KEYS } from "@jarhead/protocol";
+import { NativeHandsProcess, NativeRequestError, scrubHandsEnv } from "../native.ts";
 
 /**
  * The resident helper client: a request in flight can be dropped by a stop
@@ -78,4 +79,65 @@ test("cancelPending fails the requests in flight with `cancelled`, drops their l
   assert.deepEqual(await next, { x: 5 });
   assert.equal(hands.cancelPending(), 0, "nothing in flight: nothing dropped");
   hands.stop();
+});
+
+test("the helper is spawned without any SECRET_KEYS name in its environment — from the option's env or the process's — and everything else is kept", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-hands-"));
+  const bin = join(dir, "hands");
+  writeFileSync(bin, "#!/bin/sh\n");
+  const envs: (NodeJS.ProcessEnv | undefined)[] = [];
+  const child = new FakeChild();
+  const spawnImpl = ((_bin: string, _args: string[], opts: SpawnOptions) => {
+    envs.push(opts.env);
+    return child as unknown as ChildProcess;
+  }) as never;
+  const given: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin", JARHEAD_HANDS_BIN: bin };
+  for (const key of SECRET_KEYS) given[key] = "sk-live-secret";
+  const hands = new NativeHandsProcess({ binPath: bin, spawnImpl, env: given });
+  const req = hands.request("cursor");
+  await seen(child, 1);
+  assert.equal(envs.length, 1);
+  for (const key of SECRET_KEYS) assert.equal(envs[0]![key], undefined, `${key} is not in the helper's env`);
+  assert.equal(envs[0]!["PATH"], "/usr/bin:/bin");
+  assert.equal(envs[0]!["JARHEAD_HANDS_BIN"], bin);
+  assert.equal(given["OPENAI_API_KEY"], "sk-live-secret", "the caller's env object is untouched");
+  hands.cancelPending();
+  await assert.rejects(req, /cancelled/);
+  hands.stop();
+
+  // Without the option the daemon's own env is the base, scrubbed the same way.
+  const scrubbed = scrubHandsEnv({ HOME: "/Users/kevin", OPENAI_API_KEY: "x", ANTHROPIC_API_KEY: "y", JARHEAD_BRAIN_API_KEY: "z" });
+  assert.deepEqual(scrubbed, { HOME: "/Users/kevin" });
+  assert.equal(SECRET_KEYS.length, 3, "the three keys the shell and Codex children are also denied");
+});
+
+test("two clients over two children: a cancel on one fails only its own pendings; the other's requests are untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-hands-"));
+  const bin = join(dir, "hands");
+  writeFileSync(bin, "#!/bin/sh\n");
+  const childA = new FakeChild();
+  const childB = new FakeChild();
+  const a = new NativeHandsProcess({ binPath: bin, spawnImpl: (() => childA as unknown as ChildProcess) as never });
+  const b = new NativeHandsProcess({ binPath: bin, spawnImpl: (() => childB as unknown as ChildProcess) as never });
+  const typing = a.request("type", { text: "hello" });
+  const tree = b.request<{ count: number }>("ax_tree", { summary: true });
+  const front = b.request<{ app: string }>("frontmost");
+  await seen(childA, 1);
+  await seen(childB, 2);
+  assert.equal(a.pendingCount, 1);
+  assert.equal(b.pendingCount, 2);
+  assert.equal(a.cancelPending("stop"), 1);
+  await assert.rejects(typing, (e: unknown) => e instanceof NativeRequestError && e.detail.code === "cancelled");
+  assert.equal(b.pendingCount, 2, "the other helper's requests stand");
+  // Answer by op: two requests made while the spawn is still settling may reach the child in either order.
+  const idOf = (op: string): string => childB.seen.find((s) => s.op === op)!.id;
+  childB.answer(idOf("ax_tree"), { count: 12 });
+  childB.answer(idOf("frontmost"), { app: "Slack" });
+  assert.deepEqual(await tree, { count: 12 });
+  assert.deepEqual(await front, { app: "Slack" });
+  // Ids are per client: the same `r1` on both children never crosses over.
+  assert.equal(childA.seen[0]!.id, "r1");
+  assert.ok(childB.seen.some((s) => s.id === "r1"), "both clients start at r1");
+  a.stop();
+  b.stop();
 });

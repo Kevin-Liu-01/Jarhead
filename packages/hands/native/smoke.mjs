@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Smoke test for build/jarhead-hands. Plain Node, no dependencies.
-// Safe on a live machine: it only reads (screenshots, cursor, windows, AX) and nudges the
-// mouse by 3 points and back. It never clicks, types, scrolls, drags or focuses apps.
+// Safe on a live machine: it only reads (screenshots, cursor, windows, AX, user_idle) and nudges
+// the mouse by 3 points and back. It never clicks, types, scrolls, drags or focuses apps: the
+// acting ops it sends carry `expectFront: {pid: 1}` (launchd is never in front), so the helper
+// refuses each with `focus_moved` before its first post — which is the check.
 //
 //   node packages/hands/native/smoke.mjs
 //   JARHEAD_HANDS_BIN=/path/to/jarhead-hands node packages/hands/native/smoke.mjs
@@ -139,6 +141,31 @@ if (moved && moved.x === cursor.x && moved.y === cursor.y) {
 }
 await step("move back", "move", { x: cursor.x, y: cursor.y });
 await step("wait 50", "wait", { ms: 50 });
+
+// Kevin's hands win: `user_idle` reads the session's last inputs (a huge number = never seen);
+// an acting op judged against an app that is not in front posts nothing. `ownDriver: true`
+// skips the busy check so a keystroke of yours during the run cannot turn `focus_moved` into `busy`.
+const idle = await step("user_idle", "user_idle");
+if (idle) {
+  for (const key of ["keyMs", "clickMs", "scrollMs", "moveMs", "foreignMs"]) {
+    if (typeof idle[key] !== "number" || idle[key] < 0) {
+      failures += 1;
+      console.log(`FAIL user_idle: ${key} should be a non-negative number, got ${JSON.stringify(idle[key])}`);
+    }
+  }
+}
+const nothingInFront = { expectFront: { pid: 1 }, ownDriver: true };
+await step("click with expectFront pid 1 (nothing posted)", "click", { ...nothingInFront }, "focus_moved");
+await step("type with expectFront pid 1 (nothing posted)", "type", { text: "x", ...nothingInFront }, "focus_moved");
+await step("key with expectFront pid 1 (nothing posted)", "key", { combo: "shift", ...nothingInFront }, "focus_moved");
+await step("scroll with expectFront pid 1 (nothing posted)", "scroll", { dy: 1, ...nothingInFront }, "focus_moved");
+await step("expectFront without pid", "click", { expectFront: {} }, "bad_request");
+const idleAfter = await step("user_idle after the refusals", "user_idle");
+if (idle && idleAfter && idleAfter.keyMs < idle.keyMs - 50 && idle.keyMs < 1e11) {
+  // A key press arrived between the two reads: yours, or a refusal that posted (it must not).
+  console.log("note keyMs moved between the reads — if you did not touch the keyboard, a refused op posted something");
+}
+
 await step("invalid op", "definitely_not_an_op", {}, "bad_request");
 await step("click with bad button", "click", { button: "nope" }, "bad_request");
 await step("key with bad combo", "key", { combo: "cmd+notakey" }, "bad_request");

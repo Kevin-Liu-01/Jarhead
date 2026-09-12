@@ -50,6 +50,24 @@ class FakeEngine extends EventEmitter implements EngineLike {
       return { result: { kind: "text", text: `${name} ran with ${JSON.stringify(input)}` } };
     },
   };
+  /** Worker lane runners by id (`runnerFor`); a worker's call must land here and never in `runner`. */
+  workerRunners = new Map<string, { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> }>();
+  workerCalls: { worker: string; name: string; input: unknown }[] = [];
+  runnerFor(worker: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } | undefined {
+    return this.workerRunners.get(worker);
+  }
+  /** A worker whose lane runner answers with its own id, so a test can tell whose hands ran. */
+  addWorker(id: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } {
+    const runner = {
+      attached: true,
+      run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
+        this.workerCalls.push({ worker: id, name, input });
+        return { result: { kind: "text", text: `${id} ran ${name}` } };
+      },
+    };
+    this.workerRunners.set(id, runner);
+    return runner;
+  }
   snapshot(): unknown {
     return { phase: "asleep" };
   }
@@ -271,6 +289,203 @@ test("tool.run goes through the engine's runner and answers the asking client on
 
   asker.close();
   bystander.close();
+  await server.close();
+});
+
+/** Wait until the socket delivered what the test expects — a fixed pause is too short under a loaded full run. */
+async function until(check: () => boolean, what: string, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+test("tool.run with a worker goes to engine.runnerFor(worker) and never the main runner; unknown, malformed and unattached workers are refused in the runner's refusal shape", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const spotify = engine.addWorker("w_spotify");
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const bridge = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  bridge.on("message", (m) => got.push(m));
+  await bridge.connect({ pid: 1 });
+  const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
+
+  const play = { script: 'tell application "Spotify" to play' };
+  bridge.sendJson({ type: "tool.run", id: "w1", name: "applescript", input: play, worker: "w_spotify" });
+  // A worker the engine does not have: finished, stopped or never started.
+  bridge.sendJson({ type: "tool.run", id: "w2", name: "left_click", input: { coordinate: [1, 1] }, worker: "w_gone" });
+  // A worker id that is not a string, and one that is empty: neither may reach any runner.
+  bridge.sendJson({ type: "tool.run", id: "w3", name: "left_click", input: { coordinate: [1, 1] }, worker: 7 } as never);
+  bridge.sendJson({ type: "tool.run", id: "w4", name: "frontmost_app", input: {}, worker: "" });
+  // No worker: the main brain's call, as before.
+  bridge.sendJson({ type: "tool.run", id: "w5", name: "frontmost_app", input: {} });
+  // The tool table is checked first, whoever asks.
+  bridge.sendJson({ type: "tool.run", id: "w6", name: "format_disk", input: {}, worker: "w_spotify" });
+  await until(() => results().length === 6, "six tool results");
+  // The worker's lane lost its task (cancelled, budget cut): the same refusal the main runner gives.
+  spotify.attached = false;
+  bridge.sendJson({ type: "tool.run", id: "w7", name: "applescript", input: play, worker: "w_spotify" });
+  await until(() => results().length === 7, "the seventh tool result");
+
+  const byId = new Map(results().map((r) => [r.id, r.result]));
+  assert.deepEqual(byId.get("w1"), { kind: "text", text: "w_spotify ran applescript" });
+  assert.equal(byId.get("w2")?.kind, "error");
+  assert.match((byId.get("w2") as { message: string }).message, /^refused: no worker w_gone is running in Jarhead; left_click was not run \(it finished, was stopped, or never started\)$/);
+  assert.match((byId.get("w3") as { message: string }).message, /^refused: malformed worker id; left_click was not run$/);
+  assert.match((byId.get("w4") as { message: string }).message, /^refused: malformed worker id; frontmost_app was not run$/);
+  assert.match((byId.get("w5") as { text: string }).text, /frontmost_app ran/);
+  assert.match((byId.get("w6") as { message: string }).message, /unknown tool format_disk/);
+  assert.match((byId.get("w7") as { message: string }).message, /^refused: no task is running in Jarhead; applescript was not run \(Kevin stopped the task, or it finished\)$/);
+  assert.deepEqual(engine.workerCalls, [{ worker: "w_spotify", name: "applescript", input: play }], "only the routed call reached the worker's lane");
+  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app"], "the main runner saw the main call and no worker's");
+
+  // An engine without runnerFor (older engines, no workers): every worker call is refused; main calls still run.
+  const legacy = new FakeEngine();
+  Object.defineProperty(legacy, "runnerFor", { value: undefined });
+  const legacyPath = join(dir, "l.sock");
+  const legacyServer = new DaemonServer(legacy, legacyPath);
+  await legacyServer.listen();
+  const legacyBridge = new DaemonClient(legacyPath);
+  const legacyGot: DaemonMessage[] = [];
+  legacyBridge.on("message", (m) => legacyGot.push(m));
+  await legacyBridge.connect({ pid: 2 });
+  legacyBridge.sendJson({ type: "tool.run", id: "l1", name: "frontmost_app", input: {}, worker: "w_spotify" });
+  legacyBridge.sendJson({ type: "tool.run", id: "l2", name: "frontmost_app", input: {} });
+  await until(() => legacyGot.filter((m) => m.type === "tool.result").length === 2, "two legacy tool results");
+  const legacyById = new Map(legacyGot.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result").map((r) => [r.id, r.result]));
+  assert.match((legacyById.get("l1") as { message: string }).message, /^refused: no worker w_spotify is running in Jarhead/);
+  assert.equal(legacyById.get("l2")?.kind, "text");
+  assert.deepEqual(legacy.toolCalls.map((c) => c.name), ["frontmost_app"]);
+
+  bridge.close();
+  legacyBridge.close();
+  await server.close();
+  await legacyServer.close();
+});
+
+test("a server over one brain's runner-only engine: runnerFor knows exactly its worker id — that id routes, every other id is refused, no worker still hits runner", async () => {
+  // The shape CodexBrain's own tool socket has outside the daemon process (codex.ts
+  // ensureToolSocket → runnerOnlyEngine): one runner, one worker id at most. A worker brain
+  // there names its id on every frame; the server must hand those to the same runner and
+  // nothing else to it.
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const calls: { name: string; worker?: string }[] = [];
+  const runner = {
+    attached: true,
+    run: async (name: string): Promise<{ result: ToolResult }> => {
+      calls.push({ name });
+      return { result: { kind: "text", text: `${name} ran on the one runner` } };
+    },
+  };
+  const one = new FakeEngine();
+  one.runner = runner;
+  one.runnerFor = (w: string) => (w === "w_slack" ? runner : undefined);
+  const server = new DaemonServer(one, path);
+  await server.listen();
+  const bridge = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  bridge.on("message", (m) => got.push(m));
+  await bridge.connect({ pid: 1 });
+  const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
+  bridge.sendJson({ type: "tool.run", id: "s1", name: "frontmost_app", input: {}, worker: "w_slack" });
+  bridge.sendJson({ type: "tool.run", id: "s2", name: "frontmost_app", input: {}, worker: "w_spotify" });
+  bridge.sendJson({ type: "tool.run", id: "s3", name: "frontmost_app", input: {} });
+  await until(() => results().length === 3, "three tool results");
+  const byId = new Map(results().map((r) => [r.id, r.result]));
+  assert.deepEqual(byId.get("s1"), { kind: "text", text: "frontmost_app ran on the one runner" });
+  assert.match((byId.get("s2") as { message: string }).message, /^refused: no worker w_spotify is running in Jarhead; frontmost_app was not run/);
+  assert.deepEqual(byId.get("s3"), { kind: "text", text: "frontmost_app ran on the one runner" });
+  assert.equal(calls.length, 2, "the worker's own call and the plain call ran; the stranger's did not");
+  bridge.close();
+  await server.close();
+});
+
+test("tool.run with worker: null on the wire is refused as malformed, never routed to the main runner", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  engine.addWorker("w_spotify");
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const bridge = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  bridge.on("message", (m) => got.push(m));
+  await bridge.connect({ pid: 1 });
+  // JSON.stringify keeps a null where it drops an undefined: a bridge that sets the key to null sends it.
+  bridge.sendJson({ type: "tool.run", id: "n1", name: "frontmost_app", input: {}, worker: null } as never);
+  await until(() => got.some((m) => m.type === "tool.result"), "the tool result");
+  const r = got.find((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result")!;
+  assert.equal(r.id, "n1");
+  assert.match((r.result as { message: string }).message, /^refused: malformed worker id; frontmost_app was not run$/);
+  assert.equal(engine.toolCalls.length, 0, "the main runner never saw it");
+  assert.equal(engine.workerCalls.length, 0);
+  bridge.close();
+  await server.close();
+});
+
+test("an engine whose runnerFor throws answers the asking client with an error result and the server keeps serving", async () => {
+  // runTool is fire-and-forget; a throw from the engine's pool lookup (a worker being cut
+  // as its brain calls) must not become the unhandled rejection that would exit the daemon.
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  engine.runnerFor = (w: string) => {
+    if (w === "w_boom") throw new Error("the pool is mid-cut");
+    return engine.workerRunners.get(w);
+  };
+  engine.addWorker("w_ok");
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const bridge = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  bridge.on("message", (m) => got.push(m));
+  await bridge.connect({ pid: 1 });
+  const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
+  bridge.sendJson({ type: "tool.run", id: "b1", name: "frontmost_app", input: {}, worker: "w_boom" });
+  await until(() => results().length === 1, "the refusal");
+  assert.equal(results()[0]!.id, "b1");
+  assert.match((results()[0]!.result as { message: string }).message, /^refused: the pool is mid-cut; frontmost_app was not run$/);
+  // Still up: the next worker call and the next main call both run.
+  bridge.sendJson({ type: "tool.run", id: "b2", name: "frontmost_app", input: {}, worker: "w_ok" });
+  bridge.sendJson({ type: "tool.run", id: "b3", name: "frontmost_app", input: {} });
+  await until(() => results().length === 3, "two more results");
+  const byId = new Map(results().map((r) => [r.id, r.result]));
+  assert.deepEqual(byId.get("b2"), { kind: "text", text: "w_ok ran frontmost_app" });
+  assert.equal(byId.get("b3")?.kind, "text");
+  assert.equal(server.clientCount, 1, "the connection survived the throw");
+  bridge.close();
+  await server.close();
+});
+
+test("commands on the wire: worker.stop and sleep with a cause pass isEngineCommand and reach the engine as sent; a tool name is not a command", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  app.on("message", (m) => got.push(m));
+  await app.connect({ pid: 1 });
+  // The Console's Stop on a worker row; the blob dropped into the notch; a spoken cue with its phrase; the bare sleep of older surfaces.
+  const sent = [
+    { type: "worker.stop", workerId: "w_spotify" },
+    { type: "sleep", cause: "dock" },
+    { type: "sleep", cause: "said", phrase: "go to sleep" },
+    { type: "sleep" },
+  ];
+  for (const command of sent) app.sendJson({ type: "command", command });
+  // worker_start is a brain tool, not a surface command: refused as malformed, never dispatched.
+  app.sendJson({ type: "command", command: { type: "worker_start", name: "Spotify" } as never });
+  await until(() => got.some((m) => m.type === "error"), "the malformed-command error");
+  assert.deepEqual(engine.commands, sent, "each command arrives intact, cause and phrase included");
+  assert.deepEqual(got.filter((m) => m.type === "error"), [{ type: "error", message: "malformed command" }]);
+  app.close();
   await server.close();
 });
 

@@ -49,7 +49,8 @@ struct RightRail: View, Equatable {
                         NowPanel(phase: snapshot.phase, sessionInfo: snapshot.session, pause: snapshot.pause, usageToday: snapshot.usageToday,
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
-                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped)
+                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped,
+                                 workers: snapshot.allWorkers)
                             .transition(Motion.swap)
                     case .settings:
                         SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash)
@@ -276,6 +277,8 @@ struct NowPanel: View {
     let marks: [ScreenMark]
     /// The problems with their kind and remedy (Snapshot.problemsTyped); nil from a daemon that sends only the lines.
     var problemsTyped: [Problem]? = nil
+    /// The delegation's workers (Snapshot.workers): running, and finished within the last half minute.
+    var workers: [Worker] = []
 
     @Environment(\.consoleActions) private var actions
 
@@ -421,6 +424,24 @@ struct NowPanel: View {
             }
             .animation(Motion.gentle, value: marks.map(\.id))
 
+            // The delegation's second pair of hands, one row each (the ProblemRow idiom): the
+            // status glyph, the name and status word, elapsed · lane in mono, the last line,
+            // and Stop while it runs. The section arrives with the first worker and leaves
+            // half a minute after the last one finishes (the snapshot keeps them that long);
+            // a row rises in and drops out on its own ink.
+            if !workers.isEmpty {
+                RailSection("Workers", count: workers.count) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(workers) { w in
+                            WorkerRow(worker: w) { actions.send(.workerStop(workerId: w.id)) }
+                                .transition(Motion.appear)
+                        }
+                    }
+                    .animation(Motion.gentle, value: workers.map(\.id))
+                }
+                .transition(Motion.appear)
+            }
+
             RailSection("Ready") {
                 VStack(spacing: 0) {
                     readyRow("brain.fill", "Brain", brainReady, brain.rawValue)
@@ -486,6 +507,8 @@ struct NowPanel: View {
             .animation(Motion.gentle, value: problems)
             .animation(Motion.gentle, value: typed?.map(\.id) ?? [])
         }
+        // The Workers section arriving or leaving reflows the panel under it.
+        .animation(Motion.gentle, value: workers.isEmpty)
     }
 
     /// The remedy button: its command when the engine gave one the Console can send, its
@@ -550,6 +573,77 @@ private struct ProblemRow: View {
         if let json = problem.remedy?.command, case .string(let type)? = json["type"] { return "Sends \(type)" }
         if let target = problem.remedy?.open, !target.isEmpty { return "Opens \(ConsoleFormat.truncPath(target, max: 48))" }
         return "Check this again"
+    }
+}
+
+/// One worker (the ProblemRow idiom): the status glyph on the icon column; the name and its
+/// status word, with a 22pt ghost Stop trailing while it runs; "00:03 · background" in mono
+/// under them, the seconds rolling until it is done; its last line under that. Stop sends
+/// `worker.stop` for this hand alone — never `transportStop`, which closes the paid session
+/// and sleeps: the other worker, the main brain and the meter carry on. The tooltip has the brief.
+private struct WorkerRow: View {
+    let worker: Worker
+    let stop: () -> Void
+
+    var body: some View {
+        let meta = ConsoleTheme.worker(worker.status)
+        HStack(alignment: .top, spacing: iconGap) {
+            ConsoleWorkerGlyph(status: worker.status)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(worker.name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
+                        .lineLimit(1).layoutPriority(1)
+                    // The word turns as the hand works, waits and finishes; a crossfade, never a cut.
+                    Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
+                        .lineLimit(1).truncationMode(.tail)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: meta.label)
+                    Spacer(minLength: 4)
+                    if worker.status.isRunning {
+                        Button("Stop", action: stop)
+                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                            .layoutPriority(1)
+                            .help("Stop \(worker.name) — the others and the session carry on")
+                            .accessibilityLabel("Stop \(worker.name)")
+                            .transition(.opacity)
+                    }
+                }
+                .frame(minHeight: 22)
+                elapsed
+                if let detail = worker.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+                    Text(detail).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.fg3)
+                        .lineLimit(2).truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: detail)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .animation(Motion.gentle, value: worker.status.isRunning)
+        .help("\(worker.name) · \(ConsoleTheme.lane(worker.lane)) lane · \(worker.task)\nstarted \(ConsoleFormat.time(worker.startedAt)) · \(worker.steps) steps")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Worker \(worker.name), \(meta.label)" + (worker.detail.map { ". \($0)" } ?? ""))
+    }
+
+    /// "00:03 · background", the seconds rolling while the hand runs; frozen once it settles.
+    @ViewBuilder private var elapsed: some View {
+        if worker.status.isRunning {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                metaLine(now: ctx.date.timeIntervalSince1970 * 1000)
+            }
+        } else {
+            metaLine(now: worker.doneAt ?? worker.startedAt)
+        }
+    }
+
+    private func metaLine(now: Double) -> some View {
+        let text = ConsoleFormat.workerMeta(worker, now: now)
+        return Text(text).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+            .lineLimit(1)
+            .contentTransition(ConsoleMotion.numeric)
+            .animation(Motion.snappy, value: text)
     }
 }
 

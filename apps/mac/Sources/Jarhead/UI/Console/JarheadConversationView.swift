@@ -378,6 +378,13 @@ enum JarheadLog {
                     if let detail = a.detail, !detail.isEmpty { text += " · \(detail)" }
                     add("agent", text)
                 }
+            case "sleep":
+                // Why it slept, before the close it explains: the `session.closed` line after this reads
+                // "closed · asleep · said" instead of the meter alone. A pressed Stop's sleep row keeps "stop".
+                transport = row.cause == "stop" ? "stop" : "sleep:\(row.cause ?? "command")"
+                if let t = ConsoleFormat.tombstone(row) {
+                    add(t.kind, [t.text, t.mono, t.trailing].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "), .meter)
+                }
             default:
                 // The cleanup's tombstone rows: "moved to Trash", "restored", "renamed to …", "pinned" — the meter's tone, they are the record's own moves.
                 if let t = ConsoleFormat.tombstone(row) {

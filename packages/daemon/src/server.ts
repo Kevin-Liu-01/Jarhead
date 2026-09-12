@@ -47,6 +47,15 @@ export interface EngineLike {
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
+  /**
+   * A worker's lane runner by worker id, for `tool.run { worker }` from a bridge started
+   * with `JARHEAD_WORKER`. Undefined for a worker the engine does not have — finished,
+   * stopped, never started — and the call is refused. Optional: an engine without workers
+   * refuses every worker call the same way, and never hands one to `runner`. A server
+   * that fronts ONE brain (CodexBrain's own tool socket outside the daemon process) must
+   * still answer here for that brain's worker id, or its every call is refused as unknown.
+   */
+  runnerFor?(worker: string): EngineLike["runner"] | undefined;
 }
 
 interface Client {
@@ -201,7 +210,9 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         return;
       }
       case "tool.run":
-        void this.runTool(client, msg.id, msg.name, msg.input);
+        // Nothing on this path may become an unhandled rejection: the daemon has no handler
+        // for one, and Node would take the whole engine down over one bad tool call.
+        void this.runTool(client, msg.id, msg.name, msg.input, msg.worker).catch((e: unknown) => log.warn(`tool.run ${String(msg.name)} failed outside the runner: ${(e as Error).message}`));
         return;
       case "ping":
         // Liveness (REDESIGN §16, "Liveness"): answered here, synchronously, with no engine
@@ -223,26 +234,39 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
    * refused here, before the runner sees them; everything else is the runner's
    * business (policy, ledger, screenshot archive, the confirmation handshake),
    * exactly as for the in-process brains.
+   *
+   * A call that names a worker goes to that worker's lane runner and nowhere else:
+   * the main runner holds the pointer and the keyboard, so an unknown, finished or
+   * malformed worker id is a refusal the model can read, never a fall-through.
    */
-  private async runTool(client: Client, id: unknown, name: unknown, input: unknown): Promise<void> {
+  private async runTool(client: Client, id: unknown, name: unknown, input: unknown, worker?: unknown): Promise<void> {
     const requestId = typeof id === "string" ? id : String(id ?? "");
-    if (typeof name !== "string" || !specByName(name)) {
-      this.send(client, { type: "tool.result", id: requestId, result: { kind: "error", message: `unknown tool ${String(name)}` } });
-      return;
-    }
-    // An out-of-process brain may only act while a delegation has the runner: a Codex
-    // turn that outlived a stop (interrupted before turn/start answered) gets a refusal, not a click.
-    if (this.engine.runner.attached === false) {
-      this.send(client, { type: "tool.result", id: requestId, result: { kind: "error", message: `refused: no task is running in Jarhead; ${name} was not run (Kevin stopped the task, or it finished)` } });
-      return;
+    const answer = (result: ToolResult): void => this.send(client, { type: "tool.result", id: requestId, result });
+    if (typeof name !== "string" || !specByName(name)) return answer({ kind: "error", message: `unknown tool ${String(name)}` });
+    // Finding the runner is engine code (a pool lookup, possibly mid-cut): a throw there is a
+    // refusal the model reads, never an unhandled rejection that exits the daemon.
+    let runner: EngineLike["runner"];
+    try {
+      if (worker === undefined) runner = this.engine.runner;
+      else {
+        if (typeof worker !== "string" || worker === "") return answer({ kind: "error", message: `refused: malformed worker id; ${name} was not run` });
+        const lane = this.engine.runnerFor?.(worker);
+        if (!lane) return answer({ kind: "error", message: `refused: no worker ${worker} is running in Jarhead; ${name} was not run (it finished, was stopped, or never started)` });
+        runner = lane;
+      }
+      // An out-of-process brain may only act while a delegation has the runner: a Codex
+      // turn that outlived a stop (interrupted before turn/start answered) gets a refusal, not a click.
+      if (runner.attached === false) return answer({ kind: "error", message: `refused: no task is running in Jarhead; ${name} was not run (Kevin stopped the task, or it finished)` });
+    } catch (e) {
+      return answer({ kind: "error", message: `refused: ${(e as Error).message}; ${name} was not run` });
     }
     let result: ToolResult;
     try {
-      result = (await this.engine.runner.run(name, input)).result;
+      result = (await runner.run(name, input)).result;
     } catch (e) {
       result = { kind: "error", message: (e as Error).message };
     }
-    this.send(client, { type: "tool.result", id: requestId, result });
+    answer(result);
   }
 
   private send(client: Client, message: DaemonMessage): void {

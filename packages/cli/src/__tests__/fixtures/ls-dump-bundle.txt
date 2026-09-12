@@ -1,0 +1,106 @@
+Checking data integrity......done.
+Status: Database is seeded.
+--------------------------------------------------------------------------------
+bundle id:                  Jarhead (0x3204)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /Applications/Jarhead.app (0x4260)
+directory:                  /Applications
+name:                       Jarhead
+displayName:                Jarhead
+identifier:                 com.kevinliu.jarhead
+version:                    2.0 ({length = 32, bytes = 0x02000000 00000000 00000000 00000000 ... 00000000 00000000 })
+platform:                   native
+executable:                 Contents/MacOS/Jarhead
+slices:                     arm64 (0000000000000080)
+Mach-O UUIDs:               5A4DADC9-B381-3ADE-BD16-F8EC59505C0A
+infoDictionary:             32 values (77404 (0x12e5c))
+                            {
+                                CFBundleExecutable = Jarhead;
+                                CFBundleIdentifier = "com.kevinliu.jarhead";
+                                CFBundleName = Jarhead;
+                            }
+--------------------------------------------------------------------------------
+bundle id:                  ear-probe (0x3208)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /Users/kevinliu/.jarhead/worktrees/se_x/apps/mac/.build/ear-probe/EarProbe.app (0x41ec)
+directory:                  ~
+name:                       ear-probe
+identifier:                 com.kevinliu.jarhead.ear-probe
+platform:                   native
+executable:                 Contents/MacOS/ear-probe
+slices:                     arm64 (0000000000000080)
+Mach-O UUIDs:               AAA1A2DC-9ABB-3992-A7BB-FC24AA102601
+--------------------------------------------------------------------------------
+bundle id:                  ear-probe (0x320c)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /Users/kevinliu/jarvis/apps/mac/.build/ear-probe/EarProbe.app (0x41f0)
+directory:                  ~
+name:                       ear-probe
+identifier:                 com.kevinliu.jarhead.ear-probe
+platform:                   native
+executable:                 Contents/MacOS/ear-probe
+slices:                     arm64 (0000000000000080)
+--------------------------------------------------------------------------------
+bundle id:                  Jarhead (0x3210)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /Users/kevinliu/.Trash/Jarhead.app (0x4264)
+directory:                  ~
+name:                       Jarhead
+displayName:                Jarhead
+identifier:                 com.kevinliu.jarvis
+version:                    0.1 ({length = 32, bytes = 0x00000000 00000000 01000000 00000000 ... 00000000 00000000 })
+platform:                   native
+executable:                 Contents/MacOS/Jarhead
+slices:                     arm64 (0000000000000080)
+Mach-O UUIDs:               4C4C44DB-5555-3144-A15D-5C7F8C883657
+infoDictionary:             16 values (77420 (0x12e6c))
+                            {
+                                CFBundleDisplayName = Jarhead;
+                                CFBundleExecutable = Jarhead;
+                                CFBundleIconFile = "electron.icns";
+                                CFBundleIdentifier = "com.kevinliu.jarvis";
+                                CFBundleName = Jarhead;
+                            }
+--------------------------------------------------------------------------------
+bundle id:                  Jarhead (0x3214)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /Users/kevinliu/jarvis/build/stage/Jarhead.app (0x4268)
+directory:                  /Users/kevinliu/jarvis/build/stage
+name:                       Jarhead
+identifier:                 com.kevinliu.jarhead
+platform:                   native
+executable:                 Contents/MacOS/Jarhead
+--------------------------------------------------------------------------------
+bundle id:                  Grapher (0x3218)
+container:                  / (0x4)
+mount state:                mounted
+isOnRootVolume:             true
+isSystemManaged:            true
+isOnPrebootVolume:          false
+path:                       /System/Applications/Utilities/Grapher.app (0x426c)
+directory:                  /System/Applications/Utilities
+name:                       Grapher
+identifier:                 com.apple.grapher
+platform:                   native
+executable:                 Contents/MacOS/Grapher
+--------------------------------------------------------------------------------

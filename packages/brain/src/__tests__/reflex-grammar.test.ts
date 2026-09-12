@@ -123,6 +123,122 @@ test("grammar: compounds, descriptions, pronouns, positions, ambiguous phrases a
   assert.equal(parseReflex("click link")!.input["name"], "link");
 });
 
+/**
+ * Kevin's request 2: "go to sleep or shut off or things like that are cues to return to
+ * dock and go to sleep." One grammar for the ear, the Delegator and Live's delegation
+ * path — the whole utterance, anchored, wake word and politeness stripped.
+ */
+const SLEEP_POSITIVE: readonly string[] = [
+  "go to sleep",
+  "jarhead go to sleep",
+  "Jarhead, go to sleep please.",
+  "go back to sleep",
+  "back to sleep",
+  "sleep now",
+  "shut off",
+  "shut yourself off",
+  "shut yourself down",
+  "turn yourself off",
+  "turn your self off",
+  "power down",
+  "power off",
+  "goodnight",
+  "goodnight jarhead",
+  "good night jarhead",
+  "Goodnight, Jarhead.",
+  "good night night",
+  "night night",
+  "that is all",
+  "that's all",
+  "that’s all",
+  "that will be all",
+  "that will be all, thanks",
+  "that'll be all",
+  "that's all for now",
+  "that is all for today",
+  "that's it for tonight",
+  "hey jarhead that'll be all for tonight",
+  "dismissed",
+  "you're dismissed",
+  "you are dismissed",
+  "you can rest",
+  "you can rest now",
+  "you may rest",
+  "go to bed",
+  "stand down",
+  "go dormant",
+];
+
+/** Not cues: bare words, negations, trailing clauses, objects, room talk, and the commands that share a word with one. */
+const SLEEP_NEGATIVE: readonly string[] = [
+  "shut down",
+  "shut down my mac",
+  "shut down the computer",
+  "sleep",
+  "night",
+  "night.",
+  "stop",
+  "cancel",
+  "going to sleep",
+  "i'm going to sleep now",
+  "turn off the lights",
+  "turn yourself off after this",
+  "turn it off",
+  "put the display to sleep",
+  "sleep timer for spotify",
+  "don't go to sleep",
+  "do not go to sleep",
+  "is that all",
+  "that is all wrong",
+  "that's all i wanted to say about it",
+  "you can rest assured",
+  "dismissed the dialog",
+  "night mode",
+  "power down the volume",
+  "stand down the alert",
+  "go to slack",
+  "go to safari",
+  "stop dictating",
+  "good morning",
+  // Longer than the cue and not an app: neither a sleep nor a phantom `open_app "Sleep Mode"` / `"Bed Early"`.
+  "go to sleep mode",
+  "go to bed early",
+];
+
+test("sleep grammar: every dismissal in the table is a sleep cue — never a tool, never prefired, Kevin's words as the phrase", () => {
+  for (const said of SLEEP_POSITIVE) {
+    const r = parseReflex(said);
+    assert.ok(r, `${JSON.stringify(said)} should be a sleep cue`);
+    assert.equal(r.kind, "sleep", said);
+    assert.equal(r.tool, "sleep", said);
+    assert.equal(r.said, "night.", said);
+    assert.equal(r.label, "go to sleep", said);
+    assert.equal(r.prefire, false, `${said}: a dismissal never runs ahead of Live's word`);
+    assert.equal(r.idempotent, true, said);
+    assert.equal(r.input["phrase"], said.trim().replace(/\s+/g, " "), "the phrase is what Kevin said, for the ledger's sleep row");
+  }
+  // Today's defect: at f6c3b40 these were `open_app Sleep` and `open_app Bed`.
+  assert.equal(parseReflex("go to sleep")!.kind, "sleep");
+  assert.equal(parseReflex("go to bed")!.kind, "sleep");
+  // The row that used to take them still takes an app.
+  assert.deepEqual(parseReflex("go to slack"), { kind: "open_app", tool: "open_app", input: { name: "Slack" }, said: "opened Slack.", label: "open Slack", prefire: false, idempotent: true });
+});
+
+test("sleep grammar: bare words, negations, trailing clauses, objects and room talk are not cues; the commands sharing a word keep their own row", () => {
+  for (const said of SLEEP_NEGATIVE) assert.notEqual(parseReflex(said)?.kind, "sleep", `${JSON.stringify(said)} must not be a sleep cue (got ${JSON.stringify(parseReflex(said))})`);
+  assert.equal(parseReflex("go to slack")!.kind, "open_app");
+  assert.equal(parseReflex("stop dictating")!.kind, "dictate_stop");
+  for (const said of ["shut down", "shut down my mac", "sleep", "night", "stop", "turn off the lights", "that is all wrong", "don't go to sleep", "dismissed the dialog", "night mode", "go to sleep mode", "go to bed early"]) assert.equal(parseReflex(said), undefined, `${said}: not a reflex at all`);
+});
+
+test("sleep grammar: ReflexRunner.match never hands a sleep cue out as a reflex to run — the ear and the Delegator ask parseReflex for it", () => {
+  const { runner } = makeRunner({}, new FakeHands());
+  const reflexes = new ReflexRunner({ runner, frontmostApp: async () => "Finder" });
+  for (const said of SLEEP_POSITIVE) assert.equal(reflexes.match(said), undefined, said);
+  assert.equal(reflexes.match("scroll down")?.kind, "scroll", "everything else still matches");
+  assert.equal(reflexes.match("go to slack")?.kind, "open_app");
+});
+
 test("grammar: flags — idempotent vs not, prefire, browserOnly; terminal tails; similarity", () => {
   assert.equal(parseReflex("scroll down")!.idempotent, true);
   assert.equal(parseReflex("screenshot this")!.idempotent, true);

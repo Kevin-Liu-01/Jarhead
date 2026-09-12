@@ -69,12 +69,14 @@ func postMouseButton(_ type: CGEventType, button: MouseButton, at point: CGPoint
                               mouseCursorPosition: point, mouseButton: button.cgButton) else { return }
     event.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
     event.flags = flags
+    noteOwnPost(type)
     event.post(tap: .cghidEventTap)
 }
 
 func postKey(_ keyCode: CGKeyCode, down: Bool, flags: CGEventFlags) {
     guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: down) else { return }
     event.flags = flags
+    if down { noteOwnPost(.keyDown) }
     event.post(tap: .cghidEventTap)
 }
 
@@ -98,9 +100,115 @@ func postUnicode(_ units: [UInt16], flags: CGEventFlags = []) -> Bool {
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: buffer.baseAddress)
         }
         event.flags = flags
+        if down { noteOwnPost(.keyDown) }
         event.post(tap: .cghidEventTap)
     }
     return posted
+}
+
+// MARK: - Kevin's hands win
+//
+// Every event this process posts is stamped by kind. Before an acting op's first post, the
+// session's last key press, click and scroll are read (`CGEventSource.secondsSinceLastEventType`
+// on the combined session state, which counts our own posts too); one that is not within
+// `ownPostSlackSec` of our last post of that kind is Kevin's, and when it is younger than
+// `kevinQuietMs` the op answers `busy` with nothing posted. Pointer moves are not counted: a
+// resting hand jitters. Dictation passes `ownDriver: true` — Kevin is the one typing there.
+// The check lives here, not in the client, because only this process knows the time of every
+// event it posted; an engine-side subtraction guesses.
+
+let kevinQuietMs: Double = 1500
+let ownPostSlackSec: TimeInterval = 0.030
+/// What `user_idle` reports for a kind of event the session has never seen (JSON has no Infinity).
+let userIdleNoneMs: Double = 1.0e12
+
+private var lastOwnKeyAt: TimeInterval = -1
+private var lastOwnClickAt: TimeInterval = -1
+private var lastOwnScrollAt: TimeInterval = -1
+
+/// A monotonic clock on the same base as the session's event timestamps (mach absolute time).
+func uptimeNow() -> TimeInterval {
+    return ProcessInfo.processInfo.systemUptime
+}
+
+/// Called immediately before each post, on the worker queue.
+func noteOwnPost(_ type: CGEventType) {
+    switch type {
+    case .keyDown: lastOwnKeyAt = uptimeNow()
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown: lastOwnClickAt = uptimeNow()
+    case .scrollWheel: lastOwnScrollAt = uptimeNow()
+    default: break
+    }
+}
+
+/// Milliseconds since the session's last event of `type`; nil when there was none.
+private func msSinceLast(_ type: CGEventType) -> Double? {
+    let seconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: type)
+    guard seconds.isFinite, seconds >= 0, seconds < 1.0e9 else { return nil }
+    return seconds * 1000
+}
+
+/// Is the session's last event of a kind (`msAgo`) one this process posted (within the slack of our last post of that kind)?
+private func isOwn(msAgo: Double, lastOwnAt: TimeInterval) -> Bool {
+    guard lastOwnAt >= 0 else { return false }
+    let eventAt = uptimeNow() - msAgo / 1000
+    return abs(eventAt - lastOwnAt) <= ownPostSlackSec
+}
+
+struct SessionIdle {
+    var keyMs: Double?
+    var clickMs: Double?
+    var scrollMs: Double?
+    var moveMs: Double?
+    /// ms since the newest key press, click or scroll this process did NOT post; nil when there was none.
+    var foreignMs: Double?
+}
+
+func sessionIdle() -> SessionIdle {
+    var out = SessionIdle()
+    var foreign: [Double] = []
+    if let key = msSinceLast(.keyDown) {
+        out.keyMs = key
+        if !isOwn(msAgo: key, lastOwnAt: lastOwnKeyAt) { foreign.append(key) }
+    }
+    for type in [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown] {
+        guard let click = msSinceLast(type) else { continue }
+        out.clickMs = min(out.clickMs ?? click, click)
+        if !isOwn(msAgo: click, lastOwnAt: lastOwnClickAt) { foreign.append(click) }
+    }
+    if let scroll = msSinceLast(.scrollWheel) {
+        out.scrollMs = scroll
+        if !isOwn(msAgo: scroll, lastOwnAt: lastOwnScrollAt) { foreign.append(scroll) }
+    }
+    out.moveMs = msSinceLast(.mouseMoved)
+    out.foreignMs = foreign.min()
+    return out
+}
+
+/// `user_idle {}`: how long since Kevin (or anyone) last touched the machine, by kind, and since the last input that was not ours.
+func opUserIdle() -> JSONObject {
+    let idle = sessionIdle()
+    return [
+        "keyMs": idle.keyMs ?? userIdleNoneMs,
+        "clickMs": idle.clickMs ?? userIdleNoneMs,
+        "scrollMs": idle.scrollMs ?? userIdleNoneMs,
+        "moveMs": idle.moveMs ?? userIdleNoneMs,
+        "foreignMs": idle.foreignMs ?? userIdleNoneMs,
+    ]
+}
+
+/// Kevin's last key/click/scroll in ms when it is inside the quiet window; nil when the machine is free to act on.
+func kevinBusyMs() -> Int? {
+    guard let foreign = sessionIdle().foreignMs, foreign < kevinQuietMs else { return nil }
+    return Int(foreign.rounded())
+}
+
+/// The two refusals every acting op makes before its first post: Kevin's hands (unless `ownDriver`), then the front app (`expectFront`).
+func guardActing(_ params: Params, busyCheck: Bool = true) throws {
+    if busyCheck, try params.bool("ownDriver") != true, let ms = kevinBusyMs() {
+        throw HandsError.busy("Kevin used the keyboard/mouse \(ms) ms ago; nothing was posted")
+    }
+    try requireFront(params)
 }
 
 func postStroke(_ stroke: KeyStroke) {
@@ -128,6 +236,7 @@ func opClick(_ params: Params) throws -> JSONObject {
     let count = try params.int("count") ?? 1
     guard (1...3).contains(count) else { throw HandsError.badRequest("'count' must be 1, 2 or 3") }
     let flags = try parseModifiers(try params.stringArray("modifiers"))
+    try guardActing(params)
 
     var point = cursorLocation()
     if let target = try params.optionalXY() {
@@ -147,6 +256,7 @@ func opClick(_ params: Params) throws -> JSONObject {
 func opMouseDown(_ params: Params) throws -> JSONObject {
     let button = try MouseButton(name: try params.string("button"))
     let flags = try parseModifiers(try params.stringArray("modifiers"))
+    try guardActing(params)
     let point = cursorLocation()
     postMouseButton(button.downType, button: button, at: point, clickState: 1, flags: flags)
     return ["x": Double(point.x), "y": Double(point.y), "button": button.rawValue]
@@ -155,6 +265,9 @@ func opMouseDown(_ params: Params) throws -> JSONObject {
 func opMouseUp(_ params: Params) throws -> JSONObject {
     let button = try MouseButton(name: try params.string("button"))
     let flags = try parseModifiers(try params.stringArray("modifiers"))
+    // The up completes a press already posted: refusing it for Kevin's click would leave a
+    // synthetic button held down, which is worse than releasing it. `expectFront` still applies.
+    try guardActing(params, busyCheck: false)
     let point = cursorLocation()
     postMouseButton(button.upType, button: button, at: point, clickState: 1, flags: flags)
     return ["x": Double(point.x), "y": Double(point.y), "button": button.rawValue]
@@ -171,6 +284,7 @@ func opDrag(_ params: Params) throws -> JSONObject {
     let flags = try parseModifiers(try params.stringArray("modifiers"))
     let duration = try params.int("durationMs") ?? 300
     guard duration >= 0, duration <= 10_000 else { throw HandsError.badRequest("'durationMs' must be 0...10000") }
+    try guardActing(params)
 
     postMouseMove(to: from, flags: flags)
     sleepMs(15)
@@ -194,6 +308,7 @@ func opScroll(_ params: Params) throws -> JSONObject {
     let dx = try params.double("dx") ?? 0
     let dy = try params.double("dy") ?? 0
     let flags = try parseModifiers(try params.stringArray("modifiers"))
+    try guardActing(params)
     if let target = try params.optionalXY() {
         postMouseMove(to: target, flags: flags)
         sleepMs(8)
@@ -206,6 +321,7 @@ func opScroll(_ params: Params) throws -> JSONObject {
         throw HandsError.internalError("could not create scroll event")
     }
     event.flags = flags
+    noteOwnPost(.scrollWheel)
     event.post(tap: .cghidEventTap)
     return ["dx": Double(wheel2), "dy": Double(wheel1)]
 }
@@ -255,6 +371,12 @@ enum TypeStrategy: String {
     case ax, keystrokes, paste
 }
 
+/// Why a `type` stopped part way: the client's stop, or the front app changed under the keystrokes.
+enum TypeCancelReason: String {
+    case stop
+    case focusMoved = "focus_moved"
+}
+
 enum Delivery {
     /// The text landed. `verified` is true when the field read it back, false when it could not be checked.
     case done(verified: Bool, note: String?)
@@ -262,18 +384,46 @@ enum Delivery {
     case failed(String)
     /// Not applicable here (no text field under focus, no permission); not counted as an attempt.
     case skipped(String)
-    /// Kevin stopped it between two graphemes.
-    case cancelled
+    /// Stopped between two graphemes: Kevin's stop, or the focus moved.
+    case cancelled(TypeCancelReason)
+}
+
+/// The front app during a `type`, re-read at most every 50 ms between clusters on the worker
+/// queue (a switch mid-word lands the rest of the text nowhere, not in the new window).
+struct FrontWatch {
+    let pid: pid_t?
+    private var lastCheckAt: TimeInterval = -1
+    private(set) var moved = false
+
+    init(pid: pid_t?) {
+        self.pid = pid
+    }
+
+    mutating func check() -> Bool {
+        guard let pid, !moved else { return moved }
+        let now = uptimeNow()
+        if lastCheckAt >= 0, now - lastCheckAt < 0.050 { return false }
+        lastCheckAt = now
+        if let front = frontmostNow(), front.pid == pid { return false }
+        moved = true
+        return true
+    }
 }
 
 /// One `type` op's running state.
 struct TypeSession {
     let generation: sig_atomic_t
     let delayMs: Int
+    var front: FrontWatch
     var events = 0
     /// Characters delivered so far (for a cancelled result).
     var typed = 0
-    var isCancelled: Bool { typeCancelGeneration != generation }
+    /// Why to stop now, if at all: the stop signal first, then the front app.
+    mutating func cancelReason() -> TypeCancelReason? {
+        if typeCancelGeneration != generation { return .stop }
+        if front.check() { return .focusMoved }
+        return nil
+    }
 }
 
 private let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
@@ -335,11 +485,13 @@ private func judge(_ cell: String, before: String?, target: FocusedTarget?, poll
     return .failed("nothing landed in \(target?.describedField ?? "the field")")
 }
 
-private func deliverAX(_ cell: String, target: FocusedTarget?) -> Delivery {
+private func deliverAX(_ cell: String, target: FocusedTarget?, session: inout TypeSession) -> Delivery {
     guard let target else { return .skipped("no focused element known") }
     guard target.isTextField else { return .skipped("\(target.role ?? "the focused element") is not a text field") }
     guard trustsReadBack(target) else { return .skipped("a Chromium / Electron field: keystrokes go in directly") }
     guard axCanInsertText(target.element) else { return .skipped("the field does not take accessibility insertion") }
+    // The insertion goes to the focused element of whatever is in front: the same check as a keystroke.
+    if let why = session.cancelReason() { return .cancelled(why) }
     let before = readBack(target)
     guard axInsertText(cell, into: target.element) else { return .failed("the app refused accessibility insertion") }
     // The set was accepted: whatever the read-back says, something may have landed — never fall through.
@@ -350,7 +502,7 @@ private func deliverKeystrokes(_ cell: String, target: FocusedTarget?, session: 
     let before = readBack(target)
     var posted = 0
     for cluster in cell {
-        if session.isCancelled { return .cancelled }
+        if let why = session.cancelReason() { return .cancelled(why) }
         let units = Array(String(cluster).utf16)
         let chunks = units.count <= 20 ? [units] : utf16Chunks(Substring(String(cluster)), maxUnits: 20)
         for chunk in chunks {
@@ -372,6 +524,8 @@ private func deliverKeystrokes(_ cell: String, target: FocusedTarget?, session: 
 
 private func deliverPaste(_ cell: String, target: FocusedTarget?, session: inout TypeSession, keepOnFailure: Bool) -> Delivery {
     let pb = NSPasteboard.general
+    // ⌘V lands in the front app: not one Kevin switched to since the caller looked.
+    if let why = session.cancelReason() { return .cancelled(why) }
     let saved = onMain { snapshotPasteboard(pb) }
     let before = readBack(target)
     onMain { writeConcealed(pb, cell) }
@@ -412,9 +566,13 @@ func opType(_ params: Params) throws -> JSONObject {
     default: throw HandsError.badRequest("'strategy' must be auto, ax, keystrokes or paste")
     }
     if typeCancelGeneration != typeCancelConsumed {
-        return ["characters": 0, "events": 0, "via": TypeStrategy.keystrokes.rawValue, "attempts": 0, "cancelled": true, "field": NSNull()]
+        return ["characters": 0, "events": 0, "via": TypeStrategy.keystrokes.rawValue, "attempts": 0, "cancelled": true, "reason": TypeCancelReason.stop.rawValue, "field": NSNull()]
     }
-    var session = TypeSession(generation: typeCancelGeneration, delayMs: delay)
+    // Kevin's hands, then the front app — before anything is posted (a mismatch here is an error,
+    // like a click's; one that appears mid-text is a cancelled result that says how far it got).
+    try guardActing(params)
+    let expectPid: pid_t? = try params.object("expectFront").map { pid_t(truncatingIfNeeded: try $0.requireInt("pid")) }
+    var session = TypeSession(generation: typeCancelGeneration, delayMs: delay, front: FrontWatch(pid: expectPid))
     let trusted = AXIsProcessTrusted()
     // Where the text lands. Refused for a password field here too — the gate said no already;
     // this is the hands' own no, so no caller can reach one by another road.
@@ -428,12 +586,12 @@ func opType(_ params: Params) throws -> JSONObject {
     var anyDelivered = false
     var notes: [String] = []
 
-    func cancelledResult() -> JSONObject {
-        return ["characters": session.typed, "events": session.events, "via": via.rawValue, "attempts": attempts, "cancelled": true, "field": orNull(field)]
+    func cancelledResult(_ reason: TypeCancelReason) -> JSONObject {
+        return ["characters": session.typed, "events": session.events, "via": via.rawValue, "attempts": attempts, "cancelled": true, "reason": reason.rawValue, "field": orNull(field)]
     }
-    /// A separator key (Return / Tab) moves focus or submits: re-resolve where the next cell lands.
-    func separator(_ key: Int) throws -> Bool {
-        if session.isCancelled { return false }
+    /// A separator key (Return / Tab) moves focus or submits: re-resolve where the next cell lands. Returns why it did not, if it did not.
+    func separator(_ key: Int) throws -> TypeCancelReason? {
+        if let why = session.cancelReason() { return why }
         pressKey(CGKeyCode(key), flags: [])
         session.events += 1
         sleepMs(max(delay, 8))
@@ -442,19 +600,19 @@ func opType(_ params: Params) throws -> JSONObject {
             if let t = target, t.secure { throw passwordRefusal }
             if let t = target { field = t.describedField }
         }
-        return true
+        return nil
     }
 
     let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
     let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
     for (lineIndex, line) in lines.enumerated() {
-        if lineIndex > 0, try !separator(kVK_Return) { return cancelledResult() }
+        if lineIndex > 0, let why = try separator(kVK_Return) { return cancelledResult(why) }
         let cells = line.split(separator: "\t", omittingEmptySubsequences: false)
         for (cellIndex, cellSub) in cells.enumerated() {
-            if cellIndex > 0, try !separator(kVK_Tab) { return cancelledResult() }
+            if cellIndex > 0, let why = try separator(kVK_Tab) { return cancelledResult(why) }
             let cell = String(cellSub)
             if cell.isEmpty { continue }
-            if session.isCancelled { return cancelledResult() }
+            if let why = session.cancelReason() { return cancelledResult(why) }
             var delivered = false
             var cellAttempts = 0
             var failures: [String] = []
@@ -462,15 +620,15 @@ func opType(_ params: Params) throws -> JSONObject {
                 let last = i == order.count - 1
                 let outcome: Delivery
                 switch strategy {
-                case .ax: outcome = deliverAX(cell, target: target)
+                case .ax: outcome = deliverAX(cell, target: target, session: &session)
                 case .keystrokes: outcome = deliverKeystrokes(cell, target: target, session: &session)
                 case .paste: outcome = deliverPaste(cell, target: target, session: &session, keepOnFailure: last || cellAttempts >= 2)
                 }
                 switch outcome {
                 case .skipped(let why):
                     debugLog("type: \(strategy.rawValue) skipped — \(why)")
-                case .cancelled:
-                    return cancelledResult()
+                case .cancelled(let why):
+                    return cancelledResult(why)
                 case .done(let verified, let note):
                     cellAttempts += 1
                     attempts += cellAttempts
@@ -511,6 +669,7 @@ func opKey(_ params: Params) throws -> JSONObject {
     let repeatCount = try params.int("repeat") ?? 1
     guard (1...100).contains(repeatCount) else { throw HandsError.badRequest("'repeat' must be 1...100") }
     let stroke = try parseCombo(combo)
+    try guardActing(params)
     for i in 0..<repeatCount {
         if i > 0 { sleepMs(30) }
         postStroke(stroke)
@@ -523,6 +682,7 @@ func opHoldKey(_ params: Params) throws -> JSONObject {
     let duration = try params.requireInt("durationMs")
     guard duration >= 0, duration <= 10_000 else { throw HandsError.badRequest("'durationMs' must be 0...10000") }
     let stroke = try parseCombo(combo)
+    try guardActing(params)
     if let code = stroke.keyCode {
         postKey(code, down: true, flags: stroke.flags)
         sleepMs(duration)

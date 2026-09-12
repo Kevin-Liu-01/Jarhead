@@ -4,18 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfig, type JarheadConfig } from "@jarhead/core";
 import type { LiveSession, SessionConfig } from "@jarhead/live";
-import type { Brain, BrainResult, BrainTask } from "@jarhead/brain";
-import type { NativeHands } from "@jarhead/hands";
+import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
+import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { EngineEvent, OverlayCommand } from "@jarhead/protocol";
 import { Engine, type EngineOptions } from "../engine.ts";
+import type { WorkerBrainFactory } from "../workers.ts";
 
 /**
  * A stand-in world for engine tests: a fake Live session per wake (records the
  * config it was opened with, instructions, mutes; emits what a real one would;
- * closes once, or hangs on close when told to), hands that answer every op with a
- * canned result and record the ops (a held op can be released later), a brain that
- * holds its task until the abort signal or the test resolves it, and a clock the
- * test moves by hand.
+ * closes once, or hangs on close when told to), two sets of hands — the acting
+ * helper and the reading one — that answer every op with a canned result and
+ * record the ops (a held op can be released later; Kevin's own key or click makes
+ * an acting op answer `busy`, as the helper does), a main brain that attaches the
+ * runner and holds its task until the abort signal or the test resolves it, a
+ * worker-brain factory whose brains a test scripts, and a clock the test moves by
+ * hand.
  */
 
 export class FakeLive extends EventEmitter {
@@ -110,10 +114,17 @@ export class FakeLive extends EventEmitter {
   }
 }
 
-/** Hands with canned answers; `hold` names an op to keep in flight until `release()`. */
+/**
+ * Hands with canned answers; `hold` names an op to keep in flight until `release()`.
+ * Kevin's hands win here as in the helper: after `kevinActed()` every acting op within
+ * KEVIN_QUIET_MS answers `busy` (nothing posted) unless the op says `ownDriver`;
+ * `user_idle` reports the same clock. `focus_app` / `open_app` change `frontApp`.
+ */
 export class RecordingHands implements NativeHands {
   ready = true;
   ops: { op: string; params: Record<string, unknown>; at: number }[] = [];
+  /** The acting ops that landed (a `busy` refusal is in `ops`, never here). */
+  posted: { op: string; params: Record<string, unknown>; at: number }[] = [];
   hold: string | undefined;
   private release_: (() => void) | undefined;
   frontApp = "Notes";
@@ -123,14 +134,47 @@ export class RecordingHands implements NativeHands {
   /** What find_element answers: the labels on the "front window". */
   labels: string[] = ["Save", "Cancel", "Send", "Add Folder"];
   now: () => number = Date.now;
+  /** When Kevin last pressed a key, clicked or scrolled (never Jarhead's own posts); undefined = never. */
+  kevinAt: number | undefined;
+  /** The helper's busy check on acting ops (off to play a helper built before it). */
+  busyCheck = true;
+
+  /** Kevin used the keyboard or mouse (now, or at `at`). */
+  kevinActed(at?: number): void {
+    this.kevinAt = at ?? this.now();
+  }
+
+  /** What `user_idle` answers right now. */
+  get userIdle(): UserIdle {
+    const foreignMs = this.kevinAt === undefined ? USER_IDLE_NONE_MS : Math.max(0, this.now() - this.kevinAt);
+    return { keyMs: foreignMs, clickMs: foreignMs, scrollMs: USER_IDLE_NONE_MS, moveMs: foreignMs, foreignMs };
+  }
+
   async request<T>(op: string, params: Record<string, unknown> = {}): Promise<T> {
-    this.ops.push({ op, params, at: this.now() });
+    const at = this.now();
+    this.ops.push({ op, params, at });
     if (this.hold === op && this.release_ === undefined) await new Promise<void>((r) => (this.release_ = r));
+    if (FAKE_ACTING_OPS.has(op)) {
+      // As the helper does, before its first CGEvent.post: Kevin's hands on the machine → nothing is posted.
+      if (this.busyCheck && params["ownDriver"] !== true && this.kevinAt !== undefined) {
+        const ms = this.now() - this.kevinAt;
+        if (ms < KEVIN_QUIET_MS) throw new NativeRequestError({ code: "busy", message: `${HANDS_BUSY_PREFIX} ${Math.max(0, Math.round(ms))} ms ago; nothing was posted` });
+      }
+      this.posted.push({ op, params, at });
+    }
     switch (op) {
       case "hello":
         return { version: "fake", pid: 1, permissions: { accessibility: true, screenRecording: true } } as T;
+      case "user_idle":
+        return this.userIdle as T;
       case "frontmost":
         return { app: this.frontApp, pid: 1, window: { title: "Untitled", x: 100, y: 100, w: 800, h: 600, windowId: 1 } } as T;
+      case "focus_app":
+      case "open_app": {
+        const name = String(params["name"] ?? params["app"] ?? "");
+        if (name && (op === "focus_app" || params["activate"] !== false)) this.frontApp = name;
+        return { pid: 1, app: name || this.frontApp } as T;
+      }
       case "cursor":
         return { x: 400, y: 300 } as T;
       case "element_at": {
@@ -174,17 +218,56 @@ export interface BrainState {
   tasks: BrainTask[];
 }
 
+/** One worker's fake brain: what it was asked, what it was told, how often it was cancelled and stopped. */
+export interface FakeWorkerBrain {
+  readonly id: string;
+  /** The worker's name, read from its first task (`<parentLiveId>/<name>`). */
+  name: string;
+  readonly runner: ToolRunner;
+  tasks: BrainTask[];
+  sink: BrainSink | undefined;
+  started: number;
+  cancels: number;
+  stops: number;
+  /** Settle the current turn (the runner is detached first, as a real brain does at the end of a turn). */
+  resolve: ((r: BrainResult) => void) | undefined;
+}
+
+/** What a scripted worker turn sees. Return a result to finish the turn; return undefined to hold it for `brain.resolve`. */
+export interface WorkerJob {
+  readonly brain: FakeWorkerBrain;
+  readonly task: BrainTask;
+  readonly sink: BrainSink;
+  /** The worker's own lane runner: `runner.run("type", …)` goes through its lane's rules. */
+  readonly runner: ToolRunner;
+}
+
+export interface WorkerWorld {
+  /** Every worker brain the engine built, in order (the spare included). */
+  brains: FakeWorkerBrain[];
+  /** What a worker does when its turn starts; absent, the turn holds until the test resolves it. */
+  script: ((job: WorkerJob) => Promise<BrainResult | undefined>) | undefined;
+  /** What a worker brain's `start()` answers (default: ready at once); a test makes the spare's boot hang or fail. Set before the wake that warms the spare. */
+  startResult: ((brain: FakeWorkerBrain) => Promise<{ ready: boolean; detail: string }>) | undefined;
+  /** The brain of the worker named `name` (the first task tells a brain its name). */
+  byName(name: string): FakeWorkerBrain | undefined;
+}
+
 export interface World {
   engine: Engine;
   /** The first session's Live (the one a single-wake test talks to). */
   live: FakeLive;
   /** Every session the engine opened, in order; a resume or a re-wake appends one. `lives.at(-1)` is the current. */
   lives: FakeLive[];
+  /** The acting helper: the main brain's, dictation's and screen-lane workers' ops. */
   hands: RecordingHands;
+  /** The reading helper: the AX warm tick, ear hints, the wake shot, `user_idle`, background workers' ops. */
+  handsBg: RecordingHands;
   events: EngineEvent[];
   overlays: OverlayCommand[];
   audio: Buffer[];
   brain: BrainState;
+  workers: WorkerWorld;
   clock: { t: number };
   dir: string;
 }
@@ -193,8 +276,10 @@ export interface World {
  * `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine
  * over the same day. `where.firstSessionId` names that engine's first FakeLive (default
  * `sess_1`), so two engines over one ledger do not write the same session id twice.
+ * `where.oneHands` gives both helpers the same RecordingHands (a test that patches
+ * `hands.request` and does not care which helper answered).
  */
-export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean } = {}): World {
+export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean; readonly oneHands?: boolean } = {}): World {
   const dir = where.dir ?? mkdtempSync(join(tmpdir(), "jh-engine-"));
   const config: JarheadConfig = {
     ...readConfig(),
@@ -209,21 +294,77 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
     stateDir: join(dir, "state"),
     socketPath: join(dir, "state", "j.sock"),
   };
+  let engine!: Engine;
   const brainState: BrainState = { cancels: 0, cancelDelayMs: 0, resolve: undefined, tasks: [] };
   const brain: Brain = {
     kind: "fake",
     start: async () => ({ ready: true, detail: "fake" }),
-    handle: (task) =>
+    handle: (task, sink) =>
       new Promise<BrainResult>((resolve) => {
         brainState.tasks.push(task);
-        brainState.resolve = resolve;
-        task.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+        // As every real brain does: the runner carries this task for the turn (the daemon's `attached` check, the lease's turn end).
+        engine.runner.attach(sink, task);
+        const done = (r: BrainResult): void => {
+          engine.runner.attach(undefined);
+          resolve(r);
+        };
+        brainState.resolve = done;
+        task.signal.addEventListener("abort", () => done({ status: "cancelled" }), { once: true });
       }),
     cancel: async () => {
       brainState.cancels++;
       if (brainState.cancelDelayMs > 0) await new Promise((r) => setTimeout(r, brainState.cancelDelayMs));
     },
     stop: async () => undefined,
+  };
+  // Worker brains: one fake per worker, scripted by the test.
+  const workers: WorkerWorld = {
+    brains: [],
+    script: undefined,
+    startResult: undefined,
+    byName: (name) => workers.brains.find((b) => b.name === name),
+  };
+  const makeWorkerBrain: WorkerBrainFactory = (spec) => {
+    const fb: FakeWorkerBrain = { id: spec.workerId, name: "", runner: spec.runner, tasks: [], sink: undefined, started: 0, cancels: 0, stops: 0, resolve: undefined };
+    workers.brains.push(fb);
+    return {
+      kind: "fake-worker",
+      start: async () => {
+        fb.started++;
+        return workers.startResult ? workers.startResult(fb) : { ready: true, detail: "fake worker" };
+      },
+      handle: (task, sink) =>
+        new Promise<BrainResult>((resolve) => {
+          fb.name = task.delegationId.split("/").pop() ?? fb.name;
+          fb.tasks.push(task);
+          fb.sink = sink;
+          fb.runner.attach(sink, task);
+          let settled = false;
+          const done = (r: BrainResult): void => {
+            if (settled) return;
+            settled = true;
+            fb.runner.attach(undefined);
+            fb.resolve = undefined;
+            resolve(r);
+          };
+          fb.resolve = done;
+          task.signal.addEventListener("abort", () => done({ status: "cancelled" }), { once: true });
+          const script = workers.script;
+          if (script) {
+            void script({ brain: fb, task, sink, runner: fb.runner })
+              .then((r) => {
+                if (r) done(r);
+              })
+              .catch((e: unknown) => done({ status: "failed", error: (e as Error).message }));
+          }
+        }),
+      cancel: async () => {
+        fb.cancels++;
+      },
+      stop: async () => {
+        fb.stops++;
+      },
+    };
   };
   // One FakeLive per session: the first exists before the wake (tests hold it as `live`);
   // every wake after that — a resume, a re-wake — gets a fresh one, as the engine does.
@@ -239,18 +380,20 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
     return l as unknown as LiveSession;
   };
   const hands = new RecordingHands();
+  const handsBg = where.oneHands ? hands : new RecordingHands();
   const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
+  handsBg.now = () => clock.t;
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
-  const engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, ...extra });
+  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, ...extra });
   const events: EngineEvent[] = [];
   const overlays: OverlayCommand[] = [];
   const audio: Buffer[] = [];
   engine.on("event", (e) => events.push(e));
   engine.on("overlay", (c) => overlays.push(c));
   engine.on("audio", (pcm) => audio.push(pcm));
-  return { engine, live, lives, hands, events, overlays, audio, brain: brainState, clock, dir };
+  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, workers, clock, dir };
 }
 
 export const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -278,4 +421,14 @@ export function nextUtterance(w: World): void {
 /** Ledger rows of one type for the world's day, in order. */
 export function rows<T extends { type: string }>(w: World, type: string): T[] {
   return (w.engine.ledger.read(w.clock.t) as unknown as T[]).filter((r) => r.type === type);
+}
+
+/** Wait until `cond` holds (polled every 10 ms) or `ms` pass; returns whether it held. */
+export async function until(cond: () => boolean, ms = 2000): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (cond()) return true;
+    await settle(10);
+  }
+  return cond();
 }

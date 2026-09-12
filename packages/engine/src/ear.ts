@@ -1,5 +1,5 @@
 import { logger, newId } from "@jarhead/core";
-import { endsTerminally, normalizeUtterance, type FiredReflexes, type Reflex, type ReflexOutcome } from "@jarhead/brain";
+import { addressesJarhead, endsTerminally, normalizeUtterance, parseReflex, type FiredReflexes, type Reflex, type ReflexOutcome } from "@jarhead/brain";
 
 /**
  * The ear: Kevin's words as the app's on-device recogniser hears them, ~100–200 ms
@@ -42,6 +42,15 @@ import { endsTerminally, normalizeUtterance, type FiredReflexes, type Reflex, ty
  * (and any partial stable for `dictationStableMs`) is typed into the focused
  * field with a trailing space; "new line" / "new paragraph" press Return; "delete
  * that" is ⌥⌫; "stop dictating" ends it.
+ *
+ * A dismissal ("go to sleep", "goodnight jarhead", "that's all for now" — the
+ * `sleep` row of the grammar) is judged after "stop" and before the hold: Kevin
+ * dismisses Jarhead over its own voice or over a running task, and Jarhead's own
+ * words never contain a cue (its idle clause is "going to sleep", its farewell
+ * "night."). Unlike "stop" it is careful — at once on a final or a terminal tail,
+ * else after `carefulMs` unchanged, so "that is all" cannot fire while it grows
+ * into "that is all wrong" — and it fires ONLY when the words name Jarhead or the
+ * engine is mid-exchange: a bare "goodnight" to someone in the room never sleeps it.
  */
 
 const log = logger("engine.ear");
@@ -90,6 +99,14 @@ export interface EarOptions {
   readonly run: (reflex: Reflex, phrase: string) => Promise<ReflexOutcome & { readonly dropped?: string }>;
   /** Kevin said "stop" (only forwarded while something is running or speaking; the engine decides). */
   readonly onStop: () => void;
+  /** Kevin dismissed Jarhead ("go to sleep", "goodnight jarhead"): the phrase, normalised. Absent, dismissals are ordinary words. */
+  readonly onSleep?: ((phrase: string) => void) | undefined;
+  /**
+   * Mid-exchange right now (Jarhead spoke or was spoken to a moment ago): a dismissal
+   * without the name counts then — unless the engine knows these normalised words as
+   * Jarhead's own line back through the microphone.
+   */
+  readonly addressed?: ((phrase: string) => boolean) | undefined;
   /** Dictation: `active()` says whether the field is being dictated into right now. */
   readonly dictation: DictationHooks & { active(): boolean; start(): void };
   readonly fired: FiredReflexes;
@@ -206,6 +223,10 @@ export class EarReflexes {
       this.opts.onStop();
       return;
     }
+    // A dismissal, before the hold (Kevin says it over the voice or a task), only to Jarhead.
+    if (this.opts.onSleep && parseReflex(cleaned)?.kind === "sleep") {
+      if (this.sleepCue(seg, candidate, phrase, words.length, isFinal)) return;
+    }
     // Holding still (the voice is speaking — these may be its own words back through the
     // microphone; a task is running; the mic is muted): consumed, never judged later.
     const held = this.opts.suppressed?.();
@@ -249,6 +270,45 @@ export class EarReflexes {
       this.fire(seg!, reflex, phrase, wordCount, at, matchedAt, "stable");
     }, window);
     seg.timer.unref?.();
+  }
+
+  /**
+   * The candidate is a dismissal. Fired at once on a final or a terminal tail
+   * ("goodnight jarhead"), else after `carefulMs` unchanged — and only when the words
+   * name Jarhead or the engine says it is mid-exchange. Returns true when the words
+   * were taken (fired, or armed); false leaves them for the ordinary path (a bare
+   * "goodnight" in the room: a final is left behind there, a partial may still grow
+   * into "goodnight jarhead").
+   */
+  private sleepCue(seg: Segment, candidate: string, phrase: string, wordCount: number, isFinal: boolean): boolean {
+    const addressed = addressesJarhead(candidate) || this.opts.addressed?.(phrase) === true;
+    if (!addressed) {
+      log.debug(`ear: "${phrase}" is a dismissal but not to Jarhead; ignored`);
+      return false;
+    }
+    const fire = (how: "final" | "terminal" | "stable"): void => {
+      seg.consumed = Math.max(seg.consumed, wordCount);
+      log.info(`ear: "${phrase}" → sleep (${how})`);
+      this.opts.onSleep?.(phrase);
+    };
+    if (isFinal || endsTerminally(candidate)) {
+      this.clearTimer(seg);
+      fire(isFinal ? "final" : "terminal");
+      return true;
+    }
+    if (seg.waitingFor === candidate && seg.timer) return true;
+    this.clearTimer(seg);
+    seg.waitingFor = candidate;
+    seg.timer = setTimeout(() => {
+      seg.timer = undefined;
+      seg.waitingFor = undefined;
+      // Still the same words? "that is all" that became "that is all wrong" is not a dismissal.
+      if (seg.words.slice(seg.consumed).join(" ") !== candidate) return;
+      if (!this.opts.enabled() || this.opts.dictation.active()) return;
+      fire("stable");
+    }, this.carefulMs);
+    seg.timer.unref?.();
+    return true;
   }
 
   /** Take the segment's words as heard and leave them all behind. */

@@ -225,3 +225,53 @@ test("`jarhead cmd pause|resume` shapes: the engine commands are accepted by the
     await engine.stop();
   }
 });
+
+test("pause while workers run: every worker is cancelled with its brain's cancel called once, both helpers' pendings dropped, the session closed; the resume opens a new session and workers start again", async () => {
+  const w = world();
+  const { engine, live, lives, hands, handsBg, brain } = w;
+  try {
+    let read!: (r: unknown) => void;
+    const reading = new Promise<unknown>((r) => (read = r));
+    w.workers.script = async (job) => {
+      read((await job.runner.run("frontmost_app", {})).result);
+      return undefined;
+    };
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
+    await settle();
+    handsBg.hold = "frontmost";
+    await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
+    await settle(50);
+    hands.hold = "frontmost";
+    const typing = engine.toolset.run("type", { text: "hi" });
+    await settle();
+    assert.ok(hands.named("frontmost").length > 0 && handsBg.named("frontmost").length > 0);
+
+    await engine.command({ type: "pause" });
+    assert.equal(engine.isPaused, true);
+    assert.equal(live.currentState, "closed");
+    assert.equal(brain.cancels, 1);
+    assert.equal(w.workers.byName("Spotify")!.cancels, 1);
+    assert.equal((engine.snapshot().workers ?? [])[0]!.status, "cancelled");
+    assert.equal((await typing).kind, "error", "the acting helper's pending failed");
+    assert.equal(((await reading) as { kind: string }).kind, "error", "the reading helper's pending failed");
+    hands.release();
+    handsBg.release();
+    assert.deepEqual(rows<Row>(w, "pause").length, 1);
+
+    await engine.command({ type: "resume" });
+    assert.equal(lives.length, 2);
+    nextUtterance(w);
+    delegate(w, "jarhead play focus on spotify and tell ben", "item_2");
+    await settle();
+    const again = await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
+    assert.equal(again.result.kind, "text", "workers start again on the new session");
+  } finally {
+    hands.release();
+    handsBg.release();
+    await engine.stop();
+  }
+});

@@ -395,7 +395,8 @@ export class ComputerToolset {
         const count = name === "double_click" ? 2 : name === "triple_click" ? 3 : 1;
         // The blob flies to where the action lands, then the click pulses under it.
         this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
-        await hands.request("click", { ...p, button, count, modifiers: modifiersOf(input) });
+        // The app the click was judged against must still be in front when the event goes out (the helper checks, atomically).
+        await hands.request("click", { ...p, button, count, modifiers: modifiersOf(input), ...frontOf(gate.probes.front) });
         this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
         return ok();
       }
@@ -409,7 +410,7 @@ export class ComputerToolset {
         noteDecision(gate.decision);
         if (gate.result) return gate.result;
         if (Number.isFinite(p.x) && Number.isFinite(p.y)) this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
-        await hands.request("mouse_down", { button: "left" });
+        await hands.request("mouse_down", { button: "left", ...frontOf(gate.probes.front) });
         return ok();
       }
       case "left_mouse_up": {
@@ -427,7 +428,7 @@ export class ComputerToolset {
         // The blob flies to the grab point and the layer traces the drag.
         this.opts.annotate?.({ cmd: "orb.fly", x: from.x, y: from.y, dwellMs: 1500, reason: name });
         this.opts.annotate?.({ cmd: "path", from, to, ttlMs: 1500 });
-        await hands.request("drag", { from, to, modifiers: modifiersOf(input) }, 8000);
+        await hands.request("drag", { from, to, modifiers: modifiersOf(input), ...frontOf(gate.probes.front) }, 8000);
         return ok();
       }
       case "scroll": {
@@ -469,12 +470,15 @@ export class ComputerToolset {
         // that restores the clipboard; three attempts, then a failure that names the field and leaves
         // the text on the clipboard. `strategy` is the escape hatch for an app that rejects one of them.
         const strategy = typeof input["strategy"] === "string" && /^(auto|ax|keystrokes|paste)$/.test(input["strategy"]) ? { strategy: input["strategy"] } : {};
+        // Dictation is Kevin driving: `ownDriver` tells the helper his own keystrokes are not a reason to hold back.
+        const ownDriver = input["ownDriver"] === true ? { ownDriver: true } : {};
         try {
-          const r = await hands.request<TypeResult>("type", { text, ...strategy }, 6000 + text.length * 15);
+          const r = await hands.request<TypeResult>("type", { text, ...strategy, ...ownDriver, ...frontOf(gate.probes.front) }, 6000 + text.length * 15);
           return { kind: "text", text: describeTyped(r, text, f) };
         } catch (e) {
           // The helper's own words name the field and say where the text is; the code adds nothing.
-          if (e instanceof NativeRequestError && e.detail.code !== "cancelled" && e.detail.code !== "unavailable" && e.detail.code !== "timeout") return { kind: "error", message: e.detail.message };
+          // `busy` keeps its code in front (run() renders it) so a runner can retry it silently.
+          if (e instanceof NativeRequestError && e.detail.code !== "cancelled" && e.detail.code !== "unavailable" && e.detail.code !== "timeout" && e.detail.code !== "busy") return { kind: "error", message: e.detail.message };
           throw e;
         }
       }
@@ -485,7 +489,7 @@ export class ComputerToolset {
         const gate = await this.gate(name, input, { text: combo });
         noteDecision(gate.decision);
         if (gate.result) return gate.result;
-        await hands.request("key", { combo, repeat }, 3000 + repeat * 40);
+        await hands.request("key", { combo, repeat, ...frontOf(gate.probes.front) }, 3000 + repeat * 40);
         return ok();
       }
       case "hold_key": {
@@ -581,7 +585,7 @@ export class ComputerToolset {
         const button = input["button"] === "right" ? "right" : "left";
         const count = Number(input["count"]) === 2 ? 2 : 1;
         this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: "click_element" });
-        await hands.request("click", { ...p, button, count, modifiers: [] });
+        await hands.request("click", { ...p, button, count, modifiers: [], ...frontOf(under.front) });
         this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
         return { kind: "text", text: `clicked "${el.label}" (${el.role}) in ${found.app} at ${Math.round(p.x)},${Math.round(p.y)}${found.tier === "fuzzy" ? ` (matched "${name}" at ${Math.round(el.score * 100)} %)` : ""}` };
       }
@@ -781,7 +785,12 @@ function describeTyped(r: TypeResult, text: string, f: FocusedText | undefined):
   const how = r.via === "ax" ? "by accessibility insertion" : r.via === "paste" ? "by paste (clipboard restored)" : "by keystrokes";
   const checked = r.verified === true ? "verified" : r.verified === false ? "not verifiable in this field" : "";
   const tries = r.attempts && r.attempts > 1 ? `, ${r.attempts} attempts` : "";
-  if (r.cancelled) return `stopped after ${r.characters ?? 0} of ${text.length} characters${field ? ` in ${field}` : ""}`;
+  if (r.cancelled) {
+    const got = `stopped after ${r.characters ?? 0} of ${text.length} characters${field ? ` in ${field}` : ""}`;
+    // The helper stopped itself: the app in front changed under the keystrokes, so the rest was not typed anywhere.
+    if (r.reason === "focus_moved") return `${got}: the front app changed, so the rest was not typed; look at the screen before typing again`;
+    return got;
+  }
   return `typed ${text.length} characters ${how}${field ? ` into ${field}` : ""}${checked ? ` (${checked}${tries})` : tries ? ` (${tries.slice(2)})` : ""}`;
 }
 
@@ -840,6 +849,16 @@ function relates(a: string, b: string): boolean {
   const y = fold(b);
   if (!x || !y) return false;
   return x === y || x.includes(y) || y.includes(x);
+}
+
+/**
+ * `expectFront` for an acting op: the pid of the app the gate's own probe saw in
+ * front. The helper reads the front app again immediately before its first post
+ * (and every ~50 ms inside a `type`) and posts nothing when it moved — the
+ * probe→post gap two serial ops cannot close from here. No probe, no expectation.
+ */
+function frontOf(front: FrontmostInfo | undefined): { expectFront: { pid: number } } | Record<never, never> {
+  return front && typeof front.pid === "number" && front.pid > 0 ? { expectFront: { pid: front.pid } } : {};
 }
 
 function modifiersOf(input: Record<string, unknown>): string[] {

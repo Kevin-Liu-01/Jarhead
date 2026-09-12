@@ -45,6 +45,7 @@ func dispatch(op: String, params: Params) throws -> JSONObject {
     case "browser_tabs": return try opBrowserTabs(params)
     case "browser_navigate": return try opBrowserNavigate(params)
     case "browser_url": return try opBrowserURL(params)
+    case "user_idle": return opUserIdle()
     case "wait": return try opWait(params)
     default: throw HandsError.badRequest("unknown op '\(op)'")
     }

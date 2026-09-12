@@ -1758,6 +1758,82 @@ never stacks the two), and the app's `PermissionsKit.meta` `required` set is the
 same seven as the engine's catalogue — pin it in a Swift test next to the
 engine's.
 
+### One bundle on disk: the install is in place (2026-09-12)
+
+Kevin: "figure out the multi app situation. there should only be one jarhead."
+There was one bundle, but `pnpm build:mac` replaced it every build — `rm -rf
+/Applications/Jarhead.app` then `cp -R` — and the Dock's pinned tile is a bookmark
+(the `book` blob) keyed on the bundle **directory's inode**, so each build gave the
+pin a dead bookmark and the running app came back as a second, "recent" tile. Every
+grant above keys on the same bundle, so the fix had to keep the path, the identity
+and now the directory itself. Step 5 of `scripts/build-mac.ts` (the three signing
+lines are untouched):
+
+1. `planInstall(probeTarget("/Applications/Jarhead.app"))` refuses a symlink (rsync
+   follows a destination link and writes into its target), a regular file, another
+   uid's directory (never `sudo` from a script), or no write bit — before anything
+   is written; the signed stage stays in `build/stage/` for inspection.
+2. First install (nothing there): `cp -R` of the stage. Otherwise a rollback
+   snapshot to gitignored `build/previous/Jarhead.app`, then `/usr/bin/rsync -rlptD
+   -c --delay-updates --delete-after --itemize-changes build/stage/Jarhead.app/
+   /Applications/Jarhead.app/`. `-rlptD` is `-a` without owner/group; `-c` compares
+   by checksum (two files of equal size in the same second were skipped by the quick
+   check once); `--delay-updates` renames every changed file in one burst after the
+   transfer; `--delete-after` drops what the stage no longer has. Never `-E`:
+   openrsync's xattr emulation writes `._*` AppleDouble entries into the bundle
+   (the signature is embedded, not in xattrs; a copy without them verifies strict);
+   never `--inplace`: it would write into the running app's mapped, signed Mach-O.
+   Each changed file is a new inode renamed over the old name, so pid N keeps what
+   it has mapped and the directory inode never changes.
+3. The **installed** copy is verified, not the stage: `codesign --verify --strict
+   --deep --verbose=1` (the helper is nested code; `--strict` refuses sideband a bad
+   copy could add), `codesign -d -r-` must contain `identifier
+   "com.kevinliu.jarhead"` (the designated requirement TCC keys the grants on), a
+   sha256 walk proves the installed tree is exactly the signed stage (rsync's exit
+   code on a permission error is not trusted), and the directory inode after equals
+   the one before. Any failure prints the rollback line
+   (`rsync -rlptD -c --delete-after build/previous/Jarhead.app/ /Applications/Jarhead.app/`)
+   and exits 1. `build/Jarhead.app` stays a symlink to the installed bundle.
+4. One Jarhead: `lsregister -f /Applications/Jarhead.app`, then the Bundle table
+   (`lsregister -dump Bundle`: ~2 s on an idle Mac, 66–85 s at load average 300
+   because every lsregister call waits on lsd; the pass allows each call 120 s —
+   a 20 s cap once made this half silently do nothing during a slow self-edit
+   build; the full `-dump` is minutes) is read and every stale Jarhead record —
+   Jarhead's id at any other path (paths compared resolved, so a record at the
+   `build/Jarhead.app` symlink is the installed bundle, never stale), a
+   `com.kevinliu.jarhead.*` probe bundle under a self-edit worktree or the Trash or
+   gone, any other bundle **named** Jarhead.app under those roots (the retired
+   Electron shell in the Trash has a different id and the same name, and `open -a
+   Jarhead` resolves by name) — is `lsregister -u`'d: the database only, no file and
+   nothing in the Trash is touched. A build dumps the table once and reports from
+   the `-u` exit codes; only `dock --fix` dumps again to prove the records went. A
+   dump that fails or times out carries its reason (`spawnSync … ETIMEDOUT`) into
+   the `one jarhead` line and the doctor row. Then a READ-ONLY line about the Dock.
+5. The Dock is rewritten only when Kevin asks: `pnpm jarhead dock --fix` or
+   `JARHEAD_INSTALL_HYGIENE=fix`. `defaults export com.apple.dock -` (through
+   cfprefsd; the plist file itself is what cfprefsd overwrites) → drop every Jarhead
+   tile from `recent-apps`, keep the FIRST pin in `persistent-apps` where it is and
+   drop later ones, and when anything changed or the pin's URL is not
+   `file:///Applications/Jarhead.app/`, strip that pin's `tile-data` to exactly
+   `bundle-identifier`, `file-data`, `file-label`, `file-type` (the Dock rebuilds
+   `book` and the mod dates) → re-export and compare `mod-count` (the Dock rewrites
+   its domain on its own events; three rounds, then "kept changing") → `defaults
+   import com.apple.dock -` → `killall Dock` only when something was written. No pin
+   → report only; pinning is Kevin's. `JARHEAD_INSTALL_HYGIENE=0` skips the pass.
+
+The library is `@jarhead/cli/install` (`packages/cli/src/install/`: an XML-plist
+reader/writer that keeps `<data>` and 14-digit integers verbatim and re-serializes
+Apple's export byte for byte, the Dock audit, the lsregister parser and stale rule,
+the install plan/argv/parity, `performInstall` — steps 1–3 above as one function over
+injectable exec/fs seams, so a scripted run pins the order and every fail path — and
+`runHygiene` with one injectable `exec`); every test runs in CI without a Dock, and
+the openrsync behaviour (inode kept, rename in, `-c`, no temp files, a snapshot into
+a missing `build/previous/`) is proved between two temp trees on macOS. `pnpm run doctor`
+gains read-only rows `install`, `launch services`, `dock`; `pnpm jarhead dock` prints
+the same audit; `pnpm build:mac` prints an `install` line (`kept (inode …) · 4 files
+replaced …`) and a `one jarhead` line. The hunk touches the "app signing" rail by
+regex (it says `codesign`); the signing lines themselves are byte-identical.
+
 ## 15. Latency: the warm thread and the clean Codex home (2026-09-12)
 
 Kevin: "simple commands like 'search the wiki for design' produce a visible
@@ -2392,3 +2468,216 @@ faster model; AX-first native hands on the real screen with verification; the
 wake word behind Touch ID; one policy table with a spoken yes once for the
 destructive verbs; the Console that steps into every coding-agent session. Every
 item above was built under those, and none of them moved.
+
+## 18. Workers and Sleep (2026-09-12)
+
+Kevin, verbatim: "also support capabilities to do multiple things at the same
+time, be able to spin up subagents or however you can figure out how to support
+this: to not only use slack and send slack messages but also click through
+spotify at the same time for example." And: "also if you tell it to go to sleep or
+shut off or things like that those are all cues to return to dock and go to
+sleep" — "dock" being the notch home the blob tucks into. The standard both were
+built to: better, faster, and like an actual human at the screen. One short spoken
+line when work splits, one when a worker finishes; workers never narrate; reflexes
+stay under 2 s and the brain's first action near 4 s.
+
+### Workers, not agents
+
+*Agents* (`agents_*`, the Sessions rail) are Kevin's coding sessions. A **worker**
+is the brain's second pair of hands: `Worker { id, name, delegationId, task, lane,
+status, detail?, startedAt, doneAt?, steps }`, `WorkerLane = background | screen`,
+`WorkerStatus = starting | working | waiting-screen | awaiting-confirmation | done
+| failed | cancelled`, `WORKER_MAX` 2, `WORKER_LINGER_MS` 30 s in the snapshot after
+it finishes (`Snapshot.workers`; `Settings.workers` on by default). Tools, appended
+after `AGENT_SPECS` (`ALL_TOOL_SPECS.length` 67): `worker_start {name, task, lane?
+(default background), budget?: {steps 1..40, seconds 10..300}}`, `worker_wait {name
+| "all", timeout? 1..240 (120)}`, `worker_read {name}`, `worker_stop {name}`. Budgets
+default 25 steps / 180 s, capped at 40 / 300 (the delegation's wall clock); a hung
+worker is cut at its cap. `worker_*` and `self_*` are denied to workers (depth 1).
+
+A worker is a second brain over a `LaneRunner` (`packages/engine/src/workers.ts`):
+`new CodexBrain({ ...mainOpts, runner: laneRunner, worker: id, primeThreads: false,
+maxWallMs: secondsCap })`, its bridge started with `JARHEAD_WORKER=<id>` so every
+`tool.run` frame carries `worker` and the daemon routes it to
+`engine.runnerFor(worker)` (unknown or unattached → refused). One warm spare
+process (thread/start only, no primer, no model request) is kept at wake so the
+split does not pay the 3.4 s boot. Other brain kinds run a second instance over
+the lane runner; `openai-responses` cannot (no thread of its own) and
+`worker_start` says so. The worker's `BrainTask.request` and `kevinDialogue` are the
+PARENT's — Kevin's words — and the brief rides in the dialogue, so `runner.ts`'s
+`namedPaths` / `classifyUrl` reads see what Kevin said, not a paraphrase. Its steps
+land on the parent delegation with `step.worker = name`; one `LedgerRow { type:
+"worker", worker }` per status change (positional attribution, not META).
+
+**The background lane never touches the pointer.** `FOCUS_TOOLS` = the acting
+members ∪ {open_url, browser_click, browser_type, clipboard_read, clipboard_write}
+∪ applescript matching `keystroke | key code | click | set value | perform action |
+activate | open location | reopen | set frontmost` ∪ `run_shell` whose head is
+`open` (without -g/-j) or `osascript`. A background worker calling one gets
+"refused: this hand runs in the background lane — the pointer and keyboard are not
+its; use applescript (Apple events), browser_*, files, shell or web, or report that
+the screen is needed" — from the runner, so `policy.ts` is untouched. Spotify plays
+by Apple event without the pointer moving; Slack, which needs typing, is the main
+brain's or a screen worker's.
+
+**Two helper processes, one binary.** `HandsPool { focus, background }`
+(`packages/hands/src/pool.ts`), same daemon parent so the same TCC identity, both
+spawned with `SECRET_KEYS` stripped. Screen-lane actors (main brain, dictation,
+screen workers) use `focus`; background workers and the engine's own reads (the AX
+warm tick, ear hints, `circleUnderCursor`, the wake shot) use `background`, so a
+background hand's screenshot never queues behind a `type`. `cancelAll` cancels
+both (SIGURG only to the child with a pending type); grant restarts restart both.
+
+**The lease.** `FocusLease` (`packages/hands/src/lease.ts`) is the one holder of
+pointer, keyboard and frontmost. Hand-over only at the holder's turn end, a confirm
+question, or `LEASE_IDLE_MS` 3000 without an acting call; a priority taker (main
+brain, dictation) waits `MIN_HOLD_MS` 1500 and never cuts mid-op, then `SETTLE_MS`
+300 to re-front its remembered app (`focus_app` + a `frontmost` poll). A worker tool
+waits at most `WAIT_MAX_MS` 8000 and returns "waiting for the screen: <reason>"
+(status waiting-screen); three consecutive waits fail the worker. STALE_FOCUS: a
+front app no lane activated that differs from the worker's remembered app means
+Kevin switched — the worker is never refocused behind him. Jarhead's own hands
+acquire with priority and never wait on a worker's idle or on Kevin's typing beyond
+the helper's own busy retry.
+
+**Kevin's hands win, in the helper, atomically.** Both checks live in `Input.swift`
+before the first `CGEvent.post`: `busy` — the helper tracks `lastOwnPostAt` for
+every event it posts and reads `CGEventSource.secondsSinceLastEventType` for
+keyDown / mouseDown / rightMouseDown / scrollWheel (not mouseMoved); a most-recent
+event that is not its own and within 1500 ms → `{ok:false, error:{code:"busy",
+message:"Kevin used the keyboard/mouse <n> ms ago; nothing was posted"}}`
+(dictation passes `ownDriver:true`); `expectFront {pid}` on click / mouse_down /
+mouse_up / drag / scroll / type / key / hold_key — the frontmost pid read
+immediately before the first post and every ~50 ms inside the type loop; a
+mismatch → `focus_moved` with nothing posted, or for type `{cancelled:true,
+reason:"focus_moved", characters:N}`. The toolset passes `expectFront` from the
+gate's own `frontmost` probe in the dispatch cases only. New op `user_idle {}` →
+`{keyMs, clickMs, scrollMs, moveMs, foreignMs}`. Kevin clicking Mail during a
+screen worker's Slack step lands nothing in Mail — the worker waits and reports.
+
+**The desk.** The engine's root `ConfirmationState` stays; every toolset — the main
+lane too — gets `desk.lane(id, name)`, a `LaneConfirmationState` whose `ask` posts
+to the root when the floor is free or queues (`{id:"queued_<n>"}`, "Queued behind
+<Floor>'s question: … Kevin will be asked after that one; stop and wait
+(worker_wait), do not retry"); `consume` is true only for the floor's lane, then
+`desk.promote()` re-asks the next queued question on the root and it is SPOKEN with
+its worker's name ("Spotify asks: …"); grants, arm, clear, dropQuestion and the
+conversation bounds forward to the root; `dropQuestion()` / `clear()` drop floor
+and queue. Destructive verbs ask every time in every lane; grants stay per
+conversation. `toolset.ts`'s `ConfirmationState` / `YES_PATTERN` hunk is not edited.
+
+**The Delegator gets a `draining` slot.** A delegation whose brain finished with
+live workers becomes `draining`; `active = running ?? draining`. A new request while
+the main brain runs cancels only that turn and parks the parent as draining
+("Kevin asked something else; the workers carry on"); only the cut verbs cancel
+workers, whose AbortControllers belong to the `WorkerPool`. Order in
+`onDelegation`: (a) the sleep cue → `onSleep(phrase)`, finish done, return; (b) a
+yes for a worker (`YES_PATTERN` on the last utterance and `workers.floorLane()` is a
+worker → `arm(record)`, `workers.resume(lane)`, finish done "relayed the yes to
+<Name>"; the running Foreman turn is NOT superseded); (c) today's refuse /
+supersede / reflex path. Live stays open while a worker runs; the idle-sleep guard
+is `!delegator.active && workers.running() === 0`; `earHeld` holds while the main
+brain's turn runs or the lease is held — not while only background workers drain.
+
+**Speech.** Workers never narrate; their thinking and commentary are steps on the
+parent. Jarhead says the split line ONCE per delegation at the first
+`worker_start` — "<Name> alongside." (`say(text, false)`, marks voicedTool) — then
+per worker "<Name>: <summary ≤80>", "<Name> failed: <reason ≤80>" or "<Name>
+stopped.", and a promoted question as "<Name> asks: <question>", all through the
+parent's `queueCommentary` (600 ms coalescer: two workers finishing together are one
+sentence) via `Delegator.workerSay`, which bypasses `say`'s running-id guard for a
+running OR draining parent. Fallback behind `JARHEAD_WORKER_SAY=instructions`:
+`appendInstructions(null, 'A hand finished. Tell Kevin now in one short sentence:
+"…". Then wait.')`. The Codex addendum gains one cheat-sheet line for the four
+tools (a named rail); the voice's `DEFAULT_CAPABILITIES` gains one line saying the
+backend can split independent work across a second pair of hands and how each
+lane behaves.
+
+**Console.** A Workers section in the right rail above Ready (a 22 pt ghost Stop per
+row → `worker.stop {workerId}`, never the transport's Stop; an hourglass for
+waiting-screen, a hand for awaiting-confirmation), `WorkerStrip` chips under the
+timeline, a `[Name]` mono chip on a step from `step.worker`, `person.2.fill` system
+lines for worker rows; `pnpm jarhead status` prints `workers N` with a row each;
+`pnpm jarhead cmd worker.stop <id>` stops one. `EngineCommand { type: "worker.stop",
+workerId }`.
+
+### Sleep: one grammar, three entries, one closer
+
+`SleepCause = said | idle | pause-decayed | brain-changed | dock | command | stop |
+shutdown`; `EngineCommand { type: "sleep", cause?, phrase? }` (the app's
+`dropIntoDock` sends `cause: "dock"`; `pnpm jarhead cmd sleep [cause]`);
+`LedgerRow { type: "sleep", cause, phrase?, sessionId?, farewell? }` written before
+the close; the Console's tombstone reads "asleep · <cause words>" with the phrase,
+`closeReason` knows `sleep:<cause>`.
+
+**The grammar** is `SLEEP` in `reflex.ts` as `ReflexKind "sleep"`, checked right
+after the dictation rows and BEFORE `OPEN` (today "go to sleep" became `open_app
+Sleep` and "go to bed" `open_app Bed`), anchored `^…$` over `normalizeUtterance`
+output (a leading or trailing "jarhead" / "hey jarhead" / "please" / "thanks" is
+stripped there): `go (back) to sleep|bed`, `back to sleep`, `sleep now`, `shut
+off`, `shut yourself off|down`, `turn yourself off`, `power down|off`, `good
+night`, `night night`, `that's|that is|that will be|that'll be all (for
+now|today|tonight)`, `that's it for now|today|tonight`, `(you're) dismissed`, `you
+can|may rest (now)`, `stand down`, `go dormant`. Bare "shut down", "sleep",
+"night" and "stop" are NOT cues; "turn off the lights", "shut down my Mac", "put
+the display to sleep" and "sleep timer for spotify" are tasks; "don't go to sleep"
+and "is that all" are negations the anchoring excludes. `parseReflex` yields `{
+kind:"sleep", tool:"sleep", input:{phrase}, said:"night.", label:"go to sleep",
+prefire:false, idempotent:true }` and `ReflexRunner.match` returns undefined for
+it — it never runs as a tool. `reflex-grammar.test.ts` pins the positive and
+negative tables.
+
+**Three entries.** The ear (`engine/ear.ts`) checks it after STOP_WORDS and before
+the hold, fires at once on a final/terminal utterance and otherwise after the
+450 ms careful window, and ONLY when `addressesJarhead(candidate)` or the engine is
+in an exchange (`lastAddressedAt` within 8 s) — a "goodnight" to someone in the
+room never sleeps it, and Jarhead's own "going to sleep" idle clause never fires
+it. The Delegator's `onSleep` covers Live's delegation path (the voice's attention
+gate is the addressing test there), checked before supersede / refuse / reflex, so
+the cue works with reflexes off. The command `sleep {cause}` is the third.
+
+**One closer.** `Engine.fallAsleep(cause, {phrase?, farewell?})` is idempotent and
+the ONLY way the engine goes to sleep: `sleep` row (before detach) →
+`cutEverything` (both helpers, the lease, every worker with its brain's `cancel()`
+once, the confirmations) → if `farewell` and the session is started, not gated,
+and the voice has not said "night" within 2 s: `appendInstructions(null,
+FAREWELL_LINE)` — `'Kevin dismissed you. Say exactly one word — "night." — and
+nothing else.'` — and wait for the first output delta + 300 ms quiet, cap 1800 ms
+→ `detachLive` + `closeWithDeadline(live, "sleep:<cause>")` → phase asleep → toast
+→ `workers.stopAll()`. For non-farewell causes the phase flips synchronously before
+the first await (pressStop needs that). Rewired callers: `sleep()` →
+`fallAsleep("command")`; the idle tick → `idle`; pause decay → `pause-decayed`; a
+brain swap → `brain-changed`; `Engine.stop()` → `shutdown`; `pressStop` keeps its
+bookkeeping and `stop` row then `fallAsleep("stop")` with no farewell; the app's
+`dropIntoDock` sends `.sleepCause("dock")`. The orb needs nothing else: asleep
+already converges on `goHomeForTransition()` — the blob tucks into the notch on the
+last syllable of "night."
+
+**The voice rail** (`packages/live/src/instructions.ts`, a named rail edited on
+Kevin's request): a `# Sleep` section — on a dismissal addressed to you (go to
+sleep, shut off, goodnight, that's all, power down, dismissed) say exactly "night."
+and nothing else, then delegate his words unchanged; never for "stop" / "cancel"
+(the interrupt); never for "turn off the lights" / "shut down my Mac" (tasks) — and
+the one capability line above. `instructions.test.ts` pins the section, the cues,
+the exclusions, the section order and the ≤ 1100-word budget (1085 with the
+always-on gate).
+
+**What Kevin hears.** "tell Ben on Slack I'm late and play Focus on Spotify" → one
+split line within ~4 s, Spotify plays by Apple event with the pointer still, Slack
+typed only with Slack in front, one spoken Send question, "yes" sends once, the
+summary does not repeat Spotify. "stop" mid-split ends everything within a frame
+with the meter still running. "goodnight" → "night." → the meter stops within 2 s
+→ the blob tucks. "Jarhead" wakes it as before.
+
+**Deferred to v2, not built:** ax_press / ax_set_value / window_capture as
+background acting ops; a Settings toggle for workers; `RunnerOptions.extensions`;
+open_app / focus_app honouring the policy verdict; main-lane preemption beyond the
+helper's busy check; a wake-then-sleep rule in `Wake/**`.
+
+**Rails touched, by name:** the voice instructions (`instructions.ts`), the Codex
+addendum (`codexAddendum` in `codex.ts`, one cheat-sheet line), app signing
+(`scripts/build-mac.ts`, the install hunk matches the rail's regex; the signing
+lines are byte-identical). Not touched: `policy.ts`, `core/index.ts`, `brain.ts`,
+`brain/index.ts`, `runner.ts` (subclassed only), the `ConfirmationState` /
+`YES_PATTERN` / gate hunk of `toolset.ts`, `Wake/**`, `shell.ts`, `files.ts`,
+`SECRET_KEYS`, NotchPanel's working string.

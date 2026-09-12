@@ -125,8 +125,14 @@ export type ClientMessage =
    * screenshot archive, confirmation handshake included). Used by the MCP bridge
    * that gives an external brain (Codex) the same tools the in-process brains
    * have. Only local unix-socket clients exist, so there is no further auth.
+   *
+   * `worker` names the worker whose brain is calling (the `w_…` id the bridge was
+   * started with as `JARHEAD_WORKER`): the daemon routes the call to that worker's
+   * lane runner — its lane's refusals, its budget, its place in the confirmation
+   * queue — and refuses a worker it does not know rather than falling back to the
+   * main runner, which holds the pointer. Absent: the main brain's call.
    */
-  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown }
+  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown; readonly worker?: string }
   /**
    * The app's on-device ear while awake: a partial or final transcript of what
    * Kevin is saying, ~100–200 ms behind his speech. `at` is ms since epoch when the

@@ -78,6 +78,39 @@ export const AGENT_SPECS: readonly ToolSpec[] = [
   { name: "agent_start", description: "Start a new agent session in a folder: tool 'codex' (a new Codex thread, Kevin's ChatGPT login, appears in the Codex app) or 'claude-code' (a headless Claude Code session), with a working directory and the first prompt. Existing sessions found on this Mac are continued with agent_send, not started here.", parameters: { type: "object", properties: { tool: { type: "string", enum: ["codex", "claude-code"], description: "which agent CLI runs the session" }, cwd: { type: "string", description: "absolute path of the folder to work in" }, name: { type: "string" }, prompt: { type: "string" }, kind: { type: "string", description: "deprecated alias of tool" } }, required: ["tool", "cwd", "prompt"] } },
 ];
 
+/**
+ * A second pair of hands inside the same delegation (a Worker is not an Agent: agents
+ * are Kevin's coding sessions). The descriptions carry the split rule the standing
+ * orders do not: the brain keeps the part that needs the screen, splits only work
+ * that is independent of it, and a background hand acts without the pointer or the
+ * keyboard — Apple events, the browser tools, files, shell, web. The engine's pool
+ * enforces the lanes; a brain without a pool gets "not available here".
+ */
+export const WORKER_SPECS: readonly ToolSpec[] = [
+  {
+    name: "worker_start",
+    description:
+      "Start a second hand on an independent part of the request while you carry on with the rest — Kevin asked for two things at once ('tell Ben on Slack I'm late and play Focus on Spotify'). Keep the part that needs the screen yourself; split off only work that does not depend on yours and does not touch the same app. lane 'background' (default) never touches the pointer, keyboard or front app: it acts through applescript (Apple events to Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, files, run_shell and the web, and reports when it needs the screen instead. lane 'screen' waits its turn for the pointer and keyboard. At most 2 at once. Returns at once; Jarhead tells Kevin the split in one line, so do not announce it. worker_wait collects the result; the worker's finish line is spoken for you, so never repeat it in your summary.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "one word Kevin will hear, usually the app: 'Spotify', 'Slack' (≤ 16 characters, unique in this task)" },
+        task: { type: "string", description: "what to do, in full sentences, with the names and text it needs; it cannot see your screen or your context" },
+        lane: { type: "string", enum: ["background", "screen"], description: "background (default): Apple events, browser, files, shell, web only; screen: waits for the pointer and keyboard" },
+        budget: { type: "object", properties: { steps: { type: "integer", minimum: 1, maximum: 40, description: "tool calls before it gives up (default 25)" }, seconds: { type: "integer", minimum: 10, maximum: 300, description: "wall clock before it is cut (default 180)" } } },
+      },
+      required: ["name", "task"],
+    },
+  },
+  {
+    name: "worker_wait",
+    description: "Wait until a worker (by name, or 'all') has finished, failed or been stopped, or the timeout passes (seconds, default 120, at most 240). Returns each worker's status and last line, and says what Kevin was already told so you do not repeat it. Call it once your own part is done, before the summary.",
+    parameters: { type: "object", properties: { name: { type: "string", description: "the worker's name, or 'all'" }, timeout: { type: "integer", minimum: 1, maximum: 240 } }, required: ["name"] },
+  },
+  { name: "worker_read", description: "A worker's status right now (starting, working, waiting for the screen, awaiting Kevin's yes, done, failed, stopped), its steps so far and its last line, without waiting.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "worker_stop", description: "Stop a worker by name: its current step ends, nothing more runs, and Kevin hears one line that it stopped. Use it when its part is no longer wanted or you are taking it over yourself.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+];
+
 export const MISC_SPECS: readonly ToolSpec[] = [
   {
     name: "run_shell",
@@ -242,7 +275,8 @@ export const BROWSER_SPECS: readonly ToolSpec[] = [
 
 export const COMPUTER_TOOL_SPECS: readonly ToolSpec[] = COMPUTER_MEMBERS.map((m) => COMPUTER_SPECS[m]);
 export const DESKTOP_TOOL_SPECS: readonly ToolSpec[] = DESKTOP_TOOLS.map((t) => DESKTOP_SPECS[t]);
-export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS];
+/** 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6 = 67 (pinned in brain.test.ts and mcp-bridge.test.ts). */
+export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...WORKER_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS];
 
 export function specByName(name: string): ToolSpec | undefined {
   return ALL_TOOL_SPECS.find((t) => t.name === name);

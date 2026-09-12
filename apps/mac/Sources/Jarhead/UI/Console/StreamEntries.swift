@@ -37,6 +37,16 @@ enum StreamEntry: Identifiable, Equatable {
     }
 }
 
+extension StreamEntry {
+    /// The workers this row draws: a delegation card's own (`Worker.delegationId`), none for an
+    /// utterance or a system line — so a worker ticking re-evaluates its card and no other row
+    /// (StreamRow is Equatable over its workers).
+    func workers(from all: [Worker]) -> [Worker] {
+        guard case .delegation(let d) = self, !all.isEmpty else { return [] }
+        return all.filter { $0.delegationId == d.id }
+    }
+}
+
 struct LedgerStats: Equatable {
     var sessions = 0
     var utterances = 0
@@ -65,6 +75,10 @@ enum StreamBuilder {
         var order: [String] = []
         // The last transport row: what a close the engine asked for meant (ConsoleFormat.closeReason).
         var transport: String?
+        // The hands whose "working" line is said. A worker's rows are one per status change
+        // (starting, working, the waits, working again, the end); the stream keeps the first
+        // "working" and the end — its waits are on the parent card as note steps already.
+        var workersAnnounced: Set<String> = []
 
         for (index, row) in rows.enumerated() {
             switch row.type {
@@ -123,6 +137,24 @@ enum StreamBuilder {
                     out.append(.system(SystemEntry(id: "a:\(row.at):\(index):\(a.id)", at: row.at, symbol: "terminal.fill", text: a.name,
                                                    trailing: a.detail, agentStatus: a.status)))
                 }
+            case "sleep":
+                // Jarhead went to sleep: the row says why, and the cue when one was spoken. It is
+                // written before the close, so the `session.closed` that follows reads "asleep · why"
+                // (ConsoleFormat.closeReason) — the server's own word says nothing about it. A
+                // pressed Stop's sleep row is the close's bookkeeping: the stop row above it is the
+                // record and the close reads "stopped"; it gets no moon of its own.
+                transport = "sleep:" + (row.sleepCause ?? "command")
+                if row.sleepCause != "stop", let t = ConsoleFormat.tombstone(row) {
+                    out.append(.system(SystemEntry(id: "zz:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
+                }
+            case "worker":
+                // A hand's life, one row per status change; the stream says "Slack · working" once,
+                // then how it ended (done, failed, cancelled). The log (JarheadLog) lists every row.
+                guard let w = row.worker, Self.announces(w.status, seen: workersAnnounced.contains(w.id)) else { break }
+                workersAnnounced.insert(w.id)
+                if let t = ConsoleFormat.tombstone(row) {
+                    out.append(.system(SystemEntry(id: "wk:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
+                }
             default:
                 // The cleanup's tombstone rows read as terse system lines: "Moved to Trash", "Restored", "Renamed".
                 if let t = ConsoleFormat.tombstone(row) {
@@ -133,6 +165,17 @@ enum StreamBuilder {
         for id in order { if let d = delegations[id] { out.append(.delegation(d)) } }
         out.sort { $0.at < $1.at }
         return out
+    }
+
+    /// Which of a worker's rows the stream says: the first `working` (the hand has begun) and
+    /// the end. `starting`, the two waits and a return to `working` are not lines of their own —
+    /// a screen-lane hand that waited twice would otherwise read as seven lines for two facts.
+    static func announces(_ status: WorkerStatus, seen: Bool) -> Bool {
+        switch status {
+        case .working: return !seen
+        case .done, .failed, .cancelled: return true
+        case .starting, .waitingScreen, .awaitingConfirmation: return false
+        }
     }
 
     static func stats(_ rows: [LedgerRow]) -> LedgerStats {
@@ -177,16 +220,26 @@ extension ConsoleFormat {
     /// The server's word for a close the engine asked for (`close_requested`) — or ours
     /// when it had to force one (`client_closed`) — says nothing about why; the
     /// transport row before it does. Mirrors `Ledger.sessions()`: "paused" after a
-    /// `pause`, "stopped" after a pressed `stop`, "closed" with neither (an idle sleep);
-    /// every other reason (idle, connection_lost, …) is kept as recorded.
+    /// `pause`, "stopped" after a pressed `stop`, "asleep · why" after a `sleep` row
+    /// (`transport` "sleep:<cause>"), "closed" with none (an older engine's idle sleep);
+    /// every other reason (idle, connection_lost, …) is kept as recorded — except the
+    /// engine's own sleep label, "sleep:<cause>", which reads the same as the row.
     static func closeReason(_ reason: String?, after transport: String? = nil) -> String {
         guard let reason, !reason.isEmpty else { return "closed" }
+        if let words = sleepWords(reason) { return words }
         guard reason == "close_requested" || reason == "client_closed" else { return reason }
         switch transport {
         case "pause": return "paused"
         case "stop": return "stopped"
-        default: return "closed"
+        default: return transport.flatMap(sleepWords) ?? "closed"
         }
+    }
+
+    /// "sleep:<cause>" → "asleep · <cause words>"; a pressed Stop's sleep (`sleep:stop`) stays
+    /// "stopped" — the stop row before it is the record, as today. nil for anything else.
+    static func sleepWords(_ label: String) -> String? {
+        guard let cause = SleepCauseFormat.cause(fromCloseReason: label) else { return nil }
+        return cause == "stop" ? "stopped" : SleepCauseFormat.line(cause)
     }
 
     /// "HH:mm" — the rail's meta line has no room for seconds.
@@ -206,9 +259,17 @@ extension ConsoleFormat {
     /// A tombstone row as one terse line: the solid symbol, the log's kind column, the
     /// words (lower case; the stream capitalises), a mono figure and a trailing note. nil
     /// for any other row. `conversation.trashed` by retention says so; `ledger.moved` names
-    /// the day, what moved and where.
+    /// the day, what moved and where. The `sleep` row is the moon: "asleep · said" with the
+    /// cue in quotes. A `worker` row is "Spotify · working" / "Spotify · done" with its lane in
+    /// mono and its last line trailing — every row maps here (the log lists each status change);
+    /// the stream keeps a hand's first "working" and its end (StreamBuilder.announces).
     static func tombstone(_ row: LedgerRow) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
         switch row.type {
+        case "sleep":
+            return ("moon.zzz.fill", "sleep", SleepCauseFormat.line(row.sleepCause ?? "command"), row.sessionId.map { shortId($0) }, row.quotedPhrase)
+        case "worker":
+            guard let w = row.worker else { return nil }
+            return ("person.2.fill", "worker", "\(w.name) · \(w.status.words)", ConsoleTheme.lane(w.lane), w.detail)
         case "conversation.trashed":
             return ("trash.fill", "trash", "moved to Trash", nil, row.by == "retention" ? "by retention" : nil)
         case "conversation.restored":

@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the ear is biased to hear: the reflex grammar's phrases (packages/brain/src/reflex.ts,
-/// the SCROLL … DOUBLE_CLICK regexes), the engine's dictation commands
+/// the SLEEP and SCROLL … DOUBLE_CLICK regexes), the engine's dictation commands
 /// (packages/engine/src/ear.ts DICTATION_COMMANDS) and the names Kevin says most.
 /// `SFSpeechRecognizer.contextualStrings` raises the odds that "scroll down" comes back
 /// as those two words on the first partial rather than as "scrolled on" three revisions
@@ -56,6 +56,21 @@ enum EarGrammar {
         "Netflix", "ChatGPT", "LinkedIn", "Vercel", "Google Docs", "Google Drive", "Stack Overflow", "npm", "Google Maps",
     ]
 
+    /// The sleep cues (reflex.ts SLEEP): "go to sleep", "shut off", "goodnight", "that's all for
+    /// now" and the rest, as whole phrases so the first partial comes back as those words and
+    /// not "go to sleet". Bias only — the app matches nothing: the engine decides, and only when
+    /// the words address Jarhead (a "goodnight" to someone in the room sleeps nothing). Bare
+    /// "sleep", "night", "shut down" and "stop" are not cues and are not here.
+    static let sleepCues: [String] = [
+        "go to sleep", "go back to sleep", "back to sleep", "go to bed", "sleep now",
+        "shut off", "shut yourself off", "shut yourself down", "turn yourself off",
+        "power down", "power off",
+        "good night", "goodnight", "night night",
+        "that's all", "that is all", "that will be all", "that'll be all",
+        "that's all for now", "that's all for today", "that's all for tonight", "that's it for now",
+        "dismissed", "you're dismissed", "you can rest", "you may rest", "stand down", "go dormant",
+    ]
+
     /// The whole bias list; the order does not matter to the recogniser.
-    static var contextualStrings: [String] { verbs + names + places }
+    static var contextualStrings: [String] { verbs + names + places + sleepCues }
 }

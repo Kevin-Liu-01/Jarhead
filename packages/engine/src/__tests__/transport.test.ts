@@ -1046,3 +1046,47 @@ test("Stop inside the reconnect window after connection_lost writes the stop row
     await a.engine.stop();
   }
 });
+
+test("sleep with a cause: the transport's Stop writes its stop row and then the sleep row (cause stop, the session id); the dock's sleep is asleep synchronously with no farewell; sleeping while asleep records nothing; the sleep command still closes the session", async () => {
+  const w = world();
+  const { engine, live, lives, clock } = w;
+  type SleepRow = Extract<LedgerRow, { type: "sleep" }>;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.reportUsage(4);
+    await engine.command({ type: "stop" });
+    assert.deepEqual(sequence(w, "stop", "sleep", "session.closed"), ["stop", "sleep", "session.closed"]);
+    const first = rows<SleepRow>(w, "sleep")[0]!;
+    assert.equal(first.cause, "stop");
+    assert.equal(first.sessionId, "sess_1");
+    assert.equal(first.farewell, undefined);
+    assert.equal(rows<Closed>(w, "session.closed")[0]!.reason, "client_closed");
+
+    await engine.command({ type: "go" });
+    const second = lives[1]!;
+    const sleeping = engine.command({ type: "sleep", cause: "dock" });
+    assert.equal(engine.currentPhase, "asleep", "before the first await");
+    assert.equal(second.currentState, "closed");
+    await sleeping;
+    assert.equal(rows<SleepRow>(w, "sleep")[1]!.cause, "dock");
+    assert.equal(second.instructions.length, 0, "no farewell for the dock");
+    assert.equal(engine.transportState, "asleep");
+
+    const before = rows<SleepRow>(w, "sleep").length;
+    await engine.command({ type: "sleep" });
+    await engine.sleep();
+    assert.equal(rows<SleepRow>(w, "sleep").length, before, "asleep already: nothing recorded");
+
+    await engine.command({ type: "go" });
+    await engine.command({ type: "sleep" });
+    assert.equal(rows<SleepRow>(w, "sleep").at(-1)!.cause, "command");
+    assert.equal(lives[2]!.currentState, "closed");
+    assert.equal(engine.currentPhase, "asleep");
+    clock.t += 1;
+  } finally {
+    await engine.stop();
+  }
+});

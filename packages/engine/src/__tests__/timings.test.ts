@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addLogSink } from "@jarhead/core";
 import type { Brain } from "@jarhead/brain";
 import type { LedgerRow } from "@jarhead/protocol";
-import { delegate, rows, settle, world, type World } from "./world.ts";
+import { delegate, rows, settle, until, world, type World } from "./world.ts";
 
 /**
  * The two latency stamps that make "speech end → first visible action" measurable
@@ -119,6 +119,47 @@ test("timings: with no acting tool nothing is stamped as an action, and speechEn
     assert.equal(d.status, "done");
     assert.equal(d.timings.firstActionAt, undefined, "a look is not an action");
     assert.equal(d.timings.speechEndAt, undefined, "no utterance, no speech end");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("timings: a worker's steps land on the parent with its name but stamp no firstToolAt / firstActionAt; 61 s of worker actions never move lastKevinAt (the presence gate's clock)", async () => {
+  const w = world();
+  const { engine, brain, clock } = w;
+  const lastKevinAt = (): number => (engine as unknown as { lastKevinAt: number }).lastKevinAt;
+  try {
+    let acted!: () => void;
+    const actedP = new Promise<void>((r) => (acted = r));
+    w.workers.script = async (job) => {
+      for (let i = 0; i < 6; i++) {
+        clock.t += 10_000;
+        await job.runner.run("frontmost_app", {});
+      }
+      clock.t += 1000;
+      acted();
+      return { status: "done", summary: "looked six times." };
+    };
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
+    await settle();
+    const kevinBefore = lastKevinAt();
+    const started = await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
+    assert.equal(started.result.kind, "text");
+    await actedP;
+    assert.equal(lastKevinAt(), kevinBefore, "61 s of a worker's actions are not Kevin's presence");
+    const d = engine.snapshot().delegations[0]!;
+    assert.equal(d.steps.filter((s) => s.worker === "Spotify" && s.kind === "tool").length, 6);
+    // worker_start is the main brain's own tool step; the worker's reads are not the main brain's first tool or action.
+    const t = d.timings as { firstToolAt?: number; firstActionAt?: number };
+    const workerStart = d.steps.find((s) => s.kind === "tool" && s.tool?.name === "worker_start")!;
+    assert.equal(t.firstToolAt, workerStart.at, "the first tool is the brain's own worker_start");
+    assert.equal(t.firstActionAt, undefined, "a worker's read is nobody's action; worker_start changes nothing on screen");
+    brain.resolve?.({ status: "done", summary: "on it." });
+    await until(() => engine.snapshot().delegations[0]!.status === "done");
   } finally {
     await engine.stop();
   }

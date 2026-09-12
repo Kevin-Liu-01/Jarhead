@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>mod-count</key>
+	<integer>1301</integer>
+	<key>persistent-apps</key>
+	<array>
+		<dict>
+			<key>GUID</key>
+			<integer>2654545700</integer>
+			<key>tile-data</key>
+			<dict>
+				<key>book</key>
+				<data>
+				Ym9vazwCAAAAAAUQQAAAAAAAAAAAAAAAAAAAAAAAAAAA
+				0AAABAAAAAAAAAA=
+				</data>
+				<key>bundle-identifier</key>
+				<string>com.kevinliu.jarhead</string>
+				<key>dock-extra</key>
+				<false/>
+				<key>file-data</key>
+				<dict>
+					<key>_CFURLString</key>
+					<string>file:///Users/kevinliu/jarvis/build/Jarhead.app/</string>
+					<key>_CFURLStringType</key>
+					<integer>15</integer>
+				</dict>
+				<key>file-label</key>
+				<string>Jarhead</string>
+				<key>file-mod-date</key>
+				<integer>0</integer>
+				<key>is-beta</key>
+				<false/>
+				<key>parent-mod-date</key>
+				<integer>0</integer>
+			</dict>
+			<key>tile-type</key>
+			<string>file-tile</string>
+		</dict>
+	</array>
+	<key>persistent-others</key>
+	<array/>
+	<key>version</key>
+	<integer>1</integer>
+</dict>
+</plist>

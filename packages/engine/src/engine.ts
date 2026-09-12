@@ -3,10 +3,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync,
 import { join } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, HELPER_PERMISSION_KINDS, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reconciliation, type Reflex, type ReflexOutcome } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type Reconciliation, type Reflex, type ReflexOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
+import { WorkerAwareRunner, WorkerPool, type WorkerBrainFactory, type WorkerParent, type WorkerVoice } from "./workers.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
@@ -31,6 +32,7 @@ import {
   type SecretKey,
   type SettingsPatch,
   type SetupStatus,
+  type SleepCause,
   type Snapshot,
   type TranscriptItem,
   type TrashInfo,
@@ -81,6 +83,10 @@ export interface EngineOptions {
   readonly now?: () => number;
   /** Answers the helper's requests instead of the Swift binary (tests, `jarhead bench --fake-hands`). */
   readonly hands?: NativeHands;
+  /** The second helper's stand-in (the reading / background lane); absent, `hands` answers both. */
+  readonly backgroundHands?: NativeHands;
+  /** Builds a worker's brain over its lane runner (tests inject a scripted fake); absent, the engine builds one for the running brain kind. */
+  readonly makeWorkerBrain?: WorkerBrainFactory;
   /** What a fresh helper process would print for `--permissions` (tests; the real client runs the binary). */
   readonly probePermissions?: () => Promise<HelloPermissions>;
   /** The ear's stability window for a partial of a prefire kind — scroll, page, screenshot, circle (default 120 ms); tests shorten it. */
@@ -134,10 +140,26 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Earlier sessions' utterances, kept across a pause and a sleep: the Console shows them and a resume is reminded of them. */
   private heldTranscript: readonly TranscriptItem[] = [];
   readonly confirmations = new ConfirmationState();
+  /** The one question floor over `confirmations`: every lane — the main one included — asks through it; the root keeps the slot the Delegator arms. */
+  readonly desk: ConfirmationDesk;
+  /** Two helper processes, one binary, one parent: `focus` acts, `background` reads and serves background workers. */
+  readonly pool: HandsPool;
+  /** The acting helper (`pool.focus`), under the name every caller knows. */
   readonly hands: NativeHandsProcess;
+  /** One holder of the pointer, keyboard and frontmost app: Jarhead's own hands with priority, workers in turn. */
+  readonly lease: FocusLease;
   readonly toolset: ComputerToolset;
   readonly agents: AgentRegistry;
-  readonly runner: ToolRunner;
+  /** The main lane's runner: `worker_*` answered from the pool, screen tools under the lease. */
+  readonly runner: WorkerAwareRunner;
+  /** The workers: a second pair of hands inside one delegation. */
+  readonly workers: WorkerPool;
+  /** Builds a worker's brain for the running brain kind; undefined while it cannot run a second thread (Responses, a test brain without a seam). */
+  private workerBrainFactory: WorkerBrainFactory | undefined;
+  /** The sleep in flight: the ear, Live and the dock saying so at once are one sleep. */
+  private sleeping: Promise<void> | undefined;
+  /** Ends the farewell wait early when a harder cause (Stop, the dock) lands mid-farewell. */
+  private farewellEnd: (() => void) | undefined;
 
   private brain: Brain | undefined;
   private brainReady = false;
@@ -263,16 +285,28 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.hiddenAgents = this.ledger.hiddenAgents();
     this.settings = this.loadSettings();
     // The seam: a stand-in answers the helper's request lines as a fake child, so the
-    // real client (pending map, timeouts, a stop's cancelPending) runs unchanged.
-    this.hands = new NativeHandsProcess({ binPath: this.config.handsBin, ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}), ...(opts.probePermissions ? { probeImpl: opts.probePermissions } : {}) });
-    this.toolset = new ComputerToolset({
-      hands: this.hands,
-      confirmations: this.confirmations,
+    // real client (pending map, timeouts, a stop's cancelPending) runs unchanged. Two
+    // helpers, both spawned with Jarhead's keys stripped from the environment (the
+    // client scrubs every spawn).
+    this.pool = new HandsPool({
+      binPath: this.config.handsBin,
+      ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}),
+      ...(opts.backgroundHands ? { background: { spawnImpl: fakeHandsSpawn(opts.backgroundHands), assumeAvailable: true } } : {}),
+      ...(opts.probePermissions ? { probeImpl: opts.probePermissions } : {}),
+    });
+    this.hands = this.pool.focus;
+    this.desk = new ConfirmationDesk(this.confirmations, (name, question) => this.speakPromoted(name, question), this.now);
+    // Over the ACTING helper: `user_idle` is judged against the events that helper posted itself
+    // (its own typing is not Kevin's), and the re-front's `focus_app` is an acting op.
+    this.lease = new FocusLease({ hands: this.pool.focus, now: this.now });
+    const toolsetBase: Omit<ToolsetOptions, "hands" | "screen" | "confirmations"> = {
       excludePids: () => [...this.excludePids, process.pid],
       annotate: (cmd) => this.emit("overlay", cmd),
       onAction: (a) => this.onAction(a),
       presenceAt: () => this.lastKevinAt || undefined,
-    });
+      now: this.now,
+    };
+    this.toolset = new ComputerToolset({ ...toolsetBase, hands: this.hands, confirmations: this.desk.lane(WorkerAwareRunner.ACTOR, "Jarhead") });
     const connectors =
       opts.connectors ??
       defaultConnectors({
@@ -284,8 +318,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.agentsList = list;
       this.scheduleSnapshot();
     });
-    this.runner = new ToolRunner({
-      toolset: this.toolset,
+    const runnerBase: Omit<RunnerOptions, "toolset"> = {
       agents: this.agents,
       stateDir: this.config.stateDir,
       ledger: this.ledger,
@@ -298,7 +331,23 @@ export class Engine extends EventEmitter<EngineEvents> {
         ...(this.config.codexBin ? { codexBin: this.config.codexBin } : {}),
         ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
       },
+    };
+    // Workers get the same runner and toolset options over their own lane (hands, Screen, desk lane).
+    this.workers = new WorkerPool({
+      now: this.now,
+      ledger: this.ledger,
+      desk: this.desk,
+      lease: this.lease,
+      hands: { focus: this.pool.focus, background: this.pool.background },
+      runnerOptions: () => runnerBase,
+      toolsetOptions: () => toolsetBase,
+      makeBrain: () => this.opts.makeWorkerBrain ?? this.workerBrainFactory,
+      parentFor: (task) => this.workerParentFor(task),
+      voice: () => this.workerVoice(),
+      enabled: () => this.settings.workers !== false,
+      onChange: () => this.scheduleSnapshot(),
     });
+    this.runner = new WorkerAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.workers, lease: this.lease, desk: this.desk });
     // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up.
     this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName(), browserInFront: async () => BROWSER_APPS.test(this.frontApp || (await this.frontmostAppName())), now: this.now });
     this.firedReflexes = new FiredReflexes(this.now, Engine.RECONCILE_WINDOW_MS);
@@ -309,8 +358,13 @@ export class Engine extends EventEmitter<EngineEvents> {
       run: (reflex, phrase) => this.runEarReflex(reflex, phrase),
       // A spoken "stop" interrupts: work and speech end, the session stays open and listening.
       onStop: () => {
-        if (this.delegator?.active || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
+        if (this.delegator?.active || this.workers.running() > 0 || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
       },
+      // A dismissal ("go to sleep", "goodnight jarhead", "that's all"): the one sleep function, with the farewell.
+      onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
+      // Room talk never sleeps it: a bare "goodnight" counts only mid-exchange (Jarhead spoke or was spoken to within
+      // EXCHANGE_WINDOW_MS) — and never when the words are Jarhead's own line back through the microphone.
+      addressed: (phrase) => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS && !this.echoOfJarhead(phrase),
       dictation: {
         active: () => this.dictating,
         start: () => this.startDictation(),
@@ -688,11 +742,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     return { changed, regained };
   }
 
-  /** A grant appeared for a connection the resident helper made without it: restart it (no relaunch of anything else). */
+  /** A grant appeared for a connection the resident helpers made without it: restart both (no relaunch of anything else). */
   private async restartHandsAfterGrant(): Promise<void> {
     if (!this.hands.available) return;
     try {
-      await this.hands.restart();
+      await this.pool.restartAll();
     } catch (e) {
       log.warn(`hands restart after grant failed: ${(e as Error).message}`);
     }
@@ -873,8 +927,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.brainRestart = (async () => {
       log.info(`restarting brain: ${reason}`);
       await this.delegator?.cancel("brain restarting");
+      // Workers run brains of the old kind: they go with it.
+      await this.bounded(this.workers.stopAll());
       const old = this.brain;
       this.brain = undefined;
+      this.workerBrainFactory = undefined;
       this.brainReady = false;
       this.brainDetail = "restarting";
       this.setupProbe = { ...this.setupProbe, brain: "unchecked" };
@@ -894,7 +951,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         const isResponses = (this.brain as Brain | undefined) instanceof ResponsesBrain;
         if (isResponses !== wasResponses) {
           this.toast("brain changed; reconnecting the voice session", "info");
-          await this.sleep();
+          await this.fallAsleep("brain-changed");
           void this.wake("brain changed");
         } else {
           this.rebindBrain();
@@ -964,6 +1021,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private async startBrain(): Promise<void> {
     if (this.opts.brain) {
       this.brain = this.opts.brain;
+      // A test brain has no second thread of its own; the `makeWorkerBrain` seam stands in.
+      this.workerBrainFactory = undefined;
       const r = await this.brain.start();
       this.brainReady = r.ready;
       this.brainDetail = r.detail;
@@ -1007,27 +1066,35 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
     };
 
-    // Every brain proves itself before it takes a task.
-    const build = (kind: Kind): { brain: Brain; label: string; warning?: string } => {
+    // Every brain proves itself before it takes a task. The same builder makes a worker's
+    // brain over its lane runner: a Codex worker is its own app-server process with one
+    // thread, no primer (a spare's boot is a process, not a model request) and the
+    // worker's id on the bridge env; the HTTP and Claude kinds are a second instance;
+    // Live's own Responses delegation has no thread of its own to give.
+    type Worker = { readonly runner: ToolRunner; readonly workerId: string; readonly secondsCap: number };
+    const build = (kind: Kind, worker?: Worker): { brain: Brain; label: string; warning?: string } | undefined => {
+      const runner = worker?.runner ?? this.runner;
       switch (kind) {
         case "codex":
           return {
             label: "Codex",
             brain: new CodexBrain({
-              runner: this.runner,
+              runner,
               probe: codexProbe,
               stateDir: this.config.stateDir,
               socketPath: this.config.socketPath,
               // Under `auto` a leftover Claude id is not an override for Codex; an explicit choice keeps what Kevin set.
               ...(model && !(wanted === "auto" && looksClaude) ? { model } : {}),
               effort: this.settings.effort,
+              // A worker: its id on the bridge env (the daemon routes its tool calls to its lane), one thread, no primer, the pool's wall clock as the backstop.
+              ...(worker ? { worker: worker.workerId, primeThreads: false, maxWallMs: worker.secondsCap * 1000 } : {}),
             }),
           };
         case "claude-code":
           return {
             label: "Claude Code",
             brain: new ClaudeBrain({
-              runner: this.runner,
+              runner,
               stateDir: this.config.stateDir,
               // Under `auto` a leftover OpenAI id must not sink the Claude login; an explicit choice keeps what Kevin set.
               ...(model && !(wanted === "auto" && looksOpenAI) ? { model } : {}),
@@ -1036,7 +1103,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             }),
           };
         case "anthropic-api":
-          return { label: "Anthropic API", brain: new AnthropicBrain({ runner: this.runner, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort }) };
+          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort }) };
         case "openai-compatible": {
           // Only a key Kevin set for this brain (JARHEAD_BRAIN_API_KEY) goes to an arbitrary
           // host; config.brainApiKey falls back to OPENAI_API_KEY, which belongs to OpenAI alone.
@@ -1048,14 +1115,16 @@ export class Engine extends EventEmitter<EngineEvents> {
           return {
             label: "OpenAI-compatible",
             ...(key.warning ? { warning: key.warning } : {}),
-            brain: new OpenAICompatibleBrain({ runner: this.runner, baseUrl, apiKey: key.apiKey, model }),
+            brain: new OpenAICompatibleBrain({ runner, baseUrl, apiKey: key.apiKey, model }),
           };
         }
         case "openai-responses":
+          if (worker) return undefined;
           // The model override only applies when Kevin chose this backend; under `auto` it may be another vendor's id.
           return { label: "OpenAI Responses", brain: new ResponsesBrain({ runner: this.runner, model: wanted === "openai-responses" ? model : undefined, effort: "low" }) };
       }
     };
+    const workerFactoryFor = (kind: Kind): WorkerBrainFactory | undefined => (kind === "openai-responses" ? undefined : (w) => build(kind, w)?.brain);
 
     // `auto` walks the contract order (codex → claude-code → anthropic-api →
     // openai-compatible → openai-responses) and takes the first that is ready.
@@ -1076,10 +1145,12 @@ export class Engine extends EventEmitter<EngineEvents> {
         continue;
       }
       const candidate = build(kind);
+      if (!candidate) continue;
       if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.PROBE_REMEDY);
       const r = await candidate.brain.start();
       if (r.ready) {
         this.brain = candidate.brain;
+        this.workerBrainFactory = workerFactoryFor(kind);
         this.brainReady = true;
         // Landing on Responses under `auto` deserves a why: which backends broke
         // (they have a problem() line each) and whether the rest were merely absent.
@@ -1098,6 +1169,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
     const r = await responses.start();
     this.brain = responses;
+    this.workerBrainFactory = undefined;
     this.brainReady = r.ready;
     this.brainDetail = r.detail;
   }
@@ -1109,6 +1181,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
     await responses.start();
     this.brain = responses;
+    this.workerBrainFactory = undefined;
     this.brainReady = true;
     this.brainDetail = "responses delegation (fallback)";
   }
@@ -1437,12 +1510,22 @@ export class Engine extends EventEmitter<EngineEvents> {
               peek: (u) => this.firedReflexes.peek(u),
             },
           }),
-      // Paused (or dictating): delegations are recorded and refused, never run.
-      refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : undefined),
+      // Paused (or dictating, or going to sleep): delegations are recorded and refused, never run.
+      refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : this.sleeping ? "going to sleep" : undefined),
       // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
       onStop: (reason) => void this.interrupt(reason, "said"),
       // The session timeline's zero on the wall clock: the triggering utterance's end becomes timings.speechEndAt.
       sessionStartedAt: () => this.sessionStartedAt,
+      // Live's path for a dismissal (the voice's attention gate is the addressing test there): the one sleep function.
+      onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
+      // The workers a delegation's brain split off: the parent drains before it finishes; Kevin's yes reaches the floor's lane.
+      workers: {
+        drain: (id, signal) => this.workers.drain(id, signal),
+        running: (id) => this.workers.running(id),
+        resume: (laneId) => this.workers.resume(laneId),
+        floorLane: () => this.workers.floorLane(),
+        inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
+      },
     });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
@@ -1531,27 +1614,118 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
   }
 
+  /** The legacy verb: the `sleep` command without a cause. */
+  sleep(): Promise<void> {
+    return this.fallAsleep("command");
+  }
+
+  /** How long the voice gets for its one-word farewell before the session closes regardless. */
+  static readonly FAREWELL_CAP_MS = 1800;
+  /** Quiet after the farewell's first words (no transcript delta, no audible frame) before the close. */
+  static readonly FAREWELL_QUIET_MS = 300;
+  static readonly FAREWELL_LINE = 'Kevin dismissed you. Say exactly one word — "night." — and nothing else.';
+  /** The voice said its farewell on its own (Live's path) within this long: no second one is asked for. */
+  private static readonly FAREWELL_SAID_MS = 2000;
+
   /**
-   * Sleep: a graceful close and asleep (idle sleep, a brain swap, shutdown, a
-   * pause that decayed). From paused, the held conversation is let go. The session
-   * is detached at once — the next snapshot has none — and closed with the deadline.
+   * Sleep — the ONE closer for every cause: a spoken dismissal ("said"), the idle
+   * timer, a pause that decayed, a brain swap, the blob dropped into the dock, the
+   * app's sleep command, the transport's Stop (which writes its own `stop` row first)
+   * and shutdown. Idempotent: the ear, Live's delegation and the dock saying so at once
+   * are one sleep. Order: the `sleep` row (before the detach, so it lands in the
+   * closing session's log) → everything a stop cuts (both helpers, the lease, every
+   * worker, the questions, the delegation) → for a dismissal, one word from the voice
+   * (FAREWELL_LINE, unless it already said "night."), waited for until its first words
+   * plus FAREWELL_QUIET_MS, capped at FAREWELL_CAP_MS — the session bills meanwhile →
+   * detach and close (`sleep:<cause>`) → phase asleep → toast → the worker processes
+   * end. Without a farewell the phase flips before the first await, which `pressStop`
+   * needs (asleep synchronously). From paused, the held conversation is let go.
    */
-  async sleep(): Promise<void> {
-    this.wantAwake = false;
-    const live = this.live;
-    const wasPaused = this.pauseInfo !== undefined;
-    this.pauseInfo = undefined;
-    // Quiet: nothing appended to a session about to close (context_injection_incomplete otherwise).
-    const cancel = this.delegator?.cancel("going to sleep", { quiet: true }) ?? Promise.resolve();
-    if (live && !this.connecting) {
-      this.detachLive(live);
-      this.closeWithDeadline(live, "sleep");
+  fallAsleep(cause: SleepCause, o: { readonly phrase?: string | undefined; readonly farewell?: boolean | undefined } = {}): Promise<void> {
+    if (this.sleeping) {
+      // A harder cause mid-farewell (Stop, the dock, shutdown) does not wait for the word.
+      if (cause !== "said") this.farewellEnd?.();
+      return this.sleeping;
     }
-    this.flushSpeaker();
-    this.setPhase("asleep");
-    if (wasPaused) log.info("pause ended: asleep");
-    // A brain whose cancel hangs must not hold anything up; the session is closing already.
-    await this.bounded(cancel);
+    const run = (async (): Promise<void> => {
+      const t0 = this.now();
+      const live = this.live;
+      const wasPaused = this.pauseInfo !== undefined;
+      const wasConnecting = this.connecting;
+      const sessionId = live?.session?.id;
+      this.wantAwake = false;
+      this.pauseInfo = undefined;
+      // Only when there is something to put to sleep: asleep already, there is nothing to record.
+      const farewell = o.farewell === true && live !== undefined && !wasConnecting && live.currentState === "started" && !this.outputGated;
+      if (live || wasPaused || wasConnecting) this.ledger.append({ at: t0, type: "sleep", cause, ...(o.phrase ? { phrase: o.phrase } : {}), ...(sessionId ? { sessionId } : {}), ...(farewell ? { farewell: true } : {}) });
+      // Quiet: the closing session speaks for the whole stop; nothing else is appended to it.
+      const { cancel } = this.cutEverything(`going to sleep (${cause})`, "sleep");
+      if (farewell && live) {
+        // Live's path: the voice may have said "night." before its delegation landed here — then only the word's tail is waited for.
+        const said = this.transcript.last("jarhead");
+        const alreadySaid = said !== undefined && t0 - said.at < Engine.FAREWELL_SAID_MS && /\b(night|sleeping)\b/i.test(said.text);
+        if (!alreadySaid) live.appendInstructions(null, Engine.FAREWELL_LINE);
+        await this.farewell(live, alreadySaid);
+      }
+      if (live && !this.connecting) {
+        this.detachLive(live);
+        this.closeWithDeadline(live, `sleep:${cause}`);
+      }
+      // A farewell's tail plays out of the app's buffer; nothing else is queued after the cut.
+      if (!farewell) this.flushSpeaker();
+      this.setPhase("asleep");
+      if (wasPaused) log.info("pause ended: asleep");
+      if (cause === "said") this.toast("night", "info");
+      else if (cause === "dock") this.toast("asleep", "info");
+      log.info(`asleep (${cause}${o.phrase ? `: "${o.phrase}"` : ""}${farewell ? ", after the farewell" : ""})`);
+      // The worker processes — the spare too — and the brain's own cancel; neither holds anything up.
+      await this.bounded(Promise.all([this.workers.stopAll(), cancel]));
+    })();
+    this.sleeping = run.finally(() => {
+      this.sleeping = undefined;
+      this.farewellEnd = undefined;
+    });
+    return this.sleeping;
+  }
+
+  /**
+   * Wait for the farewell: the voice's first output-transcript delta after the
+   * append, then FAREWELL_QUIET_MS with no further delta and no audible frame; or
+   * FAREWELL_CAP_MS. `spoken`: the word is already out — only its tail is waited
+   * for. Real timers (they pace the voice, not the session clock); every one is
+   * cleared however the wait ends.
+   */
+  private farewell(live: LiveSession, spoken = false): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let quiet: NodeJS.Timeout | undefined;
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(cap);
+        if (quiet) clearTimeout(quiet);
+        live.off("outputTranscript", onDelta);
+        this.off("audio", onAudio);
+        this.farewellEnd = undefined;
+        resolve();
+      };
+      const armQuiet = (): void => {
+        if (quiet) clearTimeout(quiet);
+        quiet = setTimeout(finish, Engine.FAREWELL_QUIET_MS);
+        quiet.unref?.();
+      };
+      const onDelta = (): void => armQuiet();
+      // Audible frames stretch the quiet window once the word has begun; the API's silence frames do not.
+      const onAudio = (): void => {
+        if (quiet && this.outputLevel >= Engine.AUDIBLE_OUTPUT_LEVEL) armQuiet();
+      };
+      const cap = setTimeout(finish, Engine.FAREWELL_CAP_MS);
+      cap.unref?.();
+      live.on("outputTranscript", onDelta);
+      this.on("audio", onAudio);
+      this.farewellEnd = finish;
+      if (spoken) armQuiet();
+    });
   }
 
   setMuted(muted: boolean): void {
@@ -1607,13 +1781,18 @@ export class Engine extends EventEmitter<EngineEvents> {
     const running = this.delegator?.active;
     this.gatedFrames = 0;
     this.flushSpeaker();
-    const dropped = this.hands.cancelPending(reason);
+    // Both helpers' pending requests (each signals its own in-flight type), the lease, every worker.
+    const dropped = this.pool.cancelAll(reason);
+    this.lease.cancelAll(reason);
+    const workers = this.workers.cancelAll(reason);
     const { jobs } = this.runner.abortTask(abortReason);
+    // The question on the floor and every queued one go; the grants sleep until the same conversation resumes.
     this.confirmations.clear();
+    this.desk.clear();
     if (this.dictating) this.stopDictation("said");
     this.earReflexes.quiesce();
     // Quiet: the caller's one instruction (interrupt) or the closing session (stop, pause) speaks for the whole stop.
-    const cancel = this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve();
+    const cancel = Promise.all([this.delegator?.cancel(reason, { quiet: true }) ?? Promise.resolve(), workers]);
     return { running, dropped, jobs, cancel };
   }
 
@@ -1667,24 +1846,23 @@ export class Engine extends EventEmitter<EngineEvents> {
     // A reconnect pending after expired / connection_lost (the 500 ms window, or the row still
     // counting): the session is detached and not yet connecting, but something is running.
     const wasReconnecting = this.voiceReconnectSince > 0;
+    const workersRunning = this.workers.running() > 0;
     this.wantAwake = false;
     // Kevin's Stop wins over a restart's resume: the conversation the previous process was
     // cut from is not picked up by the next Go once he has said stop in this one.
     this.ledgerResumeUsed = true;
     this.lostSession = undefined;
     const { running, dropped, jobs, cancel } = this.cutEverything("Kevin pressed stop", "stop");
-    this.pauseInfo = undefined;
     this.endVoiceReconnect();
     // The stop row is written whenever there was something to stop — a pending reconnect
     // included, so the next process reads Kevin's word and does not resume the cut session.
-    const happened = live !== undefined || wasConnecting || wasPaused || wasReconnecting || running !== undefined || jobs > 0;
+    const happened = live !== undefined || wasConnecting || wasPaused || wasReconnecting || running !== undefined || workersRunning || jobs > 0;
     if (happened) this.ledger.append({ at: t0, type: "stop", how: "pressed", ...(running ? { cancelled: running.id } : {}) });
-    if (live && !wasConnecting) {
-      this.detachLive(live);
-      this.closeWithDeadline(live, "stop");
-    }
-    this.setPhase("asleep");
+    // The closing half is the one sleep function's (its own row after the stop row, the pause let go,
+    // detach and close, phase asleep before the first await); the cut above makes its cut a no-op.
+    const sleeping = this.fallAsleep("stop");
     this.toast(happened ? "stopped" : "nothing running", "info");
+    await sleeping;
     await this.bounded(cancel);
     log.info(`stop (${source}) in ${this.now() - t0}ms: ${live ? `session ${live.session?.id ?? "(connecting)"} closed` : wasPaused ? "pause ended" : "no session"}; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; ${jobs} background job(s) stopped`);
   }
@@ -1739,6 +1917,47 @@ export class Engine extends EventEmitter<EngineEvents> {
     } catch {
       return "";
     }
+  }
+
+  // -------------------------------------------------------------- workers
+  // The pool lives in ./workers.ts; the engine gives it what only the engine knows: the
+  // delegation behind a task, the parent's voice, the brain kind's factory, the two helpers.
+
+  /** The runner a `tool.run {worker}` frame lands on (the daemon's `runnerFor`); undefined for a worker nobody owns — refused there. */
+  runnerFor(worker: string): ToolRunner | undefined {
+    return this.workers.laneRunner(worker);
+  }
+
+  /**
+   * The desk promoted a queued question onto the floor. A worker's is spoken with its
+   * name by the pool ("Spotify asks: …"). The MAIN lane's ("Jarhead") has no worker to
+   * speak for it — its brain was told to wait, and may be blocked in worker_wait or done
+   * — so Jarhead asks in its own words on the delegation under way (running or draining;
+   * Jarhead's own line, never gated), else through the voice's instructions. Either way
+   * the question Kevin's next yes lands on is the one he heard, and no other.
+   */
+  private speakPromoted(name: string, question: string): void {
+    if (this.workers.speakQuestion(name, question)) return;
+    const d = this.delegator?.active;
+    if (d) this.delegator?.workerSay(d.id, "Jarhead", `May I ${question}? Say yes.`);
+    else this.live?.appendInstructions(null, `Your earlier question is Kevin's to answer now. Ask him: "${question}".`);
+  }
+
+  /** The delegation a main-lane task belongs to, with Kevin's words for the worker's gates. */
+  private workerParentFor(task: BrainTask | undefined): WorkerParent | undefined {
+    if (!task) return undefined;
+    const d = this.delegator?.all().find((x) => x.liveId === task.delegationId && x.status === "running");
+    if (!d) return undefined;
+    return { id: d.id, liveId: d.liveId, request: task.request, ...(task.kevinDialogue !== undefined ? { kevinDialogue: task.kevinDialogue } : {}), offsetMs: task.offsetMs };
+  }
+
+  /**
+   * How a worker's two lines and its steps reach the parent delegation: the Delegator's
+   * own hooks — the parent's `say(text, false)` and 600 ms coalescer for the lines, the
+   * parent's timeline with `step.worker` for the steps — while the parent runs or drains.
+   */
+  private workerVoice(): WorkerVoice | undefined {
+    return this.delegator;
   }
 
   // ------------------------------------------------------- conversations
@@ -2009,6 +2228,15 @@ export class Engine extends EventEmitter<EngineEvents> {
    * (idleSleepMinutes, at least a minute).
    */
   async pause(): Promise<void> {
+    if (this.sleeping) {
+      // A dismissal already in flight wins: its farewell ends now and the sleep finishes (the
+      // session closes, the spare goes). A pause over it would flip the phase to paused for a
+      // tick and then be undone by the sleep's tail; there is nothing left to hold.
+      this.farewellEnd?.();
+      await this.sleeping;
+      this.toast("asleep already", "info");
+      return;
+    }
     if (this.pauseInfo) {
       this.toast("paused already", "info");
       return;
@@ -2161,12 +2389,43 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private earHeld(): string | undefined {
     if (this.muted) return "muted";
-    if (this.delegator?.active) return "a task is running";
+    // Held while the main brain's turn runs or the screen is leased — not while only background
+    // workers drain under a parent that is merely `draining` (B3's second slot), and not while
+    // the main brain's turn is blocked in worker_wait (its hands are still for up to 240 s):
+    // a colleague working Spotify by Apple events would still scroll for you.
+    const active = this.delegator?.active;
+    const draining = this.delegator?.draining;
+    if (active && (!draining || active.id !== draining.id) && !this.runner.waitingOnWorkers) return "a task is running";
+    // A screen-lane worker has the pointer: a reflex click would land in its work. Jarhead's own
+    // hold (a reflex that just ran, dictation) is the ear's own doing and holds nothing.
+    const holder = this.lease.holder;
+    if (holder !== undefined && holder !== WorkerAwareRunner.ACTOR && holder !== "dictation") return "a task is running";
     const now = this.now();
     const speaking = now - this.lastOutputSpeechAt < Engine.SPEAKING_WINDOW_MS;
     const audible = now - this.lastAudibleOutputAt < Engine.SPEAKING_WINDOW_MS && now - this.lastOutputAudioAt < Engine.SPEAKING_WINDOW_MS;
     if (!this.outputGated && (speaking || audible)) return "the voice is speaking";
     return undefined;
+  }
+
+  /** Jarhead's own voice back through the microphone within this long is not Kevin's word. */
+  private static readonly ECHO_WINDOW_MS = 1500;
+
+  /**
+   * Are these words Jarhead's own, just said? The mic hears the speaker: a line of
+   * Jarhead's that happens to be a cue ("That's all for now.") would otherwise dismiss
+   * it a moment later, because its own speech opens the exchange window. The tail of
+   * its last utterance is compared (≥ RECONCILE_THRESHOLD similar, as reconciliation
+   * judges the ear against Live) while its last words are under ECHO_WINDOW_MS old. A
+   * cue that names Jarhead is never an echo (the ear does not ask here for one).
+   */
+  private echoOfJarhead(phrase: string): boolean {
+    if (this.now() - this.lastOutputSpeechAt > Engine.ECHO_WINDOW_MS) return false;
+    const said = this.transcript.last("jarhead");
+    if (!said) return false;
+    const own = normalizeUtterance(said.text);
+    if (!own || !phrase) return false;
+    const tail = own.slice(Math.max(0, own.length - phrase.length));
+    return own === phrase || similarity(tail, phrase) >= RECONCILE_THRESHOLD;
   }
 
   /** The grammar, gated by the setting and by dictation (while dictating, words are text, not commands). */
@@ -2247,6 +2506,9 @@ export class Engine extends EventEmitter<EngineEvents> {
             log.info(`ear reflex ${reflex.label} asks (${outcome.result.question.slice(0, 80)}); the delegation that joined it relays the question, the pending stays`);
           } else if (this.confirmations.pending?.id === outcome.result.pendingId) {
             this.confirmations.dropQuestion();
+          } else if (ConfirmationDesk.isQueuedId(outcome.result.pendingId)) {
+            // Queued behind a worker's question: nobody will relay it either; it leaves the queue so it is never promoted unspoken.
+            this.desk.drop(WorkerAwareRunner.ACTOR);
           }
           if (!outcome.shared) log.info(`ear reflex ${reflex.label} dropped: the policy wants a yes (${outcome.result.question.slice(0, 80)})`);
           return { ...outcome, ok: false, dropped: "needs confirmation" };
@@ -2265,14 +2527,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     let rect: Rect | undefined;
     let label: string | undefined;
     try {
-      const c = await this.hands.request<{ x: number; y: number }>("cursor", {}, 1000);
-      const el = await this.hands.request<ElementInfo>("element_at", c, 1500).catch(() => undefined);
+      // Reads, on the reading helper: the acting one may be mid-click for a worker or the brain.
+      const c = await this.pool.background.request<{ x: number; y: number }>("cursor", {}, 1000);
+      const el = await this.pool.background.request<ElementInfo>("element_at", c, 1500).catch(() => undefined);
       if (el?.frame && el.frame.w >= 4 && el.frame.h >= 4 && el.frame.w * el.frame.h < 4_000_000) {
         rect = el.frame;
         label = el.title || el.description || el.role;
       }
       if (!rect) {
-        const f = await this.hands.request<FrontmostInfo>("frontmost", {}, 1500);
+        const f = await this.pool.background.request<FrontmostInfo>("frontmost", {}, 1500);
         if (f.window) {
           rect = { x: f.window.x, y: f.window.y, w: f.window.w, h: f.window.h };
           label = f.window.title || f.app;
@@ -2293,6 +2556,18 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.dictating) return;
     this.dictating = true;
     this.kevinSpoke();
+    // Kevin's live typing is never interleaved with a worker's: dictation holds the screen with priority until it
+    // ends, and holds it as ONE op in flight — a holder that merely falls silent for LEASE_IDLE_MS lets a waiting
+    // worker take the lease, and Kevin pausing between sentences is not letting go. (A long dictation can cost a
+    // waiting worker its three waits; it then reports "could not get the screen".)
+    void this.lease.acquire("dictation", { priority: true }).then((g) => {
+      if (!g.ok) {
+        log.debug(`dictation: the lease said ${g.reason}; typing anyway (Kevin's hands win)`);
+        return;
+      }
+      if (this.dictating) this.lease.beginOp("dictation");
+      else this.lease.release("dictation", "done");
+    });
     this.live?.appendInstructions(null, "Kevin is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says \"stop dictating\"; do not delegate what he says.");
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
     this.toast("dictating — say \"stop dictating\" to end", "info");
@@ -2302,6 +2577,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private stopDictation(reason: "said" | "refused" | "asleep"): void {
     if (!this.dictating) return;
     this.dictating = false;
+    this.lease.endOp("dictation");
+    this.lease.release("dictation", "done");
     this.ledger.append({ at: this.now(), type: "dictation", state: "stopped", reason } as unknown as LedgerRow);
     if (reason !== "asleep") {
       this.live?.appendInstructions(null, reason === "refused" ? "Dictation stopped: the focused field is a password field or a hands-off app, so nothing was typed. Tell Kevin in one sentence." : "Kevin stopped dictating. Say \"done\" and carry on.");
@@ -2318,9 +2595,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     const focused = await this.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined);
     const decision = classifyAction({ kind: "dictate", app, secureField: focused?.secure === true, text });
     if (decision.verdict !== "run") return false;
-    const r = await this.toolset.run("type", { text });
+    // `ownDriver`: Kevin is the one typing, so the helper's "Kevin used the keyboard" check does not apply (B2's type op reads it).
+    const r = await this.toolset.run("type", { text, ownDriver: true });
+    this.lease.touch("dictation");
     if (r.kind === "needs-confirmation") {
       if (this.confirmations.pending?.id === r.pendingId) this.confirmations.dropQuestion();
+      else if (ConfirmationDesk.isQueuedId(r.pendingId)) this.desk.drop(WorkerAwareRunner.ACTOR);
       return false;
     }
     if (r.kind === "error") {
@@ -2346,10 +2626,20 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (brain?.warmUp) {
       void brain.warmUp().then((r) => log.info(`brain warm at wake: ${r.warm ? "yes" : "not yet"} (${r.detail})`)).catch((e: Error) => log.debug(`brain warm-up: ${e.message}`));
     }
+    // One spare worker process, so the first split lands at once (no model request: primeThreads off).
+    if (this.settings.workers !== false) this.workers.warmSpare();
     if (!this.hands.available && !this.hands.ready) return;
     if (!(this.brain instanceof ResponsesBrain)) {
+      // The wake shot goes to the reading helper (ScreenCaptureKit's first capture is the slow one) and
+      // still sets the main lane's Screen mapping, so a spoken click maps through it at once.
       const t0 = this.now();
-      void this.toolset.run("screenshot", { quick: true }).then((r) => log.info(`first screenshot at wake: ${r.kind} in ${this.now() - t0} ms`));
+      void this.pool.background
+        .request<ScreenshotResult>("screenshot", { display: "cursor", maxLongEdge: QUICK_SHOT_BUDGET.maxLongEdge, maxPixels: QUICK_SHOT_BUDGET.maxPixels, excludePids: [...this.excludePids, process.pid], showCursor: true }, 6000)
+        .then((shot) => {
+          this.toolset.screen.remember(shot);
+          log.info(`first screenshot at wake: image in ${this.now() - t0} ms`);
+        })
+        .catch((e: Error) => log.info(`first screenshot at wake: ${e.message}`));
     }
     this.startAxWarm();
   }
@@ -2359,7 +2649,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const tick = (): void => {
       if (!this.live || this.axWarmBusy) return;
       this.axWarmBusy = true;
-      this.hands
+      this.pool.background
         .request<AxTreeResult>("ax_tree", { summary: true, maxAgeMs: Engine.AX_WARM_MS - 100, maxMs: 80 }, 1500)
         .then((r) => {
           if (r.app) this.frontApp = r.app;
@@ -2414,7 +2704,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.earHintsSummary = summary;
     this.earHintsReadAt = now;
     this.earHintsBusy = true;
-    this.hands
+    this.pool.background
       .request<AxTreeResult>("ax_tree", { maxAgeMs: Engine.AX_WARM_MS + 200, maxMs: 80 }, 1500)
       .then((tree) => {
         if (!this.live) return;
@@ -2481,7 +2771,15 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "wake":
         return this.wake("wake command");
       case "sleep":
-        return this.sleep();
+        // The app's dock drop sends cause "dock"; a bare sleep is the legacy command. Only a spoken cue gets the farewell.
+        return this.fallAsleep(cmd.cause ?? "command", { ...(cmd.phrase ? { phrase: cmd.phrase } : {}), farewell: cmd.cause === "said" });
+      case "worker.stop": {
+        const w = this.workers.get(cmd.workerId);
+        const cut = await this.workers.stop(cmd.workerId, "kevin");
+        // A row still lingering for the Console after its worker finished: nothing was stopped, and the word says so.
+        this.toast(!w ? "no such worker" : cut ? `${w.name} stopped` : `${w.name} had already finished`, w ? "info" : "warn");
+        return;
+      }
       case "mute":
         return this.setMuted(true);
       case "unmute":
@@ -2573,12 +2871,13 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
     this.stopAxWarm();
     this.closeConversations();
-    await this.sleep();
+    await this.fallAsleep("shutdown");
     // The process is going away with the session; no deadline may fire into a gone engine.
     for (const t of this.closeTimers) clearTimeout(t);
     this.closeTimers.clear();
+    this.lease.cancelAll("shutdown");
     await this.brain?.stop();
-    this.hands.stop();
+    this.pool.stop();
   }
 
   // ----------------------------------------------------------------- state
@@ -2608,25 +2907,30 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.logMemory();
     }
     this.problemsTick(now);
+    // A question queued behind one Kevin moved on from comes up now (the desk cannot see the root's drop).
+    this.desk.promote();
     const idleMs = this.settings.idleSleepMinutes * 60_000;
+    // Not idle while a task runs — or while a worker still works for one (Live stays open for its
+    // question and for the spoken stop; its caps bound the worst case at about five minutes).
+    const busy = this.delegator?.active !== undefined || this.workers.running() > 0;
     // Five seconds before the idle sleep, one clause ("going to sleep") — and the sleep then
     // falls due on a fixed deadline, so the announcement (Jarhead's own speech moves
     // lastAddressedAt) cannot postpone it; only Kevin's input does (kevinSpoke).
-    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > idleMs - 5000 && now - this.lastKevinAt > idleMs - 5000) {
+    if (this.live && !this.connecting && this.live.currentState === "started" && !busy && idleMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > idleMs - 5000 && now - this.lastKevinAt > idleMs - 5000) {
       this.sleepDeadlineAt = now + 5000;
       this.delegator?.announceSleep(5);
     }
-    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && (now - this.lastAddressedAt > idleMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
+    if (this.live && !this.connecting && this.live.currentState === "started" && !busy && idleMs > 0 && (now - this.lastAddressedAt > idleMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
       this.sleepDeadlineAt = undefined;
       log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
       this.toast("asleep — tap the orb to wake", "info");
-      void this.sleep();
+      void this.fallAsleep("idle");
     }
     // A pause nobody resumed decays to sleep: the held conversation is let go.
     if (this.pauseInfo && !this.connecting && now >= this.pauseInfo.sleepsAt) {
       log.info(`paused ${Math.round((now - this.pauseInfo.at) / 60_000)} min without a resume; sleeping`);
       this.toast("paused too long · asleep", "info");
-      void this.sleep();
+      void this.fallAsleep("pause-decayed");
     }
     if (this.live) this.transcript.settle(this.live.nowMs);
     void this.pollPermissions();
@@ -2912,7 +3216,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.clearProblems(kind);
         if (this.hands.available) {
           try {
-            await this.hands.restart();
+            await this.pool.restartAll();
           } catch (e) {
             this.problemOf("hands.helper", `hands helper failed: ${(e as Error).message}`, Engine.HANDS_REMEDY);
             return;
@@ -3250,6 +3554,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       // The Trash line and the hidden agents (K1); both are read when they change, not here.
       trash: this.trashInfo,
       hiddenAgents: this.hiddenAgents,
+      // Running workers and those finished within WORKER_LINGER_MS, for the Console's rail.
+      workers: this.workers.list(),
     };
   }
 

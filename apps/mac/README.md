@@ -68,7 +68,8 @@ pause was authenticated when its session opened and decays to asleep on its own.
 ## Package
 
 ```sh
-pnpm build:mac          # builds, signs, installs /Applications/Jarhead.app; build/Jarhead.app is a symlink to it
+pnpm build:mac          # builds, signs, installs /Applications/Jarhead.app IN PLACE; build/Jarhead.app is a symlink to it
+pnpm jarhead dock       # one Jarhead: the Dock tiles and LaunchServices records, read-only (--fix repairs)
 open -a Jarhead
 ```
 
@@ -79,10 +80,41 @@ appear in the Dock.
 
 `scripts/build-mac.ts` rebuilds `jarhead-hands` whenever `packages/hands/native`
 is newer than `build/jarhead-hands` (the bundle freezes a copy), builds the icon if
-missing, runs `swift build -c release`, assembles the bundle, writes
-`Contents/Resources/jarhead.json` (`{repo, node, tsx, daemon}`) so the bundle knows
-where this checkout is, signs the helper and then the app, and verifies with
-`codesign --verify --strict`.
+missing, runs `swift build -c release`, assembles the bundle in `build/stage/`,
+writes `Contents/Resources/jarhead.json` (`{repo, node, tsx, daemon}`) so the bundle
+knows where this checkout is, signs the helper and then the app, and verifies the
+stage with `codesign --verify --strict`.
+
+**The install is in place.** The Dock's pinned tile stores a bookmark keyed on the
+bundle directory's inode; replacing the directory (`rm` + `cp -R`, what the first
+version did) gave it a new inode every build and the running app came back as a
+second, "recent" Dock tile. So the step now: refuses a target that is a symlink, a
+regular file or another user's directory (`planInstall`); on a first install copies
+the stage whole (`cp -R`); otherwise snapshots the current bundle to gitignored
+`build/previous/Jarhead.app` and runs `/usr/bin/rsync -rlptD -c --delay-updates
+--delete-after --itemize-changes build/stage/Jarhead.app/ /Applications/Jarhead.app/`
+— each changed file is renamed over the old name, so the running app keeps the
+inodes it has mapped; never `-a`, never `-E` (openrsync's xattr emulation writes
+`._*` AppleDouble entries into the bundle), never `--inplace`. Then it verifies the
+INSTALLED copy, not the stage: `codesign --verify --strict --deep`, the designated
+requirement must carry `identifier "com.kevinliu.jarhead"` (what TCC keys the grants
+on), a sha256 walk proves the installed tree is exactly the signed stage, and the
+directory inode must be the one from before. A failure prints the rollback line and
+keeps the stage (the order and every fail path are `performInstall` in
+`@jarhead/cli/install`, pinned by a scripted test). Then the one-Jarhead pass:
+`lsregister -f` on the installed bundle, stale Jarhead records (a Trash copy, a
+worktree's probe bundle, an old stage path — never a symlink that resolves to the
+installed bundle) unregistered from the LaunchServices database — no file, the Trash
+included, is touched — and a READ-ONLY line about the Dock. lsregister waits on lsd:
+the Bundle dump is 2 s idle and over a minute under heavy load, so each call gets
+120 s, and a build dumps the table once (the `-u` exit codes are the report). The Dock itself is rewritten only by
+`pnpm jarhead dock --fix` or `JARHEAD_INSTALL_HYGIENE=fix` (`defaults export`, drop
+Jarhead's recent tiles, keep one pin stripped to the keys the Dock rebuilds its
+bookmark from, `defaults import` behind a `mod-count` race check, `killall Dock` only
+when something was written); `JARHEAD_INSTALL_HYGIENE=0` skips the pass. `pnpm run
+doctor` shows `install`, `launch services` and `dock` rows, all read-only. The
+library is `@jarhead/cli/install` (`packages/cli/src/install/`), pure functions with
+one injectable `exec`, tested without a Dock.
 
 Signing picks, in order: `JARHEAD_SIGN_IDENTITY` (use `-` to force ad-hoc), the
 first `Apple Development` identity, the first `Developer ID Application`, then

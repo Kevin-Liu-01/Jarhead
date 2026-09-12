@@ -48,7 +48,48 @@ One JSON object per line on stdin; one JSON line per request on stdout, in arriv
 | `permission_denied` | Screen Recording or Accessibility is not granted (see TCC below) |
 | `capture_failed` | ScreenCaptureKit failed for a non-permission reason |
 | `not_found` | display / app / window / AX element does not exist |
+| `busy` | Kevin used the keyboard or mouse within the last 1.5 s: nothing was posted (see *Kevin's hands win*) |
+| `focus_moved` | the app in front is not the `expectFront` pid the caller judged against: nothing was posted |
 | `internal` | anything else (launch timeouts, unexpected errors) |
+
+The TypeScript client adds three of its own that never come from this process: `unavailable`
+(the helper is not built, not running, or exited), `timeout` (no answer within the client's
+per-op deadline, 8 s by default) and `cancelled` (a stop — `cancelPending` — failed the
+request while it was in flight; a late answer for it is dropped).
+
+### Kevin's hands win
+
+Two processes run this binary (`HandsPool` in `packages/hands`: `focus` acts, `background`
+reads); both are children of the daemon, so they share its TCC identity and neither carries
+Jarhead's API keys in its environment. Whatever the lanes do about sharing the one pointer,
+the last word is here, on the worker queue, immediately before an op's first `CGEvent.post`:
+
+- **`busy`.** Every event this process posts is stamped by kind (key down, button down,
+  scroll). Before an acting op (`click`, `mouse_down`, `drag`, `scroll`, `type`, `key`,
+  `hold_key`) posts anything it reads the session's last key press, click and scroll
+  (`CGEventSource.secondsSinceLastEventType` on the combined session state, which counts our
+  own posts too). One that is not within 30 ms of our last post of that kind is Kevin's; when
+  it is younger than 1500 ms the op answers `busy` — *"Kevin used the keyboard/mouse N ms ago;
+  nothing was posted"* — and the client retries it quietly once he has been still. Pointer
+  moves are not counted (a resting hand jitters). `ownDriver: true` skips the check: dictation
+  is Kevin typing, and his keystrokes are not a reason to hold his own words back. `mouse_up`
+  skips it too: refusing the release of a press already posted would leave a synthetic button
+  held down.
+- **`expectFront: {pid}`** on the same ops (and `mouse_up`): the pid of the app the caller
+  saw in front when it judged the action. If another app is in front now the op answers
+  `focus_moved` with nothing posted. Inside `type` the front app is re-read at most every
+  50 ms between grapheme clusters (and before a Return/Tab, an accessibility insertion or a
+  ⌘V); a change there ends the op with a cancelled result — `{…, cancelled: true, reason:
+  "focus_moved", characters: N}` — so the rest of the text lands nowhere rather than in the
+  new window. The caller's own probe and the post are two serial ops with a gap between them;
+  only this process can close it.
+- **`user_idle {}`** → `{keyMs, clickMs, scrollMs, moveMs, foreignMs}`: milliseconds since the
+  session's last key press, click, scroll and pointer move, and `foreignMs` — since the last
+  key/click/scroll this process did *not* post (Kevin's own input). `1e12` when the session has
+  never seen that kind of event. The screen lease polls it before a worker takes the pointer.
+  Per process: a helper that never posts (the engine's `background` one) counts every event as
+  foreign, the acting helper's own posts included — so the lease reads `user_idle` from the
+  acting helper (`FocusLeaseOptions.userIdle`), never from the reader.
 
 ### Coordinates
 
@@ -141,9 +182,13 @@ a message telling the user to grant Screen Recording to the launching app.
 
 ### Mouse
 
+Every op below except `cursor` and `move` accepts `expectFront?: {pid}` and `ownDriver?: bool`
+(see *Kevin's hands win*) and may answer `busy` or `focus_moved` having posted nothing.
+
 **`cursor`** → `{x, y}` from `CGEvent(source: nil).location`.
 
-**`move {x, y}`** → `{x, y}`. Posts `.mouseMoved` at `.cghidEventTap`.
+**`move {x, y}`** → `{x, y}`. Posts `.mouseMoved` at `.cghidEventTap`. Not an acting op: no
+busy check, no `expectFront`.
 
 **`click {x?, y?, button?, count?, modifiers?}`** → `{x, y, button, count}`
 - `button`: `"left"` (default) | `"right"` | `"middle"`; `count`: 1 | 2 | 3 (default 1).
@@ -169,11 +214,32 @@ left. When `x`,`y` are given the cursor is moved there first.
 
 ### Keyboard
 
-**`type {text, delayMs?}`** → `{characters, events}`. Text is sent with
-`CGEventKeyboardSetUnicodeString` in chunks of ≤ 20 UTF-16 code units (surrogate pairs are
-never split), keyDown + keyUp per chunk, `delayMs` (default 8, max 1000) apart. `\n`
-(also `\r\n`, `\r`) is sent as a Return key press and `\t` as a Tab key press. Any Unicode
-works, independent of the keyboard layout.
+All three accept `expectFront?: {pid}` and `ownDriver?: bool` (see *Kevin's hands win*).
+
+**`type {text, delayMs?, strategy?, expectFront?, ownDriver?}`** →
+`{characters, events, via, attempts, verified?, field, note?}`, or when it stopped part way
+`{characters, events, via, attempts, cancelled: true, reason: "stop" | "focus_moved", field}`.
+
+Delivery is a strategy chain, like a careful person typing into a field and looking:
+`strategy` `"auto"` (default) tries **`ax`** — accessibility insertion into the focused text
+field, read back to verify (skipped for Chromium / Electron fields, whose value says nothing) —
+then **`keystrokes`** — `CGEventKeyboardSetUnicodeString` one grapheme cluster at a time
+(≤ 20 UTF-16 units per event, surrogate pairs never split), `delayMs` (default 3, max 1000)
+apart, the stop flag and the front app read between clusters — then **`paste`**: the text goes
+on the general pasteboard marked concealed and transient, ⌘V, and the previous contents are
+restored. Three attempts at most; then `internal` with a message that names the field and says
+the whole text is on the clipboard for one ⌘V. `"ax"`, `"keystrokes"` or `"paste"` pins one
+strategy. `\n` (also `\r\n`, `\r`) is a Return key press and `\t` a Tab press; after each the
+focused element is resolved again. A password field is refused (`bad_request`) whatever the
+caller asked. `via` is the strategy that delivered, `verified` whether the field read the text
+back (absent when nothing was typed), `field` the field's description ("the "Subject" text
+field in Mail") or `null`. Any Unicode works, independent of the keyboard layout.
+
+The client's stop is out of band: the helper is serial, so a cancel line would queue behind
+the very `type` it means to stop — instead the client sends `SIGURG` (default action: ignore,
+so an older helper shrugs it off) and the keystroke loop stops at the next grapheme with
+`cancelled: true, reason: "stop"`. A signal that lands before a queued `type` starts counts as
+that op's stop.
 
 **`key {combo, repeat?}`** → `{combo, repeat}`. `combo` is `+`-joined, case-insensitive,
 xdotool style: `cmd+shift+p`, `ctrl+c`, `alt+Tab`, `Return`, `a`, `A` (adds shift), `+`,
@@ -195,6 +261,11 @@ with the requested flags. A modifier alone (`cmd`) presses that modifier key. `r
 
 **`hold_key {combo, durationMs}`** → `{combo, durationMs}`. keyDown, sleep (max 10000 ms),
 keyUp.
+
+### Session input
+
+**`user_idle {}`** → `{keyMs, clickMs, scrollMs, moveMs, foreignMs}` — see *Kevin's hands
+win*. Never posts anything; safe to poll.
 
 ### Windows and apps
 
@@ -288,9 +359,9 @@ fetched as two whole lists (75 ms for 80 tabs).
 | `Protocol.swift` | JSON param parsing, error codes, response writer, small helpers |
 | `Screen.swift` | displays, ScreenCaptureKit capture, content cache, `screenshot`/`zoom` |
 | `FastPNG.swift` | parallel zlib PNG encoder |
-| `Input.swift` | mouse and keyboard ops |
+| `Input.swift` | mouse and keyboard ops, the type strategy chain, own-post stamps, the busy check, `user_idle` |
 | `Keys.swift` | key-name → `kVK_*` table, combo/modifier parsing |
-| `Windows.swift` | `frontmost`, `windows`, `open_app`, `focus_app` |
+| `Windows.swift` | `frontmost`, `windows`, `open_app`, `focus_app`, the `expectFront` check |
 | `AX.swift` | `focused_text`, `element_at`, shared AX helpers |
 | `AXTree.swift` | the cached window tree, `ax_tree`, `find_element` |
 | `Browser.swift` | `browser_js`, `browser_url`, `browser_tabs`, `browser_navigate` via NSAppleScript |
