@@ -130,10 +130,9 @@ enum NotchInk {
     private static let paleCyan = SIMD3<Float>(160, 240, 255)
     private static let ink = SIMD3<Float>(0, 0, 0)
 
-    /// Bands in the gradient — the icon's count, so the two are one material.
+    /// Bands in the gradient — the icon's count, so the two are one material. The dither
+    /// cell is `Dither.cellPixels(scale:)` at the key's scale (1.5 pt: 3 px on Retina).
     static let bands = Dither.bands
-    /// Dither cell in device pixels.
-    static let cell = Dither.cell
     /// Where the diagonal ramp starts (0 = the palest cyan) and how far it runs. On the
     /// open island biased so its body — where the face and the words sit — is mid and
     /// deep blue (the face, at the left, over #5b82ff), the cyan the upper-left corner
@@ -303,7 +302,8 @@ enum NotchInk {
         guard W > 0, H > 0 else { return nil }
         let s = Float(key.scale100) / 100
         let wPt = Float(W) / s, hPt = Float(H) / s
-        let noise = Dither.blueNoise, nz = Dither.noiseSize
+        let noise = Dither.tile, nz = Dither.tileSize
+        let cell = Dither.cellPixels(scale: CGFloat(s))
         let nb = Float(bands)
         // 0 at the peek's height … 1 at the island's: the black under the notch reaches
         // deeper, the ramp shifts to the blues and the vignette comes in as the island opens.

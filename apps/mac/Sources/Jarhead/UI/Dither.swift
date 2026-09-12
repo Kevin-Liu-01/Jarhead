@@ -5,11 +5,14 @@ import SwiftUI
 //
 // Kevin (2026-09-11): "make the icon and any gradients or designs be dithered." Flat
 // fills stay flat; anything that shades — a ramp, a glow, a vignette — is quantised
-// into a few bands and dithered with a blue-noise tile at device-pixel resolution, so
-// it reads as grain, never as a smooth gradient. The app icon does the same
-// (`scripts/make-icon.ts`: the same void-and-cluster tile, the same `ORB_STOPS`
-// palette, the same band count), so the Dock, the notch island and any future shaded
-// surface are one material.
+// into a few bands and dithered with an ordered Bayer matrix in cells a pixel or three
+// wide, so the pattern is SEEN. Kevin (2026-09-12): the first cut — blue noise at one
+// device pixel, seven bands — was "so grainy it just looks smooth"; the cell is now
+// sized in points (`cellPoints`), the tile is the classic 8×8 matrix and the bands are
+// five, so every step of a ramp is a legible crosshatch. The app icon does the same
+// (`scripts/make-icon.ts`: the same matrix, the same `ORB_STOPS` palette, the same
+// band count), so the Dock, the notch island and any future shaded surface are one
+// material.
 //
 // `Dither.gradientImage` is the renderer: a banded, dithered ramp between `stops`
 // along a `direction`, as a `CGImage` at a backing scale. It is pure and thread-
@@ -49,10 +52,63 @@ enum Dither {
         Stop(1.0, hex: 0x2f5ce0),
     ]
 
-    /// Bands in a ramp (the icon's count below 256 px): few enough that the dither shows.
-    static let bands = 7
-    /// Dither cell in device pixels: 1 at every point size (the icon uses 1 px below 128).
-    static let cell = 1
+    /// Bands in a ramp (the icon's count): few, so each step is a wide zone the pattern carries.
+    static let bands = 5
+    /// Dither cell in POINTS: 1.5 pt — 3 device pixels on a Retina display, 2 at 1× — on the
+    /// notch island and the blob's halo; `DitheredGradient` uses 2 pt on the Console's larger
+    /// surfaces, and the icon 2 pt at Dock size. One device pixel was too fine to see.
+    static let cellPoints: CGFloat = 1.5
+    /// The cell in device pixels at a backing scale, never below one pixel.
+    static func cellPixels(scale: CGFloat, points: CGFloat = cellPoints) -> Int {
+        let s = scale.isFinite ? max(1, scale) : 1
+        let p = points.isFinite ? max(0, points) : cellPoints
+        return max(1, Int((s * p).rounded()))
+    }
+
+    // MARK: pattern
+
+    /// The threshold tile. `bayer8` (the default) is the classic ordered matrix — a regular,
+    /// legible crosshatch with 64 densities between two bands; `bayer4` is coarser (16);
+    /// `blueNoise` is the old void-and-cluster grain, kept for reference and the tests.
+    enum Pattern { case bayer8, bayer4, blueNoise }
+    static let pattern: Pattern = .bayer8
+
+    /// The 8×8 Bayer matrix as thresholds in (0,1): `(rank + 0.5) / 64`, row-major.
+    static let bayer8: [Float] = {
+        let ranks: [Int] = [
+            0, 32, 8, 40, 2, 34, 10, 42,
+            48, 16, 56, 24, 50, 18, 58, 26,
+            12, 44, 4, 36, 14, 46, 6, 38,
+            60, 28, 52, 20, 62, 30, 54, 22,
+            3, 35, 11, 43, 1, 33, 9, 41,
+            51, 19, 59, 27, 49, 17, 57, 25,
+            15, 47, 7, 39, 13, 45, 5, 37,
+            63, 31, 55, 23, 61, 29, 53, 21,
+        ]
+        return ranks.map { (Float($0) + 0.5) / 64 }
+    }()
+    /// The 4×4 matrix, the same way.
+    static let bayer4: [Float] = {
+        let ranks: [Int] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+        return ranks.map { (Float($0) + 0.5) / 16 }
+    }()
+
+    /// The active tile (thresholds, row-major, tileable) and its side. Stored, so a hot
+    /// loop's read is a load; hoist both into locals before a pixel loop anyway.
+    static let tile: [Float] = {
+        switch pattern {
+        case .bayer8: return bayer8
+        case .bayer4: return bayer4
+        case .blueNoise: return blueNoise
+        }
+    }()
+    static let tileSize: Int = {
+        switch pattern {
+        case .bayer8: return 8
+        case .bayer4: return 4
+        case .blueNoise: return noiseSize
+        }
+    }()
 
     // MARK: direction
 
@@ -106,24 +162,25 @@ enum Dither {
         return (0...n).map { ramp(Float($0) / Float(n), stops: stops) }
     }
 
-    /// Quantise `v` (0…1) to a step 0…`levels` with the blue-noise threshold `t`.
+    /// Quantise `v` (0…1) to a step 0…`levels` with the tile's threshold `t`.
     @inline(__always) static func quantise(_ v: Float, _ levels: Float, _ t: Float) -> Int {
         Int(min(levels, floorf(clamp01(v) * levels + t)))
     }
 
     /// The tile's threshold for a device pixel (cells of `cell` pixels).
-    @inline(__always) static func threshold(x: Int, y: Int, cell: Int = cell) -> Float {
-        let c = max(1, cell)
-        return blueNoise[((y / c) % noiseSize) * noiseSize + (x / c) % noiseSize]
+    @inline(__always) static func threshold(x: Int, y: Int, cell: Int) -> Float {
+        let c = max(1, cell), n = tileSize
+        return tile[((y / c) % n) * n + (x / c) % n]
     }
 
     // MARK: image
 
     /// A banded, dithered ramp as an image of `size` points at `scale`: `stops` along
-    /// `direction`, `bands` levels, `cell`-pixel dither cells. Pure; blocks only on the
-    /// tile (once). Draw it 1:1 with interpolation off so the dither stays crisp.
+    /// `direction`, `bands` levels, `cell`-pixel dither cells (nil = `cellPixels(scale:)`).
+    /// Pure; blocks only on the tile (once). Draw it 1:1 with interpolation off so the
+    /// dither stays crisp.
     static func gradientImage(size: CGSize, scale: CGFloat, stops: [Stop] = orbStops, direction: Direction = .diagonal,
-                              bands: Int = bands, cell: Int = cell) -> CGImage? {
+                              bands: Int = bands, cell: Int? = nil) -> CGImage? {
         let s = max(1, scale)
         // `Int(nan)` traps: a size that is not a number is no image.
         guard size.width.isFinite, size.height.isFinite, s.isFinite else { return nil }
@@ -131,16 +188,17 @@ enum Dither {
         guard W > 0, H > 0, !stops.isEmpty else { return nil }
         let table = lut(stops: stops, bands: bands)
         let nb = Float(max(1, bands))
-        let c = max(1, cell)
+        let c = max(1, cell ?? cellPixels(scale: s))
+        let tile = Dither.tile, n = tileSize
         var px = [UInt8](repeating: 0, count: W * H * 4)
         px.withUnsafeMutableBufferPointer { out in
             for y in 0..<H {
                 let fy = (Float(y) + 0.5) / Float(H)
                 let rowBase = y * W * 4
-                let noiseRow = ((y / c) % noiseSize) * noiseSize
+                let noiseRow = ((y / c) % n) * n
                 for x in 0..<W {
                     let fx = (Float(x) + 0.5) / Float(W)
-                    let t = blueNoise[noiseRow + (x / c) % noiseSize]
+                    let t = tile[noiseRow + (x / c) % n]
                     let col = table[quantise(direction.parameter(x: fx, y: fy), nb, t)]
                     let i = rowBase + x * 4
                     out[i] = UInt8(clamping: Int(col.x.rounded()))
@@ -255,9 +313,10 @@ enum Dither {
     /// so is every cached image.
     nonisolated static let renderQueue = DispatchQueue(label: "jarhead.dither", qos: .userInitiated)
 
-    /// Start the tile on the render queue so the first surface that asks does not pay for it.
+    /// Start the tile on the render queue so the first surface that asks does not pay for it
+    /// (trivial for a Bayer matrix; tens of milliseconds for the blue-noise tile).
     static func prewarm() {
-        renderQueue.async { _ = blueNoise }
+        renderQueue.async { _ = tile }
     }
 
     static let noiseSize = 64
@@ -385,6 +444,8 @@ struct DitheredGradient: View {
     var stops: [Dither.Stop] = Dither.orbStops
     var direction: Dither.Direction = .diagonal
     var bands: Int = Dither.bands
+    /// The dither cell in points: 2 on the Console's larger surfaces (the island uses `Dither.cellPoints`).
+    var cellPoints: CGFloat = 2
 
     @Environment(\.displayScale) private var displayScale
     @State private var image: CGImage?
@@ -392,7 +453,8 @@ struct DitheredGradient: View {
 
     var body: some View {
         GeometryReader { geo in
-            let key = Dither.Key(size: geo.size, scale: displayScale, stops: stops, direction: direction, bands: bands, cell: Dither.cell)
+            let key = Dither.Key(size: geo.size, scale: displayScale, stops: stops, direction: direction, bands: bands,
+                                 cell: Dither.cellPixels(scale: displayScale, points: cellPoints))
             ZStack {
                 if let image, imageKey == key {
                     Image(decorative: image, scale: CGFloat(key.scale100) / 100)

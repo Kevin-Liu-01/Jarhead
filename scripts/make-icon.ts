@@ -19,9 +19,9 @@ import { REPO_ROOT } from "@jarhead/core";
  * pale cyan at the upper left through the listening cyan and the accent blues to a
  * deep blue at the lower right (no violet), with a glassy highlight and a sphere
  * shade toward the rim — over a glow of the orb's own colour spilling onto the ink.
- * Every shaded surface is quantised into a few bands and dithered with a seeded
- * void-and-cluster blue-noise tile, at EVERY size: 6–7 bands from 1024 down to 16,
- * cells of whole device pixels (8 px at 1024 … 1 px at 128 and below), so the 16 and
+ * Every shaded surface is quantised into a few bands and dithered with the 8×8 Bayer
+ * matrix, at EVERY size: 5 bands from 1024 down to 16, cells of whole device pixels
+ * (16 px at 1024, 4 px at 256 — 2 pt at Dock size — 1 px at 64 and below), so the 16 and
  * 32 px Dock and menu renders carry the same grain as the big one rather than
  * collapsing into a smooth ramp (2026-09-11: "make the icon and any gradients or
  * designs be dithered"). The notch island's gradient (apps/mac/.../UI/Dither.swift)
@@ -43,7 +43,10 @@ const LISTENING: RGB = [90, 215, 255]; // #5ad7ff — the one allowed phase whis
 const P = {
   body: 0.82, // squircle half-extent as a fraction of the canvas half-size
   squircleN: 4.2, // superellipse exponent (Apple-ish)
-  cellDiv: 128, // dither cell = size / cellDiv px (8 @1024, 4 @512, 1 @128 and below)
+  cellDiv: 64, // dither cell = size / cellDiv px (16 @1024, 4 @256 — 2 pt at Dock size — 1 @64 and below)
+  // The threshold tile: the classic 8×8 Bayer matrix (UI/Dither.swift's default), or the
+  // old void-and-cluster grain. Kevin (2026-09-12): blue noise at a pixel "just looks smooth".
+  pattern: "bayer8" as "bayer8" | "blueNoise",
   blob: {
     r: 0.4, // base radius
     aspect: 1.12, // horizontal stretch — the product's blob is a wide cloud, not a ball
@@ -215,6 +218,26 @@ function getNoise(): Float32Array {
   return noiseTile;
 }
 
+/** The 8×8 Bayer matrix as thresholds in (0,1): (rank + 0.5) / 64, row-major — the same numbers as `Dither.bayer8`. */
+const BAYER8: Float32Array = Float32Array.from(
+  [
+    0, 32, 8, 40, 2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44, 4, 36, 14, 46, 6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+    3, 35, 11, 43, 1, 33, 9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47, 7, 39, 13, 45, 5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21,
+  ],
+  (r) => (r + 0.5) / 64,
+);
+
+/** The active threshold tile and its side. */
+function getTile(): { tile: Float32Array; size: number } {
+  return P.pattern === "bayer8" ? { tile: BAYER8, size: 8 } : { tile: getNoise(), size: P.noise.size };
+}
+
 /** Tone-space intensity (0 = ink, 1 = paper) at a point given in bodyR units from the canvas centre. */
 function field(u: number, v: number): number {
   const bx = (u - P.blob.x) / P.blob.aspect;
@@ -273,9 +296,9 @@ const ORB = {
   x: 0.0,
   y: 0.0,
   harmonics: [[3, 0.025, 1.4], [2, 0.02, 0.6], [5, 0.008, 2.2]] as ReadonlyArray<readonly [number, number, number]>,
-  // Dither band count: few, at every size, so the grain shows at 16 px as at 1024 (it
-  // used to climb to 48 below 128 px, which smoothed the small icons into a plain ramp).
-  bands: (size: number) => (size >= 256 ? 6 : 7),
+  // Dither band count: five at every size — the same as UI/Dither.swift — so each band
+  // step is a wide zone the Bayer pattern has to carry (seven read as a plain ramp).
+  bands: (_size: number) => 5,
   highlight: { x: -0.36, y: -0.4, sigma: 0.3, amp: 0.9 }, // glassy top-left spot (orb units)
   rimDarken: 0.42,    // sphere shading toward the lower-right edge
   glowAmp: 0.5, glowLen: 0.28, glowPow: 1.3, // dithered glow spilling onto the ink
@@ -304,8 +327,7 @@ export function renderRgba(size: number): Buffer {
   const bodyR = r * P.body;
   const cell = Math.max(1, Math.round(size / P.cellDiv));
   const bands = ORB.bands(size);
-  const noise = getNoise();
-  const nz = P.noise.size;
+  const { tile, size: nz } = getTile();
   const ringW = Math.max(1, size / 512);
   const ringInsetPx = Math.max(size <= 64 ? 1 : 2, P.ring.inset * bodyR);
   const drawRing = size > 16;
@@ -321,11 +343,13 @@ export function renderRgba(size: number): Buffer {
         px[i + 3] = 0;
         continue;
       }
+      // The threshold is per cell (the Bayer block), the geometry per pixel: the orb's
+      // silhouette and highlight stay crisp while the dither stays chunky.
       const cx = Math.floor(x / cell);
       const cy = Math.floor(y / cell);
-      const sx = ((cx + 0.5) * cell - c) / bodyR;
-      const sy = ((cy + 0.5) * cell - c) / bodyR;
-      const t = noise[(cy % nz) * nz + (cx % nz)] ?? 0.5;
+      const sx = (x + 0.5 - c) / bodyR;
+      const sy = (y + 0.5 - c) / bodyR;
+      const t = tile[(cy % nz) * nz + (cx % nz)] ?? 0.5;
       const g = orbGeometry(sx, sy);
 
       let col: RGB;
@@ -359,7 +383,7 @@ export function renderRgba(size: number): Buffer {
   return px;
 }
 
-/** Quantise `v` (0..1) to `levels` steps with the blue-noise threshold `t`, returning the stepped 0..1 value. */
+/** Quantise `v` (0..1) to `levels` steps with the tile's threshold `t`, returning the stepped 0..1 value. */
 function quantiseDither(v: number, levels: number, t: number): number {
   return Math.min(levels, Math.floor(clamp01(v) * levels + t)) / levels;
 }
