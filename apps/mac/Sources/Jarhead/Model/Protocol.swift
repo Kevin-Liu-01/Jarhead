@@ -63,6 +63,47 @@ public struct DelegationStep: Codable, Identifiable, Equatable {
     public var text: String?
     public var tool: ToolStep?
     public var screenshotPath: String?
+    /// The worker's name when one of the delegation's workers ran this step.
+    public var worker: String?
+}
+
+// MARK: - Workers: a second pair of hands inside one delegation (mirror of Worker).
+
+public enum WorkerLane: String, Codable, Equatable, Sendable {
+    case background, screen
+    public init(from decoder: Decoder) throws {
+        self = WorkerLane(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .background
+    }
+}
+
+public enum WorkerStatus: String, Codable, Equatable, Sendable {
+    case starting, working, done, failed, cancelled
+    case waitingScreen = "waiting-screen"
+    case awaitingConfirmation = "awaiting-confirmation"
+    public init(from decoder: Decoder) throws {
+        self = WorkerStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .working
+    }
+    /// Still alive: not done, failed or cancelled.
+    public var isRunning: Bool {
+        switch self {
+        case .starting, .working, .waitingScreen, .awaitingConfirmation: return true
+        case .done, .failed, .cancelled: return false
+        }
+    }
+}
+
+public struct Worker: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    /// Spoken as-is ("Spotify").
+    public var name: String
+    public var delegationId: String
+    public var task: String
+    public var lane: WorkerLane
+    public var status: WorkerStatus
+    public var detail: String?
+    public var startedAt: Double
+    public var doneAt: Double?
+    public var steps: Int
 }
 
 public struct DelegationTimings: Codable, Equatable {
@@ -320,7 +361,10 @@ public struct Settings: Codable, Equatable {
     /// Retention: days before a day's ledger / shots move to the trash (0 = never). Optional on the wire.
     public var ledgerRetentionDays: Int?
     public var shotsRetentionDays: Int?
+    /// Workers: let the brain split independent work across a second pair of hands. Optional on the wire.
+    public var workers: Bool?
 
+    public var workersOn: Bool { workers ?? true }
     public var wakeSettings: WakeSettings { wake ?? .standard }
     public var isOnboarded: Bool { onboarded ?? false }
     public var reflexesOn: Bool { reflexes ?? true }
@@ -514,7 +558,11 @@ public struct Snapshot: Codable, Equatable {
     public var problemsTyped: [Problem]?
     public var trash: TrashInfo?
     public var hiddenAgents: [String]?
+    /// The delegation's workers (running, and finished within the last half minute). Optional on the wire.
+    public var workers: [Worker]?
 
+    public var allWorkers: [Worker] { workers ?? [] }
+    public var runningWorkers: [Worker] { allWorkers.filter { $0.status.isRunning } }
     public var setupStatus: SetupStatus { setup ?? .unknown }
     public var screenMarks: [ScreenMark] { marks ?? [] }
 
@@ -532,6 +580,8 @@ public enum EngineCommand: Equatable {
     /// stops), sleep. `go` is its one button: wake when asleep, resume when paused.
     /// `interrupt` cancels the current work and speech but stays awake (a spoken "stop").
     case wake, sleep, mute, unmute, stop, go
+    /// Sleep with a cause the ledger records ("dock" when the blob is dropped into the notch).
+    case sleepCause(String)
     case interrupt(how: String)
     case sayText(String)
     case setSettings(SettingsPatch)
@@ -563,6 +613,8 @@ public enum EngineCommand: Equatable {
     case ledgerRestoreDay(day: String)
     case ledgerSweep
     case agentHide(agentId: String, hidden: Bool)
+    /// Stop one worker from its Console row; the others and the session carry on.
+    case workerStop(workerId: String)
     case problemRetry(kind: String)
     case openConsole, openLedger
     case requestPermission(String)
@@ -575,6 +627,7 @@ public enum EngineCommand: Equatable {
         switch self {
         case .wake: return ["type": "wake"]
         case .sleep: return ["type": "sleep"]
+        case .sleepCause(let cause): return ["type": "sleep", "cause": cause]
         case .mute: return ["type": "mute"]
         case .unmute: return ["type": "unmute"]
         case .stop: return ["type": "stop"]
@@ -608,6 +661,7 @@ public enum EngineCommand: Equatable {
         case .ledgerRestoreDay(let day): return ["type": "ledger.restore-day", "day": day]
         case .ledgerSweep: return ["type": "ledger.sweep"]
         case .agentHide(let id, let hidden): return ["type": "agent.hide", "agentId": id, "hidden": hidden]
+        case .workerStop(let id): return ["type": "worker.stop", "workerId": id]
         case .problemRetry(let kind): return ["type": "problem.retry", "kind": kind]
         case .openConsole: return ["type": "open-console"]
         case .openLedger: return ["type": "open-ledger"]
@@ -806,7 +860,12 @@ public struct LedgerRow: Codable, Identifiable {
     public var app: String?
     public var actionClass: String?
     public var until: Double?
-    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? "")" }
+    /// `worker` rows: the record at that moment. `sleep` rows: why, the cue, the farewell.
+    public var worker: Worker?
+    public var cause: String?
+    public var phrase: String?
+    public var farewell: Bool?
+    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? worker?.id ?? "")" }
 }
 
 // MARK: - A JSON value for tool inputs/outputs of unknown shape.

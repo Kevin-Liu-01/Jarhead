@@ -61,7 +61,52 @@ export interface DelegationStep {
   readonly tool?: ToolStep;
   /** Path under the state dir; the Console loads it as an image. */
   readonly screenshotPath?: string;
+  /** The worker's name when one of the delegation's workers ran this step (absent: the main brain). */
+  readonly worker?: string;
 }
+
+// ---- workers: a second pair of hands inside one delegation -----------------
+//
+// A Worker is not an Agent (agents are Kevin's coding sessions). The main brain spawns a
+// worker with `worker_start` when Kevin asks for two independent things at once ("tell
+// Ben on Slack I'm late and play Focus on Spotify"). A worker is its own brain over the
+// same tools and policy, in one of two lanes: `background` never touches the pointer,
+// keyboard or frontmost app (Apple events, browser, files, shell, web only); `screen`
+// waits its turn for the one screen lease. Workers never narrate: the voice speaks one
+// short line when the split happens and one when each worker finishes. Every stop verb
+// (interrupt, Stop, Pause, sleep) cancels every worker. At most WORKER_MAX at once.
+export type WorkerLane = "background" | "screen";
+export type WorkerStatus = "starting" | "working" | "waiting-screen" | "awaiting-confirmation" | "done" | "failed" | "cancelled";
+export interface Worker {
+  /** Unguessable ("w_…"); also the lane id a worker's tool calls carry on the wire. */
+  readonly id: string;
+  /** Spoken as-is ("Spotify"); ≤ 16 chars, unique within its delegation. */
+  readonly name: string;
+  /** The parent delegation. */
+  readonly delegationId: string;
+  /** The main brain's brief, redacted. */
+  readonly task: string;
+  readonly lane: WorkerLane;
+  readonly status: WorkerStatus;
+  /** Last line or failure reason, ≤ 200 chars. */
+  readonly detail?: string;
+  readonly startedAt: number;
+  readonly doneAt?: number;
+  readonly steps: number;
+}
+/** Workers alive at once, per delegation and in total. */
+export const WORKER_MAX = 2;
+/** How long a finished worker stays in the snapshot for the Console before it is dropped. */
+export const WORKER_LINGER_MS = 30_000;
+
+/**
+ * Why Jarhead went to sleep. `said`: a spoken cue ("go to sleep", "goodnight", "that's
+ * all"); `idle`: the idle timer; `pause-decayed`: an unresumed pause; `brain-changed`: the
+ * brain was swapped; `dock`: the blob was dropped into the notch; `command`: the app's
+ * sleep command; `stop`: the transport's Stop (the `stop` row is the record, the `sleep`
+ * row names the cause); `shutdown`: the engine is exiting.
+ */
+export type SleepCause = "said" | "idle" | "pause-decayed" | "brain-changed" | "dock" | "command" | "stop" | "shutdown";
 
 export interface DelegationTimings {
   readonly delegatedAt: number;
@@ -253,6 +298,8 @@ export interface Settings {
   readonly ledgerRetentionDays: number;
   /** Days a day's screenshots stay live before the sweep moves them to the trash (0 = never). */
   readonly shotsRetentionDays: number;
+  /** Let the brain split independent work across workers (a second pair of hands). */
+  readonly workers: boolean;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -274,6 +321,7 @@ export const DEFAULT_SETTINGS: Settings = {
   orbHome: "notch",
   ledgerRetentionDays: 0,
   shotsRetentionDays: 14,
+  workers: true,
 };
 
 /**
@@ -397,6 +445,8 @@ export interface Snapshot {
   readonly trash?: TrashInfo;
   /** Agents Kevin hid from the rail (agent.hidden rows). */
   readonly hiddenAgents?: readonly string[];
+  /** The delegation's workers: running ones and those finished within WORKER_LINGER_MS. */
+  readonly workers?: readonly Worker[];
 }
 
 export type ProblemKind =
@@ -492,7 +542,8 @@ export type SettingsPatch = { readonly [K in keyof Settings]?: Settings[K] | nul
 /** Surface → engine. */
 export type EngineCommand =
   | { readonly type: "wake" }
-  | { readonly type: "sleep" }
+  /** Sleep: return to the notch and close the session. `cause` says why (absent = `command`); `phrase` is the cue Kevin said. */
+  | { readonly type: "sleep"; readonly cause?: SleepCause; readonly phrase?: string }
   | { readonly type: "mute" }
   | { readonly type: "unmute" }
   /**
@@ -528,6 +579,8 @@ export type EngineCommand =
   /** Run the retention sweep now (what it would move is logged first). */
   | { readonly type: "ledger.sweep" }
   | { readonly type: "agent.hide"; readonly agentId: string; readonly hidden: boolean }
+  /** Stop one worker (the Console's Stop on its row); the others and the session carry on. */
+  | { readonly type: "worker.stop"; readonly workerId: string }
   /** A remedy button pressed on a typed problem; the engine re-checks and clears it when fixed. */
   | { readonly type: "problem.retry"; readonly kind: ProblemKind }
   | { readonly type: "say-text"; readonly text: string }
@@ -621,6 +674,10 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "delegation.finished"; readonly delegationId: string; readonly status: DelegationStatus; readonly timings: DelegationTimings; readonly summary?: string }
   | { readonly at: number; readonly type: "problem"; readonly text: string }
   | { readonly at: number; readonly type: "agent"; readonly agent: AgentInfo }
+  /** A worker started or changed status (one row per change; `worker` is the whole record at that moment). */
+  | { readonly at: number; readonly type: "worker"; readonly worker: Worker }
+  /** Jarhead went to sleep: why, the cue if spoken, the session it closed, whether the voice said its one-word farewell. Written before the close. */
+  | { readonly at: number; readonly type: "sleep"; readonly cause: SleepCause; readonly phrase?: string; readonly sessionId?: string; readonly farewell?: boolean }
   // ---- conversation cleanup: tombstone rows appended to TODAY's file; the bytes of the
   // conversation stay where they were written. `chainId` is any session id of the chain
   // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both
@@ -650,6 +707,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "wake", "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
   "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
+  "worker.stop",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {
