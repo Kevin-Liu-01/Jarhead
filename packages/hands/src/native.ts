@@ -82,6 +82,10 @@ export interface ScreenshotResult {
   readonly points: Rect;
   /** Image pixels per point. */
   readonly scale: number;
+  /** The helper's running frame number (absent from the screencapture fallback and older helpers). */
+  readonly frameId?: number;
+  /** The display-configuration hash the shot was taken under (display ids and bounds, the front app and its front window). */
+  readonly config?: string;
 }
 
 export interface FrontmostInfo {
@@ -89,6 +93,23 @@ export interface FrontmostInfo {
   readonly bundleId?: string;
   readonly pid: number;
   readonly window: { readonly title: string; readonly x: number; readonly y: number; readonly w: number; readonly h: number; readonly windowId: number } | null;
+  /** The screen is locked or another user's session is on the console (a probe may carry it). */
+  readonly locked?: boolean;
+}
+
+/** What the helper's `type` op reports back: how the text was delivered and whether it read back. */
+export interface TypeResult {
+  readonly characters: number;
+  readonly events: number;
+  /** The strategy that delivered it (the last one, when several were tried). */
+  readonly via: "ax" | "keystrokes" | "paste";
+  readonly attempts: number;
+  /** True when the field's value read back with the text; false when the field exposes no value to read; absent when nothing was typed. */
+  readonly verified?: boolean;
+  /** "the Subject field in Mail" — the field it landed in, when accessibility knew. */
+  readonly field?: string;
+  /** A stop landed between two graphemes: `characters` were typed, the rest were not. */
+  readonly cancelled?: boolean;
 }
 
 export interface WindowInfo {
@@ -112,6 +133,10 @@ export interface FocusedText {
   readonly secure: boolean;
   readonly app?: string;
   readonly frame?: Rect | null;
+  /** The display-configuration hash right now (see ScreenshotResult.config); the gate compares it with the last shot's. */
+  readonly config?: string;
+  /** The screen is locked (CGSessionCopyCurrentDictionary). */
+  readonly locked?: boolean;
 }
 
 export interface ElementInfo {
@@ -122,6 +147,10 @@ export interface ElementInfo {
   readonly value?: string;
   readonly frame?: Rect | null;
   readonly app?: string;
+  /** The display-configuration hash right now; a coordinate action compares it with the last screenshot's. */
+  readonly config?: string;
+  /** The screen is locked (CGSessionCopyCurrentDictionary). */
+  readonly locked?: boolean;
 }
 
 /** One node of the frontmost window's accessibility tree, as `ax_tree` / `find_element` report it. */
@@ -195,7 +224,17 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
+  op: string;
 }
+
+/**
+ * The out-of-band stop for a `type` in flight. The helper is serial — a cancel line
+ * would queue behind the very op it means to stop — so the client sends a signal
+ * instead: the helper's type loop checks between grapheme clusters and stops
+ * mid-word. SIGURG because its default action is "ignore": a helper built before
+ * the handler existed shrugs it off instead of dying.
+ */
+export const TYPE_CANCEL_SIGNAL: NodeJS.Signals = "SIGURG";
 
 export interface NativeHandsProcessOptions {
   readonly binPath: string;
@@ -296,8 +335,23 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
    */
   cancelPending(reason = "stopped"): number {
     const n = this.pending.size;
+    // A `type` in flight is the one op the helper can stop part way: tell it, out of band,
+    // before the ids are forgotten. Nothing to send for anything else (a click has landed).
+    const typing = [...this.pending.values()].some((p) => p.op === "type");
     this.failAll({ code: "cancelled", message: reason });
+    if (typing) this.signalTypeCancel();
     return n;
+  }
+
+  /** SIGURG to the resident helper: its type loop stops at the next grapheme. Harmless to a helper that does not listen. */
+  private signalTypeCancel(): void {
+    const pid = this.child?.pid;
+    if (typeof pid !== "number" || pid <= 0 || !this.ready) return;
+    try {
+      process.kill(pid, TYPE_CANCEL_SIGNAL);
+    } catch (e) {
+      log.debug(`type cancel signal: ${(e as Error).message}`);
+    }
   }
 
   private onLine(line: string): void {
@@ -332,7 +386,7 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
         this.pending.delete(id);
         reject(new NativeRequestError({ code: "timeout", message: `${op} did not answer within ${timeoutMs ?? this.opts.defaultTimeoutMs ?? 8000}ms` }));
       }, timeoutMs ?? this.opts.defaultTimeoutMs ?? 8000);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, op });
       child.stdin?.write(line, (err) => {
         if (err) {
           this.pending.delete(id);

@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { spawn, type ChildProcess } from "node:child_process";
-import { readConfig, setLogLevel } from "@jarhead/core";
+import { Ledger, readConfig, setLogLevel } from "@jarhead/core";
 import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
@@ -19,6 +19,11 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
   pnpm jarhead hands <op> [json]      talk to the native helper directly
   pnpm jarhead ledger [YYYY-MM-DD]    print a day's ledger
+  pnpm jarhead ledger trash <day> [--shots|--both]   move a day's ledger file (its screenshots with --shots, both with --both) to ~/.jarhead/trash, through the daemon.
+                                      Nothing is deleted; today, the open session's day and any day of a pinned or open conversation stay, and the answer says why
+  pnpm jarhead ledger restore <day>   move a day back from the Trash
+  pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
+  pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume>   send a command to the running daemon
@@ -40,11 +45,13 @@ flags
   --only a,b     (bench --brain) restrict to these command ids (wiki-search, open-safari, whats-on-screen, click-search-type, scroll-down)
   --out FILE     (bench --brain) also write the JSON report to FILE
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
+  --shots / --both   (ledger trash) move the day's screenshots instead of / as well as its ledger file
+  --limit N      (ledger search) how many hits (default 50, at most 200)
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -236,10 +243,99 @@ function ledger(date: string | undefined): void {
   }
 }
 
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * `jarhead ledger …`: a day to print (no daemon needed), or one of the cleanup verbs
+ * over the daemon socket — the daemon owns the ledger and the Trash, and its toasts
+ * say what moved and why anything stayed. Nothing here deletes anything.
+ */
+async function ledgerCommand(rest: string[]): Promise<void> {
+  const [verb, ...args] = rest;
+  if (verb === undefined || DAY.test(verb)) return ledger(verb);
+  switch (verb) {
+    case "trash": {
+      const day = args[0];
+      if (!day || !DAY.test(day)) throw new Error("usage: jarhead ledger trash <YYYY-MM-DD> [--shots|--both]");
+      await sendCommand({ type: "ledger.trash-day", day, what: flags.has("--both") ? "both" : flags.has("--shots") ? "shots" : "ledger" }, 800);
+      return;
+    }
+    case "restore": {
+      const day = args[0];
+      if (!day || !DAY.test(day)) throw new Error("usage: jarhead ledger restore <YYYY-MM-DD>");
+      await sendCommand({ type: "ledger.restore-day", day }, 800);
+      return;
+    }
+    case "sweep":
+      await sendCommand({ type: "ledger.sweep" }, 2000);
+      return;
+    case "search": {
+      const query = args.join(" ").trim();
+      if (!query) throw new Error('usage: jarhead ledger search "<words>" [--limit N]');
+      await search(query, Math.max(1, Math.min(200, Number(flagValue("limit") ?? 50) || 50)));
+      return;
+    }
+    default:
+      throw new Error(`unknown ledger verb: ${verb} — a day (YYYY-MM-DD), or trash | restore | sweep | search`);
+  }
+}
+
+interface Hit {
+  sessionId: string;
+  chainId: string;
+  /** active | archived | trashed — the conversation the hit sits in (absent from a daemon before the field). */
+  state?: string;
+  at: number;
+  kind: string;
+  text: string;
+}
+
+/** `ledger.search` over the socket; one line per hit, newest first. */
+async function search(query: string, limit: number): Promise<void> {
+  const client = await daemon();
+  const id = `cli_${process.pid}_${Date.now()}`;
+  let hits: Hit[];
+  try {
+    hits = await new Promise<Hit[]>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the daemon did not answer the search within 5 s")), 5000);
+      client.on("message", (m) => {
+        if (m.type !== "ledger.hits" || m.id !== id) return;
+        clearTimeout(timer);
+        resolve(m.hits as Hit[]);
+      });
+      client.sendJson({ type: "ledger.search", id, query, limit });
+    });
+  } finally {
+    client.close();
+  }
+  if (hits.length === 0) {
+    console.log(`\n  nothing for "${query}"\n`);
+    return;
+  }
+  console.log("");
+  for (const h of hits) {
+    const d = new Date(h.at);
+    const when = `${Ledger.dayFor(h.at)} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    // A hit in a conversation the rail hides says so, so the line is not mistaken for a live one.
+    const mark = h.state === "trashed" || h.state === "archived" ? ` (${h.state})` : "";
+    console.log(`  ${when}  ${h.kind.padEnd(7)} ${h.sessionId.padEnd(16)} ${h.text.length > 120 ? `${h.text.slice(0, 119)}…` : h.text}${mark}`);
+  }
+  console.log(`\n  ${hits.length} hit${hits.length === 1 ? "" : "s"}${hits.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""}\n`);
+}
+
+/** "129 MB", "640 KB". */
+function human(bytes: number): string {
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(bytes >= 10 * 1_048_576 ? 0 : 1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
 /** Connect to the running daemon; exits with a hint when none is up. */
 async function daemon(): Promise<DaemonClient> {
   const cfg = readConfig();
   const client = new DaemonClient(cfg.socketPath);
+  // The client re-emits socket errors; without a listener a refused connect is an unhandled 'error' event and a stack, not the hint below.
+  client.on("error", () => undefined);
   try {
     await client.connect({ pid: process.pid, audio: false });
   } catch {
@@ -265,7 +361,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] } };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
   console.log(`\n  phase      ${s.phase}`);
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
@@ -275,18 +371,26 @@ async function status(): Promise<void> {
   else if (perms) console.log(`  permissions  mic ${perms.microphone} · screen recording ${perms.screenRecording} · accessibility ${perms.accessibility} (an older daemon: no list)`);
   if (flags.has("--permissions") && perms?.all) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
-  console.log(`  agents     ${s.agents.length}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
+  console.log(`  agents     ${s.agents.length}${s.hiddenAgents?.length ? ` (${s.hiddenAgents.length} hidden)` : ""}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
+  // The Trash: whole day files Jarhead moved out of the way; emptying it is Kevin's, in Finder.
+  if (s.trash) console.log(`  trash      ${s.trash.days === 0 ? "empty" : `${s.trash.days} ${s.trash.days === 1 ? "day" : "days"} · ${human(s.trash.bytes)}`} · ${s.trash.path}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
   if (s.problems.length) console.log(`  problems\n    - ${s.problems.join("\n    - ")}`);
   console.log("");
 }
 
-async function sendCommand(cmd: Record<string, unknown>): Promise<void> {
+/** Send one command; stay `listenMs` for the toasts it raises (a move says what moved and why anything stayed). */
+async function sendCommand(cmd: Record<string, unknown>, listenMs = 150): Promise<void> {
   const client = await daemon();
+  const toasts: string[] = [];
+  client.on("message", (m) => {
+    if (m.type === "toast") toasts.push(`${m.tone === "info" ? "·" : "!"} ${m.text}`);
+  });
   client.sendJson({ type: "command", command: cmd });
-  await new Promise((r) => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, listenMs));
   client.close();
   console.log(`  sent ${JSON.stringify(cmd)}`);
+  for (const t of toasts) console.log(`  ${t}`);
 }
 
 const [command, ...rest] = positional;
@@ -311,7 +415,7 @@ try {
       await hands(rest[0], rest[1]);
       break;
     case "ledger":
-      ledger(rest[0]);
+      await ledgerCommand(rest);
       break;
     case "status":
       await status();

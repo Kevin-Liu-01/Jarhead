@@ -29,6 +29,13 @@ import QuartzCore
 //            (no Accessibility grant needed) sees the pointer approach while the island
 //            is small. Its top corners are generously rounded where it hangs from the
 //            bar, with concave fillets into the notch's column (NotchInk.shape).
+//   working  a delegation runs (`workingSince`, set by the controller from the snapshot's
+//            running delegation): "Working · 0:12" in mono digits — right of the face in
+//            the peek (the island widens by the counter's width and the face slides left
+//            by half of it, so the pair stays centred), right of the phase word on the
+//            open island, and, while the blob is out at its target (not parked), alone
+//            on a quiet black strip of peek height under the notch. Fades in and out over
+//            `Motion.base`; gone the moment the delegation is done or cancelled.
 //
 // Geometry comes from NSScreen (`auxiliaryTopLeftArea` / `auxiliaryTopRightArea`:
 // the notch is the gap between them; on Kevin's 14" it is x 771…956, 185×32 pt, under
@@ -260,8 +267,23 @@ final class NotchDock {
 
     /// The phase changed under the sim: tucked ↔ peeking.
     func phaseChanged() {
+        #if JARHEAD_ORB_PREVIEW
+        // ORB_NOTCH_WORKING=1: no daemon feeds a delegation here, so the working state
+        // follows the phase — on at thinking / acting, off otherwise — for the shots.
+        if Self.previewWorkingFollowsPhase {
+            let working = view.currentPhase == .thinking || view.currentPhase == .acting
+            view.workingSince = working ? (view.workingSince ?? Date().timeIntervalSince1970) : nil
+        }
+        #endif
         view.setMode(mode, animated: true)
         view.wake()
+    }
+
+    /// The running delegation's start (seconds since 1970), or nil when nothing runs:
+    /// the controller sets it from every snapshot (`Snapshot.delegations`, the last
+    /// one whose status is running). The island shows "Working · m:ss" while it is set.
+    func setWorking(since: Double?) {
+        view.workingSince = since
     }
 
     /// The gate's pill (question, verdict, countdown) under the notch while asleep.
@@ -350,6 +372,8 @@ final class NotchDock {
     /// hovered / pressed in the harness's shots (the hover lift, the accent press fill).
     nonisolated(unsafe) static var previewHoveredButton = ProcessInfo.processInfo.environment["ORB_NOTCH_HOVER"]
     nonisolated(unsafe) static var previewPressedButton = ProcessInfo.processInfo.environment["ORB_NOTCH_PRESSED"]
+    /// ORB_NOTCH_WORKING=1: the working state ("Working · 0:12") follows the phase in the harness.
+    nonisolated(unsafe) static var previewWorkingFollowsPhase = ProcessInfo.processInfo.environment["ORB_NOTCH_WORKING"] == "1"
     /// Pretend the pointer approached (or left) the island.
     func previewHover(_ over: Bool) { pointer(over: over) }
     var previewMode: String { mode.rawValue }
@@ -455,6 +479,25 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// The transport circle's diameter.
     static let transportDiameter: CGFloat = 22
 
+    /// The working state: the running delegation's start, seconds since 1970 (the
+    /// snapshot's `timings.delegatedAt / 1000`), or nil. Flipping it starts the
+    /// counter's fade (`workLevel`) and, with the blob out, grows or shrinks the strip.
+    var workingSince: Double? {
+        didSet {
+            let was = oldValue != nil, now = workingSince != nil
+            if was != now {
+                workingChangedAt = window == nil ? -1 : CACurrentMediaTime()
+                setMode(mode, animated: true)
+            } else if workingSince != oldValue {
+                needsDisplay = true
+            }
+        }
+    }
+    /// When `workingSince` last flipped between nil and a value (< 0: never / snapped).
+    private var workingChangedAt = -1.0
+    /// The phase, for the harness's working knob (`NotchDock.phaseChanged`).
+    var currentPhase: Phase { sim.phase }
+
     /// Reduce Motion, from the one flag the controller keeps in step with the system
     /// setting (`BlobSim.reducedMotion`; the harness's ORB_REDUCE_MOTION sets the same
     /// flag), so the fades, the stagger and the spring agree with the face's own
@@ -537,6 +580,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     private static let lineAttrsEmpty: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor.white.withAlphaComponent(0.46), .paragraphStyle: truncating]
     private static let lineShadow: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 0, alpha: 0.55), .paragraphStyle: truncating]
     private static let pillAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72)]
+    /// "Working · 0:12": mono digits (the meter's font), the 0.72 step, an ink shadow under it.
+    private static let workAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72)]
+    private static let workShadow: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 0, alpha: 0.55)]
+    /// The counter's widest plausible text, measured once: the peek widens by this plus
+    /// padding while working, so the island never re-lays itself as the digits roll.
+    private static let workTextWidth: CGFloat = textWidth("Working · 00:00" as NSString, workAttrs)
+    /// What the peek island grows by while working (the counter, a gap from the face, padding).
+    private static var peekExtraWidth: CGFloat { workTextWidth > 0 ? workTextWidth + 18 : 0 }
 
     /// Three of the eight crashes of 2026-09-11 were `NSString.draw` on the island →
     /// CoreText `TAttributes::ApplyFont` → "attempt to insert nil object", on ordinary
@@ -594,7 +645,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         setAccessibilityLabel("Jarhead, in the notch")
         NotchInk.Cache.shared.addObserver(self)
         // The island's fonts exist from here on, long before the first island opens.
-        _ = Self.phaseAttrs; _ = Self.lineAttrs; _ = Self.lineAttrsEmpty; _ = Self.pillAttrs
+        _ = Self.phaseAttrs; _ = Self.lineAttrs; _ = Self.lineAttrsEmpty; _ = Self.pillAttrs; _ = Self.workAttrs; _ = Self.workTextWidth
     }
 
     required init?(coder: NSCoder) { fatalError("NotchView is code-only") }
@@ -653,8 +704,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         mode = m
         let n = geometry?.notch.width ?? 185
         if !parked {
-            widthSpring.target = n
-            heightSpring.target = 0
+            // The blob is out. Working, the notch keeps a quiet strip of peek height with
+            // the counter alone on it (the face is on the body at its target); otherwise
+            // the island shrinks away to nothing: it left.
+            let strip = workingSince != nil
+            widthSpring.target = strip ? n + Self.peekExtraWidth : n
+            heightSpring.target = strip ? NotchGeometry.peekHeight : 0
             openSpring.target = 0
         } else {
             switch m {
@@ -729,7 +784,24 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         if contentShown, contentOpenedAt >= 0, now - contentOpenedAt < base + 3 * Motion.stagger { return true }
         if !contentShown, contentClosedAt >= 0, now - contentClosedAt < seconds(Motion.quick) { return true }
         if flashPress != nil, now - flashAt < base { return true }
+        if workingChangedAt >= 0, now - workingChangedAt < base { return true }
         return false
+    }
+
+    /// How present the working counter is: 1 working, 0 not, crossfading over
+    /// `Motion.base` (`Motion.easeOut` in, `Motion.easeIn` out) from the last flip.
+    private func workLevel(_ now: Double) -> CGFloat {
+        let working = workingSince != nil
+        if workingChangedAt < 0 { return working ? 1 : 0 }
+        let t = finite01((now - workingChangedAt) / seconds(Motion.base))
+        return CGFloat(working ? Motion.easeOutCurve.value(at: t) : 1 - Motion.easeInCurve.value(at: t))
+    }
+
+    /// "Working · 0:12" — the elapsed since the delegation began, mono digits.
+    private func workingText() -> NSString {
+        guard let since = workingSince else { return "" }
+        let elapsed = Date().timeIntervalSince1970 - since
+        return ("Working · " + OrbStyle.mmss(elapsed.isFinite ? max(0, elapsed) : 0)) as NSString
     }
 
     @objc private func onFrame(_ link: CADisplayLink) {
@@ -741,7 +813,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // level (the spring smooths it into a pulse; `draw` brightens the hairline with
         // it). Not under reduce motion, where the island holds its size.
         if parked, mode == .peek, let n = geometry?.notch.width {
-            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * finite01(sim.islandLevel))
+            // Working, the peek also carries the counter right of the face: room for it, eased in.
+            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * finite01(sim.islandLevel)) + Double(Self.peekExtraWidth * workLevel(now))
         }
         if !springsSettled {
             let step = min(dt, 1.0 / 30)
@@ -759,7 +832,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             lastRender = now
             needsDisplay = true
         }
-        let busy = animating || (parked && !sim.isStatic) || (parked && sim.rawLevelsActive)
+        // Working counts as busy (the counter rolls once a second, at the idle rate).
+        let busy = animating || (parked && !sim.isStatic) || (parked && sim.rawLevelsActive) || workingSince != nil
         if busy {
             idleSince = -1
         } else if idleSince < 0 {
@@ -820,10 +894,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         var right: CGFloat { centre.x + gap / 2 + CGFloat(size) * 0.6 }
     }
 
-    private func faceLayout(island: NSRect, open: CGFloat, lipFace: Bool) -> FaceLayout {
+    /// `shift` moves the small island's face (peek, tucked) sideways — while working the
+    /// face gives half the counter's width so face + counter stay centred under the notch.
+    private func faceLayout(island: NSRect, open: CGFloat, lipFace: Bool, shift: CGFloat = 0) -> FaceLayout {
         let size = (lipFace ? BlobSim.eyeSizePt * 0.85 : BlobSim.eyeSizePt) * Double(1 + 0.45 * open)
         let gap = CGFloat(size) * 0.95
-        let x = island.minX + (island.width / 2) * (1 - open) + (14 + gap + 10) * open
+        let x = island.minX + (island.width / 2) * (1 - open) + (14 + gap + 10) * open + (shift.isFinite ? shift : 0) * (1 - open)
         let y = island.minY + island.height / 2 + (lipFace ? -1 : 0)
         return FaceLayout(centre: CGPoint(x: x, y: y), size: size, gap: gap)
     }
@@ -889,6 +965,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         cg.addPath(shape.path)
         cg.fillPath()
         let park = finite01(parkLevel(now))
+        let work = finite01(workLevel(now))
+        // The blob is out at its target and a delegation runs: the counter alone on the
+        // strip (no face — that is on the body), fading with the park level's inverse.
+        if work > 0.005, park < 0.995, island.isFiniteRect, island.height >= 1 {
+            drawWorkingStrip(cg, shape: shape, island: island, color: sim.displayColor, alpha: work * (1 - park))
+        }
         guard park > 0.005, island.isFiniteRect, island.height >= 1 else { return }
 
         // Everything on the island is clipped to the ink and fades with the park level:
@@ -938,7 +1020,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // under-copy (`drawEye`) keeps it readable over the gradient's light end.
         let face = sim.face
         let lipFace = mode == .tucked && open < 0.5
-        let fl = faceLayout(island: island, open: open, lipFace: lipFace)
+        // Working in the peek: the face gives half the counter's width to keep the pair centred.
+        let peekShift: CGFloat = lipFace ? 0 : -(Self.peekExtraWidth / 2) * work
+        let fl = faceLayout(island: island, open: open, lipFace: lipFace, shift: peekShift)
         // Cell shift: the look moves the pair by up to a glyph's third.
         let shiftX = CGFloat(sim.faceLookX) * CGFloat(fl.size) * 0.3
         let shiftY = CGFloat(sim.faceLookY) * CGFloat(fl.size) * 0.18
@@ -973,6 +1057,26 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
         cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
         cg.strokePath()
+
+        // Working, peeking: "Working · 0:12" right of the face, fading as the island opens
+        // (on the open island it sits after the phase word instead).
+        if work > 0.005, !lipFace, open < 0.995 {
+            let alpha = finite01(work * (1 - open))
+            let text = workingText()
+            let w = Self.textWidth(text, Self.workAttrs)
+            let x = fl.right + 8
+            let rect = NSRect(x: x, y: island.midY - 8, width: min(w + 2, max(0, island.maxX - 10 - x)), height: 16)
+            if rect.width > 24 {
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
+                cg.saveGState()
+                cg.setAlpha(alpha)
+                Self.drawText(text, in: rect.offsetBy(dx: 0, dy: 1), Self.workShadow)
+                Self.drawText(text, in: rect, Self.workAttrs)
+                cg.restoreGState()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+        }
 
         // The island's transport, words and buttons: laid out in the open island's rect,
         // revealed by the ink as it opens, each fading in and rising on its own beat.
@@ -1077,6 +1181,22 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             let rect = l.word.offsetBy(dx: 0, dy: a.dy)
             Self.drawText(word, in: rect.offsetBy(dx: 0, dy: 1), Self.phaseShadow)
             Self.drawText(word, in: rect, Self.phaseAttrs)
+            // Working: "Working · 0:12" right after the phase word, mono digits, one step dimmer.
+            let work = workLevel(now)
+            if work > 0.005 {
+                let text = workingText()
+                let x = rect.minX + Self.textWidth(word, Self.phaseAttrs) + 8
+                let room = rect.maxX - x
+                let w = Self.textWidth(text, Self.workAttrs)
+                if room > 24, w > 0 {
+                    cg.saveGState()
+                    cg.setAlpha(finite01(park * a.alpha * work))
+                    let box = NSRect(x: x, y: rect.minY + 1, width: min(w + 2, room), height: rect.height)
+                    Self.drawText(text, in: box.offsetBy(dx: 0, dy: 1), Self.workShadow)
+                    Self.drawText(text, in: box, Self.workAttrs)
+                    cg.restoreGState()
+                }
+            }
             cg.restoreGState()
         }
         if let a = contentAppearance(2, now: now) {
@@ -1130,6 +1250,41 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             }
         }
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The working strip: the blob is out at its target, a delegation runs. The ink is
+    /// already down (the notch grown to peek height); this adds the phase colour as the
+    /// hairline along the bottom edge and "Working · 0:12" centred — nothing else, so
+    /// the notch reads as busy without competing with the body on the screen.
+    private func drawWorkingStrip(_ cg: CGContext, shape: NotchInk.Shape, island: NSRect, color: RGB, alpha: CGFloat) {
+        let a = finite01(alpha)
+        guard a > 0.005 else { return }
+        cg.saveGState()
+        cg.addPath(shape.path)
+        cg.clip()
+        cg.setAlpha(a)
+        let inset = max(shape.bottomRadius, 2)
+        cg.setStrokeColor(color.cgColor(alpha: 0.9))
+        cg.setLineWidth(1)
+        cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
+        cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
+        cg.strokePath()
+        let text = workingText()
+        let w = Self.textWidth(text, Self.workAttrs)
+        if w > 0, island.height >= 14 {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
+            cg.setShouldSmoothFonts(false)
+            cg.setAllowsFontSubpixelPositioning(true)
+            cg.setShouldSubpixelPositionFonts(true)
+            let rect = NSRect(x: island.midX - w / 2 - 1, y: island.midY - 8, width: min(w + 2, max(0, island.width - 12)), height: 16)
+            if rect.width > 24 {
+                Self.drawText(text, in: rect.offsetBy(dx: 0, dy: 1), Self.workShadow)
+                Self.drawText(text, in: rect, Self.workAttrs)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        cg.restoreGState()
     }
 
     /// The last transcript line, set by the controller (mono, one line).

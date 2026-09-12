@@ -48,6 +48,58 @@ func displaySignature() -> String {
     }.joined(separator: ";")
 }
 
+// MARK: - Frames and the display-configuration hash
+//
+// A screenshot is a frame; a coordinate action is aimed at one. The model may act on a frame
+// only while the screen is still that frame's: the same displays with the same bounds, the same
+// app in front with the same front window. The hash below says so in one short string, carried
+// by every screenshot and by every probe the click gate runs (`element_at`, `focused_text`), so
+// the TypeScript side compares two strings and never a pair of screenshots.
+
+/// Frame numbers, one per captured image, for the model to refer to ("frame 12").
+final class FrameCounter {
+    static let shared = FrameCounter()
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+}
+
+/// FNV-1a over UTF-8, as 16 hex digits: deterministic across helper restarts (Swift's Hasher is not).
+func fnv1a(_ s: String) -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in s.utf8 {
+        hash ^= UInt64(byte)
+        hash = hash &* 0x0000_0100_0000_01b3
+    }
+    return String(hash, radix: 16).leftPadded(to: 16)
+}
+
+private extension String {
+    func leftPadded(to width: Int) -> String {
+        return count >= width ? self : String(repeating: "0", count: width - count) + self
+    }
+}
+
+/// The display arrangement plus the front app and its front (layer 0) window. Menus, sheets
+/// inside the window and the cursor are not part of it: a menu opening does not stale the frame,
+/// a new window, a switched app or a moved display does. ~1–3 ms (one CGWindowList read).
+func displayConfigHash() -> String {
+    var parts = displaySignature()
+    if let app = onMain({ NSWorkspace.shared.frontmostApplication }) {
+        parts += "|\(app.bundleIdentifier ?? "")|\(app.processIdentifier)"
+        if let window = windowInfos(allLayers: false).first(where: { $0.pid == Int(app.processIdentifier) }) {
+            parts += "|\(window.windowId)"
+        }
+    }
+    return fnv1a(parts)
+}
+
 private func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {
     let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
     let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
@@ -239,6 +291,9 @@ func encodePNG(_ image: CGImage) throws -> Data {
 /// `scale` is exact image pixels per point (width / points.w) so the caller can map back with
 /// points.x + px / scale.
 func captureResult(spec: CaptureSpec, points: CGRect) throws -> JSONObject {
+    // The configuration is read before the capture: what the model sees is the screen as it
+    // was when the shutter opened, and a change during the encode stales the frame, not the hash.
+    let config = displayConfigHash()
     let t0 = DispatchTime.now()
     let image = try captureCGImage(spec)
     let captureMs = elapsedMs(since: t0)
@@ -253,6 +308,8 @@ func captureResult(spec: CaptureSpec, points: CGRect) throws -> JSONObject {
         "height": image.height,
         "points": rectJSON(points),
         "scale": points.width > 0 ? Double(image.width) / Double(points.width) : 1,
+        "frameId": FrameCounter.shared.next(),
+        "config": config,
     ]
 }
 

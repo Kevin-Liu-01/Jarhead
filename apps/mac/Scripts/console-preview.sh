@@ -2,7 +2,19 @@
 # Throwaway preview of the Console window with fake data.
 #   Scripts/console-preview.sh [scenario] [out.png]
 # scenario: live | confirm | empty | settings | wake-locked | ledger | light |
-#           conversation | conversation-codex | jarhead | jarhead-log | paused | switch (default live)
+#           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
+#           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
+#           search | search-hit | problems | cleared (default live)
+#   The cleanup scenarios: `cleanup` is the rail with a pinned chain above the days, "Archived (2)"
+#   folded, "Trash (2)" open with Restore on each row and the folder on its head, and the Agents
+#   section's "Hidden (1)" open; `cleanup-select` adds two ⌘-picked chains and the strip under the
+#   head; `cleanup-rename` the inline title field; `cleanup-undo` a chain just moved to the Trash
+#   and the toast "Moved to Trash · Undo"; `search` the head as the search box with hits grouped
+#   by conversation; `search-hit` searches "codex did while" and opens its one hit the way the row
+#   would (the conversation scrolled to the row, lit; run.log's `probe:` line says what landed);
+#   `cleanup-undo-toast` presses the toast's Undo then ⌘Z then ⇧⌘Z (run.log: ⌘Z must find nothing);
+#   `problems` the Now tab's typed problems with a remedy each; `cleared` the Now stream cleared
+#   ("Cleared · Undo").
 #   `settings` is asleep with the wake gate listening (Settings tab); `wake-locked`
 #   the same tab with the gate locked out and no passphrase set.
 #   `jarhead` steps into a past Jarhead conversation (the paused → resumed chain,
@@ -34,9 +46,12 @@ SCENARIO="${1:-live}"
 OUT="${2:-}"
 BUILD=".build/console-preview"
 mkdir -p "$BUILD"
-swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
-  -o "$BUILD/console-preview" \
-  Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
+# PREVIEW_SKIP_BUILD=1 reuses the last binary (a run of several scenarios compiles once).
+if [[ "${PREVIEW_SKIP_BUILD:-}" != "1" || ! -x "$BUILD/console-preview" ]]; then
+  swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
+    -o "$BUILD/console-preview" \
+    Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
+fi
 export PREVIEW_SCENARIO="$SCENARIO"
 export PREVIEW_STATE_DIR="${PREVIEW_STATE_DIR:-$(cd Scripts/mock && pwd)}"
 export PREVIEW_SHOT_PNG="${PREVIEW_SHOT_PNG:-preview-orb-expanded.png}"

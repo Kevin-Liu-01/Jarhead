@@ -23,7 +23,19 @@ final class AudioEngine {
 
     private var micAccumulator = Data()
     private var lastLevelAt: CFAbsoluteTime = 0
+    /// Kevin's explicit pick (`Settings.micDeviceId`); nil = "Auto (ranked)".
     private var preferredInputUID: String?
+    /// The microphone the graph last ran on, so the ranking can prefer it once the
+    /// explicit pick and the built-in are out (`MicRanking.rank`). On `queue`.
+    private var lastUsedInputUID: String?
+    /// What the running graph hears through (nil while stopped). On the echo-cancelled
+    /// path this is the system default input, whatever the ranking wanted (see
+    /// `applyInputDevice`); on the plain path it is the ranked or explicit choice.
+    private var activeInputUID: String?
+    private var voiceProcessingOn = false
+    /// Device list / default-input listeners (Core Audio), answering on `queue`.
+    private let router = MicRouter()
+    private var lastRouteSummary = ""
     private var running = false
     /// True between start() and stop(): the graph should be up, and a dead graph
     /// (failed start, device yanked) is retried until it is.
@@ -53,10 +65,18 @@ final class AudioEngine {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
             self?.restartAfterConfigurationChange()
         }
+        // The device list and the system default input, watched from the start: a
+        // microphone that vanishes mid-session is rebuilt around on the next-ranked one
+        // (`routeChanged`), and the Console's mic picker learns the ranked list.
+        router.onChange = { [weak self] reason in self?.routeChanged(reason) }
+        router.start(on: queue)
+        installRouteRequestObserver()
     }
 
     deinit {
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        if let routeRequestObserver { NotificationCenter.default.removeObserver(routeRequestObserver) }
+        router.stop()
     }
 
     // MARK: - control
@@ -86,6 +106,8 @@ final class AudioEngine {
                 self.player.stop()
                 if self.engine.isRunning { self.player.play() }
             }
+            // Nothing queued is audible any more: the duck's gate disarms with the backlog.
+            BargeInDuck.shared.noteFlush()
         }
     }
 
@@ -132,7 +154,15 @@ final class AudioEngine {
             var samples = [Int16](repeating: 0, count: frames)
             _ = samples.withUnsafeMutableBytes { pcm.copyBytes(to: $0, count: frames * 2) }
             let scale = Float(1.0 / 32768.0)
-            for i in 0 ..< frames { dst[i] = Float(samples[i]) * scale }
+            var energy = 0.0
+            for i in 0 ..< frames {
+                let s = Float(samples[i]) * scale
+                dst[i] = s
+                energy += Double(s * s)
+            }
+            // What the speaker is about to say, for the barge-in duck: GPT-Live-1 streams
+            // silence between sentences too, so audibility (not arrival) is what arms it.
+            BargeInDuck.shared.noteOutput(rms: clampLevel((energy / Double(frames)).squareRoot()), seconds: Double(frames) / self.playFormat.sampleRate)
             self.guardPlayer("schedule") {
                 self.player.scheduleBuffer(buf, completionHandler: nil)
                 if !self.player.isPlaying { self.player.play() }
@@ -216,7 +246,8 @@ final class AudioEngine {
                 try input.setVoiceProcessingEnabled(voiceProcessing)
             }
         })
-        applyPreferredInputDevice(to: input)
+        voiceProcessingOn = voiceProcessing
+        applyInputDevice(to: input, voiceProcessing: voiceProcessing)
 
         let hw = input.outputFormat(forBus: 0)
         guard hw.sampleRate > 0, hw.channelCount > 0 else {
@@ -270,11 +301,24 @@ final class AudioEngine {
             player.play()
         })
         running = true
+        if let uid = activeInputUID { lastUsedInputUID = uid }
+        // The duck drives the player's own volume (its bus on the main mixer): −20 dB the
+        // moment Kevin's voice is heard over Jarhead's, back over 300 ms. Only with echo
+        // cancellation on — without it the gate would hear Jarhead and duck itself. The
+        // write goes through the ObjC shim like every other player call: it runs on the
+        // duck's queue and can land while `engine.reset()` runs for a device change.
+        let playerNode = self.player
+        BargeInDuck.shared.attach(echoCancelled: voiceProcessing) { gain in
+            try? objcTry { playerNode.volume = gain }
+        }
         let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
         onStatus?("audio running: mic \(formatNote), voice processing \(voiceProcessing ? "on" : "off (no echo cancellation)"), output wiring \(wiring)")
+        publishRoute("audio running")
     }
 
     private func tearDownGraph() {
+        BargeInDuck.shared.detach()
+        activeInputUID = nil
         // The graph may be half-built after a failed attempt; a teardown must never raise.
         try? objcTry {
             self.engine.inputNode.removeTap(onBus: 0)
@@ -300,6 +344,7 @@ final class AudioEngine {
     }
 
     private func stopLocked() {
+        BargeInDuck.shared.detach()
         try? objcTry {
             self.engine.inputNode.removeTap(onBus: 0)
             // Always drop the speaker backlog: after a device change the engine may have
@@ -308,6 +353,8 @@ final class AudioEngine {
             if self.engine.isRunning { self.engine.stop() }
         }
         running = false
+        activeInputUID = nil
+        publishRoute("audio stopped")
     }
 
     /// `AVAudioEngineConfigurationChange`: an input or output device changed and the
@@ -386,6 +433,9 @@ final class AudioEngine {
         let src = floats[min(chosenChannel, channels - 1)]
         for i in 0..<frames { dst[i] = src[i] }
         mono.frameLength = AVAudioFrameCount(frames)
+        // The barge-in gate reads the same channel in 10 ms slices: the tap only hands over
+        // 100 ms buffers, so the slices are what let "60 ms of speech" be judged inside one.
+        BargeInDuck.shared.noteMic(mono: dst, frames: frames, sampleRate: buffer.format.sampleRate, capturedAt: when)
         // The ear hears the same buffer the voice gets (echo-cancelled when voice
         // processing is on), fresh each callback, so appending it elsewhere is safe.
         onMicBuffer?(mono, when)
@@ -413,7 +463,7 @@ final class AudioEngine {
         if now - lastDiagAt > 5 {
             lastDiagAt = now
             let energies = channelEnergy.map { String(format: "%.4f", sqrt($0)) }.joined(separator: " ")
-            onStatus?("mic diag: \(channels) ch, using ch\(chosenChannel), rms per ch [\(energies)], convert \(status == .error ? "ERROR \(error?.localizedDescription ?? "")" : "ok \(out.frameLength) frames")")
+            onStatus?("mic diag: \(channels) ch, using ch\(chosenChannel), rms per ch [\(energies)], convert \(status == .error ? "ERROR \(error?.localizedDescription ?? "")" : "ok \(out.frameLength) frames")\(BargeInDuck.shared.diagSuffix())")
         }
         guard status != .error, out.frameLength > 0, let ch = out.int16ChannelData?[0] else { return }
         let bytes = Data(bytes: ch, count: Int(out.frameLength) * 2)
@@ -451,30 +501,131 @@ final class AudioEngine {
 
     // MARK: - input device selection (Core Audio)
 
-    private func applyPreferredInputDevice(to input: AVAudioInputNode) {
-        guard let uid = preferredInputUID else { return }
-        // The voice-processing unit drives input and output from one device property:
-        // pointing it at a microphone would also send Jarhead's speech there (or fail
-        // outright for input-only devices), so the echo canceller follows the system
-        // default input instead. The explicit choice only applies on the no-AEC path.
-        if input.isVoiceProcessingEnabled {
-            onStatus?("echo cancellation follows the system default microphone; pick the mic in System Settings › Sound (Jarhead's choice \(uid) applies only without echo cancellation)")
+    /// The microphone the graph should run on: `MicRanking.rank` over the connected input
+    /// devices — Kevin's explicit pick, else the connected built-in, else the one used
+    /// last, else the system default; an aggregate or virtual device only when picked by
+    /// name. Applied on the plain path only. The voice-processing unit has ONE device
+    /// property (`kAudioOutputUnitProperty_CurrentDevice`, global scope) for input and
+    /// output: pointing it at a microphone also routes Jarhead's speech there, or fails
+    /// outright for an input-only device and knocks the graph onto the no-AEC fallback.
+    /// With echo cancellation on, the graph therefore follows the system default input;
+    /// the ranking is logged and the Console's picker says so. The default is Kevin's to
+    /// change (System Settings › Sound) and is never written from here.
+    ///
+    /// One exception to "never a virtual device unless picked": when the only connected
+    /// inputs are aggregate or virtual, the first of them is used — deaf is not better —
+    /// and the log and the picker say it is virtual.
+    private func applyInputDevice(to input: AVAudioInputNode, voiceProcessing: Bool) {
+        let inputs = MicInputs.enumerate()
+        let systemDefault = MicInputs.systemDefaultUID()
+        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
+        guard let choice = ranked.first else {
+            activeInputUID = systemDefault
             return
         }
-        guard let deviceID = AudioEngine.deviceID(matching: uid) else {
-            onStatus?("mic device \(uid) not found; using the system default")
+        if voiceProcessing {
+            activeInputUID = systemDefault
+            if choice.uid != systemDefault {
+                onStatus?("mic ranking wants \(choice.name); echo cancellation follows the system default microphone (\(MicInputs.name(of: systemDefault) ?? "none")) — pick it in System Settings › Sound")
+            }
             return
         }
         guard let au = input.audioUnit else {
             onStatus?("input node has no audio unit; using the system default mic")
+            activeInputUID = systemDefault
             return
         }
-        var dev = deviceID
+        var dev = choice.id
         let err = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
         if err != noErr {
-            onStatus?("could not select mic device \(uid) (\(err)); using the system default")
+            onStatus?("could not select mic device \(choice.name) (\(err)); using the system default")
+            activeInputUID = systemDefault
+            return
+        }
+        activeInputUID = choice.uid
+        if let wanted = preferredInputUID, wanted != choice.uid {
+            onStatus?("mic device \(wanted) is not connected; using \(choice.name) (ranked)")
+        } else if preferredInputUID == nil, choice.isVirtual {
+            onStatus?("only aggregate/virtual inputs are connected; using \(choice.name) (\(choice.transportName)) rather than nothing")
         }
     }
+
+    // MARK: - route changes (Core Audio listeners, on `queue`)
+
+    private var routeChangeScheduled = false
+    private var routeChangeReasons: [String] = []
+
+    /// The device list or the system default input changed. Bursts (a device arriving
+    /// fires both listeners) are folded into one look 50 ms later.
+    private func routeChanged(_ reason: String) {
+        if !routeChangeReasons.contains(reason) { routeChangeReasons.append(reason) }
+        guard !routeChangeScheduled else { return }
+        routeChangeScheduled = true
+        queue.asyncAfter(deadline: .now() + 0.05) {
+            self.routeChangeScheduled = false
+            let why = self.routeChangeReasons.joined(separator: ", ")
+            self.routeChangeReasons.removeAll()
+            self.applyRouteChange(why)
+        }
+    }
+
+    /// Three things can follow a change: the microphone the graph hears through is gone
+    /// — rebuild on the next-ranked one (an `AVAudioEngineConfigurationChange` usually
+    /// arrives for the same event; `restartPending` folds the two into one restart 0.3 s
+    /// after the first); Kevin's explicit pick came back on the plain path — move to it;
+    /// otherwise only the published route moves. The system default is never written.
+    private func applyRouteChange(_ reason: String) {
+        let inputs = MicInputs.enumerate()
+        let systemDefault = MicInputs.systemDefaultUID()
+        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
+        var restart: String?
+        if running, let active = activeInputUID, !inputs.contains(where: { $0.uid == active }) {
+            restart = "microphone \(MicInputs.name(of: active) ?? active) vanished; rebuilding on \(ranked.first?.name ?? "the system default")"
+        } else if running, !voiceProcessingOn, let explicit = preferredInputUID, activeInputUID != explicit, ranked.first?.uid == explicit {
+            restart = "picked microphone \(ranked.first?.name ?? explicit) is back; moving to it"
+        }
+        publishRoute(reason)
+        guard let restart, wanted, !restartPending else { return }
+        restartPending = true
+        onStatus?("mic route: \(restart) — restarting in 0.3 s")
+        if running { stopLocked() }
+        try? objcTry { self.engine.reset() }
+        queue.asyncAfter(deadline: .now() + 0.3) {
+            self.restartPending = false
+            guard self.wanted, !self.running else { return }
+            self.retryAttempt = 0
+            self.startLocked()
+        }
+    }
+
+    /// The route as the Console's picker and the ear report it: the ranked list, the
+    /// active device, what the choice follows. Posted on the main queue as
+    /// `.jarheadMicRoute` with plain strings (the Console harness compiles without this
+    /// file) and logged through `onStatus` when it changed. Answers the picker's
+    /// `jarhead.micRoute.request` too, so a Console opened later still gets the list.
+    private func publishRoute(_ reason: String) {
+        let inputs = MicInputs.enumerate()
+        let systemDefault = MicInputs.systemDefaultUID()
+        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
+        let route = MicRoute(ranked: ranked, active: activeInputUID, systemDefault: systemDefault, explicit: preferredInputUID, echoCancelled: running && voiceProcessingOn, running: running)
+        let summary = route.summary
+        if summary != lastRouteSummary {
+            lastRouteSummary = summary
+            onStatus?("mic route (\(reason)): \(summary)")
+        }
+        let info = route.userInfo
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .jarheadMicRoute, object: nil, userInfo: info) }
+    }
+
+    /// The Console's picker asks for the route when it appears (`MicRoute.requestName`).
+    private func installRouteRequestObserver() {
+        routeRequestObserver = NotificationCenter.default.addObserver(forName: MicRoute.requestName, object: nil, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { self.publishRoute("picker") }
+        }
+    }
+
+    private var routeRequestObserver: NSObjectProtocol?
 
     /// Match a Core Audio device UID, falling back to a literal AudioDeviceID.
     static func deviceID(matching uid: String) -> AudioDeviceID? {
@@ -501,5 +652,730 @@ final class AudioEngine {
         }
         guard err == noErr, let cf = value?.takeRetainedValue() else { return nil }
         return cf as String
+    }
+}
+
+// MARK: - microphones: enumeration, ranking, listeners
+
+extension Notification.Name {
+    /// The voice engine's microphone route changed (`MicRoute.userInfo`, main queue).
+    /// The Console's picker and the ear listen; the raw name is spelled out in
+    /// RightRailView.swift, which the Console harness compiles without this file.
+    static let jarheadMicRoute = Notification.Name("jarhead.micRoute")
+}
+
+/// One input device as Core Audio lists it.
+struct MicInput: Equatable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+    let transport: UInt32
+
+    var isBuiltIn: Bool { transport == UInt32(kAudioDeviceTransportTypeBuiltIn) }
+    /// Aggregate and virtual devices (a loopback, BlackHole, an aggregate Kevin built):
+    /// listed, never auto-picked — they carry no room and often no microphone at all.
+    var isVirtual: Bool {
+        transport == UInt32(kAudioDeviceTransportTypeAggregate) || transport == UInt32(kAudioDeviceTransportTypeAutoAggregate) || transport == UInt32(kAudioDeviceTransportTypeVirtual)
+    }
+
+    var transportName: String {
+        switch transport {
+        case UInt32(kAudioDeviceTransportTypeBuiltIn): return "built-in"
+        case UInt32(kAudioDeviceTransportTypeUSB): return "usb"
+        case UInt32(kAudioDeviceTransportTypeBluetooth), UInt32(kAudioDeviceTransportTypeBluetoothLE): return "bluetooth"
+        case UInt32(kAudioDeviceTransportTypeAggregate), UInt32(kAudioDeviceTransportTypeAutoAggregate): return "aggregate"
+        case UInt32(kAudioDeviceTransportTypeVirtual): return "virtual"
+        case UInt32(kAudioDeviceTransportTypeContinuityCaptureWired), UInt32(kAudioDeviceTransportTypeContinuityCaptureWireless): return "continuity"
+        case UInt32(kAudioDeviceTransportTypeAirPlay): return "airplay"
+        case UInt32(kAudioDeviceTransportTypeHDMI), UInt32(kAudioDeviceTransportTypeDisplayPort): return "display"
+        case UInt32(kAudioDeviceTransportTypeThunderbolt), UInt32(kAudioDeviceTransportTypePCI), UInt32(kAudioDeviceTransportTypeFireWire): return "wired"
+        default: return "other"
+        }
+    }
+}
+
+/// Core Audio reads, all read-only: the connected input devices, the system default input, a name.
+enum MicInputs {
+    static func enumerate() -> [MicInput] {
+        var out: [MicInput] = []
+        for id in AudioEngine.allDeviceIDs() where hasInputStreams(id) && isAlive(id) {
+            guard let uid = AudioEngine.deviceUID(id), !uid.isEmpty else { continue }
+            out.append(MicInput(id: id, uid: uid, name: deviceName(id) ?? uid, transport: transport(id)))
+        }
+        return out
+    }
+
+    static func systemDefaultUID() -> String? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &deviceID) == noErr, deviceID != 0 else { return nil }
+        return AudioEngine.deviceUID(deviceID)
+    }
+
+    static func name(of uid: String?) -> String? {
+        guard let uid, let id = AudioEngine.deviceID(matching: uid) else { return nil }
+        return deviceName(id)
+    }
+
+    static func deviceName(_ id: AudioDeviceID) -> String? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let err = withUnsafeMutablePointer(to: &value) { ptr in AudioObjectGetPropertyData(id, &addr, 0, nil, &size, ptr) }
+        guard err == noErr, let cf = value?.takeRetainedValue() else { return nil }
+        return cf as String
+    }
+
+    private static func hasInputStreams(_ id: AudioDeviceID) -> Bool {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioObjectPropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        return AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr && size > 0
+    }
+
+    private static func isAlive(_ id: AudioDeviceID) -> Bool {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var alive: UInt32 = 1
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &alive) == noErr else { return true }
+        return alive != 0
+    }
+
+    private static func transport(_ id: AudioDeviceID) -> UInt32 {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return 0 }
+        return value
+    }
+}
+
+/// Which microphone, in what order: Kevin's explicit pick (any kind — an aggregate he
+/// asked for is his), then the connected built-in, then the one the graph ran on last,
+/// then the system default, then the rest by name, and every aggregate / virtual device
+/// last — never excluded, so a Mac whose only inputs are virtual still hears through
+/// one (`applyInputDevice` says so). Pure, so the probe and the Console can show the
+/// order for the devices at hand.
+enum MicRanking {
+    static func rank(_ inputs: [MicInput], explicit: String?, lastUsed: String?, systemDefault: String?) -> [MicInput] {
+        var out: [MicInput] = []
+        func add(_ device: MicInput) { if !out.contains(device) { out.append(device) } }
+        let byName: (MicInput, MicInput) -> Bool = { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if let explicit, let picked = inputs.first(where: { $0.uid == explicit }) { add(picked) }
+        for d in inputs.filter({ $0.isBuiltIn && !$0.isVirtual }).sorted(by: byName) { add(d) }
+        if let lastUsed, let used = inputs.first(where: { $0.uid == lastUsed && !$0.isVirtual }) { add(used) }
+        if let systemDefault, let def = inputs.first(where: { $0.uid == systemDefault && !$0.isVirtual }) { add(def) }
+        for d in inputs.filter({ !$0.isVirtual }).sorted(by: byName) { add(d) }
+        for d in inputs.filter({ $0.isVirtual }).sorted(by: byName) { add(d) }
+        return out
+    }
+}
+
+/// What the voice engine publishes about its microphones (`.jarheadMicRoute`).
+struct MicRoute {
+    /// The picker's request for a fresh route when it appears; the raw name is repeated in RightRailView.swift.
+    static let requestName = Notification.Name("jarhead.micRoute.request")
+
+    let ranked: [MicInput]
+    let active: String?
+    let systemDefault: String?
+    let explicit: String?
+    let echoCancelled: Bool
+    let running: Bool
+
+    /// "explicit" | "ranked" | "system default (echo cancellation)" | "off".
+    var follows: String {
+        guard running else { return "off" }
+        if echoCancelled { return "system default (echo cancellation)" }
+        return explicit != nil && active == explicit ? "explicit" : "ranked"
+    }
+
+    var summary: String {
+        let list = ranked.map { d -> String in
+            var tags = [d.transportName]
+            if d.uid == systemDefault { tags.append("default") }
+            if d.uid == explicit { tags.append("picked") }
+            return "\(d.name) (\(tags.joined(separator: ", ")))"
+        }.joined(separator: " › ")
+        let activeName = running ? (MicInputs.name(of: active) ?? active ?? "none") : "off"
+        return "\(list.isEmpty ? "no input devices" : list); active \(activeName), follows \(follows)"
+    }
+
+    var userInfo: [String: Any] {
+        [
+            "ids": ranked.map(\.uid),
+            "names": ranked.map(\.name),
+            "transports": ranked.map(\.transportName),
+            "virtual": ranked.filter(\.isVirtual).map(\.uid),
+            "active": active ?? "",
+            "default": systemDefault ?? "",
+            "follows": follows,
+            "summary": summary,
+        ]
+    }
+}
+
+/// Core Audio listeners for the device list and the system default input; `onChange`
+/// runs on the queue handed to `start`, with a short reason.
+final class MicRouter {
+    var onChange: ((String) -> Void)?
+    private var queue: DispatchQueue?
+    private var block: AudioObjectPropertyListenerBlock?
+
+    private static var devicesAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+    private static var defaultInputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    func start(on queue: DispatchQueue) {
+        guard block == nil else { return }
+        self.queue = queue
+        let block: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
+            var reasons: [String] = []
+            for i in 0 ..< Int(count) {
+                let selector = addresses[i].mSelector
+                let reason = selector == kAudioHardwarePropertyDevices ? "device list changed" : selector == kAudioHardwarePropertyDefaultInputDevice ? "default input changed" : "audio hardware changed"
+                if !reasons.contains(reason) { reasons.append(reason) }
+            }
+            self?.onChange?(reasons.joined(separator: ", "))
+        }
+        self.block = block
+        var devices = MicRouter.devicesAddress
+        var defaultInput = MicRouter.defaultInputAddress
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devices, queue, block)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultInput, queue, block)
+    }
+
+    func stop() {
+        guard let block, let queue else { return }
+        var devices = MicRouter.devicesAddress
+        var defaultInput = MicRouter.defaultInputAddress
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devices, queue, block)
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultInput, queue, block)
+        self.block = nil
+    }
+}
+
+// MARK: - barge-in duck
+
+/// The barge-in duck: the instant the microphone hears Kevin over Jarhead's voice, the
+/// speaker comes down 20 dB — before GPT-Live-1 has noticed the interruption (its own
+/// stop lands ~1.4 s later on the public model) — and comes back once he has finished,
+/// or after 700 ms when nothing follows (a cough, a chair). The microphone is never
+/// touched; only the player's volume moves.
+///
+/// Inputs, from five threads: the mono mic tap in 10 ms slices (`noteMic`, the tap
+/// thread), what the speaker has queued (`noteOutput` / `noteFlush`, the audio queue),
+/// Live's transcript of Kevin and Jarhead's own recent words (`noteLiveHeardKevin`,
+/// `noteJarheadSaid`, main), the engine's phase (`noteVoiceSpeaking`, main) and the
+/// ear's partials (`noteEarWords`, the ear queue). One lock guards the state; the gain
+/// steps and the timers run on `queue`.
+///
+/// Onset: speech energy over the room floor for ≥ 60 ms (six slices), judged inside the
+/// 100 ms tap buffer, while the player has audible output queued (or had within the last
+/// 300 ms — the queue is modelled from the seconds scheduled, so a network burst that
+/// hands the player half a second at once keeps the gate armed until it has played) —
+/// or the ear's words, or Live's transcript of Kevin, each with energy the gate saw in
+/// the last 300 ms, whichever comes first. The gain reaches 0.1 (−20 dB) in three 4 ms
+/// steps.
+///
+/// Confirmation — Live heard Kevin too — in the order it can arrive: the ear's partial
+/// carrying a word Jarhead did not just say (100–200 ms; a partial made only of words
+/// from Jarhead's own transcript may be residual echo and confirms nothing), Kevin's
+/// non-final item growing in the snapshot's transcript (Live's
+/// `session.input_transcript.delta`, typically around a second), the phase leaving
+/// `speaking` (≥ 1.2 s after Jarhead's last words: a fallback).
+///
+/// Release: confirmed, when the mic has been quiet 250 ms (capped at 4 s), a 300 ms ramp
+/// back to 1 and a 500 ms hold-off. Unconfirmed at 700 ms with the mic gone quiet: a
+/// cough — the ramp, and a 1 s hold-off (3 s after two in ten seconds). A mic still hot
+/// at 700 ms is not a cough and not Jarhead's echo (that dropped 20 dB with the
+/// speaker): the deadline extends 100 ms at a time to 1.5 s from the duck — about when
+/// Live's own stop lands — then the ramp and the hold-off. After an unconfirmed release
+/// the floor takes the level that tripped the gate, so a fan that switched on ducks once,
+/// not every few seconds (the floor falls again the moment the room is quieter).
+///
+/// Off without echo cancellation: the gate would hear Jarhead and duck Jarhead.
+final class BargeInDuck: @unchecked Sendable {
+    static let shared = BargeInDuck()
+
+    /// −20 dB.
+    static let duckGain: Float = 0.1
+    static let sliceSeconds = 0.01
+    /// Six 10 ms slices: 60 ms of speech energy.
+    static let onsetSlices = 6
+    /// The first look at a duck nobody confirmed.
+    static let confirmWindow: TimeInterval = 0.7
+    /// While the mic stays hot, the unconfirmed deadline moves on by this much at a time…
+    static let extendStep: TimeInterval = 0.1
+    /// …up to this long from the duck (GPT-Live-1's own stop on barge-in is ~1.4 s).
+    static let unconfirmedCap: TimeInterval = 1.5
+    /// A hot slice this recent at the deadline means he is still talking (a pause between
+    /// phrases, plus the tap's 100 ms delivery, fits inside it).
+    static let stillSpeakingWindow: TimeInterval = 0.3
+    static let releaseSeconds: TimeInterval = 0.3
+    /// The gate stays armed this long after the last audible sample the player has queued.
+    static let armTail: TimeInterval = 0.3
+    static let quietHold: TimeInterval = 0.25
+    static let maxDuck: TimeInterval = 4
+    /// Below this RMS nothing is speech whatever the floor says (residual echo after AEC sits under it).
+    static let minimumHotRMS = 0.008
+    static let floorFactor = 3.0
+    /// Over the mic level measured while Jarhead speaks unducked (residual echo), by this factor.
+    static let echoFactor = 2.5
+    /// The engine's AUDIBLE_OUTPUT_LEVEL: the silence the API streams between sentences is ~0.
+    static let audibleOutput = 0.02
+    static let holdoff: TimeInterval = 1
+    static let longHoldoff: TimeInterval = 3
+    /// After every release, confirmed or not, at least this long before the next duck.
+    static let releaseHoldoff: TimeInterval = 0.5
+    /// The ear's words and Live's transcript count as an onset only with energy this recent.
+    static let earEnergyWindow: TimeInterval = 0.3
+    /// A word this long that Jarhead did not just say is what lets a partial confirm.
+    static let novelWordMinLength = 3
+
+    enum Event {
+        /// The gain reached −20 dB; `latencyMs` is from the first hot slice's capture time (or the ear's cue).
+        case ducked(source: String, latencyMs: Double)
+        case confirmed(String)
+        /// The 700 ms deadline moved on because the mic was still hot; `afterMs` since the duck.
+        case extended(afterMs: Double)
+        /// A partial made only of Jarhead's own words was not taken as confirmation.
+        case refusedWords(String)
+        /// Back at unity; `afterMs` since the duck.
+        case released(String, afterMs: Double)
+    }
+    /// Harnesses and the log; called on `queue`.
+    var onEvent: ((Event) -> Void)?
+
+    struct Stats {
+        var ducks = 0
+        var confirmed = 0
+        var unconfirmed = 0
+        /// Unconfirmed ducks held past 700 ms because the mic stayed hot.
+        var held = 0
+        /// Partials refused as confirmation (Jarhead's own words).
+        var refusedWords = 0
+    }
+
+    private enum State {
+        case idle
+        case ducked(since: CFAbsoluteTime, onsetHost: UInt64, confirmed: Bool)
+        case releasing
+    }
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "jarhead.duck", qos: .userInteractive)
+    private var gain: ((Float) -> Void)?
+    private var echoCancelled = false
+    private var state: State = .idle
+    private var currentGain: Float = 1
+    /// The room: falls to any quieter slice at once, rises with a ~20 s time constant.
+    private var floor = 0.02
+    /// The mic while Jarhead speaks unducked and nobody else does: residual echo.
+    private var echoFloor = 0.0
+    private var hotRun = 0
+    private var hotSinceHost: UInt64 = 0
+    private var lastHotHost: UInt64 = 0
+    /// The player's queue as scheduled: when the last sample handed over will have played,
+    /// and when the last *audible* one will have (silence between sentences arms nothing).
+    private var queueEnd: CFAbsoluteTime = 0
+    private var audibleUntil: CFAbsoluteTime = 0
+    private var voiceSpeaking = false
+    private var holdoffUntil: CFAbsoluteTime = 0
+    private var unconfirmedAt: [CFAbsoluteTime] = []
+    /// Whether the current duck's deadline has been extended at least once.
+    private var extendedThisDuck = false
+    /// Hot slices during the current duck: the level that tripped the gate, for the floor when nothing confirms.
+    private var hotSum = 0.0
+    private var hotCount = 0
+    /// Jarhead's recent words (lowercased, ≥ `novelWordMinLength`), from the snapshot's transcript.
+    private var jarheadWords: Set<String> = []
+    /// Bumped by every state change that invalidates queued timers.
+    private var generation = 0
+    private var stats = Stats()
+
+    // MARK: wiring
+
+    /// The graph is up: `gain` sets the player's volume. Called on the audio queue.
+    func attach(echoCancelled: Bool, gain: @escaping (Float) -> Void) {
+        lock.lock()
+        self.gain = gain
+        self.echoCancelled = echoCancelled
+        state = .idle
+        currentGain = 1
+        generation += 1
+        hotRun = 0
+        queueEnd = 0
+        audibleUntil = 0
+        lock.unlock()
+        queue.async { gain(1) }
+    }
+
+    /// The graph is going down: unity first, then no player to drive.
+    func detach() {
+        lock.lock()
+        let gain = self.gain
+        self.gain = nil
+        state = .idle
+        currentGain = 1
+        generation += 1
+        queueEnd = 0
+        audibleUntil = 0
+        lock.unlock()
+        if let gain { queue.async { gain(1) } }
+    }
+
+    /// Harnesses: forget floors, hold-offs, words and counts between runs.
+    func resetForHarness() {
+        lock.lock()
+        state = .idle
+        currentGain = 1
+        floor = 0.02
+        echoFloor = 0
+        hotRun = 0
+        hotSinceHost = 0
+        lastHotHost = 0
+        queueEnd = 0
+        audibleUntil = 0
+        voiceSpeaking = false
+        holdoffUntil = 0
+        unconfirmedAt.removeAll()
+        extendedThisDuck = false
+        hotSum = 0
+        hotCount = 0
+        jarheadWords.removeAll()
+        generation += 1
+        stats = Stats()
+        let gain = self.gain
+        lock.unlock()
+        if let gain { queue.async { gain(1) } }
+    }
+
+    var currentStats: Stats {
+        lock.lock(); defer { lock.unlock() }
+        return stats
+    }
+
+    /// For the mic diag line: empty until something has happened.
+    func diagSuffix() -> String {
+        let s = currentStats
+        guard s.ducks > 0 else { return "" }
+        return ", duck \(s.ducks) (\(s.confirmed) confirmed, \(s.unconfirmed) unconfirmed, \(s.held) held past 700 ms, \(s.refusedWords) echo partials refused)"
+    }
+
+    // MARK: inputs
+
+    /// What the speaker is about to play (the audio queue): `seconds` of audio at `rms`,
+    /// queued behind whatever is still playing.
+    func noteOutput(rms: Double, seconds: TimeInterval) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        lock.lock()
+        let now = CFAbsoluteTimeGetCurrent()
+        queueEnd = max(queueEnd, now) + seconds
+        if rms >= BargeInDuck.audibleOutput { audibleUntil = queueEnd }
+        lock.unlock()
+    }
+
+    /// The speaker backlog was dropped (a stop, a barge-in the engine confirmed): nothing queued is audible any more.
+    func noteFlush() {
+        lock.lock()
+        let now = CFAbsoluteTimeGetCurrent()
+        queueEnd = now
+        audibleUntil = min(audibleUntil, now)
+        lock.unlock()
+    }
+
+    /// The engine's phase entered or left `speaking` (main queue). Leaving it while ducked
+    /// unconfirmed is a confirmation: Live heard Kevin too. A fallback — the phase leaves
+    /// `speaking` 1.2 s after Jarhead's last words at the earliest.
+    func noteVoiceSpeaking(_ speaking: Bool) {
+        lock.lock()
+        let was = voiceSpeaking
+        voiceSpeaking = speaking
+        var confirm = false
+        if was, !speaking, case .ducked(_, _, false) = state { confirm = true }
+        if confirm { confirmLocked("voice stopped") }
+        lock.unlock()
+    }
+
+    /// Jarhead's recent words as the snapshot's transcript has them (main queue): a
+    /// partial made only of these may be his echo and confirms nothing.
+    func noteJarheadSaid(_ text: String) {
+        let words = BargeInDuck.words(of: text)
+        lock.lock()
+        jarheadWords = words
+        lock.unlock()
+    }
+
+    /// Live's transcript of Kevin grew (a new or longer non-final item in the snapshot,
+    /// main queue): the confirmation when the ear is off. With the room still hot and the
+    /// speaker audible it is also an onset — confirmed at once, through any hold-off:
+    /// Live's word outranks the gate's caution.
+    func noteLiveHeardKevin() {
+        lock.lock()
+        switch state {
+        case .ducked(_, _, false):
+            confirmLocked("live transcript")
+        case .idle, .releasing:
+            let now = CFAbsoluteTimeGetCurrent()
+            if recentEnergyLocked(), echoCancelled, gain != nil, outputAudibleLocked(now) {
+                duckLocked(source: "live transcript", onsetHost: lastHotHost, confirmed: true)
+            }
+        case .ducked:
+            break
+        }
+        lock.unlock()
+    }
+
+    /// The ear produced words (a partial that grew), on the ear queue. With a word
+    /// Jarhead did not just say they are an onset (confirmed at once) or the confirmation;
+    /// made only of his words they are left to the gate — residual echo says his words.
+    func noteEarWords(_ text: String) {
+        lock.lock()
+        let novel = hasNovelWordLocked(text)
+        switch state {
+        case .idle, .releasing:
+            if novel, recentEnergyLocked(), armedLocked() { duckLocked(source: "ear words", onsetHost: hotRun > 0 ? hotSinceHost : lastHotHost, confirmed: true) }
+        case .ducked(_, _, false):
+            if novel {
+                confirmLocked("ear words")
+            } else {
+                stats.refusedWords += 1
+                queue.async { [weak self] in self?.onEvent?(.refusedWords(text)) }
+            }
+        case .ducked:
+            break
+        }
+        lock.unlock()
+    }
+
+    /// The mono microphone buffer (the tap thread): 10 ms slices, floor, onset.
+    func noteMic(mono: UnsafePointer<Float>, frames: Int, sampleRate: Double, capturedAt: AVAudioTime) {
+        guard frames > 0, sampleRate > 0 else { return }
+        let slice = max(1, Int(sampleRate * BargeInDuck.sliceSeconds))
+        let startHost = capturedAt.isHostTimeValid ? capturedAt.hostTime : mach_absolute_time() &- AVAudioTime.hostTime(forSeconds: Double(frames) / sampleRate)
+        lock.lock()
+        defer { lock.unlock() }
+        guard echoCancelled, gain != nil else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let outputAudible = outputAudibleLocked(now)
+        var offset = 0
+        while offset < frames {
+            let n = min(slice, frames - offset)
+            var acc = 0.0
+            for i in offset ..< offset + n { acc += Double(mono[i] * mono[i]) }
+            let rms = clampLevel((acc / Double(n)).squareRoot())
+            offset += n
+            // The room, and the residual echo of Jarhead's own voice while it plays unducked.
+            if rms < floor { floor = rms } else { floor += (rms - floor) * 0.0005 }
+            if outputAudible, case .idle = state {
+                if rms > echoFloor { echoFloor += (rms - echoFloor) * 0.02 } else { echoFloor *= 0.995 }
+            } else if !outputAudible {
+                echoFloor *= 0.999
+            }
+            let threshold = max(floor * BargeInDuck.floorFactor, BargeInDuck.minimumHotRMS, echoFloor * BargeInDuck.echoFactor)
+            let sliceHost = startHost &+ AVAudioTime.hostTime(forSeconds: Double(offset - n) / sampleRate)
+            if rms > threshold {
+                if hotRun == 0 { hotSinceHost = sliceHost }
+                hotRun += 1
+                lastHotHost = sliceHost &+ AVAudioTime.hostTime(forSeconds: Double(n) / sampleRate)
+                if case .ducked = state {
+                    hotSum += rms
+                    hotCount += 1
+                }
+                if hotRun == BargeInDuck.onsetSlices, armedLocked() {
+                    switch state {
+                    case .idle, .releasing: duckLocked(source: "gate", onsetHost: hotSinceHost, confirmed: false)
+                    case .ducked: break
+                    }
+                }
+            } else {
+                hotRun = 0
+            }
+        }
+    }
+
+    // MARK: the machine (under `lock`)
+
+    /// Audible output is queued, or was within `armTail`.
+    private func outputAudibleLocked(_ now: CFAbsoluteTime) -> Bool {
+        now < audibleUntil + BargeInDuck.armTail
+    }
+
+    /// The gate saw speech energy within `earEnergyWindow`.
+    private func recentEnergyLocked() -> Bool {
+        guard lastHotHost > 0 else { return false }
+        let nowHost = mach_absolute_time()
+        return nowHost < lastHotHost || AVAudioTime.seconds(forHostTime: nowHost - lastHotHost) < BargeInDuck.earEnergyWindow
+    }
+
+    /// Seconds since the last hot slice; infinite when none was seen.
+    private func quietForLocked() -> TimeInterval {
+        guard lastHotHost > 0 else { return .infinity }
+        let nowHost = mach_absolute_time()
+        return nowHost < lastHotHost ? 0 : AVAudioTime.seconds(forHostTime: nowHost - lastHotHost)
+    }
+
+    /// Words of `text`, lowercased, letters and digits only, at least `novelWordMinLength` long.
+    static func words(of text: String) -> Set<String> {
+        var out: Set<String> = []
+        for piece in text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) where piece.count >= novelWordMinLength {
+            out.insert(String(piece))
+        }
+        return out
+    }
+
+    /// True when `text` has a word Jarhead did not just say (or nothing of his is known yet).
+    private func hasNovelWordLocked(_ text: String) -> Bool {
+        let words = BargeInDuck.words(of: text)
+        guard !words.isEmpty else { return false }
+        guard !jarheadWords.isEmpty else { return true }
+        return words.contains { !jarheadWords.contains($0) }
+    }
+
+    private func armedLocked() -> Bool {
+        guard echoCancelled, gain != nil else { return false }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now >= holdoffUntil else { return false }
+        return outputAudibleLocked(now)
+    }
+
+    private func duckLocked(source: String, onsetHost: UInt64, confirmed: Bool) {
+        let now = CFAbsoluteTimeGetCurrent()
+        state = .ducked(since: now, onsetHost: onsetHost, confirmed: confirmed)
+        generation += 1
+        let gen = generation
+        stats.ducks += 1
+        if confirmed { stats.confirmed += 1 }
+        extendedThisDuck = false
+        hotSum = 0
+        hotCount = 0
+        guard let gain else { return }
+        // Three steps, 4 ms apart: −20 dB within one render cycle or two, without a click.
+        let steps: [Float] = [0.5, 0.25, BargeInDuck.duckGain]
+        for (i, g) in steps.enumerated() {
+            queue.asyncAfter(deadline: .now() + .milliseconds(4 * i)) { [weak self] in
+                guard let self, self.stillCurrent(gen) else { return }
+                gain(g)
+                self.setGain(g)
+                if i == steps.count - 1 {
+                    let nowHost = mach_absolute_time()
+                    let ms = nowHost > onsetHost ? AVAudioTime.seconds(forHostTime: nowHost - onsetHost) * 1000 : 0
+                    self.onEvent?(.ducked(source: source, latencyMs: ms.isFinite ? ms : 0))
+                }
+            }
+        }
+        if confirmed {
+            // Already Live's word: release when he has finished.
+            queue.async { [weak self] in
+                self?.onEvent?(.confirmed(source))
+                self?.pollRelease(gen, source: source)
+            }
+        } else {
+            // Nothing follows within 700 ms and the mic is quiet: a cough. Back up, and hold off.
+            queue.asyncAfter(deadline: .now() + BargeInDuck.confirmWindow) { [weak self] in
+                self?.unconfirmedDeadline(gen)
+            }
+        }
+    }
+
+    private func confirmLocked(_ source: String) {
+        guard case .ducked(let since, let onset, false) = state else { return }
+        state = .ducked(since: since, onsetHost: onset, confirmed: true)
+        stats.confirmed += 1
+        let gen = generation
+        queue.async { [weak self] in
+            self?.onEvent?(.confirmed(source))
+            self?.pollRelease(gen, source: source)
+        }
+    }
+
+    private func stillCurrent(_ gen: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return gen == generation && gain != nil
+    }
+
+    private func setGain(_ g: Float) {
+        lock.lock()
+        currentGain = g
+        lock.unlock()
+    }
+
+    /// On `queue`: the deadline for a duck nobody confirmed — 700 ms, moved on while the
+    /// mic stays hot (he is still talking; Jarhead's echo dropped with the speaker) up to
+    /// 1.5 s, unless two ducks in ten seconds already went unconfirmed.
+    private func unconfirmedDeadline(_ gen: Int) {
+        lock.lock()
+        guard gen == generation, case .ducked(let since, _, false) = state else { lock.unlock(); return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let stillSpeaking = quietForLocked() < BargeInDuck.stillSpeakingWindow
+        let recentUnconfirmed = unconfirmedAt.filter { now - $0 < 10 }.count
+        if stillSpeaking, now - since + BargeInDuck.extendStep <= BargeInDuck.unconfirmedCap + 0.001, recentUnconfirmed < 2 {
+            if !extendedThisDuck {
+                extendedThisDuck = true
+                stats.held += 1
+            }
+            lock.unlock()
+            onEvent?(.extended(afterMs: (now - since) * 1000))
+            queue.asyncAfter(deadline: .now() + BargeInDuck.extendStep) { [weak self] in self?.unconfirmedDeadline(gen) }
+            return
+        }
+        stats.unconfirmed += 1
+        unconfirmedAt = unconfirmedAt.filter { now - $0 < 10 } + [now]
+        holdoffUntil = now + (unconfirmedAt.count >= 2 ? BargeInDuck.longHoldoff : BargeInDuck.holdoff)
+        // The level that tripped the gate is the floor now, until the room is quieter than it.
+        if hotCount > 0 { floor = max(floor, min(1, (hotSum / Double(hotCount)) / BargeInDuck.floorFactor)) }
+        let held = extendedThisDuck
+        lock.unlock()
+        beginRelease(held ? "unconfirmed, held to \(Int(((now - since) * 1000).rounded())) ms" : "unconfirmed at 700 ms", since: since)
+    }
+
+    /// On `queue`: once confirmed, release when the mic has been quiet a while (or at the cap).
+    private func pollRelease(_ gen: Int, source: String) {
+        lock.lock()
+        guard gen == generation, case .ducked(let since, _, true) = state else { lock.unlock(); return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let quietFor = quietForLocked()
+        let done = quietFor >= BargeInDuck.quietHold || now - since >= BargeInDuck.maxDuck
+        lock.unlock()
+        if done {
+            beginRelease(quietFor >= BargeInDuck.quietHold ? "quiet after \(source)" : "capped at 4 s", since: since)
+        } else {
+            queue.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in self?.pollRelease(gen, source: source) }
+        }
+    }
+
+    /// On `queue`: the 300 ms ramp back to unity, 15 ms a step, and a hold-off after it.
+    private func beginRelease(_ why: String, since: CFAbsoluteTime) {
+        lock.lock()
+        state = .releasing
+        generation += 1
+        let gen = generation
+        let from = currentGain
+        let gain = self.gain
+        holdoffUntil = max(holdoffUntil, CFAbsoluteTimeGetCurrent() + BargeInDuck.releaseHoldoff)
+        lock.unlock()
+        guard let gain else { return }
+        let steps = max(1, Int(BargeInDuck.releaseSeconds / 0.015))
+        for i in 1 ... steps {
+            queue.asyncAfter(deadline: .now() + .milliseconds(15 * i)) { [weak self] in
+                guard let self, self.stillCurrent(gen) else { return }
+                let t = Float(i) / Float(steps)
+                // Ease out: most of the level comes back early, the tail is smooth.
+                let eased = 1 - (1 - t) * (1 - t)
+                let g = from + (1 - from) * eased
+                gain(g)
+                self.setGain(g)
+                if i == steps {
+                    self.lock.lock()
+                    if gen == self.generation { self.state = .idle }
+                    self.lock.unlock()
+                    self.onEvent?(.released(why, afterMs: (CFAbsoluteTimeGetCurrent() - since) * 1000))
+                }
+            }
+        }
     }
 }

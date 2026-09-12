@@ -80,6 +80,12 @@ export type DaemonMessage =
   | { readonly type: "ledger.days"; readonly id: string; readonly days: string[] }
   /** Jarhead's own sessions (JarheadSessionSummary[]), newest first. */
   | { readonly type: "ledger.sessions"; readonly id: string; readonly sessions: unknown[] }
+  /** Liveness: the daemon answers a client's ping at once; two missed pongs and the app respawns it. */
+  | { readonly type: "pong"; readonly id: string; readonly at: number }
+  /** Words the on-device ear should be biased toward right now: visible control titles, the front app and window, agent names. */
+  | { readonly type: "ear.hints"; readonly strings: readonly string[] }
+  /** Full-text hits over the ledger for the Console's search box. */
+  | { readonly type: "ledger.hits"; readonly id: string; readonly hits: unknown[] }
   | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
@@ -111,6 +117,9 @@ export type ClientMessage =
   | { readonly type: "ledger.sessions"; readonly id: string }
   /** The rows of one session (its started row through its closed row); answered with `ledger.rows`. */
   | { readonly type: "ledger.session"; readonly id: string; readonly sessionId: string }
+  | { readonly type: "ping"; readonly id: string }
+  /** Search heard/said text and delegation requests across the live ledger (not the trash); `limit` default 50. */
+  | { readonly type: "ledger.search"; readonly id: string; readonly query: string; readonly limit?: number }
   /**
    * Run one of Jarhead's tools through the engine's ToolRunner (policy, ledger,
    * screenshot archive, confirmation handshake included). Used by the MCP bridge

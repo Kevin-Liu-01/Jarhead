@@ -268,6 +268,177 @@ test("sessions: the per-file cache notices a file that grew, including by anothe
   assert.equal(ledger.sessions()[0]?.said, 1);
 });
 
+// ------------------------------------------------------------ conversation cleanup
+//
+// Tombstone rows in TODAY's file; the bytes of the conversation stay where they were
+// written. A row's chainId is any session of the chain and resolves to the root through
+// the resumedFrom links; the last row by `at` wins; `restored` clears trashed and archived.
+
+/** A two-session chain (A paused, B resumed from it) on the 11th, closed. */
+function chain(ledger: Ledger): void {
+  const t = (m: number, s = 0) => local(11, 14, m, s);
+  ledger.append({ at: t(0), type: "session.started", sessionId: "A", voice: "cedar" });
+  ledger.append(heard(t(1), "read me the plan"));
+  ledger.append(said(t(2), "the plan is a plan"));
+  ledger.append({ at: t(3), type: "delegation.created", delegation: { ...delegation("d1", t(3)), request: "open the auth branch in Safari" } });
+  ledger.append({ at: t(3, 30), type: "delegation.finished", delegationId: "d1", status: "done", timings: { delegatedAt: t(3) }, summary: "Safari shows the pull request" });
+  ledger.append({ at: t(4), type: "pause", sessionId: "A", usageSeconds: 180 });
+  ledger.append({ at: t(4, 1), type: "session.closed", sessionId: "A", reason: "close_requested", usageSeconds: 180 });
+  ledger.append({ at: t(6), type: "resume", sessionId: "B", resumedFrom: "A", pausedMs: 119_000 });
+  ledger.append({ at: t(6, 1), type: "session.started", sessionId: "B", voice: "cedar", resumedFrom: "A" });
+  ledger.append(heard(t(7), "carry on"));
+  ledger.append({ at: t(8), type: "session.closed", sessionId: "B", reason: "idle", usageSeconds: 60 });
+}
+
+test("conversations: a tombstone against any session of the chain lands on the chain; last row by `at` wins; restore clears trashed and archived", () => {
+  const ledger = fresh();
+  chain(ledger);
+  // An unrelated session on the 12th, so the tombstones land in "today's" file, not the chain's.
+  ledger.append({ at: local(12, 9, 0), type: "session.started", sessionId: "C", voice: "cedar" });
+  ledger.append({ at: local(12, 9, 1), type: "session.closed", sessionId: "C", reason: "idle", usageSeconds: 5 });
+
+  const states = () => Object.fromEntries(ledger.sessions().map((s) => [s.id, s.state]));
+  assert.deepEqual(states(), { C: undefined, B: undefined, A: undefined }, "no rows: active, nothing stamped");
+
+  // Trashed through the RESUMED session's id: both summaries of the chain say so; C is untouched.
+  ledger.append({ at: local(12, 14, 2), type: "conversation.trashed", chainId: "B", by: "kevin" });
+  assert.deepEqual(states(), { C: undefined, B: "trashed", A: "trashed" });
+  const a = ledger.sessions().find((s) => s.id === "A")!;
+  assert.equal(a.trashedAt, local(12, 14, 2));
+  assert.equal(a.pinned, false);
+  assert.equal(a.name, undefined);
+  assert.equal(ledger.conversation("A")?.state, "trashed");
+  assert.equal(ledger.conversation("B")?.trashedAt, local(12, 14, 2));
+  assert.equal(ledger.chainRootOf("B"), "A");
+  assert.equal(ledger.chainRootOf("A"), "A");
+  assert.equal(ledger.chainRootOf("C"), "C");
+
+  // Restored: active again, trashedAt gone.
+  ledger.append({ at: local(12, 14, 3), type: "conversation.restored", chainId: "A" });
+  assert.deepEqual(states(), { C: undefined, B: "active", A: "active" });
+  assert.equal(ledger.sessions().find((s) => s.id === "B")!.trashedAt, undefined);
+
+  // Archived, then trashed, then restored: restore clears both.
+  ledger.append({ at: local(12, 14, 4), type: "conversation.archived", chainId: "A" });
+  assert.equal(ledger.conversation("B")?.state, "archived");
+  ledger.append({ at: local(12, 14, 5), type: "conversation.trashed", chainId: "A", by: "retention" });
+  assert.equal(ledger.conversation("B")?.state, "trashed");
+  ledger.append({ at: local(12, 14, 6), type: "conversation.restored", chainId: "B" });
+  assert.equal(ledger.conversation("A")?.state, "active");
+  assert.equal(ledger.conversation("A")?.trashedAt, undefined);
+
+  // Rename and pin ride along; "" puts the auto title back.
+  ledger.append({ at: local(12, 14, 7), type: "conversation.renamed", chainId: "B", name: "  The auth branch  " });
+  ledger.append({ at: local(12, 14, 8), type: "conversation.pinned", chainId: "A", pinned: true });
+  const b = ledger.sessions().find((s) => s.id === "B")!;
+  assert.equal(b.name, "The auth branch");
+  assert.equal(b.pinned, true);
+  assert.equal(b.state, "active");
+  assert.equal(b.title, "carry on", "the auto title is still there underneath");
+  ledger.append({ at: local(12, 14, 9), type: "conversation.renamed", chainId: "B", name: "" });
+  assert.equal(ledger.sessions().find((s) => s.id === "A")!.name, undefined);
+
+  // Last row by `at` wins, whatever the file order: a late-written row with an EARLIER `at` does not undo the newer verdict.
+  ledger.append({ at: local(12, 14, 1), type: "conversation.trashed", chainId: "A", by: "kevin" });
+  assert.equal(ledger.conversation("A")?.state, "active");
+  assert.equal(ledger.conversation("A")?.updatedAt, local(12, 14, 9));
+
+  // Unknown ids are counted, never fatal — and never stamp anyone.
+  ledger.append({ at: local(12, 15, 0), type: "conversation.trashed", chainId: "nope", by: "kevin" });
+  assert.equal(ledger.unresolvedConversationRows(), 1);
+  assert.deepEqual(states(), { C: undefined, B: "active", A: "active" });
+  assert.equal(ledger.conversation("nope"), undefined);
+  assert.equal(ledger.chainRootOf("nope"), undefined);
+});
+
+test("conversations: readSession carries the chain's tombstones from today's file, in order, and not another chain's", () => {
+  const ledger = fresh();
+  chain(ledger);
+  // Today: an OPEN session D (no closed row) whose span runs to the end of the file, and the moves.
+  ledger.append({ at: local(12, 13, 0), type: "session.started", sessionId: "D", voice: "cedar" });
+  ledger.append(heard(local(12, 13, 1), "hello"));
+  ledger.append({ at: local(12, 14, 2), type: "conversation.trashed", chainId: "B", by: "kevin" });
+  ledger.append({ at: local(12, 14, 3), type: "conversation.restored", chainId: "A" });
+  ledger.append({ at: local(12, 14, 4), type: "conversation.pinned", chainId: "D", pinned: true });
+  ledger.append({ at: local(12, 14, 5), type: "grant", chainId: "A", app: "Mail", actionClass: "send", until: local(12, 15, 0) });
+
+  // The chain's rows show the moves after the session's own rows — the Log's "Moved to Trash 14:02 · Restored 14:03".
+  assert.deepEqual(ledger.readSession("A").map((r) => r.type), ["session.started", "heard", "said", "delegation.created", "delegation.finished", "pause", "session.closed", "conversation.trashed", "conversation.restored", "grant"]);
+  assert.deepEqual(ledger.readSession("B").map((r) => r.type), ["resume", "session.started", "heard", "session.closed", "conversation.trashed", "conversation.restored", "grant"]);
+  // D is open around the tombstones, but only its own pin is its row; the others belong to A's chain.
+  assert.deepEqual(ledger.readSession("D").map((r) => r.type), ["session.started", "heard", "conversation.pinned"]);
+  assert.equal(ledger.sessions().find((s) => s.id === "D")!.pinned, true);
+  assert.equal(ledger.sessions().find((s) => s.id === "D")!.state, "active");
+});
+
+test("conversations: now.cleared / now.restored per session, last by `at`; the rows are the session's own", () => {
+  const ledger = fresh();
+  ledger.append({ at: local(12, 10, 0), type: "session.started", sessionId: "S", voice: "cedar" });
+  ledger.append(heard(local(12, 10, 1), "one"));
+  assert.equal(ledger.nowClearedAt("S"), undefined);
+  ledger.append({ at: local(12, 10, 2), type: "now.cleared", sessionId: "S" });
+  assert.equal(ledger.nowClearedAt("S"), local(12, 10, 2));
+  ledger.append({ at: local(12, 10, 3), type: "now.restored", sessionId: "S" });
+  assert.equal(ledger.nowClearedAt("S"), undefined);
+  ledger.append({ at: local(12, 10, 4), type: "now.cleared", sessionId: "S" });
+  assert.equal(ledger.nowClearedAt("S"), local(12, 10, 4));
+  assert.equal(ledger.nowClearedAt("other"), undefined);
+  assert.deepEqual(ledger.readSession("S").map((r) => r.type), ["session.started", "heard", "now.cleared", "now.restored", "now.cleared"]);
+  // Hidden agents: last row per agent wins.
+  ledger.append({ at: local(12, 10, 5), type: "agent.hidden", agentId: "sessions:codex:1", hidden: true });
+  ledger.append({ at: local(12, 10, 6), type: "agent.hidden", agentId: "sessions:claude:2", hidden: true });
+  ledger.append({ at: local(12, 10, 7), type: "agent.hidden", agentId: "sessions:codex:1", hidden: false });
+  assert.deepEqual(ledger.hiddenAgents(), ["sessions:claude:2"]);
+  // ledger.moved and agent.hidden rows are nobody's session rows.
+  ledger.append({ at: local(12, 10, 8), type: "ledger.moved", day: "2026-09-01", what: "ledger", to: "trash", path: "/x", by: "kevin" });
+  assert.ok(!ledger.readSession("S").some((r) => r.type === "ledger.moved" || r.type === "agent.hidden"));
+});
+
+test("conversations: a chain whose root day is gone resolves to the last known session; the old tombstone is counted, not applied", () => {
+  const ledger = fresh();
+  // Only B's day is live: its resumedFrom names an A the ledger never saw start.
+  ledger.append({ at: local(11, 14, 6, 1), type: "session.started", sessionId: "B", voice: "cedar", resumedFrom: "A" });
+  ledger.append({ at: local(11, 14, 8), type: "session.closed", sessionId: "B", reason: "idle", usageSeconds: 60 });
+  ledger.append({ at: local(12, 14, 2), type: "conversation.trashed", chainId: "A", by: "kevin" });
+  ledger.append({ at: local(12, 14, 3), type: "conversation.renamed", chainId: "B", name: "still here" });
+  assert.equal(ledger.chainRootOf("B"), "B");
+  assert.equal(ledger.unresolvedConversationRows(), 1);
+  const b = ledger.sessions()[0]!;
+  assert.equal(b.state, "active");
+  assert.equal(b.name, "still here");
+});
+
+test("search: case-insensitive substring over heard, said, requests and summaries, newest first, attributed to the session and its chain, bounded", () => {
+  const ledger = fresh();
+  chain(ledger);
+  ledger.append({ at: local(12, 9, 0), type: "session.started", sessionId: "C", voice: "cedar" });
+  ledger.append(heard(local(12, 9, 1), "what did the PLAN say again"));
+  ledger.append(said(local(12, 9, 2), "the plan is what it was"));
+  ledger.append({ at: local(12, 9, 3), type: "problem", text: "a plan-shaped problem is not searched" });
+
+  const hits = ledger.search("  plan ");
+  assert.deepEqual(
+    hits.map((h) => [h.sessionId, h.chainId, h.kind, h.text]),
+    [
+      ["C", "C", "said", "the plan is what it was"],
+      ["C", "C", "heard", "what did the PLAN say again"],
+      ["A", "A", "said", "the plan is a plan"],
+      ["A", "A", "heard", "read me the plan"],
+    ],
+  );
+  assert.ok(hits.every((h, i) => i === 0 || h.at <= hits[i - 1]!.at), "newest first");
+  // Requests and summaries, attributed to the chain through the resumed session too.
+  assert.deepEqual(ledger.search("auth branch").map((h) => [h.sessionId, h.chainId, h.kind]), [["A", "A", "request"]]);
+  assert.deepEqual(ledger.search("pull request").map((h) => h.kind), ["summary"]);
+  assert.deepEqual(ledger.search("carry").map((h) => [h.sessionId, h.chainId]), [["B", "A"]]);
+  // Bounds: an empty query is nothing; the limit caps and clamps.
+  assert.deepEqual(ledger.search("   "), []);
+  assert.equal(ledger.search("plan", 2).length, 2);
+  assert.equal(ledger.search("plan", 0).length, 4, "0 falls back to the default");
+  assert.equal(ledger.search("a", 10_000).length <= 200, true);
+  assert.deepEqual(ledger.search("nothing like this"), []);
+});
+
 test("line splitter frames partial chunks and caps runaway lines", () => {
   const s = new LineSplitter(64);
   assert.deepEqual(s.push('{"a":1}\n{"b"'), ['{"a":1}']);
@@ -286,4 +457,33 @@ test("marks measure from start and between", () => {
   assert.equal(m.since("a"), 250);
   assert.equal(m.between("a", "b"), 650);
   assert.equal(m.since("missing"), undefined);
+});
+
+test("search: a hit says the state of its conversation (a rail that hides a trashed chain can hide or mark the hit); a limit that is not positive is the default, never a cap of 1", () => {
+  const ledger = fresh();
+  chain(ledger);
+  ledger.append({ at: local(12, 9, 0), type: "session.started", sessionId: "C", voice: "cedar" });
+  ledger.append(heard(local(12, 9, 1), "the secret plan"));
+  ledger.append({ at: local(12, 9, 2), type: "session.closed", sessionId: "C", reason: "idle", usageSeconds: 5 });
+  assert.ok(ledger.search("plan").every((h) => h.state === "active"));
+
+  ledger.append({ at: local(12, 10, 0), type: "conversation.trashed", chainId: "A", by: "kevin" });
+  ledger.append({ at: local(12, 10, 1), type: "conversation.archived", chainId: "C" });
+  assert.deepEqual(
+    ledger.search("plan").map((h) => [h.sessionId, h.chainId, h.state]),
+    [
+      ["C", "C", "archived"],
+      ["A", "A", "trashed"],
+      ["A", "A", "trashed"],
+    ],
+  );
+  // B's line sits in A's chain: trashed with it, restored with it.
+  assert.deepEqual(ledger.search("carry").map((h) => [h.sessionId, h.chainId, h.state]), [["B", "A", "trashed"]]);
+  ledger.append({ at: local(12, 10, 2), type: "conversation.restored", chainId: "A" });
+  assert.deepEqual(ledger.search("carry").map((h) => h.state), ["active"]);
+  // Bounds: -3, NaN and 0 are the default (well above the three hits here); 1 is a cap of 1.
+  assert.equal(ledger.search("plan", -3).length, 3);
+  assert.equal(ledger.search("plan", Number.NaN).length, 3);
+  assert.equal(ledger.search("plan", 0).length, 3);
+  assert.equal(ledger.search("plan", 1).length, 1);
 });

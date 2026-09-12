@@ -92,3 +92,101 @@ test("delegator: the eyes' shot is the first attachment and never the brain's fi
   assert.ok(live.sent.some((s) => s.type === "instructions" && /cancelled/.test(s.payload.content)));
   d.dispose();
 });
+
+test("delegator: narration at the level of intent — the first action is voiced as it lands without the tool's name, per-click lines and lines naming a tool stay on the timeline, state changes and the summary are spoken; announceSleep is one instruction, none while a task runs", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  let hold: ((r: BrainResult) => void) | undefined;
+  const brain: Brain = {
+    kind: "fake",
+    start: async () => ({ ready: true, detail: "" }),
+    handle: (task, sink) =>
+      new Promise<BrainResult>((resolve) => {
+        hold = resolve;
+        sink.step({ kind: "tool", tool: { name: "frontmost_app", input: {}, ok: true, ms: 3 } }); // a look: silent
+        sink.step({ kind: "tool", tool: { name: "open_app", input: { name: "Numbers" }, ok: true, ms: 40 } }); // the first action: voiced as it lands
+        sink.commentary("Clicking the Invoices tab."); // per click, after something was voiced: timeline only
+        sink.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [3, 4] }, ok: true, ms: 7 } });
+        sink.commentary("Found the invoice."); // a state change: spoken
+        sink.commentary("Pressing Return."); // per click: timeline
+        sink.commentary("I will use read_focused_text to check the field."); // names a tool: timeline
+        sink.commentary("Typing the amount."); // a state change (not in the per-click list): spoken
+        task.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+      }),
+    cancel: async () => undefined,
+    stop: async () => undefined,
+  };
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), now: () => clock, commentaryCoalesceMs: 0, voiceFirstTool: true });
+  assert.equal(Delegator.narrationVerdict("Clicking Save.", false), "speak", "the task's first words pass whatever their shape");
+  assert.equal(Delegator.narrationVerdict("Clicking Save.", true), "timeline");
+  assert.equal(Delegator.narrationVerdict("Calling click_element on Save.", false), "timeline", "a tool's name never reaches the voice");
+  assert.equal(Delegator.narrationVerdict("Renamed my_report.txt.", true), "speak", "Kevin's own identifiers are not tool names");
+  assert.equal(Delegator.narrationVerdict("Typed the amount.", true), "speak");
+  assert.equal(Delegator.narrationVerdict("Send it to dana@example.com?", true), "speak", "a question is for Kevin");
+  assert.equal(Delegator.narrationVerdict('About to run "python edit_file.py". Say yes and I will.', true), "speak", "the handshake's words pass even naming a tool");
+  assert.equal(Delegator.narrationVerdict("Pressing Send will post it; confirm.", true), "speak");
+  assert.equal(Delegator.narrationVerdict("Calling click_element on Save.", true, true), "speak", "once a confirmation is pending nothing is gated");
+
+  assert.equal(d.announceSleep(5), true);
+  assert.deepEqual(live.sent.map((s) => `${s.type}:${s.payload.content}`), ["instructions:Nothing has been said for a while: you are going to sleep in about 5 seconds. Say so in one short clause (\"going to sleep\") and then stay quiet."]);
+  assert.equal(d.sleepAnnounced, true);
+  assert.equal(d.announceSleep(5), false, "one announcement per idle stretch");
+  assert.equal(live.sent.length, 1, "…so the voice is not told twice");
+  live.emit("inputTranscript", "file ");
+  assert.equal(d.sleepAnnounced, false, "Kevin spoke: the stretch is over");
+  assert.equal(d.announceSleep(5), true, "…and the next one announces again");
+  live.sent.length = 0;
+
+  transcript.push({ speaker: "kevin", delta: "file the invoice", startMs: 0, endMs: 900 });
+  live.emit("delegation", "item_1", "client", 900);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(d.sleepAnnounced, false, "a task started: the announcement is void");
+  assert.equal(d.announceSleep(5), false);
+  const spoken = () => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
+  assert.deepEqual(spoken(), ["Opening Numbers.", "Found the invoice.", "Typing the amount."], "one clause per state change; the first action as it landed");
+  assert.equal(live.sent.filter((s) => s.type === "instructions").length, 0, "no sleep announcement while a task runs");
+  const running = d.all()[0]!;
+  assert.deepEqual(running.steps.filter((s) => s.kind === "commentary").map((s) => s.text), ["Opening Numbers.", "Clicking the Invoices tab.", "Found the invoice.", "Pressing Return.", "I will use read_focused_text to check the field.", "Typing the amount."], "the Console keeps every line");
+  hold!({ status: "done", summary: "Filed the invoice under April." });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(spoken().at(-1), "Filed the invoice under April.", "the summary is the answer: never gated");
+  assert.equal(d.all()[0]!.status, "done");
+  d.dispose();
+});
+
+test("delegator: a confirmation question relayed as commentary is spoken even when it names a tool or reads as a click — Kevin has to hear it to answer", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  let hold: ((r: BrainResult) => void) | undefined;
+  const question = 'About to run "python edit_file.py" in ~/Documents. It edits a file outside the scratch folders. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.';
+  const brain: Brain = {
+    kind: "fake",
+    start: async () => ({ ready: true, detail: "" }),
+    handle: (task, sink) =>
+      new Promise<BrainResult>((resolve) => {
+        hold = resolve;
+        sink.step({ kind: "tool", tool: { name: "open_app", input: { name: "Terminal" }, ok: true, ms: 40 } }); // voiced as it lands
+        sink.commentary("I will use run_shell for this."); // names a tool, nothing pending: timeline
+        sink.step({ kind: "confirm", text: question }); // the runner's needs-confirmation, as responses.ts records it
+        sink.commentary("Pressing Return would run python edit_file.py in Documents. Should I?"); // speak_progress relaying the question: spoken
+        sink.commentary("Clicking Run needs your yes."); // per click, names nothing, but a confirmation is pending: spoken
+        task.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+      }),
+    cancel: async () => undefined,
+    stop: async () => undefined,
+  };
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), now: () => clock, commentaryCoalesceMs: 0, voiceFirstTool: true });
+  transcript.push({ speaker: "kevin", delta: "fix the script", startMs: 0, endMs: 900 });
+  live.emit("delegation", "item_1", "client", 900);
+  await new Promise((r) => setTimeout(r, 20));
+  const spoken = () => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
+  assert.deepEqual(spoken(), ["Opening Terminal.", "Pressing Return would run python edit_file.py in Documents. Should I?", "Clicking Run needs your yes."], "the question reaches the voice; the tool-naming line before it did not");
+  assert.equal(d.all()[0]!.status, "awaiting-confirmation");
+  hold!({ status: "done", summary: "Say yes and I will run it." });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(spoken().at(-1), "Say yes and I will run it.");
+  assert.equal(d.all()[0]!.status, "awaiting-confirmation", "the handshake stays pending for his yes");
+  d.dispose();
+});

@@ -1,9 +1,58 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { JarheadSessionSummary, LedgerRow } from "@jarhead/protocol";
+import type { ConversationState, JarheadSessionSummary, LedgerRow } from "@jarhead/protocol";
 
 /** How much of the first heard line becomes a session's title. */
 const TITLE_CHARS = 60;
+
+/** How much of a matching line a search hit carries. */
+const HIT_CHARS = 500;
+
+/** `search()`'s default and ceiling. */
+const SEARCH_DEFAULT_LIMIT = 50;
+const SEARCH_MAX_LIMIT = 200;
+
+/**
+ * What the tombstone rows say about one conversation — a chain of sessions linked
+ * by `resumedFrom`, named by its root session id. Nothing here is ever the bytes of
+ * the conversation: the rows that built it stay where they were written.
+ */
+export interface ConversationInfo {
+  readonly state: ConversationState;
+  /** Kevin's own name; "" = the auto title. */
+  readonly name: string;
+  readonly pinned: boolean;
+  /** Set while `state` is "trashed". */
+  readonly trashedAt?: number;
+  /** `at` of the last tombstone row applied. */
+  readonly updatedAt: number;
+}
+
+export type SearchHitKind = "heard" | "said" | "request" | "summary";
+
+/** One match of `Ledger.search`: where it sits and what matched. */
+export interface LedgerSearchHit {
+  readonly sessionId: string;
+  /** The root of the session's chain (the conversation). */
+  readonly chainId: string;
+  /** The conversation's state: a hit in a trashed or archived chain says so, so a rail that hides the chain can hide (or mark) the hit. */
+  readonly state: ConversationState;
+  readonly at: number;
+  readonly kind: SearchHitKind;
+  readonly text: string;
+}
+
+/**
+ * Rows about the record rather than of a session: they sit in whichever day file was
+ * today when Kevin acted, and never count as a session's own rows by position. A
+ * `conversation.*` / `grant` row belongs to its chain and a `now.*` row to its
+ * session (`readSession` places them by that); `ledger.moved` and `agent.hidden`
+ * belong to nobody's session.
+ */
+const META_TYPES: ReadonlySet<string> = new Set([
+  "conversation.trashed", "conversation.restored", "conversation.archived", "conversation.renamed", "conversation.pinned",
+  "now.cleared", "now.restored", "ledger.moved", "agent.hidden", "grant",
+]);
 
 /**
  * The server's word for a close the engine asked for (`session.close` answered), and
@@ -62,6 +111,29 @@ interface Walk {
   readonly sessions: readonly BuiltSession[];
   /** Rows that name a session (`sessionId`), by session, wherever they sit. */
   readonly named: ReadonlyMap<string, readonly Position[]>;
+  /** Session id → the root of its chain (itself when it resumed nothing known). */
+  readonly roots: ReadonlyMap<string, string>;
+  /** The tombstone rows' verdict per chain root, last row by `at` winning. */
+  readonly conversations: ReadonlyMap<string, ConversationInfo>;
+  /** `conversation.*` and `grant` rows by chain root, in file order. */
+  readonly chainRows: ReadonlyMap<string, readonly Position[]>;
+  /** `now.cleared` / `now.restored` rows by session, in file order. */
+  readonly nowRows: ReadonlyMap<string, readonly Position[]>;
+  /** Session → `at` of the clear in force (absent when restored or never cleared). */
+  readonly nowCleared: ReadonlyMap<string, number>;
+  /** Agent id → hidden, last row by `at`. */
+  readonly hidden: ReadonlyMap<string, boolean>;
+  /** Per file, the id of the session open at each row (what `search` attributes a hit to). */
+  readonly owners: ReadonlyMap<string, readonly (string | undefined)[]>;
+  /** `conversation.*` / `grant` rows whose chainId names no session the ledger knows: ignored, counted. */
+  readonly unresolved: number;
+}
+
+/** A tombstone row waiting for the chain roots to be known. */
+interface PendingChainRow {
+  readonly row: LedgerRow;
+  readonly at: Position;
+  readonly order: number;
 }
 
 /**
@@ -85,8 +157,13 @@ export class Ledger {
   }
 
   static fileNameFor(at: number): string {
+    return `${Ledger.dayFor(at)}.jsonl`;
+  }
+
+  /** The local day an instant falls on, YYYY-MM-DD — the day file's name without its extension. */
+  static dayFor(at: number): string {
     const d = new Date(at);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}.jsonl`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
   append(row: LedgerRow): void {
@@ -127,8 +204,9 @@ export class Ledger {
    * says nothing about why; any other reason (idle, connection_lost, …) is kept.
    */
   sessions(): JarheadSessionSummary[] {
-    return this.walk()
-      .sessions.map((b) => Ledger.summarize(b))
+    const walk = this.walk();
+    return walk.sessions
+      .map((b) => Ledger.summarize(b, walk.conversations.get(walk.roots.get(b.id) ?? b.id)))
       .sort((a, b) => b.startedAt - a.startedAt);
   }
 
@@ -137,7 +215,11 @@ export class Ledger {
    * row inclusive (across a midnight file boundary), plus every `stop` / `pause` /
    * `resume` row that lands within it, and any row that names the session wherever
    * it sits (a `resume` written before the started row it announces). Rows inside
-   * the span that name another session belong to that one and are left out.
+   * the span that name another session belong to that one and are left out. The
+   * record's own rows come by ownership, never by position: the chain's
+   * `conversation.*` / `grant` rows and this session's `now.*` rows are included
+   * wherever they sit ("Moved to Trash 14:02 · Restored 14:03" in the Log), and a
+   * tombstone for another chain that happened to land inside an open span is not.
    */
   readSession(sessionId: string): LedgerRow[] {
     const walk = this.walk();
@@ -150,12 +232,21 @@ export class Ledger {
     const first = files.indexOf(built.start.file);
     const last = built.end ? files.indexOf(built.end.file) : files.length - 1;
     const outside = (walk.named.get(sessionId) ?? []).filter((p) => !Ledger.within(built, p));
-    for (const p of outside) if (p.file < built.start.file) out.push(this.rowsOf(p.file)[p.index]!);
+    const root = walk.roots.get(sessionId) ?? sessionId;
+    const owned = [...(walk.chainRows.get(root) ?? []), ...(walk.nowRows.get(sessionId) ?? [])];
+    const ownedKeys = new Set(owned.map(Ledger.key));
+    const before = owned.filter((p) => p.file < built.start.file).sort(Ledger.byPosition);
+    const after = built.end ? owned.filter((p) => p.file > (built.end as Position).file).sort(Ledger.byPosition) : [];
+    for (const p of [...outside.filter((p) => p.file < built.start.file), ...before].sort(Ledger.byPosition)) out.push(this.rowsOf(p.file)[p.index]!);
     for (let f = Math.max(0, first); f <= last; f++) {
       const file = files[f]!;
       const rows = this.rowsOf(file);
       for (let index = 0; index < rows.length; index++) {
         const row = rows[index]!;
+        if (Ledger.isMeta(row)) {
+          if (ownedKeys.has(Ledger.key({ file, index }))) out.push(row);
+          continue;
+        }
         const named = Ledger.sessionIdOf(row);
         if (named === sessionId) {
           out.push(row);
@@ -166,8 +257,69 @@ export class Ledger {
       }
     }
     // An open session's span runs to the last file, so only a closed one has files after it.
-    if (built.end) for (const p of outside) if (p.file > built.end.file) out.push(this.rowsOf(p.file)[p.index]!);
+    const late = built.end ? [...outside.filter((p) => p.file > (built.end as Position).file), ...after].sort(Ledger.byPosition) : [];
+    for (const p of late) out.push(this.rowsOf(p.file)[p.index]!);
     return out;
+  }
+
+  /** What the tombstone rows say about the conversation `sessionId` belongs to; undefined when no row ever named its chain. */
+  conversation(sessionId: string): ConversationInfo | undefined {
+    const walk = this.walk();
+    const root = walk.roots.get(sessionId);
+    return root === undefined ? undefined : walk.conversations.get(root);
+  }
+
+  /** The root session of the chain `sessionId` belongs to (itself when it resumed nothing); undefined for an id the ledger never saw start. */
+  chainRootOf(sessionId: string): string | undefined {
+    return this.walk().roots.get(sessionId);
+  }
+
+  /** `at` of the `now.cleared` row in force for the session, or undefined after a `now.restored` (or never cleared). */
+  nowClearedAt(sessionId: string): number | undefined {
+    return this.walk().nowCleared.get(sessionId);
+  }
+
+  /** Agent ids Kevin hid from the rail (`agent.hidden` rows, last one per agent wins), sorted. */
+  hiddenAgents(): string[] {
+    const out: string[] = [];
+    for (const [id, hidden] of this.walk().hidden) if (hidden) out.push(id);
+    return out.sort();
+  }
+
+  /** How many `conversation.*` / `grant` rows named a chain the ledger does not know (a day file moved away, a typo): ignored, never fatal. */
+  unresolvedConversationRows(): number {
+    return this.walk().unresolved;
+  }
+
+  /**
+   * Case-insensitive substring search over what was heard and said and over the
+   * delegations' requests and summaries, across the LIVE day files only (the trash
+   * is not read), newest first. Bounded: `limit` defaults to 50 and never exceeds
+   * 200. Reads the walk's parsed cache — a search on a quiet day costs the stats.
+   */
+  search(query: string, limit: number = SEARCH_DEFAULT_LIMIT): LedgerSearchHit[] {
+    const q = query.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!q) return [];
+    // A limit that is not a positive number (0, -3, NaN) is the default, never a cap of 1.
+    const asked = Math.floor(Number(limit));
+    const cap = Math.min(SEARCH_MAX_LIMIT, asked > 0 ? asked : SEARCH_DEFAULT_LIMIT);
+    const walk = this.walk();
+    const files = this.days();
+    const hits: LedgerSearchHit[] = [];
+    for (let f = files.length - 1; f >= 0 && hits.length < cap; f--) {
+      const file = files[f]!;
+      const rows = this.rowsOf(file);
+      const owners = walk.owners.get(file);
+      for (let index = rows.length - 1; index >= 0 && hits.length < cap; index--) {
+        const row = rows[index]!;
+        const found = Ledger.searchable(row);
+        if (!found || !found.text.toLowerCase().includes(q)) continue;
+        const sessionId = owners?.[index] ?? "";
+        const chainId = walk.roots.get(sessionId) ?? sessionId;
+        hits.push({ sessionId, chainId, state: walk.conversations.get(chainId)?.state ?? "active", at: row.at, kind: found.kind, text: found.text.length > HIT_CHARS ? found.text.slice(0, HIT_CHARS) : found.text });
+      }
+    }
+    return hits;
   }
 
   // ------------------------------------------------------------------ internals
@@ -217,6 +369,43 @@ export class Ledger {
     }
   }
 
+  private static isMeta(row: LedgerRow): boolean {
+    return META_TYPES.has(row.type);
+  }
+
+  private static key(p: Position): string {
+    return `${p.file}:${p.index}`;
+  }
+
+  private static byPosition(a: Position, b: Position): number {
+    return a.file < b.file ? -1 : a.file > b.file ? 1 : a.index - b.index;
+  }
+
+  /** The text a row offers to `search`, and what kind of hit it makes. */
+  private static searchable(row: LedgerRow): { kind: SearchHitKind; text: string } | undefined {
+    switch (row.type) {
+      case "heard":
+      case "said": {
+        const text = Ledger.flat(row.item?.text);
+        return text ? { kind: row.type, text } : undefined;
+      }
+      case "delegation.created": {
+        const text = Ledger.flat(row.delegation?.request);
+        return text ? { kind: "request", text } : undefined;
+      }
+      case "delegation.finished": {
+        const text = Ledger.flat(row.summary);
+        return text ? { kind: "summary", text } : undefined;
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  private static flat(text: unknown): string {
+    return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+  }
+
   private static within(b: BuiltSession, at: Position): boolean {
     if (at.file < b.start.file || (at.file === b.start.file && at.index < b.start.index)) return false;
     if (!b.end) return true;
@@ -245,12 +434,53 @@ export class Ledger {
     const sessions: BuiltSession[] = [];
     const byId = new Map<string, BuiltSession>();
     const named = new Map<string, Position[]>();
+    const owners = new Map<string, (string | undefined)[]>();
+    const pendingChain: PendingChainRow[] = [];
+    const pendingNow: PendingChainRow[] = [];
+    const nowRows = new Map<string, Position[]>();
+    const hidden = new Map<string, { hidden: boolean; at: number }>();
+    let order = 0;
     let open: BuiltSession | undefined;
     for (const file of files) {
       const day = file.replace(/\.jsonl$/, "");
       const rows = this.rowsOf(file);
+      const owner: (string | undefined)[] = new Array<string | undefined>(rows.length);
+      owners.set(file, owner);
       for (let index = 0; index < rows.length; index++) {
         const row = rows[index]!;
+        owner[index] = open?.id;
+        if (Ledger.isMeta(row)) {
+          // The record's own rows: kept aside and placed once every chain root is known.
+          const position = { file, index };
+          switch (row.type) {
+            case "conversation.trashed":
+            case "conversation.restored":
+            case "conversation.archived":
+            case "conversation.renamed":
+            case "conversation.pinned":
+            case "grant":
+              pendingChain.push({ row, at: position, order: order++ });
+              break;
+            case "now.cleared":
+            case "now.restored": {
+              if (typeof row.sessionId !== "string") break;
+              const list = nowRows.get(row.sessionId);
+              if (list) list.push(position);
+              else nowRows.set(row.sessionId, [position]);
+              pendingNow.push({ row, at: position, order: order++ });
+              break;
+            }
+            case "agent.hidden": {
+              if (typeof row.agentId !== "string") break;
+              const last = hidden.get(row.agentId);
+              if (!last || row.at >= last.at) hidden.set(row.agentId, { hidden: row.hidden === true, at: row.at });
+              break;
+            }
+            default:
+              break;
+          }
+          continue;
+        }
         const names = Ledger.sessionIdOf(row);
         if (names !== undefined) {
           const list = named.get(names);
@@ -268,6 +498,7 @@ export class Ledger {
               open.end = { file, index };
               open.endInclusive = false;
             }
+            owner[index] = row.sessionId;
             const started: BuiltSession = {
               id: row.sessionId,
               day,
@@ -333,7 +564,81 @@ export class Ledger {
         }
       }
     }
-    this.walked = { signature, sessions, named };
+
+    // Chains: every session resolves to its root through the resumedFrom links. A link
+    // to a session the ledger does not know (its day file moved away) ends the chain
+    // there — the last known session is the root — and a loop, which no engine writes,
+    // is cut by the visited set rather than followed.
+    const roots = new Map<string, string>();
+    for (const b of sessions) {
+      const seen = new Set<string>([b.id]);
+      let cur = b;
+      for (;;) {
+        const parent = cur.resumedFrom ? byId.get(cur.resumedFrom) : undefined;
+        if (!parent || seen.has(parent.id)) break;
+        seen.add(parent.id);
+        cur = parent;
+      }
+      roots.set(b.id, cur.id);
+    }
+
+    // Tombstones: last row by `at` wins (file order breaks ties), applied per chain root.
+    // A chainId the ledger cannot resolve is counted and ignored — never fatal.
+    const conversations = new Map<string, ConversationInfo>();
+    const chainRows = new Map<string, Position[]>();
+    let unresolved = 0;
+    pendingChain.sort((a, b) => a.row.at - b.row.at || a.order - b.order);
+    for (const { row, at } of pendingChain) {
+      const chainId = (row as { chainId?: unknown }).chainId;
+      const root = typeof chainId === "string" ? roots.get(chainId) : undefined;
+      if (root === undefined) {
+        unresolved++;
+        continue;
+      }
+      const list = chainRows.get(root);
+      if (list) list.push(at);
+      else chainRows.set(root, [at]);
+      const prev = conversations.get(root) ?? { state: "active" as ConversationState, name: "", pinned: false, updatedAt: row.at };
+      switch (row.type) {
+        case "conversation.trashed":
+          conversations.set(root, { ...prev, state: "trashed", trashedAt: row.at, updatedAt: row.at });
+          break;
+        case "conversation.restored": {
+          const { trashedAt: _gone, ...rest } = prev;
+          conversations.set(root, { ...rest, state: "active", updatedAt: row.at });
+          break;
+        }
+        case "conversation.archived": {
+          const { trashedAt: _gone, ...rest } = prev;
+          conversations.set(root, { ...rest, state: "archived", updatedAt: row.at });
+          break;
+        }
+        case "conversation.renamed":
+          conversations.set(root, { ...prev, name: typeof row.name === "string" ? row.name.trim() : "", updatedAt: row.at });
+          break;
+        case "conversation.pinned":
+          conversations.set(root, { ...prev, pinned: row.pinned === true, updatedAt: row.at });
+          break;
+        default:
+          // A grant is the chain's row for the Log; it says nothing about the conversation's state.
+          break;
+      }
+    }
+    for (const list of chainRows.values()) list.sort(Ledger.byPosition);
+
+    // The Now stream's clear per session: the last of cleared / restored by `at` decides.
+    const nowCleared = new Map<string, number>();
+    pendingNow.sort((a, b) => a.row.at - b.row.at || a.order - b.order);
+    for (const { row } of pendingNow) {
+      const sessionId = (row as { sessionId?: unknown }).sessionId as string;
+      if (row.type === "now.cleared") nowCleared.set(sessionId, row.at);
+      else nowCleared.delete(sessionId);
+    }
+
+    const hiddenFlat = new Map<string, boolean>();
+    for (const [id, h] of hidden) hiddenFlat.set(id, h.hidden);
+
+    this.walked = { signature, sessions, named, roots, conversations, chainRows, nowRows, nowCleared, hidden: hiddenFlat, owners, unresolved };
     return this.walked;
   }
 
@@ -348,7 +653,8 @@ export class Ledger {
     return flat.length > TITLE_CHARS ? flat.slice(0, TITLE_CHARS).trimEnd() : flat;
   }
 
-  private static summarize(b: BuiltSession): JarheadSessionSummary {
+  /** A summary; `conv` is the chain's verdict from the tombstone rows, stamped on every session of the chain. */
+  private static summarize(b: BuiltSession, conv: ConversationInfo | undefined): JarheadSessionSummary {
     const closed = b.closedAt !== undefined;
     return {
       id: b.id,
@@ -362,6 +668,14 @@ export class Ledger {
       delegations: b.delegations,
       title: b.title,
       ...(b.resumedFrom ? { resumedFrom: b.resumedFrom } : {}),
+      ...(conv
+        ? {
+            state: conv.state,
+            pinned: conv.pinned,
+            ...(conv.name ? { name: conv.name } : {}),
+            ...(conv.state === "trashed" && conv.trashedAt !== undefined ? { trashedAt: conv.trashedAt } : {}),
+          }
+        : {}),
     };
   }
 }

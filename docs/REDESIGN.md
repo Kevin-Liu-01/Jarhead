@@ -528,6 +528,19 @@ is the row's icon; the colour is the status dot's ring and the conversation head
   `PREVIEW_ACTION` grammar; onboarding `PREVIEW_GO` / `PREVIEW_SHOT_AT` /
   `PREVIEW_REDUCE_MOTION`.
 
+### Built since (2026-09-12)
+
+- **Dropping the blob into the notch dock puts Jarhead to sleep.** A drag that ends
+  over the notch's column (48 pt either side, 70 pt under the menu bar) closes the
+  session (the meter stops) and the sleep transition tucks it in; asleep already, it
+  just goes home; a drag-out that had made it free is undone (`dropIntoDock` in
+  OrbPanelController). Kevin's words: "if i drag jarhead to my dock im putting him
+  to sleep".
+- **Conversation cleanup** (§17): Trash / Archive / Rename / Pin per conversation
+  with undo, Clear Now with undo, hide an agent, a retention sweep that moves whole
+  days by rename, a search box over the live ledger, typed problems with one-tap
+  remedies in the rail.
+
 ## 10. Anything and everything, gated by policy; and a Jarhead that rewrites itself (2026-09-10)
 
 Kevin: "make jarhead be able to do anything and everything even rewriting its own
@@ -2124,3 +2137,258 @@ so the next OOM is read against a trend.
   while the server is still writing to it loses its own unread bytes. Ack, then close.
 - The daemon's stdout is the app's pipe; when the app dies, so does the log
   unless the daemon re-homes it. `DaemonLog` is `O_APPEND` for that reason.
+
+### Problems, typed (builder K3, 2026-09-12)
+
+Kevin's ledger had 53 `problem` rows on the 10th and 25 on the 11th, and the top
+eight classes were all things with one obvious fix that the row did not offer:
+Accessibility / Full Disk Access / Screen Recording not granted (28 / 19 / 4),
+the Claude Code brain not answering its probe (14), GPT-Live-1's
+`response_input_buffer_full` (10), `context_injection_incomplete` (8), a Live
+session that closed before it started (4), the hands helper stopped (6). The
+dictation tools are ahead of Jarhead on exactly this — named failure states with a
+one-tap remedy — so the engine now types every problem it raises.
+
+`Engine.problem(text)` still exists (the daemon's "command failed", a settings
+write; kind `other`); every other site calls **`problemOf(kind, text, remedy?)`**.
+`Snapshot.problems` stays the plain list — the order and the eight-line cap — and
+**`Snapshot.problemsTyped`** (`Engine.typedProblems()`) is the same list with each
+line's `kind`, its `remedy` and `since` (first seen, wall clock). Deduped by kind +
+text: a line raised again while present keeps its place and its `since`; a fixed
+problem clears itself at the site that knows (a grant appears, the helper greets,
+the key answers, the voice reconnects). One `problem` ledger row per first sighting;
+the elapsed-seconds refreshes below write none. The map:
+
+| kind | raised by | remedy |
+|---|---|---|
+| `permission.accessibility` / `.screenRecording` | the helper's fresh read finds the grant missing | **Request** → `request-permission <kind>` (the helper prompts) |
+| `permission.fullDiskAccess` | same | **Open pane** → `request-permission fullDiskAccess` (the app opens the pane) |
+| `permission.microphone` | the app's read | **Open pane** → `request-permission microphone` |
+| `permission.other` | Input Monitoring | **Request** (the app prompts) |
+| `brain.unavailable` / `brain.probe` | a configured backend that would not start; the fallback swap; a key warning | **Retry** → `config.probe` |
+| `voice.limit` | a Live error `classifyLiveError` calls `limit` (a rate limit, the 128-item / 32 768-token input history — caps that pass) | **Retry in 30 s**; the row clears itself after 30 s (`VOICE_LIMIT_CLEAR_MS`) |
+| `voice.connection` | `expired` / `connection_lost` while reconnecting — the text counts "reconnecting for N s" from `tick()` until the session is back, and the counting row ends the moment the reconnect's own start fails (`endVoiceReconnect`), so the failed start's line stands — and a failed start whose message is a socket's | **Retry** → `go` |
+| `voice.key` | no `OPENAI_API_KEY`; the key rejected; the model not listed for it; an exhausted quota (`insufficient_quota`, "check your plan and billing" — billing, not a limit: waiting fixes nothing, so it never auto-clears) | **Open Setup** → `jarhead://setup` |
+| `hands.helper` | not built, failed, exited | **Restart helper** → `problem.retry hands.helper` (a fresh helper process; its greeting clears the row) |
+| `disk.low` | the preflight below | **Reveal shots** → opens `<stateDir>/shots` |
+| `crash` | a report under `<stateDir>/crashes` younger than ten minutes (`reason:` line; one that says `survived:` is a note, not a crash) | **Details** → opens the file |
+| `daemon` | the **app**, not the engine: no daemon answering for 3 s | **Restart daemon** → `daemon.restart`, routed to `DaemonProcess` while nothing is connected |
+
+`classifyLiveError` (packages/live/src/session.ts) reads a Live error's
+`code: message` or a start failure into `limit` / `connection` / `key` / `other`;
+`context_injection_incomplete` — an append racing a close — is still not a problem.
+
+**`problem.retry {kind}`** (`Engine.retryProblem`) re-runs that kind's check and lets
+the row clear when it passes: the two helper kinds prompt again; the app-owned
+permission kinds make the engine read fresh and closely for 90 s (the app's own
+prompt or pane is the remedy button's other half); the brain kinds clear their rows,
+`restartBrain`, `probeSetup`; `voice.connection` reconnects only when Jarhead should
+be awake (`wantAwake`, no session, not paused) and otherwise just clears;
+`voice.key` probes the key; `hands.helper` restarts the helper and re-greets;
+`disk.low` measures again; `daemon`, `crash` and `other` are dismissed. The doctor
+prints the running engine's typed problems as a `problems` group with the remedy in
+"next steps" (`voice.key`, `daemon` and a denied microphone grade `fail`, the rest
+`warn`), and grades a socket file nobody answers on.
+
+**Disk preflight.** `checkDisk()` — `fs.statfsSync` on the state dir, `bavail ×
+bsize` — runs at start, before every session opens (`connect`) and before **every**
+mark capture (statfs is microseconds; a disk that fills mid-session is caught at the
+next shot, not the next connect); under **500 MB** (`DISK_LOW_BYTES`) it raises `disk.low` with the
+figure (one row per kind, refreshed in place), skips the capture (the mark still
+counts; the brain gets the region without the pixels, as with no eyes), and logs a
+warning once; `tick()` measures again every 60 s while low and clears the row when
+space returns. The session itself still opens: a full disk is a reason to stop
+saving screenshots, not a reason to stop listening. The runner's own archive
+(`packages/brain/src/runner.ts`, a rail) still writes; making it read the same
+verdict is a one-line hook a rail edit has to carry — noted, not done here.
+
+### Liveness (builder K3, 2026-09-12)
+
+A daemon that exits is caught by `DaemonProcess` (respawn with backoff, `Lifeline`
+for the app's side); a daemon that is alive on the socket and not answering — a
+wedged event loop — was invisible: the app's client sat connected, commands queued,
+and Kevin saw a blob that did nothing. Now:
+
+- **Ping / pong on the wire.** `EngineClient` sends `{type:"ping", id}` every **2 s**
+  while connected; `DaemonServer` answers `{type:"pong", id, at}` in `onFrame`,
+  synchronously, with no engine work on the path (a late pong is the finding). Two
+  pings unanswered — **4 s** of silence — and the client logs `daemon unresponsive:
+  no pong for 4 s`, drops the connection (the reconnect loop takes over) and posts
+  `EngineClient.daemonUnresponsiveNotification`; `DaemonProcess.kick` SIGKILLs the
+  daemon it owns — its exit runs `handleExit` → `scheduleRestart` with the usual
+  backoff, so a daemon that wedges on every start is not respawned hot — or, for a
+  daemon it only attached to, kills the pid the hello gave and takes over on the
+  next probe. One kick per 5 s. Both objects are the app's, so no AppDelegate wiring:
+  a notification carries it. **The pid is never stale**: `EngineClient.daemonPid`
+  lives exactly as long as the connection that hello'd it (cleared in
+  `dropAndReconnect`), only the ping path — a live connection — names one, the
+  "Restart daemon" remedy carries none, and `kick` asks `proc_pidpath` before
+  signalling: a pid that is no longer a `node` (gone, or the number reused by one of
+  Kevin's own processes) is logged and left alone.
+- **The `daemon` row.** Disconnected for more than 3 s (a normal respawn is back in
+  1–3 s and must not flash it), the client republishes the last snapshot with one
+  typed problem on top — kind `daemon`, "Restart daemon" as its remedy
+  (`daemon.restart`, which `EngineClient.send` hands to `DaemonProcess` while
+  nothing is connected instead of queueing it for the daemon that has just come
+  back). The daemon's next snapshot replaces the whole thing, row included.
+- **Auto-resume after a respawn.** At a drop the client remembers whether the last
+  snapshot had a session open (or opening) and whether this app sent `stop` or
+  `pause` since it; on the reconnect it arms a 10 s window, and if the daemon's
+  first snapshot inside it says asleep — no session, no pause — it sends **`go`
+  once**. The engine side (`Engine.restoreFromLedger` at `start()`,
+  `resumeFromLedger` in `connect`): the most recent session in the ledger, by its
+  rows. A pressed `stop` inside it — Kevin ended it, nothing to pick up. A `pause`
+  row — Kevin paused it: the new process **holds the pause again** (`pauseInfo`
+  from the row, phase `paused`, the meter still stopped, the decay clock as it would
+  have run; a pause past its decay is asleep), and his Go resumes with the
+  continuity. No closed row (or one the engine would have reconnected from) and a
+  last row inside 30 min — the process died mid-conversation: the first Go within
+  **30 s** of `start()` opens the new session with a `# Continuity` section whose
+  lines are the last ~12 `heard` / `said` rows **of that session from the ledger**
+  (`recallFromLedger`; the new process never heard them), the last finished task's
+  summary, and one instruction: say exactly one word, "back", then wait. The started
+  row says `resumedFrom`, a `resume` row follows with the downtime as `pausedMs`, so
+  the Console shows one conversation. Once per process; never after Kevin pressed
+  Stop in the new one (`pressStop` disarms it); a Go outside the window is a plain
+  wake. A paused conversation is deliberately **not** auto-resumed into an open
+  session: Kevin paused to stop the meter, and a respawn is no reason to start it.
+- **Once means once across respawns too.** Each respawn is a new engine process with
+  no memory of the last resume, so "once per process" alone would let a daemon that
+  dies soon after every resume run a loop of paid sessions each saying "back", at the
+  backoff's cadence. Two guards. The app does not arm a `go` when it sent a resume
+  `go` inside the last 5 min (`resumeCooldown`) or when this is the second drop
+  inside 2 min (`dropLoopWindow`) — both logged as a loop. The engine
+  (`restoreFromLedger`) declines when the latest session's started row says
+  `resumedFrom` and its rows span less than 60 s (`RESUME_LOOP_SPAN_MS`): a resume
+  that died young is a loop, not a conversation; a pause's resume (the parent has a
+  `pause` row) is Kevin's own chain and exempt. After a declined resume the next Go
+  is a plain wake.
+- **Stop inside the reconnect window.** After `connection_lost` the session is
+  detached and nothing is connecting for 500 ms; a Stop there used to write no row,
+  and the next process saw a lost session. Now `pressStop` counts a pending reconnect
+  as something that happened (the `stop` row is written, the counting row leaves),
+  and because that row lands after the session's `closed` row — outside its span in
+  `readSession` — `restoreFromLedger` asks the day's own rows (`stoppedAfter`) for a
+  pressed stop at or after the close.
+- Tests: `daemon.test.ts` (a pong per ping, same id, the daemon's clock, to the
+  asking client only, no engine command), `problems.test.ts` (every kind and remedy
+  above, the dedupe and the cap, the 30 s limit clear, the reconnect row's count and
+  clear, a fake statvfs through a skipped capture and the 60 s re-check, the crash
+  file, `retryProblem` per kind, the snapshot's `problemsTyped` and the
+  `problem.retry` arm, a reconnect whose start fails, an exhausted quota as
+  `voice.key`, a disk that fills mid-session), `transport.test.ts` (a second engine
+  over the first one's state dir: the ledger continuity with "back", `resumedFrom`,
+  once only; Kevin's Stop before the cut and in the new process; the window; the held
+  pause and its decay; the loop guard over five engines — a resume that lived is
+  resumed again, one that died young is not, a pause's resume is exempt; Stop inside
+  the reconnect window). The Swift side compiles; the kill-and-respawn, the stale-pid
+  guard and the app-side loop guards were reasoned from `DaemonProcess`'s existing
+  exit path and `EngineClient`'s reconnect loop, not run against a wedged daemon.
+
+## 17. What the field does, and what we took (2026-09-12)
+
+Kevin, 2026-09-11: "it crashes a lot, be able to clean up conversations, make it
+work a lot better … keep in mind that ours is better faster works like an actual
+human would on your screen". Five research reports on 2026-09-12 read the field
+for that sentence — the dictation tools (Wispr Flow, Superwhisper, Aqua Voice),
+Grok's voice and Grok Bot, Hermes Agent and OpenClaw, Operator / ChatGPT agent /
+Atlas, Anthropic's computer use and Claude in Chrome, Gemini Live, Apple's Siri AI
+and Voice Control, Perplexity's Computer, Raycast, and the conversation-history
+UX of nine products — and one synthesis ranked what to adopt, what to skip and what
+never to lose. The latency numbers side by side are LATENCY.md §7. This section is
+the ledger of the pass built on that reading: by item, what each product does that
+Jarhead took, and what it deliberately did not.
+
+### What the field is ahead on, and where it landed here
+
+The dictation tools are ahead only on the boring parts, and the boring parts are
+what crashes feel like. The agent products are behind on everything Kevin named as
+ours — they pay 2–5 s per action on a cloud VM at about 50 % reliability — but two
+of them have a policy UI worth reading. The contract for the whole pass is
+`packages/protocol/src/index.ts` (mirrored in `Model/Protocol.swift`, the frames in
+`packages/daemon/src/wire.ts`); each builder's own section says what landed behind
+it. The rows marked *per the contract* (K1–K5) are written from that contract as
+applied and checked against the worktree's named symbols on 2026-09-12 (`ping` /
+`pong` in `server.ts`, the tombstone rows and `rename(2)` moves in `ledger.ts`,
+`ear.hints` in `engine.ts`, `MicRanking` in `AudioEngine.swift`, the grants in
+`policy.ts`, `evictShots` in `runner.ts`), not from those builders' final code —
+the integrator corrects them from their notes. The K6 rows are the build record.
+
+| product | what it does | what Jarhead took (item) |
+|---|---|---|
+| Hermes Agent `sessions archive / pin / rename / prune`, ChatGPT and Claude "Archive" | conversations are hidden, never destroyed; retention is a setting on *ended* sessions; pinned exempt | conversation.trashed / restored / archived / renamed / pinned as **tombstone rows** in today's ledger file; `ConversationState = active \| archived \| trashed`; `Settings.ledgerRetentionDays` (default 0 = never) and `shotsRetentionDays` (14); whole day files **move** by `rename(2)` into `<stateDir>/trash` and back (`ledger.trash-day` / `restore-day` / `sweep`, `Snapshot.trash {path, days, bytes}`); "Move to Trash", "Archive", "Restore" — never "Delete" (K1–K2, per the contract) |
+| Claude Code `/clear` (saves the old conversation), ChatGPT "New chat" | a clear that keeps the record | `now.clear` / `now.restore` filter the Now view at snapshot output only; `conversation.new` is a close with a reason and a wake without continuity; the Live context and every naming gate untouched (K1, per the contract) |
+| Hermes FTS5 `session_search` (~20 ms, no model call) | search the bodies, not only the titles | `ledger.search {id, query, limit}` → `ledger.hits`: a bounded, case-insensitive linear scan over the live day files (the walk's parsed cache, so a quiet day costs the stats; the trash is never read; 50 hits by default, 200 at most) (K2, per the contract) |
+| Wispr Flow's error-message guide, Superwhisper's troubleshooting, Hermes' degraded-state issue #89737 | **named failure states with a one-tap remedy**; permissions re-checked on foreground; a "reset" button | `Snapshot.problemsTyped: Problem[] {kind, text, remedy?: {label, command?, open?}, since}` and `problem.retry {kind}` — the top eight problem classes from Kevin's own ledger (Accessibility 28, Full Disk Access 19, a brain that did not answer 14, Live's 128-item buffer 10, `context_injection_incomplete` 8 …) each with its remedy, shown in the Console (K3, per the contract) |
+| Hermes gateway wedged-not-dead (#12438); Grok Bot's Recover / Update / Reset | a liveness signal, and recovery that keeps durable state | client `ping {id}` / server `pong {id, at}` on the wire, so a daemon that is alive but wedged is seen, not assumed (K3, per the contract) — on top of §16's crash guard and the daemon that lingers 90 s |
+| Wispr / Superwhisper mic ranking with fallback, OpenClaw's "uses the system default while the chosen mic is away and retains the selection" | the microphone is a ranked list, not a pointer | mic ranking and a route-change observer in the app's audio layer (`MicRanking.rank`, `AVAudioEngineConfigurationChange`) (K4, per the contract) |
+| Grok's `keyterms` / `language_hint`, Apple's `contextualStrings` | bias the recogniser toward what is on the screen | `ear.hints {strings}` from the engine to the app's on-device ear: app names, window titles, AX labels, agent names (K4, per the contract) |
+| Grok Bot's approval card (Allow once / Always allow / Deny, Require-Approval beats Always-Allow), Claude in Chrome's per-site "Always allow" and its bugs (#74715: it did not stick), Operator's confirmations (−90 % nuisance errors, 92 % recall) | a remembered yes, scoped, with a hard list it can never cover | `grant {chainId, app, actionClass, until}`: a yes remembered **for this conversation, this app, this action class, until**; **never for a destructive verb** (send, pay, delete, post, purchase — those stay spoken-yes-once, `ConfirmationState`); the never-list unchanged (K5, per the contract) |
+| Hermes' three-most-recent screenshots, Claude in Chrome's `read_page` refs, OpenClaw's `frameId` / `executionId` | do not keep every pixel; act on the frame you saw | the screenshot archive is capped and the oldest shots **move** into `<stateDir>/trash/shots` by rename, never unlinked (`runner.ts` `evictShots`; `Settings.shotsRetentionDays`, 14). A frame id or stale-frame guard was **not** built in this pass: the hands act through AX with the screenshot as the fallback and the verification, and nothing on the Codex thread references a frame (K5, per the contract; the eviction checked in the worktree) |
+| Cowork's "Working on your computer · 0:42", Claude's red border, Perplexity's step list, Grok Bot's status line | a working state you can see, with elapsed time | **"Working · 0:12"** — a mono elapsed counter next to the phase word on the notch island (peek and open), alone on a black strip of the notch while the blob is out at its target, and under the phase word on the capsule; `Motion.base` in and out; gone at done or cancelled (K6, `NotchPanel.swift`, `OrbExpandedView.swift`) |
+| Hermes' "emoji-mapped tool usage" praised, its per-click narration complained about; GPT-Live-1's over-eager backchannels (eesel 2026-09-11) | narrate the intent, not the keystrokes | the voice's `# Narration` rule — one short clause per state change ("found the invoice", "typing the amount"), never per click, never a tool's name, silence while a single step runs — and the same gate in the Delegator's relay (`Delegator.narrationVerdict`: per-click lines and lines naming a tool stay on the Console's timeline; the first action is voiced as it lands without the tool's name; the summary and a reflex's landing are never gated), plus one clause before idle sleep (`Delegator.announceSleep`: once per idle stretch, true when it spoke; the engine's tick arms one sleep deadline off that return and must not re-read its idle clock, since the clause is Jarhead's own speech and moves `lastAddressedAt` — that hook in `engine.ts` is the integrator's) (K6, `instructions.ts`, `delegator.ts`) |
+| Hermes' context compression (Phase 1: tool results > 200 chars → placeholders, no model call; protected head and tail), OpenClaw's soft-trim (keep first/last 1 500 chars), Claude Code's compaction that "stops with a thrashing error instead of looping" | compress what a fresh context is told, and never thrash | the carried block after a Codex rollover is compacted (`renderCarry`): Kevin's words verbatim, every tool result over 200 chars or bytes (images included) one line naming its size ("[tool result, 3.1 KB]"), the block capped near 2 KB with the oldest exchanges dropped first; and one turn's measure rolls the thread over once (`TokenUsage.turnId`, `rolloverDue()`) so an oversized tool output cannot open a third thread (K6, `codex.ts`, `codex-app-server.ts`) |
+| Wispr publishes a p99; nobody publishes a per-action clock | the headline is the tail, not the median | LATENCY.md §7: the field side by side with p95 as the headline column and "measured or claimed" on every row (K6) |
+
+### What Jarhead deliberately skipped, and why
+
+- **Turns that end on a key.** Every dictation tool ends the turn on key release
+  or an explicit stop and none runs a semantic end-of-turn detector. Jarhead's
+  turn is GPT-Live-1's: full duplex, interruptible, no key. The ear's grammar has
+  its own windows (120 / 450 ms, REDESIGN §12); a key would make them slower.
+- **The clipboard as transport.** Wispr, Superwhisper and Aqua paste; every one
+  of them has a paste-failure article and a "Paste" fallback button, and Codex
+  issue #11103 shows the clipboard racing other writers. Jarhead's hands type
+  into the focused element through AX and CGEvent and read the field back; the
+  clipboard stays Kevin's.
+- **A cloud VM or a remote desktop.** Operator, ChatGPT agent, Mariner, Grok Bot
+  and Perplexity's heavy tasks run elsewhere and pay 2–5 s per action for it.
+  Jarhead's tools answer in 55 ms median on the real screen (LATENCY §3c).
+- **Background driving through private SPIs.** Hermes' cua-driver injects
+  pid-scoped events so "your cursor doesn't move"; Apple can change those SPIs
+  and did change `CGDisplayCreateImage`. Kevin's cursor is the cursor; the blob
+  flies to where it works so he sees it.
+- **Personalities and companions.** Grok retired its companions in 2026-07 and
+  reviewers called the thirteen personalities spectacle; this is a work tool with
+  one voice.
+- **A permission stack.** OpenClaw needs five layers to agree and then asks per
+  action never; Claude in Chrome has modes, site rules, protected actions and a
+  hard-ban list, and users file "Always allow does not stick". One table decides
+  run / confirm / refuse (`policy.ts`); a grant is one scoped row on top of it and
+  never reaches a destructive verb.
+- **An independent reviewer model on every action.** Grok Bot's Auto Review and
+  Claude in Chrome's classifier cost a model generation each; a generation is
+  3.4 s here (LATENCY §3c). The policy is a table and answers in microseconds.
+- **Confirm sheets and "Delete forever".** ChatGPT and Claude purge within 30
+  days; Grok deletes at once with no window; Cowork lost weeks of history
+  overnight (#45076). Jarhead never unlinks Kevin's data: rows are tombstoned,
+  days move to the Trash by rename and come back, and "Empty Trash" does not
+  exist in the app ("Reveal in Finder" does).
+- **A 30-day safety copy.** There is nothing to copy when nothing is deleted.
+- **An always-on ungated microphone.** Apple's Voice Control listens all the
+  time with no gate; Wispr has no wake word by design. Jarhead's wake word is
+  on-device and behind Touch ID or the passphrase before a paid session opens.
+- **Pixels-only grounding.** Perplexity's browser control and Operator read
+  screenshots; Siri AI reads "exactly what's in the pixels" unless an app
+  annotates its views. Jarhead is AX-first (`click_element`, `find_element`,
+  `read_focused_text`) with the screenshot as the fallback and the verification.
+- **A chained STT → LLM → TTS voice.** Hermes' CLI waits 3.0 s of silence and
+  then 1–2 s of TTS; OpenClaw's Talk mode 700 ms plus the model. GPT-Live-1 is
+  one model that listens while it speaks.
+- **Streaming raw words into the field.** Aqua Realtime and Superwhisper stream
+  unpolished words and skip the cleanup. A reflex types verified text once, and
+  a `type` whose words differ from what Kevin said is undone (REDESIGN §12).
+- **Cloud-synced history.** ChatGPT's history survives a reinstall because it is
+  server-side; Kevin's is `~/.jarhead/ledger/*.jsonl`, his, append-only, greppable.
+- **A hidden-window "background mode".** Claude Code hides other apps while it
+  works and ChatGPT's Computer Use runs scoped tasks behind you; both are
+  documented as slower than a direct integration and neither says how it avoids
+  the wrong window. The blob at the cursor is the guard against the wrong window.
+
+### The edge, kept
+
+Full duplex by construction; the 250 ms reflex path as a second source, not a
+faster model; AX-first native hands on the real screen with verification; the
+wake word behind Touch ID; one policy table with a spoken yes once for the
+destructive verbs; the Console that steps into every coding-agent session. Every
+item above was built under those, and none of them moved.

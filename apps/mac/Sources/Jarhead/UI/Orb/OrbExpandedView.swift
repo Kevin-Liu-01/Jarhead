@@ -33,6 +33,9 @@ final class OrbCapsuleModel: ObservableObject {
     var lastKevin: TranscriptItem? { snapshot.transcript.last { $0.speaker == .kevin } }
     var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
+    /// The delegation being worked on right now — running, not waiting on Kevin's yes. The
+    /// header's "Working · 0:12" follows it and stops with it (done, cancelled, awaiting).
+    var workingDelegation: Delegation? { snapshot.delegations.last { $0.status == .running } }
     var isAwake: Bool { phase != .asleep && phase != .error }
     var paused: Bool { phase == .paused }
     /// The gate holds the microphone wherever the voice engine does not: dormant (asleep,
@@ -158,6 +161,13 @@ enum OrbStyle {
         let s = seconds.isFinite && seconds < 1e12 ? max(0, Int(seconds.rounded(.down))) : 0
         if s >= 3600 { return String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) }
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    /// "Working · 0:12" — the same line on the capsule and the notch island: elapsed since
+    /// the running delegation began (`timings.delegatedAt`, ms since 1970), mono digits.
+    static func workingLine(delegatedAtMs: Double, now: Date) -> String {
+        let elapsed = now.timeIntervalSince1970 - delegatedAtMs / 1000
+        return "Working · " + mmss(elapsed.isFinite ? max(0, elapsed) : 0)
     }
 
     // MARK: wake gate — the same words and symbols as the status menu's row
@@ -357,13 +367,29 @@ struct OrbCapsuleView: View {
 
     private func header(now: Date, theme: OrbTheme) -> some View {
         let phase = model.phase
+        // A delegation running: "Working · 0:12" under the phase word (the same line the
+        // notch island shows), rolling once a second, gone the moment it is done or cancelled.
+        let working = model.workingDelegation
         return HStack(spacing: 8) {
             Circle().fill(OrbStyle.color(phase))
                 .frame(width: 6, height: 6)
                 .frame(width: OrbTheme.iconColumn)
-            Text(OrbStyle.label(phase))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(theme.text)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(OrbStyle.label(phase))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(theme.text)
+                if let w = working {
+                    let line = OrbStyle.workingLine(delegatedAtMs: w.timings.delegatedAt, now: now)
+                    Text(line)
+                        .font(.system(size: 10, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(theme.titanium)
+                        .lineLimit(1)
+                        .metered(line)
+                        .transition(Motion.appear)
+                        .help("How long the brain has been on it")
+                }
+            }
+            .animation(Motion.fade, value: working != nil)
             Spacer(minLength: 4)
             // The meter. A session open: elapsed, and what it has billed at the list price
             // ("2.3 min · $0.12"; the word "billed" lives in the tooltip — the header is

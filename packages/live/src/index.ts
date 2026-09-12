@@ -1,5 +1,5 @@
-export { LiveSession } from "./session.ts";
-export type { LiveSessionOptions, LiveSessionEvents, LiveState, WebSocketLike } from "./session.ts";
+export { LiveSession, classifyLiveError } from "./session.ts";
+export type { LiveSessionOptions, LiveSessionEvents, LiveState, WebSocketLike, LiveErrorKind } from "./session.ts";
 export { LIVE_URL, LIVE_MODEL, SAMPLE_RATE, parseServerEvent } from "./events.ts";
 export type { ClientEvent, ServerEvent, ServerEventType, SessionConfig, SessionResource, BuiltInVoice, InitialItem, ResponsesDelegationConfig } from "./events.ts";
 export { Transcript, GAP_MS, joinFragments } from "./transcript.ts";

@@ -768,3 +768,281 @@ test("a wake during a brain restart waits for the brain instead of wedging the t
     await engine.stop();
   }
 });
+
+// ------------------------------------------------ auto-resume after a restart (REDESIGN §16)
+// The engine process dies mid-conversation (a crash, a kill, a self-update); the app
+// respawns it and, seeing it come back asleep after a session was open, sends `go` once.
+// The new process has no transcript: the ledger says what was said, and the voice says
+// "back" once. A second engine over the first one's state dir is that new process here.
+
+test("auto-resume: a Go soon after start resumes the session the previous engine left open — the continuity comes from the LEDGER, the started row says resumedFrom, the voice is told to say 'back' once — and only once", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead open the budget spreadsheet", "item_1");
+    await settle();
+    a.live.emit("outputTranscript", " Opening it now.", a.live.nowMs + 100, a.live.nowMs + 900);
+    nextUtterance(a);
+    delegate(a, "jarhead scroll to the totals", "item_2");
+    await settle();
+    // Quiet for a while on the session timeline: the tick settles the last utterance and the heard / said rows land.
+    a.live.nowMs += 5000;
+    a.clock.t += 2000;
+    tick(a.engine);
+    assert.ok(rows<Row>(a, "heard").length >= 2, "the words are on the ledger");
+    // The process dies here: no stop row, no closed row. A new engine over the same state dir.
+    a.clock.t += 8000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    assert.equal(b.engine.transportState, "asleep");
+    b.clock.t += 3000;
+    await b.engine.command({ type: "go" });
+    assert.equal(b.engine.transportState, "awake");
+    const config = b.live.config;
+    assert.match(config?.instructions ?? "", /# Continuity/);
+    assert.match(config?.instructions ?? "", /Jarhead's engine restarted \d+ seconds ago in the middle of this conversation/);
+    assert.match(config?.instructions ?? "", /Kevin: jarhead open the budget spreadsheet/);
+    assert.match(config?.instructions ?? "", /Jarhead: Opening it now\./);
+    assert.match(config?.instructions ?? "", /Kevin: jarhead scroll to the totals/);
+    assert.match(config?.instructions ?? "", /Say exactly one word now — "back"/);
+    const started = rows<Started>(b, "session.started");
+    assert.equal(started.at(-1)?.sessionId, "sess_b");
+    assert.equal(started.at(-1)?.resumedFrom, "sess_1", "chained to the cut session");
+    const resume = rows<Resume>(b, "resume").at(-1);
+    assert.equal(resume?.resumedFrom, "sess_1");
+    assert.ok((resume?.pausedMs ?? 0) >= 10_000, `pausedMs is the downtime (${resume?.pausedMs})`);
+    // Once only: a later wake in this process is a plain session.
+    await b.engine.command({ type: "stop" });
+    await b.engine.command({ type: "go" });
+    assert.equal(b.lives.length, 2);
+    assert.doesNotMatch(b.lives[1]!.config?.instructions ?? "", /Continuity/);
+  } finally {
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("auto-resume never happens after Kevin's Stop: a pressed stop before the cut leaves nothing to resume, and a Stop in the new process before its Go does too; outside the window a Go is a plain wake", async () => {
+  // Stopped before the cut.
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  let c: ReturnType<typeof world> | undefined;
+  let d: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead read the headline", "item_1");
+    await settle();
+    await a.engine.command({ type: "stop" });
+    a.clock.t += 5000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    await b.engine.command({ type: "go" });
+    assert.doesNotMatch(b.live.config?.instructions ?? "", /Continuity/, "Kevin stopped it: nothing to pick up");
+    assert.equal(rows<Started>(b, "session.started").at(-1)?.resumedFrom, undefined);
+    // Cut mid-conversation, but Kevin presses Stop in the new process before pressing Go.
+    b.clock.t += 5000;
+    c = world({}, { dir: a.dir, firstSessionId: "sess_c" });
+    c.clock.t = b.clock.t;
+    await c.engine.start();
+    await c.engine.ready();
+    await c.engine.command({ type: "stop" }); // from asleep: no row, but his word
+    await c.engine.command({ type: "go" });
+    assert.doesNotMatch(c.live.config?.instructions ?? "", /Continuity/, "his Stop in this process wins");
+    // Cut mid-conversation, Go after the window: a plain wake.
+    await c.engine.command({ type: "stop" });
+    c.clock.t += 5000;
+    d = world({}, { dir: a.dir, firstSessionId: "sess_d" });
+    d.clock.t = c.clock.t;
+    await d.engine.start();
+    await d.engine.ready();
+    d.clock.t += Engine.AUTO_RESUME_WINDOW_MS + 1000;
+    await d.engine.command({ type: "go" });
+    assert.doesNotMatch(d.live.config?.instructions ?? "", /Continuity/, "the window has passed");
+  } finally {
+    await d?.engine.stop();
+    await c?.engine.stop();
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("a pause survives the engine's death: the new process holds it again (paused, meter stopped, decaying as it would have) and Go resumes with the ledger's continuity; a pause past its decay is asleep", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  let c: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead find the invoice", "item_1");
+    await settle();
+    a.live.reportUsage(21);
+    const pausedAt = a.clock.t;
+    await a.engine.command({ type: "pause" });
+    assert.equal(a.engine.transportState, "paused");
+    // The process dies while paused; the new one reads the pause row back.
+    a.clock.t += 10_000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    assert.equal(b.engine.transportState, "paused");
+    assert.equal(b.engine.currentPhase, "paused");
+    assert.deepEqual(b.engine.snapshot().pause, { at: pausedAt, sessionId: "sess_1", usageSeconds: 21, sleepsAt: pausedAt + Engine.PAUSE_MIN_MS });
+    assert.equal(b.engine.snapshot().session, undefined, "no session, no meter");
+    await b.engine.command({ type: "go" });
+    assert.equal(b.engine.transportState, "awake");
+    assert.match(b.live.config?.instructions ?? "", /# Continuity/);
+    assert.match(b.live.config?.instructions ?? "", /Kevin paused you/);
+    assert.match(b.live.config?.instructions ?? "", /Kevin: jarhead find the invoice/, "the lines come from the ledger");
+    assert.equal(rows<Started>(b, "session.started").at(-1)?.resumedFrom, "sess_1");
+    await b.engine.command({ type: "stop" });
+    // A pause whose decay has passed by the time the new process starts is not held: asleep.
+    await b.engine.command({ type: "go" });
+    await b.engine.command({ type: "pause" });
+    b.clock.t += Engine.PAUSE_MIN_MS + 1000;
+    c = world({}, { dir: a.dir, firstSessionId: "sess_c" });
+    c.clock.t = b.clock.t;
+    await c.engine.start();
+    await c.engine.ready();
+    assert.equal(c.engine.transportState, "asleep");
+    assert.equal(c.engine.snapshot().pause, undefined);
+  } finally {
+    await c?.engine.stop();
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("the resume loop guard: a session that was itself a ledger resume and lived is resumed again; one that died inside 60 s is not (a Go is a plain wake); a pause's resume is exempt", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  let c: ReturnType<typeof world> | undefined;
+  let d: ReturnType<typeof world> | undefined;
+  let e: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead open the budget spreadsheet", "item_1");
+    await settle();
+    a.live.nowMs += 5000;
+    a.clock.t += 2000;
+    tick(a.engine);
+    // Cut. b resumes sess_1 (the first resume) and then LIVES: rows 90 s into it.
+    a.clock.t += 5000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    await b.engine.command({ type: "go" });
+    assert.match(b.live.config?.instructions ?? "", /# Continuity/);
+    assert.equal(rows<Started>(b, "session.started").at(-1)?.resumedFrom, "sess_1");
+    b.clock.t += 90_000;
+    delegate(b, "jarhead scroll to the totals", "item_2");
+    await settle();
+    b.live.nowMs += 5000;
+    b.clock.t += 2000;
+    tick(b.engine);
+    assert.ok(rows<Row>(b, "heard").some((r) => r.at >= b!.clock.t - 3000), "b's words are on the ledger, late in its life");
+    // Cut again. c: b was a resume, but it lived — resumed once more, with b's lines.
+    b.clock.t += 5000;
+    c = world({}, { dir: a.dir, firstSessionId: "sess_c" });
+    c.clock.t = b.clock.t;
+    await c.engine.start();
+    await c.engine.ready();
+    await c.engine.command({ type: "go" });
+    assert.match(c.live.config?.instructions ?? "", /# Continuity/, "a resume that lived is a conversation");
+    assert.match(c.live.config?.instructions ?? "", /Kevin: jarhead scroll to the totals/);
+    assert.equal(rows<Started>(c, "session.started").at(-1)?.resumedFrom, "sess_b");
+    // c dies 20 s in: a resume that died young. d must not resume it — that is the loop.
+    c.clock.t += 20_000;
+    d = world({}, { dir: a.dir, firstSessionId: "sess_d" });
+    d.clock.t = c.clock.t;
+    await d.engine.start();
+    await d.engine.ready();
+    assert.equal(d.engine.transportState, "asleep");
+    d.clock.t += 2000;
+    await d.engine.command({ type: "go" });
+    assert.equal(d.engine.transportState, "awake");
+    assert.doesNotMatch(d.live.config?.instructions ?? "", /Continuity/, "a resume that died young is a loop, not a conversation");
+    assert.equal(rows<Started>(d, "session.started").at(-1)?.resumedFrom, undefined);
+    assert.equal(rows<Resume>(d, "resume").filter((r) => r.resumedFrom === "sess_c").length, 0);
+    // The exemption: d pauses and resumes (Kevin's own chain, resumedFrom set), then dies 10 s in — e resumes it.
+    delegate(d, "jarhead find the invoice", "item_3");
+    await settle();
+    await d.engine.command({ type: "pause" });
+    d.clock.t += 1000;
+    await d.engine.command({ type: "go" });
+    assert.equal(rows<Started>(d, "session.started").at(-1)?.resumedFrom, "sess_d");
+    d.clock.t += 10_000;
+    e = world({}, { dir: a.dir, firstSessionId: "sess_e" });
+    e.clock.t = d.clock.t;
+    await e.engine.start();
+    await e.engine.ready();
+    await e.engine.command({ type: "go" });
+    assert.match(e.live.config?.instructions ?? "", /# Continuity/, "a pause's resume that died young is still Kevin's conversation");
+    assert.equal(rows<Started>(e, "session.started").at(-1)?.resumedFrom, "sess_d_2");
+  } finally {
+    await e?.engine.stop();
+    await d?.engine.stop();
+    await c?.engine.stop();
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});
+
+test("Stop inside the reconnect window after connection_lost writes the stop row (it lands after the session's closed row), and the next process does not resume that session", async () => {
+  const a = world();
+  let b: ReturnType<typeof world> | undefined;
+  try {
+    await a.engine.start();
+    await a.engine.ready();
+    a.engine.updateSettings({ idleSleepMinutes: 0 });
+    await a.engine.wake("test");
+    delegate(a, "jarhead read the headline", "item_1");
+    await settle();
+    a.live.nowMs += 5000;
+    a.clock.t += 2000;
+    tick(a.engine);
+    // The server drops the session; the engine will reconnect in 500 ms. Kevin presses Stop first.
+    a.live.serverClosed("connection_lost", 5);
+    assert.equal(a.engine.snapshot().session, undefined, "detached");
+    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p)), true);
+    a.clock.t += 100;
+    await a.engine.command({ type: "stop" });
+    const stops = rows<Stop>(a, "stop").filter((r) => r.how === "pressed");
+    assert.equal(stops.length, 1, "Kevin's word is on the ledger even though nothing was connecting yet");
+    assert.ok(stops[0]!.at >= rows<Closed>(a, "session.closed").at(-1)!.at, "after the closed row");
+    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p)), false, "the reconnect row left with the stop");
+    await settle(600); // the reconnect timer fires into a stopped engine
+    assert.equal(a.lives.length, 1, "nothing reopened");
+    assert.equal(a.engine.transportState, "asleep");
+    // The process dies; the next engine reads the stop after the closed row and leaves the session alone.
+    a.clock.t += 3000;
+    b = world({}, { dir: a.dir, firstSessionId: "sess_b" });
+    b.clock.t = a.clock.t;
+    await b.engine.start();
+    await b.engine.ready();
+    b.clock.t += 1000;
+    await b.engine.command({ type: "go" });
+    assert.doesNotMatch(b.live.config?.instructions ?? "", /Continuity/, "his Stop wins");
+    assert.equal(rows<Started>(b, "session.started").at(-1)?.resumedFrom, undefined);
+  } finally {
+    await b?.engine.stop();
+    await a.engine.stop();
+  }
+});

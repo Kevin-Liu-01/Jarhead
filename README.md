@@ -59,6 +59,18 @@ one policy, and can step into every coding-agent session on the Mac.
   and a reflex layer executes unambiguous commands (scroll, click a labelled
   control, type, tabs, open an app, dictation) straight through the policy-gated
   hands, reconciled with the model afterwards; `pnpm jarhead bench` enforces it.
+- **Cleans up without deleting.** Conversations Move to Trash, Archive, Restore,
+  rename and pin — never "Delete": the ledger stays append-only (a move is a
+  tombstone row), whole days move into `~/.jarhead/trash` by rename and come back
+  the same way, and retention is a setting whose default is forever.
+- **Names its problems, with the remedy attached.** Every failure state is typed —
+  a permission not granted, a brain that did not answer, a Live buffer full — and
+  carries its one-tap remedy (retry, open the pane, restart the helper) in the
+  Console; the daemon answers a ping, so wedged is not mistaken for fine.
+- **Works like a person at your screen.** It says what it is doing at the level
+  of intent — "found the invoice", "typing the amount", one clause per state
+  change, never per click — shows "Working · 0:12" in the notch and on the capsule
+  while a task runs, and says it is going to sleep before it does.
 - **Rewrites itself, carefully.** `self_edit` runs a coding agent in a git
   worktree of this repo, runs typecheck, tests and the Swift build, tells you
   what changed, and applies and restarts only after you say so. Changes to its

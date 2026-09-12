@@ -428,3 +428,89 @@ to his microphone and bills per second.
   (reason, backtrace, the last 40 app log lines) and relaunches at most 3× per 10
   min; the daemon lingers 90 s after an app that left without a `bye` frame so the
   relaunched app re-attaches to the warm Codex thread. Read the crash file first.
+- **Narration is gated in one place.** The voice's `# Narration` rule (one clause
+  per state change, never per click, never a tool's name) is mirrored in the
+  Delegator's relay — `Delegator.narrationVerdict` — so no brain has to be trusted
+  with it: a brain line naming one of `ALL_TOOL_SPECS` or reading as one click
+  ("Clicking Save.") after something was voiced stays on the Console's timeline
+  and never reaches Live. Jarhead's own lines (`say`: the summary, a reflex's
+  landing, a failure, the first-tool line) are never gated — they are the answer.
+  `speak_progress` goes through the brain's channel and is gated like any line —
+  except a line that asks Kevin something (a question, "say yes"), and every line
+  once a `confirm` step is pending: the runner's question quotes the command
+  (`run "python edit_file.py"`), so it names a tool, and Kevin has to hear it or
+  the handshake sits pending until his next request drops it.
+- **Jarhead's own speech counts as "addressed".** `live.on("outputTranscript")`
+  moves `lastAddressedAt`, so a pre-sleep clause judged against the idle clock
+  re-arms itself every idle period and the session never sleeps while it bills.
+  `Delegator.announceSleep` speaks once per idle stretch (Kevin's next words or
+  the next task start a new one) and returns whether it did; the engine arms one
+  deadline off `true` and sleeps at it unless `sleepAnnounced` has cleared —
+  never by re-reading `lastAddressedAt`.
+- **Carried history is a budget, not a transcript.** After a Codex rollover the
+  fresh thread hears `renderCarry`: Kevin's words verbatim (never cut, even over
+  budget), the spoken answers, and each tool result as one line — verbatim under
+  200 chars *and* 200 bytes, else `[tool result, 3.1 KB]`. Size is the whole MCP
+  result as the model saw it (a 1×1 PNG "screenshot" is 280 bytes: images count),
+  the text kept in memory is capped at 1 200 chars, the block at ~2 KB with the
+  oldest exchanges dropped whole first, the newest answer cut last. When the
+  newest exchange alone is over budget its results all become placeholders —
+  each naming its true size (`carriedResultLine(r, true)`), never a size inflated
+  to force the swap: what the model is told about a result must be true.
+- **A rollover's measure belongs to a turn.** `thread/tokenUsage/updated` carries a
+  `turnId`; the server sends one per model request and one can land after
+  `turn/completed` — or after the fresh thread's start reset `usage`. Judging it
+  again would open a third thread for one oversized tool output. `needsFreshThread()`
+  stays the pure measure (the tests read it); `rolloverDue()` is the trigger and
+  refuses the turn that already rolled the thread over (`rolledOverForTurn`).
+- **The notch island draws its content only while `parked`.** Anything that must
+  show while the blob is out at its target (the "Working · 0:12" strip) draws
+  *before* the park guard in `draw` and fades with `1 − park`; `setMode` gives the
+  unparked island peek height only while `workingSince` is set, else it shrinks to
+  nothing as before. The counter's width is measured once for the widest text
+  ("Working · 00:00") so the peek never re-lays itself as the digits roll; the
+  face slides left by half of it to keep the pair centred under the notch.
+- **The island's working state is fed, not derived.** `NotchDock.setWorking(since:)`
+  takes the snapshot's running delegation (`timings.delegatedAt / 1000`, nil when
+  none); the phase is not a proxy — `acting` is also dictation, and a summary being
+  spoken is `speaking` while the task is already done. The harness has no snapshot
+  feed, so `ORB_NOTCH_WORKING=1` makes the state follow the phase there only.
+- **Six builders, one worktree, one `swift build`.** SwiftPM fails with "input file
+  … was modified during the build" when another builder saves mid-compile, and
+  their half-edited files fail to compile in yours. `Scripts/orb-preview.sh
+  --build-only` compiles exactly Model + UI + UI/Orb + UI/Overlay and is the compile
+  check for those files while the package build is red on someone else's.
+- Rules that came out of this pass (the other builders' learnings are forwarded by
+  the integrator): **levels are untrusted numbers** (clamp at the source, `isFinite`
+  before `min`/`max`/`Int`); **AVFoundation throws ObjC exceptions** Swift cannot
+  catch (`JHTry` around every tap, connect, reset, prepare, format read);
+  **tombstones, not deletes** (a conversation's state is the last row for its
+  chain in an append-only file; day files move by `rename(2)`, nothing is ever
+  unlinked); **grants never for destructive verbs** (a remembered yes is scoped to
+  a conversation, an app, an action class and a deadline, and send / pay / delete /
+  post / purchase stay spoken-yes-once).
+- Cleanup never deletes: conversations get tombstone rows (`conversation.*`) in
+  TODAY's ledger file, the bytes stay where they were written, whole day files
+  MOVE to `~/.jarhead/trash` by rename(2) (`ledger.moved`), and every Console
+  verb is Move to Trash / Archive / Restore / Rename / Pin — never "Delete".
+  The Trash is emptied by Kevin in Finder, nowhere else.
+- Shots folders were named by the UTC day while ledger files are LOCAL days; both
+  now use `Ledger.dayFor`, so retention and the pinned/open guards line up.
+- Grants (a remembered yes) are issued only by a recorded yes (`arm(record)`),
+  keyed on app + action class, 20-minute ceiling, suspended by a cut and woken by
+  the same chain's resume; key presses are never grantable; System Settings /
+  Keychain Access keep every yes per action; destructive verbs (send, pay, delete,
+  post, purchase) ask every time. A presence hold ("Not now") registers no
+  pending confirmation — a bare "yes" after it lands nothing.
+- `presenceAt` must be stamped by KEVIN's input only (wake word, ear utterance,
+  Live input transcript, typed line, dictation) — never by Jarhead's speech or
+  the model's actions, or the brain satisfies its own presence gate.
+- AVAudioEngine hands the barge-in gate 100 ms buffers however small a bufferSize
+  is asked for; onset → −20 dB is 80–140 ms. Sub-100 ms needs an AVAudioSinkNode.
+  On the echo-cancelled path the mic ranking cannot be honoured (VoiceIO follows
+  the system default); the picker says so.
+- A class field initializer runs before the constructor body: `private transcript
+  = this.newTranscript()` saw `this.now` undefined, so the first transcript used
+  Date.now while later ones used the injected clock — pass clocks lazily.
+- The hands helper is serial, so a cancel line queues behind the op it means to
+  stop; the out-of-band stop is a signal whose default action is ignore (SIGURG).

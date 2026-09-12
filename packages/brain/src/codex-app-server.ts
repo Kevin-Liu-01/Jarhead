@@ -153,6 +153,8 @@ export interface TokenUsage {
    */
   readonly contextTokens: number;
   readonly contextWindow: number | undefined;
+  /** The turn this measure belongs to (`params.turnId`), so one turn's measure rolls the thread over once. */
+  readonly turnId: string | undefined;
 }
 
 /** What `rollover` announces: the old thread, the new one, and the context that triggered it. */
@@ -232,6 +234,8 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
   private threadId: string | undefined;
   private active: ActiveTurn | undefined;
   private usage: TokenUsage | undefined;
+  /** The turn whose measure last rolled the thread over: its late usage cannot roll it again. */
+  private rolledOverForTurn: string | undefined;
   private stopped = false;
   private startedAt = 0;
   private stderrTail = "";
@@ -373,6 +377,20 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
     return u.contextTokens > (this.opts.contextRolloverTokens ?? 240_000);
   }
 
+  /**
+   * Whether to start the replacement now: the context is full AND its measure has
+   * not already been acted on. One oversized tool output is one rollover: the measure
+   * belongs to a turn (`TokenUsage.turnId`), and a late `thread/tokenUsage/updated`
+   * for the turn that already rolled the thread over — the server sends usage per
+   * model request, and one can land after `turn/completed`, or after the fresh
+   * thread's start reset `usage` — is not a second reason to open a third thread.
+   */
+  private rolloverDue(): boolean {
+    if (!this.needsFreshThread()) return false;
+    const turn = this.usage?.turnId;
+    return turn === undefined || turn !== this.rolledOverForTurn;
+  }
+
   /** "context 181k/258k (0.70)" — the current context against the window, for the log. */
   contextReport(): string {
     const u = this.usage;
@@ -411,7 +429,7 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
       await this.interrupt();
       await primer.catch(() => undefined);
     }
-    if (this.needsFreshThread() && !this.active) await this.rollOver("at the next turn");
+    if (this.rolloverDue() && !this.active) await this.rollOver("at the next turn");
     if (this.rolling) await this.rolling;
   }
 
@@ -421,6 +439,8 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
     const from = this.threadId;
     const report = this.contextReport();
     const usage = this.usage;
+    // The measure that filled the thread has been acted on; the same turn's late usage is spent.
+    this.rolledOverForTurn = usage?.turnId;
     const t0 = Date.now();
     this.rolling = (async () => {
       try {
@@ -675,7 +695,8 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
         if (!u) return;
         const lastTotal = u.last?.totalTokens ?? 0;
         const lastInput = u.last?.inputTokens ?? 0;
-        this.usage = { totalTokens: u.total?.totalTokens ?? 0, lastTurnTokens: lastTotal, lastInputTokens: lastInput, lastCachedInputTokens: u.last?.cachedInputTokens ?? 0, contextTokens: lastTotal || lastInput, contextWindow: u.modelContextWindow ?? undefined };
+        const turnId = typeof params["turnId"] === "string" ? params["turnId"] : undefined;
+        this.usage = { totalTokens: u.total?.totalTokens ?? 0, lastTurnTokens: lastTotal, lastInputTokens: lastInput, lastCachedInputTokens: u.last?.cachedInputTokens ?? 0, contextTokens: lastTotal || lastInput, contextWindow: u.modelContextWindow ?? undefined, turnId };
         return;
       }
       case "turn/completed": {
@@ -687,7 +708,7 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
         active.resolve({ status, turnId: turn.id, ...(turn.error?.message ? { error: turn.error.message } : {}) });
         // The thread filled up on this turn: replace it now, so the next task finds a
         // warm one instead of paying thread/start (and the bridge start) on its own path.
-        if (this.opts.backgroundRollover !== false && this.running && this.needsFreshThread()) void this.rollOver("after the turn that filled it");
+        if (this.opts.backgroundRollover !== false && this.running && this.rolloverDue()) void this.rollOver("after the turn that filled it");
         return;
       }
       case "warning":

@@ -24,25 +24,30 @@ struct JarheadConversationPane: View, Equatable {
     let log: [JarheadLogLine]
     let loading: Bool
     let view: ConsoleSession.JarheadView
+    /// A row's wall-clock ms to open on (a search hit; ConsoleSession.jarheadScrollTarget); nil follows the end.
+    var scrollTarget: Double? = nil
 
     @EnvironmentObject private var session: ConsoleSession
+    @Environment(\.consoleActions) private var actions
 
     static func == (a: JarheadConversationPane, b: JarheadConversationPane) -> Bool {
         a.chain == b.chain && a.entries == b.entries && a.log == b.log && a.loading == b.loading && a.view == b.view
+            && a.scrollTarget == b.scrollTarget
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            JarheadConversationHeader(chain: chain, view: view, select: select, close: close)
+            JarheadConversationHeader(chain: chain, view: view, select: select, close: close, restore: restore)
             // Conversation ↔ Log: the two crossfade in place (Motion.swap) as the thumb glides.
             ZStack {
                 switch view {
                 case .conversation:
                     StreamFeed(entries: entries, modeKey: "jarhead:\(chain.id)",
-                               emptyState: StreamEmptyState(text: loading ? "Reading…" : "Nothing recorded.", loading: loading))
+                               emptyState: StreamEmptyState(text: loading ? "Reading…" : "Nothing recorded.", loading: loading),
+                               scrollToId: scrollTarget.flatMap { JarheadConversationPane.scrollTo(at: $0, in: entries) })
                         .transition(Motion.swap)
                 case .log:
-                    JarheadLogView(lines: log, loading: loading)
+                    JarheadLogView(lines: log, loading: loading, scrollToId: scrollTarget.flatMap { JarheadConversationPane.scrollTo(at: $0, in: log) })
                         .transition(Motion.swap)
                 }
             }
@@ -50,6 +55,31 @@ struct JarheadConversationPane: View, Equatable {
             .animation(Motion.gentle, value: view)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// The entry to open on for a row at `at`: the one written that millisecond, else the
+    /// nearest within two seconds (a delegation's card sits at its created row; a hit inside
+    /// it lands on the card). nil when nothing is near.
+    static func scrollTo(at: Double, in entries: [StreamEntry]) -> String? {
+        nearest(at: at, among: entries.map { ($0.id, $0.at) })
+    }
+
+    /// The log line to open on, the same way.
+    static func scrollTo(at: Double, in lines: [JarheadLogLine]) -> String? {
+        nearest(at: at, among: lines.map { ($0.id, $0.at) })
+    }
+
+    private static func nearest(at: Double, among rows: [(id: String, at: Double)]) -> String? {
+        guard at.isFinite, !rows.isEmpty else { return nil }
+        if let exact = rows.first(where: { $0.at == at }) { return exact.id }
+        let best = rows.min { abs($0.at - at) < abs($1.at - at) }
+        guard let best, abs(best.at - at) <= 2000 else { return nil }
+        return best.id
+    }
+
+    /// The header's Restore: back from Archived or the Trash, undoable like every cleanup.
+    private func restore() {
+        actions.cleanup(.restore([chain]))
     }
 
     private func select(_ view: ConsoleSession.JarheadView) {
@@ -72,8 +102,16 @@ private struct JarheadConversationHeader: View {
     let view: ConsoleSession.JarheadView
     let select: (ConsoleSession.JarheadView) -> Void
     let close: () -> Void
+    let restore: () -> Void
 
-    private var title: String { chain.title.isEmpty ? "—" : chain.title }
+    private var title: String { chain.displayTitle.isEmpty ? "—" : chain.displayTitle }
+
+    /// "in the Trash" / "archived" — where the conversation sits, with the way back beside it.
+    private var placed: (symbol: String, word: String)? {
+        if chain.isTrashed { return ("trash.fill", "in the Trash") }
+        if chain.isArchived { return ("archivebox.fill", "archived") }
+        return nil
+    }
 
     /// How the chain ended: "paused", "stopped", "idle", "connection_lost", "closed"; "open" while it never did.
     private var ended: String { chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason) }
@@ -109,9 +147,15 @@ private struct JarheadConversationHeader: View {
                     .font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(2)
-                    .help(chain.title.isEmpty ? "Nothing heard in this conversation" : chain.title)
+                    .help(chain.name.map { "\($0)\n\(chain.title.isEmpty ? "Nothing heard" : chain.title)" } ?? (chain.title.isEmpty ? "Nothing heard in this conversation" : chain.title))
                     .contentTransition(.opacity)
                     .animation(Motion.fade, value: title)
+                if chain.pinned {
+                    ConsoleIcon(name: "pin.fill", size: 11)
+                        .help("Pinned")
+                        .accessibilityLabel("Pinned")
+                        .transition(.opacity)
+                }
                 Spacer(minLength: 8)
                 JarheadSegmented(selected: view, select: select)
                     .layoutPriority(1)
@@ -148,14 +192,27 @@ private struct JarheadConversationHeader: View {
                     }
                     .help(chainHelp)
                 }
+                // Where it sits, and the way back: never a Delete here or anywhere.
+                if let placed {
+                    HStack(spacing: 6) {
+                        ConsoleIcon(name: placed.symbol, size: 11)
+                        Text(placed.word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
+                        Button("Restore", action: restore)
+                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
+                            .help(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
+                    }
+                    .layoutPriority(1)
+                    .transition(Motion.appear)
+                }
             }
             .padding(.horizontal, 12)
             .frame(height: metaStripHeight)
             .background(ConsoleTheme.raised)
+            .animation(Motion.gentle, value: chain.state)
             ConsoleHairline()
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Jarhead conversation, \(title), \(meta)" + (resumed.map { ", \($0)" } ?? ""))
+        .accessibilityLabel("Jarhead conversation, \(title), \(meta)" + (resumed.map { ", \($0)" } ?? "") + (placed.map { ", \($0.word)" } ?? ""))
     }
 }
 
@@ -322,7 +379,12 @@ enum JarheadLog {
                     add("agent", text)
                 }
             default:
-                add(row.type, "")
+                // The cleanup's tombstone rows: "moved to Trash", "restored", "renamed to …", "pinned" — the meter's tone, they are the record's own moves.
+                if let t = ConsoleFormat.tombstone(row) {
+                    add(t.kind, [t.text, t.mono, t.trailing].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "), .meter)
+                } else {
+                    add(row.type, "")
+                }
             }
         }
         return out
@@ -332,6 +394,10 @@ enum JarheadLog {
 private struct JarheadLogView: View {
     let lines: [JarheadLogLine]
     let loading: Bool
+    /// The line to open on (a search hit); nil starts at the top.
+    var scrollToId: String? = nil
+
+    @State private var highlightId: String?
 
     var body: some View {
         ZStack {
@@ -342,15 +408,21 @@ private struct JarheadLogView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity)
             } else {
-                ScrollView(.vertical) {
-                    // Lazy is fine here: nothing sticks to the bottom of a finished log.
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(lines) { line in
-                            JarheadLogRow(line: line)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        // Lazy is fine here: nothing sticks to the bottom of a finished log.
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(lines) { line in
+                                JarheadLogRow(line: line)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active).opacity(highlightId == line.id ? 1 : 0))
+                                    .id(line.id)
+                            }
                         }
+                        .padding(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 16))
+                        .thinScrollers()
                     }
-                    .padding(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 16))
-                    .thinScrollers()
+                    .onAppear { if let id = scrollToId { scroll(to: id, proxy: proxy) } }
+                    .onChange(of: scrollToId) { _, id in if let id { scroll(to: id, proxy: proxy) } }
                 }
                 .accessibilityLabel("Log, \(lines.count) rows")
                 .transition(.opacity)
@@ -358,6 +430,19 @@ private struct JarheadLogView: View {
         }
         // "Reading…" and the rows that answer it crossfade.
         .animation(Motion.fade, value: lines.isEmpty)
+    }
+
+    private func scroll(to id: String, proxy: ScrollViewProxy) {
+        guard lines.contains(where: { $0.id == id }) else { return }
+        DispatchQueue.main.async {
+            if Motion.reduced { proxy.scrollTo(id, anchor: .center) } else { withAnimation(Motion.gentle) { proxy.scrollTo(id, anchor: .center) } }
+            withAnimation(Motion.fade) { highlightId = id }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_800_000_000)
+                guard highlightId == id else { return }
+                withAnimation(Motion.fade) { highlightId = nil }
+            }
+        }
     }
 }
 

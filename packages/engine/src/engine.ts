@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, logger, newId, readConfig, type JarheadConfig } from "@jarhead/core";
-import { LiveSession, Transcript, buildLiveInstructions, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, HELPER_PERMISSION_KINDS, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
+import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
+import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, type SessionConfig } from "@jarhead/live";
+import { ComputerToolset, ConfirmationState, DEFAULT_SHOT_BUDGET, HELPER_PERMISSION_KINDS, NativeHandsProcess, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type ScreenshotResult, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, ReflexRunner, ResponsesBrain, ToolRunner, responsesDelegationConfig, screenNote, type Brain, type BrainAttachment, type BrainSink, type Reconciliation, type Reflex, type ReflexOutcome } from "@jarhead/brain";
 import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
@@ -21,6 +21,9 @@ import {
   type PauseInfo,
   type Permissions,
   type Phase,
+  type Problem,
+  type ProblemKind,
+  type ProblemRemedy,
   type Settings,
   type Point,
   type Rect,
@@ -30,6 +33,7 @@ import {
   type SetupStatus,
   type Snapshot,
   type TranscriptItem,
+  type TrashInfo,
   type UsageToday,
   type WakeSettings,
 } from "@jarhead/protocol";
@@ -60,6 +64,12 @@ export interface EngineEvents {
   reflex: [label: string, ms: number, prefired: boolean];
   /** A reflex through the ear finished (or was dropped): the timing chain the ledger keeps. */
   "reflex.fired": [row: ReflexLedgerRow];
+  /**
+   * What is on the screen, for the app's on-device ear (wire.ts `ear.hints`): the front
+   * app, its window title, the visible controls' titles, the agents' names — at most 100
+   * strings of at most three words, only when the set changed, at most twice a second.
+   */
+  "ear.hints": [strings: readonly string[]];
 }
 
 export interface EngineOptions {
@@ -79,6 +89,23 @@ export interface EngineOptions {
   readonly earCarefulMs?: number;
   /** How long a graceful `close()` may go unanswered before the session is `terminate()`d (default 1000 ms); tests shorten it. */
   readonly closeDeadlineMs?: number;
+  /** The disk preflight's statvfs (default `fs.statfsSync` on the state dir): free bytes are `bavail * bsize`. Tests fake a full disk. */
+  readonly statfs?: (path: string) => { readonly bavail: number | bigint; readonly bsize: number | bigint };
+}
+
+/** What the engine knows about a problem beyond its line: its kind, its one remedy, when it was first seen. */
+interface ProblemMeta {
+  readonly kind: ProblemKind;
+  readonly remedy?: ProblemRemedy;
+  readonly since: number;
+}
+
+/** The session the previous engine process left open (no closed row, no pressed stop): a Go soon after the restart resumes it. */
+interface LostSession {
+  readonly sessionId: string;
+  /** Wall clock of its last row: when the conversation was cut. */
+  readonly at: number;
+  readonly usageSeconds: number;
 }
 
 const SETTINGS_FILE = "settings.json";
@@ -87,6 +114,16 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Re-read after `config.set-secrets`; everything else treats it as constant. */
   config: JarheadConfig;
   readonly ledger: Ledger;
+  /** The Trash under the state dir: whole day files move there and back by rename; Jarhead never empties it (K1). */
+  readonly trash: Trash;
+  /** What the Trash holds, refreshed when something moves — never per snapshot. */
+  private trashInfo: TrashInfo;
+  /** A local-day rollover happened while a session was up: the retention sweep waits for the first quiet tick (nothing on the voice loop copies or walks folders). */
+  private sweepPending = false;
+  /** Agents Kevin hid from the rail (`agent.hidden` rows), sorted. */
+  private hiddenAgents: readonly string[] = [];
+  /** Kevin cleared the Now stream at this wall-clock ms: items at or before it are hidden from the snapshot only. */
+  private nowClearedAt: number | undefined;
   /**
    * The open session's transcript. Session-timeline ms restart with every session,
    * so each gets its own: a Delegator's request window (`since(lastDelegationEnd)`)
@@ -131,7 +168,29 @@ export class Engine extends EventEmitter<EngineEvents> {
   private muted = false;
   private wantAwake = false;
   private connecting = false;
+  /**
+   * The problem lines, oldest first, capped at eight: the snapshot's `problems`, the order
+   * and the cap for `typedProblems()`. `clear-problems` empties it; `problemMeta` carries
+   * each line's kind, remedy and first-seen (see the "problems, typed" region).
+   */
   private problems: string[] = [];
+  private readonly problemMeta = new Map<string, ProblemMeta>();
+  /** The disk preflight's last verdict (`checkDisk`): shots are skipped while true. */
+  private diskLow = false;
+  /** Wall clock of Kevin's last own input (wake, ear, Live transcript, typed line, dictation) — never Jarhead's speech or the model's actions: the presence gate reads it. */
+  private lastKevinAt = 0;
+  /** When the announced idle sleep falls due: fixed once announced, so the announcement itself cannot push it. */
+  private sleepDeadlineAt: number | undefined;
+  private diskCheckedAt = 0;
+  /** While the voice reconnects after `expired` / `connection_lost`: since when, for the problem line's elapsed figure. 0 otherwise. */
+  private voiceReconnectSince = 0;
+  private voiceReconnectLabel = "";
+  /** Wall clock of `start()`: the auto-resume window (`AUTO_RESUME_WINDOW_MS`) is measured from it. */
+  private startedAt = 0;
+  /** The session the previous process left open, found in the ledger at start; consumed by the first connect inside the window. */
+  private lostSession: LostSession | undefined;
+  /** The ledger resume happens at most once per process — and never after Kevin pressed Stop in this one. */
+  private ledgerResumeUsed = false;
   private permissions: Permissions = { microphone: "unknown", screenRecording: "unknown", accessibility: "unknown" };
   private agentsList: AgentInfo[] = [];
   private connectorHealth: ConnectorHealth[] = [];
@@ -198,6 +257,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     mkdirSync(this.config.stateDir, { recursive: true });
     this.ledger = new Ledger(this.config.stateDir);
     this.loadUsageToday();
+    // The Trash asks the ledger which days hold a pinned or open conversation and records every move in it (K1).
+    this.trash = new Trash(this.config.stateDir, this.ledger, { now: this.now, openSessionIds: () => this.openSessionIds(), log: (line) => log.info(line) });
+    this.trashInfo = this.trash.info();
+    this.hiddenAgents = this.ledger.hiddenAgents();
     this.settings = this.loadSettings();
     // The seam: a stand-in answers the helper's request lines as a fake child, so the
     // real client (pending map, timeouts, a stop's cancelPending) runs unchanged.
@@ -208,6 +271,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       excludePids: () => [...this.excludePids, process.pid],
       annotate: (cmd) => this.emit("overlay", cmd),
       onAction: (a) => this.onAction(a),
+      presenceAt: () => this.lastKevinAt || undefined,
     });
     const connectors =
       opts.connectors ??
@@ -224,6 +288,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       toolset: this.toolset,
       agents: this.agents,
       stateDir: this.config.stateDir,
+      ledger: this.ledger,
       overlay: (cmd) => this.emit("overlay", cmd),
       // Self-edit: after a change to engine code passes its checks and Kevin confirms,
       // the daemon restarts on the new code (exit 75 → the app respawns it).
@@ -277,7 +342,9 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** A session's transcript: every finalized utterance goes on the ledger (heard / said) and out as an event. */
   private newTranscript(): Transcript {
-    const t = new Transcript();
+    // The engine's clock, like every other timestamp here: a cleared Now stream compares item.at against it (K1).
+    // Read lazily — the first transcript is a field initializer, built before the constructor body sets `this.now`.
+    const t = new Transcript(() => this.now());
     t.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
@@ -377,7 +444,15 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** Spawn the helper, probe permissions, start the brain. Does not open a session. */
   async start(): Promise<void> {
+    this.startedAt = this.now();
     this.tickTimer = setInterval(() => this.tick(), 1000);
+    // What the previous process left behind: a pause to hold again, a session it was cut
+    // from, a crash report to point at, a disk with no room for shots (the K3 region below).
+    this.restoreFromLedger();
+    this.noteCrashReports();
+    this.checkDisk();
+    // Retention (K1): days past the windows move to the Trash — listed in the log first; 0 = never.
+    this.runSweep("startup");
     void this.probeHands();
     void this.agents.refresh().then((r) => {
       this.connectorHealth = r.health;
@@ -401,7 +476,7 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   private async probeHands(): Promise<void> {
     if (!this.hands.available) {
-      this.problem(`hands helper not built (${this.config.handsBin}); run pnpm build:hands`);
+      this.problemOf("hands.helper", `hands helper not built (${this.config.handsBin}); run pnpm build:hands`, Engine.HANDS_REMEDY);
       this.permissions = { ...this.permissions, screenRecording: "unknown", accessibility: "unknown" };
       return;
     }
@@ -409,6 +484,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       const hello = await this.hands.hello();
       // The greeting is a fresh process's read (the helper was just spawned): fold it like a poll.
       this.applyHelperRead(hello.permissions);
+      // A helper that greets is a helper that works: whatever was said about it before is over.
+      this.clearProblems("hands.helper");
     } catch (e) {
       // A restart (a grant appeared while the greeting was pending) ends the first helper on
       // purpose; the successor greets again. Only a second failure is a problem.
@@ -416,18 +493,22 @@ export class Engine extends EventEmitter<EngineEvents> {
         try {
           const hello = await this.hands.hello();
           this.applyHelperRead(hello.permissions);
+          this.clearProblems("hands.helper");
           this.scheduleSnapshot();
           return;
         } catch (again) {
-          this.problem(`hands helper failed: ${(again as Error).message}`);
+          this.problemOf("hands.helper", `hands helper failed: ${(again as Error).message}`, Engine.HANDS_REMEDY);
           this.scheduleSnapshot();
           return;
         }
       }
-      this.problem(`hands helper failed: ${(e as Error).message}`);
+      this.problemOf("hands.helper", `hands helper failed: ${(e as Error).message}`, Engine.HANDS_REMEDY);
     }
     this.scheduleSnapshot();
   }
+
+  /** The one thing to press for a hands problem: a fresh helper process (`retryProblem("hands.helper")`). */
+  private static readonly HANDS_REMEDY: ProblemRemedy = { label: "Restart helper", command: { type: "problem.retry", kind: "hands.helper" } };
 
   // ---------------------------------------------------------- permissions
   //
@@ -596,10 +677,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         // read of the daemon's life (unknown → granted) does not — restarting then would
         // cut the helper's own greeting short and report a failure that never happened.
         if ((kind === "accessibility" || kind === "screenRecording") && before === "denied") regained = true;
-        this.problems = this.problems.filter((p) => p !== text);
+        this.clearProblemText(text);
         if (before !== "unknown") this.toast(`${base.label} granted — ${Engine.GRANTED_NOTE[kind]}`, "info");
       } else {
-        this.problem(text);
+        this.problemOf(Engine.permissionProblemKind(kind), text, Engine.permissionRemedy(kind));
         if (before === "granted") this.toast(`${base.label} was revoked`, "warn");
       }
     }
@@ -668,9 +749,37 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   setMicrophonePermission(state: Permissions["microphone"]): void {
     this.permissions = { ...this.permissions, microphone: state };
-    if (state === "denied") this.problem(Engine.MICROPHONE_PROBLEM);
-    else if (state === "granted") this.problems = this.problems.filter((p) => p !== Engine.MICROPHONE_PROBLEM);
+    if (state === "denied") this.problemOf("permission.microphone", Engine.MICROPHONE_PROBLEM, Engine.permissionRemedy("microphone"));
+    else if (state === "granted") this.clearProblemText(Engine.MICROPHONE_PROBLEM);
     this.scheduleSnapshot();
+  }
+
+  /** The typed kind of a missing grant: the four the contract names, `permission.other` for the rest. */
+  static permissionProblemKind(kind: PermissionKind): ProblemKind {
+    switch (kind) {
+      case "accessibility":
+        return "permission.accessibility";
+      case "screenRecording":
+        return "permission.screenRecording";
+      case "microphone":
+        return "permission.microphone";
+      case "fullDiskAccess":
+        return "permission.fullDiskAccess";
+      default:
+        return "permission.other";
+    }
+  }
+
+  /**
+   * The one button for a missing grant: "Request" where a prompt exists (the helper asks
+   * for Accessibility and Screen Recording; the app asks for the rest), "Open pane" where
+   * only System Settings grants it (Full Disk Access; a denied microphone — the app opens
+   * the pane for a kind that cannot be prompted again). Both are the `request-permission`
+   * command the surfaces already route (AppDelegate answers the app-owned kinds itself).
+   */
+  static permissionRemedy(kind: PermissionKind): ProblemRemedy {
+    const ask = Engine.PERMISSION_CATALOGUE[kind].ask;
+    return { label: ask === "settings" || kind === "microphone" ? "Open pane" : "Request", command: { type: "request-permission", which: kind } };
   }
 
   /**
@@ -823,9 +932,12 @@ export class Engine extends EventEmitter<EngineEvents> {
           signal: AbortSignal.timeout(8000),
         });
         openaiKey = r.status === 200 ? "ok" : r.status === 401 ? "invalid" : r.status === 404 ? "ok" : "invalid";
-        if (r.status === 404) this.problem(`OpenAI key works but ${this.config.liveModel} is not listed for it`);
+        if (r.status === 404) this.problemOf("voice.key", `OpenAI key works but ${this.config.liveModel} is not listed for it`, Engine.SETUP_REMEDY);
+        // The key answered: a missing or stale key is not the problem any more; nor is reaching the host.
+        if (r.status === 200) this.clearProblems("voice.key");
+        this.clearProblems("voice.connection", (t) => t.startsWith("could not reach api.openai.com"));
       } catch (e) {
-        this.problem(`could not reach api.openai.com: ${(e as Error).message}`);
+        this.problemOf("voice.connection", `could not reach api.openai.com: ${(e as Error).message}`, Engine.PROBE_REMEDY);
         openaiKey = "unchecked";
       }
     }
@@ -964,7 +1076,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         continue;
       }
       const candidate = build(kind);
-      if (candidate.warning) this.problem(candidate.warning);
+      if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.PROBE_REMEDY);
       const r = await candidate.brain.start();
       if (r.ready) {
         this.brain = candidate.brain;
@@ -980,7 +1092,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       tried.push(`${candidate.label}: ${r.detail}`);
       failed.push(candidate.label);
       // A configured backend that cannot start is worth a line in the Console.
-      this.problem(`${candidate.label} brain unavailable (${r.detail}); ${order.length > 1 ? "trying the next backend" : "using the OpenAI backend instead"}`);
+      this.problemOf("brain.unavailable", `${candidate.label} brain unavailable (${r.detail}); ${order.length > 1 ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.PROBE_REMEDY);
     }
     // An explicit choice that could not start: the Live session's own Responses delegation always can.
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
@@ -992,7 +1104,7 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** Called by the shell when the brain fails to authenticate mid-run. */
   private async swapToResponses(reason: string): Promise<void> {
-    this.problem(`brain failed (${reason}); switching to the OpenAI backend for the next session`);
+    this.problemOf("brain.unavailable", `brain failed (${reason}); switching to the OpenAI backend for the next session`, Engine.PROBE_REMEDY);
     await this.brain?.stop();
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
     await responses.start();
@@ -1073,12 +1185,14 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.wantAwake = true;
     if (this.live || this.connecting) return;
     if (!this.config.openaiApiKey) {
-      this.problem("OPENAI_API_KEY is missing; set it in ~/.jarhead/env or .env.local");
+      this.endVoiceReconnect();
+      this.problemOf("voice.key", "OPENAI_API_KEY is missing; set it in ~/.jarhead/env or .env.local", Engine.SETUP_REMEDY);
       this.setPhase("error");
       return;
     }
     this.connecting = true;
-    this.lastAddressedAt = this.now();
+    if (!reason.startsWith("reconnect")) this.kevinSpoke();
+    else this.lastAddressedAt = this.now();
     this.setPhase("connecting");
     await this.ready();
     // A brain swap in flight (keys changed, settings changed) leaves `this.brain` undefined for a moment; wire() needs it.
@@ -1088,6 +1202,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.setPhase("asleep");
       return;
     }
+    // A fresh process whose predecessor was cut mid-conversation: the first Go inside the
+    // window resumes that conversation from the ledger (the K3 region; a real pause's resume
+    // arrives with its continuity already). Then the disk: a session may open with no room
+    // for shots, but the row says so before the first screenshot is skipped.
+    resume ??= this.resumeFromLedger(reason);
+    this.checkDisk();
     const config = this.sessionConfig(resume?.continuity);
     let live: LiveSession | undefined;
     try {
@@ -1102,6 +1222,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.usageSeconds = 0;
       this.contextRatio = undefined;
       this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
+      // Grants live with the conversation: a resume continues the chain it left, a new session starts one.
+      this.confirmations.beginConversation(resume ? (this.ledger.chainRootOf(resume.pause.sessionId) ?? resume.pause.sessionId) : res.id);
       this.usageBase = { ...this.usageBase, sessions: this.usageBase.sessions + 1 };
       if (!this.wantAwake) {
         // Stop (or sleep) landed while the socket was opening: close the session the moment it exists.
@@ -1118,6 +1240,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
+      // The voice is back: a reconnect's "connection lost" row (and a failed start's) is over.
+      this.endVoiceReconnect();
+      this.clearProblems("voice.connection");
       log.info(`session ${res.id} started (${config.delegation?.type ?? "client"} delegation${resume ? `; resumed from ${resume.pause.sessionId}` : ""})`);
       this.warmStart();
     } catch (e) {
@@ -1127,7 +1252,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         log.info(`session start abandoned: ${(e as Error).message}`);
         this.setPhase("asleep");
       } else {
-        this.problem(`could not start a Live session: ${(e as Error).message}`);
+        // A reconnect that failed is not reconnecting any more: its counting row ends here, so
+        // the failed start's own line (with Retry → go) stands and tick() does not rewrite it.
+        this.endVoiceReconnect();
+        this.voiceProblem(`could not start a Live session: ${(e as Error).message}`, Engine.GO_REMEDY);
         this.setPhase("error");
       }
     } finally {
@@ -1221,8 +1349,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     // A session open across midnight is one of today's sessions too.
     if (this.live?.session) sessions += 1;
+    const day = Ledger.fileNameFor(now);
+    const rolled = this.usageDay !== "" && this.usageDay !== day;
     this.usageBase = { seconds, sessions };
-    this.usageDay = Ledger.fileNameFor(now);
+    this.usageDay = day;
+    // A new local day (K1): the retention sweep runs once, at the next tick with no session up (`runPendingSweep`); the day that just ended is today − 1 and never moves.
+    if (rolled) this.sweepPending = true;
   }
 
   /** The meter: today's closed sessions plus what the open one has billed so far. */
@@ -1340,6 +1472,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     live.on("inputTranscript", (delta, s, e) => {
       if (!current()) return;
       if (this.outputGateUntil) this.liftOutputGate("Kevin spoke");
+      this.kevinSpoke();
       this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
     });
     live.on("outputTranscript", (delta, s, e) => {
@@ -1353,7 +1486,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     live.on("delegation", () => {
       if (!current()) return;
-      this.lastAddressedAt = this.now();
+      this.kevinSpoke();
     });
     live.on("usage", (seconds, ratio) => {
       if (!current()) return;
@@ -1364,7 +1497,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     live.on("error", (e, cid) => {
       if (!current()) return;
       log.warn(`live error${cid ? ` (${cid})` : ""}: ${e.message}`);
-      if (!/context_injection_incomplete/.test(e.message)) this.problem(`voice: ${e.message}`);
+      if (!/context_injection_incomplete/.test(e.message)) this.voiceProblem(`voice: ${e.message}`);
     });
     live.on("closed", (reason, usage) => {
       // The record and the meter, whichever session this was. A socket that never
@@ -1387,6 +1520,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
       if (this.wantAwake && !this.pauseInfo && (reason === "expired" || reason === "connection_lost")) {
         this.toast(reason === "expired" ? "session expired; reconnecting" : "connection lost; reconnecting", "warn");
+        this.noteVoiceReconnect(reason === "expired" ? "session expired" : "connection lost");
         // Re-checked when it fires: a stop or a pause in the meantime wins over the reconnect.
         setTimeout(() => {
           if (this.wantAwake && !this.pauseInfo) void this.connect(`reconnect after ${reason}`);
@@ -1451,8 +1585,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!t) return;
     if (this.pauseInfo) await this.resume();
     if (!this.live) return;
-    this.lastAddressedAt = this.now();
-    if (YES_PATTERN.test(t)) this.confirmations.arm();
+    this.kevinSpoke();
+    if (YES_PATTERN.test(t)) {
+      // A typed yes grants the way a spoken one does: only with its ledger row.
+      this.confirmations.arm((g) => this.ledger.append({ at: this.now(), type: "grant", chainId: this.confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }));
+    }
     this.live.appendInstructions(null, `Kevin just typed (treat it exactly like speech): "${t}". Respond to it now; delegate if it asks for anything the backend does.`);
   }
 
@@ -1527,10 +1664,20 @@ export class Engine extends EventEmitter<EngineEvents> {
     const live = this.live;
     const wasPaused = this.pauseInfo !== undefined;
     const wasConnecting = this.connecting;
+    // A reconnect pending after expired / connection_lost (the 500 ms window, or the row still
+    // counting): the session is detached and not yet connecting, but something is running.
+    const wasReconnecting = this.voiceReconnectSince > 0;
     this.wantAwake = false;
+    // Kevin's Stop wins over a restart's resume: the conversation the previous process was
+    // cut from is not picked up by the next Go once he has said stop in this one.
+    this.ledgerResumeUsed = true;
+    this.lostSession = undefined;
     const { running, dropped, jobs, cancel } = this.cutEverything("Kevin pressed stop", "stop");
     this.pauseInfo = undefined;
-    const happened = live !== undefined || wasConnecting || wasPaused || running !== undefined || jobs > 0;
+    this.endVoiceReconnect();
+    // The stop row is written whenever there was something to stop — a pending reconnect
+    // included, so the next process reads Kevin's word and does not resume the cut session.
+    const happened = live !== undefined || wasConnecting || wasPaused || wasReconnecting || running !== undefined || jobs > 0;
     if (happened) this.ledger.append({ at: t0, type: "stop", how: "pressed", ...(running ? { cancelled: running.id } : {}) });
     if (live && !wasConnecting) {
       this.detachLive(live);
@@ -1763,10 +1910,19 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** Screenshot the region through the hands and fill the mark's screenshotPath in place; never throws. */
   private async captureMark(id: string, rect: Rect, at: number, size: string): Promise<void> {
+    // The disk preflight, measured before EVERY capture (statfs is microseconds): a disk that
+    // fills mid-session is caught at the next shot, not the next connect. Under DISK_LOW_BYTES
+    // free the region is not captured — the mark still counts and the brain gets the region
+    // without the pixels (the same fallback as no eyes).
+    if (!this.checkDisk()) {
+      log.warn(`mark ${id}: ${size}; not captured — disk low (${Math.round(Engine.DISK_LOW_BYTES / 1_048_576)} MB floor)`);
+      this.scheduleSnapshot();
+      return;
+    }
     try {
       // Jarhead's own windows (the orb, the overlay with the stroke on it) stay out of the shot, as with every capture.
       const shot = await this.hands.request<ScreenshotResult>("zoom", { ...rect, maxLongEdge: DEFAULT_SHOT_BUDGET.maxLongEdge, excludePids: [...this.excludePids, process.pid] }, 6000);
-      const day = new Date(at).toISOString().slice(0, 10);
+      const day = Ledger.dayFor(at);
       const rel = join("shots", day, `${id}.png`);
       mkdirSync(join(this.config.stateDir, "shots", day), { recursive: true });
       writeFileSync(join(this.config.stateDir, rel), Buffer.from(shot.pngBase64, "base64"));
@@ -1894,13 +2050,22 @@ export class Engine extends EventEmitter<EngineEvents> {
     await this.connect("resume", { pause, continuity: this.continuityFor(pause) });
   }
 
-  /** The "# Continuity" section a resumed session starts with: the last lines of the conversation and the last task. */
-  private continuityFor(pause: PauseInfo): string {
-    const minutes = Math.round((this.now() - pause.at) / 60_000);
+  /**
+   * The "# Continuity" section a resumed session starts with: the last lines of the
+   * conversation and the last task. `how` says what the gap was: a pause Kevin chose
+   * (the default: carry on silently), or a restart of the engine that cut the
+   * conversation — then the lines come from the LEDGER (this process never heard them)
+   * and the voice says one word, "back", so Kevin knows it is the same conversation.
+   */
+  private continuityFor(pause: PauseInfo, how: "paused" | "restarted" = "paused"): string {
+    const gapMs = this.now() - pause.at;
+    const minutes = Math.round(gapMs / 60_000);
     const when = minutes < 1 ? "less than a minute ago" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
     const lines: string[] = [];
     let chars = 0;
-    const whole = this.wholeTranscript();
+    // A fresh process holds no transcript: what was said lives in the ledger's heard / said rows.
+    const recalled = this.wholeTranscript().length > 0 ? undefined : this.recallFromLedger(pause.sessionId);
+    const whole = recalled?.items ?? this.wholeTranscript();
     for (let i = whole.length - 1; i >= 0 && lines.length < Engine.CONTINUITY_LINES; i--) {
       const item = whole[i];
       const text = item?.text.trim();
@@ -1915,7 +2080,17 @@ export class Engine extends EventEmitter<EngineEvents> {
       chars += line.length + 1;
     }
     const last = this.lastDelegations[this.lastDelegations.length - 1];
-    const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : undefined;
+    const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : recalled?.task;
+    if (how === "restarted") {
+      const seconds = Math.max(1, Math.round(gapMs / 1000));
+      return [
+        "# Continuity",
+        `Jarhead's engine restarted ${seconds < 90 ? `${seconds} seconds` : `${minutes} minutes`} ago in the middle of this conversation (a crash, or an update). This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
+        lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
+        ...(task ? [task] : []),
+        'Say exactly one word now — "back" — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.',
+      ].join("\n");
+    }
     return [
       "# Continuity",
       `Kevin paused you ${when} and just resumed. This is the same conversation. What was said before the pause, most recent last:`,
@@ -2071,7 +2246,7 @@ export class Engine extends EventEmitter<EngineEvents> {
           if (outcome.shared) {
             log.info(`ear reflex ${reflex.label} asks (${outcome.result.question.slice(0, 80)}); the delegation that joined it relays the question, the pending stays`);
           } else if (this.confirmations.pending?.id === outcome.result.pendingId) {
-            this.confirmations.clear();
+            this.confirmations.dropQuestion();
           }
           if (!outcome.shared) log.info(`ear reflex ${reflex.label} dropped: the policy wants a yes (${outcome.result.question.slice(0, 80)})`);
           return { ...outcome, ok: false, dropped: "needs confirmation" };
@@ -2117,7 +2292,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private startDictation(): void {
     if (this.dictating) return;
     this.dictating = true;
-    this.lastAddressedAt = this.now();
+    this.kevinSpoke();
     this.live?.appendInstructions(null, "Kevin is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says \"stop dictating\"; do not delegate what he says.");
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
     this.toast("dictating — say \"stop dictating\" to end", "info");
@@ -2145,14 +2320,14 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (decision.verdict !== "run") return false;
     const r = await this.toolset.run("type", { text });
     if (r.kind === "needs-confirmation") {
-      if (this.confirmations.pending?.id === r.pendingId) this.confirmations.clear();
+      if (this.confirmations.pending?.id === r.pendingId) this.confirmations.dropQuestion();
       return false;
     }
     if (r.kind === "error") {
       log.warn(`dictation type failed: ${r.message}`);
       return !/^refused/.test(r.message);
     }
-    this.lastAddressedAt = this.now();
+    this.kevinSpoke();
     return true;
   }
 
@@ -2188,6 +2363,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         .request<AxTreeResult>("ax_tree", { summary: true, maxAgeMs: Engine.AX_WARM_MS - 100, maxMs: 80 }, 1500)
         .then((r) => {
           if (r.app) this.frontApp = r.app;
+          this.noteAxForHints(r);
         })
         .catch((e: Error) => log.debug(`ax warm: ${e.message}`))
         .finally(() => {
@@ -2203,6 +2379,85 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.axWarmTimer) clearInterval(this.axWarmTimer);
     this.axWarmTimer = undefined;
     this.frontApp = "";
+    this.resetEarHints();
+  }
+
+  // ------------------------------------------------------------ ear hints
+  // What is on the screen, whispered to the app's on-device recogniser: the front app,
+  // its window title, the visible controls' titles and the agents' names become
+  // `SFSpeechAudioBufferRecognitionRequest.contextualStrings` on the ear's next segment
+  // (apps/mac Ear/EarListener.swift `applyHints`), so "click Add Folder" comes back as
+  // those words on the first partial — the one the reflex grammar matches (§12). Fed by
+  // the AX warm tick above (every 500 ms while awake): the nodes are read from the
+  // helper's cache only when the tree's summary changed (app, window, node count) or
+  // every EAR_HINTS_REREAD_MS; the set is compared whole and `ear.hints` goes out only
+  // when it changed, never more than twice a second (a trailing send carries the newest).
+  // Real-clock timers here: they pace a wire message, not the session. Nothing on the
+  // voice path or the reflex path awaits any of it.
+
+  static readonly EAR_HINTS_MIN_INTERVAL_MS = 500;
+  static readonly EAR_HINTS_REREAD_MS = 3000;
+  private earHintsSummary = "";
+  private earHintsReadAt = 0;
+  private earHintsBusy = false;
+  private earHintsLast = "";
+  private earHintsSentAt = 0;
+  private earHintsPending: readonly string[] | undefined;
+  private earHintsTimer: NodeJS.Timeout | undefined;
+
+  /** The warm tick's summary: is the tree worth reading for hints right now? */
+  private noteAxForHints(r: AxTreeResult): void {
+    if (!this.live || this.earHintsBusy) return;
+    const summary = `${r.app}|${r.window}|${r.count}|${r.truncated ? 1 : 0}`;
+    const now = performance.now();
+    if (summary === this.earHintsSummary && now - this.earHintsReadAt < Engine.EAR_HINTS_REREAD_MS) return;
+    this.earHintsSummary = summary;
+    this.earHintsReadAt = now;
+    this.earHintsBusy = true;
+    this.hands
+      .request<AxTreeResult>("ax_tree", { maxAgeMs: Engine.AX_WARM_MS + 200, maxMs: 80 }, 1500)
+      .then((tree) => {
+        if (!this.live) return;
+        this.sendEarHints(earHintsFrom(tree.nodes ?? [], tree.app, tree.window, this.agentsList.map((a) => a.name)));
+      })
+      .catch((e: Error) => log.debug(`ear hints: ${e.message}`))
+      .finally(() => {
+        this.earHintsBusy = false;
+      });
+  }
+
+  /** `ear.hints` when the set changed, at most twice a second. */
+  private sendEarHints(strings: readonly string[]): void {
+    const key = strings.join("");
+    if (key === this.earHintsLast) return;
+    const now = performance.now();
+    const wait = Engine.EAR_HINTS_MIN_INTERVAL_MS - (now - this.earHintsSentAt);
+    if (wait > 0) {
+      this.earHintsPending = strings;
+      if (!this.earHintsTimer) {
+        this.earHintsTimer = setTimeout(() => {
+          this.earHintsTimer = undefined;
+          const pending = this.earHintsPending;
+          this.earHintsPending = undefined;
+          if (pending && this.live) this.sendEarHints(pending);
+        }, wait);
+        this.earHintsTimer.unref?.();
+      }
+      return;
+    }
+    this.earHintsLast = key;
+    this.earHintsSentAt = now;
+    log.debug(`ear hints: ${strings.length} strings (${strings.slice(0, 6).join(", ")}${strings.length > 6 ? ", …" : ""})`);
+    this.emit("ear.hints", strings);
+  }
+
+  private resetEarHints(): void {
+    if (this.earHintsTimer) clearTimeout(this.earHintsTimer);
+    this.earHintsTimer = undefined;
+    this.earHintsPending = undefined;
+    this.earHintsSummary = "";
+    this.earHintsReadAt = 0;
+    this.earHintsLast = "";
   }
 
   /** Ask the host to restart this process on the current code (the app respawns on exit 75). */
@@ -2279,6 +2534,34 @@ export class Engine extends EventEmitter<EngineEvents> {
         return this.resume();
       case "request-permission":
         return this.requestPermission(cmd.which);
+      // ---- conversation cleanup (K1): commands only, never a brain tool; nothing is deleted.
+      case "conversation.trash":
+        return this.markConversation(cmd.chainId, (at, chainId) => ({ at, type: "conversation.trashed", chainId, by: "kevin" }));
+      case "conversation.restore":
+        return this.markConversation(cmd.chainId, (at, chainId) => ({ at, type: "conversation.restored", chainId }));
+      case "conversation.archive":
+        return this.markConversation(cmd.chainId, (at, chainId) => ({ at, type: "conversation.archived", chainId }));
+      case "conversation.rename":
+        return this.markConversation(cmd.chainId, (at, chainId) => ({ at, type: "conversation.renamed", chainId, name: String(cmd.name ?? "").replace(/\s+/g, " ").trim().slice(0, Engine.NAME_CHARS) }));
+      case "conversation.pin":
+        return this.markConversation(cmd.chainId, (at, chainId) => ({ at, type: "conversation.pinned", chainId, pinned: cmd.pinned === true }));
+      case "conversation.new":
+        return this.newConversation();
+      case "now.clear":
+        return this.clearNow();
+      case "now.restore":
+        return this.restoreNow();
+      case "ledger.trash-day":
+        return this.trashDay(String(cmd.day), cmd.what === "shots" || cmd.what === "both" ? cmd.what : "ledger");
+      case "ledger.restore-day":
+        return this.restoreDay(String(cmd.day));
+      case "ledger.sweep":
+        this.runSweep("command");
+        return;
+      case "agent.hide":
+        return this.hideAgent(String(cmd.agentId), cmd.hidden === true);
+      case "problem.retry":
+        return this.retryProblem(cmd.kind);
       case "open-console":
       case "open-ledger":
         return; // the shell handles window commands
@@ -2300,6 +2583,13 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   // ----------------------------------------------------------------- state
 
+  /** Kevin's own input landed: presence, attention, and any announced sleep is off. */
+  private kevinSpoke(): void {
+    this.lastKevinAt = this.now();
+    this.lastAddressedAt = this.lastKevinAt;
+    this.sleepDeadlineAt = undefined;
+  }
+
   private onAction(a: ActionEvent): void {
     if (a.member === "mouse_move" && a.points) this.emit("overlay", { cmd: "point", x: a.points.x, y: a.points.y, ttlMs: 3000 });
     this.lastAddressedAt = this.now();
@@ -2311,13 +2601,23 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.recomputePhase();
     this.pruneMarks();
     if (Ledger.fileNameFor(now) !== this.usageDay) this.loadUsageToday();
+    if (this.sweepPending) this.runPendingSweep();
     this.watchdog();
     if (now - this.memoryLoggedAt >= Engine.MEMORY_LOG_MS) {
       this.memoryLoggedAt = now;
       this.logMemory();
     }
+    this.problemsTick(now);
     const idleMs = this.settings.idleSleepMinutes * 60_000;
-    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && now - this.lastAddressedAt > idleMs) {
+    // Five seconds before the idle sleep, one clause ("going to sleep") — and the sleep then
+    // falls due on a fixed deadline, so the announcement (Jarhead's own speech moves
+    // lastAddressedAt) cannot postpone it; only Kevin's input does (kevinSpoke).
+    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 5000 && this.sleepDeadlineAt === undefined && now - this.lastAddressedAt > idleMs - 5000 && now - this.lastKevinAt > idleMs - 5000) {
+      this.sleepDeadlineAt = now + 5000;
+      this.delegator?.announceSleep(5);
+    }
+    if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && (now - this.lastAddressedAt > idleMs || (this.sleepDeadlineAt !== undefined && now >= this.sleepDeadlineAt))) {
+      this.sleepDeadlineAt = undefined;
       log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
       this.toast("asleep — tap the orb to wake", "info");
       void this.sleep();
@@ -2450,11 +2750,457 @@ export class Engine extends EventEmitter<EngineEvents> {
     return this.phase;
   }
 
+  // ------------------------------------------------------- problems, typed
+  // A problem is one line Kevin can read, its kind, and the ONE thing to press for it
+  // (REDESIGN §16, "Problems, typed"). `problems` (the snapshot's plain list) stays the
+  // order and the cap; `problemMeta` carries kind, remedy and first-seen per line, so
+  // `typedProblems()` is the same list with its remedies. Deduped by kind + text; a line
+  // raised again while present keeps its `since`; a fixed problem clears itself at the
+  // site that knows (a grant appears, the helper greets, the key answers, the voice
+  // reconnects) or on `problem.retry`, which re-runs that kind's check.
+
+  /** How many problem lines the snapshot carries; the oldest leave first. */
+  static readonly MAX_PROBLEMS = 8;
+
+  /** A problem of no particular kind (the daemon's "command failed", a settings write). */
   problem(text: string): void {
+    this.problemOf("other", text);
+  }
+
+  /** Raise a problem: the log line, the ledger row and the snapshot on the first sighting; a repeat only refreshes the remedy. */
+  problemOf(kind: ProblemKind, text: string, remedy?: ProblemRemedy): void {
+    const have = this.problemMeta.get(text);
+    if (have && have.kind === kind) {
+      // Present already: keep its place and its since; a remedy may have been added since.
+      if (remedy && !have.remedy) this.problemMeta.set(text, { ...have, remedy });
+      return;
+    }
     log.warn(text);
-    this.problems = [...this.problems.filter((p) => p !== text), text].slice(-8);
+    this.problems = [...this.problems.filter((p) => p !== text), text].slice(-Engine.MAX_PROBLEMS);
+    this.problemMeta.set(text, { kind, ...(remedy ? { remedy } : {}), since: this.now() });
+    this.pruneProblemMeta();
     this.ledger.append({ at: this.now(), type: "problem", text });
     this.scheduleSnapshot();
+  }
+
+  /**
+   * One row per kind, its text refreshed in place: the disk figure, the reconnect's
+   * elapsed seconds. The first sighting is a problem like any other; a refresh keeps the
+   * row's `since` and writes no ledger row and no log line.
+   */
+  private replaceProblem(kind: ProblemKind, text: string, remedy?: ProblemRemedy): void {
+    const existing = this.problems.filter((p) => this.problemMeta.get(p)?.kind === kind);
+    if (existing.length === 0) {
+      this.problemOf(kind, text, remedy);
+      return;
+    }
+    const since = Math.min(...existing.map((p) => this.problemMeta.get(p)?.since ?? this.now()));
+    const keep = existing[existing.length - 1]!;
+    if (keep === text && existing.length === 1) return;
+    // The newest row of the kind takes the new text in place; older rows of the kind leave; the text appears once.
+    const next: string[] = [];
+    for (const p of this.problems) {
+      if (p === keep) {
+        if (!next.includes(text)) next.push(text);
+      } else if (this.problemMeta.get(p)?.kind !== kind && p !== text) {
+        next.push(p);
+      }
+    }
+    this.problems = next;
+    for (const p of existing) if (p !== text) this.problemMeta.delete(p);
+    this.problemMeta.set(text, { kind, ...(remedy ? { remedy } : {}), since });
+    this.scheduleSnapshot();
+  }
+
+  /** Every problem of a kind is over — or only those whose text `where` picks. */
+  private clearProblems(kind: ProblemKind, where: (text: string) => boolean = () => true): void {
+    const gone = this.problems.filter((p) => this.problemMeta.get(p)?.kind === kind && where(p));
+    if (gone.length === 0) return;
+    this.problems = this.problems.filter((p) => !gone.includes(p));
+    for (const p of gone) this.problemMeta.delete(p);
+    this.scheduleSnapshot();
+  }
+
+  /** One exact line is over (the permission sites clear by their catalogue text). */
+  private clearProblemText(text: string): void {
+    if (!this.problems.includes(text)) return;
+    this.problems = this.problems.filter((p) => p !== text);
+    this.problemMeta.delete(text);
+    this.scheduleSnapshot();
+  }
+
+  /** Meta for a line that left the capped list (or `clear-problems` emptied it) is garbage. */
+  private pruneProblemMeta(): void {
+    for (const text of this.problemMeta.keys()) if (!this.problems.includes(text)) this.problemMeta.delete(text);
+  }
+
+  /** The problems with their kind, remedy and first-seen: the snapshot's `problemsTyped`, the same list as `problems`. */
+  typedProblems(): Problem[] {
+    this.pruneProblemMeta();
+    return this.problems.map((text) => {
+      const meta = this.problemMeta.get(text);
+      return { kind: meta?.kind ?? "other", text, ...(meta?.remedy ? { remedy: meta.remedy } : {}), since: meta?.since ?? this.now() };
+    });
+  }
+
+  /** The remedies that are one command away. */
+  private static readonly PROBE_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "config.probe" } };
+  private static readonly SETUP_REMEDY: ProblemRemedy = { label: "Open Setup", open: "jarhead://setup" };
+  private static readonly GO_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "go" } };
+  private static readonly LIMIT_REMEDY: ProblemRemedy = { label: "Retry in 30 s", command: { type: "problem.retry", kind: "voice.limit" } };
+
+  /**
+   * A GPT-Live-1 error as a typed problem: a cap (`voice.limit`, clears itself after
+   * VOICE_LIMIT_CLEAR_MS), the socket (`voice.connection`), the key (`voice.key` → Setup),
+   * anything else as it is. `classifyLiveError` (packages/live) reads the message.
+   */
+  private voiceProblem(text: string, connectionRemedy: ProblemRemedy = Engine.GO_REMEDY): void {
+    switch (classifyLiveError(text)) {
+      case "limit":
+        return this.problemOf("voice.limit", text, Engine.LIMIT_REMEDY);
+      case "key":
+        return this.problemOf("voice.key", text, Engine.SETUP_REMEDY);
+      case "connection":
+        return this.problemOf("voice.connection", text, connectionRemedy);
+      default:
+        return this.problemOf("other", text);
+    }
+  }
+
+  /**
+   * The remedy button was pressed (`problem.retry {kind}`): re-run that kind's check and
+   * let the row clear when it passes. The permission kinds ask again (the helper's two
+   * prompt; the app owns the rest, so the engine reads fresh and closely); the brain
+   * restarts and is probed; the voice reconnects when it should be awake; the helper is
+   * a new process; the disk is measured again. A limit is over by the time anyone
+   * presses it; a crash report and the daemon row are the surface's to dismiss.
+   */
+  async retryProblem(kind: ProblemKind): Promise<void> {
+    log.info(`problem.retry ${kind}`);
+    switch (kind) {
+      case "permission.accessibility":
+      case "permission.screenRecording":
+        await this.requestPermission(kind === "permission.accessibility" ? "accessibility" : "screenRecording");
+        return;
+      case "permission.microphone":
+      case "permission.fullDiskAccess":
+      case "permission.other":
+        // The app owns these prompts and panes; what the engine can do is read fresh, now and closely.
+        this.permissionFastUntil = this.now() + 90_000;
+        this.permissionPollAt = 0;
+        await this.pollPermissions();
+        this.scheduleSnapshot();
+        return;
+      case "brain.unavailable":
+      case "brain.probe":
+        this.clearProblems(kind);
+        await this.restartBrain("problem.retry");
+        await this.probeSetup();
+        return;
+      case "voice.limit":
+        this.clearProblems(kind);
+        return;
+      case "voice.connection":
+        this.clearProblems(kind);
+        this.voiceReconnectSince = 0;
+        if (this.wantAwake && !this.live && !this.connecting && !this.pauseInfo) await this.connect("problem.retry");
+        return;
+      case "voice.key":
+        await this.probeSetup(); // clears itself when the key answers
+        return;
+      case "hands.helper":
+        this.clearProblems(kind);
+        if (this.hands.available) {
+          try {
+            await this.hands.restart();
+          } catch (e) {
+            this.problemOf("hands.helper", `hands helper failed: ${(e as Error).message}`, Engine.HANDS_REMEDY);
+            return;
+          }
+        }
+        await this.probeHands();
+        return;
+      case "disk.low":
+        this.checkDisk();
+        this.scheduleSnapshot();
+        return;
+      case "daemon":
+      case "crash":
+      case "other":
+        this.clearProblems(kind);
+        return;
+    }
+  }
+
+  // --------------------------------------- liveness, preflight, auto-resume (K3)
+  // What survives the engine process dying: the disk is measured before a session opens
+  // and before a shot is written; a crash report younger than ten minutes becomes a row
+  // with the file behind it; and the ledger says what the previous process was doing —
+  // a pause is held again (meter stopped, decaying as it would have), a session cut
+  // mid-conversation is resumed by the first Go inside the window with its last lines
+  // read back from the ledger, and the voice says "back" once. Never twice; never after
+  // Kevin's Stop (a pressed stop row before the cut, or one in this process). The daemon's
+  // liveness itself is the app's (ping / pong on the wire, DaemonProcess respawns).
+
+  /** Under this much free space on the state dir's volume, shots are skipped and `disk.low` is raised. */
+  static readonly DISK_LOW_BYTES = 500 * 1024 * 1024;
+  /** How often a low disk is measured again from tick(), so the row clears when space returns. */
+  static readonly DISK_RECHECK_MS = 60_000;
+  /** A `voice.limit` row clears itself after this long: the cap it names is per request or per minute. */
+  static readonly VOICE_LIMIT_CLEAR_MS = 30_000;
+  /** A Go this long after start() still resumes the session the previous process was cut from. */
+  static readonly AUTO_RESUME_WINDOW_MS = 30_000;
+  /** A session whose last row is older than this was not cut by the restart that just happened. */
+  static readonly LOST_SESSION_MAX_AGE_MS = 30 * 60_000;
+  /**
+   * A session that was itself a resume and whose rows span less than this before the next
+   * cut is a resume that died young — a loop (a daemon that dies soon after every resume),
+   * not a conversation; the next process does not resume it again. A pause's resume is
+   * Kevin's own chain and is exempt.
+   */
+  static readonly RESUME_LOOP_SPAN_MS = 60_000;
+  /** A crash report older than this is history, not a problem (the app's own notice uses the same window). */
+  static readonly CRASH_FRESH_MS = 10 * 60_000;
+
+  /**
+   * statvfs on the state dir: true when there is room. Under DISK_LOW_BYTES the typed
+   * problem `disk.low` names the figure and reveals the shots folder (the one thing that
+   * grows: 129 MB of shots against 638 KB of ledger on this Mac); `captureMark` and the
+   * preflight before a session read `diskLow`. Space coming back clears the row (tick).
+   */
+  private checkDisk(): boolean {
+    this.diskCheckedAt = this.now();
+    let free: number;
+    try {
+      const s = (this.opts.statfs ?? statfsSync)(this.config.stateDir);
+      free = Number(s.bavail) * Number(s.bsize);
+    } catch (e) {
+      // A volume that will not answer is not a low disk; the next shot's own write reports its error.
+      log.debug(`statfs ${this.config.stateDir}: ${(e as Error).message}`);
+      return true;
+    }
+    if (!Number.isFinite(free) || free < 0) return true;
+    const low = free < Engine.DISK_LOW_BYTES;
+    const mb = Math.round(free / 1_048_576);
+    if (low) {
+      if (!this.diskLow) log.warn(`disk low: ${mb} MB free on ${this.config.stateDir} (floor ${Math.round(Engine.DISK_LOW_BYTES / 1_048_576)} MB); screenshots are skipped until space returns`);
+      this.replaceProblem("disk.low", `Disk low: ${mb} MB free on ${this.config.stateDir}; screenshots are not being saved`, { label: "Reveal shots", open: join(this.config.stateDir, "shots") });
+    } else {
+      if (this.diskLow) log.info(`disk ok again: ${mb} MB free on ${this.config.stateDir}`);
+      this.clearProblems("disk.low");
+    }
+    this.diskLow = low;
+    return !low;
+  }
+
+  /** The voice is reconnecting on its own (expired / connection_lost): one row that counts the seconds until it is back. */
+  private noteVoiceReconnect(label: string): void {
+    this.voiceReconnectSince = this.now();
+    this.voiceReconnectLabel = label;
+    this.replaceProblem("voice.connection", `${label} · reconnecting`, Engine.GO_REMEDY);
+  }
+
+  /**
+   * Nobody is reconnecting any more — the session is back, Kevin stopped or paused, or the
+   * reconnect's own start failed: the counting row leaves and tick() stops rewriting it. A
+   * failed start's line (with Retry → go) is a different text of the same kind and stays.
+   */
+  private endVoiceReconnect(): void {
+    if (!this.voiceReconnectSince) return;
+    this.voiceReconnectSince = 0;
+    const label = this.voiceReconnectLabel;
+    this.clearProblems("voice.connection", (t) => t.startsWith(label));
+  }
+
+  /** The problem rows' own clock, from tick(): limits expire, the reconnect row counts, a low disk is re-measured. */
+  private problemsTick(now: number): void {
+    for (const text of this.problems) {
+      const meta = this.problemMeta.get(text);
+      if (meta?.kind === "voice.limit" && now - meta.since >= Engine.VOICE_LIMIT_CLEAR_MS) this.clearProblemText(text);
+    }
+    if (this.voiceReconnectSince) {
+      if (!this.wantAwake || this.pauseInfo || (this.live && !this.connecting) || this.phase === "error") {
+        // Back, stopped, paused, or the reconnect failed: whichever it was, nobody is reconnecting any more.
+        this.endVoiceReconnect();
+      } else {
+        const seconds = Math.max(1, Math.round((now - this.voiceReconnectSince) / 1000));
+        this.replaceProblem("voice.connection", `${this.voiceReconnectLabel} · reconnecting for ${seconds} s`, Engine.GO_REMEDY);
+      }
+    }
+    if (this.diskLow && now - this.diskCheckedAt >= Engine.DISK_RECHECK_MS) this.checkDisk();
+  }
+
+  /**
+   * The newest crash report under <stateDir>/crashes (CrashGuard writes them; the app
+   * relaunches on them), when it is younger than CRASH_FRESH_MS: one `crash` row with
+   * its `reason:` line and the file to open. A report that says `survived:` was an
+   * exception the process outlived — a note, not a crash. File times are wall clock.
+   */
+  private noteCrashReports(): void {
+    const dir = join(this.config.stateDir, "crashes");
+    let newest: { path: string; mtimeMs: number } | undefined;
+    try {
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith(".txt")) continue;
+        const path = join(dir, name);
+        const st = statSync(path);
+        if (!newest || st.mtimeMs > newest.mtimeMs) newest = { path, mtimeMs: st.mtimeMs };
+      }
+    } catch {
+      return; // no folder yet: no crashes
+    }
+    const age = Date.now() - (newest?.mtimeMs ?? 0);
+    if (!newest || age > Engine.CRASH_FRESH_MS || age < -60_000) return;
+    let reason = "unknown";
+    try {
+      const head = readFileSync(newest.path, "utf8").slice(0, 16_384);
+      if (/\nsurvived:/.test(head)) return;
+      const m = head.match(/^reason: (.+)$/m);
+      if (m?.[1]) reason = m[1].trim();
+    } catch {
+      // unreadable: the row still points at it
+    }
+    const minutes = Math.round(age / 60_000);
+    this.problemOf("crash", `Jarhead crashed ${minutes < 1 ? "just now" : `${minutes} min ago`} · ${reason.slice(0, 140)}`, { label: "Details", open: newest.path });
+  }
+
+  /**
+   * At start: what the previous engine process left in the ledger, by its most recent
+   * session. A pressed `stop` inside it means Kevin ended it — nothing to pick up. A
+   * `pause` row means he paused it: the pause is held again (`pauseInfo` from the row,
+   * phase `paused`, the meter still stopped) unless its decay has passed, in which case
+   * it sleeps as it would have. No `session.closed` row (or one the engine would have
+   * reconnected from: `expired`, `connection_lost`) and a last row inside
+   * LOST_SESSION_MAX_AGE_MS means the process died mid-conversation: `lostSession` is set,
+   * and the first Go within AUTO_RESUME_WINDOW_MS resumes it (`resumeFromLedger`).
+   */
+  private restoreFromLedger(): void {
+    let latest;
+    try {
+      latest = this.ledger.sessions()[0];
+    } catch (e) {
+      log.debug(`ledger walk at start failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!latest) return;
+    // A conversation Kevin moved to the trash or archived is his decision about it; it is not picked up again.
+    if (latest.state === "trashed" || latest.state === "archived") {
+      log.debug(`last session ${latest.id} is ${latest.state}; nothing to resume`);
+      return;
+    }
+    const now = this.now();
+    const rows = this.ledger.readSession(latest.id);
+    const startedAt = rows.findIndex((r) => r.type === "session.started" && r.sessionId === latest.id);
+    const inside = startedAt >= 0 ? rows.slice(startedAt) : rows;
+    if (inside.some((r) => r.type === "stop" && r.how === "pressed")) {
+      log.debug(`last session ${latest.id} was stopped by Kevin; nothing to resume`);
+      return;
+    }
+    const lastAt = inside.reduce((m, r) => Math.max(m, r.at), latest.startedAt);
+    const pauseRow = [...inside].reverse().find((r): r is Extract<LedgerRow, { type: "pause" }> => r.type === "pause");
+    if (pauseRow) {
+      const sleepsAt = pauseRow.at + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000);
+      if (now >= sleepsAt) {
+        log.info(`last session ${latest.id} was paused ${Math.round((now - pauseRow.at) / 60_000)} min ago and would have slept by now; asleep`);
+        return;
+      }
+      this.pauseInfo = { at: pauseRow.at, sessionId: latest.id, usageSeconds: typeof pauseRow.usageSeconds === "number" ? pauseRow.usageSeconds : latest.usageSeconds, sleepsAt };
+      // A Now Kevin cleared in that session stays cleared across the restart (and `now.restore` still has a mark to lift).
+      this.nowClearedAt = this.ledger.nowClearedAt(latest.id);
+      this.setPhase("paused");
+      log.info(`last session ${latest.id} was paused ${Math.round((now - pauseRow.at) / 1000)} s ago and the engine restarted since: holding the pause again (sleeps in ${Math.round((sleepsAt - now) / 1000)} s unless Go)`);
+      return;
+    }
+    const closed = inside.find((r): r is Extract<LedgerRow, { type: "session.closed" }> => r.type === "session.closed" && r.sessionId === latest.id);
+    if (closed && closed.reason !== "expired" && closed.reason !== "connection_lost") return; // ended on purpose: sleep, idle, the server
+    // Kevin's Stop inside the reconnect window after connection_lost is written after the
+    // session's closed row — outside its span — so the day's own rows are asked.
+    if (closed && this.stoppedAfter(closed.at, now)) {
+      log.debug(`last session ${latest.id} lost its connection and Kevin pressed stop before it reconnected; nothing to resume`);
+      return;
+    }
+    if (now - lastAt > Engine.LOST_SESSION_MAX_AGE_MS) {
+      log.debug(`last session ${latest.id} was left open ${Math.round((now - lastAt) / 60_000)} min ago; too old to resume`);
+      return;
+    }
+    // The loop guard: a session that was itself resumed from a cut one and died young is a
+    // daemon dying after every resume, not a conversation to pick up a third time.
+    const startedRow = startedAt >= 0 ? (rows[startedAt] as Extract<LedgerRow, { type: "session.started" }>) : undefined;
+    const span = lastAt - latest.startedAt;
+    if (startedRow?.resumedFrom && span < Engine.RESUME_LOOP_SPAN_MS && !this.ledger.readSession(startedRow.resumedFrom).some((r) => r.type === "pause")) {
+      log.warn(`last session ${latest.id} was itself resumed from ${startedRow.resumedFrom} and lived ${Math.round(span / 1000)} s before the engine ended again: a resume loop, not a conversation; not resumed (a Go opens a fresh session)`);
+      return;
+    }
+    this.lostSession = { sessionId: latest.id, at: lastAt, usageSeconds: latest.usageSeconds };
+    this.nowClearedAt = this.ledger.nowClearedAt(latest.id);
+    log.info(`last session ${latest.id} was open when the previous engine ended (${Math.round((now - lastAt) / 1000)} s ago); a Go within ${Engine.AUTO_RESUME_WINDOW_MS / 1000} s resumes it from the ledger`);
+  }
+
+  /**
+   * A pressed `stop` row at or after `at` in the day files that could hold it (the day of
+   * `at`, and today when that is another day): Kevin's word after a session's closed row,
+   * which `readSession` places outside the session.
+   */
+  private stoppedAfter(at: number, now: number): boolean {
+    const days = Ledger.dayFor(at) === Ledger.dayFor(now) ? [at] : [at, now];
+    for (const day of days) {
+      let rows: LedgerRow[];
+      try {
+        rows = this.ledger.read(day);
+      } catch {
+        continue;
+      }
+      if (rows.some((r) => r.type === "stop" && r.how === "pressed" && r.at >= at)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The resume a connect gets when there is no pause to resume but the previous process
+   * was cut mid-conversation: once per process, inside the window, never after a Stop.
+   * The `resume` row and `resumedFrom` on the started row chain the sessions into one
+   * conversation, as a pause's resume does.
+   */
+  private resumeFromLedger(reason: string): { readonly pause: PauseInfo; readonly continuity: string } | undefined {
+    const lost = this.lostSession;
+    if (!lost || this.ledgerResumeUsed) return undefined;
+    // Trashed or archived since this process started (a command here, a row from elsewhere): Kevin's decision about it stands.
+    const state = this.ledger.conversation(lost.sessionId)?.state;
+    if (state === "trashed" || state === "archived") {
+      log.info(`${reason}: the session the previous engine left open (${lost.sessionId}) is ${state}; not resumed`);
+      this.lostSession = undefined;
+      return undefined;
+    }
+    if (this.now() - this.startedAt > Engine.AUTO_RESUME_WINDOW_MS) {
+      log.info(`${reason}: the session the previous engine left open (${lost.sessionId}) is not resumed — the ${Engine.AUTO_RESUME_WINDOW_MS / 1000} s window has passed`);
+      this.lostSession = undefined;
+      return undefined;
+    }
+    this.ledgerResumeUsed = true;
+    this.lostSession = undefined;
+    const pause: PauseInfo = { at: lost.at, sessionId: lost.sessionId, usageSeconds: lost.usageSeconds, sleepsAt: lost.at };
+    log.info(`${reason}: resuming session ${lost.sessionId}, cut ${Math.round((this.now() - lost.at) / 1000)} s ago by the previous engine's end, from the ledger`);
+    return { pause, continuity: this.continuityFor(pause, "restarted") };
+  }
+
+  /**
+   * What a session said, from its ledger rows: the heard / said items in order (the
+   * continuity's lines when this process never heard them) and the last finished task
+   * with a summary. Bounded to the rows of that one session.
+   */
+  private recallFromLedger(sessionId: string): { items: TranscriptItem[]; task?: string } {
+    const items: TranscriptItem[] = [];
+    let task: string | undefined;
+    const requests = new Map<string, string>();
+    for (const row of this.ledger.readSession(sessionId)) {
+      if ((row.type === "heard" || row.type === "said") && row.item?.text) items.push(row.item);
+      else if (row.type === "delegation.created") requests.set(row.delegation.id, row.delegation.request);
+      else if (row.type === "delegation.finished" && row.summary) {
+        const request = requests.get(row.delegationId);
+        task = `Last task: "${(request ?? "").replace(/\s+/g, " ").trim().slice(0, 160)}" — ${row.status}: ${row.summary}`;
+      }
+    }
+    return { items, ...(task ? { task } : {}) };
   }
 
   toast(text: string, tone: "info" | "warn" | "error" = "info"): void {
@@ -2487,18 +3233,23 @@ export class Engine extends EventEmitter<EngineEvents> {
       // Present exactly while paused; the meter counts today's closed sessions plus the open one.
       ...(this.pauseInfo ? { pause: this.pauseInfo } : {}),
       usageToday: this.usageToday(),
-      transcript: this.wholeTranscript().slice(-200),
+      // A cleared Now stream (K1) hides items at or before the mark HERE only: the ledger, Live's context and every gate still see them.
+      transcript: this.nowVisible(this.wholeTranscript(), (i) => i.at).slice(-200),
       // Delegations survive a pause and resume (and a sleep): the Console keeps the day's work, newest last.
-      delegations: [...this.pastDelegations(), ...(this.delegator?.all() ?? [])].slice(-Engine.MAX_DELEGATIONS),
+      delegations: this.nowVisible([...this.pastDelegations(), ...(this.delegator?.all() ?? [])], (d) => d.createdAt).slice(-Engine.MAX_DELEGATIONS),
       agents: this.agentsList,
       connectors: this.connectorHealth,
       settings: this.settings,
       permissions: this.permissions,
       problems: this.problems,
+      problemsTyped: this.typedProblems(),
       brainReady: this.brainReady,
       setup: this.setupStatus(),
       marks: this.marks,
       handsReady: this.hands.ready || this.hands.available,
+      // The Trash line and the hidden agents (K1); both are read when they change, not here.
+      trash: this.trashInfo,
+      hiddenAgents: this.hiddenAgents,
     };
   }
 
@@ -2506,6 +3257,196 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   private pastDelegations(): readonly Delegation[] {
     return this.lastDelegations;
+  }
+
+  // ------------------------------------------------ conversation cleanup (K1)
+  //
+  // Commands only — none of this is a brain tool. Tombstone rows go to TODAY's ledger
+  // file and the bytes of a conversation stay where they were written; bytes move only
+  // as whole day files through `Trash` (rename, never unlink); the Now stream's clear
+  // is a filter at snapshot output, so Live's context and every naming gate still see
+  // everything. Nothing here is on the voice path or the reflex path.
+
+  /** How much of Kevin's own name for a conversation is kept. */
+  static readonly NAME_CHARS = 120;
+
+  /**
+   * The sessions in progress, whose chains' days the Trash must keep and whose chains a
+   * trash or archive ends: the open one, the paused one, and the one a crashed process
+   * left for the next Go (`lostSession`, until the window passes or it is consumed).
+   */
+  private openSessionIds(): string[] {
+    const ids: string[] = [];
+    const open = this.live?.session?.id;
+    if (open) ids.push(open);
+    if (this.pauseInfo) ids.push(this.pauseInfo.sessionId);
+    if (this.lostSession) ids.push(this.lostSession.sessionId);
+    return ids;
+  }
+
+  /** The chain roots of `openSessionIds()`. */
+  private openRoots(): Set<string> {
+    const roots = new Set<string>();
+    for (const id of this.openSessionIds()) roots.add(this.ledger.chainRootOf(id) ?? id);
+    return roots;
+  }
+
+  /** Items of the Now stream still shown after a clear: those after the mark. */
+  private nowVisible<T>(items: readonly T[], at: (item: T) => number): readonly T[] {
+    const cleared = this.nowClearedAt;
+    return cleared === undefined ? items : items.filter((i) => at(i) > cleared);
+  }
+
+  /** The Trash line is refreshed on change, never per snapshot. */
+  private refreshTrash(): void {
+    try {
+      this.trashInfo = this.trash.info();
+    } catch (e) {
+      log.warn(`trash: could not read ${this.trash.dir}: ${(e as Error).message}`);
+    }
+    this.scheduleSnapshot();
+  }
+
+  /**
+   * One tombstone for the chain `chainId` names — any session of it resolves to the
+   * root, and the root is what the row carries. An id the ledger never saw start (a day
+   * file already in the Trash, a stale rail) is a word, not a row.
+   *
+   * Trashing or archiving the conversation Kevin is IN — the open session's chain, the
+   * paused one's, or the one a crashed process left for the next Go — ends it the way
+   * `conversation.new` does: the session closes (the meter stops), the pause or the
+   * pending resume is let go, Now empties, and the next Go opens a chain of its own.
+   * Without this the live session would sit stamped `trashed` under a rail that hides
+   * it, and the next Go would resume straight into the trashed chain.
+   */
+  private async markConversation(chainId: string, row: (at: number, root: string) => LedgerRow): Promise<void> {
+    const root = this.ledger.chainRootOf(String(chainId));
+    if (root === undefined) {
+      this.toast("no such conversation", "warn");
+      return;
+    }
+    const r = row(this.now(), root);
+    this.ledger.append(r);
+    const puts = r.type === "conversation.trashed" || r.type === "conversation.archived";
+    if (puts && this.openRoots().has(root)) {
+      log.info(`${r.type} names the conversation in progress (${root}); ending it as a new conversation would`);
+      await this.newConversation();
+      return;
+    }
+    this.scheduleSnapshot();
+  }
+
+  /**
+   * New conversation: the transport's stop (the open session closes so the meter stops;
+   * a pause is let go), then the Now stream starts empty — the ledger and the rail keep
+   * what was said. With no pause left to resume, the next Go opens a chain of its own:
+   * its started row carries no `resumedFrom`.
+   */
+  private async newConversation(): Promise<void> {
+    const closing = this.live || this.connecting || this.pauseInfo ? this.pressStop("new conversation") : undefined;
+    // The session a crashed process left for the next Go is let go too. pressStop does this when it
+    // runs; asleep inside the auto-resume window nothing else would, and the next Go would resume it.
+    this.lostSession = undefined;
+    this.ledgerResumeUsed = true;
+    this.confirmations.endConversation();
+    // pressStop detached the session synchronously (its words moved to the held record); the record is dropped now.
+    this.heldTranscript = [];
+    this.lastDelegations = [];
+    this.nowClearedAt = undefined;
+    this.scheduleSnapshot();
+    if (closing) await closing;
+  }
+
+  /** The session a `now.*` row names: the open one, the paused one, else the last the ledger knows. */
+  private nowSessionId(): string | undefined {
+    return this.live?.session?.id ?? this.pauseInfo?.sessionId ?? this.ledger.sessions()[0]?.id;
+  }
+
+  /** Clear the Now stream: items at or before now leave the snapshot; the ledger keeps them, and so does Live. */
+  private clearNow(): void {
+    const at = this.now();
+    this.nowClearedAt = at;
+    const sessionId = this.nowSessionId();
+    if (sessionId) this.ledger.append({ at, type: "now.cleared", sessionId });
+    this.scheduleSnapshot();
+  }
+
+  private restoreNow(): void {
+    if (this.nowClearedAt === undefined) return;
+    this.nowClearedAt = undefined;
+    const sessionId = this.nowSessionId();
+    if (sessionId) this.ledger.append({ at: this.now(), type: "now.restored", sessionId });
+    this.scheduleSnapshot();
+  }
+
+  /** Move a day's ledger file, its shots, or both to the Trash; the toast says what moved and why anything stayed. */
+  private trashDay(day: string, what: "ledger" | "shots" | "both"): void {
+    const whats: ("ledger" | "shots")[] = what === "both" ? ["ledger", "shots"] : [what];
+    const moved: string[] = [];
+    const kept: { what: string; reason: string }[] = [];
+    for (const w of whats) {
+      const r = this.trash.moveDay(day, w, "kevin");
+      if (r.ok) moved.push(r.move.what);
+      else kept.push({ what: r.what, reason: r.reason });
+    }
+    // "both" on a day with no shots is not a refusal worth a line once the ledger moved.
+    const worth = kept.filter((k) => !(what === "both" && moved.length > 0 && /^no /.test(k.reason)));
+    const parts = [moved.length ? `${day} ${moved.join(" and ")} moved to the Trash` : "", ...worth.map((k) => `${k.what} kept · ${k.reason}`)].filter(Boolean);
+    this.toast(parts.join(" · "), moved.length ? "info" : "warn");
+    if (moved.length) this.refreshTrash();
+  }
+
+  private restoreDay(day: string): void {
+    const r = this.trash.restoreDay(day);
+    const parts = [r.restored.length ? `${day} ${r.restored.map((m) => m.what).join(" and ")} restored` : "", ...r.refused.map((x) => `${x.what} · ${x.reason}`)].filter(Boolean);
+    this.toast(parts.join(" · "), r.restored.length ? "info" : "warn");
+    if (r.restored.length) this.refreshTrash();
+  }
+
+  /**
+   * The retention sweep (`Settings.ledgerRetentionDays` / `shotsRetentionDays`, 0 =
+   * never): at startup, at the day rollover `loadUsageToday` notices, and on the
+   * `ledger.sweep` command. The Trash logs what it would move before it moves anything.
+   */
+  private runSweep(why: "startup" | "rollover" | "command"): SweepResult | undefined {
+    let result: SweepResult | undefined;
+    const { ledgerRetentionDays, shotsRetentionDays } = this.settings;
+    if (!(ledgerRetentionDays > 0) && !(shotsRetentionDays > 0)) {
+      if (why === "command") this.toast("retention is off · nothing to sweep", "info");
+    } else {
+      try {
+        const r = this.trash.sweep({ ledgerRetentionDays, shotsRetentionDays }, this.now());
+        log.info(`sweep (${why}): ${r.moved.length} moved, ${r.refused.length} kept, ${r.failed.length} failed`);
+        if (why === "command") this.toast(r.moved.length ? `${r.moved.length} ${r.moved.length === 1 ? "day" : "days"} moved to the Trash` : r.refused.length ? `nothing moved · ${r.refused.length} kept` : "nothing to move", "info");
+        result = r;
+      } catch (e) {
+        this.problem(`sweep failed: ${(e as Error).message}`);
+      }
+    }
+    // Re-read whether or not anything moved: Finder may have emptied the Trash since (Trash.info() is memoised on the folders' mtimes, so an unchanged one costs a few stats).
+    this.refreshTrash();
+    return result;
+  }
+
+  /**
+   * The rollover's sweep, once nothing is up: a sweep walks and may copy whole folders
+   * (the cross-device fallback), and `tick()` is the loop the mic audio rides while a
+   * session is live. Paused counts as quiet — the transport is closed while paused.
+   */
+  private runPendingSweep(): void {
+    if (this.live || this.connecting) return;
+    this.sweepPending = false;
+    this.runSweep("rollover");
+  }
+
+  /** Hide an agent from the rail (or show it again): a row, and the snapshot's list. Never a file operation on another tool's store. */
+  private hideAgent(agentId: string, hidden: boolean): void {
+    this.ledger.append({ at: this.now(), type: "agent.hidden", agentId, hidden });
+    const set = new Set(this.hiddenAgents);
+    if (hidden) set.add(agentId);
+    else set.delete(agentId);
+    this.hiddenAgents = [...set].sort();
+    this.scheduleSnapshot();
   }
 
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
@@ -2550,6 +3491,60 @@ function coverage(inner: Rect, outer: Rect): number {
 }
 
 /** A rounded frame for the blob to drag around what Kevin circled: four straight runs and four quarter arcs, clockwise from the top-left. */
+/** Roles whose title names a control Kevin might say ("click Add Folder"); anything pressable counts too. */
+const EAR_HINT_ROLES = new Set([
+  "AXButton", "AXPopUpButton", "AXMenuButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton", "AXLink", "AXTab",
+  "AXDisclosureTriangle", "AXComboBox", "AXTextField", "AXSearchField", "AXCell", "AXRow", "AXTabGroup", "AXToolbar", "AXSlider", "AXIncrementor",
+]);
+
+/**
+ * One hint as the recogniser wants it: whitespace collapsed, ellipses and edge punctuation
+ * dropped, at most three words (a longer title keeps its first three: the words a spoken
+ * "click …" starts with), 2–40 characters with a letter in them. Mirrors the app's
+ * `EarHints.clean` (Ear/EarListener.swift), which cleans again on its side.
+ */
+export function cleanEarHint(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const words = raw.replace(/…|\.\.\./g, " ").split(/\s+/).filter(Boolean).slice(0, 3);
+  const s = words.join(" ").replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "");
+  if (s.length < 2 || s.length > 40 || !/\p{L}/u.test(s)) return undefined;
+  return s;
+}
+
+/**
+ * The `ear.hints` set for a front window: the app first (the ear treats a change of it as
+ * a new screen), its window title, then the visible controls' titles in the tree's
+ * breadth-first order (the toolbar and the top-level controls before a long page's
+ * links; at most `caps.controls`), then the agents' names — deduplicated
+ * case-insensitively, at most `caps.total` strings.
+ */
+export function earHintsFrom(nodes: readonly AxNodeInfo[], app: string, window: string, agents: readonly string[], caps = { controls: 80, total: 100 }): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string | undefined): boolean => {
+    const s = cleanEarHint(raw);
+    if (!s) return false;
+    const k = s.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    out.push(s);
+    return true;
+  };
+  add(app);
+  add(window);
+  let controls = 0;
+  for (const n of nodes) {
+    if (controls >= caps.controls || out.length >= caps.total) break;
+    if (!(EAR_HINT_ROLES.has(n.role) || n.pressable === true)) continue;
+    if (add(n.title || n.description || (n as { placeholder?: string }).placeholder)) controls++;
+  }
+  for (const a of agents) {
+    if (out.length >= caps.total) break;
+    add(a);
+  }
+  return out;
+}
+
 export function roundedRectPoints(r: Rect, radius = Math.min(12, r.w / 4, r.h / 4), arcSteps = 4): Point[] {
   const rad = Math.max(0, radius);
   const out: Point[] = [];

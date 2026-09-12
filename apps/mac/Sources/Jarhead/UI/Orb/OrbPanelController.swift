@@ -533,6 +533,12 @@ public final class OrbPanelController {
             .removeDuplicates()
             .sink { [weak self] line in self?.notch?.view.lastLine = line }
             .store(in: &cancellables)
+        // The island's working state: "Working · 0:12" while a delegation runs, counted from its start.
+        state.$snapshot
+            .map { (s: Snapshot) -> Double? in s.delegations.last { $0.status == .running }.map { $0.timings.delegatedAt / 1000 } }
+            .removeDuplicates()
+            .sink { [weak self] since in self?.notch?.setWorking(since: since) }
+            .store(in: &cancellables)
         gatePill
             .sink { [weak self] pill in self?.notch?.setGatePill(pill) }
             .store(in: &cancellables)
@@ -923,6 +929,34 @@ public final class OrbPanelController {
         guard hideNotchAfterDrag else { return }
         hideNotchAfterDrag = false
         notch?.hide()
+    }
+
+    /// Where a dropped blob counts as "into the dock" (CG, y down): the notch's column
+    /// widened by a hand's breadth and reaching 70 pt under the menu bar — the island's
+    /// ground. Nil on a display without a notch.
+    private func dockCatchZoneCG() -> CGRect? {
+        guard let g = notch?.geometry ?? NotchGeometry.current() else { return nil }
+        let n = g.notch
+        let reach: CGFloat = 70, wing: CGFloat = 48
+        let ak = NSRect(x: n.minX - wing, y: g.menuBarBottom - reach, width: n.width + 2 * wing, height: (n.maxY - g.menuBarBottom) + reach)
+        return CGSpace.rect(fromAppKit: ak)
+    }
+
+    /// Kevin dropped the blob into the notch dock: that is putting it to sleep. Awake,
+    /// the session closes (the meter stops) and the sleep transition tucks it in; asleep
+    /// already, it just goes home. A drag-out that had ended notch mode is undone: the
+    /// dock is home again.
+    private func dropIntoDock() {
+        homePillTimer?.cancel(); homePillTimer = nil
+        homePill.send(nil)
+        freeForSession = false
+        if !notchMode { updateHomeMode(animated: true) }
+        if !isDormant {
+            state.send(.sleep)
+        } else if !tucked {
+            goHomeForTransition()
+        }
+        blobView.poke()
     }
 
     /// The pill's one click: notch mode again, the blob flies back up.
@@ -2126,8 +2160,9 @@ public final class OrbPanelController {
         defer { downPoint = nil }
         if dragMoved {
             body.endDrag()
+            let intoDock = dockCatchZoneCG()?.contains(body.center) ?? false
             hideNotchIfOwed()
-            blobView.poke()
+            if intoDock { dropIntoDock() } else { blobView.poke() }
             return
         }
         guard time - downTime < 0.6 else { return }

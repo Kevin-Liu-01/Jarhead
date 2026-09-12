@@ -139,6 +139,35 @@ test("server and client round-trip control, audio, and ledger over a unix socket
   await server.close();
 });
 
+test("ping is answered with a pong carrying the same id and a wall-clock `at`, to the asking client only, with no engine involved", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = new DaemonClient(path);
+  const bystander = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  const seenByBystander: DaemonMessage[] = [];
+  app.on("message", (m) => got.push(m));
+  bystander.on("message", (m) => seenByBystander.push(m));
+  await app.connect({ pid: 1, audio: true });
+  await bystander.connect({ pid: 2 });
+  await tick(30);
+  const before = Date.now();
+  app.sendJson({ type: "ping", id: "p-1" });
+  app.sendJson({ type: "ping", id: "p-2" });
+  await tick(40);
+  const pongs = got.filter((m): m is Extract<DaemonMessage, { type: "pong" }> => m.type === "pong");
+  assert.deepEqual(pongs.map((p) => p.id), ["p-1", "p-2"]);
+  for (const p of pongs) assert.ok(p.at >= before && p.at <= Date.now() + 1, `at is the daemon's clock (${p.at})`);
+  assert.equal(seenByBystander.filter((m) => m.type === "pong").length, 0, "a pong goes to whoever pinged");
+  assert.deepEqual(engine.commands, [], "a ping is not an engine command");
+  app.close();
+  bystander.close();
+  await server.close();
+});
+
 test("permission and permissions messages reach the engine as sent; a non-array list is dropped; an older engine still gets the microphone", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");

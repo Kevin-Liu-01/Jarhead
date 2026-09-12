@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, type Decision } from "@jarhead/core";
+import { HANDS_OFF_APPS, REPO_ROOT, classifyAction, classifyAppleScript, classifyPath, classifyUrl, expandPath, logger, newId, shellCwdReason, type Decision, Ledger } from "@jarhead/core";
 import type { AgentRegistry } from "@jarhead/agents";
 import { DaemonClient } from "@jarhead/daemon";
 import { ComputerToolset, type ToolResult } from "@jarhead/hands";
@@ -59,9 +60,25 @@ export interface RunnerOptions {
   readonly home?: string | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly fetch?: typeof fetch | undefined;
+  /** The per-delegation cap on the shots archive (default SHOTS_CAP): the oldest files past it MOVE to <stateDir>/trash/shots. */
+  readonly shotsCap?: ShotsCap | undefined;
+  /**
+   * The ledger, for the `ledger.moved` row each eviction pass writes (one per day
+   * touched, `by: "retention"`, the path the files went to). Absent, the manifest
+   * line under trash/manifest.jsonl is the only record — the engine wires this.
+   */
+  readonly ledger?: Ledger | undefined;
 }
 
 export type ToolRunnerOptions = RunnerOptions;
+
+export interface ShotsCap {
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/** At most this many screenshot files / bytes stay under <stateDir>/shots; the day-level retention sweep is the engine's. */
+export const SHOTS_CAP: ShotsCap = { files: 400, bytes: 1024 * 1024 * 1024 };
 
 export interface RunOutcome {
   readonly result: ToolResult;
@@ -91,6 +108,10 @@ export class ToolRunner {
   /** Secret values (Jarhead's keys, everything in ~/.jarhead/env, secret-shaped strings) are struck from every result. */
   readonly redactor: SecretRedactor;
   private lastProgressAt = 0;
+  /** Screenshots archived during this task, by the sha-256 of their bytes: the same frame twice is one file. */
+  private readonly shotsThisTask = new Map<string, string>();
+  /** What lives under <stateDir>/shots, kept current as the runner writes (built from disk on first use). */
+  private shotsIndex: { files: { rel: string; mtimeMs: number; size: number }[]; bytes: number } | undefined;
 
   constructor(private readonly opts: RunnerOptions) {
     this.now = opts.now ?? Date.now;
@@ -115,6 +136,7 @@ export class ToolRunner {
       this.task = task;
       this.taskStartedAt = this.now();
       this.readThisTask.clear();
+      this.shotsThisTask.clear();
     }
     if (!sink) this.task = undefined;
   }
@@ -189,16 +211,117 @@ export class ToolRunner {
     }
   }
 
+  /**
+   * Archive a screenshot under <stateDir>/shots/<day>/. Identical bytes within one
+   * delegation (a screen that did not change between two looks) are archived once and
+   * the first path is reused. Past the cap (files or bytes, `shotsCap`) the oldest files
+   * MOVE to <stateDir>/trash/shots/<day>/ by rename(2) — never unlinked; the day-level
+   * retention sweep owns the trash from there. Nothing here is awaited by anyone on the
+   * voice path: the runner archives after the tool has answered.
+   */
   private archive(pngBase64: string): string {
-    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const bytes = Buffer.from(pngBase64, "base64");
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    const seen = this.shotsThisTask.get(sha);
+    if (seen && existsSync(join(this.opts.stateDir, seen))) return seen;
+    const day = Ledger.dayFor(this.now()); // the ledger's LOCAL day, so retention and the pinned/open guards line up
     const rel = join("shots", day, `${newId("shot")}.png`);
     try {
+      // The index is read from disk before this file lands, so the file is counted once.
+      const idx = this.shots();
       mkdirSync(join(this.opts.stateDir, "shots", day), { recursive: true });
-      writeFileSync(join(this.opts.stateDir, rel), Buffer.from(pngBase64, "base64"));
+      writeFileSync(join(this.opts.stateDir, rel), bytes);
+      this.shotsThisTask.set(sha, rel);
+      idx.files.push({ rel, mtimeMs: this.now(), size: bytes.length });
+      idx.bytes += bytes.length;
+      this.evictShots();
     } catch (e) {
       log.warn(`could not archive screenshot: ${(e as Error).message}`);
     }
     return rel;
+  }
+
+  /** The shots index: read from disk once (every <day>/<file>.png under shots/), then kept current. */
+  private shots(): { files: { rel: string; mtimeMs: number; size: number }[]; bytes: number } {
+    if (this.shotsIndex) return this.shotsIndex;
+    const root = join(this.opts.stateDir, "shots");
+    const files: { rel: string; mtimeMs: number; size: number }[] = [];
+    let bytes = 0;
+    if (existsSync(root)) {
+      for (const day of readdirSync(root, { withFileTypes: true })) {
+        if (!day.isDirectory()) continue;
+        for (const f of readdirSync(join(root, day.name), { withFileTypes: true })) {
+          if (!f.isFile()) continue;
+          try {
+            const st = statSync(join(root, day.name, f.name));
+            files.push({ rel: join("shots", day.name, f.name), mtimeMs: st.mtimeMs, size: st.size });
+            bytes += st.size;
+          } catch {
+            // gone between readdir and stat: not ours to count
+          }
+        }
+      }
+    }
+    files.sort((a, b) => a.mtimeMs - b.mtimeMs || a.rel.localeCompare(b.rel));
+    this.shotsIndex = { files, bytes };
+    return this.shotsIndex;
+  }
+
+  /**
+   * Oldest first, past either cap, moved (rename) into the trash; the live day folder is
+   * removed only once it is empty. The Trash's unit is the whole day (core's trash.ts):
+   * a day folder the cap has already started lives in both places, so its later move
+   * MERGES into what is there and a restore merges back — the Trash reads the folders,
+   * not a record, so nothing is lost either way. Every file moved gets its line in
+   * trash/manifest.jsonl (the Trash's own record shape), and each day touched in one
+   * pass gets one `ledger.moved` row when a ledger is wired.
+   */
+  private evictShots(): void {
+    const cap = this.opts.shotsCap ?? SHOTS_CAP;
+    const idx = this.shots();
+    let moved = 0;
+    const at = this.now();
+    const days = new Map<string, string>(); // day → the trash day folder its files went to
+    while (idx.files.length > 0 && (idx.files.length > cap.files || idx.bytes > cap.bytes)) {
+      const oldest = idx.files.shift()!;
+      idx.bytes -= oldest.size;
+      const from = join(this.opts.stateDir, oldest.rel);
+      const to = join(this.opts.stateDir, "trash", oldest.rel);
+      try {
+        mkdirSync(join(to, ".."), { recursive: true });
+        renameSync(from, to);
+        moved++;
+        const dayDir = join(from, "..");
+        const day = oldest.rel.split(/[\\/]/)[1] ?? "";
+        days.set(day, join(to, ".."));
+        this.manifest({ at, day, what: "shots", to: "trash", from, path: to, by: "retention" });
+        if (readdirSync(dayDir).length === 0) rmdirSync(dayDir);
+      } catch (e) {
+        log.warn(`could not move ${oldest.rel} to the trash: ${(e as Error).message}`);
+        // The index no longer matches the disk; rebuild it next time.
+        this.shotsIndex = undefined;
+        break;
+      }
+    }
+    for (const [day, path] of days) {
+      try {
+        this.opts.ledger?.append({ at, type: "ledger.moved", day, what: "shots", to: "trash", path, by: "retention" });
+      } catch (e) {
+        log.warn(`shots: ledger.moved row for ${day} not written: ${(e as Error).message}`);
+      }
+    }
+    if (moved) log.info(`shots: moved ${moved} oldest screenshot${moved === 1 ? "" : "s"} to the trash (cap ${cap.files} files / ${Math.round(cap.bytes / 1_048_576)} MB)`);
+  }
+
+  /** One line in <stateDir>/trash/manifest.jsonl, in the Trash's record shape (a convenience for Finder; the ledger row is the record). */
+  private manifest(line: { at: number; day: string; what: "shots"; to: "trash"; from: string; path: string; by: "retention" }): void {
+    try {
+      const dir = join(this.opts.stateDir, "trash");
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(join(dir, "manifest.jsonl"), `${JSON.stringify(line)}\n`);
+    } catch (e) {
+      log.warn(`shots: manifest line not written: ${(e as Error).message}`);
+    }
   }
 
   private async dispatch(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -377,8 +500,14 @@ export class ToolRunner {
     return classifyPath({ path, access, home: this.home, realPath: realPathOf(path), repoRoot: this.repoRoot, writableRoots: this.writableRoots(), request: this.request, ...extra });
   }
 
-  private ask(description: string, member: string, input: Record<string, unknown>, decision: Decision, extra = ""): ToolResult {
-    const pending = this.opts.toolset.confirmations.ask(description, member, input);
+  /**
+   * The runner's own questions (a shell command, a file outside Jarhead's places, a script, an
+   * agent in the checkout, a self-apply) are one-offs: the yes is spent on that action. The
+   * grant context is forwarded all the same — the policy decides what a yes keeps (`Decision.grant`),
+   * and today it names a class only for the hands' hands-off question, never for these.
+   */
+  private ask(description: string, member: string, input: Record<string, unknown>, decision: Decision, extra = "", app = ""): ToolResult {
+    const pending = this.opts.toolset.confirmations.ask(description, member, input, decision.grant && app ? { app, actionClass: decision.grant } : undefined);
     return { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${description}.${extra ? ` ${extra}` : ""} ${decision.reason}. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.` };
   }
 

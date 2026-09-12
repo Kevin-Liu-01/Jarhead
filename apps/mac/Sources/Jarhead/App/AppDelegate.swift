@@ -121,6 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         state.ledgerDaysHandler = { [weak self] in await self?.client.ledgerDays() ?? [] }
         state.ledgerReadHandler = { [weak self] day in await self?.client.ledgerRows(day: day) ?? [] }
+        // The rail's search: full text over the live ledger through the daemon (titles only without it).
+        state.ledgerSearchHandler = { [weak self] query, limit in await self?.client.ledgerSearch(query: query, limit: limit) }
         state.installJarheadSessions(list: { [weak self] in await self?.client.jarheadSessions() ?? [] },
                                      rows: { [weak self] id in await self?.client.jarheadSessionRows(id) ?? [] })
         state.openConsoleHandler = { [weak self] in self?.console.show() }
@@ -383,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "pause": state.transportPause()
             case "stop", "sleep": state.transportStop()
             case "orb": orb.summon()
+            case "setup": state.openOnboarding()
             default: console.show()
             }
         }

@@ -1,8 +1,9 @@
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
-import { readConfig, type JarheadConfig } from "@jarhead/core";
+import { REPO_ROOT, readConfig, type JarheadConfig } from "@jarhead/core";
 import type { LiveSession } from "@jarhead/live";
 import { parseReflex, type Brain, type BrainResult, type BrainSink, type BrainTask, type DelegationTimingsExtra, type ToolRunner } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
@@ -36,6 +37,15 @@ import type { Delegation } from "@jarhead/protocol";
  *                            real helper fails the bench (exit 1) unless --no-gate.
  *   browser                  the helper's Apple-event path to a running browser (url, tabs), reads only
  *   stop                     stopEverything() wall time with a delegation the brain is holding
+ *   barge-in → duck          the Mac app's speaker duck (apps/mac AudioEngine.swift `BargeInDuck`), measured by
+ *                            the Swift duck probe (apps/mac/Scripts/duck-probe.sh) on synthetic 100 ms tap
+ *                            buffers: speech onset (the first hot 10 ms slice's capture time) → the player's
+ *                            gain at −20 dB; then the restores — a cough (or a partial made of Jarhead's own
+ *                            words) back at 700 ms, a confirmed barge-in back once Kevin stops, and speech
+ *                            nobody confirmed held to 1.5 s while the mic stays hot. Live's transcript is
+ *                            modelled (+900 ms from onset; DUCK_PROBE_LIVE_MS), not measured: no session is
+ *                            opened. Not on this engine's path; in the table so the human-feel numbers sit
+ *                            together. A note, not a MISS, when the probe cannot be built here.
  *
  * and prints one table with medians, p90 and the targets. The numbers depend on
  * the machine's load and on what is on the display (a busy 1280-px shot is an
@@ -166,6 +176,61 @@ function fakeBrain(getRunner: () => ToolRunner, state: { hold: boolean; held: ((
     cancel: async () => undefined,
     stop: async () => undefined,
   };
+}
+
+/** What the Swift duck probe prints as its last line (`--json`). */
+interface DuckProbeReport {
+  readonly samples?: readonly number[];
+  readonly unconfirmedRestoreMs?: readonly number[];
+  readonly confirmedReleaseMs?: readonly number[];
+  /** Kevin's last word → unity, for a confirmed barge-in (the quiet hold, the poll, the ramp). */
+  readonly speechEndToUnityMs?: readonly number[];
+  /** Duck → unity when nothing confirmed but the mic stayed hot (held to 1.5 s, then the ramp). */
+  readonly heldRestoreMs?: readonly number[];
+  /** Duck → Live's (modelled) transcript confirming; duck → the ear's words confirming. */
+  readonly liveConfirmMs?: readonly number[];
+  readonly earConfirmMs?: readonly number[];
+  readonly refusedEchoPartials?: number;
+  readonly liveModelledMs?: number;
+  readonly ranked?: readonly string[];
+}
+
+export const DUCK_TARGET_MS = 170;
+export const DUCK_RELEASE_TARGET_MS = 750;
+
+/**
+ * Run apps/mac/Scripts/duck-probe.sh (builds the probe when its sources are newer than the
+ * binary, then runs it) and read its JSON line: onset → −20 dB samples, the restore
+ * timings, and this Mac's microphone ranking (read-only). Never throws; a probe that cannot
+ * run comes back as a note.
+ */
+export async function runDuckProbe(runs: number, timeoutMs = 180_000): Promise<{ report: DuckProbeReport; note?: string }> {
+  if (process.platform !== "darwin") return { report: {}, note: "not measured: the duck lives in the Mac app (macOS only)" };
+  const script = join(REPO_ROOT, "apps", "mac", "Scripts", "duck-probe.sh");
+  if (!existsSync(script)) return { report: {}, note: `not measured: ${script} is missing` };
+  return new Promise((resolve) => {
+    const child = spawn("bash", [script, "--json"], { env: { ...process.env, DUCK_PROBE_RUNS: String(runs) }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ report: {}, note: `not measured: ${e.message}` });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const line = out.split("\n").reverse().find((l) => l.startsWith("{"));
+      const tail = (err.trim() || out.trim()).split("\n").slice(-2).join(" · ").slice(0, 240);
+      if (code !== 0 || !line) return resolve({ report: {}, note: `not measured: duck probe exited ${code ?? "by signal"} (${tail})` });
+      try {
+        resolve({ report: JSON.parse(line) as DuckProbeReport });
+      } catch {
+        resolve({ report: {}, note: `not measured: unreadable probe output (${tail})` });
+      }
+    });
+  });
 }
 
 function percentile(values: readonly number[], p: number): number {
@@ -453,6 +518,22 @@ export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
       }
       brainState.hold = false;
     }
+
+    // Barge-in → duck: the Mac app's gate on synthetic tap buffers (nothing is played or
+    // recorded; the microphone ranking it prints is read-only). See the header.
+    if (!opts.codex) {
+      const probe = await runDuckProbe(opts.runs);
+      for (const ms of probe.report.samples ?? []) add("barge-in: speech onset → −20 dB (duck probe)", ms);
+      for (const ms of probe.report.unconfirmedRestoreMs ?? []) add("barge-in: cough / echo words, unconfirmed → back to unity", ms);
+      for (const ms of probe.report.speechEndToUnityMs ?? []) add("barge-in: confirmed, Kevin's last word → back to unity", ms);
+      for (const ms of probe.report.heldRestoreMs ?? []) add("barge-in: no confirmation, still speaking → back to unity", ms);
+      if (probe.note) log(`  barge-in: ${probe.note}`);
+      else {
+        const med = (v: readonly number[] | undefined): string => (v && v.length ? `${percentile(v, 50).toFixed(0)} ms` : "—");
+        log(`  barge-in: probe ok; confirmed by Live's transcript ${med(probe.report.liveConfirmMs)} after the duck (modelled at +${probe.report.liveModelledMs ?? "?"} ms from onset), by the ear's words ${med(probe.report.earConfirmMs)}; ${probe.report.refusedEchoPartials ?? 0} partial(s) of Jarhead's own words refused as confirmation`);
+        if (probe.report.ranked?.length) log(`  barge-in: mic ranking on this Mac (auto): ${probe.report.ranked.join(" › ")}`);
+      }
+    }
   } finally {
     await Promise.race([engine.stop(), new Promise((r) => setTimeout(r, 8000))]);
   }
@@ -475,6 +556,10 @@ export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
     "browser: Google Chrome browser_read (JS)": 80,
     "browser: Safari browser_read (JS)": 80,
     "stop: command → everything stopped": 150,
+    // 60 ms of speech energy + the rest of the 100 ms tap buffer it lands in + the 12 ms gain steps.
+    "barge-in: speech onset → −20 dB (duck probe)": DUCK_TARGET_MS,
+    // 250 ms quiet hold + the 50 ms poll + the tap's 100 ms delivery + the 300 ms ramp.
+    "barge-in: confirmed, Kevin's last word → back to unity": DUCK_RELEASE_TARGET_MS,
   };
   /** The ear rows are judged at p95 (the 250 ms promise is for every command, not the typical one); the rest at the median. */
   const judgedAtP95 = new Set(["ear: partial → dispatch", "ear: careful partial → dispatch", "ear: final → dispatch"]);

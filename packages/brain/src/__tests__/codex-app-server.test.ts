@@ -298,3 +298,34 @@ test("app-server: the boot budget bounds thread/start (not a hard-coded minute),
   const args = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", developerInstructions: "x", disableUserServers: false });
   assert.deepEqual(args.slice(0, 7), ["app-server", "--listen", "stdio://", "--disable", "apps", "-c", "notify=[]"]);
 });
+
+test("app-server: one oversized tool output is one rollover — a late tokenUsage for the turn that already rolled the thread over does not start a third thread; the next turn's full context does", async () => {
+  const child = new FakeChild();
+  child.turnStartDelayMs = 5;
+  // Every turn reports a context over the line (a 181k `last`: one tool result the size of a page).
+  child.completing = { usages: [{ total: 240_000, last: 181_000 }], afterMs: 5 };
+  const s = server(child);
+  const rollovers: string[] = [];
+  s.on("rollover", (info) => rollovers.push(`${info.from}→${info.to}`));
+  await s.start();
+  assert.equal((await s.turn([text("read the page")], {})).status, "completed");
+  assert.equal(s.needsFreshThread(), true, "the context as measured is full");
+  assert.equal(s.isRollingOver, true, "the replacement went out with turn/completed");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(rollovers, ["thr_1→thr_2"]);
+  assert.equal(s.thread, "thr_2");
+  // The same turn's usage lands late (no threadId, so the thread filter cannot drop it): the measure is spent.
+  child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/tokenUsage/updated", params: { turnId: "turn_1", tokenUsage: { total: { totalTokens: 245_000 }, last: { totalTokens: 182_000, inputTokens: 181_980 }, modelContextWindow: 258_400 } } })}\n`);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(s.tokenUsage?.turnId, "turn_1");
+  assert.equal(s.needsFreshThread(), true, "measured full…");
+  await s.settleThread();
+  assert.equal(child.threads, 2, "…but not rolled over again: turn_1 already did");
+  assert.deepEqual(rollovers, ["thr_1→thr_2"]);
+  // The next turn's own measure (turn_2) is a new reason.
+  assert.equal((await s.turn([text("and the next page")], {})).status, "completed");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(rollovers, ["thr_1→thr_2", "thr_2→thr_3"]);
+  assert.equal(child.threads, 3);
+  await s.stop();
+});

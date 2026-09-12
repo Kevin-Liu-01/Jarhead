@@ -302,7 +302,47 @@ Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): fir
 - The `bench --brain` gate is only "no run timed out"; the numbers are read, not
   asserted, because they depend on the model and the machine's load.
 
-## 7. What remains (the bottlenecks no plumbing removes)
+## 7. The field, side by side (2026-09-12)
+
+Five research reports on 2026-09-12 (Wispr Flow / Superwhisper / Aqua; Grok; Hermes,
+OpenClaw, Operator, Anthropic computer use, Gemini Live; the Mac-native screen
+assistants; conversation history across nine products) put numbers next to ours.
+They do not all time the same thing, so the second column says what the clock
+runs between. **p95 is the headline** where one exists; the field mostly publishes
+a median, a p99 or a range, and that is marked. "Measured" means a third party or
+this repo's own harness ran a clock; "claimed" means the vendor's page says so.
+
+| product | the clock runs from … to … | **p95** | median / other | measured or claimed | source, date |
+|---|---|---:|---|---|---|
+| **Jarhead — reflex path** (the 250 ms path, REDESIGN §12) | the ear's partial → the acting op dispatched to the hands, careful window (450 ms) included, real Swift helper | **457 ms** (n = 30) | 455 ms median; prefire kinds (scroll, page) 122 / **126 ms p95**; a final with no window 3 / **6 ms p95** (n = 50) | **measured** — `pnpm jarhead bench`, this Mac | [REDESIGN §12](REDESIGN.md#12-reflexes-and-the-250-ms-path-2026-09-11), 2026-09-11 |
+| **Jarhead — model path** (Codex through the app-server) | Live's delegation → the first visible action on the screen (a click, a type, an app in front, a search sent) | **5.1 s** (n = 6) | 4.4 s median; first model tool 4.4 s / 6.7 s p95 (n = 8); verified completion 8.9 s / **25.6 s p95** (n = 10, one 7-generation run); speech end → delegation adds 0.4–1.6 s (n = 4, the ledger) | **measured** — the in-repo harness, real Codex, canned hands, load 3.9 | [`docs/latency/after.json`](latency/after.json), 2026-09-12 03:23 UTC; §5 |
+| Wispr Flow (dictation) | key release (the turn ends on the key, not on speech) → the cleaned text pasted | — (p99 **< 700 ms** claimed: the vendor's target, budgeted ASR < 200 ms + LLM < 200 ms + network 200 ms) | reviewers: "closer to 1 to 2 seconds" felt (Spokenly, a competitor, 2026-05); "a brief delay" (Proser, 2026-08-01) | **claimed** — the vendor's own engineering post states the p99 as its target and its infra partner quotes it as met; reviewer numbers are impressions | [Wispr engineering post](https://wisprflow.ai/post/technical-challenges) 2025-09-11; [Baseten customer story](https://www.baseten.co/resources/customers/wispr-flow/) (undated, ~2025); [Spokenly review](https://spokenly.app/blog/wispr-flow-review) 2026-05; [Proser](https://zackproser.com/blog/wisprflow-review) 2026-08-01 |
+| Aqua Voice (dictation, Instant mode) | key release → text in the field | — | **~450 ms** "after you stop"; start-up < 200 ms | **claimed** (vendor's llms.txt) | [aquavoice.com/llms.txt](https://aquavoice.com/llms.txt), updated 2026-08-16 |
+| Grok Voice Think Fast 2.0 (speech-to-speech) | end of the user's turn → first audio back (no action) | — | **0.70 s** time-to-first-audio; reviewer 300–500 ms perceived end to end | vendor claim, **corroborated** by an independent index (0.70 s) | [x.ai](https://x.ai/news/grok-voice-think-fast-2) 2026-07-29; [Artificial Analysis](https://artificialanalysis.ai/speech-to-speech) read 2026-09-12 |
+| GPT-Live-1 (Jarhead's own voice) | last frame of the user's speech → first audible frame of the reply (an early "let me check that" counts); and speech during the reply → the reply stops | — (p90 **1.21 s**) | **1.11 s median** response (1,105 ms / P90 1,209 ms; n = 30 per condition, artificial mouth, iPhone 13, the ChatGPT app in launch week, 2026-07-09); stop on barge-in ~1.4 s, about 0.5 s slower to yield than Advanced Voice; the vendor's own turn-taking figure 0.798 s | **measured** by a third party (Agora). Two of the research reports read the same post as 1.1 / 1.2 s and as 1.3 / 1.4 s; the page re-read on 2026-09-12 says 1,105 / 1,209 ms. The 0.798 s is claimed | [Agora](https://www.agora.io/en/blog/openai-didnt-publish-gpt-lives-latency-so-we-measured-it/) 2026-07-10, re-read 2026-09-12; [unite.ai on the API launch](https://www.unite.ai/openais-gpt-live-1-arrives-in-the-api-at-0-05-per-minute/) 2026-09-10 |
+| Gemini Live API | end of the user's turn → first packet / audible reply; and barge-in → the model stops | — | 300–500 ms end to end, 200–400 ms first packet; interrupt round trip 200–500 ms while the model keeps talking | **measured** by developers, no percentiles | [eastondev](https://eastondev.com/blog/en/posts/ai/20260227-gemini-live-api-tutorial/) 2026-02-27; [Google Cloud community](https://medium.com/google-cloud/why-your-voice-bot-feels-robotic-and-how-gemini-live-fixes-it-05c7a4d5355a) |
+| Perplexity Computer / Personal Computer (browser control) | one action → the next: screenshot up, remote model, mouse or keyboard back | — | **2–5 s per action** cycle, processing remote | reviewer range | [fazm.ai](https://fazm.ai/blog/perplexity-computer-browser-control) 2026-04-06 |
+| Operator / ChatGPT agent / Atlas, Claude computer use, Claude in Chrome (screenshot-loop agents) | a whole errand | — | Atlas: 10 min for three Amazon items, 16 min for flights; Claude in Chrome: "tasks that take you seconds can take Claude minutes"; Claude on the Mac: ~50 % success over 12 operations; Operator: 38.1 % OSWorld, 13 nuisance errors per 100 tasks unmitigated | reviewers and the vendor's system card; no per-action clock published | [Futurism](https://futurism.com/artificial-intelligence/openai-atlas-web-browser-messy) 2025-10-23; [aitoolanalysis](https://aitoolanalysis.com/claude-in-chrome-review/) 2026-03-04; [jock.pl](https://thoughts.jock.pl/p/claude-cowork-dispatch-computer-use-honest-agent-review-2026) 2026-03-24; [Operator system card](https://cdn.openai.com/operator_system_card.pdf) 2025-01-23 |
+| Hermes Agent, CLI voice (chained STT → LLM → TTS) | speech → the reply's audio | — | **3.0 s of silence** before the turn even ends, then STT 0.5–2 s (Groq / OpenAI), then TTS 1–2 s | vendor docs (design numbers) | [voice-mode doc](https://hermes-agent.nousresearch.com/docs/user-guide/features/voice-mode); [tts doc](https://hermes-agent.nousresearch.com/docs/user-guide/features/tts), 2026 |
+
+**What is measured versus claimed.** Both Jarhead rows are measured by this repo's
+own harness on this Mac and read from the ledger (§2, §5): nearest-rank p95 over
+small n (6–50), so a single slow run moves them; the reflex row is like-for-like
+with the dictation tools (speech → an effect on the screen) and is faster than any
+published dictation figure, claimed or felt; the model path row stops at an
+*action*, which no dictation timer and no voice-model TTFA includes at all. Wispr's
+"< 700 ms p99" is the vendor's own target from its engineering post, quoted by its
+infrastructure partner as met, and the only p99 in the table; every reviewer who
+used the product reports one to two seconds.
+Grok's 0.70 s is a vendor number an independent index reproduced. GPT-Live-1's 1.1 s
+is the one third-party measurement with percentiles, and it is our own voice: it is
+the floor under every spoken reply Jarhead gives. The agent rows are the only
+products doing what the model path does — acting on a screen — and they publish no
+per-action clock at all; the 2–5 s per action and the minutes per errand are what
+reviewers saw, and they are the honest comparison for our 5.1 s p95 to the first
+action and 8.9 s median to a verified finish.
+
+## 8. What remains (the bottlenecks no plumbing removes)
 
 - **The model's per-generation latency**: 3.4 s median / 5.9 s p90 per generation
   at effort medium on gpt-6-astra through the app-server; 1.8–3.1 s for a warm
@@ -317,7 +357,7 @@ Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): fir
 - **Verification**: a claimed action must be verified before it is reported done;
   one generation (a `read_focused_text` or a quick shot) is the floor.
 
-## 8. Honest assessment
+## 9. Honest assessment
 
 **2–5 s to a visible action after Kevin stops speaking — met at the top of the
 window on the model path, met outright on the reflex path.** On the brain path the

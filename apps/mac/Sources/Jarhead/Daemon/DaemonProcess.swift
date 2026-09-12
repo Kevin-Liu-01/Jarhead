@@ -38,6 +38,85 @@ final class DaemonProcess {
         let stateDir = env["JARHEAD_STATE_DIR"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarhead")
         self.logFile = DaemonLog(url: stateDir.appendingPathComponent("daemon.log"))
+        // The client's two liveness signals (EngineClient, REDESIGN §16 "Liveness"): a daemon
+        // that stopped answering pings, and the `daemon` row's "Restart daemon" pressed while
+        // nothing answers. Both arrive on the main queue; both end in `kick`.
+        for (name, why) in [(EngineClient.daemonUnresponsiveNotification, "daemon unresponsive"), (EngineClient.restartDaemonNotification, "restart requested from the daemon row")] {
+            let observer = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let pid = note.userInfo?["pid"] as? Int32
+                let seconds = note.userInfo?["seconds"] as? Int
+                let reason = seconds.map { "\(why): no pong for \($0) s" } ?? why
+                MainActor.assumeIsolated { self?.kick(why: reason, pid: pid) }
+            }
+            observers.append(observer)
+        }
+    }
+
+    deinit {
+        for o in observers { NotificationCenter.default.removeObserver(o) }
+    }
+
+    private var observers: [NSObjectProtocol] = []
+    /// When `kick` last acted; one kick per `kickDebounce` so a slow Mac is not kicked into a restart loop.
+    private var lastKickAt: Date?
+    static let kickDebounce: TimeInterval = 5
+
+    /// The daemon is up and not answering (EngineClient missed two pongs), or Kevin pressed
+    /// "Restart daemon" while nothing answers. What we own is SIGKILLed — its exit runs the
+    /// usual `handleExit` → `scheduleRestart` with the backoff, so a daemon that dies on
+    /// every start is not respawned hot. A daemon we only attached to is killed by the pid
+    /// its hello gave on the connection that just stopped answering — and only when that
+    /// pid is still a `node` (`proc_pidpath`): a pid is a number the kernel reuses, and the
+    /// one thing this must never do is kill one of Kevin's own processes. Then we take over
+    /// on the next probe. A kick inside the debounce window is logged and ignored: the
+    /// previous one is still working.
+    func kick(why: String, pid hint: Int32?) {
+        guard !stopping else { return }
+        if let last = lastKickAt, Date().timeIntervalSince(last) < DaemonProcess.kickDebounce {
+            log("[app] \(why); a restart is already under way (\(Int(Date().timeIntervalSince(last))) s ago)")
+            return
+        }
+        lastKickAt = Date()
+        if let p = process, p.isRunning {
+            log("[app] \(why); killing daemon pid \(p.processIdentifier) and respawning")
+            setDetail("daemon unresponsive; restarting")
+            kill(p.processIdentifier, SIGKILL)
+            return
+        }
+        if let hint, hint > 0, hint != ProcessInfo.processInfo.processIdentifier {
+            if let exe = DaemonProcess.executablePath(of: hint), isDaemonExecutable(exe) {
+                log("[app] \(why); killing the attached daemon pid \(hint) (\(exe)) and starting our own")
+                kill(hint, SIGKILL)
+            } else {
+                log("[app] \(why); pid \(hint) from the daemon's hello is not a node process any more (gone, or the number was reused) — not killed; starting our own")
+            }
+        } else {
+            log("[app] \(why); no daemon of ours is running — starting one")
+        }
+        attachTimer?.invalidate(); attachTimer = nil
+        attached = false
+        backoff = 1
+        setDetail("starting")
+        // Through the restart timer, not spawn() directly: it probes the socket first, so a
+        // daemon that still answers (a wrong pid hint) is attached to again rather than doubled.
+        scheduleRestart(why: why)
+    }
+
+    /// The executable behind a pid (`proc_pidpath`), or nil when there is no such process or it is not ours to see.
+    nonisolated static func executablePath(of pid: Int32) -> String? {
+        var buf = [CChar](repeating: 0, count: 4 * Int(PATH_MAX))
+        let n = proc_pidpath(pid, &buf, UInt32(buf.count))
+        guard n > 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    /// True for the node this app spawns daemons with, or any `node` (a CLI-started daemon may
+    /// run under another version): a process that hello'd on our socket a moment ago and is
+    /// still a node is the daemon; anything else is a reused pid.
+    private func isDaemonExecutable(_ path: String) -> Bool {
+        let exe = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        if exe.path == location.node.resolvingSymlinksInPath().path { return true }
+        return exe.lastPathComponent == "node"
     }
 
     // MARK: - lifecycle

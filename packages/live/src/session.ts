@@ -59,6 +59,45 @@ export interface LiveSessionEvents {
 
 const log = logger("live");
 
+/**
+ * What a GPT-Live-1 error is about, for the typed problem the engine raises (REDESIGN
+ * §16, "Problems, typed"). The server's `error` frames arrive as `code: message`
+ * (`dispatch`), a failed start as this class's own words; both are matched here.
+ *
+ * - `limit`: the session hit a cap that passes — a rate limit, the 128-item / 32 768-token
+ *   response input history (`response_input_buffer_full`, 10 rows in two days of Kevin's
+ *   ledger), the append cap. Transient: the remedy is to wait, and the row clears itself.
+ * - `connection`: the socket, the network, the server closing us (`connection_lost`,
+ *   `remote_hangup`, a start that never answered); the engine reconnects on its own.
+ * - `key`: authentication and billing — a missing, stale or unentitled key, a model the
+ *   key cannot see, an exhausted quota (`insufficient_quota`, "check your plan and
+ *   billing"). Nothing recovers this by waiting: Setup is the remedy, and the row stays.
+ * - `other`: everything else (`context_injection_incomplete` is an append racing a
+ *   close, `unknown_parameter` a client bug); shown as it is.
+ *
+ * Precedence: billing first (a quota message also says "exceeded", which is limit-shaped);
+ * then a key error that is not also a rate-limit message; then limit; then connection.
+ */
+export type LiveErrorKind = "limit" | "connection" | "key" | "other";
+
+const BILLING_ERROR = /insufficient_quota|\bquota\b|\bbilling\b|exceeded your current quota/i;
+const LIMIT_ERROR = /rate[_ ]?limit|too many requests|\b429\b|response_input_buffer_full|buffer.*\bfull\b|limited to \d+ items|context_window|token limit|max_tokens|over capacity|overloaded/i;
+const KEY_ERROR = /invalid_api_key|incorrect api key|api[_ ]?key|authentication|unauthori[sz]ed|\b401\b|\b403\b|permission_denied|model_not_found|not listed for it|not available for|OPENAI_API_KEY/i;
+const CONNECTION_ERROR = /connection_lost|connection lost|remote_hangup|socket (closed|error)|closed before (it )?start|did not start within|ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|EPIPE|\bnetwork\b|handshake|\b50[234]\b|server_error|internal_error|service unavailable|websocket|\bexpired\b/i;
+
+/** Classify a Live error's message (`code: message` from the server, or a start failure). Never throws; the empty string is `other`. */
+export function classifyLiveError(message: string): LiveErrorKind {
+  const text = String(message ?? "");
+  // An exhausted quota is a billing problem: "Retry in 30 s" would lie and the row would
+  // clear with the wake still failing. Setup, and the row stays until the key answers.
+  if (BILLING_ERROR.test(text)) return "key";
+  // A key error that also names a rate limit ("401 rate" is not a thing, but be safe) is the limit.
+  if (KEY_ERROR.test(text) && !LIMIT_ERROR.test(text)) return "key";
+  if (LIMIT_ERROR.test(text)) return "limit";
+  if (CONNECTION_ERROR.test(text)) return "connection";
+  return "other";
+}
+
 function defaultFactory(url: string, headers: Record<string, string>): WebSocketLike {
   // Node's WebSocket accepts headers through a non-standard options bag.
   return new WebSocket(url, { headers } as unknown as string[]) as unknown as WebSocketLike;

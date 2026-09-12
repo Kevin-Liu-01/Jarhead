@@ -41,6 +41,14 @@ export interface ActionContext {
   readonly secureField?: boolean | undefined;
   /** Kevin said "go ahead" for this specific action already. */
   readonly confirmed?: boolean | undefined;
+  /**
+   * A standing yes from earlier in this conversation covers this app and this
+   * action class (`Decision.grant`): the hands-off question is not asked again.
+   * Never a destructive verb — those keep asking — and never anything refused.
+   */
+  readonly granted?: boolean | undefined;
+  /** Kevin at the Mac, as the hands see it; absent when the caller cannot tell (the shell, the browser tools). */
+  readonly presence?: Presence | undefined;
   /** run_shell: pids of processes Jarhead itself started; stopping them is housekeeping, not destruction. */
   readonly ownedPids?: readonly number[] | undefined;
   /** run_shell: Jarhead's own scratch directories (self-edit worktrees); deleting inside them runs. */
@@ -58,11 +66,75 @@ export interface ActionContext {
 export interface Decision {
   readonly verdict: Verdict;
   readonly reason: string;
+  /**
+   * On a `confirm`: the action class a yes opens for the rest of the conversation in
+   * this app ("click", "type"). Absent when the yes is good for this one action only —
+   * every destructive verb (send, pay, purchase, delete, post, publish, transfer…) and
+   * everything outside the hands-off table.
+   */
+  readonly grant?: string;
+  /**
+   * On a `confirm`: this is not a question but a hold — the presence gate found Kevin
+   * away from the Mac. Nothing to arm: the tool tells the brain, the brain tells Kevin,
+   * and the action goes through the whole gate again when he is back and asks again.
+   */
+  readonly hold?: boolean;
+}
+
+/**
+ * Whether Kevin is at the Mac, leg by leg. Each leg is true, false, or unknown
+ * (undefined); only a leg that is known false holds an action back.
+ */
+export interface Presence {
+  /** The wake word or ear activity within `PRESENCE_WINDOW_MS` (the engine's presenceAt). */
+  readonly recent?: boolean | undefined;
+  /** The screen is not locked (CGSessionCopyCurrentDictionary, read by the hands). */
+  readonly unlocked?: boolean | undefined;
+  /** The app the action lands on is the one in front. */
+  readonly frontmost?: boolean | undefined;
 }
 
 const READ_ONLY = new Set(["screenshot", "zoom", "cursor_position", "wait", "read", "list_windows", "focused_text", "element_at"]);
 const POINTER = new Set(["left_click", "right_click", "middle_click", "double_click", "triple_click", "mouse_move", "left_mouse_down", "left_mouse_up", "left_click_drag", "scroll"]);
 const KEYS = new Set(["type", "key", "hold_key"]);
+
+/**
+ * The action class a conversation-scoped grant is keyed on: pointer members are one
+ * class ("click"), `type` another ("type"). Undefined for everything else — `key` and
+ * `hold_key` included: a key press in a password manager (cmd+delete on a login item,
+ * space on a checkbox) is not covered by a yes to "type there", and the policy never
+ * reads the combo, so each one asks on its own.
+ */
+export function grantClassOf(kind: string): string | undefined {
+  const k = kind.trim().toLowerCase();
+  if (POINTER.has(k)) return "click";
+  if (k === "type") return "type";
+  return undefined;
+}
+
+/**
+ * Hands-off apps where no yes is kept: System Settings and Keychain Access are the
+ * machine's security surface, where one click flips FileVault or a privacy grant. A
+ * yes there is good for that one action.
+ */
+export const GRANT_NEVER_APPS = /\b(system settings|system preferences|keychain access)\b/i;
+
+/**
+ * Under a standing grant in a hands-off app, controls that still ask: anything that
+ * flips a setting (a checkbox, a switch, a radio button) or moves, opens or hands out
+ * what the app guards. The grant opened the app for ordinary clicks and typing, not
+ * for these.
+ */
+export const GRANTED_STILL_ASKS = /\b(AXCheckBox|AXSwitch|AXRadioButton|AXToggle|trash|archive|allow|enable|disable|turn (on|off)|reset|revoke|export|import|autofill|unlock)\b/i;
+
+/** The accessibility roles that flip a setting, in the words the question uses. */
+const SETTING_ROLE: Record<string, string> = { checkbox: "checkbox", switch: "switch", radiobutton: "radio button", toggle: "toggle" };
+
+/** The grant class a hands-off question may carry: the kind's class, unless the app keeps every yes per action. */
+function grantableIn(kind: string, app: string): string | undefined {
+  if (GRANT_NEVER_APPS.test(app)) return undefined;
+  return grantClassOf(kind);
+}
 
 /** Words on a control that mean "this leaves the machine or cannot be undone". */
 const IRREVERSIBLE =
@@ -71,8 +143,47 @@ const IRREVERSIBLE =
 /** Apps where Kevin drives; Jarhead only looks. */
 export const HANDS_OFF_APPS = /\b(1password|keychain access|system settings|system preferences|bitwarden|authy|banking|wallet)\b/i;
 
+// ---- presence gate (added 2026-09-12; Operator's Watch Mode, kept because it costs nothing when Kevin is there) ----
+
+/**
+ * Apps where a confirm-tier action also needs Kevin at the Mac: mail, messaging,
+ * money and password managers. Adjacent to HANDS_OFF_APPS: those ask before *any*
+ * action; these ask only for the actions that already ask, and add the question
+ * "is he here" — so a yes said an hour ago, or a brain acting while the screen is
+ * locked, sends nothing. Matched on the front app's name, by whole word.
+ */
+export const PRESENCE_GATED_APPS = /\b(mail|messages|outlook|airmail|spark|mimestream|thunderbird|slack|discord|whatsapp|telegram|signal|teams|1password|bitwarden|keychain access|authy|banking|wallet|venmo|paypal|zelle|cash app|robinhood|coinbase)\b/i;
+/** The same kinds as web apps, for an action whose page URL is known (the browser tools pass `url`). */
+export const PRESENCE_GATED_HOSTS = /(^|\.)(mail\.google\.com|outlook\.(live|office)\.com|mail\.proton\.me|mail\.yahoo\.com|web\.whatsapp\.com|web\.telegram\.org|app\.slack\.com|discord\.com|messages\.google\.com|teams\.microsoft\.com|paypal\.com|venmo\.com|coinbase\.com|binance\.com|kraken\.com|robinhood\.com|schwab\.com|fidelity\.com|chase\.com|wellsfargo\.com|bankofamerica\.com|citi\.com|1password\.com|bitwarden\.com|lastpass\.com)$/i;
+/** How long the wake word or ear activity counts as "Kevin is here". */
+export const PRESENCE_WINDOW_MS = 60_000;
+/** What the tool says when it holds an action for him (terse; the brain reads it out). */
+export const PRESENCE_ABSENT = "I'll do this when you're back at the Mac";
+
+/** Whether the app or page an action lands on is one of the presence-gated kinds. */
+export function presenceGated(app: string | undefined, url: string | undefined): boolean {
+  if (app && PRESENCE_GATED_APPS.test(app)) return true;
+  if (!url) return false;
+  try {
+    return PRESENCE_GATED_HOSTS.test(new URL(url.trim()).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/** Why a confirm-tier action in a presence-gated app waits for Kevin, if it does: the first leg known to be false. */
+export function presenceReason(ctx: Pick<ActionContext, "app" | "url" | "presence">): string | undefined {
+  const p = ctx.presence;
+  if (!p || !presenceGated(ctx.app, ctx.url)) return undefined;
+  const where = ctx.app ? ` in ${ctx.app}` : "";
+  if (p.unlocked === false) return `the screen is locked, so nothing${where} happens now; ${PRESENCE_ABSENT}`;
+  if (p.frontmost === false) return `${ctx.app ?? "the target app"} is not the app in front; ${PRESENCE_ABSENT}`;
+  if (p.recent === false) return `Kevin has not said anything for a minute, so this${where} waits; ${PRESENCE_ABSENT}`;
+  return undefined;
+}
+
 const run = (reason: string): Decision => ({ verdict: "run", reason });
-const confirm = (reason: string): Decision => ({ verdict: "confirm", reason });
+const confirm = (reason: string, grant?: string): Decision => (grant ? { verdict: "confirm", reason, grant } : { verdict: "confirm", reason });
 const refuse = (reason: string): Decision => ({ verdict: "refuse", reason });
 
 function escapeRe(s: string): string {
@@ -187,6 +298,9 @@ function autostartReason(p: string, home: string): string | undefined {
   return undefined;
 }
 
+/** The trash is move-only: the one refusal both the path gate and the shell gate give for writing or deleting there. */
+export const TRASH_REASON = "the trash (~/.jarhead/trash) is move-only: whole days move in and out by rename and nothing is written or deleted there by a tool; Jarhead never deletes Kevin's data, and Reveal in Finder is how he empties it";
+
 export type PathAccess = "read" | "write" | "delete";
 
 export interface PathContext {
@@ -226,10 +340,15 @@ export function classifyPath(ctx: PathContext): Decision {
   const secret = secretPathReason(p) ?? (real !== p ? secretPathReason(real) : undefined);
   if (secret) return refuse(`${secret} holds secrets; Jarhead never reads or writes it, and Kevin handles it himself`);
   if (ctx.access === "read") return run("reading is harmless on Kevin's own machine");
-  if (ctx.confirmed) return run(`Kevin confirmed ${ctx.access === "delete" ? "deleting" : "writing"} ${p}`);
-  if (ctx.access === "delete") return confirm(`deleting ${p} cannot be undone; ask first`);
   const stateDir = resolve(home, ".jarhead");
   const targets = real !== p ? [p, real] : [p];
+  // The trash (added 2026-09-12): where Kevin's moved conversations and screenshots live. Move-only — whole
+  // days move in and out by rename(2), from the engine; no tool writes or deletes there, yes or no. Compared
+  // case-folded: APFS is case-insensitive by default, so ~/.jarhead/Trash IS the trash.
+  const trashDir = resolve(stateDir, "trash").toLowerCase();
+  if (targets.some((t) => isUnder(t.toLowerCase(), trashDir))) return refuse(TRASH_REASON);
+  if (ctx.confirmed) return run(`Kevin confirmed ${ctx.access === "delete" ? "deleting" : "writing"} ${p}`);
+  if (ctx.access === "delete") return confirm(`deleting ${p} cannot be undone; ask first`);
   if (targets.some((t) => isUnder(t, resolve(stateDir, "ledger")))) return confirm("the ledger is append-only; writing there needs a yes");
   if (targets.some((t) => t === resolve(stateDir, "settings.json"))) return confirm("settings.json carries the wake gate and the brain choice; changing it needs a yes");
   for (const t of targets) {
@@ -622,6 +741,71 @@ function secretSweepReason(norm: string): string | undefined {
   return undefined;
 }
 
+/**
+ * `.jarhead/trash` named on a command line — under `~`, `$HOME`, any home spelling, a quote,
+ * `./` or `//` in the path, any case (APFS folds it) — followed by `/` or the end of a word.
+ * Text is normalised (home → ~) before the test; the pattern does not rely on it.
+ */
+const TRASH_PATH = /(^|[\s"'=\/~])\.jarhead(\/\.)*\/+trash(\/|(?=$|[\s"';|&),}]))/i;
+/** `~/.jarhead/{trash,}`, `~/.jarhead/{ledger,trash}`: a brace that expands to the trash. */
+const TRASH_BRACE = /\.jarhead(\/\.)*\/+\{[^}]*\btrash\b[^}]*\}/i;
+/** Deleting and emptying, wherever on the line: once the trash is named anywhere, its name flows through pipes, variables and braces the gate cannot follow. */
+const TRASH_DELETERS = /^(rm|rmdir|unlink|shred|srm|truncate)$/;
+/** Code the gate cannot read, on a line that names the trash: refused whole. */
+const TRASH_INTERPRETERS = /^(python[\d.]*|node|bun|deno|perl|ruby|php|osascript|swift|tclsh|lua[\d.]*)$/;
+/** Copy-like commands: the destination decides (into the trash is a write); `mv` moves the trash or into it either way. */
+const TRASH_COPIERS = /^(cp|rsync|ln|install|ditto|scp)$/;
+
+function namesTrash(s: string): boolean {
+  return TRASH_PATH.test(s) || TRASH_BRACE.test(s);
+}
+
+/**
+ * Why a shell command would write into, delete from, empty or move the trash, if it
+ * would: the trash is move-only (added 2026-09-12). Lexical and fail-closed: once the
+ * trash is named anywhere on the line, every deleter, interpreter and in-place editor
+ * on that line is refused (names travel down pipes, into variables and braces); a
+ * `cd` / `pushd` into it or a variable holding it puts the rest of the line in the
+ * trash, where anything that is not look-only is refused; `cp` / `rsync` / `ln` /
+ * `install` are refused when their destination is the trash, `mv` / `dd` / `tee` /
+ * `sed -i` whenever the statement names it, and a redirect into it always.
+ */
+function trashReason(norm: string): string | undefined {
+  if (!namesTrash(norm)) return undefined;
+  let inTrash = false; // `cd ~/.jarhead/trash`, or `T=~/.jarhead/trash`: what follows runs there or reaches it by the variable
+  for (const st of splitStatements(norm)) {
+    const stmt = st.text;
+    const s = stripWrappers(stmt);
+    const cmd = commandOf(stmt);
+    const named = namesTrash(stmt) || inTrash;
+    if (/^(cd|pushd)$/.test(cmd)) {
+      inTrash = namesTrash(stmt);
+      continue;
+    }
+    if (/^(export\s+|declare\s+(-\w+\s+)*|local\s+|typeset\s+)?[A-Za-z_]\w*=/.test(stmt) && s === "") {
+      // A bare assignment: `T=~/.jarhead/trash` puts the trash in every `$T` that follows.
+      if (namesTrash(stmt)) inTrash = true;
+      continue;
+    }
+    if (TRASH_DELETERS.test(cmd) || TRASH_INTERPRETERS.test(cmd)) return TRASH_REASON;
+    if (cmd === "find" && /\s-(delete|exec|execdir|ok|okdir)\b/.test(s)) return TRASH_REASON;
+    if (cmd === "xargs" && /\b(rm|rmdir|unlink|shred|srm|mv|cp|truncate|tee|dd|ln|install)\b/.test(s)) return TRASH_REASON;
+    if (!named) continue;
+    if (/^(mv|dd|tee|rmdir|chmod|chown|touch|mkdir|patch|zip|tar|unzip)$/.test(cmd)) return TRASH_REASON;
+    if (/^(sed|perl|ruby)$/.test(cmd) && /\s-\w*i/.test(s)) return TRASH_REASON;
+    if (TRASH_COPIERS.test(cmd)) {
+      const args = s.split(/\s+/).filter((a) => a && !a.startsWith("-"));
+      const dest = args[args.length - 1] ?? "";
+      if (inTrash || namesTrash(` ${dest}`) || (cmd === "rsync" && /\s--delete/.test(s)) || (cmd === "ln" && namesTrash(s))) return TRASH_REASON;
+    }
+    if (/(^|[^>&\d])>{1,2}(?!&)/.test(stmt) && (inTrash || /(^|[^>&\d])>{1,2}(?!&)\s*["']?[^\s"']*\.jarhead(\/\.)*\/+trash/i.test(stmt))) return TRASH_REASON;
+    if (inTrash && cmd !== "" && !LOOK_ONLY.has(cmd) && !TRASH_READERS.test(cmd)) return TRASH_REASON;
+  }
+  return undefined;
+}
+/** Reading from inside the trash (after a `cd` there) is fine: these only print. */
+const TRASH_READERS = /^(cat|head|tail|less|more|grep|rg|wc|bat|jq|sort|uniq|diff|cmp|md5|shasum|sha256sum|strings|hexdump|xxd)$/;
+
 /** ssh and friends name a key file after -i without reading it into anything; only that form passes, and only on that statement. */
 function withoutIdentityFlags(stmt: string): string {
   const s = stripWrappers(stmt);
@@ -641,6 +825,8 @@ export function shellNeverReason(text: string, home: string = homedir()): string
     if (env) return env;
     const sweep = secretSweepReason(norm);
     if (sweep) return sweep;
+    const trash = trashReason(norm);
+    if (trash) return trash;
     const home_ = homeSweepReason(norm);
     if (home_.refuse) return home_.refuse;
   }
@@ -958,7 +1144,26 @@ function classifyDictation(ctx: ActionContext): Decision {
   return run("dictation into an ordinary field");
 }
 
+/**
+ * The verdict, then the presence gate over it (added 2026-09-12): in a mail, messaging,
+ * money or password-manager app, an action that is confirm-tier on its own merits — the
+ * question it would ask, or did ask and got a yes or a standing grant for — also needs
+ * Kevin at the Mac: spoken to Jarhead within the last minute, the screen unlocked, the
+ * app in front. A leg known to be false turns the verdict into a `confirm` that says
+ * "I'll do this when you're back at the Mac"; nothing lands. A refusal is never softened,
+ * a plain `run` (a scroll, a click on Search) is never held, and a caller that cannot
+ * tell (no `presence`) gets the plain verdict.
+ */
 export function classifyAction(ctx: ActionContext): Decision {
+  const decision = classifyActionCore(ctx);
+  if (decision.verdict === "refuse" || !ctx.presence) return decision;
+  const tier = ctx.confirmed || ctx.granted ? classifyActionCore({ ...ctx, confirmed: false, granted: false }) : decision;
+  if (tier.verdict !== "confirm") return decision;
+  const away = presenceReason(ctx);
+  return away ? { verdict: "confirm", reason: away, hold: true } : decision;
+}
+
+function classifyActionCore(ctx: ActionContext): Decision {
   const kind = ctx.kind.trim().toLowerCase();
   const app = ctx.app ?? "";
   const target = ctx.target ?? "";
@@ -975,7 +1180,11 @@ export function classifyAction(ctx: ActionContext): Decision {
   if (kind === "run_shell") return classifyShell(text, ctx);
 
   if (HANDS_OFF_APPS.test(app) && (POINTER.has(kind) || KEYS.has(kind))) {
-    return ctx.confirmed ? run(`Kevin confirmed acting in ${ctx.app}`) : confirm(`${ctx.app} holds credentials or system settings; ask before acting there`);
+    if (ctx.confirmed) return run(`Kevin confirmed acting in ${ctx.app}`);
+    // The one question a yes may answer for the whole conversation (`grant`): acting in this
+    // app, this class of action. A grant opens the app, not its destructive controls — a
+    // "Delete" under a granted click still asks below.
+    if (!ctx.granted) return confirm(`${ctx.app} holds credentials or system settings; ask before acting there`, grantableIn(kind, app));
   }
 
   if (IRREVERSIBLE.test(target)) {
@@ -983,6 +1192,16 @@ export function classifyAction(ctx: ActionContext): Decision {
   }
 
   if (POINTER.has(kind) || KEYS.has(kind) || kind === "open_app" || kind === "focus_app") {
+    if (ctx.granted && HANDS_OFF_APPS.test(app)) {
+      // The grant covers the ordinary controls; a setting, a switch or a hand-out still asks, and its yes keeps nothing.
+      const role = /\bAX(CheckBox|Switch|RadioButton|Toggle)\b/i.exec(target);
+      const word = GRANTED_STILL_ASKS.exec(target);
+      if (role || word || !grantableIn(kind, app)) {
+        const why = role ? `is a ${SETTING_ROLE[role[1]!.toLowerCase()] ?? "setting"} control` : word ? `says "${word[1]}", which changes a setting or hands something out` : "is not covered by a standing yes";
+        return confirm(`"${target}" in ${ctx.app} ${why}; Kevin's earlier yes does not cover it, ask first`);
+      }
+      return run(`Kevin's earlier yes covers ${grantClassOf(kind) ?? kind} in ${ctx.app} for this conversation`);
+    }
     return run(`${kind} is reversible on Kevin's own machine`);
   }
 

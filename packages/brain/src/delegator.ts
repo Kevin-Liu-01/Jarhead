@@ -8,6 +8,7 @@ import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "
 import { markNote } from "./attachments.ts";
 import { addressesJarhead, normalizeUtterance, type Reconciliation, type Reflex, type ReflexOutcome } from "./reflex.ts";
 import { progressLine } from "./responses.ts";
+import { ALL_TOOL_SPECS } from "./tools.ts";
 
 /**
  * Where the voice meets the brain.
@@ -167,6 +168,30 @@ export interface DelegationTimingsExtra extends DelegationTimings {
 export const ACTING_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"]);
 
 const STOP_PATTERN = /^\s*(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+/**
+ * Narration at the level of intent (REDESIGN §17, the voice's `# Narration`): a
+ * brain line that reads as one click — "Clicking Save.", "Pressing Return.",
+ * "Scrolling down." — once something has already been voiced for this task.
+ * Such lines stay on the timeline and never reach the voice; the first spoken
+ * line of a task passes whatever its shape (Kevin hears that work began).
+ */
+const PER_CLICK_LINE = /^\s*(?:clicking|clicked|pressing|pressed|scrolling|scrolled|taking a screenshot|took a screenshot|zooming|zoomed|moving the (?:mouse|pointer|cursor)|pointing at|double[- ]clicking)\b/i;
+/**
+ * A line that asks Kevin something — a question, or the confirmation handshake's own
+ * words ("say yes"). He has to hear it to answer it, so it is never gated, whatever
+ * else it carries (the runner's question quotes the command: `run "python edit_file.py"`).
+ */
+const ASKS_KEVIN = /\?|\b(?:say yes|confirm|go ahead)\b/i;
+/** Every tool the brains have, by name: a spoken line that carries one of these is mechanics, not intent. */
+const TOOL_NAMES: ReadonlySet<string> = new Set(ALL_TOOL_SPECS.map((t) => t.name));
+const SNAKE_TOKENS = /\b[a-z]+(?:_[a-z]+)+\b/g;
+/** Whether a line names a tool (a snake_case token that is one of ours); Kevin's own identifiers pass. */
+function namesATool(text: string): boolean {
+  for (const token of text.match(SNAKE_TOKENS) ?? []) if (TOOL_NAMES.has(token)) return true;
+  return false;
+}
+/** What the voice hears when a first-tool line would otherwise carry the tool's own name. */
+const GENERIC_WORKING_LINE = "working on it.";
 /** Tools that only look, remember or already speak: not worth a spoken line when they are the brain's first move. */
 const SILENT_TOOLS: ReadonlySet<string> = new Set([
   "screenshot", "zoom", "cursor_position", "frontmost_app", "list_windows", "element_at", "find_element", "read_focused_text", "wait",
@@ -210,6 +235,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private prefireTimer: NodeJS.Timeout | undefined;
   /** Wall clock (real, since the timers are real) of the last input-transcript fragment. */
   private lastInputAt = 0;
+  /** When the pre-sleep clause was sent; cleared by Kevin's next words or the next task — one announcement per idle stretch. */
+  private sleepAnnouncedAt: number | undefined;
   private prefired: Prefired | undefined;
   /** Utterances already considered for a prefire (id:text), so a settled utterance is tried once. */
   private prefireSeen = "";
@@ -250,6 +277,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    */
   private onInputDelta(delta: string): void {
     this.lastInputAt = Date.now();
+    this.sleepAnnouncedAt = undefined; // Kevin is speaking: the idle stretch is over
     if (this.running) {
       const recent = (this.opts.transcript.last("kevin")?.text ?? "") + delta;
       const tail = recent.slice(-40);
@@ -411,6 +439,36 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * the engine's stopEverything sends the one instruction for the whole stop and
    * asks for that, so the voice is not told both to acknowledge and to be silent.
    */
+  /**
+   * The engine's idle timer is about to put the session to sleep: the voice says
+   * so in one clause before the session closes, instead of going quiet without a
+   * word. Nothing here waits. Once per idle stretch: true when the line was sent,
+   * false while a task runs (a running task is the reason it is not idle) or when
+   * the stretch already has its announcement — Kevin's next words or the next task
+   * start a new stretch. The engine's `tick()` arms one sleep deadline off a true
+   * return and sleeps at it unless `sleepAnnounced` has cleared by then; it must
+   * not re-read its idle clock for that decision, because the voice saying "going
+   * to sleep" is Jarhead's own speech and moves `lastAddressedAt` — judged again,
+   * the session would announce every idle period and never sleep.
+   */
+  announceSleep(inSeconds = 5): boolean {
+    if (this.running || this.sleepAnnouncedAt !== undefined) return false;
+    this.sleepAnnouncedAt = this.now();
+    const s = Math.max(1, Math.round(inSeconds));
+    this.opts.live.appendInstructions(null, `Nothing has been said for a while: you are going to sleep in about ${s} seconds. Say so in one short clause ("going to sleep") and then stay quiet.`);
+    return true;
+  }
+
+  /** Whether the pre-sleep clause stands: sent, and nothing from Kevin and no task since. */
+  get sleepAnnounced(): boolean {
+    return this.sleepAnnouncedAt !== undefined;
+  }
+
+  /** Something other than Kevin's words woke the stretch (Go, a tap on the orb, a wake): the next idle stretch announces again. */
+  clearSleepAnnouncement(): void {
+    this.sleepAnnouncedAt = undefined;
+  }
+
   async cancel(reason: string, opts: { readonly quiet?: boolean } = {}): Promise<void> {
     const run = this.running;
     if (!run) return;
@@ -426,6 +484,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   private async onDelegation(liveId: string, target: "client" | "responses", offsetMs: number): Promise<void> {
     const { transcript, live, confirmations, brain } = this.opts;
+    this.sleepAnnouncedAt = undefined; // a task is starting: not idle
     // Live has spoken: a prefire still being considered for this utterance would only duplicate the work below.
     if (this.prefireTimer) clearTimeout(this.prefireTimer);
     this.prefireTimer = undefined;
@@ -441,11 +500,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const kevinSince = transcript.since(this.lastDelegationEndMs, "kevin");
     const requestItems = kevinSince.length > 0 ? kevinSince : [transcript.last("kevin")].filter((x): x is NonNullable<typeof x> => x !== undefined);
     const request = requestItems.map((i) => i.text).join(" ").trim() || "(no transcript yet — ask what Kevin wants)";
-    const confirmation = YES_PATTERN.test(transcript.last("kevin")?.text ?? "") && confirmations.arm() !== undefined;
+    // Kevin's yes to a repeatable question ("act in 1Password?") stays good for the conversation
+    // (never a destructive verb — those carry no grant). The grant exists only with its ledger
+    // row: `arm(record)` writes the row as the grant is born; with no ledger the yes is one-off.
+    const ledger = this.opts.ledger;
+    const record = ledger ? (g: { app: string; actionClass: string; until: number }): void => ledger.append({ at: this.now(), type: "grant", chainId: confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }) : undefined;
+    const armed = YES_PATTERN.test(transcript.last("kevin")?.text ?? "") ? confirmations.arm(record) : undefined;
+    const confirmation = armed !== undefined;
     if (!confirmation && confirmations.pending && !YES_PATTERN.test(request)) {
       // A different request while a confirmation was pending drops it: a later
-      // "yes" must not fire an action Kevin has moved on from.
-      confirmations.clear();
+      // "yes" must not fire an action Kevin has moved on from. The question only —
+      // moving on from a question is not a cut, so the standing grants stay.
+      confirmations.dropQuestion();
     }
 
     const marks = new Marks(this.now);
@@ -476,7 +542,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     // Live rejects non-null delegation ids on appends while a Responses backend
     // owns the task; general session context is the only channel then.
     const appendId = target === "responses" ? null : liveId;
-    const sink = this.makeSink(id, appendId, marks);
+    // `sink` is the brain's channel (its commentary passes the narration gate);
+    // `say` is Jarhead's own word — a reflex's landing, the summary, a failure — and
+    // is never gated: it is the answer.
+    const { sink, say } = this.makeSink(id, appendId, marks);
 
     // Paused: the record exists, nothing runs, the voice was told once when the pause began.
     const refused = this.opts.refuse?.();
@@ -500,7 +569,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         const lead = this.now() - r.fired.dispatchedAt;
         this.addStep(id, { kind: "note", text: `reflex ${r.fired.reflex.label} already ran ${lead} ms ago on the ear's words (${Math.round(r.similarity * 100)} % match)` });
         this.markReflex(id);
-        sink.commentary(r.fired.reflex.said);
+        say(r.fired.reflex.said);
         this.finish(id, { status: "done", summary: "already did it" });
         this.emit("reflex", r.fired.reflex.label, r.fired.doneAt !== undefined ? r.fired.doneAt - r.fired.dispatchedAt : 0, true);
         return;
@@ -520,7 +589,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     // A reflex needs no brain: run it (or take the one that already ran) and finish.
     if (!confirmation && this.opts.reflexes && target === "client" && !brainTakesIt) {
-      const done = await this.tryReflex(id, request, sink, prefired);
+      const done = await this.tryReflex(id, request, sink, say, prefired);
       if (done || this.running?.delegation.id !== id) return;
     } else if (prefired) {
       // Adopted, but this is a confirmation or a Responses task: the brain takes it, the record says what already happened.
@@ -567,11 +636,11 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       // The brain never got to work on it ("restarting", "already handling a task", a
       // spawn failure): the circles are still Kevin's next question, not spent.
       if (markIds.length > 0) this.opts.marks?.release(markIds);
-      sink.commentary(`Something went wrong: ${(result.error ?? "unknown error").slice(0, 300)}`);
+      say(`Something went wrong: ${(result.error ?? "unknown error").slice(0, 300)}`);
     } else if (result.summary && result.status === "done") {
       // Only speak the summary when the brain did not already speak it.
       const spokenAlready = this.current(id)?.steps.some((s) => s.kind === "commentary" && s.text === result.summary);
-      if (!spokenAlready) sink.commentary(result.summary);
+      if (!spokenAlready) say(result.summary);
     }
     this.finish(id, result);
   }
@@ -588,7 +657,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * delegation adopted is waited for, never run again; one whose words are not
    * the whole request is noted and the brain takes the request as a whole.
    */
-  private async tryReflex(id: string, request: string, sink: BrainSink, prefired: Prefired | undefined): Promise<boolean> {
+  private async tryReflex(id: string, request: string, sink: BrainSink, say: (text: string) => void, prefired: Prefired | undefined): Promise<boolean> {
     const reflexes = this.opts.reflexes;
     if (!reflexes) return false;
     let reflex: Reflex | undefined;
@@ -633,13 +702,13 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.markReflex(id);
     if (outcome.result.kind === "needs-confirmation") {
       // The runner recorded the handshake; the question is the whole answer.
-      sink.commentary(outcome.result.question);
+      say(outcome.result.question);
       this.finish(id, { status: "done", summary: outcome.result.question });
       return true;
     }
     // The verified landing (what the tool results say happened), not the grammar's line.
     const said = outcome.reflex.said || reflex.said;
-    sink.commentary(said);
+    say(said);
     this.finish(id, { status: "done", summary: said });
     return true;
   }
@@ -744,25 +813,54 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     if (!this.opts.voiceFirstTool || step.kind !== "tool" || !step.tool) return undefined;
     if (marks.has("firstCommentary") || marks.has("voicedTool") || SILENT_TOOLS.has(step.tool.name)) return undefined;
     marks.mark("voicedTool");
-    return progressLine(step.tool.name, step.tool.input);
+    // The line is the intent ("Opening Safari."), never the tool: a tool progressLine
+    // has no words for is voiced generically rather than by name.
+    const line = progressLine(step.tool.name, step.tool.input);
+    return namesATool(line) ? GENERIC_WORKING_LINE : line;
   }
 
-  private makeSink(id: string, liveId: string | null, marks: Marks): BrainSink {
+  /**
+   * The narration gate on the brain's commentary (`# Narration` in the voice's
+   * instructions, mirrored here so no brain has to be trusted with it): a line that
+   * names a tool never reaches the voice; a per-click line ("Clicking Save.")
+   * reaches it only as the task's first spoken words. Everything gated stays on
+   * the timeline — the Console sees every line, Kevin hears the state changes.
+   * Never gated: a line that asks him something, and every line once the task has
+   * asked for a confirmation (`asking`: a `confirm` step is pending) — the question
+   * quotes the command, so it names a tool, and Kevin must hear it or the handshake
+   * sits pending until his next request drops it.
+   */
+  static narrationVerdict(text: string, spokenBefore: boolean, asking = false): "speak" | "timeline" {
+    if (asking || ASKS_KEVIN.test(text)) return "speak";
+    if (namesATool(text)) return "timeline";
+    if (spokenBefore && PER_CLICK_LINE.test(text)) return "timeline";
+    return "speak";
+  }
+
+  private makeSink(id: string, liveId: string | null, marks: Marks): { sink: BrainSink; say: (text: string) => void } {
     const { live } = this.opts;
     const lastThinkingAt = { value: 0 };
     // Say a line and record it. `firstCommentaryAt` measures the brain's own first words, so only a
     // line from the brain stamps it — never Jarhead's synthetic first-tool line (voiceFirstTool).
-    const say = (text: string, fromBrain: boolean): void => {
+    // `gated`: the brain's own lines pass the narration verdict; Jarhead's (a reflex's landing,
+    // the summary, a failure, the first-tool line) do not — they are the answer.
+    const say = (text: string, fromBrain: boolean, gated = false): void => {
       if (this.running?.delegation.id !== id) return;
+      const spokenBefore = marks.has("firstCommentary") || marks.has("voicedTool");
+      const asking = this.current(id)?.steps.some((s) => s.kind === "confirm") ?? false;
       if (fromBrain && !marks.has("firstCommentary")) {
         marks.mark("firstCommentary");
         this.update(id, (d) => ({ ...d, timings: { ...d.timings, firstCommentaryAt: this.now() } }));
       }
       this.addStep(id, { kind: "commentary", text });
+      if (gated && Delegator.narrationVerdict(text, spokenBefore, asking) === "timeline") {
+        log.debug(`narration kept to the timeline: "${text.slice(0, 60)}"`);
+        return;
+      }
       this.queueCommentary(id, liveId, text);
     };
-    const commentary = (text: string): void => say(text, true);
-    return {
+    const commentary = (text: string): void => say(text, true, true);
+    const sink: BrainSink = {
       thinking: (text) => {
         if (this.running?.delegation.id !== id) return;
         if (!marks.has("firstThinking")) {
@@ -797,6 +895,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         this.addStep(id, { kind: "screenshot", screenshotPath: path, ...(note ? { text: note } : {}) });
       },
     };
+    return { sink, say: (text) => say(text, true) };
   }
 
   /**

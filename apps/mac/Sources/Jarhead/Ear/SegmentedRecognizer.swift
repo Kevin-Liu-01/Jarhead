@@ -79,6 +79,12 @@ final class SegmentedRecognizer {
     private(set) var segment: Int
     /// True between `begin()` and `end()`. On `queue`.
     private(set) var isActive = false
+    /// When the live segment began (`begin()`), for the ear's early-roll guard. On `queue`.
+    private(set) var beganAt = DispatchTime.now()
+    var segmentAge: TimeInterval {
+        let now = DispatchTime.now().uptimeNanoseconds
+        return now > beganAt.uptimeNanoseconds ? Double(now - beganAt.uptimeNanoseconds) / 1e9 : 0
+    }
 
     private let recognizer: SFSpeechRecognizer
     private let queue: DispatchQueue
@@ -117,6 +123,7 @@ final class SegmentedRecognizer {
         endTaskLocked()
         segment += 1
         let seg = segment
+        beganAt = DispatchTime.now()
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = true

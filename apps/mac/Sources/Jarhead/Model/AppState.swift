@@ -223,12 +223,350 @@ public final class AppState: ObservableObject {
         if let c = lastCrash { revealCrashHandler(c.fileURL) }
     }
 
+    // MARK: - Cleanup
+
+    // Conversation cleanup, the Console's. Nothing here deletes anything: every action is
+    // an EngineCommand whose inverse is another one (trash ↔ restore, pin ↔ unpin, clear ↔
+    // restore), the ledger's tombstone rows are the truth and the Console re-reads them.
+    // What lives here is only what the UI needs between the click and the re-read: the
+    // last 20 actions for Undo, the one toast with Undo, an optimistic overlay so a row
+    // moves the moment Kevin acts, the agents he just hid, and when he cleared Now.
+
+    /// The last 20 actions, newest last; `undoCleanup()` pops.
+    @Published public var cleanupUndoStack: [CleanupAction] = []
+    /// Undone actions, for Edit › Redo; a new action clears it.
+    @Published public var cleanupRedoStack: [CleanupAction] = []
+    /// "Moved to Trash · Undo" for 8 s; nil when none.
+    @Published public var cleanupToast: CleanupToast?
+    /// What the rail shows before the ledger's re-read confirms it: chain id → its state /
+    /// name / pinned after the click. Pruned when the list agrees, or after 15 s.
+    @Published public var chainOverrides: [String: ChainOverride] = [:]
+    /// Agents Kevin hid or unhid before the snapshot agrees: agent id → hidden.
+    @Published public var hiddenAgentOverrides: [String: Bool] = [:]
+    /// Wall-clock ms when Kevin cleared the Now stream (`now.clear`); nil when not cleared.
+    /// The engine hides the items at its end too; this hides them at once and keeps the
+    /// feed's "Cleared · Undo" state until new items arrive or the session changes.
+    @Published public var nowClearedAt: Double?
+    /// Full-text search over the ledger (`ledger.search`). Installed by the app (AppDelegate,
+    /// next to the Jarhead-sessions handlers); nil is no answer (a daemon from before the
+    /// message), [] is no hits.
+    public var ledgerSearchHandler: (String, Int) async -> [LedgerHit]? = { _, _ in nil } {
+        didSet { ledgerSearchInstalled = true }
+    }
+    /// Whether anything installed the handler. False is the app's gap, not the daemon's: the
+    /// rail says so instead of blaming a daemon it never asked.
+    public private(set) var ledgerSearchInstalled = false
+    /// The window's undo manager (Edit › Undo, ⌘Z), read at call time; installed by the Console.
+    public var cleanupUndoManager: () -> UndoManager? = { nil }
+    /// One target per action for the undo manager (it holds targets weakly), kept while its
+    /// registration stands: undoing an action outside the manager drops exactly its own entry.
+    private var cleanupUndoTokens: [UUID: CleanupUndoToken] = [:]
+    private var cleanupToastTask: Task<Void, Never>?
+
+    public static let cleanupUndoDepth = 20
+    public static let cleanupToastSeconds: Double = 8
+    /// An override the ledger never confirmed (an older daemon) is dropped after this.
+    public static let chainOverrideTTL: TimeInterval = 15
+
+    public func ledgerSearch(_ query: String, limit: Int = 50) async -> [LedgerHit]? { await ledgerSearchHandler(query, limit) }
+
+    /// Runs one cleanup action: its commands go out, the overlay shows the result at once,
+    /// the inverse is remembered (the stack and the window's undo manager) and the toast
+    /// offers Undo. The Jarhead list is re-read after the engine has appended its row.
+    public func performCleanup(_ action: CleanupAction, toast: Bool = true) {
+        for cmd in action.commands { send(cmd) }
+        applyCleanup(action, forward: true)
+        cleanupUndoStack.append(action)
+        if cleanupUndoStack.count > AppState.cleanupUndoDepth {
+            let dropped = cleanupUndoStack.prefix(cleanupUndoStack.count - AppState.cleanupUndoDepth)
+            cleanupUndoStack.removeFirst(dropped.count)
+            // Past the depth: gone from Edit › Undo too (the manager's own stack has no cap).
+            for old in dropped { dropCleanupUndo(old.id) }
+        }
+        cleanupRedoStack.removeAll()
+        if !action.inverse.isEmpty, let um = cleanupUndoManager() {
+            registerCleanupUndo(action, on: um, redo: false)
+        }
+        if toast { showCleanupToast(action) } else if cleanupToast != nil { cleanupToast = nil }
+        if action.refreshesJarhead { refreshJarheadAfterCleanup() }
+    }
+
+    /// Undo the newest action (Edit › Undo, ⌘Z).
+    public func undoCleanup() {
+        if let last = cleanupUndoStack.last { undoCleanup(id: last.id) }
+    }
+
+    /// Undo one action wherever it sits in the stack (the toast's Undo may come after a
+    /// later action; the actions are independent, so out of order is fine).
+    ///
+    /// When the window's undo manager is not the one calling (the toast's Undo) and its top
+    /// entry is this very action, the manager is asked to undo instead, so its stacks stay
+    /// true: ⌘Z next undoes the action before this one, ⇧⌘Z redoes this one. Registering a
+    /// redo closure from outside `um.undo()` would land it on the UNDO stack on top of the
+    /// still-registered original — Edit › Undo would then re-perform the action.
+    public func undoCleanup(id: UUID) {
+        guard let index = cleanupUndoStack.firstIndex(where: { $0.id == id }) else { return }
+        let um = cleanupUndoManager()
+        if let um, !um.isUndoing, !um.isRedoing, cleanupUndoStack.last?.id == id, cleanupUndoTokens[id] != nil,
+           um.canUndo, um.undoActionName == cleanupUndoStack[index].label {
+            um.undo()
+            return
+        }
+        let action = cleanupUndoStack.remove(at: index)
+        guard !action.inverse.isEmpty else { return }
+        for cmd in action.inverse { send(cmd) }
+        applyCleanup(action, forward: false)
+        cleanupRedoStack.append(action)
+        if cleanupRedoStack.count > AppState.cleanupUndoDepth { cleanupRedoStack.removeFirst(cleanupRedoStack.count - AppState.cleanupUndoDepth) }
+        if let um {
+            if um.isUndoing {
+                // The manager is driving: its redo is this action again.
+                registerCleanupUndo(action, on: um, redo: true)
+            } else {
+                // Undone outside the manager (the toast, out of order): its entry there is stale.
+                dropCleanupUndo(action.id, on: um)
+            }
+        }
+        if cleanupToast?.id == action.id { cleanupToast = nil }
+        if action.refreshesJarhead { refreshJarheadAfterCleanup() }
+    }
+
+    public func redoCleanup() {
+        if let last = cleanupRedoStack.last { redoCleanup(id: last.id) }
+    }
+
+    public func redoCleanup(id: UUID) {
+        guard let index = cleanupRedoStack.firstIndex(where: { $0.id == id }) else { return }
+        let action = cleanupRedoStack.remove(at: index)
+        for cmd in action.commands { send(cmd) }
+        applyCleanup(action, forward: true)
+        cleanupUndoStack.append(action)
+        if let um = cleanupUndoManager() {
+            // Redone by the manager (⇧⌘Z): its undo goes back on. Redone from elsewhere: whatever
+            // the manager still held for it is stale first, then it is a fresh do.
+            if !um.isRedoing { dropCleanupUndo(action.id, on: um) }
+            registerCleanupUndo(action, on: um, redo: false)
+        }
+        if action.refreshesJarhead { refreshJarheadAfterCleanup() }
+    }
+
+    /// One registration on the window's undo manager, with the action's own token as the
+    /// target (`CleanupUndoToken`), so `dropCleanupUndo` can remove exactly this action's entries.
+    private func registerCleanupUndo(_ action: CleanupAction, on um: UndoManager, redo: Bool) {
+        let token = cleanupUndoTokens[action.id] ?? CleanupUndoToken(actionId: action.id, state: self)
+        cleanupUndoTokens[action.id] = token
+        if redo {
+            um.registerUndo(withTarget: token) { t in MainActor.assumeIsolated { t.state?.redoCleanup(id: t.actionId) } }
+        } else {
+            um.registerUndo(withTarget: token) { t in MainActor.assumeIsolated { t.state?.undoCleanup(id: t.actionId) } }
+        }
+        um.setActionName(action.label)
+    }
+
+    /// Forgets the action on the manager (both of its stacks) and lets its token go.
+    private func dropCleanupUndo(_ id: UUID, on um: UndoManager? = nil) {
+        guard let token = cleanupUndoTokens.removeValue(forKey: id) else { return }
+        (um ?? cleanupUndoManager())?.removeAllActions(withTarget: token)
+    }
+
+    /// The overlay after (or before) an action: chain rows, hidden agents, the cleared Now.
+    private func applyCleanup(_ action: CleanupAction, forward: Bool) {
+        let now = Date()
+        for (id, o) in (forward ? action.chainAfter : action.chainBefore) {
+            var next = chainOverrides[id]?.merged(o) ?? o
+            next.at = now
+            chainOverrides[id] = next
+        }
+        for (id, hidden) in (forward ? action.agentsAfter : action.agentsBefore) { hiddenAgentOverrides[id] = hidden }
+        if let mark = forward ? action.nowAfter : action.nowBefore {
+            switch mark {
+            case .cleared(let at): nowClearedAt = at
+            case .restored: nowClearedAt = nil
+            }
+        }
+    }
+
+    private func showCleanupToast(_ action: CleanupAction) {
+        let toast = CleanupToast(id: action.id, text: action.toast, symbol: action.symbol, canUndo: !action.inverse.isEmpty)
+        cleanupToast = toast
+        cleanupToastTask?.cancel()
+        cleanupToastTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(AppState.cleanupToastSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.cleanupToast?.id == toast.id else { return }
+            self.cleanupToast = nil
+        }
+    }
+
+    public func dismissCleanupToast() {
+        cleanupToastTask?.cancel()
+        cleanupToast = nil
+    }
+
+    /// Two reads: one after the engine's row has landed, one for a slow event loop
+    /// (the same reasoning as `jarheadSessionsRefreshDelaysMs`, shorter — no server round trip).
+    private func refreshJarheadAfterCleanup() {
+        refreshJarheadSessions(delayMs: 120)
+        refreshJarheadSessions(delayMs: 900)
+    }
+
+    /// Drops every override the ledger's list now agrees with, and any older than the TTL.
+    public func pruneChainOverrides(against list: [JarheadSessionSummary]) {
+        guard !chainOverrides.isEmpty else { return }
+        let now = Date()
+        var byId: [String: JarheadSessionSummary] = [:]
+        for s in list where byId[s.id] == nil { byId[s.id] = s }
+        for (id, o) in chainOverrides {
+            if now.timeIntervalSince(o.at) > AppState.chainOverrideTTL { chainOverrides[id] = nil; continue }
+            if let s = byId[id], o.agrees(with: s) { chainOverrides[id] = nil }
+        }
+    }
+
+    /// Hidden agents as the rail shows them: the snapshot's list with Kevin's latest clicks on top.
+    public func hiddenAgentIds(in snap: Snapshot) -> Set<String> {
+        var out = Set(snap.hiddenAgents ?? [])
+        for (id, hidden) in hiddenAgentOverrides {
+            if hidden { out.insert(id) } else { out.remove(id) }
+        }
+        return out
+    }
+
+    /// Drops the overrides the snapshot now agrees with.
+    public func pruneHiddenAgentOverrides(_ snap: Snapshot) {
+        guard !hiddenAgentOverrides.isEmpty else { return }
+        let hidden = Set(snap.hiddenAgents ?? [])
+        for (id, on) in hiddenAgentOverrides where hidden.contains(id) == on { hiddenAgentOverrides[id] = nil }
+    }
+
     // Convenience views over the snapshot.
     public var phase: Phase { snapshot.phase }
     public var lastKevin: TranscriptItem? { snapshot.transcript.last { $0.speaker == .kevin } }
     public var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     public var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
     public var isAwake: Bool { snapshot.phase != .asleep && snapshot.phase != .error }
+}
+
+// MARK: - Cleanup (types)
+
+/// One undoable cleanup action: the commands that do it, the commands that undo it, and
+/// what the rail shows meanwhile. The UI builds these (`CleanupAction.trash(_:)` …); the
+/// state only runs and remembers them.
+public struct CleanupAction: Identifiable, Equatable {
+    public var id = UUID()
+    /// Edit › Undo's word: "Move to Trash", "Archive", "Restore", "Rename", "Pin", "Clear", "Hide".
+    public var label: String
+    /// The toast's line: "Moved to Trash", "Moved 3 to Trash", "Cleared".
+    public var toast: String
+    /// The toast's solid symbol.
+    public var symbol: String
+    public var commands: [EngineCommand]
+    /// Empty when the action cannot be undone (a sweep, a new conversation): no Undo is offered.
+    public var inverse: [EngineCommand]
+    /// The rail's overlay after the action (chain id → state / name / pinned) and after its undo.
+    public var chainAfter: [String: ChainOverride] = [:]
+    public var chainBefore: [String: ChainOverride] = [:]
+    /// Hidden agents after the action and after its undo (agent id → hidden).
+    public var agentsAfter: [String: Bool] = [:]
+    public var agentsBefore: [String: Bool] = [:]
+    /// The Now stream's cleared mark after the action and after its undo.
+    public var nowAfter: NowMark?
+    public var nowBefore: NowMark?
+    /// Re-read the Jarhead list after the engine appended its row (every conversation action).
+    public var refreshesJarhead = true
+    public var at = Date()
+
+    public init(label: String, toast: String, symbol: String, commands: [EngineCommand], inverse: [EngineCommand]) {
+        self.label = label; self.toast = toast; self.symbol = symbol; self.commands = commands; self.inverse = inverse
+    }
+}
+
+public enum NowMark: Equatable {
+    case cleared(Double)
+    case restored
+}
+
+/// The toast under the header: one line, Undo while the action can be undone, ×.
+public struct CleanupToast: Identifiable, Equatable {
+    public var id: UUID
+    public var text: String
+    public var symbol: String
+    public var canUndo: Bool
+    public init(id: UUID, text: String, symbol: String, canUndo: Bool) {
+        self.id = id; self.text = text; self.symbol = symbol; self.canUndo = canUndo
+    }
+}
+
+/// The undo manager's target for one cleanup action. The manager holds targets weakly and
+/// forgets by target (`removeAllActions(withTarget:)`), so a token per action lets an action
+/// undone outside the manager (the toast's Undo) drop its own entry and no other's.
+final class CleanupUndoToken: NSObject {
+    let actionId: UUID
+    weak var state: AppState?
+    init(actionId: UUID, state: AppState) {
+        self.actionId = actionId
+        self.state = state
+    }
+}
+
+/// What a chain looks like before the ledger confirms it: a field left nil is unchanged.
+public struct ChainOverride: Equatable {
+    /// "active" | "archived" | "trashed".
+    public var state: String?
+    /// Kevin's name; "" is back to the auto title.
+    public var name: String?
+    public var pinned: Bool?
+    public var at = Date()
+
+    public init(state: String? = nil, name: String? = nil, pinned: Bool? = nil) {
+        self.state = state; self.name = name; self.pinned = pinned
+    }
+
+    public func merged(_ other: ChainOverride) -> ChainOverride {
+        var o = self
+        if let s = other.state { o.state = s }
+        if let n = other.name { o.name = n }
+        if let p = other.pinned { o.pinned = p }
+        o.at = other.at
+        return o
+    }
+
+    /// The ledger's summary says what this override says.
+    public func agrees(with s: JarheadSessionSummary) -> Bool {
+        if let state, (s.state ?? "active") != state { return false }
+        if let name, (s.name ?? "") != name { return false }
+        if let pinned, (s.pinned ?? false) != pinned { return false }
+        return true
+    }
+}
+
+/// One full-text hit from `ledger.search` (`ledger.hits`), decoded loosely: a row's
+/// session, when, what kind of row, who spoke, and the snippet.
+public struct LedgerHit: Identifiable, Equatable {
+    public var sessionId: String
+    /// The chain the daemon resolved it to, when it did.
+    public var chainId: String?
+    public var at: Double
+    /// heard | said | request | summary (the ledger's `SearchHitKind`), or whatever else a daemon sends.
+    public var type: String
+    /// kevin | jarhead, for heard / said rows.
+    public var speaker: String?
+    public var text: String
+    public var day: String?
+    public var id: String { "\(sessionId):\(type):\(at)" }
+
+    public init(sessionId: String, chainId: String? = nil, at: Double, type: String, speaker: String? = nil, text: String, day: String? = nil) {
+        self.sessionId = sessionId; self.chainId = chainId; self.at = at; self.type = type; self.speaker = speaker; self.text = text; self.day = day
+    }
+
+    /// The wire's hit (`LedgerSearchHit`: sessionId, chainId, at, kind, text), read loosely so a
+    /// spelling that drifts (`type` for `kind`, `snippet` for `text`, `session`) still lands.
+    public init?(json o: [String: Any]) {
+        guard let sessionId = (o["sessionId"] as? String) ?? (o["session"] as? String), !sessionId.isEmpty else { return nil }
+        guard let at = (o["at"] as? NSNumber)?.doubleValue, at.isFinite else { return nil }
+        let text = (o["text"] as? String) ?? (o["snippet"] as? String) ?? (o["request"] as? String) ?? ""
+        let kind = (o["kind"] as? String) ?? (o["type"] as? String) ?? "row"
+        let speaker = (o["speaker"] as? String) ?? (kind == "heard" ? "kevin" : (kind == "said" ? "jarhead" : nil))
+        self.init(sessionId: sessionId, chainId: o["chainId"] as? String, at: at, type: kind, speaker: speaker, text: text, day: o["day"] as? String)
+    }
 }
 
 /// What the last crash report says, for the rail and the menu (AppState.lastCrash).

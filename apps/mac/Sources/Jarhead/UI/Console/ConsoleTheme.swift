@@ -256,6 +256,100 @@ enum ConsoleTheme {
     /// The gate holds the microphone while dormant (asleep, error) and while paused
     /// (WakeGate.listens(in:)); anywhere else the voice engine has it and the gate rests.
     static func gateRests(_ phase: Phase) -> Bool { phase != .asleep && phase != .error && phase != .paused }
+
+    // MARK: typed problems (Snapshot.problemsTyped) — one solid symbol per kind
+
+    /// The Problems section's glyph for a `ProblemKind`; the triangle for one it does not know.
+    static func problemSymbol(_ kind: String) -> String {
+        switch kind {
+        case "permission.accessibility": return "hand.raised.fill"
+        case "permission.screenRecording": return "rectangle.inset.filled.badge.record"
+        case "permission.microphone": return "mic.fill"
+        case "permission.fullDiskAccess": return "internaldrive.fill"
+        case "permission.other": return "lock.fill"
+        case "brain.unavailable", "brain.probe": return "brain.fill"
+        case "voice.limit": return "waveform.badge.exclamationmark"
+        case "voice.connection": return "wifi.exclamationmark"
+        case "voice.key": return "key.fill"
+        case "hands.helper": return "hand.tap.fill"
+        case "disk.low": return "externaldrive.fill.badge.exclamationmark"
+        case "daemon": return "gearshape.2.fill"
+        case "crash": return "bolt.trianglebadge.exclamationmark.fill"
+        default: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    /// A permission missing is a warning (the hands work less); everything else is an error.
+    static func problemTint(_ kind: String) -> Color {
+        kind.hasPrefix("permission.") ? speaking : error
+    }
+
+    // MARK: retention (Settings) — the menus' options and their words
+
+    /// Ledger: keep forever · 30 · 90 · 365 days (0 = never).
+    static let ledgerRetentionOptions = [0, 30, 90, 365]
+    /// Screenshots: 7 · 14 · 30 · 90 days · forever.
+    static let shotsRetentionOptions = [7, 14, 30, 90, 0]
+
+    static func retentionTitle(_ days: Int, forever: String) -> String {
+        days <= 0 ? forever : (days == 1 ? "1 day" : "\(days) days")
+    }
+}
+
+extension EngineCommand {
+    /// A typed problem's remedy command as the wire carries it ({type, …}) → the case the
+    /// Console can send; nil for one it does not know, when the caller falls back to
+    /// `problem.retry` for the kind.
+    init?(remedyJSON o: [String: JSONValue]) {
+        guard case .string(let type)? = o["type"] else { return nil }
+        func str(_ key: String) -> String? {
+            if case .string(let s)? = o[key] { return s }
+            return nil
+        }
+        func bool(_ key: String) -> Bool? {
+            if case .bool(let b)? = o[key] { return b }
+            return nil
+        }
+        switch type {
+        case "wake": self = .wake
+        case "sleep": self = .sleep
+        case "mute": self = .mute
+        case "unmute": self = .unmute
+        case "stop": self = .stop
+        case "go": self = .go
+        case "pause": self = .pause
+        case "resume": self = .resume
+        case "interrupt": self = .interrupt(how: str("how") ?? "pressed")
+        case "clear-problems": self = .clearProblems
+        case "agent.refresh": self = .agentRefresh
+        case "daemon.restart": self = .daemonRestart
+        case "config.probe": self = .probeSetup
+        case "open-console": self = .openConsole
+        case "open-ledger": self = .openLedger
+        case "ledger.sweep": self = .ledgerSweep
+        case "conversation.new": self = .conversationNew
+        case "now.clear": self = .nowClear
+        case "now.restore": self = .nowRestore
+        case "mark.clear": self = .markClear
+        case "request-permission":
+            guard let which = str("which") else { return nil }
+            self = .requestPermission(which)
+        case "problem.retry":
+            guard let kind = str("kind") else { return nil }
+            self = .problemRetry(kind: kind)
+        case "agent.hide":
+            guard let id = str("agentId") else { return nil }
+            self = .agentHide(agentId: id, hidden: bool("hidden") ?? true)
+        case "ledger.restore-day":
+            guard let day = str("day") else { return nil }
+            self = .ledgerRestoreDay(day: day)
+        case "ledger.trash-day":
+            guard let day = str("day") else { return nil }
+            self = .ledgerTrashDay(day: day, what: str("what") ?? "both")
+        default:
+            return nil
+        }
+    }
 }
 
 // MARK: - Formatting (pure)
@@ -394,6 +488,24 @@ enum ConsoleFormat {
     }
 
     static var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
+
+    /// Bytes → "412 KB" · "129 MB" · "1.2 GB" (the Trash row's size).
+    static func bytes(_ n: Double) -> String {
+        guard n.isFinite, n > 0 else { return "0 KB" }
+        if n < 1_000_000 { return "\(max(1, Int((n / 1000).rounded()))) KB" }
+        if n < 1_000_000_000 { return "\(Int((n / 1_000_000).rounded())) MB" }
+        return String(format: "%.1f GB", n / 1_000_000_000)
+    }
+
+    /// "3 days" · "1 day" · "empty" (the Trash row's count of day files).
+    static func days(_ n: Int) -> String {
+        n <= 0 ? "empty" : (n == 1 ? "1 day" : "\(n) days")
+    }
+
+    /// The Trash row: "3 days · 129 MB"; "empty" when nothing is there.
+    static func trashLine(_ t: TrashInfo) -> String {
+        t.days <= 0 && t.bytes <= 0 ? "empty" : "\(days(t.days)) · \(bytes(t.bytes))"
+    }
 }
 
 // MARK: - Motion: the Console's bridge onto UI/Motion.swift

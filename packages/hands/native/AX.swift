@@ -124,16 +124,42 @@ func enableWebAccessibility(pid: pid_t, app: AXUIElement) -> Bool {
     return first
 }
 
-func opFocusedText() throws -> JSONObject {
-    try requireAccessibility()
+// MARK: - The focused element, resolved once for every caller (focused_text, the type chain)
+
+/// What the type chain and `focused_text` need to know about the element with keyboard focus.
+struct FocusedTarget {
+    let element: AXUIElement
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let app: String?
+    let frame: CGRect?
+    /// A password field: its contents are never read and nothing is ever typed into it from here.
+    var secure: Bool { role == kAXTextFieldRole && subrole == kAXSecureTextFieldSubrole }
+    /// A field whose value is text a person types: accessibility insertion is tried there first.
+    var isTextField: Bool {
+        guard let role else { return false }
+        return textRoles.contains(role) || subrole == "AXSearchField"
+    }
+    /// "the "Subject" text field in Mail" — how a result or a failure names the field.
+    var describedField: String {
+        let kind = (role ?? "field").replacingOccurrences(of: "AX", with: "").replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression).lowercased()
+        let named = title.map { "the \"\(truncated($0, to: 40))\" \(kind)" } ?? "the \(kind)"
+        return app.map { "\(named) in \($0)" } ?? named
+    }
+}
+
+/// Roles whose value is the text in the field.
+let textRoles: Set<String> = [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole, "AXSearchField"]
+
+/// The focused element system-wide, with the Chromium / Electron retry: nothing, or a shell of
+/// an element, and the front app is one of those → switch its web accessibility on and look
+/// once more (the switch lands asynchronously; ~60 ms the first time, nothing after).
+func resolveFocused() -> (target: FocusedTarget?, error: AXError, retried: Bool) {
     var (element, error) = focusedElement()
-    if error == .apiDisabled { throw HandsError.permissionDenied(accessibilityHint) }
     var role = element.flatMap { axString($0, kAXRoleAttribute) }
     var retried = false
     if element == nil || role == nil {
-        // Nothing, or a shell of an element: for a Chromium / Electron front app, switch its
-        // web accessibility on and look once more (the switch lands asynchronously; ~60 ms).
-        // Switched on already: nothing to wait for — one quick look at the app's own focus.
         if let front = onMain({ NSWorkspace.shared.frontmostApplication }), isChromiumOrElectron(front) {
             let app = AXUIElementCreateApplication(front.processIdentifier)
             AXUIElementSetMessagingTimeout(app, 1.0)
@@ -148,26 +174,64 @@ func opFocusedText() throws -> JSONObject {
                 if let e = again.0 { element = e } else { error = again.1 }
             }
             role = element.flatMap { axString($0, kAXRoleAttribute) }
-            debugLog("focused_text: retried after AXManualAccessibility on \(front.localizedName ?? "?"): \(role ?? "still nothing")")
+            debugLog("focused: retried after AXManualAccessibility on \(front.localizedName ?? "?"): \(role ?? "still nothing")")
         }
     }
-    guard let element else {
+    guard let element else { return (nil, error, retried) }
+    return (FocusedTarget(element: element, role: role, subrole: axString(element, kAXSubroleAttribute), title: axString(element, kAXTitleAttribute),
+                          app: axAppName(element), frame: axFrame(element)), error, retried)
+}
+
+/// The field's whole value, capped at 1 MB (a text view holding a book is still one attribute read).
+func axFullValue(_ element: AXUIElement) -> String? {
+    return axString(element, kAXValueAttribute, limit: 1_000_000)
+}
+
+/// Whether accessibility insertion can be tried here: the field exposes a value to read back
+/// and lets its selected text be set. Both must hold, or a "success" could not be checked.
+func axCanInsertText(_ element: AXUIElement) -> Bool {
+    var settable: DarwinBoolean = false
+    guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success, settable.boolValue else { return false }
+    var value: CFTypeRef?
+    return AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success
+}
+
+/// Replace the selection (or insert at the caret) through accessibility. True when the app accepted the set.
+func axInsertText(_ text: String, into element: AXUIElement) -> Bool {
+    return AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+}
+
+/// The screen is locked, or another user's session holds the console (CGSessionCopyCurrentDictionary).
+/// A probe carries it so the presence gate can hold a Send while the Mac sits locked.
+func sessionLocked() -> Bool {
+    guard let dict = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+    if let locked = dict["CGSSessionScreenIsLocked"] as? Bool, locked { return true }
+    if let onConsole = dict[kCGSessionOnConsoleKey as String] as? Bool, !onConsole { return true }
+    return false
+}
+
+func opFocusedText() throws -> JSONObject {
+    try requireAccessibility()
+    let (target, error, retried) = resolveFocused()
+    if error == .apiDisabled { throw HandsError.permissionDenied(accessibilityHint) }
+    guard let target else {
         throw HandsError.notFound("no focused UI element (\(axErrorName(error)))\(retried ? " even after enabling web accessibility on the front app" : "")")
     }
-
-    let subrole = axString(element, kAXSubroleAttribute)
-    let secure = role == kAXTextFieldRole && subrole == kAXSecureTextFieldSubrole
-    let frame = axFrame(element)
+    let element = target.element
+    let secure = target.secure
     var out: JSONObject = [
-        "role": orNull(role),
-        "subrole": orNull(subrole),
-        "title": orNull(axString(element, kAXTitleAttribute)),
+        "role": orNull(target.role),
+        "subrole": orNull(target.subrole),
+        "title": orNull(target.title),
         // Never read the contents of a password field.
         "value": secure ? NSNull() : orNull(axString(element, kAXValueAttribute, limit: 4000)),
         "selectedText": secure ? NSNull() : orNull(axString(element, kAXSelectedTextAttribute, limit: 4000)),
         "secure": secure,
-        "app": orNull(axAppName(element)),
-        "frame": frame.map { rectJSON($0) } ?? NSNull(),
+        "app": orNull(target.app),
+        "frame": target.frame.map { rectJSON($0) } ?? NSNull(),
+        // The gate's probe doubles as the stale-frame and presence read.
+        "config": displayConfigHash(),
+        "locked": sessionLocked(),
     ]
     if retried { out["retried"] = true }
     return out
@@ -192,5 +256,8 @@ func opElementAt(_ params: Params) throws -> JSONObject {
         "value": orNull(axString(element, kAXValueAttribute, limit: 400)),
         "frame": frame.map { rectJSON($0) } ?? NSNull(),
         "app": orNull(axAppName(element)),
+        // The click gate's probe: is the screen still the one the screenshot showed, and is it unlocked.
+        "config": displayConfigHash(),
+        "locked": sessionLocked(),
     ]
 }

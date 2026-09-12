@@ -49,10 +49,10 @@ struct RightRail: View, Equatable {
                         NowPanel(phase: snapshot.phase, sessionInfo: snapshot.session, pause: snapshot.pause, usageToday: snapshot.usageToday,
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
-                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks)
+                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped)
                             .transition(Motion.swap)
                     case .settings:
-                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake)
+                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash)
                             .transition(Motion.swap)
                     case .ledger:
                         LedgerPanel(days: ledgerDays, picked: ledgerDay, loading: ledgerLoading, stats: ledgerStats)
@@ -274,8 +274,16 @@ struct NowPanel: View {
     let brain: BrainKind
     /// What Kevin circled (Snapshot.marks); context for the next delegation.
     let marks: [ScreenMark]
+    /// The problems with their kind and remedy (Snapshot.problemsTyped); nil from a daemon that sends only the lines.
+    var problemsTyped: [Problem]? = nil
 
     @Environment(\.consoleActions) private var actions
+
+    /// The typed list when the daemon sends one, else nothing (the plain lines render).
+    private var typed: [Problem]? {
+        guard let list = problemsTyped, !list.isEmpty || problems.isEmpty else { return nil }
+        return list
+    }
 
     /// Which of the three meter blocks is up; a change crossfades them (Motion.swap).
     private var meterKey: String {
@@ -442,9 +450,19 @@ struct NowPanel: View {
             }) {
                 // "None." and the list crossfade; a problem arriving rises in.
                 ZStack(alignment: .topLeading) {
-                    if problems.isEmpty {
+                    if problems.isEmpty && (typed?.isEmpty ?? true) {
                         Text("None.").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22)
                             .transition(.opacity)
+                    } else if let typed {
+                        // Typed: one solid symbol by kind, the line, and its one remedy as a small
+                        // ghost button — the fix is a click, not a hunt. Newest first, like the lines.
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(typed.reversed()) { p in
+                                ProblemRow(problem: p) { remedy(p) }
+                                    .transition(Motion.appear)
+                            }
+                        }
+                        .transition(.opacity)
                     } else {
                         VStack(alignment: .leading, spacing: 0) {
                             // Newest first; the id is the problem's place in the engine's append-only
@@ -466,6 +484,20 @@ struct NowPanel: View {
                 }
             }
             .animation(Motion.gentle, value: problems)
+            .animation(Motion.gentle, value: typed?.map(\.id) ?? [])
+        }
+    }
+
+    /// The remedy button: its command when the engine gave one the Console can send, its
+    /// URL or path when it named a place, else `problem.retry` for the kind — the engine
+    /// re-checks and clears the line when it is fixed.
+    private func remedy(_ p: Problem) {
+        if let json = p.remedy?.command, let cmd = EngineCommand(remedyJSON: json) {
+            actions.send(cmd)
+        } else if let target = p.remedy?.open, !target.isEmpty {
+            actions.open(target)
+        } else {
+            actions.send(.problemRetry(kind: p.kind))
         }
     }
 
@@ -485,6 +517,40 @@ struct NowPanel: View {
         .frame(height: 28)
     }
 
+}
+
+/// One typed problem: the kind's solid symbol (a missing grant in the warning tint, the
+/// rest in red), the line, and the remedy as a small ghost button under it — "Open pane",
+/// "Request", "Retry", "Restart daemon" — or a plain "Retry" when the engine named none.
+/// The tooltip says when it was first seen.
+private struct ProblemRow: View {
+    let problem: Problem
+    let act: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: iconGap) {
+            ConsoleIcon(name: ConsoleTheme.problemSymbol(problem.kind), tint: ConsoleTheme.problemTint(problem.kind))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(problem.text).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(problem.remedy?.label ?? "Retry", action: act)
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .help(remedyHelp)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .help("\(problem.kind) · since \(ConsoleFormat.fullDate(problem.since))")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Problem: \(problem.text). \(problem.remedy?.label ?? "Retry")")
+    }
+
+    private var remedyHelp: String {
+        if let json = problem.remedy?.command, case .string(let type)? = json["type"] { return "Sends \(type)" }
+        if let target = problem.remedy?.open, !target.isEmpty { return "Opens \(ConsoleFormat.truncPath(target, max: 48))" }
+        return "Check this again"
+    }
 }
 
 /// The Permissions section's rows. With the full list: the required kinds, then a
@@ -725,14 +791,48 @@ struct MicDevice: Identifiable, Equatable {
     }
 }
 
+/// What the voice engine says about the microphones (Audio/AudioEngine.swift `MicRoute`,
+/// posted as `jarhead.micRoute`; asked for with `jarhead.micRoute.request` when the panel
+/// appears): the ranked order, the active one, what the choice follows. Plain strings, so
+/// this file still compiles in the Console harness, which carries no audio code.
+struct MicRouteInfo: Equatable {
+    static let notificationName = Notification.Name("jarhead.micRoute")
+    static let requestName = Notification.Name("jarhead.micRoute.request")
+
+    /// Device UIDs, best first: the pick, the built-in, the one used last, the default, the rest; virtual last.
+    var ranked: [String] = []
+    var names: [String: String] = [:]
+    var virtual: Set<String> = []
+    var active = ""
+    var systemDefault = ""
+    /// "explicit" | "ranked" | "system default (echo cancellation)" | "off".
+    var follows = ""
+
+    init() {}
+
+    init?(_ userInfo: [AnyHashable: Any]?) {
+        guard let info = userInfo, let ids = info["ids"] as? [String], let names = info["names"] as? [String] else { return nil }
+        ranked = ids
+        for (i, id) in ids.enumerated() where i < names.count { self.names[id] = names[i] }
+        virtual = Set(info["virtual"] as? [String] ?? [])
+        active = info["active"] as? String ?? ""
+        systemDefault = info["default"] as? String ?? ""
+        follows = info["follows"] as? String ?? ""
+    }
+}
+
 struct SettingsPanel: View {
     let settings: Settings
     let setup: SetupStatus
     let phase: Phase
     let gate: WakeGateInputs
+    /// What the trash holds (Snapshot.trash); nil from a daemon that has none.
+    var trash: TrashInfo? = nil
 
     @Environment(\.consoleActions) private var actions
     @State private var mics: [MicDevice] = []
+    /// The voice engine's ranking (empty until it has published once).
+    @State private var route = MicRouteInfo()
 
     private enum Field: Hashable { case model, server, phrases }
     @FocusState private var focus: Field?
@@ -752,6 +852,9 @@ struct SettingsPanel: View {
     // Wake
     @State private var phrasesDraft = ""
     @State private var phrasesSent: [String]?
+    /// "Sweep now" pressed once: the head asks before whole days move (they come back one at a
+    /// time with Restore, but there is no Undo on the sweep itself). Lets go on its own.
+    @State private var sweepArmed = false
 
     private func patch(_ p: SettingsPatch) { actions.send(.setSettings(p)) }
 
@@ -777,17 +880,41 @@ struct SettingsPanel: View {
         return id
     }
 
+    /// "Auto (ranked)" first, then the microphones in the voice engine's ranked order (the
+    /// enumeration order until it has published), then a saved pick that is not connected.
     private var micOptions: [String] {
-        var ids = [""] + mics.map(\.id)
+        var ids = [""] + (route.ranked.isEmpty ? mics.map(\.id) : route.ranked)
+        for m in mics where !ids.contains(m.id) { ids.append(m.id) }
         let current = micSelection
         if !current.isEmpty, !ids.contains(current) { ids.append(current) }
         return ids
     }
 
+    private func micName(_ id: String) -> String? {
+        route.names[id] ?? mics.first(where: { $0.id == id })?.name
+    }
+
     private func micTitle(_ id: String) -> String {
-        if id.isEmpty { return "System default" }
-        if let m = mics.first(where: { $0.id == id }) { return m.name }
-        return "Unavailable · \(ConsoleFormat.shortId(id, 10))"
+        if id.isEmpty { return "Auto (ranked)" }
+        guard let name = micName(id) else { return "Unavailable · \(ConsoleFormat.shortId(id, 10))" }
+        var tags: [String] = []
+        if id == route.active { tags.append("active") }
+        if route.virtual.contains(id) { tags.append("virtual") }
+        return tags.isEmpty ? name : "\(name) · \(tags.joined(separator: " · "))"
+    }
+
+    /// One line under the picker: the microphone in use, and why a pick is not (echo
+    /// cancellation follows the system default; only Sound settings can move that).
+    private var micHint: String {
+        guard !route.active.isEmpty, let active = micName(route.active) else { return "" }
+        if route.follows.hasPrefix("system default") {
+            let pick = micSelection
+            if !pick.isEmpty, pick != route.active, let wanted = micName(pick) {
+                return "Using \(active). Echo cancellation follows the system default; make \(wanted) the default in Sound settings to use it."
+            }
+            return "Using \(active) · system default (echo cancellation)."
+        }
+        return "Using \(active) · \(route.follows)."
     }
 
     var body: some View {
@@ -802,7 +929,9 @@ struct SettingsPanel: View {
                     formRow("Mic") {
                         ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
                                          pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) })
+                            .help("Auto ranks the connected microphones: your pick, the built-in, the one used last, the system default. Aggregate and virtual devices only when picked.")
                     }
+                    if !micHint.isEmpty { hint(micHint) }
                 }
             }
             RailSection("Brain") {
@@ -898,6 +1027,78 @@ struct SettingsPanel: View {
                     hint(settings.livesInNotch ? "Lives in the notch; floats free when the main display has none." : "Floats free; stays where it last worked.")
                 }
             }
+            // Retention is a mover, not a deleter: older days MOVE to the trash by the sweep
+            // and come back with Restore; the trash is emptied in Finder, by Kevin, never here.
+            RailSection("Retention", trailing: {
+                // Two presses: the sweep moves whole day files and has no Undo of its own, so the
+                // head asks first, in place — the word becomes the deed, and × is the way out.
+                if sweepArmed {
+                    HStack(spacing: 4) {
+                        Button("Move older days to Trash") {
+                            withAnimation(Motion.snappy) { sweepArmed = false }
+                            actions.cleanup(.sweep)
+                        }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                        .help("Days past retention move to the trash now; each comes back with Restore")
+                        Button { withAnimation(Motion.snappy) { sweepArmed = false } } label: {
+                            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
+                        .help("Keep everything where it is")
+                        .accessibilityLabel("Cancel the sweep")
+                    }
+                    .transition(.opacity)
+                    .task {
+                        // Left alone, the question goes away.
+                        try? await Task.sleep(nanoseconds: 8_000_000_000)
+                        withAnimation(Motion.snappy) { sweepArmed = false }
+                    }
+                } else {
+                    Button("Sweep now") { withAnimation(Motion.snappy) { sweepArmed = true } }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                        .disabled((settings.ledgerRetentionDays ?? 0) == 0 && (settings.shotsRetentionDays ?? 14) == 0)
+                        .help((settings.ledgerRetentionDays ?? 0) == 0 && (settings.shotsRetentionDays ?? 14) == 0
+                              ? "Both keep forever; nothing would move"
+                              : "Move the days past retention to the trash now (each comes back with Restore); asks first")
+                        .transition(.opacity)
+                }
+            }) {
+                VStack(spacing: 2) {
+                    formRow("Ledger") {
+                        ConsoleMenuField(value: settings.ledgerRetentionDays ?? 0, options: retentionOptions(ConsoleTheme.ledgerRetentionOptions, current: settings.ledgerRetentionDays ?? 0),
+                                         title: { ConsoleTheme.retentionTitle($0, forever: "keep forever") },
+                                         pick: { days in var p = SettingsPatch(); p.ledgerRetentionDays = days; patch(p) })
+                            .accessibilityLabel("Ledger retention: \(ConsoleTheme.retentionTitle(settings.ledgerRetentionDays ?? 0, forever: "keep forever"))")
+                    }
+                    .help("Days a day's conversations stay on the rail before the sweep moves the day file to the trash")
+                    formRow("Screenshots") {
+                        ConsoleMenuField(value: settings.shotsRetentionDays ?? 14, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays ?? 14),
+                                         title: { ConsoleTheme.retentionTitle($0, forever: "forever") },
+                                         pick: { days in var p = SettingsPatch(); p.shotsRetentionDays = days; patch(p) })
+                            .accessibilityLabel("Screenshot retention: \(ConsoleTheme.retentionTitle(settings.shotsRetentionDays ?? 14, forever: "forever"))")
+                    }
+                    .help("Days a day's screenshots stay before the sweep moves the folder to the trash")
+                    hint("Older days move to the trash, never out of it. Pinned conversations keep their days.")
+                    formRow("Trash") {
+                        // The figures whole on their own line; the way to Finder under them.
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(trash.map { ConsoleFormat.trashLine($0) } ?? "—")
+                                .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
+                                .lineLimit(1)
+                                .frame(height: 26, alignment: .leading)
+                                .contentTransition(ConsoleMotion.numeric)
+                                .animation(Motion.snappy, value: trash)
+                                .help(trash.map { ConsoleFormat.truncPath($0.path, max: 48) } ?? "No trash folder yet")
+                            if let trash {
+                                Button { actions.open(trash.path) } label: { Label("Reveal in Finder", systemImage: "folder.fill") }
+                                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                                    .help("Show \(ConsoleFormat.truncPath(trash.path, max: 48)) in Finder — emptying it is yours, there")
+                            }
+                        }
+                    }
+                    hint("Nothing is deleted here; the trash is emptied in Finder.")
+                }
+            }
             RailSection("Wake") {
                 VStack(spacing: 2) {
                     formRow("Wake word") {
@@ -940,6 +1141,8 @@ struct SettingsPanel: View {
         }
         .onAppear {
             mics = MicDevice.enumerate()
+            // The voice engine answers with its ranked route (`jarhead.micRoute`).
+            NotificationCenter.default.post(name: MicRouteInfo.requestName, object: nil)
             modelDraft = settings.brainModel
             serverDraft = settings.brainBaseUrl ?? ""
             phrasesDraft = wake.phrases.joined(separator: ", ")
@@ -968,11 +1171,19 @@ struct SettingsPanel: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AVCaptureDeviceWasConnectedNotification"))) { _ in mics = MicDevice.enumerate() }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AVCaptureDeviceWasDisconnectedNotification"))) { _ in mics = MicDevice.enumerate() }
+        .onReceive(NotificationCenter.default.publisher(for: MicRouteInfo.notificationName)) { note in
+            if let r = MicRouteInfo(note.userInfo) { route = r }
+        }
     }
 
     private func step(_ delta: Int) {
         let next = min(240, max(1, Int(settings.idleSleepMinutes.rounded()) + delta))
         patch(SettingsPatch(idleSleepMinutes: Double(next)))
+    }
+
+    /// The menu's options with the saved value added when it is not one of them (a hand-edited settings file).
+    private func retentionOptions(_ options: [Int], current: Int) -> [Int] {
+        options.contains(current) ? options : options + [current]
     }
 
     // MARK: brain

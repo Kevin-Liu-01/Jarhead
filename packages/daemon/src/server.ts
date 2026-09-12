@@ -22,6 +22,8 @@ export interface EngineLike {
   on(event: "event", listener: (e: EngineEvent) => void): unknown;
   on(event: "audio", listener: (pcm: Buffer) => void): unknown;
   on(event: "overlay", listener: (cmd: OverlayCommand) => void): unknown;
+  /** Words the on-device ear should be biased toward (visible control titles, the front app, agent names). Optional: older fakes lack it. */
+  on(event: "ear.hints", listener: (strings: readonly string[]) => void): unknown;
   snapshot(): unknown;
   command(cmd: unknown): Promise<void>;
   feedMic(pcm: Buffer): void;
@@ -34,7 +36,14 @@ export interface EngineLike {
   /** On-device partial/final transcript from the app (reflex path). */
   ear(text: string, isFinal: boolean, segment: number, at: number): void;
   problem(text: string): void;
-  readonly ledger: { read(at?: number): unknown[]; days(): string[]; sessions(): unknown[]; readSession(sessionId: string): unknown[] };
+  readonly ledger: {
+    read(at?: number): unknown[];
+    days(): string[];
+    sessions(): unknown[];
+    readSession(sessionId: string): unknown[];
+    /** Full-text hits over the live day files (`ledger.search`); optional — an older fake answers none. */
+    search?(query: string, limit?: number): unknown[];
+  };
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
@@ -82,6 +91,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       for (const c of this.clients) if (c.audio && c.socket.writable) c.socket.write(frame);
     });
     engine.on("overlay", (cmd) => this.broadcast({ type: "overlay", command: cmd }));
+    engine.on("ear.hints", (strings) => this.broadcast({ type: "ear.hints", strings }));
   }
 
   listen(): Promise<void> {
@@ -180,8 +190,23 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "ledger.session":
         this.send(client, { type: "ledger.rows", id: msg.id, rows: typeof msg.sessionId === "string" ? this.engine.ledger.readSession(msg.sessionId) : [] });
         return;
+      case "ledger.search": {
+        // The Console's search box (K1): heard/said text and delegation requests/summaries over the
+        // LIVE day files, newest first, bounded by the ledger (50 by default, 200 at most). Synchronous
+        // over the walk's parsed cache; the trash is never read.
+        const query = typeof msg.query === "string" ? msg.query : "";
+        const limit = Number(msg.limit);
+        const hits = this.engine.ledger.search ? this.engine.ledger.search(query, ...(Number.isFinite(limit) && limit > 0 ? [limit] : [])) : [];
+        this.send(client, { type: "ledger.hits", id: String(msg.id ?? ""), hits });
+        return;
+      }
       case "tool.run":
         void this.runTool(client, msg.id, msg.name, msg.input);
+        return;
+      case "ping":
+        // Liveness (REDESIGN §16, "Liveness"): answered here, synchronously, with no engine
+        // work on the path — a wedged event loop is exactly what a late pong reveals.
+        this.send(client, { type: "pong", id: String(msg.id ?? ""), at: Date.now() });
         return;
       case "bye":
         // The app is quitting cleanly (wire.ts). The host decides what that means for us;

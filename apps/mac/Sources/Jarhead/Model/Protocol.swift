@@ -317,6 +317,9 @@ public struct Settings: Codable, Equatable {
     public var reflexes: Bool?
     /// "free" (float where it last worked) or "notch" (live in the MacBook notch).
     public var orbHome: String?
+    /// Retention: days before a day's ledger / shots move to the trash (0 = never). Optional on the wire.
+    public var ledgerRetentionDays: Int?
+    public var shotsRetentionDays: Int?
 
     public var wakeSettings: WakeSettings { wake ?? .standard }
     public var isOnboarded: Bool { onboarded ?? false }
@@ -455,7 +458,37 @@ public struct JarheadSessionSummary: Codable, Equatable, Identifiable {
     public var delegations: Int
     public var title: String
     public var resumedFrom: String?
+    /// Conversation (chain) state from the tombstone rows; nil = active.
+    public var state: String?
+    /// Kevin's own name; nil or "" = the auto title.
+    public var name: String?
+    public var pinned: Bool?
+    public var trashedAt: Double?
     public var isOpen: Bool { closedAt == nil }
+    public var isTrashed: Bool { state == "trashed" }
+    public var isArchived: Bool { state == "archived" }
+    public var displayTitle: String { (name?.isEmpty == false ? name! : title) }
+}
+
+/// A problem with its one remedy (mirror of Problem / ProblemRemedy).
+public struct ProblemRemedy: Codable, Equatable {
+    public var label: String
+    public var command: [String: JSONValue]?
+    public var open: String?
+}
+
+public struct Problem: Codable, Equatable, Identifiable {
+    public var kind: String
+    public var text: String
+    public var remedy: ProblemRemedy?
+    public var since: Double
+    public var id: String { kind + "|" + text }
+}
+
+public struct TrashInfo: Codable, Equatable {
+    public var path: String
+    public var days: Int
+    public var bytes: Double
 }
 
 public struct Snapshot: Codable, Equatable {
@@ -477,6 +510,10 @@ public struct Snapshot: Codable, Equatable {
     public var pause: PauseInfo?
     /// Today's billed seconds (for the meter). Optional on the wire for older daemons.
     public var usageToday: UsageToday?
+    /// The problems with their remedies; `problems` (plain text) is the same list for older surfaces.
+    public var problemsTyped: [Problem]?
+    public var trash: TrashInfo?
+    public var hiddenAgents: [String]?
 
     public var setupStatus: SetupStatus { setup ?? .unknown }
     public var screenMarks: [ScreenMark] { marks ?? [] }
@@ -513,6 +550,20 @@ public enum EngineCommand: Equatable {
     /// Keep the session open but silent (mic muted, output dropped, no delegations) / undo that.
     case pause
     case resume
+    // Conversation cleanup (the Console's). Every one is undoable; nothing is deleted.
+    case conversationTrash(chainId: String)
+    case conversationRestore(chainId: String)
+    case conversationArchive(chainId: String)
+    case conversationRename(chainId: String, name: String)
+    case conversationPin(chainId: String, pinned: Bool)
+    case conversationNew
+    case nowClear
+    case nowRestore
+    case ledgerTrashDay(day: String, what: String)
+    case ledgerRestoreDay(day: String)
+    case ledgerSweep
+    case agentHide(agentId: String, hidden: Bool)
+    case problemRetry(kind: String)
     case openConsole, openLedger
     case requestPermission(String)
     /// Secrets to write to ~/.jarhead/env; nil removes. Keys: OPENAI_API_KEY, ANTHROPIC_API_KEY, JARHEAD_BRAIN_API_KEY.
@@ -545,6 +596,19 @@ public enum EngineCommand: Equatable {
         case .daemonRestart: return ["type": "daemon.restart"]
         case .pause: return ["type": "pause"]
         case .resume: return ["type": "resume"]
+        case .conversationTrash(let id): return ["type": "conversation.trash", "chainId": id]
+        case .conversationRestore(let id): return ["type": "conversation.restore", "chainId": id]
+        case .conversationArchive(let id): return ["type": "conversation.archive", "chainId": id]
+        case .conversationRename(let id, let name): return ["type": "conversation.rename", "chainId": id, "name": name]
+        case .conversationPin(let id, let pinned): return ["type": "conversation.pin", "chainId": id, "pinned": pinned]
+        case .conversationNew: return ["type": "conversation.new"]
+        case .nowClear: return ["type": "now.clear"]
+        case .nowRestore: return ["type": "now.restore"]
+        case .ledgerTrashDay(let day, let what): return ["type": "ledger.trash-day", "day": day, "what": what]
+        case .ledgerRestoreDay(let day): return ["type": "ledger.restore-day", "day": day]
+        case .ledgerSweep: return ["type": "ledger.sweep"]
+        case .agentHide(let id, let hidden): return ["type": "agent.hide", "agentId": id, "hidden": hidden]
+        case .problemRetry(let kind): return ["type": "problem.retry", "kind": kind]
         case .openConsole: return ["type": "open-console"]
         case .openLedger: return ["type": "open-ledger"]
         case .requestPermission(let which): return ["type": "request-permission", "which": which]
@@ -574,6 +638,8 @@ public struct SettingsPatch: Equatable {
     public var wake: WakeSettings?
     public var reflexes: Bool?
     public var orbHome: String?
+    public var ledgerRetentionDays: Int?
+    public var shotsRetentionDays: Int?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
@@ -600,6 +666,8 @@ public struct SettingsPatch: Equatable {
         if let v = wake { o["wake"] = v.json }
         if let v = reflexes { o["reflexes"] = v }
         if let v = orbHome { o["orbHome"] = v }
+        if let v = ledgerRetentionDays { o["ledgerRetentionDays"] = v }
+        if let v = shotsRetentionDays { o["shotsRetentionDays"] = v }
         return o
     }
 }
@@ -724,6 +792,20 @@ public struct LedgerRow: Codable, Identifiable {
     public var cancelled: String?
     public var resumedFrom: String?
     public var pausedMs: Double?
+    /// conversation.* / now.* / ledger.moved / agent.hidden / grant rows.
+    public var chainId: String?
+    public var by: String?
+    public var name: String?
+    public var pinned: Bool?
+    public var day: String?
+    public var what: String?
+    public var to: String?
+    public var path: String?
+    public var agentId: String?
+    public var hidden: Bool?
+    public var app: String?
+    public var actionClass: String?
+    public var until: Double?
     public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? "")" }
 }
 

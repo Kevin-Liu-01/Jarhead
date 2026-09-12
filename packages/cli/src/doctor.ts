@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, PERMISSION_KINDS, type BrainKind, type PermissionInfo, type WakeSettings } from "@jarhead/protocol";
+import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, PERMISSION_KINDS, type BrainKind, type PermissionInfo, type Problem, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
 import { defaultConnectors } from "@jarhead/agents";
 import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
@@ -46,14 +46,27 @@ export function summarizePermissions(all: readonly PermissionInfo[] | undefined)
   return parts.join(" · ");
 }
 
-/** A running daemon's permission list (`snapshot.permissions.all`); undefined when none answers within 1.5 s. */
-async function daemonPermissions(socketPath: string): Promise<readonly PermissionInfo[] | undefined> {
+/** What the doctor reads from a running daemon's first snapshot: the app's permission list and the typed problems. */
+interface DaemonRead {
+  readonly permissions: readonly PermissionInfo[] | undefined;
+  /** `problemsTyped` when the engine sends it; the plain `problems` lines as kind `other` from an older one. */
+  readonly problems: readonly Problem[];
+  /** Milliseconds from connect to the snapshot: a slow answer is itself a finding. */
+  readonly ms: number;
+}
+
+/** A running daemon's first snapshot (`permissions.all`, the problems); undefined when none answers within 1.5 s. */
+async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
   if (!existsSync(socketPath)) return undefined;
   const client = new DaemonClient(socketPath);
+  const t0 = Date.now();
   try {
-    const got = new Promise<readonly PermissionInfo[] | undefined>((resolve) => {
+    const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
-        if (m.type === "snapshot") resolve(((m.snapshot as { permissions?: { all?: readonly PermissionInfo[] } }).permissions ?? {}).all);
+        if (m.type !== "snapshot") return;
+        const snap = m.snapshot as { permissions?: { all?: readonly PermissionInfo[] }; problems?: readonly string[]; problemsTyped?: readonly Problem[] };
+        const problems = snap.problemsTyped ?? (snap.problems ?? []).map((text): Problem => ({ kind: "other", text, since: 0 }));
+        resolve({ permissions: snap.permissions?.all, problems, ms: Date.now() - t0 });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -65,6 +78,29 @@ async function daemonPermissions(socketPath: string): Promise<readonly Permissio
     client.close();
   }
 }
+
+/** The remedy as one line for the doctor's "next steps": the button and what it sends or opens. */
+export function remedyLine(p: Problem): string | undefined {
+  const r = p.remedy;
+  if (!r) return undefined;
+  if (r.command) {
+    const cmd = r.command as { type: string; which?: string; kind?: string };
+    const arg = cmd.which ?? cmd.kind;
+    return `${r.label} — sends ${cmd.type}${arg ? ` ${arg}` : ""} (the Console's Problems rail has the button)`;
+  }
+  if (r.open) return `${r.label} — opens ${r.open}`;
+  return r.label;
+}
+
+/** "since 2 min" for a problem's first sighting; "" when the engine did not say. */
+function sinceLine(p: Problem, now = Date.now()): string {
+  if (!p.since) return "";
+  const s = Math.max(0, Math.round((now - p.since) / 1000));
+  return s < 60 ? ` · since ${s} s` : s < 3600 ? ` · since ${Math.round(s / 60)} min` : ` · since ${Math.round(s / 3600)} h`;
+}
+
+/** The kinds that make Jarhead unusable until fixed, as the doctor grades them: the rest are warnings. */
+const FAILING_KINDS = new Set<Problem["kind"]>(["voice.key", "daemon", "permission.microphone"]);
 
 function sh(cmd: string, args: readonly string[]): string | undefined {
   try {
@@ -262,7 +298,8 @@ export async function runChecks(): Promise<Check[]> {
   }
 
   // ---- permissions: the app's list, from the running daemon (TCC keys every grant on Jarhead.app)
-  const appPerms = await daemonPermissions(cfg.socketPath);
+  const daemon = await daemonRead(cfg.socketPath);
+  const appPerms = daemon?.permissions;
   const missingRequired = (appPerms ?? []).filter((p) => p.required && p.grant !== "granted");
   add({
     group: "permissions",
@@ -329,7 +366,29 @@ export async function runChecks(): Promise<Check[]> {
     add({ group: "app", name: "wake word", status: "warn", detail: (e as Error).message, required: false });
   }
   const daemonSock = existsSync(cfg.socketPath);
-  add({ group: "app", name: "daemon socket", status: daemonSock ? "ok" : "warn", detail: daemonSock ? `${cfg.socketPath} present (app or jarheadd running)` : "no daemon running", required: false });
+  add({
+    group: "app",
+    name: "daemon socket",
+    // A socket file nobody answers on is a daemon that died without cleaning up, or one that is wedged: the app's ping/pong respawns the latter.
+    status: !daemonSock ? "warn" : daemon ? "ok" : "warn",
+    detail: !daemonSock ? "no daemon running" : daemon ? `${cfg.socketPath} answered in ${daemon.ms} ms` : `${cfg.socketPath} present but nothing answered within 1.5 s`,
+    required: false,
+    fix: daemonSock && !daemon ? "the daemon is not answering — Jarhead.app respawns one on two missed pongs; from a terminal, pnpm jarhead status, or kill the stale jarheadd" : undefined,
+  });
+  // ---- problems: what the running engine itself says is wrong, typed, each with its one remedy (REDESIGN §16 "Problems, typed")
+  if (daemon) {
+    if (daemon.problems.length === 0) add({ group: "problems", name: "engine", status: "ok", detail: "none reported", required: false });
+    for (const p of daemon.problems) {
+      add({
+        group: "problems",
+        name: p.kind,
+        status: FAILING_KINDS.has(p.kind) ? "fail" : "warn",
+        detail: `${p.text}${sinceLine(p)}`,
+        required: false,
+        fix: remedyLine(p),
+      });
+    }
+  }
   // ---- self-edit: worktrees the brain made of this repo and the last one it applied
   try {
     const se = selfEditDoctorRow(join(cfg.stateDir, "worktrees"));

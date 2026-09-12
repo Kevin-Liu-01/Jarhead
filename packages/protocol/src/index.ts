@@ -249,6 +249,10 @@ export interface Settings {
   readonly reflexes: boolean;
   /** Where the blob lives: floating where it last worked, or tucked in the MacBook notch. */
   readonly orbHome: "free" | "notch";
+  /** Days a ledger day file stays live before the sweep MOVES it to <stateDir>/trash (0 = never). Pinned chains keep their days. */
+  readonly ledgerRetentionDays: number;
+  /** Days a day's screenshots stay live before the sweep moves them to the trash (0 = never). */
+  readonly shotsRetentionDays: number;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -268,6 +272,8 @@ export const DEFAULT_SETTINGS: Settings = {
   onboarded: false,
   reflexes: true,
   orbHome: "notch",
+  ledgerRetentionDays: 0,
+  shotsRetentionDays: 14,
 };
 
 /**
@@ -382,6 +388,41 @@ export interface Snapshot {
   readonly pause?: PauseInfo;
   /** Live seconds billed today — closed sessions from the ledger plus the open one — for the meter. */
   readonly usageToday?: UsageToday;
+  /**
+   * The problems, typed: what kind, one line, and the one action that fixes it. `problems`
+   * (plain text) stays for older surfaces; this list is the same problems with their remedy.
+   */
+  readonly problemsTyped?: readonly Problem[];
+  /** What the trash holds, for the Console ("3 days · 129 MB"; Reveal in Finder). */
+  readonly trash?: TrashInfo;
+  /** Agents Kevin hid from the rail (agent.hidden rows). */
+  readonly hiddenAgents?: readonly string[];
+}
+
+export type ProblemKind =
+  | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
+  | "brain.unavailable" | "brain.probe" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "daemon" | "crash" | "other";
+
+export interface ProblemRemedy {
+  /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon". */
+  readonly label: string;
+  /** What the button does: an EngineCommand the surface sends, or a URL/path the surface opens. */
+  readonly command?: EngineCommand;
+  readonly open?: string;
+}
+
+export interface Problem {
+  readonly kind: ProblemKind;
+  readonly text: string;
+  readonly remedy?: ProblemRemedy;
+  /** Wall-clock ms first seen. */
+  readonly since: number;
+}
+
+export interface TrashInfo {
+  readonly path: string;
+  readonly days: number;
+  readonly bytes: number;
 }
 
 export interface PauseInfo {
@@ -420,7 +461,15 @@ export interface JarheadSessionSummary {
   /** The first thing Kevin said in it, trimmed; "" when nothing was heard. */
   readonly title: string;
   readonly resumedFrom?: string;
+  /** Conversation (chain) state from the tombstone rows; absent = active. */
+  readonly state?: ConversationState;
+  /** Kevin's own name for the conversation ("" or absent = the auto title). */
+  readonly name?: string;
+  readonly pinned?: boolean;
+  readonly trashedAt?: number;
 }
+
+export type ConversationState = "active" | "archived" | "trashed";
 
 // --------------------------------------------------------- shell messages ---
 
@@ -462,6 +511,25 @@ export type EngineCommand =
    * spoken "stop" / "cancel" / "never mind" means. The pre-transport `stop`.
    */
   | { readonly type: "interrupt"; readonly how?: "pressed" | "said" }
+  // ---- conversation cleanup (the Console's; never a brain tool). Every one is undoable.
+  | { readonly type: "conversation.trash"; readonly chainId: string }
+  | { readonly type: "conversation.restore"; readonly chainId: string }
+  | { readonly type: "conversation.archive"; readonly chainId: string }
+  | { readonly type: "conversation.rename"; readonly chainId: string; readonly name: string }
+  | { readonly type: "conversation.pin"; readonly chainId: string; readonly pinned: boolean }
+  /** Start a fresh conversation: the open session is closed like a stop; the next Go starts a new chain. */
+  | { readonly type: "conversation.new" }
+  /** Hide the Now stream's items so far (undo with now.restore); the ledger keeps them. */
+  | { readonly type: "now.clear" }
+  | { readonly type: "now.restore" }
+  /** Move a whole day (ledger file and/or shots) to the trash, or back. */
+  | { readonly type: "ledger.trash-day"; readonly day: string; readonly what: "ledger" | "shots" | "both" }
+  | { readonly type: "ledger.restore-day"; readonly day: string }
+  /** Run the retention sweep now (what it would move is logged first). */
+  | { readonly type: "ledger.sweep" }
+  | { readonly type: "agent.hide"; readonly agentId: string; readonly hidden: boolean }
+  /** A remedy button pressed on a typed problem; the engine re-checks and clears it when fixed. */
+  | { readonly type: "problem.retry"; readonly kind: ProblemKind }
   | { readonly type: "say-text"; readonly text: string }
   | { readonly type: "set-settings"; readonly patch: SettingsPatch }
   | { readonly type: "clear-problems" }
@@ -552,7 +620,25 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "delegation.step"; readonly delegationId: string; readonly step: DelegationStep }
   | { readonly at: number; readonly type: "delegation.finished"; readonly delegationId: string; readonly status: DelegationStatus; readonly timings: DelegationTimings; readonly summary?: string }
   | { readonly at: number; readonly type: "problem"; readonly text: string }
-  | { readonly at: number; readonly type: "agent"; readonly agent: AgentInfo };
+  | { readonly at: number; readonly type: "agent"; readonly agent: AgentInfo }
+  // ---- conversation cleanup: tombstone rows appended to TODAY's file; the bytes of the
+  // conversation stay where they were written. `chainId` is any session id of the chain
+  // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both
+  // `trashed` and `archived`. Nothing is ever deleted: whole day files MOVE to
+  // <stateDir>/trash by rename(2) (`ledger.moved`), and move back on restore.
+  | { readonly at: number; readonly type: "conversation.trashed"; readonly chainId: string; readonly by: "kevin" | "retention" }
+  | { readonly at: number; readonly type: "conversation.restored"; readonly chainId: string }
+  | { readonly at: number; readonly type: "conversation.archived"; readonly chainId: string }
+  | { readonly at: number; readonly type: "conversation.renamed"; readonly chainId: string; readonly name: string }
+  | { readonly at: number; readonly type: "conversation.pinned"; readonly chainId: string; readonly pinned: boolean }
+  /** Kevin cleared the Now stream: items at or before `at` of `sessionId` are hidden from the live view (the ledger keeps them). */
+  | { readonly at: number; readonly type: "now.cleared"; readonly sessionId: string }
+  | { readonly at: number; readonly type: "now.restored"; readonly sessionId: string }
+  /** A whole day's ledger file or shots folder moved between the live dirs and <stateDir>/trash (never unlinked). */
+  | { readonly at: number; readonly type: "ledger.moved"; readonly day: string; readonly what: "ledger" | "shots"; readonly to: "trash" | "live"; readonly path: string; readonly by: "kevin" | "retention" }
+  | { readonly at: number; readonly type: "agent.hidden"; readonly agentId: string; readonly hidden: boolean }
+  /** A confirmation Kevin gave that stays good for the rest of the conversation (same app, same action class); `until` is wall-clock ms. */
+  | { readonly at: number; readonly type: "grant"; readonly chainId: string; readonly app: string; readonly actionClass: string; readonly until: number };
 
 // ------------------------------------------------------------ type guards ---
 
@@ -563,6 +649,7 @@ export function isPhase(value: unknown): value is Phase {
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "wake", "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
   "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
+  "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {

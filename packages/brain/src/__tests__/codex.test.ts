@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { CodexBrain, codexAddendum, codexBaseInstructions, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, isSimpleRequest, probeCodex, socketAnswers } from "../codex.ts";
+import { CARRY_MAX_CHARS, CARRY_RESULT_MAX_CHARS, CodexBrain, carriedResult, carriedResultLine, codexAddendum, codexBaseInstructions, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, isSimpleRequest, probeCodex, renderCarry, resultPlaceholder, socketAnswers } from "../codex.ts";
 import { PRIMER_TEXT, appServerArgs } from "../codex-app-server.ts";
 import { codexPromptTrimArgs, codexUserMcpServers, prepareCodexHome } from "../codex-config.ts";
 import { brainSystemPrompt } from "../brain.ts";
@@ -289,7 +289,8 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   const again = await brain.handle(makeTask("and now?"), makeSink().sink);
   assert.equal(again.status, "done");
   const second = execLog();
-  assert.ok(second.prompt.includes('Earlier in this session:\nKevin said: "what app is open"\nYou answered: Finder is in front.'));
+  // Compacted (renderCarry): Kevin's words whole, a short result as it was, the screenshot (280 bytes with its image) as a size line.
+  assert.ok(second.prompt.includes('Earlier in this session:\nKevin said: "what app is open"\n  frontmost_app → Finder — window: Desktop\n  screenshot → [tool result, 0.3 KB]\nYou answered: Finder is in front.'), second.prompt.slice(-600));
   assert.ok(second.prompt.endsWith('Kevin said: "and now?"'));
 
   await brain.stop();
@@ -526,7 +527,7 @@ test("codex brain: circled regions ride a warm turn as localImage inputs; a full
   const turns = log.requests.filter((r) => r.method === "turn/start");
   assert.equal(turns[1]!.params!["threadId"], "thread_2", "the task rode the replacement thread (this fake reports a full context after every turn, so a third thread may already be starting)");
   const text = (turns[1]!.params!["input"] as Array<{ text?: string }>)[0]!.text!;
-  assert.ok(text.includes('Earlier in this session:\nKevin said: "what is this"\nYou answered: Finder is in front.'), text.slice(0, 300));
+  assert.ok(text.includes('Earlier in this session:\nKevin said: "what is this"\n  frontmost_app → Finder — window: Desktop\n  screenshot → [tool result, 0.3 KB]\nYou answered: Finder is in front.'), text.slice(0, 400));
   assert.ok(text.endsWith('Kevin said: "do it again"'));
 
   // Three trivial turns whose bill grows 25k each while the context stays at 23k never roll over (the bug: total was judged).
@@ -755,4 +756,61 @@ test("codex brain: a slow app-server never sits on a task's path — start() rep
   assert.equal(r2.status, "done");
   assert.equal(appServerLog().requests.filter((r) => r.method === "turn/start").length, 1);
   assert.match(brain.detail, /warm app-server/);
+});
+
+test("carried history is compacted: a tool result over 200 chars (or bytes, images included) becomes one size line, Kevin's words stay verbatim, the block is capped near 2 KB with the oldest exchanges dropped first and the newest request never cut", () => {
+  // The result lines: short ones as they were (one line), long ones as their size.
+  const short = carriedResult("frontmost_app", { content: [{ type: "text", text: "Finder — window: Desktop" }] });
+  assert.equal(short.bytes, 65);
+  assert.equal(carriedResultLine(short), "  frontmost_app → Finder — window: Desktop");
+  const multiline = carriedResult("read_focused_text", { content: [{ type: "text", text: "line one\n  line two\nline three" }] });
+  assert.equal(carriedResultLine(multiline), "  read_focused_text → line one line two line three", "never a newline inside a result line");
+  const page = carriedResult("web_fetch", "x".repeat(3174));
+  assert.equal(page.text.length, 1200, "kept in memory bounded");
+  assert.equal(page.bytes, 3174, "…but the placeholder names the true size");
+  assert.equal(resultPlaceholder(page.bytes), "[tool result, 3.1 KB]");
+  assert.equal(carriedResultLine(page), "  web_fetch → [tool result, 3.1 KB]");
+  assert.equal(resultPlaceholder(48 * 1024), "[tool result, 48 KB]");
+  // A 1x1 screenshot: 73 chars of text but 280 bytes with its image — over the line, so a placeholder.
+  const shot = carriedResult("screenshot", { content: [{ type: "image", data: "A".repeat(100), mimeType: "image/png" }, { type: "text", text: "1x1 px; scratch display." }] });
+  assert.ok(shot.bytes > CARRY_RESULT_MAX_CHARS && shot.text.length < CARRY_RESULT_MAX_CHARS);
+  assert.match(carriedResultLine(shot), /^ {2}screenshot → \[tool result, 0\.\d KB\]$/);
+  const exactly = carriedResult("clipboard_read", "y".repeat(CARRY_RESULT_MAX_CHARS));
+  assert.equal(carriedResultLine(exactly), `  clipboard_read → ${"y".repeat(200)}`, "200 is still verbatim; 201 is not");
+  assert.equal(carriedResultLine(carriedResult("clipboard_read", "y".repeat(201))), "  clipboard_read → [tool result, 0.2 KB]");
+  assert.equal(carriedResultLine(carriedResult("wait", null)), "  wait → (empty)");
+
+  // The block: oldest first, newest last; every request verbatim; nothing when there is nothing.
+  assert.equal(renderCarry([]), undefined);
+  const block = renderCarry([
+    { request: "what app is open", answer: "Finder is in front.", results: [short, shot] },
+    { request: "send the invoice to dana", answer: "Send the invoice to dana@example.com? Say yes to send it.", results: [page] },
+  ]);
+  assert.equal(block, ['Earlier in this session:', 'Kevin said: "what app is open"', "  frontmost_app → Finder — window: Desktop", carriedResultLine(shot), "You answered: Finder is in front.", 'Kevin said: "send the invoice to dana"', "  web_fetch → [tool result, 3.1 KB]", "You answered: Send the invoice to dana@example.com? Say yes to send it."].join("\n"));
+  assert.ok(block!.length < CARRY_MAX_CHARS);
+
+  // The cap: 3 exchanges of ~900 chars each do not fit in 2 KB — the oldest goes first, whole.
+  const big = (i: number) => ({ request: `request ${i}`, answer: `answer ${i} ${"a".repeat(880)}`, results: [] });
+  const capped = renderCarry([big(1), big(2), big(3)])!;
+  assert.ok(capped.length <= CARRY_MAX_CHARS, `${capped.length} chars`);
+  assert.ok(!capped.includes('Kevin said: "request 1"'), "the oldest exchange was dropped whole");
+  assert.ok(capped.includes('Kevin said: "request 2"') && capped.includes('Kevin said: "request 3"'));
+  assert.ok(capped.endsWith("a".repeat(880)), "the newest answer is intact when it fits");
+  // The newest exchange alone over the cap: its results go first (as placeholders, then gone), then its answer is cut; Kevin's words never are.
+  const words = "please file the invoice from dana under april and tell me the total ".repeat(6).trim();
+  const huge = renderCarry([{ request: words, answer: "b".repeat(5000), results: [short, page] }], "Kevin", 1024)!;
+  assert.ok(huge.length <= 1024, `${huge.length} chars`);
+  assert.ok(huge.includes(`Kevin said: "${words}"`), "Kevin's words, whole");
+  assert.ok(!huge.includes("frontmost_app") && !huge.includes("web_fetch"), "no room for result lines");
+  assert.match(huge, /You answered: b+…$/, "the answer cut to what is left");
+  // Over budget by a few chars: the results become placeholders, each naming its TRUE size — never inflated to force the swap.
+  assert.equal(carriedResultLine(short, true), "  frontmost_app → [tool result, 0.1 KB]");
+  const nearly = renderCarry([{ request: "what app is open", answer: "c".repeat(100), results: [short] }], "Kevin", 211)!;
+  assert.ok(nearly.length <= 211, `${nearly.length} chars`);
+  assert.ok(nearly.includes("  frontmost_app → [tool result, 0.1 KB]"), "a 65-byte result is told as 0.1 KB, not 0.2");
+  assert.ok(nearly.includes(`You answered: ${"c".repeat(100)}`), "the answer intact once the placeholder made room");
+  // A request longer than the whole budget still rides whole: the block runs over rather than cut his words.
+  const long = renderCarry([{ request: "w".repeat(1500), answer: "ok.", results: [] }], "Kevin", 1024)!;
+  assert.ok(long.includes(`Kevin said: "${"w".repeat(1500)}"`));
+  assert.match(long, /You answered: …$/);
 });

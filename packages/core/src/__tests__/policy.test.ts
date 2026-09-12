@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyAction, classifyAppleScript, classifyPath, classifyUrl, isLoopbackHost, isPrivateHost, namedPaths, secretPathReason, shellCwdReason, type Verdict } from "../policy.ts";
+import { PRESENCE_ABSENT, TRASH_REASON, classifyAction, classifyAppleScript, classifyPath, classifyUrl, grantClassOf, isLoopbackHost, isPrivateHost, namedPaths, presenceGated, presenceReason, secretPathReason, shellCwdReason, type Presence, type Verdict } from "../policy.ts";
 
 const HOME = "/Users/kevin";
 
@@ -532,4 +532,208 @@ test("urls: https runs; http and private hosts only when Kevin named them; file 
   assert.equal(v("https://[::ffff:127.0.0.1]:8080/", "look at my localhost server on 8080"), "run", "named, it is fine");
   assert.equal(v("https://[2606:4700:4700::1111]/", "read"), "run", "a public v6 address is the internet");
   assert.ok(isLoopbackHost("::ffff:7f00:1") && isLoopbackHost("[::]") && isPrivateHost("::ffff:10.0.0.1") && !isPrivateHost("::ffff:8.8.8.8"));
+});
+
+// ------------------------------------------------- presence, grants, trash (K5, 2026-09-12) ---
+
+/** [app, kind, target, presence, verdict, note]: the presence gate holds confirm-tier actions in mail / messaging / money / password apps when Kevin is not there. */
+const PRESENCE_CASES: ReadonlyArray<readonly [string, string, string, Presence | undefined, Verdict, string]> = [
+  // Kevin is there: the verdict is the plain one.
+  ["Mail", "left_click", "Send", { recent: true, unlocked: true, frontmost: true }, "confirm", "Send still asks; presence does not answer the question"],
+  ["Mail", "left_click", "Search", { recent: false, unlocked: false, frontmost: false }, "run", "a plain run is never held, however absent he is"],
+  ["Mail", "screenshot", "", { recent: false, unlocked: false, frontmost: false }, "run", "looking never asks"],
+  // Each leg on its own holds a confirm-tier action.
+  ["Mail", "left_click", "Send", { recent: false, unlocked: true, frontmost: true }, "confirm", "no ear activity for a minute"],
+  ["Messages", "left_click", "Send", { recent: true, unlocked: false, frontmost: true }, "confirm", "the screen is locked"],
+  ["Messages", "key", "Return", { recent: true, unlocked: false, frontmost: true }, "run", "Return is reversible: not confirm-tier, not held"],
+  ["Slack", "left_click", "Send", { recent: true, unlocked: true, frontmost: false }, "confirm", "Slack is not the app in front"],
+  // Unknown legs do not hold.
+  ["Mail", "left_click", "Send", { recent: undefined, unlocked: undefined, frontmost: undefined }, "confirm", "unknown legs: the plain confirm, not the presence one"],
+  // Not a gated app: presence is ignored.
+  ["Google Chrome", "left_click", "Search", { recent: false, unlocked: false, frontmost: false }, "run", "Chrome is not gated by name"],
+  ["Notes", "type", "", { recent: false, unlocked: false, frontmost: false }, "run", "typing a note while away is fine"],
+  // Refusals are never softened.
+  ["1Password", "type", "", { recent: false, unlocked: false, frontmost: false }, "refuse", "secure field stays refused"],
+];
+
+test("presence: confirm-tier actions in gated apps wait for Kevin at the Mac; each leg alone holds; runs and refusals are untouched", () => {
+  for (const [app, kind, target, presence, verdict, note] of PRESENCE_CASES) {
+    const secureField = app === "1Password" && kind === "type";
+    const d = classifyAction({ kind, app, target, presence, secureField });
+    assert.equal(d.verdict, verdict, `${app} ${kind} "${target}" ${JSON.stringify(presence)} → ${d.verdict} (${d.reason}); ${note}`);
+  }
+  // The reason names the leg and carries the one line the brain reads out.
+  const away = classifyAction({ kind: "left_click", app: "Mail", target: "Send", presence: { recent: true, unlocked: false, frontmost: true } });
+  assert.match(away.reason, /screen is locked/);
+  assert.match(away.reason, new RegExp(PRESENCE_ABSENT.replace(/'/g, "'")));
+  // A yes said before he walked away does not land while he is away: confirmed + absent → still a confirm, nothing runs.
+  const yesButAway = classifyAction({ kind: "left_click", app: "Mail", target: "Send", confirmed: true, presence: { recent: false, unlocked: true, frontmost: true } });
+  assert.equal(yesButAway.verdict, "confirm");
+  assert.match(yesButAway.reason, /back at the Mac/);
+  assert.equal(yesButAway.hold, true, "a hold, not a question: nothing for a yes to arm");
+  assert.equal(away.hold, true);
+  assert.equal(classifyAction({ kind: "left_click", app: "Mail", target: "Send", presence: { recent: true, unlocked: true, frontmost: true } }).hold, undefined, "the ordinary question is not a hold");
+  // The same yes with him there runs.
+  assert.equal(classifyAction({ kind: "left_click", app: "Mail", target: "Send", confirmed: true, presence: { recent: true, unlocked: true, frontmost: true } }).verdict, "run");
+  // Hosts: a browser action on a gated page with a URL known.
+  assert.ok(presenceGated(undefined, "https://mail.google.com/mail/u/0/#inbox"));
+  assert.ok(presenceGated(undefined, "https://www.paypal.com/myaccount/transfer"));
+  assert.ok(!presenceGated(undefined, "https://example.com/mail.google.com"), "the host, not the path");
+  assert.ok(!presenceGated("Google Chrome", undefined));
+  assert.ok(presenceGated("Microsoft Outlook", undefined));
+  assert.ok(!presenceGated("Gmail Helper", undefined), "whole word: 'Gmail' is not 'mail'");
+  assert.equal(presenceReason({ app: "Mail", presence: undefined }), undefined, "no presence, no gate");
+  assert.equal(presenceReason({ app: "Mail", presence: { recent: true, unlocked: true, frontmost: true } }), undefined);
+});
+
+test("grants: the hands-off question carries a class a yes may keep for the conversation; destructive verbs never do; a grant opens the app, not its destructive controls", () => {
+  // The hands-off confirm names its class; the irreversible confirm has none.
+  const copy = classifyAction({ kind: "left_click", app: "1Password", target: "Copy" });
+  assert.equal(copy.verdict, "confirm");
+  assert.equal(copy.grant, "click");
+  assert.equal(copy.hold, undefined, "a question, not a hold");
+  const typeIn = classifyAction({ kind: "type", app: "1Password", text: "hello" });
+  assert.equal(typeIn.verdict, "confirm");
+  assert.equal(typeIn.grant, "type");
+  // System Settings and Keychain Access are the machine's security surface: every yes there is per action.
+  for (const app of ["System Settings", "System Preferences", "Keychain Access"]) {
+    for (const kind of ["left_click", "type"]) {
+      const d = classifyAction({ kind, app, target: "General", text: "x" });
+      assert.equal(d.verdict, "confirm", `${kind} in ${app}`);
+      assert.equal(d.grant, undefined, `${kind} in ${app}: no class to keep`);
+    }
+    assert.equal(classifyAction({ kind: "left_click", app, target: "General", granted: true }).verdict, "confirm", `${app}: a grant (there can be none) changes nothing`);
+  }
+  // A key press is never covered by a yes to "type there": cmd+delete on a login item, space on a checkbox, each asks.
+  for (const [app, combo, target] of [
+    ["1Password", "cmd+delete", "Login item · AXRow"],
+    ["Keychain Access", "delete", "login · AXRow"],
+    ["System Settings", "space", "FileVault · AXCheckBox"],
+    ["System Settings", "Return", "Firewall · AXCheckBox"],
+    ["1Password", "Return", "Search"],
+  ] as const) {
+    const d = classifyAction({ kind: "key", app, text: combo, target, granted: true });
+    assert.equal(d.verdict, "confirm", `key ${combo} in ${app} on "${target}" under a grant → ${d.verdict} (${d.reason})`);
+    assert.equal(classifyAction({ kind: "key", app, text: combo, target }).grant, undefined, `key ${combo}: the question carries no class`);
+    assert.equal(classifyAction({ kind: "hold_key", app, text: combo, target, granted: true }).verdict, "confirm");
+  }
+  // Under a click grant in 1Password, a setting, a switch or a hand-out still asks (and its yes keeps nothing).
+  for (const target of ["FileVault · AXCheckBox", "Allow full disk access · AXCheckBox", "Move to Trash", "Archive", "Enable autofill · AXSwitch", "Reset vault", "Revoke access", "Export vault", "Two-factor · AXRadioButton"]) {
+    const d = classifyAction({ kind: "left_click", app: "1Password", target, granted: true });
+    assert.equal(d.verdict, "confirm", `"${target}" under a granted click → ${d.verdict} (${d.reason})`);
+    assert.equal(d.grant, undefined);
+  }
+  for (const target of ["Copy", "Search · AXTextField", "Open in browser · AXButton", "Personal · AXCell"]) {
+    assert.equal(classifyAction({ kind: "left_click", app: "1Password", target, granted: true }).verdict, "run", `"${target}" is what the grant covers`);
+  }
+  for (const target of ["Send", "Pay", "Purchase", "Delete", "Post", "Publish", "Transfer", "Place your order"]) {
+    const d = classifyAction({ kind: "left_click", app: "Mail", target });
+    assert.equal(d.verdict, "confirm", target);
+    assert.equal(d.grant, undefined, `${target} is a destructive verb: no grant class`);
+  }
+  // A grant runs the class in the app…
+  const granted = classifyAction({ kind: "left_click", app: "1Password", target: "Copy", granted: true });
+  assert.equal(granted.verdict, "run");
+  assert.match(granted.reason, /earlier yes covers click in 1Password/);
+  assert.equal(classifyAction({ kind: "type", app: "1Password", text: "search term", granted: true }).verdict, "run");
+  // …but never a destructive control in it, and never a refusal.
+  assert.equal(classifyAction({ kind: "left_click", app: "1Password", target: "Delete", granted: true }).verdict, "confirm", "Delete under a granted click still asks");
+  assert.equal(classifyAction({ kind: "left_click", app: "1Password", target: "Delete", granted: true }).grant, undefined);
+  assert.equal(classifyAction({ kind: "type", app: "1Password", text: "x", granted: true, secureField: true }).verdict, "refuse");
+  // A grant means nothing outside the hands-off table (there was no question to keep).
+  assert.equal(classifyAction({ kind: "left_click", app: "Mail", target: "Send", granted: true }).verdict, "confirm");
+  // The class table.
+  assert.equal(grantClassOf("left_click"), "click");
+  assert.equal(grantClassOf("left_click_drag"), "click");
+  assert.equal(grantClassOf("scroll"), "click");
+  assert.equal(grantClassOf("left_mouse_down"), "click");
+  assert.equal(grantClassOf("type"), "type");
+  assert.equal(grantClassOf("key"), undefined, "a key press asks on its own");
+  assert.equal(grantClassOf("hold_key"), undefined);
+  assert.equal(grantClassOf("run_shell"), undefined);
+  assert.equal(grantClassOf("open_app"), undefined);
+});
+
+test("trash: move-only — no tool writes or deletes under ~/.jarhead/trash, confirmed or not; reading is fine; the shell gate refuses the same", () => {
+  for (const access of ["write", "delete"] as const) {
+    for (const confirmed of [false, true]) {
+      const d = classifyPath({ path: "~/.jarhead/trash/ledger/2026-09-10.jsonl", access, home: HOME, confirmed, readThisTask: true, exists: true });
+      assert.equal(d.verdict, "refuse", `${access} confirmed=${confirmed} → ${d.verdict}: ${d.reason}`);
+      assert.equal(d.reason, TRASH_REASON);
+    }
+  }
+  assert.equal(classifyPath({ path: "~/.jarhead/trash/shots/2026-09-10/shot_1.png", access: "read", home: HOME }).verdict, "run");
+  assert.equal(classifyPath({ path: "/tmp/x", access: "write", home: HOME, realPath: "/Users/kevin/.jarhead/trash/ledger/a.jsonl" }).verdict, "refuse", "the real path is judged");
+  assert.equal(classifyPath({ path: "~/.jarhead/trashy-notes.md", access: "write", home: HOME }).verdict, "run", "the folder, not a prefix");
+  const shell = (cmd: string): Verdict => classifyAction({ kind: "run_shell", text: cmd, home: HOME, confirmed: true }).verdict;
+  for (const cmd of [
+    "rm -rf ~/.jarhead/trash",
+    "rm ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "rm -rf /Users/kevin/.jarhead/trash/shots",
+    "find ~/.jarhead/trash -type f -delete",
+    "find ~/.jarhead/trash -name '*.png' -exec rm {} \;",
+    "ls ~/.jarhead/trash | xargs rm",
+    "truncate -s 0 ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "echo x > ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "sudo rm -rf $HOME/.jarhead/trash/ledger",
+    "bash -c 'rm -rf ~/.jarhead/trash'",
+    // Spellings the first cut missed (review, 2026-09-12): the name travels through cd, variables, braces and code.
+    "cd ~/.jarhead/trash && rm -rf *",
+    "cd ~/.jarhead/trash; rm -rf ./*",
+    "pushd ~/.jarhead/trash && rm -rf ledger",
+    "T=~/.jarhead/trash; rm -rf $T",
+    "export T=~/.jarhead/trash; rm -rf $T/ledger",
+    "T=~/.jarhead/trash; mv $T /tmp/gone",
+    "rm -rf ~/.jarhead/{trash,}",
+    "rm -rf ~/.jarhead/{ledger,trash}",
+    "python3 -c \"import shutil; shutil.rmtree('/Users/kevin/.jarhead/trash')\"",
+    "node -e \"require('fs').rmSync(process.env.HOME + '/.jarhead/trash',{recursive:true})\"",
+    "perl -e 'unlink glob \"~/.jarhead/trash/ledger/*\"'",
+    "osascript -e 'tell application \"Finder\" to delete POSIX file \"/Users/kevin/.jarhead/trash\"'",
+    "rsync -a --delete /tmp/empty/ ~/.jarhead/trash/",
+    "rsync -a /tmp/stuff/ ~/.jarhead/trash/shots/",
+    "cp /dev/null ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "cp -r /tmp/x ~/.jarhead/trash/",
+    "mv ~/.jarhead/trash /tmp/gone",
+    "mv /tmp/x ~/.jarhead/trash/",
+    "dd if=/dev/zero of=~/.jarhead/trash/ledger/2026-09-10.jsonl count=1",
+    "tee ~/.jarhead/trash/ledger/2026-09-10.jsonl < /dev/null",
+    "sed -i '' '1d' ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "ln -sf /tmp/x ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "install -m 644 /tmp/x ~/.jarhead/trash/",
+    "touch ~/.jarhead/trash/ledger/x.jsonl",
+    "cd ~/.jarhead/trash && echo x > ledger/2026-09-10.jsonl",
+    "cd ~/.jarhead/trash && cp /dev/null ledger/2026-09-10.jsonl",
+    // Case: APFS folds it, so ~/.jarhead/Trash IS the trash.
+    "rm -rf ~/.jarhead/Trash",
+    "rm -rf ~/.JARHEAD/trash",
+    "rm -rf /Users/kevin/.jarhead/TRASH/shots",
+    // Odd spellings of the same path.
+    "rm -rf ~/.jarhead/./trash",
+    "rm -rf ~/.jarhead//trash",
+    "rm -rf '~/.jarhead/trash'",
+    "rm -rf ${HOME}/.jarhead/trash",
+  ]) {
+    assert.equal(shell(cmd), "refuse", `${JSON.stringify(cmd)} should be refused even with a yes`);
+  }
+  // dd into the trash is refused without a yes as well (it was a plain run before the review).
+  assert.equal(classifyAction({ kind: "run_shell", text: "dd if=/dev/zero of=~/.jarhead/trash/ledger/2026-09-10.jsonl count=1", home: HOME }).verdict, "refuse");
+  assert.equal(classifyAction({ kind: "run_shell", text: "rm -rf ~/.jarhead/Trash", home: HOME }).verdict, "refuse");
+  for (const cmd of [
+    "ls -la ~/.jarhead/trash",
+    "du -sh ~/.jarhead/trash",
+    "open ~/.jarhead/trash",
+    "cat ~/.jarhead/trash/ledger/2026-09-10.jsonl",
+    "cp ~/.jarhead/trash/ledger/2026-09-10.jsonl /tmp/",
+    "cat ~/.jarhead/trash/ledger/2026-09-10.jsonl > /tmp/out.jsonl",
+    "cd ~/.jarhead/trash && ls -la && cat ledger/2026-09-10.jsonl | wc -l",
+    "ls ~/.jarhead/Trash",
+    "T=~/.jarhead/trash; ls $T",
+  ]) {
+    assert.equal(classifyAction({ kind: "run_shell", text: cmd, home: HOME }).verdict, "run", `${JSON.stringify(cmd)} only looks or copies out`);
+  }
+  // The path gate folds case too.
+  assert.equal(classifyPath({ path: "~/.jarhead/Trash/x", access: "write", home: HOME }).verdict, "refuse");
+  assert.equal(classifyPath({ path: "~/.JARHEAD/trash/x", access: "delete", home: HOME, confirmed: true }).verdict, "refuse");
+  assert.equal(classifyPath({ path: "~/.jarhead/Trash/ledger/2026-09-10.jsonl", access: "read", home: HOME }).verdict, "run");
 });

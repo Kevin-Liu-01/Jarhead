@@ -1,6 +1,6 @@
-import { classifyAction, logger, type ActionContext, type Decision } from "@jarhead/core";
+import { PRESENCE_ABSENT, PRESENCE_WINDOW_MS, classifyAction, grantClassOf, logger, type ActionContext, type Decision, type Presence } from "@jarhead/core";
 import type { OverlayCommand } from "@jarhead/protocol";
-import { NativeRequestError, type ElementInfo, type FindElementResult, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type WindowInfo } from "./native.ts";
+import { NativeRequestError, type ElementInfo, type FindElementResult, type FocusedText, type FrontmostInfo, type NativeHands, type ScreenshotResult, type TypeResult, type WindowInfo } from "./native.ts";
 import { DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET, Screen, type ShotBudget } from "./screen.ts";
 import { screencaptureFallback } from "./fallback.ts";
 import type { DisplayInfo } from "./native.ts";
@@ -64,60 +64,181 @@ export interface ActionEvent {
   readonly ok: boolean;
 }
 
+/** What a yes to a pending question would keep for the rest of the conversation: this app, this class of action. */
+export interface Grantable {
+  /** The app's bundle id when known, else its name (the key a later action is matched on, case-folded). */
+  readonly app: string;
+  /** "click" or "type" — `Decision.grant` from the policy. */
+  readonly actionClass: string;
+}
+
 export interface PendingConfirmation {
   readonly id: string;
   readonly description: string;
   readonly member: string;
   readonly input: Record<string, unknown>;
   readonly at: number;
+  /** Absent for a one-off (every destructive verb): the yes is spent on this action alone. */
+  readonly grantable?: Grantable;
 }
+
+/** A standing yes: Kevin approved `actionClass` in `app` for the conversation (ended by `endConversation`, or at `until` at the latest). */
+export interface ConfirmationGrant extends Grantable {
+  readonly at: number;
+  readonly until: number;
+}
+
+/** What `arm()` returns: the action Kevin is confirming, and the grant his yes issued, if any. */
+export interface ArmedConfirmation extends PendingConfirmation {
+  readonly grant?: ConfirmationGrant;
+}
+
+/**
+ * A grant lives for the conversation (the chain's end, a stop, `conversation.new`
+ * end it); this is the ceiling when nothing does — conversation-shaped, not
+ * shift-shaped, so a yes never outlives the errand it was said for by more than this.
+ */
+export const GRANT_TTL_MS = 20 * 60_000;
+
+/** The pendingId of a hold: not a question, nothing registered, nothing a yes can arm. */
+export const HOLD_ID = "hold";
 
 /**
  * Confirmation is a two-delegation handshake: the tool refuses with a question,
  * Live asks Kevin, Kevin says "go ahead", the next delegation arms this state,
  * and the *same* action then runs once. A yes never carries over to a different
  * action, and it expires.
+ *
+ * Grants (2026-09-12): when the question was a repeatable one — "act in this
+ * hands-off app?" — the yes may also open that app for that class of action for the
+ * rest of the conversation (`granted()`), so the third click in 1Password is not
+ * a third question. A grant is issued only by an `arm(record)` that puts it on the
+ * ledger as it is born: no grant without its `grant` row, so a caller that cannot
+ * record one (the typed yes today) arms the one action and keeps nothing.
+ * Destructive verbs (send, pay, purchase, delete, post, publish, transfer) never
+ * leave a grant: the policy gives them no `grant` class, so they ask every time.
+ * A refusal or a per-action ask always beats a grant: the grant only answers
+ * `granted` in the policy, which still refuses secret fields, still asks for an
+ * irreversible control and for a setting or switch in the app.
+ *
+ * A cut (`clear()`: the engine's stop or pause, whichever verb) drops the question
+ * and SUSPENDS the grants — nothing runs on them until `beginConversation` names
+ * the same chain again (a resume), which wakes them; a different chain, or
+ * `endConversation()`, drops them. Fail-safe by construction: an engine that never
+ * calls `beginConversation` leaves a cut grant asleep for good. `dropQuestion()` is
+ * the mid-conversation drop (Kevin moved on from a question) and touches no grant.
  */
 export class ConfirmationState {
   pending: PendingConfirmation | undefined;
   private armed = false;
   private seq = 0;
+  private readonly grants = new Map<string, ConfirmationGrant & { suspended?: boolean }>();
+  /**
+   * The conversation the grants belong to: any session id of the chain (the ledger walk
+   * resolves it to the root). The engine sets it at `session.started` — a resume passes
+   * the chain it continues, so the grants stay; a new chain ends them (`beginConversation`).
+   * Empty until the engine says.
+   */
+  conversationId = "";
 
-  constructor(private readonly ttlMs = 3 * 60_000, private readonly now: () => number = Date.now) {}
+  /**
+   * A conversation begins (or continues, when `chainId` is the one already held). The
+   * same chain wakes the grants a cut suspended (a pause and its resume are one
+   * conversation); a different chain ends them.
+   */
+  beginConversation(chainId: string): void {
+    if (chainId !== this.conversationId) this.endConversation();
+    else for (const g of this.grants.values()) g.suspended = false;
+    this.conversationId = chainId;
+  }
 
-  ask(description: string, member: string, input: Record<string, unknown>): PendingConfirmation {
-    this.pending = { id: `confirm_${++this.seq}`, description, member, input, at: this.now() };
+  constructor(
+    private readonly ttlMs = 3 * 60_000,
+    private readonly now: () => number = Date.now,
+    private readonly grantTtlMs = GRANT_TTL_MS,
+  ) {}
+
+  ask(description: string, member: string, input: Record<string, unknown>, grantable?: Grantable): PendingConfirmation {
+    this.pending = { id: `confirm_${++this.seq}`, description, member, input, at: this.now(), ...(grantable && grantable.app ? { grantable } : {}) };
     this.armed = false;
     return this.pending;
   }
 
-  /** Called when Kevin's new request reads as a yes. Returns what he is confirming. */
-  arm(): PendingConfirmation | undefined {
+  /**
+   * Called when Kevin's new request reads as a yes. Returns what he is confirming. When
+   * the question was a repeatable one and the caller passes `record` — the function that
+   * writes the `grant` ledger row — the yes also issues the grant, recorded first, and
+   * the result carries it. Without `record` the yes is spent on this one action.
+   */
+  arm(record?: (grant: ConfirmationGrant) => void): ArmedConfirmation | undefined {
     if (!this.pending || this.now() - this.pending.at > this.ttlMs) {
       this.pending = undefined;
       return undefined;
     }
     this.armed = true;
-    return this.pending;
+    const g = this.pending.grantable;
+    if (!g || !record) return this.pending;
+    const at = this.now();
+    const grant: ConfirmationGrant = { app: g.app, actionClass: g.actionClass, at, until: at + this.grantTtlMs };
+    record(grant);
+    this.grants.set(grantKey(g.app, g.actionClass), { ...grant });
+    return { ...this.pending, grant };
+  }
+
+  /** Does a standing yes from this conversation cover `actionClass` in `app`? Not while a cut has it suspended. */
+  granted(app: string | undefined, actionClass: string | undefined): boolean {
+    if (!app || !actionClass) return false;
+    const key = grantKey(app, actionClass);
+    const g = this.grants.get(key);
+    if (!g) return false;
+    if (this.now() > g.until) {
+      this.grants.delete(key);
+      return false;
+    }
+    return !g.suspended;
+  }
+
+  /** The grants standing right now (not expired, not suspended by a cut), for the Console and the tests. */
+  get activeGrants(): readonly ConfirmationGrant[] {
+    const t = this.now();
+    for (const [k, g] of this.grants) if (t > g.until) this.grants.delete(k);
+    return [...this.grants.values()].filter((g) => !g.suspended).map(({ suspended: _s, ...g }) => g);
+  }
+
+  /** The conversation ended (a stop, `conversation.new`, another chain): every standing yes goes with it. */
+  endConversation(): void {
+    this.dropQuestion();
+    this.grants.clear();
   }
 
   /** True once, for an action matching the pending one. */
   consume(member: string, input: Record<string, unknown>): boolean {
     if (!this.armed || !this.pending) return false;
     if (this.now() - this.pending.at > this.ttlMs) {
-      this.clear();
+      this.dropQuestion();
       return false;
     }
     const same = this.pending.member === member && sameTarget(this.pending.input, input);
     if (!same) return false;
-    this.clear();
+    this.dropQuestion();
     return true;
   }
 
+  /** The cut: the question goes, and every grant sleeps until the same conversation resumes. */
   clear(): void {
+    this.dropQuestion();
+    for (const g of this.grants.values()) g.suspended = true;
+  }
+
+  /** Kevin moved on from the question (or it was answered): the question goes; the grants stand. */
+  dropQuestion(): void {
     this.pending = undefined;
     this.armed = false;
   }
+}
+
+function grantKey(app: string, actionClass: string): string {
+  return `${app.trim().toLowerCase()}\u0000${actionClass.trim().toLowerCase()}`;
 }
 
 function sameTarget(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
@@ -142,9 +263,24 @@ export interface ToolsetOptions {
   readonly onAction?: (event: ActionEvent) => void;
   readonly policy?: (ctx: ActionContext) => Decision;
   readonly now?: () => number;
+  /**
+   * When KEVIN last did something at the Mac — the wake word, an ear utterance, a Live
+   * input transcript, a line he typed, a dictation he started — as wall-clock ms, or
+   * undefined when the engine has no idea. Never the model's own speech, a delegation
+   * event or a hands action: those are the brain's activity, and a brain clicking
+   * through Mail while Kevin is away must not count as Kevin being there (the engine's
+   * `lastAddressedAt` is an exchange timer stamped by all of them — not this). Read per
+   * action; within PRESENCE_WINDOW_MS it counts as "he is here" for the presence gate.
+   * Absent (not wired), that leg of the gate is unknown and does not hold anything; the
+   * locked-screen and wrong-app legs come from the hands themselves.
+   */
+  readonly presenceAt?: () => number | undefined;
 }
 
 const SCROLL_PX_PER_CLICK = 60;
+
+/** The one line a coordinate action gets when the screen no longer matches the screenshot it was aimed at. */
+export const STALE_FRAME = "the screen changed since that screenshot — take a new one";
 
 export class ComputerToolset {
   readonly screen: Screen;
@@ -218,8 +354,8 @@ export class ComputerToolset {
           shot = await this.fallbackScreenshot(display, budget);
           log.warn(`native screenshot unavailable (${e.detail.code}); used screencapture`);
         }
-        this.screen.remember(shot);
-        return { kind: "image", pngBase64: shot.pngBase64, width: shot.width, height: shot.height, note: `display ${shot.displayId}, ${shot.width}x${shot.height} px covering ${Math.round(shot.points.w)}x${Math.round(shot.points.h)} points${input["quick"] === true ? " (quick budget)" : ""}` };
+        const m = this.screen.remember(shot);
+        return { kind: "image", pngBase64: shot.pngBase64, width: shot.width, height: shot.height, note: `display ${shot.displayId}, ${shot.width}x${shot.height} px covering ${Math.round(shot.points.w)}x${Math.round(shot.points.h)} points${input["quick"] === true ? " (quick budget)" : ""}${m.frameId !== undefined ? `; frame ${m.frameId}` : ""}` };
       }
       case "zoom": {
         const region = input["region"];
@@ -263,18 +399,22 @@ export class ComputerToolset {
         this.opts.annotate?.({ cmd: "click-pulse", x: p.x, y: p.y });
         return ok();
       }
-      case "left_mouse_down":
+      case "left_mouse_down": {
+        // The press is the commitment: mouse_move + down + up is a click by another name, so the
+        // down goes through the same gate as left_click at the pointer — the policy on what is
+        // under it, the stale-frame compare, presence, grants. mouse_move is the aim and stays free.
+        const p = await this.cursorPoints();
+        notePoints(p);
+        const gate = await this.gate(name, input, { points: p });
+        noteDecision(gate.decision);
+        if (gate.result) return gate.result;
+        if (Number.isFinite(p.x) && Number.isFinite(p.y)) this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
+        await hands.request("mouse_down", { button: "left" });
+        return ok();
+      }
       case "left_mouse_up": {
-        if (name === "left_mouse_down") {
-          // The press lands under the pointer; the blob goes there (best effort: no pointer position, no flight).
-          try {
-            const c = await this.cursorPoints();
-            if (Number.isFinite(c.x) && Number.isFinite(c.y)) this.opts.annotate?.({ cmd: "orb.fly", x: c.x, y: c.y, dwellMs: 1500, reason: name });
-          } catch {
-            // no pointer position, no flight
-          }
-        }
-        await hands.request(name === "left_mouse_down" ? "mouse_down" : "mouse_up", { button: "left" });
+        // Releasing what the gated press began; alone it is nothing.
+        await hands.request("mouse_up", { button: "left" });
         return ok();
       }
       case "left_click_drag": {
@@ -300,6 +440,17 @@ export class ComputerToolset {
         const dy = dir === "up" ? px : dir === "down" ? -px : 0;
         const dx = dir === "left" ? px : dir === "right" ? -px : 0;
         if (dx === 0 && dy === 0) return { kind: "error", message: `scroll_direction must be up, down, left or right (got ${dir})` };
+        // A scroll aimed at a point of the last screenshot: the screen must still be that screenshot.
+        if (p && this.screen.last?.config) {
+          const el = await hands.request<ElementInfo>("element_at", p, 1500).catch((e: unknown) => {
+            if (e instanceof NativeRequestError && e.detail.code === "cancelled") throw e;
+            return undefined;
+          });
+          if (!this.screen.sameConfig(el?.config)) {
+            noteDecision({ verdict: "refuse", reason: STALE_FRAME });
+            return { kind: "error", message: STALE_FRAME };
+          }
+        }
         if (p) this.opts.annotate?.({ cmd: "orb.fly", x: p.x, y: p.y, dwellMs: 1500, reason: name });
         await hands.request("scroll", { ...(p ?? {}), dx, dy, modifiers: modifiersOf(input) });
         return ok();
@@ -310,15 +461,22 @@ export class ComputerToolset {
         const gate = await this.gate(name, input, { text });
         noteDecision(gate.decision);
         if (gate.result) return gate.result;
-        // Typing lands in the focused element; when accessibility knows where that is, the blob hovers there.
+        // Typing lands in the focused element (the gate's probe); when accessibility knows where that is, the blob hovers there.
+        const f = gate.probes.focused;
+        if (f?.frame) this.opts.annotate?.({ cmd: "orb.fly", x: f.frame.x + f.frame.w / 2, y: f.frame.y + f.frame.h / 2, dwellMs: 1500, reason: name });
+        // The helper delivers like a careful person: accessibility insertion into a text field (read
+        // back to verify), else keystrokes a grapheme at a time (a stop lands mid-word), else a paste
+        // that restores the clipboard; three attempts, then a failure that names the field and leaves
+        // the text on the clipboard. `strategy` is the escape hatch for an app that rejects one of them.
+        const strategy = typeof input["strategy"] === "string" && /^(auto|ax|keystrokes|paste)$/.test(input["strategy"]) ? { strategy: input["strategy"] } : {};
         try {
-          const f = await hands.request<FocusedText>("focused_text", {}, 1500);
-          if (f.frame) this.opts.annotate?.({ cmd: "orb.fly", x: f.frame.x + f.frame.w / 2, y: f.frame.y + f.frame.h / 2, dwellMs: 1500, reason: name });
-        } catch {
-          // no frame, no flight
+          const r = await hands.request<TypeResult>("type", { text, ...strategy }, 6000 + text.length * 15);
+          return { kind: "text", text: describeTyped(r, text, f) };
+        } catch (e) {
+          // The helper's own words name the field and say where the text is; the code adds nothing.
+          if (e instanceof NativeRequestError && e.detail.code !== "cancelled" && e.detail.code !== "unavailable" && e.detail.code !== "timeout") return { kind: "error", message: e.detail.message };
+          throw e;
         }
-        await hands.request("type", { text }, 5000 + text.length * 15);
-        return ok();
       }
       case "key": {
         const combo = String(input["text"] ?? "");
@@ -403,14 +561,22 @@ export class ComputerToolset {
         if (under.stopped) return { kind: "error", message: "stopped: Kevin pressed stop before this action ran" };
         if (under.problem) return { kind: "error", message: under.problem };
         const confirmed = this.confirmations.consume("click_element", { name });
-        // The policy judges the name the tree gave and whatever the point itself says.
+        // The policy judges the name the tree gave and whatever the point itself says; a standing
+        // yes for clicks in this app answers the hands-off question, and presence is judged as for
+        // any click (the app is in front — underPoint said so — the screen unlocked, Kevin recent).
         const target = [el.label, el.role, ...under.words].filter(Boolean).join(" · ");
-        const decision = this.policy({ kind: "left_click", app: found.app, target, confirmed });
+        const appKey = under.front?.bundleId ?? found.app;
+        const granted = this.confirmations.granted(appKey, "click");
+        const presence = this.presenceOf(under.front, true, under.el?.locked);
+        const decision = this.policy({ kind: "left_click", app: found.app, target, confirmed, granted, presence });
         noteDecision(decision);
         if (decision.verdict === "refuse") return { kind: "error", message: `refused: ${decision.reason}` };
         if (decision.verdict === "confirm") {
-          const pending = this.confirmations.ask(`click "${el.label}" in ${found.app}`, "click_element", { name });
-          return { kind: "needs-confirmation", pendingId: pending.id, question: `About to click "${el.label}" in ${found.app}. ${decision.reason}. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.` };
+          const what = `click "${el.label}" in ${found.app}`;
+          // A hold registers nothing: there is no question for a yes to answer (see gate()).
+          if (decision.hold) return { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(what, decision, found.app) };
+          const pending = this.confirmations.ask(what, "click_element", { name }, decision.grant ? { app: appKey, actionClass: decision.grant } : undefined);
+          return { kind: "needs-confirmation", pendingId: pending.id, question: question(what, decision, found.app) };
         }
         const button = input["button"] === "right" ? "right" : "left";
         const count = Number(input["count"]) === 2 ? 2 : 1;
@@ -435,7 +601,7 @@ export class ComputerToolset {
    * is refused, never guessed: `click_element` is the reflex path's click and
    * nobody looked at a screenshot first.
    */
-  private async underPoint(app: string, label: string, role: string, p: { x: number; y: number }, frame: { x: number; y: number; w: number; h: number } | undefined): Promise<{ problem?: string; stopped?: boolean; words: string[] }> {
+  private async underPoint(app: string, label: string, role: string, p: { x: number; y: number }, frame: { x: number; y: number; w: number; h: number } | undefined): Promise<{ problem?: string; stopped?: boolean; words: string[]; front?: FrontmostInfo; el?: ElementInfo }> {
     const hands = this.opts.hands;
     let stopped = false;
     const probe = <T>(q: Promise<T>): Promise<T | undefined> =>
@@ -448,27 +614,44 @@ export class ComputerToolset {
     if (!front) return { problem: `could not tell which app is in front; take a screenshot and left_click "${label}" instead`, words: [] };
     if (front.app.toLowerCase() !== app.toLowerCase()) return { problem: `"${label}" is in ${app}, but ${front.app} is in front: focus_app ${app} first (its window may be behind another), or take a screenshot and left_click`, words: [] };
     const words = el ? [el.title, el.description, el.value].filter((s): s is string => typeof s === "string" && s.length > 0) : [];
-    if (el?.app && el.app.toLowerCase() !== app.toLowerCase()) return { problem: `the point where "${label}" is (${Math.round(p.x)},${Math.round(p.y)}) is covered by ${el.app}${words.length ? ` ("${words[0]}")` : ""}; take a screenshot and left_click`, words };
-    if (!el) return { words };
+    const probes = { front, ...(el ? { el } : {}) };
+    if (el?.app && el.app.toLowerCase() !== app.toLowerCase()) return { problem: `the point where "${label}" is (${Math.round(p.x)},${Math.round(p.y)}) is covered by ${el.app}${words.length ? ` ("${words[0]}")` : ""}; take a screenshot and left_click`, words, ...probes };
+    if (!el) return { words, ...probes };
     const what = `${el.role ?? "an element"}${words.length ? ` "${words[0]}"` : ""}`;
     if (frame && el.frame) {
       // Inside the control's frame: the control or one of its children, whatever it says.
-      if (within(el.frame, frame)) return { words };
+      if (within(el.frame, frame)) return { words, ...probes };
       // Around it: the point resolved to an enclosing element — the row or group the control
       // sits in when the app exposes nothing deeper there. A leaf control (a button, a link, a
       // menu item) enclosing another control is not a thing; it is a sheet's button over it.
       if (within(frame, el.frame)) {
-        if (LEAF_CONTROL.test(el.role ?? "")) return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words };
-        return { words };
+        if (LEAF_CONTROL.test(el.role ?? "")) return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words, ...probes };
+        return { words, ...probes };
       }
-      return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words };
+      return { problem: `"${label}" (${role}) is covered at its point (${Math.round(p.x)},${Math.round(p.y)}) by ${what}; take a screenshot and left_click the right one`, words, ...probes };
     }
     // No frame to compare: a control with a name of its own that is not this one is a cover
     // (a sheet's button, a menu). Static text, images and groups are taken as the control's own.
     if (words.length > 0 && !words.some((w) => relates(w, label)) && CONTROL_ROLE.test(el.role ?? "")) {
-      return { problem: `"${label}" (${role}) is not what is under its point: ${what} is; take a screenshot and left_click the right one`, words };
+      return { problem: `"${label}" (${role}) is not what is under its point: ${what} is; take a screenshot and left_click the right one`, words, ...probes };
     }
-    return { words };
+    return { words, ...probes };
+  }
+
+  /**
+   * Kevin at the Mac, leg by leg, for the presence gate: the screen unlocked (the
+   * helper reads CGSessionCopyCurrentDictionary on every probe), the app the action
+   * lands on in front, and — when the engine says when he last spoke — recent. A leg
+   * nobody can judge is left unknown, and the policy holds nothing on an unknown.
+   */
+  private presenceOf(front: FrontmostInfo | undefined, frontmost: boolean | undefined, locked?: boolean): Presence {
+    const at = this.opts.presenceAt?.();
+    const lockedNow = locked ?? front?.locked;
+    return {
+      ...(typeof at === "number" ? { recent: this.now() - at <= PRESENCE_WINDOW_MS } : {}),
+      ...(typeof lockedNow === "boolean" ? { unlocked: !lockedNow } : {}),
+      ...(typeof frontmost === "boolean" ? { frontmost } : {}),
+    };
   }
 
   /** The helper's `find_element`: the front window's cached accessibility tree searched by label. */
@@ -517,7 +700,7 @@ export class ComputerToolset {
    * element_at plus one frontmost call costs a few ms with the native helper and
    * is what makes "confirm before Send" possible at all.
    */
-  private async gate(member: string, input: Record<string, unknown>, about: { points?: { x: number; y: number }; text?: string }): Promise<{ decision: Decision; result?: ToolResult }> {
+  private async gate(member: string, input: Record<string, unknown>, about: { points?: { x: number; y: number }; text?: string }): Promise<{ decision: Decision; result?: ToolResult; probes: { front?: FrontmostInfo; element?: ElementInfo; focused?: FocusedText } }> {
     let app = "";
     let target = "";
     let secure = false;
@@ -539,7 +722,14 @@ export class ComputerToolset {
       wantsElement ? probe(hands.request<ElementInfo>("element_at", about.points, 1500)) : Promise.resolve(undefined),
       wantsFocus ? probe(hands.request<FocusedText>("focused_text", {}, 1500)) : Promise.resolve(undefined),
     ]);
-    if (stopped) return { decision: { verdict: "refuse", reason: "Kevin pressed stop" }, result: { kind: "error", message: "stopped: Kevin pressed stop before this action ran" } };
+    const probes = { ...(front ? { front } : {}), ...(el ? { element: el } : {}), ...(f ? { focused: f } : {}) };
+    if (stopped) return { decision: { verdict: "refuse", reason: "Kevin pressed stop" }, result: { kind: "error", message: "stopped: Kevin pressed stop before this action ran" }, probes };
+    // A coordinate action is aimed at the last screenshot: the display arrangement, the front
+    // app and its front window must still be the ones that shot was taken under. The probe
+    // that resolves the point reports what they are now; a different hash means the model is
+    // about to click on a screen that is gone (a dialog came up, an app switched, a display
+    // moved). Refused with the one line, never guessed. Older helpers report no hash: no guard.
+    if (wantsElement && !this.screen.sameConfig(el?.config)) return { decision: { verdict: "refuse", reason: STALE_FRAME }, result: { kind: "error", message: STALE_FRAME }, probes };
     // Without AX the policy sees less; it errs toward asking, never toward acting.
     if (front) app = front.app;
     if (el) target = [el.title, el.description, el.value, el.role].filter((s) => typeof s === "string" && s.length > 0).join(" · ");
@@ -548,20 +738,59 @@ export class ComputerToolset {
       if (!target) target = f.title ?? f.role;
     }
     const confirmed = this.confirmations.consume(member, input);
-    const decision = this.policy({ kind: member, app, target, text: about.text, secureField: secure, confirmed });
-    if (decision.verdict === "run") return { decision };
-    if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` } };
+    // The app the action lands on (the element under the point, or the focused field's owner)
+    // against the app in front: a mismatch is one leg of "he is not here"; unknown is unknown.
+    const landsOn = el?.app ?? f?.app;
+    const frontmost = front && landsOn ? landsOn.toLowerCase() === front.app.toLowerCase() : undefined;
+    const presence = this.presenceOf(front, frontmost, el?.locked ?? f?.locked);
+    // A standing yes from earlier in the conversation, keyed on the app and the class of action.
+    const appKey = front?.bundleId ?? app;
+    const granted = this.confirmations.granted(appKey, grantClassOf(member));
+    const decision = this.policy({ kind: member, app, target, text: about.text, secureField: secure, confirmed, granted, presence });
+    if (decision.verdict === "run") return { decision, probes };
+    if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` }, probes };
     const description = describe(member, input, app, target);
-    const pending = this.confirmations.ask(description, member, input);
+    // A presence hold is not a question and registers nothing: Kevin is away, so there is no
+    // question for his next "yes" to answer — a bare yes when he is back must not land an
+    // action whose real question ("about to click Send … looks irreversible") was never posed.
+    // When he is back and asks again, the action comes through this gate whole and asks it.
+    if (decision.hold) return { decision, result: { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(description, decision, app) }, probes };
+    const pending = this.confirmations.ask(description, member, input, decision.grant ? { app: appKey, actionClass: decision.grant } : undefined);
     return {
       decision,
-      result: {
-        kind: "needs-confirmation",
-        pendingId: pending.id,
-        question: `About to ${description}. ${decision.reason}. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.`,
-      },
+      result: { kind: "needs-confirmation", pendingId: pending.id, question: question(description, decision, app) },
+      probes,
     };
   }
+}
+
+/**
+ * The question the brain relays: what, why, and — for a repeatable one — that a yes covers
+ * the class for the conversation. A presence hold is not a question: Kevin is not at the Mac,
+ * so the brain says the one line (naming what waits) and waits for him, not for a yes.
+ */
+function question(description: string, decision: Decision, app: string): string {
+  if (decision.hold || decision.reason.includes(PRESENCE_ABSENT)) return `Not now: about to ${description} — ${decision.reason}. Nothing was done, and nothing is waiting for a yes. Tell Kevin in one short sentence and stop; when he is back and asks again, the action asks its own question then.`;
+  const keeps = decision.grant ? ` A yes also covers ${decision.grant === "type" ? "typing" : "clicks"}${app ? ` in ${app}` : ""} for the rest of this conversation; destructive controls, settings and switches still ask.` : "";
+  return `About to ${description}. ${decision.reason}.${keeps} Ask Kevin to confirm out loud, then stop; do not retry until he says yes.`;
+}
+
+/** What the helper did to deliver the text, in the words the model reads: where, how, and whether it was checked. */
+function describeTyped(r: TypeResult, text: string, f: FocusedText | undefined): string {
+  const field = r.field ?? fieldName(f);
+  const how = r.via === "ax" ? "by accessibility insertion" : r.via === "paste" ? "by paste (clipboard restored)" : "by keystrokes";
+  const checked = r.verified === true ? "verified" : r.verified === false ? "not verifiable in this field" : "";
+  const tries = r.attempts && r.attempts > 1 ? `, ${r.attempts} attempts` : "";
+  if (r.cancelled) return `stopped after ${r.characters ?? 0} of ${text.length} characters${field ? ` in ${field}` : ""}`;
+  return `typed ${text.length} characters ${how}${field ? ` into ${field}` : ""}${checked ? ` (${checked}${tries})` : tries ? ` (${tries.slice(2)})` : ""}`;
+}
+
+/** "the Subject field in Mail", from a focused_text probe; empty when nothing is known. */
+function fieldName(f: FocusedText | undefined): string {
+  if (!f) return "";
+  const role = (f.role ?? "").replace(/^AX/, "").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase() || "field";
+  const named = f.title ? `the "${f.title}" ${role}` : `the ${role}`;
+  return f.app ? `${named} in ${f.app}` : named;
 }
 
 /** What a model needs from a find: where it is and whether it was the only one, not the helper's timings. */

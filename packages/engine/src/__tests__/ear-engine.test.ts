@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { delegate, nextUtterance, settle, world } from "./world.ts";
+import { earHintsFrom } from "../engine.ts";
 
 /**
  * The 250 ms path end to end inside the engine: an ear partial becomes a hands
@@ -502,4 +503,87 @@ test("the ear is not held by output audio that is silence: GPT-Live-1 streams fr
   } finally {
     await engine.stop();
   }
+});
+
+test("ear hints: the AX warm tick turns the front window into `ear.hints` — app first, then the window, then the controls' titles (controls only, deduped) — once per change of the tree, never twice within 500 ms; asleep sends nothing", async () => {
+  const w = world();
+  const { engine, hands } = w;
+  const original = hands.request.bind(hands);
+  let nodes: Record<string, unknown>[] = [
+    { i: 1, depth: 1, role: "AXButton", title: "Save" },
+    { i: 2, depth: 1, role: "AXButton", title: "Add Folder" },
+    { i: 3, depth: 1, role: "AXStaticText", title: "Some prose that is long" },
+    { i: 4, depth: 2, role: "AXMenuItem", title: "Add to Reading List…" },
+    { i: 5, depth: 2, role: "AXGroup", pressable: true, description: "Close" },
+    { i: 6, depth: 2, role: "AXButton", title: "save" },
+  ];
+  const tree = (): Record<string, unknown> => ({ app: hands.frontApp, pid: 1, window: "Meeting notes", count: nodes.length, cached: true, ageMs: 1, treeMs: 3, truncated: false });
+  hands.request = async <T,>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
+    hands.ops.push({ op, params, at: hands.now() });
+    if (op === "ax_tree") return (params["summary"] ? tree() : { ...tree(), nodes }) as T;
+    hands.ops.pop();
+    return original<T>(op, params);
+  };
+  const sent: { at: number; strings: readonly string[] }[] = [];
+  engine.on("ear.hints", (strings) => sent.push({ at: performance.now(), strings }));
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle(150);
+    assert.equal(sent.length, 1, "one set after the first tick");
+    const first = sent[0]!.strings;
+    assert.deepEqual(first.slice(0, 2), ["Notes", "Meeting notes"], "the app, then the window");
+    for (const want of ["Save", "Add Folder", "Add to Reading", "Close"]) assert.ok(first.includes(want), `${want} in ${JSON.stringify(first)}`);
+    assert.ok(!first.some((s) => /prose/i.test(s)), "static text is not a control");
+    assert.equal(first.filter((s) => s.toLowerCase() === "save").length, 1, "deduped case-insensitively");
+    assert.ok(hands.named("ax_tree").some((o) => !o.params["summary"]), "the nodes were read from the cache");
+    // The next tick sees the same tree: nothing new goes out, and the nodes are not re-read.
+    const reads = hands.named("ax_tree").filter((o) => !o.params["summary"]).length;
+    await settle(600);
+    assert.equal(sent.length, 1);
+    assert.equal(hands.named("ax_tree").filter((o) => !o.params["summary"]).length, reads, "same summary: no node read");
+    // The tree changes: a new set, at least 500 ms after the first, carrying the new control.
+    nodes = [...nodes, { i: 7, depth: 1, role: "AXButton", title: "Send" }];
+    await settle(600);
+    assert.equal(sent.length, 2, "a changed tree sends a new set");
+    assert.ok(sent[1]!.at - sent[0]!.at >= 500, `paced: ${Math.round(sent[1]!.at - sent[0]!.at)} ms apart`);
+    assert.ok(sent[1]!.strings.includes("Send"));
+    // Asleep: the warm tick stops and nothing more is sent.
+    await engine.sleep();
+    nodes = [...nodes, { i: 8, depth: 1, role: "AXButton", title: "Later" }];
+    await settle(600);
+    assert.equal(sent.length, 2);
+  } finally {
+    hands.request = original as typeof hands.request;
+    await engine.stop();
+  }
+});
+
+test("ear hints: earHintsFrom keeps controls only, three words at most, trims ellipses and edge punctuation, dedupes, caps 80 controls and 100 strings, app first, window second, agents last", () => {
+  const many = Array.from({ length: 120 }, (_, i) => ({ i, depth: 1, role: "AXButton", title: `Button ${i}` }));
+  const hints = earHintsFrom(many, "Google Chrome", "Kevin Wiki — Design notes and more", ["Codex · jarvis", "Claude Code · Kevin-Wiki-v3"]);
+  assert.equal(hints[0], "Google Chrome");
+  assert.equal(hints[1], "Kevin Wiki", "the window's first three words, the dangling dash trimmed");
+  assert.equal(hints.filter((h) => h.startsWith("Button")).length, 80, "controls capped at 80");
+  assert.deepEqual(hints.slice(-2), ["Codex · jarvis", "Claude Code"], "agents last, each cut to three words, a dangling separator trimmed");
+  assert.ok(hints.length <= 100);
+  const cleaned = earHintsFrom(
+    [
+      { i: 1, depth: 1, role: "AXButton", title: "Save…" },
+      { i: 2, depth: 1, role: "AXButton", title: "+" },
+      { i: 3, depth: 1, role: "AXStaticText", title: "Hello there" },
+      { i: 4, depth: 1, role: "AXGroup", pressable: true, description: "Close window now please" },
+      { i: 5, depth: 1, role: "AXMenuItem", title: "  Add   Folder " },
+      { i: 6, depth: 1, role: "AXTextField", title: "", description: "" },
+      { i: 7, depth: 1, role: "AXButton", title: "SAVE" },
+    ],
+    "",
+    "",
+    [],
+  );
+  assert.deepEqual(cleaned, ["Save", "Close window now", "Add Folder"]);
+  const capped = earHintsFrom(many, "App", "Win", Array.from({ length: 40 }, (_, i) => `Agent ${i}`));
+  assert.equal(capped.length, 100, "total capped at 100");
 });

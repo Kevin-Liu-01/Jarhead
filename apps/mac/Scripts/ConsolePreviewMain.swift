@@ -5,6 +5,25 @@ import SwiftUI
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
 //   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
+//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared
+//     cleanup      = the rail with a pinned chain above the days, "Archived (2)" folded and
+//                    "Trash (2)" open with Restore on each row and the folder on its head; the
+//                    Agents section with "Hidden (1)" open; the trash figures in Settings › Retention
+//     cleanup-select = the same with two chains ⌘-picked: the strip under the head (Archive ·
+//                    Move to Trash · Restore) and the check marks on the rows
+//     cleanup-rename = the pinned chain's title as the inline field
+//     cleanup-undo = a chain moved to the Trash at 0.5 s: the toast "Moved to Trash · Undo" under
+//                    the header and the row in the open Trash group
+//     cleanup-log  = the pinned chain's Log view: its renamed and pinned rows as terse lines
+//     search       = the head as the search box with "codex" typed: hits from the fake ledger
+//                    grouped by conversation, the title match first
+//     search-hit   = "codex did while" searched, then its one hit opened the way the row would: the
+//                    paused → resumed chain's Conversation view scrolled to the delegation card, lit;
+//                    `probe` prints what landed (entries, scroll target, the entry id it resolves to)
+//     cleanup-undo-toast = cleanup-undo, then the toast's Undo at 1.2 s, ⌘Z at 1.8 s (must find nothing
+//                    to undo), ⇧⌘Z at 2.4 s (re-trashes): the undo manager's stacks after a toast Undo
+//     problems     = the Now tab with typed problems: a solid symbol per kind and a remedy button each
+//     cleared      = Now cleared at 0.5 s: the feed's "Cleared · Undo", the toast
 //     jarhead      = live data with a past Jarhead conversation stepped into — the paused → resumed
 //                    chain (two sessions folded into one row, "resumed ×1"), read-only, Conversation view
 //     jarhead-log  = the same conversation as its ledger log (time · type · text)
@@ -43,6 +62,20 @@ import SwiftUI
 //     geometry             print the stream's scroll geometry (minY, viewport, content, distance)
 //     shot:<name>          screenshot the window now → <PREVIEW_OUT_DIR>/<name>.png (a moment
 //                          mid-transition, where the script's own shot comes too late)
+//     search:<query>       open the rail's search box with the query (hits from the fake ledger)
+//     trash-open / archived-open / hidden-open   unfold the rail's folded groups
+//     select:<id>+<id>     ⌘-pick chains (the strip shows from two); rename:<id> opens the inline field
+//     trash:<id>           move a chain to the Trash the way the menu would (the toast with Undo)
+//     clear-now            clear the Now stream (the feed's "Cleared · Undo")
+//     hit-first            open the first search hit the way its row would (the conversation,
+//                          scrolled to the row and lit); hit:<sessionId>:<atMs> names one outright
+//     probe                print the open conversation's state (open / loaded / entries / scroll
+//                          target / the entry it resolves to) so a landed hit is checked, not reasoned
+//     key:<char>           send ⌘<char> to the window (key:f must open the search); undo runs the
+//                          window's undo manager once (the last cleanup's inverse must be sent);
+//                          undo-toast presses the toast's Undo (AppState.undoCleanup(id:)); redo
+//                          runs the manager's redo once — the toast-then-⌘Z sequence must not
+//                          re-perform the action (undo after undo-toast: canUndo=false, nothing sent)
 //     Every action may carry `@<seconds>` (from launch): "open-jarhead@1.2,shot:mid@1.36";
 //     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s).
 
@@ -98,9 +131,28 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.jarheadSessions = fake.jarheadSessions()
         state.jarheadSessionsHandler = { fake.jarheadSessions() }
         state.jarheadSessionRowsHandler = { id in fake.jarheadRows(for: id) }
+        // The rail's search, as `ledger.search` would answer: a scan of the fake rows.
+        state.ledgerSearchHandler = { query, limit in Array(fake.searchHits(query).prefix(limit)) }
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
+        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared":
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.snapshot.trash = fake.trash
+            state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
+            // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen.
+            if scenario == "cleanup" {
+                let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
+                state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
+            }
+        case "problems":
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.snapshot.trash = fake.trash
+            let typed = fake.problemsTyped()
+            state.snapshot.problemsTyped = typed
+            state.snapshot.problems = typed.map(\.text)
         case "paused":
             state.snapshot = fake.live()
             state.snapshot.phase = .paused
@@ -173,6 +225,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             frame.size = NSSize(width: max(wanted.width, window.minSize.width), height: max(wanted.height, window.minSize.height))
             window.setFrame(frame, display: true)
             window.center()
+            // The app's own install (ConsoleRootView.onAppear) reads NSApp.keyWindow at each click; an
+            // accessory harness behind the Terminal is rarely key, so the `undo` / `undo-toast` /
+            // `redo` probes would find an empty manager. Name this window's outright, a turn after
+            // the root's install so it wins.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak window] in
+                self?.state.cleanupUndoManager = { window?.undoManager }
+            }
         }
 
         switch scenario {
@@ -182,12 +241,14 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.toast("Waiting for your confirmation", tone: .warn)
         case "conversation": console.openAgent("sessions:claude:w1p2")
         case "conversation-codex": console.openAgent("sessions:codex:1")
-        case "jarhead", "jarhead-log":
+        case "jarhead", "jarhead-log", "cleanup-log":
             // The root view listens for this once it is on screen; a turn later is enough.
-            let view = scenario == "jarhead-log" ? "log" : "conversation"
+            // `cleanup-log` is the pinned chain's log: its renamed and pinned rows as terse lines.
+            let view = scenario == "jarhead" ? "conversation" : "log"
+            let sessionId = scenario == "cleanup-log" ? FakeData.pinnedId : FakeData.chainResumedId
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: ConsoleSession.openJarheadSessionNotification, object: nil,
-                                                userInfo: ["sessionId": FakeData.chainResumedId, "view": view])
+                                                userInfo: ["sessionId": sessionId, "view": view])
             }
         case "live", "light": state.toast("Delegation failed: Codex session refused input", tone: .error)
         default: break
@@ -199,9 +260,21 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // a screenshot: `scroll-up` scrolls the stream 300pt toward older rows like a
         // trackpad would; `append` adds a transcript line to the snapshot. Use
         // PREVIEW_SETTLE=3 or more. The `switch` scenario has its own default script.
-        let defaultActions = scenario == "switch"
-            ? "open-jarhead@1.2,shot:preview-console-switch-mid@1.36,show-now@2.6,geometry@3.4,append@3.6,append@3.9,geometry@4.7"
-            : nil
+        let defaultActions: String?
+        switch scenario {
+        case "switch": defaultActions = "open-jarhead@1.2,shot:preview-console-switch-mid@1.36,show-now@2.6,geometry@3.4,append@3.6,append@3.9,geometry@4.7"
+        case "cleanup": defaultActions = "trash-open@0.4,hidden-open@0.4"
+        // A chain's id is its root session's (the paused one), not the resumed session's.
+        case "cleanup-select": defaultActions = "trash-open@0.4,select:\(FakeData.chainPausedId)+\(FakeData.yesterdayId)@0.6"
+        case "cleanup-rename": defaultActions = "rename:\(FakeData.pinnedId)@0.5"
+        case "cleanup-undo": defaultActions = "trash-open@0.3,trash:\(FakeData.yesterdayId)@0.5"
+        case "cleanup-undo-toast": defaultActions = "trash-open@0.3,trash:\(FakeData.yesterdayId)@0.5,undo-toast@1.2,undo@1.8,redo@2.4"
+        case "search": defaultActions = "search:codex@0.4"
+        // One hit only (the resumed session's delegation request), in a past chain: the hit path proper.
+        case "search-hit": defaultActions = "search:codex did while@0.4,hit-first@1.2,probe@2.2"
+        case "cleared": defaultActions = "clear-now@0.5"
+        default: defaultActions = nil
+        }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
             for (index, spec) in actions.split(separator: ",").enumerated() {
                 let parts = spec.split(separator: "@", maxSplits: 1).map(String.init)
@@ -285,10 +358,76 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 let dir = ProcessInfo.processInfo.environment["PREVIEW_OUT_DIR"] ?? FileManager.default.currentDirectoryPath
                 let path = (dir as NSString).appendingPathComponent(name.hasSuffix(".png") ? name : name + ".png")
                 shoot(to: path, stamp: stamp)
+            } else if keyAction(action) {
+                // printed by keyAction
+            } else if let info = cleanupAction(action) {
+                // The rail's cleanup state (ConsoleSession.previewNotification; the root view applies it).
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
+                print("action: \(action) at \(stamp)s")
             } else {
                 performFeed(action)
             }
         }
+    }
+
+    /// `key:<char>` sends ⌘<char> to the window the way the keyboard would (⌘F must open the
+    /// rail's search); `undo` runs the window's undo manager once (Edit › Undo's path: the
+    /// last cleanup action's inverse must go out). Both print what happened.
+    private func keyAction(_ action: String) -> Bool {
+        guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }) else { return false }
+        if action.hasPrefix("key:") {
+            let char = String(action.dropFirst("key:".count))
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil, characters: char, charactersIgnoringModifiers: char,
+                                               isARepeat: false, keyCode: 0) else { return true }
+            window.makeKeyAndOrderFront(nil)
+            let handled = window.performKeyEquivalent(with: event)
+            print("action: ⌘\(char) → \(handled ? "handled" : "not handled") (shoot the window to see what it did)")
+            return true
+        }
+        if action == "undo" {
+            let um = window.undoManager
+            print("action: undo → canUndo=\(um?.canUndo ?? false) \(um?.undoActionName ?? "")")
+            um?.undo()
+            return true
+        }
+        if action == "redo" {
+            let um = window.undoManager
+            print("action: redo → canRedo=\(um?.canRedo ?? false) \(um?.redoActionName ?? "")")
+            um?.redo()
+            return true
+        }
+        if action == "undo-toast" {
+            // The toast's Undo button: AppState.undoCleanup(id:) for the toast on screen.
+            let um = window.undoManager
+            guard let toast = state.cleanupToast else { print("action: undo-toast → no toast on screen"); return true }
+            print("action: undo-toast '\(toast.text)' → before: canUndo=\(um?.canUndo ?? false) \(um?.undoActionName ?? "")")
+            state.undoCleanup(id: toast.id)
+            print("action: undo-toast → after: canUndo=\(um?.canUndo ?? false) '\(um?.undoActionName ?? "")' canRedo=\(um?.canRedo ?? false) '\(um?.redoActionName ?? "")' appUndo=\(state.cleanupUndoStack.count) appRedo=\(state.cleanupRedoStack.count) toast=\(state.cleanupToast?.text ?? "nil")")
+            return true
+        }
+        return false
+    }
+
+    /// The cleanup grammar → the preview notification's userInfo; nil for any other action.
+    private func cleanupAction(_ action: String) -> [String: Any]? {
+        if action.hasPrefix("search:") { return ["search": String(action.dropFirst("search:".count))] }
+        if action == "trash-open" { return ["trashOpen": true] }
+        if action == "archived-open" { return ["archivedOpen": true] }
+        if action == "hidden-open" { return ["hiddenOpen": true] }
+        if action.hasPrefix("select:") { return ["select": action.dropFirst("select:".count).split(separator: "+").map(String.init)] }
+        if action.hasPrefix("rename:") { return ["rename": String(action.dropFirst("rename:".count))] }
+        if action.hasPrefix("trash:") { return ["trash": String(action.dropFirst("trash:".count))] }
+        if action == "clear-now" { return ["clearNow": true] }
+        if action == "hit-first" { return ["hitFirst": true] }
+        if action == "probe" { return ["probe": true] }
+        if action.hasPrefix("hit:") {
+            // hit:<sessionId>:<atMs>
+            let parts = action.dropFirst("hit:".count).split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2, let at = Double(parts[1]) else { return nil }
+            return ["hit": ["sessionId": parts[0], "at": at] as [String: Any]]
+        }
+        return nil
     }
 
     /// A window-only screenshot of the Console right now (`screencapture -l`), for a
@@ -520,9 +659,12 @@ struct FakeData {
         running.status = .done
         running.summary = "Diagnosed the blocked session and dispatched a one-line fix to gt · api auth."
         running.timings.doneAt = running.timings.delegatedAt + 3100
-        return Snapshot(phase: .speaking, session: session(), transcript: t, delegations: [doneDelegation(), running, failedDelegation()], agents: agents(), connectors: connectors(), settings: settings,
-                        permissions: Permissions(microphone: .granted, screenRecording: .granted, accessibility: .denied),
-                        problems: ["Accessibility permission denied — hands can click but cannot read the UI tree."], brainReady: true, handsReady: false, setup: setup)
+        var s = Snapshot(phase: .speaking, session: session(), transcript: t, delegations: [doneDelegation(), running, failedDelegation()], agents: agents(), connectors: connectors(), settings: settings,
+                         permissions: Permissions(microphone: .granted, screenRecording: .granted, accessibility: .denied),
+                         problems: ["Accessibility permission denied — hands can click but cannot read the UI tree."], brainReady: true, handsReady: false, setup: setup)
+        // What the trash holds, for the Trash head's folder and Settings › Retention.
+        s.trash = trash
+        return s
     }
 
     /// The live day's stream with the session closed: asleep, nothing billed, the wake gate in charge.
@@ -553,6 +695,63 @@ struct FakeData {
     static let chainResumedId = "live_u7_EN2KpQ4mWvB8xRtZaYc3L"
     static let yesterdayId = "live_u7_EMzfmCLOp7XvtmJ3RJTTs"
     static let lostId = "live_u7_EMz1thmn1cGwzD4Cpbp6P"
+    /// The cleanup scenarios' chains: one Kevin pinned and named, two archived, two in the Trash
+    /// (one by hand, one the retention sweep moved).
+    static let pinnedId = "live_u7_EMyQ9pinnedAuthTriage01"
+    static let archivedAId = "live_u7_EMxa1archivedDocs0001"
+    static let archivedBId = "live_u7_EMxa2archivedSlack001"
+    static let trashedAId = "live_u7_EMwt1trashedTestRun01"
+    static let trashedBId = "live_u7_EMwt2trashedRetention1"
+
+    /// What the trash holds (Snapshot.trash): three day files, 129 MB of screenshots.
+    var trash: TrashInfo { TrashInfo(path: "/Users/kevinliu/.jarhead/trash", days: 3, bytes: 129_400_000) }
+
+    /// The Problems section, typed (Snapshot.problemsTyped): a kind, one line, one remedy each.
+    func problemsTyped() -> [Problem] {
+        [
+            Problem(kind: "permission.accessibility", text: "Accessibility not granted: the hands can click but cannot read the UI tree.",
+                    remedy: ProblemRemedy(label: "Request", command: ["type": .string("request-permission"), "which": .string("accessibility")], open: nil), since: ago(40 * 60)),
+            Problem(kind: "brain.unavailable", text: "Claude Code brain unavailable: did not answer a probe within 30 s.",
+                    remedy: ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string("brain.unavailable")], open: nil), since: ago(6 * 60)),
+            Problem(kind: "voice.limit", text: "GPT-Live-1 refused a note: the session's input history is full (128 items).",
+                    remedy: nil, since: ago(3 * 60)),
+            Problem(kind: "disk.low", text: "Disk space is low: 3.1 GB free. Screenshots keep 14 days; the sweep can run now.",
+                    remedy: ProblemRemedy(label: "Run sweep", command: ["type": .string("ledger.sweep")], open: nil), since: ago(90)),
+        ]
+    }
+
+    /// `ledger.search` over the fake rows: heard and said lines, delegation requests and summaries, newest first.
+    func searchHits(_ query: String) -> [LedgerHit] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        var hits: [LedgerHit] = []
+        let sessions = jarheadSessions()
+        let root: [String: String] = {
+            var byId: [String: JarheadSessionSummary] = [:]
+            for s in sessions { byId[s.id] = s }
+            var out: [String: String] = [:]
+            for s in sessions {
+                var current = s
+                while let from = current.resumedFrom, let previous = byId[from] { current = previous }
+                out[s.id] = current.id
+            }
+            return out
+        }()
+        for s in sessions {
+            for row in jarheadRows(for: s.id) {
+                let found: (kind: String, text: String)?
+                switch row.type {
+                case "heard", "said": found = row.item.map { (row.type, $0.text) }
+                case "delegation.created": found = row.delegation.map { ("request", $0.request) }
+                case "delegation.finished": found = row.summary.map { ("summary", $0) }
+                default: found = nil
+                }
+                guard let found, found.text.lowercased().contains(q) else { continue }
+                hits.append(LedgerHit(sessionId: s.id, chainId: root[s.id], at: row.at, type: found.kind, text: found.text, day: s.day))
+            }
+        }
+        return hits.sorted { $0.at > $1.at }
+    }
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -570,6 +769,31 @@ struct FakeData {
         let b0 = ago(3 * 3600 - 3 * 60 - 8 * 60), bClosed = ago(2 * 3600 + 31 * 60)
         let y0 = ago(26 * 3600 + 12 * 60), yClosed = ago(26 * 3600 + 2 * 60)
         let l0 = ago(27 * 3600 + 40 * 60)
+        // The cleanup scenarios' chains, older still: a pinned one Kevin named, two archived, two trashed.
+        let p0 = ago(30 * 3600), pClosed = ago(30 * 3600 - 14 * 60)
+        let d0 = ago(50 * 3600), dClosed = ago(50 * 3600 - 6 * 60)
+        let s0 = ago(51 * 3600), sClosed = ago(51 * 3600 - 9 * 60)
+        let t0 = ago(74 * 3600), tClosed = ago(74 * 3600 - 2 * 60)
+        let r0 = ago(75 * 3600), rClosed = ago(75 * 3600 - 20 * 60)
+        var pinned = JarheadSessionSummary(id: Self.pinnedId, day: day(p0), startedAt: p0, closedAt: pClosed, reason: "stopped", usageSeconds: 812,
+                                           heard: 9, said: 8, delegations: 4, title: "What's blocking the auth branch? Walk me through the", resumedFrom: nil)
+        pinned.name = "Auth branch triage"
+        pinned.pinned = true
+        var docs = JarheadSessionSummary(id: Self.archivedAId, day: day(d0), startedAt: d0, closedAt: dClosed, reason: "stopped", usageSeconds: 360,
+                                         heard: 4, said: 4, delegations: 2, title: "Sweep the docs folder for broken links.", resumedFrom: nil)
+        docs.state = "archived"
+        var slack = JarheadSessionSummary(id: Self.archivedBId, day: day(s0), startedAt: s0, closedAt: sClosed, reason: "idle", usageSeconds: 540,
+                                          heard: 6, said: 5, delegations: 3, title: "Read me the Slack thread about the launch.", resumedFrom: nil)
+        slack.state = "archived"
+        var testRun = JarheadSessionSummary(id: Self.trashedAId, day: day(t0), startedAt: t0, closedAt: tClosed, reason: "stopped", usageSeconds: 120,
+                                            heard: 1, said: 1, delegations: 0, title: "Testing, testing.", resumedFrom: nil)
+        testRun.state = "trashed"
+        testRun.trashedAt = ago(20 * 3600)
+        var retention = JarheadSessionSummary(id: Self.trashedBId, day: day(r0), startedAt: r0, closedAt: rClosed, reason: "stopped", usageSeconds: 1200,
+                                              heard: 12, said: 11, delegations: 5, title: "Open Codex and pick the landing refresh back up.", resumedFrom: nil)
+        retention.state = "trashed"
+        retention.trashedAt = ago(2 * 3600)
+        let cleanup = [pinned, docs, slack, testRun, retention]
         return [
             JarheadSessionSummary(id: live.id, day: day(live.startedAt), startedAt: live.startedAt, closedAt: nil, reason: nil, usageSeconds: 0,
                                   heard: 4, said: 4, delegations: 3, title: "Hey Jarhead, what's the Claude session doing on the auth", resumedFrom: nil),
@@ -582,7 +806,7 @@ struct FakeData {
                                   heard: 2, said: 2, delegations: 1, title: "Open the PR for the landing refresh and read me the diff summ", resumedFrom: nil),
             JarheadSessionSummary(id: Self.lostId, day: day(l0), startedAt: l0, closedAt: y0, reason: "lost", usageSeconds: 0,
                                   heard: 0, said: 0, delegations: 0, title: "", resumedFrom: nil),
-        ]
+        ] + cleanup
     }
 
     /// One session's rows, its started row through its closed row, the transport rows included.
@@ -649,6 +873,40 @@ struct FakeData {
             rows.append(heard(t + 40_000, "jy3", "Thanks."))
             rows.append(said(t + 41_500, "jy4", "Anytime."))
             var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "connection_lost"; closed.usageSeconds = 252; rows.append(closed)
+        case Self.pinnedId:
+            rows.append(heard(t + 4_000, "jp1", "What's blocking the auth branch? Walk me through the failing tests."))
+            rows += delegationRows("del_8auth", at: t + 5_200, request: "Kevin asked what is blocking the auth branch and to walk through the failing tests.", summary: "Two tests fail on the missing-bearer status; the Codex session has a fix queued.", steps: [
+                DelegationStep(id: "jp-s1", at: t + 6_000, kind: .tool, text: nil, tool: ToolStep(name: "agents_list", input: .object(["project": .string("gt")]), output: nil, ok: true, ms: 190), screenshotPath: nil),
+            ])
+            rows.append(said(t + 12_000, "jp2", "Two tests fail on the missing-bearer status code. Codex has a fix queued in the api hotfix session."))
+            rows.append(heard(t + 60_000, "jp3", "Pin this one, I'll come back to it."))
+            rows.append(said(t + 61_000, "jp4", "Pinned."))
+            var renamed = row(t + 62_000, "conversation.renamed"); renamed.chainId = s.id; renamed.name = "Auth branch triage"; rows.append(renamed)
+            var pinned = row(t + 62_100, "conversation.pinned"); pinned.chainId = s.id; pinned.pinned = true; rows.append(pinned)
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 812; rows.append(closed)
+        case Self.trashedBId:
+            rows.append(heard(t + 3_000, "jr1", "Open Codex and pick the landing refresh back up."))
+            rows += delegationRows("del_3land", at: t + 4_000, request: "Kevin asked Codex to pick the landing refresh back up.", summary: "Codex resumed the landing refresh thread and is editing the hero.", steps: [
+                DelegationStep(id: "jr-s1", at: t + 5_000, kind: .tool, text: nil, tool: ToolStep(name: "agent_send", input: .object(["agentId": .string("sessions:codex:thread-9")]), output: nil, ok: true, ms: 640), screenshotPath: nil),
+            ])
+            rows.append(said(t + 9_000, "jr2", "Codex is back on the landing refresh; it is editing the hero now."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 1200; rows.append(closed)
+            var trashed = row(ago(2 * 3600), "conversation.trashed"); trashed.chainId = s.id; trashed.by = "retention"; rows.append(trashed)
+        case Self.trashedAId:
+            rows.append(heard(t + 2_000, "jt1", "Testing, testing."))
+            rows.append(said(t + 3_000, "jt2", "Loud and clear."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 120; rows.append(closed)
+            var trashed = row(ago(20 * 3600), "conversation.trashed"); trashed.chainId = s.id; trashed.by = "kevin"; rows.append(trashed)
+        case Self.archivedAId:
+            rows.append(heard(t + 2_000, "jd1", "Sweep the docs folder for broken links."))
+            rows.append(said(t + 30_000, "jd2", "Three broken links, all in the SDK page; fixed."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "close_requested"; closed.usageSeconds = 360; rows.append(closed)
+            var archived = row(ago(40 * 3600), "conversation.archived"); archived.chainId = s.id; rows.append(archived)
+        case Self.archivedBId:
+            rows.append(heard(t + 2_000, "js1", "Read me the Slack thread about the launch."))
+            rows.append(said(t + 20_000, "js2", "Twelve messages. The short version: the launch moves to Thursday."))
+            var closed = row(s.closedAt!, "session.closed"); closed.sessionId = s.id; closed.reason = "idle"; closed.usageSeconds = 540; rows.append(closed)
+            var archived = row(ago(41 * 3600), "conversation.archived"); archived.chainId = s.id; rows.append(archived)
         default:
             break
         }

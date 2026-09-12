@@ -21,16 +21,20 @@ struct StreamPane: View, Equatable {
     let ledgerDay: String?
     let ledgerEntries: [StreamEntry]
     let ledgerLoading: Bool
+    /// Kevin cleared Now then (AppState.nowClearedAt): older items hide, the feed says "Cleared · Undo".
+    var clearedAt: Double? = nil
 
     @EnvironmentObject private var session: ConsoleSession
+    @Environment(\.consoleActions) private var actions
 
     static func == (a: StreamPane, b: StreamPane) -> Bool {
         a.transcript == b.transcript && a.delegations == b.delegations && a.phase == b.phase && a.hasSession == b.hasSession
             && a.ledgerDay == b.ledgerDay && a.ledgerEntries == b.ledgerEntries && a.ledgerLoading == b.ledgerLoading
+            && a.clearedAt == b.clearedAt
     }
 
     private var entries: [StreamEntry] {
-        ledgerDay == nil ? StreamBuilder.fromSnapshot(transcript: transcript, delegations: delegations) : ledgerEntries
+        ledgerDay == nil ? StreamBuilder.fromSnapshot(transcript: transcript, delegations: delegations, clearedAt: clearedAt) : ledgerEntries
     }
 
     /// Stop is hot only while the snapshot holds a running or waiting delegation — and
@@ -51,7 +55,7 @@ struct StreamPane: View, Equatable {
                     .transition(Motion.appear)
             }
             ZStack {
-                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState)
+                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear)
                     .id(feedKey)
                     .transition(Motion.swap)
             }
@@ -67,9 +71,18 @@ struct StreamPane: View, Equatable {
             if ledgerLoading { return StreamEmptyState(text: "Reading…", loading: true) }
             return StreamEmptyState(text: "Nothing recorded.")
         }
+        // The way back to a session comes first: a cleared feed must never hide Go.
         if phase == .paused { return StreamEmptyState(text: "Paused. Press Go or type to resume.", go: true) }
         if !hasSession { return StreamEmptyState(text: "Asleep. Press Go.", go: true) }
+        // Cleared: the items are hidden, not gone — the ledger has them, Undo brings them back.
+        if clearedAt != nil { return StreamEmptyState(text: "Cleared. Jarhead still remembers; the ledger has it.", undo: true) }
         return StreamEmptyState(text: "Nothing heard yet.")
+    }
+
+    /// The empty state's Undo: the cleared items come back (now.restore), itself undoable.
+    private func undoClear() {
+        guard let at = clearedAt else { return }
+        actions.cleanup(.restoreNow(clearedAt: at))
     }
 }
 
@@ -78,6 +91,8 @@ struct StreamEmptyState: Equatable {
     /// Offer the transport's Go (wake, or resume with the context).
     var go = false
     var loading = false
+    /// Offer Undo (the cleared Now).
+    var undo = false
 }
 
 /// 40pt, so its rule meets the two rail heads' rules on one seam: which day is
@@ -279,6 +294,12 @@ final class ConsoleFeedTracker: ObservableObject {
         jump(animated: false)
     }
 
+    /// The feed is about to scroll to a row (a search hit): stop following the end, offer the way back.
+    func unstick() {
+        stuck = false
+        if !showJump { showJump = true }
+    }
+
     func jump(animated: Bool) {
         stuck = true
         if showJump { showJump = false }
@@ -295,6 +316,11 @@ struct StreamFeed: View {
     let entries: [StreamEntry]
     let modeKey: String
     let emptyState: StreamEmptyState
+    /// The row to open on (a search hit's entry id): the feed scrolls there, unsticks from
+    /// the end, and the row's ground lights for a moment. nil follows the end as always.
+    var scrollToId: String? = nil
+    /// The empty state's Undo (the cleared Now).
+    var undo: () -> Void = {}
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.consoleTransport) private var transport
@@ -307,6 +333,8 @@ struct StreamFeed: View {
     /// not "new"); rows appended after that fade in and rise (`rowAppear`, on the row's
     /// ink only — the document's height never animates).
     @State private var settled = false
+    /// The row a scroll target lit; fades after a moment.
+    @State private var highlightId: String?
 
     private static let bottomId = "stream-bottom"
 
@@ -327,6 +355,9 @@ struct StreamFeed: View {
                                 ForEach(entries) { entry in
                                     StreamRow(entry: entry)
                                         .rowAppear(animated: settled)
+                                        // The found row's ground, on its own opacity: the layout never moves.
+                                        .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active).opacity(highlightId == entry.id ? 1 : 0))
+                                        .id(entry.id)
                                 }
                                 Color.clear.frame(height: 1).id(Self.bottomId)
                             }
@@ -378,7 +409,15 @@ struct StreamFeed: View {
             }
             .onChange(of: reduceMotion) { tracker.reduceMotion = reduceMotion }
             .onChange(of: entries) {
-                if tracker.stuck { tracker.jump(animated: false) }
+                if let target = scrollToId, entries.contains(where: { $0.id == target }) {
+                    // The rows a hit was waiting on landed: open on the row, not the end.
+                    scroll(to: target, proxy: proxy)
+                } else if tracker.stuck {
+                    tracker.jump(animated: false)
+                }
+            }
+            .onChange(of: scrollToId) { _, target in
+                if let target, entries.contains(where: { $0.id == target }) { scroll(to: target, proxy: proxy) }
             }
             .onChange(of: modeKey) { tracker.reset() }
         }
@@ -390,6 +429,26 @@ struct StreamFeed: View {
         DispatchQueue.main.async { settled = true }
     }
 
+    /// To the row and light it: the scroll is a view moving on its own (Motion.gentle),
+    /// the ground fades over Motion.fade and lets go after a moment. The tracker unsticks
+    /// first, so the layout pass that follows does not pin the bottom back.
+    private func scroll(to id: String, proxy: ScrollViewProxy) {
+        tracker.unstick()
+        DispatchQueue.main.async {
+            if Motion.reduced {
+                proxy.scrollTo(id, anchor: .center)
+            } else {
+                withAnimation(Motion.gentle) { proxy.scrollTo(id, anchor: .center) }
+            }
+            withAnimation(Motion.fade) { highlightId = id }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_800_000_000)
+                guard highlightId == id else { return }
+                withAnimation(Motion.fade) { highlightId = nil }
+            }
+        }
+    }
+
     private var emptyView: some View {
         ConsoleEmpty(emptyState.text) {
             if emptyState.loading {
@@ -398,6 +457,10 @@ struct StreamFeed: View {
                 Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
                     .help("Go (⌘P)")
+            } else if emptyState.undo {
+                Button(action: undo) { Label("Undo", systemImage: "arrow.uturn.backward") }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 28))
+                    .help("Bring the cleared items back")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

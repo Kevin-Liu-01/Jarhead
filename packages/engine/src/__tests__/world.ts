@@ -189,8 +189,12 @@ export interface World {
   dir: string;
 }
 
-/** `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine over the same day. */
-export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string } = {}): World {
+/**
+ * `where.dir` reuses another world's state dir (its ledger, its settings) — a second engine
+ * over the same day. `where.firstSessionId` names that engine's first FakeLive (default
+ * `sess_1`), so two engines over one ledger do not write the same session id twice.
+ */
+export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean } = {}): World {
   const dir = where.dir ?? mkdtempSync(join(tmpdir(), "jh-engine-"));
   const config: JarheadConfig = {
     ...readConfig(),
@@ -223,11 +227,12 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   };
   // One FakeLive per session: the first exists before the wake (tests hold it as `live`);
   // every wake after that — a resume, a re-wake — gets a fresh one, as the engine does.
-  const live = new FakeLive("sess_1");
+  const first = where.firstSessionId ?? "sess_1";
+  const live = new FakeLive(first);
   const lives: FakeLive[] = [live];
   let opened = 0;
   const makeLive = (config: SessionConfig): LiveSession => {
-    const l = lives[opened] ?? new FakeLive(`sess_${opened + 1}`);
+    const l = lives[opened] ?? new FakeLive(where.firstSessionId ? `${first}_${opened + 1}` : `sess_${opened + 1}`);
     if (!lives.includes(l)) lives.push(l);
     opened++;
     l.config = config;
@@ -237,7 +242,8 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
-  const engine = new Engine({ config, connectors: [], brain, hands, makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, ...extra });
+  // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
+  const engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, ...extra });
   const events: EngineEvent[] = [];
   const overlays: OverlayCommand[] = [];
   const audio: Buffer[] = [];

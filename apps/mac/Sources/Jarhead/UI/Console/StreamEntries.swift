@@ -45,11 +45,13 @@ struct LedgerStats: Equatable {
 }
 
 enum StreamBuilder {
-    static func fromSnapshot(transcript: [TranscriptItem], delegations: [Delegation]) -> [StreamEntry] {
+    /// `clearedAt`: Kevin cleared the Now stream then (AppState.nowClearedAt) — items at or
+    /// before it are hidden here at once, and by the engine's snapshot a round trip later.
+    static func fromSnapshot(transcript: [TranscriptItem], delegations: [Delegation], clearedAt: Double? = nil) -> [StreamEntry] {
         var out: [StreamEntry] = []
         out.reserveCapacity(transcript.count + delegations.count)
-        for t in transcript { out.append(.utterance(t)) }
-        for d in delegations { out.append(.delegation(d)) }
+        for t in transcript where clearedAt.map({ t.at > $0 }) ?? true { out.append(.utterance(t)) }
+        for d in delegations where clearedAt.map({ d.createdAt > $0 }) ?? true { out.append(.delegation(d)) }
         out.sort { $0.at < $1.at }
         return out
     }
@@ -122,7 +124,10 @@ enum StreamBuilder {
                                                    trailing: a.detail, agentStatus: a.status)))
                 }
             default:
-                break
+                // The cleanup's tombstone rows read as terse system lines: "Moved to Trash", "Restored", "Renamed".
+                if let t = ConsoleFormat.tombstone(row) {
+                    out.append(.system(SystemEntry(id: "tb:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
+                }
             }
         }
         for id in order { if let d = delegations[id] { out.append(.delegation(d)) } }
@@ -194,5 +199,45 @@ extension ConsoleFormat {
     static func sentence(_ s: String) -> String {
         guard let first = s.first else { return s }
         return first.uppercased() + s.dropFirst()
+    }
+
+    // MARK: the cleanup's tombstone rows
+
+    /// A tombstone row as one terse line: the solid symbol, the log's kind column, the
+    /// words (lower case; the stream capitalises), a mono figure and a trailing note. nil
+    /// for any other row. `conversation.trashed` by retention says so; `ledger.moved` names
+    /// the day, what moved and where.
+    static func tombstone(_ row: LedgerRow) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
+        switch row.type {
+        case "conversation.trashed":
+            return ("trash.fill", "trash", "moved to Trash", nil, row.by == "retention" ? "by retention" : nil)
+        case "conversation.restored":
+            return ("arrow.uturn.backward", "restore", "restored", nil, nil)
+        case "conversation.archived":
+            return ("archivebox.fill", "archive", "archived", nil, nil)
+        case "conversation.renamed":
+            let name = row.name ?? ""
+            return ("pencil", "rename", name.isEmpty ? "name cleared · back to the auto title" : "renamed to “\(name)”", nil, nil)
+        case "conversation.pinned":
+            let on = row.pinned ?? true
+            return (on ? "pin.fill" : "pin.slash.fill", "pin", on ? "pinned" : "unpinned", nil, nil)
+        case "now.cleared":
+            return ("eraser.fill", "clear", "Now cleared · the ledger keeps the rows", row.sessionId.map { shortId($0) }, nil)
+        case "now.restored":
+            return ("arrow.uturn.backward", "clear", "Now restored", row.sessionId.map { shortId($0) }, nil)
+        case "ledger.moved":
+            let what = row.what ?? "ledger"
+            let to = row.to == "trash" ? "to the Trash" : "back from the Trash"
+            let by = row.by == "retention" ? " · by retention" : ""
+            return ("folder.fill", "moved", "\(row.day ?? "day") \(what) moved \(to)\(by)", nil, row.path.map { truncPath($0, max: 40) })
+        case "agent.hidden":
+            let on = row.hidden ?? true
+            return (on ? "eye.slash.fill" : "eye.fill", "agent", on ? "agent hidden from the rail" : "agent shown again", row.agentId.map { shortId($0, 12) }, nil)
+        case "grant":
+            let until = row.until.map { " · until \(clock($0))" } ?? ""
+            return ("checkmark.seal.fill", "grant", "granted \(row.app ?? "app") · \(row.actionClass ?? "action") for this conversation\(until)", nil, nil)
+        default:
+            return nil
+        }
     }
 }

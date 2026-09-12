@@ -15,6 +15,14 @@ export interface ScreenMapping {
   readonly width: number;
   readonly height: number;
   readonly scale: number;
+  /** The helper's running frame number for this shot (absent from the screencapture fallback). */
+  readonly frameId?: number;
+  /**
+   * The display configuration the shot was taken under — display ids and bounds,
+   * the front app and its front window — as the helper's hash. A coordinate action
+   * whose probe reports a different hash is aimed at a screen that no longer exists.
+   */
+  readonly config?: string;
 }
 
 export interface ShotBudget {
@@ -52,8 +60,23 @@ export class Screen {
   }
 
   remember(shot: ScreenshotResult): ScreenMapping {
-    this.mapping = { displayId: shot.displayId, points: shot.points, width: shot.width, height: shot.height, scale: shot.scale };
+    this.mapping = {
+      displayId: shot.displayId,
+      points: shot.points,
+      width: shot.width,
+      height: shot.height,
+      scale: shot.scale,
+      ...(typeof shot.frameId === "number" ? { frameId: shot.frameId } : {}),
+      ...(typeof shot.config === "string" && shot.config ? { config: shot.config } : {}),
+    };
     return this.mapping;
+  }
+
+  /** Is `config` (a probe's current hash) the one the last screenshot was taken under? Unknown on either side is taken as unchanged. */
+  sameConfig(config: string | undefined): boolean {
+    const m = this.mapping;
+    if (!m?.config || !config) return true;
+    return m.config === config;
   }
 
   /** Image pixel → global point. Throws when no screenshot has been taken yet. */

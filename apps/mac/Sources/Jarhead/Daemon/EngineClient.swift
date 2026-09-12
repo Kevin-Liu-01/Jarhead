@@ -39,6 +39,59 @@ final class EngineClient: @unchecked Sendable {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "2.0.0"
     }()
 
+    // MARK: - liveness, the daemon row, auto-resume (REDESIGN §16 "Liveness")
+    //
+    // A daemon that exits is caught by DaemonProcess; a daemon that is alive on the socket
+    // and not answering — a wedged event loop — was invisible. So: one `ping` every 2 s
+    // while connected, answered by the daemon on the wire with no engine work (`pong`);
+    // two unanswered in a row and this client drops the connection and tells
+    // DaemonProcess (a notification: both are the app's, no AppDelegate wiring) to kill and
+    // respawn it. While no daemon answers for more than a beat, the published snapshot
+    // carries one typed problem, `daemon`, whose remedy is "Restart daemon" (the
+    // `daemon.restart` command, routed to DaemonProcess while nothing is connected); the
+    // next real snapshot replaces it. And when the daemon comes back asleep after a session
+    // was open — a crash, a kill, a self-update mid-conversation — this client sends `go`
+    // once, inside 10 s of the reconnect; the engine resumes the conversation from the
+    // ledger (Engine.resumeFromLedger). Never after Kevin pressed Stop or Pause since that
+    // session's last snapshot; never twice.
+
+    /// Posted on the main queue when `missedPongsBeforeRespawn` pings went unanswered. `userInfo`: `pid` (Int32, the daemon's, when its hello said) and `seconds` (Int).
+    nonisolated static let daemonUnresponsiveNotification = Notification.Name("jarhead.daemonUnresponsive")
+    /// Posted on the main queue when the "Restart daemon" remedy is pressed while no daemon is connected. No `pid`: nothing is connected, so there is no daemon of ours to name.
+    nonisolated static let restartDaemonNotification = Notification.Name("jarhead.restartDaemon")
+
+    static let pingInterval: TimeInterval = 2
+    static let missedPongsBeforeRespawn = 2
+    /// How long disconnected before the `daemon` row appears: a normal respawn is back in 1–3 s and must not flash it.
+    static let daemonProblemAfter: TimeInterval = 3
+    /// After a reconnect, a daemon reporting asleep inside this window gets one `go` when a session was open before the drop.
+    static let autoResumeWindow: TimeInterval = 10
+    static let daemonProblemText = "The engine is not answering; Jarhead cannot hear or act until it is back"
+
+    private var pingTimer: DispatchSourceTimer?
+    /// Ping ids sent and not yet answered, oldest first. On `net`.
+    private var pendingPings: [String] = []
+    /// The daemon's pid from THIS connection's hello, for the kill when it stops answering.
+    /// Cleared the moment the connection drops: a pid from a dead connection may have been
+    /// reused by one of Kevin's own processes, and is nobody's to kill. On `net`.
+    private var daemonPid: Int32?
+    /// When this client last sent an auto-resume `go`; no second one inside `resumeCooldown`. On `net`.
+    private var resumeGoSentAt: Date = .distantPast
+    /// The drops inside `dropLoopWindow`: a second one is a daemon dying (or wedging) on every start, and a resume would be a paid loop. On `net`.
+    private var recentDrops: [Date] = []
+    /// "Exactly once" needs memory across respawns — each is a new engine process with no memory of the last resume.
+    static let resumeCooldown: TimeInterval = 300
+    static let dropLoopWindow: TimeInterval = 120
+    /// The last snapshot the daemon sent (before any drop), and when. On `net`.
+    private var lastSnapshot: Snapshot?
+    private var lastSnapshotAt: Date = .distantPast
+    /// When this app last sent `stop` or `pause`: Kevin's word against an auto-resume. On `net`.
+    private var stopSentAt: Date = .distantPast
+    /// Armed at a drop when a session was open (or opening) and Kevin had not stopped it; consumed by the first snapshot after the reconnect.
+    private var resumeCandidate = false
+    private var resumeDeadline: Date = .distantPast
+    private var disconnectedAt: Date?
+
     init(socketPath: String, state: AppState) {
         self.socketPath = socketPath
         self.state = state
@@ -57,6 +110,9 @@ final class EngineClient: @unchecked Sendable {
     func stop() {
         net.async {
             self.running = false
+            self.stopPings()
+            self.resumeCandidate = false
+            self.daemonPid = nil
             self.connection?.cancel()
             self.connection = nil
             self.failPendingLedger()
@@ -76,9 +132,13 @@ final class EngineClient: @unchecked Sendable {
             case .ready:
                 self.reconnectDelay = 0.3
                 self.isConnected = true
+                self.disconnectedAt = nil
                 self.sendHello()
                 self.flushOutbox()
                 self.publishConnected(true)
+                self.startPings()
+                // The window for one `go` if the daemon comes back asleep after a session was open.
+                if self.resumeCandidate { self.resumeDeadline = Date().addingTimeInterval(EngineClient.autoResumeWindow) }
                 if let cb = self.onConnected { DispatchQueue.main.async(execute: cb) }
                 self.receiveLoop(conn)
             case .waiting(let err):
@@ -101,12 +161,136 @@ final class EngineClient: @unchecked Sendable {
     private func dropAndReconnect() {
         connection?.cancel()
         connection = nil
+        stopPings()
+        // The pid lives exactly as long as the connection that hello'd it.
+        daemonPid = nil
         if isConnected {
             isConnected = false
             publishConnected(false)
             failPendingLedger()
+            noteDisconnected()
         }
         scheduleReconnect()
+    }
+
+    /// On `net`, once per drop: arm the auto-resume from what the daemon last said, and
+    /// schedule the `daemon` row for a drop that lasts.
+    private func noteDisconnected() {
+        let now = Date()
+        disconnectedAt = now
+        recentDrops = recentDrops.filter { now.timeIntervalSince($0) < EngineClient.dropLoopWindow }
+        let dropsBefore = recentDrops.count
+        recentDrops.append(now)
+        // A session open or opening in the last snapshot, and no Stop / Pause from this app
+        // since that snapshot: the daemon coming back asleep is a cut conversation.
+        if let s = lastSnapshot {
+            let open = s.session != nil || s.phase == .connecting
+            let wanted = open && stopSentAt <= lastSnapshotAt
+            // The loop guards: a resume `go` inside the cooldown, or a second drop inside the
+            // window, means the daemon is dying after every resume — each cycle a paid Live
+            // session and a "back". One resume; then Kevin's own Go.
+            let sinceResume = now.timeIntervalSince(resumeGoSentAt)
+            if wanted && sinceResume < EngineClient.resumeCooldown {
+                resumeCandidate = false
+                log("disconnected with a session open \(Int(sinceResume)) s after an auto-resume; not arming another (a resume loop, not a conversation)")
+            } else if wanted && dropsBefore >= 1 {
+                resumeCandidate = false
+                log("disconnected with a session open, the \(dropsBefore + 1)th drop in \(Int(EngineClient.dropLoopWindow)) s; not arming a resume (the daemon is looping)")
+            } else {
+                resumeCandidate = wanted
+                if resumeCandidate { log("disconnected with a session open (phase \(s.phase.rawValue)); one go is armed for a daemon that comes back asleep") }
+            }
+        } else {
+            resumeCandidate = false
+        }
+        net.asyncAfter(deadline: .now() + EngineClient.daemonProblemAfter) { [weak self] in
+            guard let self, self.running, !self.isConnected, self.disconnectedAt == now else { return }
+            self.publishDaemonProblem()
+        }
+    }
+
+    // MARK: pings
+
+    /// On `net`. One ping every `pingInterval` while connected; `pingTick` judges the answers.
+    private func startPings() {
+        stopPings()
+        pendingPings.removeAll()
+        let timer = DispatchSource.makeTimerSource(queue: net)
+        timer.schedule(deadline: .now() + EngineClient.pingInterval, repeating: EngineClient.pingInterval, leeway: .milliseconds(200))
+        timer.setEventHandler { [weak self] in self?.pingTick() }
+        timer.resume()
+        pingTimer = timer
+    }
+
+    private func stopPings() {
+        pingTimer?.cancel()
+        pingTimer = nil
+        pendingPings.removeAll()
+    }
+
+    /// On `net`. Two pings unanswered (4 s of silence) is a daemon that is up and not
+    /// listening: drop the connection — the reconnect loop takes over — and ask
+    /// DaemonProcess to kill and respawn it. Otherwise send the next ping.
+    private func pingTick() {
+        guard isConnected, connection != nil else { return }
+        if pendingPings.count >= EngineClient.missedPongsBeforeRespawn {
+            let seconds = Int(EngineClient.pingInterval * Double(pendingPings.count))
+            log("daemon unresponsive: no pong for \(seconds) s (\(pendingPings.count) pings unanswered); dropping the connection and asking for a respawn")
+            var info: [AnyHashable: Any] = ["seconds": seconds]
+            if let pid = daemonPid { info["pid"] = pid }
+            DispatchQueue.main.async { NotificationCenter.default.post(name: EngineClient.daemonUnresponsiveNotification, object: nil, userInfo: info) }
+            dropAndReconnect()
+            return
+        }
+        let id = UUID().uuidString
+        pendingPings.append(id)
+        rawSend(json: ["type": "ping", "id": id])
+    }
+
+    // MARK: the daemon row
+
+    /// On `net`. The last snapshot, republished with one typed problem on top: `daemon`, with
+    /// "Restart daemon" as its remedy. `problems` (the plain list older surfaces read) gets
+    /// the same line. The daemon's next snapshot replaces the whole thing, row included.
+    private func publishDaemonProblem() {
+        let sinceMs = (disconnectedAt ?? Date()).timeIntervalSince1970 * 1000
+        onMain { st in
+            var s = st.snapshot
+            let text = EngineClient.daemonProblemText
+            s.problems = s.problems.filter { $0 != text } + [text]
+            var typed = (s.problemsTyped ?? []).filter { $0.kind != "daemon" }
+            typed.append(Problem(kind: "daemon", text: text,
+                                 remedy: ProblemRemedy(label: "Restart daemon", command: ["type": .string("daemon.restart")], open: nil),
+                                 since: sinceMs))
+            s.problemsTyped = typed
+            st.snapshot = s
+        }
+    }
+
+    // MARK: auto-resume
+
+    /// On `net`, for every snapshot the daemon sends: remember it for the next drop, and
+    /// spend the armed `go` when a daemon that just came back reports asleep. Anything
+    /// else it reports — awake (a daemon that lingered through an app crash), paused (the
+    /// engine held the pause again), error — means there is nothing to resume.
+    private func noteSnapshotForResume(_ snap: Snapshot) {
+        defer {
+            lastSnapshot = snap
+            lastSnapshotAt = Date()
+        }
+        guard resumeCandidate else { return }
+        resumeCandidate = false
+        guard Date() <= resumeDeadline else {
+            log("auto-resume: the daemon's first snapshot came after the \(Int(EngineClient.autoResumeWindow)) s window; not resuming")
+            return
+        }
+        guard snap.phase == .asleep, snap.session == nil, snap.pause == nil else {
+            log("auto-resume: the daemon is back \(snap.phase.rawValue); nothing to resume")
+            return
+        }
+        log("auto-resume: the daemon came back asleep after a session was open; sending go once")
+        resumeGoSentAt = Date()
+        rawSend(json: ["type": "command", "command": EngineCommand.go.json])
     }
 
     private func scheduleReconnect() {
@@ -149,7 +333,26 @@ final class EngineClient: @unchecked Sendable {
     }
 
     func send(_ command: EngineCommand) {
-        net.async { self.rawSend(json: ["type": "command", "command": command.json]) }
+        net.async {
+            switch command {
+            case .stop, .pause:
+                // Kevin's word: a daemon that comes back asleep after this is not resumed.
+                self.stopSentAt = Date()
+                self.resumeCandidate = false
+            case .daemonRestart where !self.isConnected:
+                // The `daemon` row's remedy with nothing to send it to: DaemonProcess spawns (or
+                // kills and respawns) one now. Queued, the command would restart the daemon that
+                // had just come back. No pid travels with it: the daemon this app last heard from
+                // is gone with its connection, and a pid from it may be someone else's by now —
+                // only the ping path (a live connection) names one to kill.
+                self.log("restart daemon requested while disconnected; asking DaemonProcess")
+                DispatchQueue.main.async { NotificationCenter.default.post(name: EngineClient.restartDaemonNotification, object: nil, userInfo: [:]) }
+                return
+            default:
+                break
+            }
+            self.rawSend(json: ["type": "command", "command": command.json])
+        }
     }
 
     func sendMic(_ pcm: Data) {
@@ -252,6 +455,17 @@ final class EngineClient: @unchecked Sendable {
         return EngineClient.decodeRows(rows)
     }
 
+    // MARK: - search
+
+    /// Full-text hits over the live ledger for the Console's search box (`ledger.search`,
+    /// answered with `ledger.hits`). nil when nothing answers — a daemon from before the
+    /// message runs into the request timeout — so the rail can say so instead of "no hits".
+    func ledgerSearch(query: String, limit: Int = 50) async -> [LedgerHit]? {
+        let any = await request(["type": "ledger.search", "query": query, "limit": limit])
+        guard let list = any as? [Any] else { return nil }
+        return list.compactMap { ($0 as? [String: Any]).flatMap(LedgerHit.init(json:)) }
+    }
+
     private func request(_ message: [String: Any]) async -> Any? {
         await withCheckedContinuation { (cont: CheckedContinuation<Any?, Never>) in
             net.async {
@@ -307,14 +521,18 @@ final class EngineClient: @unchecked Sendable {
         switch type {
         case "hello":
             let dir = obj["stateDir"] as? String
+            if let pid = obj["pid"] as? Int, pid > 0, pid <= Int(Int32.max) { daemonPid = Int32(pid) }
             onMain { st in
                 if let dir, !dir.isEmpty { st.stateDir = URL(fileURLWithPath: dir) }
             }
+        case "pong":
+            if let id = obj["id"] as? String { pendingPings.removeAll { $0 == id } }
         case "snapshot":
             guard let sub = obj["snapshot"], let snap: Snapshot = decode(sub) else {
                 log("undecodable snapshot")
                 return
             }
+            noteSnapshotForResume(snap)
             queueSnapshot(sanitized(snap))
         case "levels":
             guard let sub = obj["levels"], let levels: AudioLevels = decode(sub) else { return }
@@ -340,6 +558,14 @@ final class EngineClient: @unchecked Sendable {
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["days"]) }
         case "ledger.sessions":
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["sessions"]) }
+        case "ledger.hits":
+            if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["hits"]) }
+        case "ear.hints":
+            // What is on the screen (wire.ts `ear.hints`): the words the on-device ear should
+            // be biased toward. Handed over by notification on this queue; ReflexEar owns the
+            // listener and applies them (Ear/EarListener.swift `applyHints`).
+            guard let strings = obj["strings"] as? [String] else { return }
+            NotificationCenter.default.post(name: .jarheadEarHints, object: nil, userInfo: ["strings": strings])
         case "error":
             let message = obj["message"] as? String ?? "daemon error"
             log("daemon error: \(message)")

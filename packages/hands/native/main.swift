@@ -1,4 +1,7 @@
 import Foundation
+
+// A Stop that arrives before this process's first type op must not be lost: the handler installs now.
+_ = typeCancelHandlerInstalled
 import AppKit
 import IOKit.hid
 

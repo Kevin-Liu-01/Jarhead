@@ -337,6 +337,128 @@ Voice and drawing: speak_progress {text} says one sentence now; show_circle {x, 
 Agents and self: agents_list {}, agent_send {agent, text}, agent_read {agent}, agent_wait {agent, timeout?}, agent_start {tool, cwd, prompt}; self_edit {task}, self_review {id}, self_apply {id}, self_discard {id}, self_status {}.`;
 }
 
+// ------------------------------------------------------------ carried history
+
+/**
+ * What a fresh thread is told about the exchanges before it (REDESIGN §15's
+ * `carryHistory`, compacted here). A thread that rolled over knows nothing; the
+ * next turn carries the last exchanges as text so a "yes" still knows what it
+ * confirms and "do it again" knows what "it" was. The block is bounded on
+ * purpose: the fresh thread pays for it on every request until its own rollover,
+ * and a tool result copied whole (a 3 KB page, a directory listing) would be the
+ * old context smuggled back in. So: Kevin's words verbatim, always; the spoken
+ * answers; and each tool result either as it was (short) or as one line naming
+ * its size — Hermes' Phase-1 placeholders, OpenClaw's soft-trim, the same idea.
+ */
+export interface CarriedResult {
+  readonly tool: string;
+  /** The result's text (its text parts joined), kept up to CARRY_RESULT_KEEP_CHARS. */
+  readonly text: string;
+  /** The whole result's size in bytes as the model saw it — images and structured content included. */
+  readonly bytes: number;
+}
+
+export interface CarriedExchange {
+  readonly request: string;
+  readonly answer: string;
+  readonly results: readonly CarriedResult[];
+}
+
+/** A tool result longer than this — in text, or in bytes as the model saw it — is carried as a placeholder. */
+export const CARRY_RESULT_MAX_CHARS = 200;
+/** The carried block's budget in characters (~500 tokens). */
+export const CARRY_MAX_CHARS = 2048;
+/** How much of a result's text stays in memory per exchange; the placeholder names the true size. */
+const CARRY_RESULT_KEEP_CHARS = 1200;
+/** Results kept per exchange: the last ones, the state the answer was given from. */
+const CARRY_RESULTS_PER_EXCHANGE = 6;
+export const CARRY_HEADER = "Earlier in this session:";
+
+/** "[tool result, 3.1 KB]" — one line in place of a result too long to carry. */
+export function resultPlaceholder(bytes: number): string {
+  const kb = Math.max(0, bytes) / 1024;
+  return `[tool result, ${kb >= 10 ? String(Math.round(kb)) : kb.toFixed(1)} KB]`;
+}
+
+/** A finished MCP tool call as the history keeps it. */
+export function carriedResult(tool: string, result: unknown): CarriedResult {
+  const text = toolResultText(result);
+  let bytes: number;
+  try {
+    bytes = Buffer.byteLength(typeof result === "string" ? result : JSON.stringify(result ?? ""), "utf8");
+  } catch {
+    bytes = Buffer.byteLength(text, "utf8");
+  }
+  return { tool, text: text.slice(0, CARRY_RESULT_KEEP_CHARS), bytes: Math.max(bytes, Buffer.byteLength(text, "utf8")) };
+}
+
+/** The text parts of an MCP result (`{content: [{type: "text", text}, …]}`), else the value's own text. */
+function toolResultText(result: unknown): string {
+  if (result === null || result === undefined) return "";
+  if (typeof result === "string") return result;
+  if (typeof result === "object") {
+    const content = (result as { content?: unknown }).content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => (part && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : ""))
+        .filter(Boolean)
+        .join("\n");
+    }
+    try {
+      return JSON.stringify(result);
+    } catch {
+      return String(result);
+    }
+  }
+  return String(result);
+}
+
+/**
+ * One result as one carried line: verbatim when short, the placeholder otherwise —
+ * or always the placeholder when `placeholder` is set (the newest exchange over
+ * budget), still naming the result's true size. Never a newline.
+ */
+export function carriedResultLine(r: CarriedResult, placeholder = false): string {
+  const short = !placeholder && r.bytes <= CARRY_RESULT_MAX_CHARS && r.text.length <= CARRY_RESULT_MAX_CHARS;
+  const body = short ? r.text.replace(/\s*\n\s*/g, " ").trim() || "(empty)" : resultPlaceholder(r.bytes);
+  return `  ${r.tool} → ${body}`;
+}
+
+/**
+ * The carried block, newest exchange last, within `maxChars`: older exchanges are
+ * dropped first (whole), then the newest exchange's result lines, then its answer
+ * is cut; Kevin's own words are never cut — the newest request is always carried
+ * whole. Undefined when there is nothing to carry.
+ */
+export function renderCarry(history: readonly CarriedExchange[], userName = "Kevin", maxChars = CARRY_MAX_CHARS): string | undefined {
+  if (history.length === 0) return undefined;
+  type Results = "verbatim" | "placeholders" | "none";
+  const block = (h: CarriedExchange, results: Results, answer: string): string =>
+    [`${userName} said: "${h.request}"`, ...(results === "none" ? [] : h.results.map((r) => carriedResultLine(r, results === "placeholders"))), `You answered: ${answer}`].join("\n");
+  const newest = history[history.length - 1]!;
+  let tail = block(newest, "verbatim", newest.answer);
+  const budget = Math.max(0, maxChars - CARRY_HEADER.length - 1);
+  if (tail.length > budget) {
+    // Placeholders first (each naming its true size), then no result lines, then the answer cut to what is left; the request stands.
+    tail = block(newest, "placeholders", newest.answer);
+    if (tail.length > budget) tail = block(newest, "none", newest.answer);
+    if (tail.length > budget) {
+      const fixed = block(newest, "none", "").length;
+      const room = budget - fixed - 1;
+      tail = block(newest, "none", room > 0 ? `${newest.answer.slice(0, room)}…` : "…");
+    }
+  }
+  const blocks = [tail];
+  let used = tail.length;
+  for (let i = history.length - 2; i >= 0; i--) {
+    const b = block(history[i]!, "verbatim", history[i]!.answer);
+    if (used + 1 + b.length > budget) break;
+    blocks.unshift(b);
+    used += 1 + b.length;
+  }
+  return [CARRY_HEADER, ...blocks].join("\n");
+}
+
 // ------------------------------------------------------------------ the brain
 
 export interface CodexBrainOptions {
@@ -417,6 +539,7 @@ interface CodexItem {
   command?: string | string[];
   exit_code?: number;
   aggregated_output?: string;
+  result?: unknown;
 }
 
 interface RunState {
@@ -426,6 +549,8 @@ interface RunState {
   readonly started: number;
   /** The most recent agent_message; becomes the summary at turn.completed. */
   candidate: string | undefined;
+  /** What Jarhead's tools returned this run, for the carried history (compacted there). */
+  readonly results: CarriedResult[];
   steps: number;
   completed: boolean;
   failed: string | undefined;
@@ -448,6 +573,8 @@ interface WarmTurn {
   readonly sink: BrainSink;
   readonly started: number;
   candidate: string | undefined;
+  /** What Jarhead's tools returned this turn, for the carried history (compacted there). */
+  readonly results: CarriedResult[];
   steps: number;
   /** Set when this brain asked for the interrupt itself (budget), so the result reads as failed, not cancelled. */
   failed: string | undefined;
@@ -463,7 +590,7 @@ export class CodexBrain implements Brain {
   private started = false;
   private current: RunState | undefined;
   private warm: WarmTurn | undefined;
-  private history: Array<{ request: string; answer: string }> = [];
+  private history: CarriedExchange[] = [];
   private toolSocket: string | undefined;
   private privateServer: DaemonServer | undefined;
   private readonly model: string | undefined;
@@ -720,9 +847,8 @@ export class CodexBrain implements Brain {
   /** The whole prompt; `attached` are the images going in with `-i`, so the preamble numbers exactly those. */
   private prompt(task: BrainTask, attached: readonly BrainAttachment[]): string {
     const parts = [brainSystemPrompt(this.opts.userName), codexAddendum(this.opts.userName)];
-    if (this.history.length > 0) {
-      parts.push(["Earlier in this session:", ...this.history.flatMap((h) => [`${this.opts.userName ?? "Kevin"} said: "${h.request}"`, `You answered: ${h.answer}`])].join("\n"));
-    }
+    const carry = renderCarry(this.history, this.opts.userName ?? "Kevin");
+    if (carry) parts.push(carry);
     parts.push(delegationPrompt(task, this.opts.userName, attached));
     return parts.join("\n\n");
   }
@@ -767,14 +893,16 @@ export class CodexBrain implements Brain {
       log.info(`effort ${effort ? codexEffort(effort) : "thread default"} (${isSimple ? "simple" : "not simple"}: "${task.request.slice(0, 80)}")`);
     }
     const parts: string[] = [];
-    if (this.carryHistory && this.history.length > 0) {
-      parts.push(["Earlier in this session:", ...this.history.flatMap((h) => [`${this.opts.userName ?? "Kevin"} said: "${h.request}"`, `You answered: ${h.answer}`])].join("\n"));
-    }
+    // The carried block is compacted (renderCarry): Kevin's words whole, results as
+    // lines or size placeholders, the whole thing capped — a fresh thread is not the
+    // old one's context by another name.
+    const carry = this.carryHistory ? renderCarry(this.history, this.opts.userName ?? "Kevin") : undefined;
+    if (carry) parts.push(carry);
     this.carryHistory = false;
     parts.push(delegationPrompt(task, this.opts.userName, attached));
     const input: UserInput[] = [{ type: "text", text: parts.join("\n\n"), text_elements: [] }, ...attached.map((a): UserInput => ({ type: "localImage", path: a.path, detail: "high" }))];
 
-    const warm: WarmTurn = { task, sink, started: Date.now(), candidate: undefined, steps: 0, failed: undefined, cancelled: false, timer: undefined };
+    const warm: WarmTurn = { task, sink, started: Date.now(), candidate: undefined, results: [], steps: 0, failed: undefined, cancelled: false, timer: undefined };
     this.warm = warm;
     this.opts.runner.attach(sink, task);
     const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
@@ -816,7 +944,7 @@ export class CodexBrain implements Brain {
     else if (result.status === "failed") out = { status: "failed", error: result.error ?? "the Codex turn failed" };
     else {
       const summary = warm.candidate || "done.";
-      this.remember(task.request, summary);
+      this.remember(task.request, summary, warm.results);
       out = { status: "done", summary };
     }
     log.debug(`${out.status} in ${ms}ms after ${warm.steps} step(s) (app-server)`);
@@ -889,6 +1017,8 @@ export class CodexBrain implements Brain {
           if (/approval/i.test(why)) log.warn(`${tool}: ${why}`);
         } else if (item.server !== CODEX_MCP_SERVER) {
           sink.step({ kind: "note", text: `codex finished ${item.server ?? "?"}.${tool}` });
+        } else {
+          warm.results.push(carriedResult(tool, item.result));
         }
         return;
       }
@@ -931,7 +1061,7 @@ export class CodexBrain implements Brain {
         resolve({ status: "failed", error: `could not start Codex: ${(e as Error).message}` });
         return;
       }
-      const state: RunState = { task, sink, child, started: Date.now(), candidate: undefined, steps: 0, completed: false, failed: undefined, cancelled: false, stderr: "", resolve, timer: undefined, killTimer: undefined };
+      const state: RunState = { task, sink, child, started: Date.now(), candidate: undefined, results: [], steps: 0, completed: false, failed: undefined, cancelled: false, stderr: "", resolve, timer: undefined, killTimer: undefined };
       this.current = state;
       const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
       state.timer = setTimeout(() => this.fail(state, `I ran out of time after ${Math.round(maxWallMs / 1000)} seconds`), maxWallMs);
@@ -1070,6 +1200,8 @@ export class CodexBrain implements Brain {
           if (/approval/i.test(why)) log.warn(`${tool}: ${why}`);
         } else if (item.server !== CODEX_MCP_SERVER) {
           sink.step({ kind: "note", text: `codex finished ${item.server ?? "?"}.${tool}` });
+        } else {
+          state.results.push(carriedResult(tool, item.result));
         }
         return;
       }
@@ -1127,7 +1259,7 @@ export class CodexBrain implements Brain {
     else if (state.failed) result = { status: "failed", error: state.failed };
     else if (state.completed || (code === 0 && state.candidate)) {
       const summary = state.candidate || "done.";
-      this.remember(state.task.request, summary);
+      this.remember(state.task.request, summary, state.results);
       result = { status: "done", summary };
     } else {
       const tail = state.stderr.trim().split("\n").slice(-3).join(" ").slice(0, 300);
@@ -1137,10 +1269,10 @@ export class CodexBrain implements Brain {
     state.resolve(result);
   }
 
-  private remember(request: string, answer: string): void {
+  private remember(request: string, answer: string, results: readonly CarriedResult[] = []): void {
     const turns = this.opts.historyTurns ?? 3;
     if (turns <= 0) return;
-    this.history.push({ request, answer });
+    this.history.push({ request, answer, results: results.slice(-CARRY_RESULTS_PER_EXCHANGE) });
     if (this.history.length > turns) this.history.splice(0, this.history.length - turns);
   }
 
