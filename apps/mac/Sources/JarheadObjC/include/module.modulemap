@@ -1,0 +1,4 @@
+module JarheadObjC {
+    header "ObjCTry.h"
+    export *
+}

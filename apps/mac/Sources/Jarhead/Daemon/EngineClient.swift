@@ -315,10 +315,11 @@ final class EngineClient: @unchecked Sendable {
                 log("undecodable snapshot")
                 return
             }
-            queueSnapshot(snap)
+            queueSnapshot(sanitized(snap))
         case "levels":
             guard let sub = obj["levels"], let levels: AudioLevels = decode(sub) else { return }
-            onMain { $0.levels = levels }
+            let clean = AudioLevels(input: finiteLevel(levels.input), output: finiteLevel(levels.output))
+            onMain { $0.levels = clean }
         case "toast":
             let text = obj["text"] as? String ?? ""
             let tone = Toast.Tone(rawValue: obj["tone"] as? String ?? "info") ?? .info
@@ -346,6 +347,57 @@ final class EngineClient: @unchecked Sendable {
         default:
             break
         }
+    }
+
+    // MARK: - bad numbers
+
+    /// JSON cannot carry a NaN or an infinity — `JSON.stringify` writes `null`, which
+    /// the decoder refuses for a `Double` — so none arrives today; a future producer or
+    /// serializer must not be able to hand the sim, the meter or a layout one either.
+    /// Every level, and every number of the snapshot the app does arithmetic on, becomes
+    /// 0 when it is not finite; the first such frame is logged, then silence. On `net`.
+    private var badNumberLogged = false
+
+    private func noteBadNumber(_ what: String) {
+        guard !badNumberLogged else { return }
+        badNumberLogged = true
+        log("non-finite \(what) from the daemon — clamped to 0 (logged once)")
+    }
+
+    /// A level as the app keeps it: finite and 0…1. `min(1, max(0, x))` would hand a
+    /// NaN on unchanged (`0 >= nan` is false), which is why this checks first.
+    private func finiteLevel(_ x: Double) -> Double {
+        guard x.isFinite else { noteBadNumber("level"); return 0 }
+        return min(1, max(0, x))
+    }
+
+    private func finite(_ x: Double, _ what: String) -> Double {
+        guard x.isFinite else { noteBadNumber(what); return 0 }
+        return x
+    }
+
+    /// The snapshot's numbers the app computes with (the meter, the pause countdown,
+    /// the session's context ratio), finite or 0.
+    private func sanitized(_ snap: Snapshot) -> Snapshot {
+        var s = snap
+        if var session = s.session {
+            session.startedAt = finite(session.startedAt, "session.startedAt")
+            session.expiresAt = finite(session.expiresAt, "session.expiresAt")
+            session.usageSeconds = finite(session.usageSeconds, "session.usageSeconds")
+            if let ratio = session.contextRatio { session.contextRatio = finite(ratio, "session.contextRatio") }
+            s.session = session
+        }
+        if var pause = s.pause {
+            pause.at = finite(pause.at, "pause.at")
+            pause.usageSeconds = finite(pause.usageSeconds, "pause.usageSeconds")
+            pause.sleepsAt = finite(pause.sleepsAt, "pause.sleepsAt")
+            s.pause = pause
+        }
+        if var usage = s.usageToday {
+            usage.seconds = finite(usage.seconds, "usageToday.seconds")
+            s.usageToday = usage
+        }
+        return s
     }
 
     private func decode<T: Decodable>(_ any: Any) -> T? {

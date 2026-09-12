@@ -1,4 +1,5 @@
 import { createServer, type Server, type Socket } from "node:net";
+import { EventEmitter } from "node:events";
 import { existsSync, unlinkSync } from "node:fs";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
@@ -45,7 +46,14 @@ interface Client {
   audio: boolean;
 }
 
-export class DaemonServer {
+/** What the server tells its host about its clients: the app's bye, and every join and leave with the count after it. */
+export interface DaemonServerEvents {
+  bye: [];
+  join: [count: number];
+  leave: [count: number];
+}
+
+export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private server: Server | undefined;
   private readonly clients = new Set<Client>();
 
@@ -54,6 +62,7 @@ export class DaemonServer {
     private readonly socketPath: string,
     private readonly version = "2.0.0",
   ) {
+    super();
     engine.on("event", (e) => {
       switch (e.type) {
         case "snapshot":
@@ -121,8 +130,10 @@ export class DaemonServer {
     socket.on("close", () => {
       this.clients.delete(client);
       log.info(`client left (${this.clients.size} remaining)`);
+      this.emit("leave", this.clients.size);
     });
     log.info(`client joined (${this.clients.size})`);
+    this.emit("join", this.clients.size);
   }
 
   private onFrame(client: Client, type: number, payload: Buffer): void {
@@ -172,6 +183,13 @@ export class DaemonServer {
       case "tool.run":
         void this.runTool(client, msg.id, msg.name, msg.input);
         return;
+      case "bye":
+        // The app is quitting cleanly (wire.ts). The host decides what that means for us;
+        // the ack tells the app it may close now.
+        log.info("client said bye");
+        this.send(client, { type: "bye" });
+        this.emit("bye");
+        return;
     }
   }
 
@@ -220,5 +238,119 @@ export class DaemonServer {
     } catch {
       // gone already
     }
+  }
+}
+
+// ----------------------------------------------------------------- lifeline
+
+export interface LifelineOptions {
+  /** How long to wait for a relaunched app after the one that spawned us went away without a bye (default 90 s). */
+  readonly lingerMs?: number;
+  /** A bye older than this when stdin closes is not this quit's (default 10 s). */
+  readonly byeWindowMs?: number;
+  readonly clientCount: () => number;
+  readonly shutdown: (why: string) => void;
+  readonly log: (line: string) => void;
+  /** Called once, when stdin closes: the pipes into the app are dead, the host should re-home its output. */
+  readonly onOrphaned?: () => void;
+  readonly now?: () => number;
+}
+
+/**
+ * When the daemon exits after the app is gone.
+ *
+ * The app spawns the daemon with a stdin pipe and closes it to stop us. Before the
+ * crash guard, every app crash closed that pipe too, the daemon shut down, and the
+ * resident Codex thread and its warmed cache died with it — fourteen respawns in one
+ * evening. Now a clean quit is announced (`bye`, wire.ts) right before the pipe closes,
+ * and stdin closing *without* a recent bye means a crash: the daemon lingers for
+ * `lingerMs`, keeps the socket, the brain and the hands, and the relaunched app attaches
+ * to it warm. Nobody back inside the window → exit. A client that attaches cancels the
+ * linger; the last client leaving an orphaned daemon starts it again (so `pnpm jarhead
+ * status` during a linger extends it by one window, no more); and a bye to an orphaned
+ * daemon — the adopting app quitting — is the quit itself, since its stdin cannot close
+ * a second time. A daemon whose stdin is a terminal (`pnpm jarheadd`) hears byes and
+ * ignores them: the terminal owns it.
+ */
+export class Lifeline {
+  private stdinGone = false;
+  private byeAt = Number.NEGATIVE_INFINITY;
+  private timer: NodeJS.Timeout | undefined;
+  private done = false;
+  private readonly lingerMs: number;
+  private readonly byeWindowMs: number;
+  private readonly now: () => number;
+
+  constructor(private readonly opts: LifelineOptions) {
+    this.lingerMs = opts.lingerMs ?? 90_000;
+    this.byeWindowMs = opts.byeWindowMs ?? 10_000;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** True while waiting for a relaunched app. */
+  get lingering(): boolean {
+    return this.timer !== undefined;
+  }
+
+  /** The app announced a clean quit. */
+  bye(): void {
+    if (this.done) return;
+    this.byeAt = this.now();
+    if (this.stdinGone) {
+      this.end("bye from the app that adopted us");
+      return;
+    }
+    this.opts.log("the app said bye; the stdin close that follows is a clean quit");
+  }
+
+  /** The stdin pipe closed: the app quit (after a bye) or crashed (without one). */
+  stdinClosed(): void {
+    if (this.done || this.stdinGone) return;
+    this.stdinGone = true;
+    this.opts.onOrphaned?.();
+    if (this.now() - this.byeAt <= this.byeWindowMs) {
+      this.end("stdin closed");
+      return;
+    }
+    this.startLinger("app went away without a bye");
+  }
+
+  clientJoined(): void {
+    if (this.done || !this.timer) return;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.opts.log("a client attached; staying up");
+  }
+
+  clientLeft(): void {
+    if (this.done || !this.stdinGone || this.timer || this.opts.clientCount() > 0) return;
+    this.startLinger("the last client left an orphaned daemon");
+  }
+
+  /** Stop the timer (tests, shutdown from elsewhere). */
+  dispose(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.done = true;
+  }
+
+  private startLinger(why: string): void {
+    const seconds = Math.round(this.lingerMs / 1000);
+    this.opts.log(`${why}; lingering ${seconds} s for a relaunch`);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (this.opts.clientCount() > 0) {
+        this.opts.log("a client is attached; staying up");
+        return;
+      }
+      this.end(`nobody came back in ${seconds} s`);
+    }, this.lingerMs);
+    this.timer.unref?.();
+  }
+
+  private end(why: string): void {
+    if (this.done) return;
+    this.dispose();
+    this.opts.shutdown(why);
   }
 }

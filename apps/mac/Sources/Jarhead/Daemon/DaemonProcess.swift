@@ -59,8 +59,19 @@ final class DaemonProcess {
         stopping = true
         restartTimer?.invalidate(); restartTimer = nil
         attachTimer?.invalidate(); attachTimer = nil
+        // A clean quit says so first: the daemon then treats the stdin EOF that follows as
+        // a shutdown. Without a bye (the app crashed) it lingers 90 s for the relaunch and
+        // keeps the brain warm (packages/daemon/src/main.ts). Sent even when attached to a
+        // daemon this app did not spawn: one orphaned by an earlier crash — we were its
+        // relaunch — has no other way to hear that Kevin quit.
+        switch DaemonProcess.sendBye(socketPath) {
+        case .acked: log("[app] bye acknowledged by the daemon (clean quit)")
+        case .unacknowledged: log("[app] bye sent but not acknowledged within 600 ms; the daemon may linger")
+        case .noDaemon: break
+        }
         guard let p = process, p.isRunning else {
             process = nil
+            CrashGuard.setDaemonPid(nil)
             return
         }
         log("[app] stopping daemon pid \(p.processIdentifier)")
@@ -82,7 +93,15 @@ final class DaemonProcess {
         }
         process = nil
         stdinPipe = nil
+        CrashGuard.setDaemonPid(nil)
         logFile.flush()
+    }
+
+    /// The previous run's crash (CrashGuard's report), into daemon.log next to the engine's
+    /// lines, so the two halves of the story sit in one file.
+    func noteCrash(_ notice: CrashNotice) {
+        let came = notice.relaunched ? "relaunched by the crash guard" : "not relaunched (three crashes in ten minutes)"
+        log("[app] crashed \(CrashNotice.ago(notice.at)): \(notice.reason) — report \(notice.fileURL.path) · \(came)")
     }
 
     private func waitUntilExit(_ p: Process, deadline: Date) {
@@ -161,6 +180,7 @@ final class DaemonProcess {
         process = p
         stdinPipe = stdin
         spawnedAt = Date()
+        CrashGuard.setDaemonPid(p.processIdentifier)
         setDetail("running pid \(p.processIdentifier)")
     }
 
@@ -168,6 +188,7 @@ final class DaemonProcess {
         guard proc === process else { return }
         process = nil
         stdinPipe = nil
+        CrashGuard.setDaemonPid(nil)
         let how = reason == .uncaughtSignal ? "signal \(status)" : "exit \(status)"
         log("[app] daemon ended: \(how)")
         if stopping { return }
@@ -281,15 +302,59 @@ final class DaemonProcess {
 
     /// True when something accepts a connection on the unix socket right now.
     nonisolated static func socketAnswers(_ path: String) -> Bool {
-        guard FileManager.default.fileExists(atPath: path) else { return false }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
+        guard let fd = connectSocket(path) else { return false }
+        close(fd)
+        return true
+    }
+
+    enum ByeOutcome { case acked, unacknowledged, noDaemon }
+
+    /// One `{type:"bye"}` frame (wire.ts) on a fresh connection, then read until the
+    /// daemon's `bye` ack (≤ 600 ms) before closing. Blocking; on the way out.
+    ///
+    /// The ack is the point. The daemon answers a fresh connection with its hello and a
+    /// snapshot that can run to tens of kilobytes (64 agent sessions); a client that closes
+    /// before that write has drained fails it with EPIPE, Node destroys the socket, and a
+    /// bye still unread in the receive buffer is lost with it — measured against a real
+    /// daemon, twice. Once the ack has arrived the daemon has processed the bye.
+    nonisolated static func sendBye(_ path: String) -> ByeOutcome {
+        guard let fd = connectSocket(path) else { return .noDaemon }
         defer { close(fd) }
+        guard let frame = try? Wire.encodeJSON(["type": "bye"]) else { return .noDaemon }
+        let sent = frame.withUnsafeBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return -1 }
+            return Int(write(fd, base, raw.count))
+        }
+        guard sent == frame.count else { return .noDaemon }
+        let decoder = FrameDecoder()
+        var scratch = [UInt8](repeating: 0, count: 64 * 1024)
+        let deadline = Date().addingTimeInterval(0.6)
+        while true {
+            let left = Int32(max(0, deadline.timeIntervalSinceNow * 1000))
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            guard left > 0, poll(&pfd, 1, left) > 0 else { return .unacknowledged }
+            let n = recv(fd, &scratch, scratch.count, 0)
+            guard n > 0 else { return .unacknowledged }
+            guard let frames = try? decoder.push(Data(scratch[0..<n])) else { return .unacknowledged }
+            for f in frames where f.type == FrameType.json.rawValue {
+                if let obj = try? JSONSerialization.jsonObject(with: f.payload) as? [String: Any], obj["type"] as? String == "bye" { return .acked }
+            }
+        }
+    }
+
+    /// A connected fd to the unix socket, or nil when nobody listens (caller closes it).
+    nonisolated private static func connectSocket(_ path: String) -> Int32? {
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path) - 1
         let bytes = Array(path.utf8)
-        guard bytes.count <= maxLen else { return false }
+        guard bytes.count <= maxLen else {
+            close(fd)
+            return nil
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
             for (i, b) in bytes.enumerated() { raw[i] = b }
             raw[bytes.count] = 0
@@ -298,13 +363,20 @@ final class DaemonProcess {
         let rc = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
         }
-        return rc == 0
+        guard rc == 0 else {
+            close(fd)
+            return nil
+        }
+        return fd
     }
 
     // MARK: - log
 
+    /// Into daemon.log (the `[app]` lines) and the crash guard's ring, so a report carries
+    /// the daemon's last moves too.
     func log(_ line: String) {
         logFile.line(line)
+        CrashGuard.remember(line)
     }
 
     private func setDetail(_ text: String) {
@@ -367,12 +439,19 @@ final class DaemonLog: @unchecked Sendable {
         queue.sync { try? handle?.synchronize() }
     }
 
-    /// On `queue`.
+    /// On `queue`. O_APPEND, not a remembered offset: a daemon orphaned by an app crash
+    /// appends its own lines to this file once its stdout pipe is gone (main.ts), and a
+    /// handle writing at the offset it last knew would overwrite them.
     private func open() {
         let fm = FileManager.default
         try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !fm.fileExists(atPath: url.path) { fm.createFile(atPath: url.path, contents: nil) }
-        handle = try? FileHandle(forWritingTo: url)
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        guard fd >= 0 else {
+            handle = nil
+            written = 0
+            return
+        }
+        handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         written = (try? handle?.seekToEnd()) ?? 0
     }
 }

@@ -195,6 +195,15 @@ import SwiftUI
 //                              (a drag cancels the sleep beat: the wake at 7 s drifts it up)
 //                            ORB_NOTCH=1 ORB_NOTCH_PHASE=asleep ORB_FLY_AT=2 ORB_SLEEP_AT=5.5 ORB_SLEEP_PHASE=error ORB_WAKE_AT=7 ORB_EXIT_AFTER=9.5
 //                              (a fly while asleep leaves it out; asleep → error moves nothing; error → listening is the wake: it drifts up)
+//   ORB_LEVELS=list        bad numbers on the levels path: the fake 30 Hz levels are replaced by these
+//                          values (comma list; Swift's Double parses nan, inf, -inf, -1, 2 …), cycling,
+//                          on `state.levels` exactly where EngineClient publishes — from ORB_LEVELS_AT s
+//                          (default 0) for ORB_LEVELS_FOR s (default: the rest of the run). Prints the
+//                          sim's raw/eased levels, the notch island's springs and its raw rect every
+//                          0.5 s (a NaN reads "nan"), and once when the override turns on and off:
+//                            ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_LEVELS=nan ORB_LEVELS_AT=1.6 ORB_LEVELS_FOR=0.5 ORB_SHOT_DIR=… ORB_EXIT_AFTER=5
+//                              (half a second of NaN levels while peeking, then normal levels; the island
+//                              is hovered at 2.7 s and shot at 3.4 s — it must look like the plain notch run)
 
 @main
 struct OrbPreviewMain {
@@ -259,6 +268,15 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var notchIslandOpenedAt = -1.0
     var notchIslandClosedAt = -1.0
 
+    // ORB_LEVELS: the fake levels replaced by these values (nan, inf, -1, 2 …), cycling,
+    // from ORB_LEVELS_AT for ORB_LEVELS_FOR seconds; the readout every 0.5 s.
+    var levelsOverride: [Double] = []
+    var levelsOverrideAt = 0.0
+    var levelsOverrideFor: Double?
+    var levelsOverrideIndex = 0
+    var levelsOverrideActive = false
+    var lastLevelsLog = 0.0
+
     var shotDir: String?
     var shotPrefix = "preview-blob-"
     var shotPress = 0.3
@@ -314,6 +332,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         shotDir = env["ORB_SHOT_DIR"]
         shotPrefix = env["ORB_SHOT_PREFIX"] ?? "preview-blob-"
         shotPress = Double(env["ORB_SHOT_PRESS"] ?? "") ?? 0.3
+        if let spec = env["ORB_LEVELS"] {
+            levelsOverride = spec.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            levelsOverrideAt = Double(env["ORB_LEVELS_AT"] ?? "") ?? 0
+            levelsOverrideFor = Double(env["ORB_LEVELS_FOR"] ?? "")
+            print("ORB_LEVELS:", levelsOverride.map { "\($0)" }.joined(separator: ","), "from \(levelsOverrideAt) s,", levelsOverrideFor.map { "for \($0) s" } ?? "for the run")
+        }
         switch env["ORB_APPEARANCE"] {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -551,6 +575,21 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     levels.output = max(0, 0.55 + 0.45 * sin(t * 9.3) * cos(t * 2.3))
                 default:
                     break
+                }
+                // ORB_LEVELS: the bad numbers, on the same path the daemon's levels take.
+                if !self.levelsOverride.isEmpty {
+                    let since = CACurrentMediaTime() - self.launchedAt
+                    let on = since >= self.levelsOverrideAt && (self.levelsOverrideFor.map { since < self.levelsOverrideAt + $0 } ?? true)
+                    if on != self.levelsOverrideActive {
+                        self.levelsOverrideActive = on
+                        print(self.stamp, on ? "levels: override ON" : "levels: override OFF (fake levels resume)", "| sim", self.orb.previewSimLevels, "| springs", self.orb.previewNotchSprings)
+                        fflush(stdout)
+                    }
+                    if on {
+                        let v = self.levelsOverride[self.levelsOverrideIndex % self.levelsOverride.count]
+                        self.levelsOverrideIndex += 1
+                        levels = AudioLevels(input: v, output: v)
+                    }
                 }
                 self.state.levels = levels
             }
@@ -1242,6 +1281,16 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         let moving = orb.previewIsMoving
         let frame = orb.previewFrameCG
         let phase = orb.previewFlightPhase
+        // ORB_LEVELS: every number on the way from the levels to the island, twice a second.
+        if !levelsOverride.isEmpty, now - lastLevelsLog >= 0.5 {
+            lastLevelsLog = now
+            let raw = orb.previewNotchIslandRaw.map { String(format: "%.1f,%.1f %.1f×%.1f", $0.minX, $0.minY, $0.width, $0.height) } ?? "nil"
+            let c = orb.previewCenterCG
+            print(stamp, "levels:", orb.previewSimLevels, "| springs", orb.previewNotchSprings.isEmpty ? "-" : orb.previewNotchSprings,
+                  "| island raw", raw, "| mode", orb.previewNotchMode.isEmpty ? "-" : orb.previewNotchMode,
+                  String(format: "| body CG %.1f,%.1f speed %.1f face [%@]", c.x, c.y, orb.previewBodySpeed, orb.previewFace))
+            fflush(stdout)
+        }
         if faceLog {
             let face = orb.previewFace
             if face != lastFace {

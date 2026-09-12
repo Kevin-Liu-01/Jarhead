@@ -67,6 +67,8 @@ enum Motion {
             return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t
         }
         func value(at x: Double) -> Double {
+            // Not a number is no progress; an infinity is the end it points at.
+            guard x.isFinite else { return x > 0 ? 1 : 0 }
             let x = min(1, max(0, x))
             if x <= 0 { return 0 }
             if x >= 1 { return 1 }

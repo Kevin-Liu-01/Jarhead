@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResult } from "@jarhead/hands";
 import { FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, type DaemonMessage } from "../wire.ts";
-import { DaemonServer, type EngineLike } from "../server.ts";
+import { DaemonServer, Lifeline, type EngineLike } from "../server.ts";
 import { DaemonClient } from "../client.ts";
 
 test("frames survive arbitrary chunking and reject oversize", () => {
@@ -242,5 +242,119 @@ test("tool.run goes through the engine's runner and answers the asking client on
 
   asker.close();
   bystander.close();
+  await server.close();
+});
+
+// ----------------------------------------------------------------- the lifeline: bye vs. no bye
+
+/** A Lifeline with a short window and every decision recorded. */
+function lifeline(clients: { n: number }, lingerMs = 40) {
+  const log: string[] = [];
+  const ended: string[] = [];
+  const l = new Lifeline({ lingerMs, byeWindowMs: 10_000, clientCount: () => clients.n, shutdown: (why) => ended.push(why), log: (line) => log.push(line) });
+  return { l, log, ended };
+}
+
+const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test("lifeline: a bye then stdin closing is a clean quit — shutdown at once, no linger", async () => {
+  const clients = { n: 1 };
+  const { l, log, ended } = lifeline(clients);
+  l.bye();
+  assert.equal(ended.length, 0, "the bye alone does nothing while stdin is open");
+  clients.n = 0;
+  l.stdinClosed();
+  assert.deepEqual(ended, ["stdin closed"]);
+  assert.equal(l.lingering, false);
+  assert.ok(!log.some((s) => /lingering/.test(s)), "no linger line on a clean quit");
+});
+
+test("lifeline: stdin closing without a bye is a crash — linger, then exit when nobody comes back", async () => {
+  const clients = { n: 0 };
+  const { l, log, ended } = lifeline(clients, 40);
+  let orphaned = 0;
+  const l2 = new Lifeline({ lingerMs: 40, clientCount: () => clients.n, shutdown: (why) => ended.push(why), log: (line) => log.push(line), onOrphaned: () => orphaned++ });
+  l.dispose();
+  l2.stdinClosed();
+  assert.equal(orphaned, 1, "the host is told once to re-home its output");
+  assert.equal(l2.lingering, true);
+  assert.match(log[0]!, /^app went away without a bye; lingering 0 s for a relaunch$/);
+  assert.equal(ended.length, 0, "still up inside the window");
+  await tick(80);
+  assert.deepEqual(ended, ["nobody came back in 0 s"]);
+  assert.equal(l2.lingering, false);
+  l2.stdinClosed();
+  l2.bye();
+  assert.equal(ended.length, 1, "nothing fires twice after the end");
+});
+
+test("lifeline: a client attaching during the linger keeps the daemon; its bye is the quit; leaving without one lingers again", async () => {
+  const clients = { n: 0 };
+  const { l, log, ended } = lifeline(clients, 40);
+  l.stdinClosed();
+  clients.n = 1;
+  l.clientJoined();
+  assert.equal(l.lingering, false, "the relaunched app cancelled the timer");
+  await tick(80);
+  assert.equal(ended.length, 0, "adopted: the window passing changes nothing");
+  // A status check comes and goes: the count is back to zero without a bye → a fresh window.
+  clients.n = 0;
+  l.clientLeft();
+  assert.equal(l.lingering, true);
+  assert.match(log.at(-1)!, /the last client left an orphaned daemon; lingering/);
+  clients.n = 1;
+  l.clientJoined();
+  // The adopting app quits cleanly: its stdin cannot close (it never held ours), so the bye is the quit.
+  l.bye();
+  assert.deepEqual(ended, ["bye from the app that adopted us"]);
+});
+
+test("lifeline: a client still attached when the window ends means staying up; a stale bye does not count", async () => {
+  const clients = { n: 0 };
+  const now = { t: 1_000_000 };
+  const log: string[] = [];
+  const ended: string[] = [];
+  const l = new Lifeline({ lingerMs: 30, byeWindowMs: 1000, clientCount: () => clients.n, shutdown: (why) => ended.push(why), log: (line) => log.push(line), now: () => now.t });
+  l.bye();
+  now.t += 5000; // the bye was five seconds ago: not this quit's
+  l.stdinClosed();
+  assert.equal(l.lingering, true, "an old bye does not make the EOF a clean quit");
+  clients.n = 1; // someone attached through the socket probe but the join event was missed: the count still decides
+  await tick(60);
+  assert.equal(ended.length, 0);
+  assert.match(log.at(-1)!, /a client is attached; staying up/);
+  l.dispose();
+});
+
+test("bye reaches the server as an event and is acknowledged to that client only; every join and leave carries the client count", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  const events: string[] = [];
+  server.on("bye", () => events.push("bye"));
+  server.on("join", (n) => events.push(`join ${n}`));
+  server.on("leave", (n) => events.push(`leave ${n}`));
+  await server.listen();
+  const app = new DaemonClient(path);
+  const appGot: string[] = [];
+  app.on("message", (m) => appGot.push(m.type));
+  await app.connect({ pid: 1, audio: true });
+  const probe = new DaemonClient(path);
+  const probeGot: string[] = [];
+  probe.on("message", (m) => probeGot.push(m.type));
+  await probe.connect({ pid: 2 });
+  await tick(30);
+  app.sendJson({ type: "bye" });
+  await tick(30);
+  // The ack: the app closes only once it has read this (DaemonProcess.sendBye).
+  assert.deepEqual(appGot, ["hello", "snapshot", "bye"]);
+  assert.deepEqual(probeGot, ["hello", "snapshot"], "the ack goes to the client that said bye, nobody else");
+  probe.close();
+  await tick(30);
+  app.close();
+  await tick(30);
+  assert.deepEqual(events, ["join 1", "join 2", "bye", "leave 1", "leave 0"]);
+  assert.deepEqual(engine.commands, [], "a bye is not an engine command");
   await server.close();
 });

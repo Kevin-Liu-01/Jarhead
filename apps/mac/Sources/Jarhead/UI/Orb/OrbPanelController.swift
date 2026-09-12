@@ -2390,6 +2390,15 @@ extension OrbPanelController {
     public var previewNotchIslandCG: CGRect? { notch.map { $0.previewIslandCG } }
     /// Where the blob parks under the notch (CG).
     public var previewNotchDockCG: CGPoint? { notch?.dockPointCG }
+    /// The notch island's springs and its raw rect (view coordinates), for the harness's
+    /// ORB_LEVELS readout; "" / nil without a dock.
+    public var previewNotchSprings: String { notch?.previewSprings ?? "" }
+    public var previewNotchIslandRaw: NSRect? { notch?.previewIslandRaw }
+    /// The sim's levels — raw as sent, eased, and the island level — for the same readout.
+    public var previewSimLevels: String {
+        let l = sim.previewLevels
+        return String(format: "raw %.3f/%.3f eased %.3f/%.3f island %.3f", l.rawInput, l.rawOutput, l.input, l.output, sim.islandLevel)
+    }
     /// The slip under way: "tuck" (into the notch) / "drop" (out of it) / "" (none), and how far along (0…1).
     public var previewSlipKind: String { slip.map { $0.kind == .tuck ? "tuck" : "drop" } ?? "" }
     public var previewSlipProgress: Double { slip?.progress ?? 0 }

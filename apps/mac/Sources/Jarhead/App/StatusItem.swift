@@ -65,6 +65,11 @@ final class StatusItem: NSObject {
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
+        // The last crash's row comes and goes with the notice (CrashGuard → AppState.lastCrash).
+        state.$lastCrash
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
     }
 
     private func scheduleRefresh() {
@@ -135,6 +140,16 @@ final class StatusItem: NSObject {
         let title = NSMenuItem(title: connected ? "Jarhead — \(StatusItem.label(for: phase))" : "Jarhead — \(state.daemonDetail)", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
+
+        // The previous run's crash, while its report is fresh (AppState.lastCrash): one row;
+        // a click shows the report in Finder. The Console's rail has the dismiss.
+        if let crash = state.lastCrash {
+            let row = NSMenuItem(title: StatusItem.crashLabel(crash), action: #selector(doRevealCrash), keyEquivalent: "")
+            row.target = self
+            row.image = StatusItem.symbol("exclamationmark.triangle.fill")
+            row.toolTip = "\(crash.reason)\n\(crash.fileURL.path)\nShow the report in Finder"
+            menu.addItem(row)
+        }
 
         // Go / Pause: the transport's one button (⌥⇧Space; ⌥⇧P is the same toggle).
         let look = AppState.transportLabel(for: phase)
@@ -239,6 +254,15 @@ final class StatusItem: NSObject {
     @objc private func doMark() { state.beginMarkMode() }
     @objc private func doPermissions() { state.openPermissionsSetup() }
     @objc private func doAskAll() { state.requestAll() }
+    @objc private func doRevealCrash() { state.revealCrash() }
+
+    // MARK: - crash row
+
+    /// "Crashed 2 min ago — Failed to create tap due to format mismatch", the reason cut to a menu's width.
+    static func crashLabel(_ crash: CrashNotice, now: Date = Date()) -> String {
+        let reason = crash.reason.count > 64 ? String(crash.reason.prefix(63)) + "…" : crash.reason
+        return "Crashed \(CrashNotice.ago(crash.at, now: now)) — \(reason)"
+    }
 
     // MARK: - permissions row
 

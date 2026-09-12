@@ -21,7 +21,6 @@ final class AudioEngine {
     private let wireFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000, channels: 1, interleaved: false)!
 
-    private var converter: AVAudioConverter?
     private var micAccumulator = Data()
     private var lastLevelAt: CFAbsoluteTime = 0
     private var preferredInputUID: String?
@@ -36,7 +35,7 @@ final class AudioEngine {
 
     /// A 4800-byte PCM16 chunk, every 100 ms while running. Called on the audio queue.
     var onMicChunk: ((Data) -> Void)?
-    /// RMS 0..1 at ≤ 10 Hz. Called on the audio queue.
+    /// RMS 0..1 at ≤ 10 Hz, always finite (`clampLevel`). Called on the audio queue.
     var onMicLevel: ((Double) -> Void)?
     /// A second consumer of the same microphone tap (the on-device ear): the voice
     /// channel as mono Float32 at the hardware rate, every tap callback (100 ms of
@@ -81,8 +80,28 @@ final class AudioEngine {
     func flush() {
         queue.async {
             guard self.running else { return }
-            self.player.stop()
-            if self.engine.isRunning { self.player.play() }
+            // The player raises (not throws) when the engine has just stopped itself under
+            // it; the engine is about to be restarted anyway, so log and move on.
+            self.guardPlayer("flush") {
+                self.player.stop()
+                if self.engine.isRunning { self.player.play() }
+            }
+        }
+    }
+
+    private var lastPlayerRaiseAt: CFAbsoluteTime = 0
+
+    /// Runs a player call inside the ObjC shim; a raise is logged (at most every 5 s)
+    /// instead of aborting the app. On `queue`.
+    private func guardPlayer(_ what: String, _ body: () -> Void) {
+        do {
+            try objcTry(body)
+        } catch {
+            let now = CFAbsoluteTimeGetCurrent()
+            if now - lastPlayerRaiseAt > 5 {
+                lastPlayerRaiseAt = now
+                onStatus?("speaker \(what) raised: \(error.localizedDescription) (engine \(engine.isRunning ? "running" : "stopped"))")
+            }
         }
     }
 
@@ -114,8 +133,10 @@ final class AudioEngine {
             _ = samples.withUnsafeMutableBytes { pcm.copyBytes(to: $0, count: frames * 2) }
             let scale = Float(1.0 / 32768.0)
             for i in 0 ..< frames { dst[i] = Float(samples[i]) * scale }
-            self.player.scheduleBuffer(buf, completionHandler: nil)
-            if !self.player.isPlaying { self.player.play() }
+            self.guardPlayer("schedule") {
+                self.player.scheduleBuffer(buf, completionHandler: nil)
+                if !self.player.isPlaying { self.player.play() }
+            }
         }
     }
 
@@ -136,7 +157,8 @@ final class AudioEngine {
                 return
             } catch {
                 lastError = error
-                onStatus?("audio start (voice processing \(attempt.voice ? "on" : "off"), output \(attempt.wiring)) failed: \(error.localizedDescription) — \(deviceSummary())")
+                let how = error is ObjCException ? "raised" : "failed"
+                onStatus?("audio start (voice processing \(attempt.voice ? "on" : "off"), output \(attempt.wiring)) \(how): \(error.localizedDescription) — \(deviceSummary())")
                 tearDownGraph()
             }
         }
@@ -144,14 +166,22 @@ final class AudioEngine {
         scheduleRetryLocked(after: lastError)
     }
 
-    /// A start that failed outright (no input device, unit refused to initialise) is
-    /// not final: devices come and go. Back off 2 s → 30 s while `wanted` holds.
+    /// A start that failed outright (no input device, unit refused to initialise, a raise
+    /// caught by the shim) is not final: devices come and go. Back off on the ladder
+    /// 0.5, 1, 2, 5, 10, 30 s (`AudioBackoff`) while `wanted` holds. The first two
+    /// retries are quick and quiet — an input device that is still switching settles
+    /// within a second or two — and only from the third on does the line carry the
+    /// "audio failed" prefix the app turns into a toast, so a headset switch does not
+    /// flash an error at Kevin.
     private func scheduleRetryLocked(after error: Error?) {
         guard wanted, !retryScheduled else { return }
-        let delay = min(30.0, 2.0 * pow(2.0, Double(min(retryAttempt, 4))))
+        let delay = AudioBackoff.delay(attempt: retryAttempt)
+        let quiet = retryAttempt < 2
         retryAttempt += 1
         retryScheduled = true
-        onStatus?("audio failed to start: \(error?.localizedDescription ?? "unknown") — retrying in \(Int(delay)) s")
+        let why = error?.localizedDescription ?? "unknown"
+        let when = delay < 1 ? String(format: "%.1f s", delay) : "\(Int(delay)) s"
+        onStatus?(quiet ? "audio start deferred: \(why) — retrying in \(when)" : "audio failed to start: \(why) — retrying in \(when)")
         queue.asyncAfter(deadline: .now() + delay) {
             self.retryScheduled = false
             guard self.wanted, !self.running else { return }
@@ -176,59 +206,81 @@ final class AudioEngine {
     }
 
     private func startGraph(voiceProcessing: Bool, wiring: OutputWiring) throws {
+        // Every AVFoundation call below can raise an NSException (a connection at a rate
+        // the hardware no longer runs, a tap on a stale format, a start with no device).
+        // Inside the ObjC shim (`objcTry`) a raise is a thrown error the attempt loop
+        // handles — not the end of the process.
         let input = engine.inputNode
-        if input.isVoiceProcessingEnabled != voiceProcessing {
-            try input.setVoiceProcessingEnabled(voiceProcessing)
-        }
+        try objcTry(throwing: {
+            if input.isVoiceProcessingEnabled != voiceProcessing {
+                try input.setVoiceProcessingEnabled(voiceProcessing)
+            }
+        })
         applyPreferredInputDevice(to: input)
 
         let hw = input.outputFormat(forBus: 0)
         guard hw.sampleRate > 0, hw.channelCount > 0 else {
             throw NSError(domain: "Jarhead.Audio", code: 1, userInfo: [NSLocalizedDescriptionKey: "no input device"])
         }
-        guard let conv = AVAudioConverter(from: hw, to: wireFormat) else {
-            throw NSError(domain: "Jarhead.Audio", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot convert \(hw) to 24 kHz Int16"])
-        }
-        converter = conv
         micAccumulator.removeAll(keepingCapacity: true)
 
-        if !engine.attachedNodes.contains(player) { engine.attach(player) }
-        engine.connect(player, to: engine.mainMixerNode, format: playFormat)
-        switch wiring {
-        case .automatic:
-            break
-        case .inputRate:
-            let f = AVAudioFormat(standardFormatWithSampleRate: hw.sampleRate, channels: engine.outputNode.inputFormat(forBus: 0).channelCount > 0 ? engine.outputNode.inputFormat(forBus: 0).channelCount : 2) ?? hw
-            engine.connect(engine.mainMixerNode, to: engine.outputNode, format: f)
-        case .hardware:
-            let outFormat = engine.outputNode.inputFormat(forBus: 0)
-            if outFormat.sampleRate > 0 {
-                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outFormat)
+        var live = hw
+        try objcTry(throwing: {
+            if !engine.attachedNodes.contains(player) { engine.attach(player) }
+            engine.connect(player, to: engine.mainMixerNode, format: playFormat)
+            switch wiring {
+            case .automatic:
+                break
+            case .inputRate:
+                let f = AVAudioFormat(standardFormatWithSampleRate: hw.sampleRate, channels: engine.outputNode.inputFormat(forBus: 0).channelCount > 0 ? engine.outputNode.inputFormat(forBus: 0).channelCount : 2) ?? hw
+                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: f)
+            case .hardware:
+                let outFormat = engine.outputNode.inputFormat(forBus: 0)
+                if outFormat.sampleRate > 0 {
+                    engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outFormat)
+                }
             }
-        }
 
-        input.removeTap(onBus: 0)
-        // AVAudioEngine clamps tap buffers to [100, 400] ms whatever size is asked for
-        // (AVAudioNode.h; measured 4800 frames = 100 ms at 48 kHz here), so 2048 is a
-        // wish, not the period: every word waits 0–100 ms (mean ~50) in the tap before
-        // the wire and the ear see it, plus ~10 ms delivery. Going below that needs a
-        // render-block source (an `AVAudioSinkNode` on the input, ~10 ms slices), not a
-        // tap setting.
-        input.installTap(onBus: 0, bufferSize: 2048, format: hw) { [weak self] buffer, when in
-            self?.handleMic(buffer, at: when)
-        }
+            input.removeTap(onBus: 0)
+            // AVAudioEngine clamps tap buffers to [100, 400] ms whatever size is asked for
+            // (AVAudioNode.h; measured 4800 frames = 100 ms at 48 kHz here), so 2048 is a
+            // wish, not the period: every word waits 0–100 ms (mean ~50) in the tap before
+            // the wire and the ear see it, plus ~10 ms delivery. Going below that needs a
+            // render-block source (an `AVAudioSinkNode` on the input, ~10 ms slices), not a
+            // tap setting.
+            //
+            // `format: nil` is the node's own output format at the moment the tap is
+            // created — nothing to mismatch. `hw`, read a moment ago, can be stale right
+            // after a device switch, and a tap asked for it raised "Failed to create tap
+            // due to format mismatch" and took the app down. `handleMic` converts from
+            // `buffer.format` and rebuilds its converter when that changes, so the tap's
+            // real format is never assumed.
+            var loggedFirst = false
+            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, when in
+                if !loggedFirst {
+                    loggedFirst = true
+                    self?.onStatus?("mic tap first buffer: \(buffer.format.brief), \(buffer.frameLength) frames")
+                }
+                self?.handleMic(buffer, at: when)
+            }
 
-        engine.prepare()
-        try engine.start()
-        player.play()
+            engine.prepare()
+            live = input.outputFormat(forBus: 0)
+            try engine.start()
+            player.play()
+        })
         running = true
-        onStatus?("audio running: mic \(Int(hw.sampleRate)) Hz ×\(hw.channelCount), voice processing \(voiceProcessing ? "on" : "off (no echo cancellation)"), output wiring \(wiring)")
+        let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
+        onStatus?("audio running: mic \(formatNote), voice processing \(voiceProcessing ? "on" : "off (no echo cancellation)"), output wiring \(wiring)")
     }
 
     private func tearDownGraph() {
-        engine.inputNode.removeTap(onBus: 0)
-        if engine.isRunning { engine.stop() }
-        engine.reset()
+        // The graph may be half-built after a failed attempt; a teardown must never raise.
+        try? objcTry {
+            self.engine.inputNode.removeTap(onBus: 0)
+            if self.engine.isRunning { self.engine.stop() }
+            self.engine.reset()
+        }
     }
 
     /// Default input/output device names, for the log line that explains a failure.
@@ -248,29 +300,49 @@ final class AudioEngine {
     }
 
     private func stopLocked() {
-        engine.inputNode.removeTap(onBus: 0)
-        // Always drop the speaker backlog: after a device change the engine may have
-        // stopped itself, and whatever was queued must not replay at the next start.
-        player.stop()
-        if engine.isRunning { engine.stop() }
-        converter = nil
+        try? objcTry {
+            self.engine.inputNode.removeTap(onBus: 0)
+            // Always drop the speaker backlog: after a device change the engine may have
+            // stopped itself, and whatever was queued must not replay at the next start.
+            self.player.stop()
+            if self.engine.isRunning { self.engine.stop() }
+        }
         running = false
     }
 
+    /// `AVAudioEngineConfigurationChange`: an input or output device changed and the
+    /// engine has stopped itself. Stop and reset now (drops the speaker backlog, frees the
+    /// tap), re-query the input format so the log shows what changed, and rebuild the
+    /// graph through the shim after a short settle. Bursts coalesce into one restart.
     private func restartAfterConfigurationChange() {
         queue.async {
             guard self.wanted, !self.restartPending else { return }
             self.restartPending = true
-            self.onStatus?("audio configuration changed; restarting")
+            let before = self.inputFormatText()
+            if self.running { self.stopLocked() }
+            try? objcTry { self.engine.reset() }
+            let after = self.inputFormatText()
+            self.onStatus?("audio configuration changed: input \(before) → \(after); restarting in 0.3 s — \(self.deviceSummary())")
             // Let the device settle before rebuilding the graph.
             self.queue.asyncAfter(deadline: .now() + 0.3) {
                 self.restartPending = false
-                guard self.wanted else { return }
-                if self.running { self.stopLocked() }
+                guard self.wanted, !self.running else { return }
                 self.retryAttempt = 0
                 self.startLocked()
             }
         }
+    }
+
+    /// Harnesses only: run the configuration-change path as if a device had just changed.
+    func simulateConfigurationChange() {
+        restartAfterConfigurationChange()
+    }
+
+    /// The input node's current output format, for a log line; never raises.
+    private func inputFormatText() -> String {
+        var text = "unreadable"
+        try? objcTry { text = self.engine.inputNode.outputFormat(forBus: 0).brief }
+        return text
     }
 
     // MARK: - microphone path (AVAudioEngine tap thread, not real-time)
@@ -294,7 +366,10 @@ final class AudioEngine {
             let p = floats[c]
             for i in 0..<frames { acc += Double(p[i] * p[i]) }
             // Leaky integration; time constant ≈ 20 buffers ≈ 2 s of the tap's 100 ms buffers.
-            channelEnergy[c] = channelEnergy[c] * 0.95 + acc / Double(frames)
+            // A non-finite mean (a NaN sample from a driver mid-switch) counts as silence:
+            // once NaN, the energy would never compare again and the channel choice would freeze.
+            let mean = acc / Double(frames)
+            channelEnergy[c] = channelEnergy[c] * 0.95 + (mean.isFinite ? mean : 0)
         }
         if channels > 1 {
             var best = chosenChannel
@@ -370,7 +445,8 @@ final class AudioEngine {
                 acc += s * s
             }
         }
-        return min(1, sqrt(acc / Double(n)))
+        // Finite and 0…1 whatever came in: this is what the wire and the orb see.
+        return clampLevel(sqrt(acc / Double(n)))
     }
 
     // MARK: - input device selection (Core Audio)

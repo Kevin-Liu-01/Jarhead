@@ -31,11 +31,17 @@ cd "$(dirname "$0")/.."
 BUILD=".build/ear-probe"
 APP="$BUILD/EarProbe.app"
 mkdir -p "$APP/Contents/MacOS"
+# The ObjC exception shim (Sources/JarheadObjC): Audio/ObjCTry.swift imports it as the
+# module `JarheadObjC` through include/module.modulemap, so -I that directory is enough
+# for swiftc; the .m is compiled by clang and linked in.
+clang -c -fobjc-arc -target arm64-apple-macosx14.0 -I Sources/JarheadObjC/include \
+  -o "$BUILD/ObjCTry.o" Sources/JarheadObjC/ObjCTry.m
 swiftc -O -swift-version 5 -parse-as-library -D DEBUG -target arm64-apple-macosx14.0 \
+  -I Sources/JarheadObjC/include \
   -o "$APP/Contents/MacOS/ear-probe" \
   Sources/Jarhead/Model/*.swift Sources/Jarhead/Audio/*.swift \
   Sources/Jarhead/Wake/WakeWordListener.swift Sources/Jarhead/Ear/*.swift \
-  Scripts/EarProbeMain.swift
+  Scripts/EarProbeMain.swift "$BUILD/ObjCTry.o"
 cp Scripts/ear-probe-Info.plist "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 # Ad-hoc signed: TCC keys its grants to this build's cdhash, so Speech Recognition and the

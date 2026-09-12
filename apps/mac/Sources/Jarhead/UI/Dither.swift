@@ -125,6 +125,8 @@ enum Dither {
     static func gradientImage(size: CGSize, scale: CGFloat, stops: [Stop] = orbStops, direction: Direction = .diagonal,
                               bands: Int = bands, cell: Int = cell) -> CGImage? {
         let s = max(1, scale)
+        // `Int(nan)` traps: a size that is not a number is no image.
+        guard size.width.isFinite, size.height.isFinite, s.isFinite else { return nil }
         let W = Int((size.width * s).rounded()), H = Int((size.height * s).rounded())
         guard W > 0, H > 0, !stops.isEmpty else { return nil }
         let table = lut(stops: stops, bands: bands)
@@ -175,9 +177,10 @@ enum Dither {
         let scale100: Int
 
         init(size: CGSize, scale: CGFloat, stops: [Stop], direction: Direction, bands: Int, cell: Int) {
-            let s = max(1, scale)
-            width = max(1, Int((size.width * s).rounded()))
-            height = max(1, Int((size.height * s).rounded()))
+            // A size that is not a number keys a 1×1 image rather than trapping in `Int(nan)`.
+            let s = scale.isFinite ? max(1, scale) : 1
+            width = size.width.isFinite ? max(1, Int((size.width * s).rounded())) : 1
+            height = size.height.isFinite ? max(1, Int((size.height * s).rounded())) : 1
             self.stops = stops
             self.direction = direction
             self.bands = bands

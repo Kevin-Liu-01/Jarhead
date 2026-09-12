@@ -52,8 +52,24 @@ final class WakeWordListener {
     private var wanted = false
     private var running = false
     private var configObserver: NSObjectProtocol?
+    /// Consecutive starts that did not come up, for the quick retry ladder. On `queue` only.
+    private var startFailures = 0
+    private var retryScheduled = false
+    private var restartPending = false
 
     static let rollInterval: TimeInterval = SegmentedRecognizer.rollInterval
+    /// Failed starts retried here (0.5, 1, 2, 5 s) before the gate is told; see `startDidFail`.
+    static let quickRetries = 4
+    /// Where the listener's own lines go — the tap's first buffer format, a failed start
+    /// and its retry, a configuration change's format before → after. NSLog unless the
+    /// app points it at a log that also reaches the crash report and daemon.log (this
+    /// file is compiled by the probes without App/, so the hook is a closure, not a call).
+    static var log: (String) -> Void = { NSLog("WakeListener: %@", $0) }
+
+    private enum StartFailure: LocalizedError {
+        case noInputDevice
+        var errorDescription: String? { "no input device for the wake word" }
+    }
 
     init() {
         let recognizer = SFSpeechRecognizer(locale: locale)
@@ -120,8 +136,15 @@ final class WakeWordListener {
     func start() {
         queue.async {
             self.wanted = true
+            self.startFailures = 0
             self.startLocked()
         }
+    }
+
+    /// Harnesses only: run the configuration-change path (stop, reset, re-query the input
+    /// format, restart through the shim) as if the input device had just changed.
+    func simulateConfigurationChange() {
+        queue.async { self.restartAfterConfigurationChange() }
     }
 
     func stop() {
@@ -160,45 +183,113 @@ final class WakeWordListener {
             status(.unavailable("on-device speech model missing — download it under System Settings › Keyboard › Dictation (nothing is sent to a server)"))
             return
         }
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            status(.startFailed("no input device for the wake word"))
-            return
-        }
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.segments?.append(buffer)
-        }
-        engine.prepare()
+        // Everything AVFoundation can raise from runs inside the ObjC shim (`objcTry`):
+        // uncaught, a raise here aborted the app five times on 2026-09-11 — `installTap`
+        // asked for a format read before the input device had finished switching, and
+        // AVFoundation answered "Failed to create tap due to format mismatch".
+        var formatBefore = "unreadable", formatAfter = "unreadable"
         do {
-            try engine.start()
+            try objcTry(throwing: {
+                let input = self.engine.inputNode
+                let before = input.outputFormat(forBus: 0)
+                formatBefore = before.brief
+                guard before.sampleRate > 0, before.channelCount > 0 else { throw StartFailure.noInputDevice }
+                input.removeTap(onBus: 0)
+                // `format: nil` is the node's own output format at the moment the tap is
+                // created, whatever it has become — nothing to mismatch. The recogniser
+                // accepts any PCM format, so no conversion is needed here.
+                var loggedFirst = false
+                input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+                    if !loggedFirst {
+                        loggedFirst = true
+                        WakeWordListener.log("first buffer \(buffer.format.brief), \(buffer.frameLength) frames")
+                    }
+                    self?.segments?.append(buffer)
+                }
+                self.engine.prepare()
+                formatAfter = input.outputFormat(forBus: 0).brief
+                try self.engine.start()
+            })
         } catch {
-            input.removeTap(onBus: 0)
-            status(.startFailed("wake listener could not start: \(error.localizedDescription)"))
+            try? objcTry {
+                self.engine.inputNode.removeTap(onBus: 0)
+                if self.engine.isRunning { self.engine.stop() }
+            }
+            startDidFail(error, formats: "\(formatBefore) → \(formatAfter)")
             return
         }
         running = true
+        startFailures = 0
         segments.begin()
-        status(.started("listening on-device (\(Int(format.sampleRate)) Hz ×\(format.channelCount))"))
+        let note = formatBefore == formatAfter ? "" : ", was \(formatBefore) before prepare"
+        status(.started("listening on-device (\(formatAfter); tap at the node's own format\(note))"))
+    }
+
+    /// A start that did not come up. Devices come and go — the first failures are retried
+    /// here on a quick ladder (0.5, 1, 2, 5 s), which covers an input device that is still
+    /// switching; if it keeps failing the gate is told (`.startFailed`) and takes over with
+    /// its own 2 → 30 s backoff. The gate stops this listener while it waits (`wanted`
+    /// drops), so the two loops never race. A raise caught by the shim is named as such.
+    private func startDidFail(_ error: Error, formats: String) {
+        startFailures += 1
+        let what: String
+        if let raised = error as? ObjCException {
+            what = "AVFoundation raised \(raised.name): \(raised.reason)"
+        } else {
+            what = error.localizedDescription
+        }
+        guard startFailures <= WakeWordListener.quickRetries else {
+            startFailures = 0
+            status(.startFailed("wake listener could not start: \(what) (input \(formats))"))
+            return
+        }
+        let delay = AudioBackoff.delay(attempt: startFailures - 1)
+        WakeWordListener.log("start failed: \(what) (input \(formats)) — retry \(startFailures)/\(WakeWordListener.quickRetries) in \(String(format: "%.1f", delay)) s")
+        guard !retryScheduled else { return }
+        retryScheduled = true
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.retryScheduled = false
+            guard self.wanted, !self.running else { return }
+            self.startLocked()
+        }
     }
 
     private func stopLocked() {
         segments?.end()
-        engine.inputNode.removeTap(onBus: 0)
-        if engine.isRunning { engine.stop() }
+        // Tearing down can raise too (a node mid-switch); a stop must never abort the app.
+        try? objcTry {
+            self.engine.inputNode.removeTap(onBus: 0)
+            if self.engine.isRunning { self.engine.stop() }
+        }
         running = false
     }
 
-    /// The input device changed under us: restart after a short settle, unless the
-    /// caller stopped us meanwhile (the voice engine may have taken the microphone).
+    /// The input device changed under us (`AVAudioEngineConfigurationChange`: the engine
+    /// has stopped itself). Stop, reset, re-query the input format and log before → after,
+    /// then start again through the shim after a short settle — unless the caller stopped
+    /// us meanwhile (the voice engine may have taken the microphone). Bursts coalesce.
     private func restartAfterConfigurationChange() {
-        guard running else { return }
-        stopLocked()
+        guard wanted, !restartPending else { return }
+        restartPending = true
+        let before = inputFormatText()
+        if running { stopLocked() }
+        try? objcTry { self.engine.reset() }
+        let after = inputFormatText()
+        WakeWordListener.log("input configuration changed: \(before) → \(after); restarting in 0.4 s")
         queue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            guard let self, self.wanted, !self.running else { return }
+            guard let self else { return }
+            self.restartPending = false
+            guard self.wanted, !self.running else { return }
             self.startLocked()
         }
+    }
+
+    /// The input node's current output format, for a log line; never raises.
+    private func inputFormatText() -> String {
+        var text = "unreadable"
+        try? objcTry { text = self.engine.inputNode.outputFormat(forBus: 0).brief }
+        return text
     }
 
     private func status(_ s: Status) {

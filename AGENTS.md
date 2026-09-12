@@ -409,3 +409,22 @@ to his microphone and bills per second.
   effort on non-reasoning turns; latency ≈ 0.7 s + generations × 3.4 s. Cut
   generations (act first, verify from results, no closing screenshot), not tool
   time (55 ms median).
+- AVFoundation raises ObjC exceptions Swift cannot catch — `installTap` "Failed to
+  create tap due to format mismatch" after an input-device change (the format read
+  from the node is stale until the engine is reset and prepared) aborted the app 5×
+  on 2026-09-11. Every installTap / connect / reset / prepare / format read goes
+  through `objcTry` (the `JarheadObjC` target's `JHTry`); taps use `format: nil`
+  and convert from `buffer.format` lazily. Crash reports: `~/Library/Logs/
+  DiagnosticReports/Jarhead-*.ips` (JSON after line 1; `lastExceptionBacktrace`).
+- Numbers from audio are untrusted: an RMS over an empty buffer is 0/0 = NaN, and
+  Swift's `min`/`max` pass NaN straight through (`max(nan, 0)` is nan). Clamp with
+  `isFinite` first (`clampLevel`), guard `dt`/spring inputs, and never `Int(x)` a
+  daemon number without a finite check (`Int(nan)` traps). The orb harness knob
+  `ORB_LEVELS=nan` reproduces the old trap in `BlobSim.fittedColumn`.
+- The CoreText "nil object" abort in `NotchView.drawIslandContent` (3× on
+  2026-09-11) was a font-lifetime race inside CoreText on macOS 26.4 beta, not a
+  bad number; the island's text now draws inside `objcTry` and survives it.
+- When the app crashes, `CrashGuard` writes `~/.jarhead/crashes/<time>.txt`
+  (reason, backtrace, the last 40 app log lines) and relaunches at most 3× per 10
+  min; the daemon lingers 90 s after an app that left without a `bye` frame so the
+  relaunched app re-attaches to the warm Codex thread. Read the crash file first.

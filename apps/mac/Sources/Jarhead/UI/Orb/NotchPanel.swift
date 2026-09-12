@@ -356,6 +356,10 @@ final class NotchDock {
     /// The island's rect (CG), for framing a shot.
     var previewIslandCG: CGRect { CGSpace.rect(fromAppKit: view.islandScreenRect(in: panel)) }
     var previewPanelCG: CGRect { CGSpace.rect(fromAppKit: panel.frame) }
+    /// The island's springs (value → target, velocity) and its raw rect this frame, for
+    /// the harness's ORB_LEVELS readout: a NaN shows up here as "nan".
+    var previewSprings: String { view.previewSpringReadout }
+    var previewIslandRaw: NSRect { view.previewIslandRectRaw }
     /// Draw the panel's content into a context whose origin is the panel's bottom-left (AppKit).
     func previewRender(in ctx: CGContext) {
         view.displayIfNeeded()
@@ -456,8 +460,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// flag), so the fades, the stagger and the spring agree with the face's own
     /// stillness — never half from `Motion.reduced` and half from the sim.
     private var reduced: Bool { sim.reducedMotion }
-    /// `Motion.seconds` on that flag: durations halve under Reduce Motion.
-    private func seconds(_ d: Double) -> Double { reduced ? d / 2 : d }
+    /// `Motion.seconds` on that flag: durations halve under Reduce Motion — and never
+    /// reach 0, so no progress here is ever a division by zero.
+    private func seconds(_ d: Double) -> Double { max(0.001, reduced ? d / 2 : d) }
     /// `Motion.island`; critically damped under Reduce Motion (its stiffness, no overshoot).
     private var islandSpring: Motion.SpringSpec { reduced ? .of(stiffness: Motion.island.stiffness, ratio: 1) : Motion.island }
 
@@ -480,16 +485,102 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// the island still grows and shrinks, without the overshoot).
     private struct Spring {
         var value: Double
-        var target: Double
+        /// The target. One that is not a number is refused and the last good one kept.
+        var target: Double {
+            didSet {
+                if target.isFinite { lastGood = target } else { BadNumber.noteOnce("notch spring target", "\(target)"); target = lastGood }
+            }
+        }
         var velocity = 0.0
-        init(value: Double) { self.value = value; target = value }
+        /// The last finite target: where a spring gone bad comes back to.
+        private var lastGood: Double
+        init(value: Double) { self.value = value; target = value; lastGood = value }
         mutating func step(_ dt: Double, _ spec: Motion.SpringSpec) {
+            // A NaN anywhere in a spring is forever otherwise: the acceleration, the
+            // velocity and the value all inherit it and `settled` never comes true
+            // (`abs(nan) < 0.15` is false), so the island's rect is NaN for the rest of
+            // the process. One bad number resets the spring to its target and the
+            // island goes on; the display link never stalls on it.
+            guard dt.isFinite, value.isFinite, velocity.isFinite else { recover(); return }
             let a = spec.stiffness * (target - value) - spec.damping * velocity
             velocity += a * dt
             value += velocity * dt
+            if !value.isFinite || !velocity.isFinite { recover() }
         }
         var settled: Bool { abs(target - value) < 0.15 && abs(velocity) < 2 }
         mutating func snap() { value = target; velocity = 0 }
+        /// Back at the (finite) target, still. Logged once.
+        mutating func recover() {
+            BadNumber.noteOnce("notch spring", "value \(value) velocity \(velocity) target \(target)")
+            if !target.isFinite { target = lastGood }
+            value = target
+            velocity = 0
+        }
+    }
+
+    /// The island's fonts and attribute sets, made once and kept for the life of the
+    /// process: no font lookups per frame, and a font this view holds cannot be torn
+    /// down under the typesetter — the 22:39 report of 2026-09-11 had CoreText's
+    /// shaping thread in `TFont::~TFont` while the main thread was applying a font to
+    /// these words. Colours as before, to the value: the words must not change.
+    private static let phaseFont = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private static let lineFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    private static let pillFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private static let truncating: NSParagraphStyle = {
+        let s = NSMutableParagraphStyle()
+        s.lineBreakMode = .byTruncatingTail
+        return s.copy() as! NSParagraphStyle
+    }()
+    private static let phaseAttrs: [NSAttributedString.Key: Any] = [.font: phaseFont, .foregroundColor: NSColor.white]
+    private static let phaseShadow: [NSAttributedString.Key: Any] = [.font: phaseFont, .foregroundColor: NSColor(white: 0, alpha: 0.6)]
+    private static let lineAttrs: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor.white.withAlphaComponent(0.78), .paragraphStyle: truncating]
+    private static let lineAttrsEmpty: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor.white.withAlphaComponent(0.46), .paragraphStyle: truncating]
+    private static let lineShadow: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: NSColor(white: 0, alpha: 0.55), .paragraphStyle: truncating]
+    private static let pillAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72)]
+
+    /// Three of the eight crashes of 2026-09-11 were `NSString.draw` on the island →
+    /// CoreText `TAttributes::ApplyFont` → "attempt to insert nil object", on ordinary
+    /// ASCII lines with finite geometry (an OS-side font-lifetime race, as far as the
+    /// reports show). Once the typesetter has raised, the words stay off until relaunch:
+    /// the island keeps its face, its ink and its buttons.
+    private static var textDrawFailed = false
+
+    /// Every text draw on the island goes through here and nowhere else: nothing goes
+    /// to CoreText for a rect that is not finite and positive, and — in the app, where
+    /// the `JarheadObjC` shim is built — an NSException out of the typesetter is caught
+    /// and logged instead of aborting the process. The harness (raw swiftc, no shim)
+    /// draws directly.
+    private static func drawText(_ text: NSString, in rect: NSRect, _ attrs: [NSAttributedString.Key: Any]) {
+        guard !textDrawFailed else { return }
+        guard rect.isFiniteRect, rect.width > 0, rect.height > 0 else { BadNumber.noteOnce("notch text rect", "\(rect)"); return }
+        typeset("draw(in:)") { text.draw(in: rect, withAttributes: attrs) }
+    }
+
+    private static func drawText(_ text: NSString, at point: NSPoint, _ attrs: [NSAttributedString.Key: Any]) {
+        guard !textDrawFailed else { return }
+        guard point.isFinitePoint else { BadNumber.noteOnce("notch text point", "\(point)"); return }
+        typeset("draw(at:)") { text.draw(at: point, withAttributes: attrs) }
+    }
+
+    /// A measured width, 0 once the typesetter has raised.
+    private static func textWidth(_ text: NSString, _ attrs: [NSAttributedString.Key: Any]) -> CGFloat {
+        guard !textDrawFailed else { return 0 }
+        var w: CGFloat = 0
+        typeset("size(withAttributes:)") { w = text.size(withAttributes: attrs).width }
+        return w.isFinite ? w : 0
+    }
+
+    private static func typeset(_ what: String, _ body: () -> Void) {
+        #if canImport(JarheadObjC)
+        do {
+            try objcTry(body)
+        } catch {
+            textDrawFailed = true
+            NSLog("Jarhead: the notch island's %@ raised %@ — the island's words are off until relaunch", what, "\(error)")
+        }
+        #else
+        body()
+        #endif
     }
 
     init(frame: NSRect, sim: BlobSim) {
@@ -502,6 +593,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         setAccessibilityRole(.group)
         setAccessibilityLabel("Jarhead, in the notch")
         NotchInk.Cache.shared.addObserver(self)
+        // The island's fonts exist from here on, long before the first island opens.
+        _ = Self.phaseAttrs; _ = Self.lineAttrs; _ = Self.lineAttrsEmpty; _ = Self.pillAttrs
     }
 
     required init?(coder: NSCoder) { fatalError("NotchView is code-only") }
@@ -648,7 +741,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // level (the spring smooths it into a pulse; `draw` brightens the hairline with
         // it). Not under reduce motion, where the island holds its size.
         if parked, mode == .peek, let n = geometry?.notch.width {
-            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * sim.islandLevel)
+            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * finite01(sim.islandLevel))
         }
         if !springsSettled {
             let step = min(dt, 1.0 / 30)
@@ -683,7 +776,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// (`Motion.easeOut` in, `Motion.easeIn` out) from the last flip.
     private func parkLevel(_ now: Double) -> CGFloat {
         guard parkedChangedAt >= 0 else { return parked ? 1 : 0 }
-        let t = min(1, max(0, (now - parkedChangedAt) / seconds(Motion.base)))
+        let t = finite01((now - parkedChangedAt) / seconds(Motion.base))
         return CGFloat(parked ? Motion.easeOutCurve.value(at: t) : 1 - Motion.easeInCurve.value(at: t))
     }
 
@@ -696,12 +789,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         if contentShown {
             guard contentOpenedAt >= 0 else { return (1, 0) }
             let delay = reduced ? 0 : Double(i) * Motion.stagger
-            let t = min(1, max(0, (now - contentOpenedAt - delay) / seconds(Motion.base)))
+            let t = finite01((now - contentOpenedAt - delay) / seconds(Motion.base))
             let e = Motion.easeOutCurve.value(at: t)
             return (CGFloat(e), reduced ? 0 : CGFloat(6 * (1 - e)))
         }
         guard contentClosedAt >= 0 else { return nil }
-        let t = min(1, max(0, (now - contentClosedAt) / seconds(Motion.quick)))
+        let t = finite01((now - contentClosedAt) / seconds(Motion.quick))
         if t >= 1 { return nil }
         let e = Motion.easeInCurve.value(at: t)
         return (CGFloat(1 - e), reduced ? 0 : CGFloat(-4 * e))
@@ -711,7 +804,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// `Motion.base` later on `Motion.easeIn` (held, then let go).
     private func flashLevel(_ which: Press, now: Double) -> CGFloat {
         guard flashPress == which, flashAt >= 0 else { return 0 }
-        let t = min(1, max(0, (now - flashAt) / seconds(Motion.base)))
+        let t = finite01((now - flashAt) / seconds(Motion.base))
         return CGFloat(1 - Motion.easeInCurve.value(at: t))
     }
 
@@ -744,6 +837,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         let line: NSRect
         let stop: NSRect
         let mute: NSRect
+        /// Every rect a number: the only layout that reaches a draw.
+        var isFinite: Bool { transport.isFiniteRect && word.isFiniteRect && line.isFiniteRect && stop.isFiniteRect && mute.isFiniteRect }
     }
 
     private func contentLayout(in island: NSRect) -> ContentLayout {
@@ -765,7 +860,19 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         guard let cg = NSGraphicsContext.current?.cgContext, geometry != nil else { return }
         let now = CACurrentMediaTime()
         let n = notchRect
-        let open = CGFloat(min(1, max(0, openSpring.value)))
+        // Every number that reaches the ink, the clip, CoreGraphics or CoreText from
+        // here on is finite: the island's rect is the springs' (a bad one is reset here
+        // and the frame goes on), and a rect that is still not a rect — the geometry
+        // itself — draws nothing this frame. Logged once either way.
+        guard n.isFiniteRect, n.width >= 0 else { BadNumber.noteOnce("NotchView notch rect", "\(n)"); return }
+        var islandRaw = islandRect
+        if !islandRaw.isFiniteRect {
+            BadNumber.noteOnce("NotchView island rect", "\(islandRaw)")
+            widthSpring.recover(); heightSpring.recover(); openSpring.recover()
+            islandRaw = islandRect
+            guard islandRaw.isFiniteRect else { return }
+        }
+        let open = finite01(CGFloat(openSpring.value))
         let scale = window?.backingScaleFactor ?? 2
 
         // The ink, one shape from the bezel down (`NotchInk.shape`): the hardware notch,
@@ -776,13 +883,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // rectangle hung under the bar. Radii follow the island's size each frame, so
         // the spring never kinks; at the notch's width it is the column with rounded
         // bottom corners. Snapped to device pixels: no seam against the real notch.
-        let shape = NotchInk.shape(column: n.minX...n.maxX, island: islandRect, scale: scale)
+        let shape = NotchInk.shape(column: n.minX...n.maxX, island: islandRaw, scale: scale)
         let island = shape.island
         cg.setFillColor(CGColor(gray: 0, alpha: 1))
         cg.addPath(shape.path)
         cg.fillPath()
-        let park = parkLevel(now)
-        guard park > 0.005, island.height >= 1 else { return }
+        let park = finite01(parkLevel(now))
+        guard park > 0.005, island.isFiniteRect, island.height >= 1 else { return }
 
         // Everything on the island is clipped to the ink and fades with the park level:
         // the hand-off with the body is a crossfade, and a shrinking island never shows
@@ -798,8 +905,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // top at the island's, the excess clipped: the dither stays 1:1. Until this size
         // has rendered (in the background) the nearest rendered one is stretched over it,
         // and `notchInkRendered` redraws when the exact one lands.
-        let breath = 0.5 + 0.5 * sin(2 * .pi * sim.time / BlobSim.breathPeriod)
-        let level = gradientLevel(height: island.height, open: open, breath: sim.reducedMotion ? 0.5 : breath)
+        let breath = finite01(0.5 + 0.5 * sin(2 * .pi * sim.time / BlobSim.breathPeriod))
+        let level = finite01(gradientLevel(height: island.height, open: open, breath: sim.reducedMotion ? 0.5 : breath))
         if level > 0.005, let g = geometry,
            let gradient = NotchInk.gradient(size: island.size, notchWidth: g.notch.width, scale: scale) {
             cg.saveGState()
@@ -856,12 +963,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         if lipFace {
             hairAlpha = 0.18 + 0.22 * (sim.reducedMotion ? 0.5 : breath)
         } else if mode == .peek, open < 0.5 {
-            hairAlpha = 0.55 + 0.4 * (sim.reducedMotion ? 0.5 : sim.islandLevel)
+            hairAlpha = 0.55 + 0.4 * (sim.reducedMotion ? 0.5 : finite01(sim.islandLevel))
         } else {
             hairAlpha = 0.9
         }
         let inset = max(shape.bottomRadius, 2)
-        cg.setStrokeColor(color.cgColor(alpha: hairAlpha))
+        cg.setStrokeColor(color.cgColor(alpha: finite01(hairAlpha)))
         cg.setLineWidth(1)
         cg.move(to: CGPoint(x: island.minX + inset, y: island.maxY - 0.5))
         cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
@@ -870,7 +977,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // The island's transport, words and buttons: laid out in the open island's rect,
         // revealed by the ink as it opens, each fading in and rising on its own beat.
         if contentAppearance(0, now: now) != nil || contentAppearance(3, now: now) != nil {
-            drawIslandContent(cg, layout: contentLayout(in: islandOpenRect), color: color, park: park, now: now)
+            let layout = contentLayout(in: islandOpenRect)
+            if layout.isFinite {
+                drawIslandContent(cg, layout: layout, color: color, park: park, now: now)
+            } else {
+                BadNumber.noteOnce("NotchView content layout", "word \(layout.word) transport \(layout.transport)")
+            }
         }
         cg.restoreGState()
         cg.restoreGState()
@@ -887,7 +999,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// spring's openness so a transition fades, never steps.
     private func gradientLevel(height: CGFloat, open: CGFloat, breath: Double) -> CGFloat {
         let tucked = 0.08 + 0.04 * breath
-        let peek = 0.92 + 0.08 * (sim.reducedMotion ? 0.5 : sim.islandLevel)
+        let peek = 0.92 + 0.08 * (sim.reducedMotion ? 0.5 : finite01(sim.islandLevel))
         let lip = NotchGeometry.lipHeight, peekH = NotchGeometry.peekHeight
         let t = peekH > lip ? min(1, max(0, (height - lip) / (peekH - lip))) : 1
         let eased = t * t * (3 - 2 * t)
@@ -924,7 +1036,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // ellipsis (connecting) centred; hover lifts it, a press fills it accent and the
         // fill lets go over `Motion.base`.
         if let a = contentAppearance(0, now: now) {
-            let alpha = park * a.alpha
+            let alpha = finite01(park * a.alpha)
             cg.saveGState()
             cg.setAlpha(alpha)
             let rect = l.transport.offsetBy(dx: 0, dy: a.dy)
@@ -956,33 +1068,25 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         }
 
         // 1, 2: the words — a one-pixel ink shadow under each, then the white, so they
-        // read where the gradient runs light.
-        let phaseAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: white]
-        var phaseShadow = phaseAttrs
-        phaseShadow[.foregroundColor] = NSColor(white: 0, alpha: 0.6)
+        // read where the gradient runs light. Fonts and attributes are the view's
+        // statics; every draw goes through `drawText` (finite rect, exception guard).
         if let a = contentAppearance(1, now: now) {
             cg.saveGState()
-            cg.setAlpha(park * a.alpha)
+            cg.setAlpha(finite01(park * a.alpha))
             let word = OrbStyle.label(sim.phase) as NSString
             let rect = l.word.offsetBy(dx: 0, dy: a.dy)
-            word.draw(in: rect.offsetBy(dx: 0, dy: 1), withAttributes: phaseShadow)
-            word.draw(in: rect, withAttributes: phaseAttrs)
+            Self.drawText(word, in: rect.offsetBy(dx: 0, dy: 1), Self.phaseShadow)
+            Self.drawText(word, in: rect, Self.phaseAttrs)
             cg.restoreGState()
         }
         if let a = contentAppearance(2, now: now) {
             cg.saveGState()
-            cg.setAlpha(park * a.alpha)
-            let style = NSMutableParagraphStyle()
-            style.lineBreakMode = .byTruncatingTail
+            cg.setAlpha(finite01(park * a.alpha))
             let line = lastLine
-            let lineAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                                                            .foregroundColor: white.withAlphaComponent(line.isEmpty ? 0.46 : 0.78), .paragraphStyle: style]
-            var lineShadow = lineAttrs
-            lineShadow[.foregroundColor] = NSColor(white: 0, alpha: 0.55)
             let text = (line.isEmpty ? "—" : line) as NSString
             let rect = l.line.offsetBy(dx: 0, dy: a.dy)
-            text.draw(in: rect.offsetBy(dx: 0, dy: 1), withAttributes: lineShadow)
-            text.draw(in: rect, withAttributes: lineAttrs)
+            Self.drawText(text, in: rect.offsetBy(dx: 0, dy: 1), Self.lineShadow)
+            Self.drawText(text, in: rect, line.isEmpty ? Self.lineAttrsEmpty : Self.lineAttrs)
             cg.restoreGState()
         }
 
@@ -994,7 +1098,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             for (which, rect0) in [(Press.stop, l.stop), (.mute, l.mute)] {
                 let rect = rect0.offsetBy(dx: 0, dy: a.dy)
                 let enabled = which != .mute || muteEnabled
-                let alpha = park * a.alpha * (enabled ? 1 : 0.35)
+                let alpha = finite01(park * a.alpha * (enabled ? 1 : 0.35))
                 let box = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
                 let hot = enabled && hovered == which
                 let down = enabled && pressed == which
@@ -1083,12 +1187,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
         var text = pill.text
-        if let until = pill.until { text += " · \(max(1, Int(until.timeIntervalSinceNow.rounded()))) s" }
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: NSColor(white: 1, alpha: 0.72)]
-        let tw = (text as NSString).size(withAttributes: attrs).width
+        if let until = pill.until {
+            let left = until.timeIntervalSinceNow
+            text += " · \(left.isFinite ? max(1, Int(min(left, 1e6).rounded())) : 1) s"
+        }
+        let attrs = Self.pillAttrs
+        let tw = Self.textWidth(text as NSString, attrs)
         let iconW: CGFloat = pill.icon != nil ? 15 : (pill.tone != .info ? 10 : 0)
         let w = tw + iconW + 16, h: CGFloat = 20
         let rect = NSRect(x: island.midX - w / 2, y: island.maxY + 6, width: w, height: h)
+        guard rect.isFiniteRect else { BadNumber.noteOnce("NotchView gate pill", "\(rect)"); NSGraphicsContext.restoreGraphicsState(); return }
         let box = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
         NSColor(srgbRed: 0x10 / 255, green: 0x10 / 255, blue: 0x10 / 255, alpha: 0.94).setFill(); box.fill()
         NSColor(white: 1, alpha: 0.22).setStroke(); box.lineWidth = 1; box.stroke()
@@ -1109,7 +1217,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             NSBezierPath(ovalIn: NSRect(x: x, y: rect.midY - 2.5, width: 5, height: 5)).fill()
             x += 10
         }
-        (text as NSString).draw(at: NSPoint(x: x, y: rect.minY + 3), withAttributes: attrs)
+        Self.drawText(text as NSString, at: NSPoint(x: x, y: rect.minY + 3), attrs)
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -1189,6 +1297,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
 }
 
 #if JARHEAD_ORB_PREVIEW
+extension NotchView {
+    /// The island's springs this frame — value → target, velocity — for the harness.
+    var previewSpringReadout: String {
+        String(format: "width %.2f→%.2f v %.2f | height %.2f→%.2f | open %.3f→%.0f",
+               widthSpring.value, widthSpring.target, widthSpring.velocity, heightSpring.value, heightSpring.target, openSpring.value, openSpring.target)
+    }
+    /// The island rect as the springs give it (view coordinates), before any guard.
+    var previewIslandRectRaw: NSRect { islandRect }
+}
+
 extension NotchView.Press {
     /// The harness's names for the island's buttons (ORB_NOTCH_HOVER / ORB_NOTCH_PRESSED).
     init?(previewName: String) {

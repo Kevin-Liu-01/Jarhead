@@ -1943,3 +1943,184 @@ earlier thread had the same developer instructions), so keeping the developer
 instructions byte-identical between threads is worth more than any per-thread
 warmth: a per-turn effort or tier is fine, a per-turn change to the standing
 orders is not.
+
+## 16. Crashes: taps, NaN, and coming back (2026-09-12)
+
+Kevin, 2026-09-11, after an evening on the new build: "it crashes a lot … make it
+work a lot better". Eight crash reports under `~/Library/Logs/DiagnosticReports`
+(`Jarhead-2026-09-11-*.ips`), all `EXC_CRASH (SIGABRT)`, all `abort()` after an
+uncaught NSException — an ObjC exception, which Swift cannot catch, which ends the
+process. Two signatures; one consequence; one thing nobody had seen.
+
+### The two signatures
+
+**Tap format mismatch — 5 of 8** (15:46:39, 20:45:31, 22:48:43, 22:50:32,
+23:05:58). `WakeWordListener.startLocked` → `-[AVAudioNode installTapOnBus:
+bufferSize:format:block:]` → `AVAudioEngineImpl::InstallTapOnNode` raises "Failed
+to create tap due to format mismatch". Every one right after the input device
+changed: `AVAudioEngineConfigurationChange` → `restartAfterConfigurationChange` →
+`stopLocked` → 0.4 s → `startLocked`. The code checked `sampleRate` and
+`channelCount` and passed `input.outputFormat(forBus: 0)` as the tap's format —
+but after a configuration change that format is stale until the engine is reset
+and prepared, so it disagrees with the node's real output and AVFoundation throws.
+The unified log at 15:46:35 showed the format: 1 ch, 48 000 Hz, Float32.
+`AudioEngine.startGraph` (the voice mic) and the ear install taps the same way.
+
+**NaN into CoreText — 3 of 8** (22:39:05, 22:58:21, 22:58:34, all after the notch
+island shipped at 21:47). `NotchView.drawIslandContent` → `NSString.draw(in:
+withAttributes:)` → CoreText `TAttributes::ApplyFont` → `-[NSDictionary
+initWithObjects:forKeys:count:]` "attempt to insert nil object", on the main
+thread during a layer display. The three attribute dictionaries hold non-optional
+fonts and colours; the nil is CoreText failing to build a font for a non-finite
+geometry. The island's rect comes from two springs, and in peek mode
+`widthSpring.target = notchWidth + 30 * sim.islandLevel` — the audio level. An
+RMS over an empty buffer (a device switch mid-frame) is 0/0 = NaN; a NaN level
+makes a NaN spring, a NaN rect, a NaN font. The same device change explains why
+the two kinds cluster in the same minutes.
+
+### The fixes (builders A and B, in their own files)
+
+- **A — every AVFoundation raise is caught.** A one-function Objective-C target
+  (`apps/mac/Sources/JarheadObjC`, `JHTry(block, &error)`) wraps a block in
+  `@try/@catch` and returns the NSException as an NSError; `ObjCTry.swift` gives
+  Swift `try objcTry { … }`. `installTap`, `engine.reset()`, `engine.prepare()`
+  and the format reads in the wake listener, the voice engine and the ear go
+  through it, the tap asks for `format: nil` (the node's own), the engine is
+  reset and prepared before the format is read again, and a raise becomes a
+  logged retry instead of a dead process.
+- **B — levels are untrusted numbers.** `finite01` clamps every level at the
+  source (`BlobSim.setLevels`, the meters), `isFinitePoint / isFiniteVector /
+  isFiniteRect` guard the blob physics and the island's geometry, and
+  `BadNumber.noteOnce` logs a non-finite value once per site so the origin is
+  named the next time instead of the font.
+
+### What a crash used to cost, and the net under it now (builder C)
+
+Each app crash closed the daemon's stdin; `process.stdin.on("end")` shut the
+daemon down (`jarheadd: stdin closed, shutting down`), the resident Codex thread
+and its warmed cache died with it, and the app — with no crash handler — did not
+come back. Fourteen daemon respawns in the hour Kevin was using it, and the
+"latency" of §15 paid again after every one.
+
+**CrashGuard** (`apps/mac/Sources/Jarhead/App/CrashGuard.swift`, installed in
+`AppDelegate.init`, before anything else can crash):
+
+- `NSSetUncaughtExceptionHandler` plus `sigaction` for SIGABRT, SIGSEGV, SIGBUS,
+  SIGILL, SIGFPE and SIGTRAP (SA_SIGINFO, an alternate stack for the main
+  thread) write `~/.jarhead/crashes/<local time>.txt`: kind and reason (the
+  exception's name and reason, or the signal and fault address), version and
+  commit (`.git/HEAD` of the running tree), uptime, the phase, the daemon's pid,
+  the relaunch decision, the last 40 lines of the app's own ring (`appLog` /
+  `CrashGuard.remember`: launch, phase changes, connect/disconnect, audio
+  status, wake gate, mic grant, voice audio start/stop, every `[app]` line of
+  daemon.log), then the backtrace — `exception.callStackSymbols` for an
+  exception, `backtrace(3)` + `backtrace_symbols_fd(3)` for a signal.
+- The signal path is async-signal-safe by construction: everything it touches —
+  the directory fd, every label, the phase and signal names, the ring, the
+  frame array, the relaunch argv/envp, the spawn attributes, a scratch buffer —
+  is allocated at install; the handler loads pointers, formats integers by hand
+  and calls `write`, `openat`, `backtrace_symbols_fd`, `sigaction`, `raise` and
+  `posix_spawn`. No String, Array, closure or class is created there. A crash
+  handler that crashes is worse than none.
+- Then it chains: a previous signal handler is called; otherwise SIG_DFL is
+  restored and the signal re-raised, so the process dies the normal way and the
+  system's `.ips` (with `lastExceptionBacktrace`) is still written. The
+  uncaught-exception handler chains to AppKit's, whose abort reaches the signal
+  handler again and appends one line (`then: signal SIGABRT (6) — the runtime's
+  abort after the exception above`). Should AppKit swallow the exception and
+  keep running (it can, inside its event loop), a 1.5 s follow-up notes
+  `survived:` in the report and re-arms the guard.
+- **Coming back.** The handler `posix_spawn`s `/bin/sh` in its own session
+  (`POSIX_SPAWN_SETSID | CLOEXEC_DEFAULT`, stdio on /dev/null, signal mask and
+  dispositions reset — main.swift ignores SIGTERM/SIGINT), which waits for our
+  pid to be gone (up to 60 s: the crash reporter holds an aborting process for
+  seconds), bails if it is not, and otherwise `open -a Jarhead.app` (or exec's
+  the dev binary). The crash files are the counter: three relaunches in ten
+  minutes, then `relaunch: no — 4 crashes in 10 minutes; staying down until
+  Kevin opens Jarhead himself`. `JARHEAD_NO_RELAUNCH=1` turns it off.
+- **Telling Kevin.** On the next launch a report younger than ten minutes
+  becomes `AppState.lastCrash` (`CrashNotice`): one 28pt line under the Console
+  rail's tabs on every tab — warning glyph, "Crashed 2 min ago · <reason>",
+  *Details* (reveals the file), × — and one row in the status/Dock menu; both
+  gone on dismiss. The same line goes into daemon.log through the `[app]` path
+  (`DaemonProcess.noteCrash`), next to the engine's lines. Never a modal.
+
+**The daemon survives the app** (`packages/daemon`): `Lifeline` in `server.ts`,
+wired in `main.ts`.
+
+- A clean quit says so first. `DaemonProcess.stop` sends `{type:"bye"}` on a
+  fresh connection and waits for the daemon's `bye` **ack** before closing;
+  then it closes stdin as before. The ack is not decoration: the daemon answers
+  a fresh connection with its hello and a snapshot that runs to tens of
+  kilobytes (64 agent sessions on this Mac), a client that closes before that
+  write drains fails it with EPIPE, Node destroys the socket, and a bye still
+  unread in the receive buffer is lost with it — measured against a real daemon,
+  twice (a write-then-close bye landed in 1 of 3 tries; with the ack, 3 of 3,
+  and the whole quit takes 0.9 s instead of the 3 s SIGTERM fallback).
+- Stdin EOF within 10 s of a bye: `stdin closed, shutting down`, as before.
+  EOF without one: `app went away without a bye; lingering 90 s for a relaunch`
+  — the socket, the brain and the hands stay; the relaunched app attaches
+  (`attached to a running daemon`) and finds the thread warm. A client joining
+  cancels the timer; the last client leaving an orphaned daemon starts a fresh
+  one (so `pnpm jarhead status` mid-linger extends it by one window, no more);
+  nobody back at the deadline → `nobody came back in 90 s, shutting down`. A bye
+  to an orphaned daemon — the relaunched app quitting — is the quit itself: its
+  stdin cannot close a second time. A daemon on a terminal (`pnpm jarheadd`)
+  hears byes and ignores them. `JARHEAD_LINGER_MS` shortens the window for tests.
+- An orphaned daemon's stdout/stderr are dead pipes: `process.stdout.on("error")`
+  swallows the EPIPE that would otherwise kill it, and from the EOF on it appends
+  its lines to `daemon.log` itself (per line, `appendFileSync`). For that to
+  interleave with the app's writes, `DaemonLog` now opens the file `O_APPEND` —
+  a handle writing at a remembered offset would have overwritten the daemon's
+  lines.
+- A lingering daemon never blocks a fresh one: the relaunched app finds the
+  socket answering and attaches; a daemon whose socket file went stale is
+  unlinked by the newcomer's `listen()` and exits at its own deadline with no
+  clients.
+- Tests (`daemon.test.ts`): bye-then-EOF shuts down at once; EOF-without-bye
+  lingers and exits; a client attaching adopts the daemon and its bye is the
+  quit; a stale bye does not count; a client attached at the deadline means
+  staying up; the ack goes to the client that said bye and nobody else.
+
+**Memory watch** (`engine.ts`): `node-2026-09-11-151650.ips` is a node process
+that died of a V8 heap OOM (`node::OOMErrorHandler`), path masked — the daemon
+or a test harness, unknown. `tick()` now logs `process.memoryUsage()` every five
+minutes at info (`memory: rss 452 MB · heap 163 / 279 MB · external 40 MB ·
+arrayBuffers 36 MB` at start, on this Mac) and, past 1.5 GB of heap, a warning
+naming what the engine holds: transcript items and held items, delegations kept
+and live, marks and captures in flight, open conversations, problems, close
+timers. Screenshots are files under `shots/`, not buffers. No heap flags: a watch,
+so the next OOM is read against a trend.
+
+### Measured
+
+- Dev binary, `JARHEAD_CRASH_TEST=signal`: exit 139, report written (SIGSEGV,
+  fault address 0x10, 8 ring lines, 13 frames), one relaunched instance ~1 s
+  after the death, the system `.ips` written 55 s later. `=exception`: exit 134,
+  report with `then: signal SIGABRT (6)`, one relaunch, `.ips` with
+  `lastExceptionBacktrace`. Four crashes in a row: `1 of 3`, `2 of 3`, `3 of 3`,
+  then `relaunch: no — 4 crashes in 10 minutes` and no new process. The
+  relaunched run's ring carries `the previous run crashed` — the notice path.
+- `jarheadd` under a fake app that drops its pipes without a bye
+  (`JARHEAD_LINGER_MS=8000`): `the app's pipes are gone; appending to daemon.log
+  directly` → `lingering 8 s` → `pnpm jarhead status` answers (phase, brain,
+  hands, 64 agents) → `a client attached; staying up` → `the last client left an
+  orphaned daemon; lingering 8 s` → `nobody came back in 8 s, shutting down`,
+  socket file gone. With a bye: exit 0 in 60 ms.
+- Dev app + scratch daemon, SIGTERM (⌘Q's path): `client said bye` → `[app] bye
+  acknowledged by the daemon (clean quit)` → `stdin closed, shutting down` →
+  `[app] daemon exited (0)`; the app is gone in 0.9 s.
+
+### Rules that came out of this
+
+- AVFoundation throws ObjC exceptions Swift cannot catch — every `installTap`,
+  `connect`, `reset`, `prepare` and format read goes through `JHTry`.
+- Levels are untrusted numbers — clamp at the source, and treat every number on
+  the render path (levels, springs, eased progress, alphas, rects, font sizes,
+  `fraction:`) as untrusted.
+- A crash handler is async-signal-safe or it is a second crash: allocate at
+  install, format by hand, chain to the previous handler.
+- A protocol "fire and forget" over a unix socket is not: a peer that closes
+  while the server is still writing to it loses its own unread bytes. Ack, then close.
+- The daemon's stdout is the app's pipe; when the app dies, so does the log
+  unless the daemon re-homes it. `DaemonLog` is `O_APPEND` for that reason.

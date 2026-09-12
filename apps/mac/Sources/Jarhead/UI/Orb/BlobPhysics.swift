@@ -192,6 +192,11 @@ final class BlobBody {
     let size: CGSize
     private(set) var center: CGPoint
     private(set) var velocity = CGVector.zero
+    /// The last finite centre: where the body comes back to when a step, a place or a
+    /// goal hands it a number that is not one (`BadNumber`). A NaN in the body would
+    /// otherwise be forever — every spring and wall test inherits it — and the panel
+    /// would be asked for a frame at (nan, nan).
+    private var lastGoodCenter: CGPoint
 
     /// The body's collision radius: where the blob's surface visually is, well inside
     /// the panel, so the panel edge can poke past a wall while the glyphs cannot.
@@ -341,8 +346,34 @@ final class BlobBody {
 
     init(size: CGSize, center: CGPoint) {
         self.size = size
-        self.center = center
+        self.center = center.isFinitePoint ? center : .zero
+        lastGoodCenter = self.center
         refreshScreens()
+    }
+
+    /// `c` when it is a point, else the last good centre (logged once per site).
+    private func finiteOrLastGood(_ c: CGPoint, _ site: String) -> CGPoint {
+        guard c.isFinitePoint else { BadNumber.noteOnce(site, "\(c)"); return lastGoodCenter }
+        lastGoodCenter = c
+        return c
+    }
+
+    /// The body back at its last good centre, motionless, holding nothing.
+    private func resetToLastGood() {
+        center = lastGoodCenter
+        velocity = .zero
+        lag = .zero
+        accel = .zero
+        goal = nil
+        goalFrom = nil
+        arrived = false
+        impacts.removeAll()
+        adhesions.removeAll()
+        dragging = false
+        guided = false
+        isActive = false
+        area = ScreenArea.containing(center, in: areas)
+        updateLean()
     }
 
     func refreshScreens() {
@@ -354,7 +385,7 @@ final class BlobBody {
 
     /// Put the body somewhere with no motion (initial placement, collapse, saved position).
     func teleport(to c: CGPoint) {
-        center = c
+        center = finiteOrLastGood(c, "BlobBody.teleport")
         velocity = .zero
         lag = .zero
         accel = .zero
@@ -374,14 +405,14 @@ final class BlobBody {
     /// of the notch places it every frame — without re-reading the displays or
     /// touching anything else: a teleport's cheap sibling.
     func place(at c: CGPoint) {
-        center = c
+        center = finiteOrLastGood(c, "BlobBody.place")
         velocity = .zero
         lag = .zero
         accel = .zero
         goal = nil
         goalFrom = nil
         isActive = false
-        area = ScreenArea.containing(c, in: areas)
+        area = ScreenArea.containing(center, in: areas)
         updateLean()
     }
 
@@ -400,12 +431,13 @@ final class BlobBody {
             adhesions.removeAll()
             ignoreWindows = true
         }
-        center = c
-        velocity = v
+        center = finiteOrLastGood(c, "BlobBody.lead")
+        if v.isFiniteVector { velocity = v } else { BadNumber.noteOnce("BlobBody.lead velocity", "\(v)"); velocity = .zero }
         isActive = true
     }
 
     func beginDrag(pointer p: CGPoint) {
+        guard p.isFinitePoint else { BadNumber.noteOnce("BlobBody.beginDrag", "\(p)"); return }
         dragging = true
         guided = false
         goal = nil
@@ -420,6 +452,7 @@ final class BlobBody {
     }
 
     func moveDrag(pointer p: CGPoint) {
+        guard p.isFinitePoint else { BadNumber.noteOnce("BlobBody.moveDrag", "\(p)"); return }
         let now = CACurrentMediaTime()
         let dt = now - pointerAt
         if dt > 0.001 {
@@ -500,6 +533,7 @@ final class BlobBody {
 
     /// Throw it. A hard throw tears a stuck body off its wall; a poke's hop leaves it stuck.
     func fling(_ v: CGVector) {
+        guard v.isFiniteVector else { BadNumber.noteOnce("BlobBody.fling", "\(v)"); return }
         dragging = false
         guided = false
         lag = .zero
@@ -527,6 +561,7 @@ final class BlobBody {
     /// passes over them; a flight that bounced off every window would never arrive),
     /// walls are not. A goal already being flown to is simply retargeted mid-air.
     func fly(to g: CGPoint, spring: GoalSpring) {
+        guard g.isFinitePoint else { BadNumber.noteOnce("BlobBody.fly", "\(g)"); return }
         dragging = false
         refreshScreens()
         hop(toward: g)
@@ -709,6 +744,7 @@ final class BlobBody {
 
     /// Advance the body and return what it is pressed against (for the renderer).
     func step(_ dtRaw: Double) -> [BlobContact] {
+        guard dtRaw.isFinite else { BadNumber.noteOnce("BlobBody.step dt", "\(dtRaw)"); return contacts() }
         let dt = min(max(dtRaw, 0), 1.0 / 30)
         guard isActive || dragging else { return contacts() }
         if guided {
@@ -798,11 +834,19 @@ final class BlobBody {
 
         center.x += velocity.dx * dt
         center.y += velocity.dy * dt
+        // One bad number and the body is back at its last good place, still, holding
+        // nothing; the controller syncs the panel to it as on any frame.
+        guard center.isFinitePoint, velocity.isFiniteVector else {
+            BadNumber.noteOnce("BlobBody.step", "centre \(center) velocity \(velocity) goal \(goal.map { "\($0)" } ?? "none") dragging \(dragging)")
+            resetToLastGood()
+            return contacts()
+        }
 
         resolveWalls()
         if !dragging, !ignoreWindows { resolveObstacles() }
         if dragging { adhereToObstacles() }
         keepOnSomeScreen()
+        lastGoodCenter = center
         if dt > 0 { accel = CGVector(dx: (velocity.dx - v0.dx) / dt, dy: (velocity.dy - v0.dy) / dt) }
 
         for i in impacts.indices { impacts[i].press *= exp(-dt / 0.22) }

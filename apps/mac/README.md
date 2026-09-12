@@ -329,8 +329,48 @@ Speaker frames are converted to Float32 and scheduled on an `AVAudioPlayerNode`;
 `flush` stops the player and drops the backlog. Audio runs only while a session is
 open and the mic is granted.
 
-A start that fails outright is retried with backoff (2 s → 30 s) for as long as
-audio is wanted, device changes restart the graph, and a failure is surfaced as a
+**Nothing on the audio path may abort the process.** AVFoundation reports graph
+mistakes as Objective-C exceptions, which Swift cannot catch: `installTap` with a
+format the node no longer has ("Failed to create tap due to format mismatch"), a
+connection at a rate the hardware no longer runs, a player started on an engine that
+just stopped itself. Uncaught, one takes the app down — five of the eight crashes of
+2026-09-11 were the wake listener's tap, each a moment after the input device changed
+(the format it had read was stale until the engine was reset). Two rules follow:
+
+- Taps are installed with `format: nil` (the node's own output format at that moment,
+  so nothing can mismatch) and the callback converts from `buffer.format`, rebuilding
+  its `AVAudioConverter` when that changes — never from a format read before start.
+- Every AVFoundation call that can raise (`installTap`, `connect`, `prepare`/`start`,
+  `setVoiceProcessingEnabled`, `reset`, `removeTap`, the player's `play`/`stop`/
+  `scheduleBuffer`) runs inside `objcTry` (`Audio/ObjCTry.swift`), a Swift wrapper over
+  the `JarheadObjC` target's `JHTry` (`@try/@catch`, `Sources/JarheadObjC`). A raise
+  comes out as `ObjCException` (name, reason, top of the ObjC stack) and is logged and
+  retried like any other failed start.
+
+A start that fails — outright or by a caught raise — is retried on the ladder
+0.5, 1, 2, 5, 10, 30 s (`AudioBackoff`) for as long as audio is wanted; the first two
+retries are quiet, from the third on the line carries the "audio failed" prefix that
+becomes a toast, so a headset switch does not flash an error. The wake listener runs
+the same quick ladder for four attempts and then reports `startFailed`, at which point
+`WakeGate` takes over with its own 2 → 30 s backoff (it stops the listener while it
+waits, so the two loops never race). On `AVAudioEngineConfigurationChange` both engines
+stop, `reset()`, re-query the input format and log `before → after` (NSLog, prefixes
+`Audio:` / `WakeListener:`; the tap's first buffer logs its real format once per start),
+then rebuild after a short settle. Every level that leaves the audio code — the mic RMS
+on the wire, the ear's RMS and noise floor, the per-channel energies — goes through
+`clampLevel`: finite and 0…1, an empty buffer is 0, never 0/0.
+
+`Scripts/objc-try-probe.sh` proves the shim without the app or a TCC prompt: a
+mixer → output connection at 0 Hz and a channel-mismatched `scheduleBuffer` raise and
+are caught; when the running process already holds the microphone grant it also
+installs a tap on the *input* node with a format the device does not run and prints
+the caught "Failed to create tap due to format mismatch" (the exact raise that crashed
+the app — on a player node AVFoundation applies the format instead), shows the same
+tap with `format: nil` not raising, then starts the voice `AudioEngine`, simulates a
+configuration change and shows the formats before → after and the restart.
+`Scripts/ear-probe.sh` compiles the shim in.
+
+Device changes restart the graph, and a persistent failure is surfaced as a
 toast rather than a silent "listening". `Settings.micDeviceId` (a Core Audio device
 UID or numeric AudioDeviceID) is honoured only on the no-echo-cancellation path:
 the voice-processing unit drives input and output from one device property, so with

@@ -1,7 +1,9 @@
 #!/usr/bin/env tsx
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { readConfig, setLogLevel } from "@jarhead/core";
 import { Engine } from "@jarhead/engine";
-import { DaemonServer } from "./server.ts";
+import { DaemonServer, Lifeline } from "./server.ts";
 
 /**
  * jarheadd — the engine as a process.
@@ -44,6 +46,42 @@ engine.on("restart", (reason) => {
   console.log(`jarheadd: restart requested (${reason}); exiting 75 for the app to respawn`);
   void shutdown("restart", 75);
 });
-// The app closing its end of the socket is not a shutdown; only signals and stdin EOF are.
-process.stdin.on("end", () => void shutdown("stdin closed"));
+
+// The app closing its end of the socket is not a shutdown; signals are, and so is stdin
+// EOF — but only a clean one. The app says `bye` right before it closes our stdin on a
+// quit; EOF without a bye means it crashed, and we linger for the relaunch with the brain
+// warm (Lifeline, server.ts). JARHEAD_LINGER_MS shortens the window for tests.
+//
+// Our stdout/stderr are pipes the app reads into daemon.log. When the app dies they die:
+// a write would raise EPIPE, which must never take the lingering daemon down, and every
+// line after that would be lost — so an orphaned daemon appends straight to daemon.log
+// itself (per line, so the app's rotation and its own O_APPEND writes interleave safely).
+process.stdout.on("error", () => undefined);
+process.stderr.on("error", () => undefined);
+const lifeline = new Lifeline({
+  lingerMs: Number(process.env["JARHEAD_LINGER_MS"]) > 0 ? Number(process.env["JARHEAD_LINGER_MS"]) : 90_000,
+  clientCount: () => server.clientCount,
+  shutdown: (why) => void shutdown(why),
+  log: (line) => console.log(`jarheadd: ${line}`),
+  onOrphaned: () => writeOutputToLog(join(config.stateDir, "daemon.log")),
+});
+server.on("bye", () => lifeline.bye());
+server.on("join", () => lifeline.clientJoined());
+server.on("leave", () => lifeline.clientLeft());
+process.stdin.on("end", () => lifeline.stdinClosed());
 process.stdin.resume();
+
+/** Re-home stdout and stderr to the log file the app used to fill from our pipes. */
+function writeOutputToLog(path: string): void {
+  const append = (chunk: unknown): boolean => {
+    try {
+      if (typeof chunk === "string" || chunk instanceof Uint8Array) appendFileSync(path, chunk);
+    } catch {
+      // Best effort: a log that cannot be written is not a reason to exit.
+    }
+    return true;
+  };
+  process.stdout.write = append as typeof process.stdout.write;
+  process.stderr.write = append as typeof process.stderr.write;
+  console.log(`jarheadd: the app's pipes are gone; appending to ${path} directly`);
+}

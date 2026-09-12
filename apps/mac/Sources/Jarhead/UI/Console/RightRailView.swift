@@ -40,6 +40,7 @@ struct RightRail: View, Equatable {
         VStack(spacing: 0) {
             RailTabs(selected: tab) { picked in withAnimation(Motion.snappy) { session.select(picked) } }
             ConsoleHairline()
+            CrashNoticeRow()
             ScrollView(.vertical) {
                 // The three panels crossfade in place (Motion.swap) as the tab's thumb glides.
                 ZStack(alignment: .top) {
@@ -63,6 +64,49 @@ struct RightRail: View, Equatable {
                 .thinScrollers()
             }
         }
+    }
+}
+
+/// The previous run's crash (AppState.lastCrash, set from the crash guard's report at
+/// launch): one 28pt line under the tabs, on every tab, until dismissed — when, why,
+/// Details (the report in Finder), ×. Reads AppState itself, like AudioMeters, so the
+/// rail's Equatable inputs stay as they are; the row owns its bottom rule.
+private struct CrashNoticeRow: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            if let crash = state.lastCrash {
+                VStack(spacing: 0) {
+                    HStack(spacing: iconGap) {
+                        ConsoleIcon(name: "exclamationmark.triangle.fill", tint: ConsoleTheme.error)
+                        // "2 min ago" ticks; the reason is one line, the tooltip has it whole.
+                        TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                            Text(crash.line(now: ctx.date))
+                                .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                        Spacer(minLength: 4)
+                        Button("Details") { state.revealCrash() }
+                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                            .help("Show the crash report in Finder")
+                        Button { withAnimation(Motion.gentle) { state.dismissCrash() } } label: {
+                            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
+                        .help("Dismiss")
+                        .accessibilityLabel("Dismiss the crash notice")
+                    }
+                    .padding(.horizontal, railInset)
+                    .frame(height: 28)
+                    .help("\(crash.reason)\n\(crash.fileURL.lastPathComponent)\(crash.relaunched ? "\nRelaunched by the crash guard." : "\nNot relaunched: three crashes in ten minutes.")")
+                    ConsoleHairline()
+                }
+                .transition(Motion.appear)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .animation(Motion.gentle, value: state.lastCrash == nil)
     }
 }
 

@@ -88,6 +88,13 @@ export type DaemonMessage =
    * with an error result rather than a protocol error, so the model reads it.
    */
   | { readonly type: "tool.result"; readonly id: string; readonly result: ToolResult }
+  /**
+   * The answer to a client's `bye`: the daemon has read it. The app waits for this before
+   * closing the connection — a close while the daemon's hello/snapshot write is still
+   * queued fails that write with EPIPE, Node destroys the socket, and a bye still unread
+   * in the buffer is lost with it (seen against a real daemon; 64 agents make a big snapshot).
+   */
+  | { readonly type: "bye" }
   | { readonly type: "error"; readonly message: string };
 
 /** app → daemon */
@@ -116,7 +123,15 @@ export type ClientMessage =
    * Kevin is saying, ~100–200 ms behind his speech. `at` is ms since epoch when the
    * recogniser produced it. The engine's reflex layer acts on unambiguous commands.
    */
-  | { readonly type: "ear"; readonly text: string; readonly isFinal: boolean; readonly segment: number; readonly at: number };
+  | { readonly type: "ear"; readonly text: string; readonly isFinal: boolean; readonly segment: number; readonly at: number }
+  /**
+   * A clean quit is on its way: the app sends this right before it closes the daemon's
+   * stdin (DaemonProcess.stop / applicationWillTerminate). Stdin closing *without* a
+   * recent bye means the app crashed, and the daemon lingers for the relaunch instead
+   * of shutting down (main.ts `Lifeline`). A bye to a daemon whose stdin is already gone
+   * — an orphan the relaunched app attached to — is the quit itself.
+   */
+  | { readonly type: "bye" };
 
 export function parseClientMessage(payload: Buffer): ClientMessage | undefined {
   try {

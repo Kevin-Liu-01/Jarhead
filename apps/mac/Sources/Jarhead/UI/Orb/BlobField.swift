@@ -231,6 +231,35 @@ func gaussianRandom() -> Double {
     return sqrt(-2 * log(u)) * cos(2 * .pi * v)
 }
 
+/// A bad number — a NaN or ±inf — reached a boundary: the levels the engine sends, a
+/// spring, the body's position, a rect on its way to a draw. Each boundary makes it
+/// harmless (0, the target, the last good place, nothing drawn this frame) and says
+/// so once per site, so a wrong source is found in the log rather than rendered —
+/// and never traps (`Int(nan)`) or reaches CoreGraphics / CoreText.
+enum BadNumber {
+    nonisolated(unsafe) private static var seen = Set<String>()
+    private static let lock = NSLock()
+    /// Log the first bad number at `site`; later ones at the same site are silent.
+    nonisolated static func noteOnce(_ site: String, _ detail: @autoclosure () -> String = "") {
+        lock.lock()
+        let first = seen.insert(site).inserted
+        lock.unlock()
+        guard first else { return }
+        let d = detail()
+        NSLog("Jarhead: non-finite number at %@%@ — made safe (logged once per site)", site, d.isEmpty ? "" : ": \(d)")
+    }
+}
+
+extension CGPoint { var isFinitePoint: Bool { x.isFinite && y.isFinite } }
+extension CGVector { var isFiniteVector: Bool { dx.isFinite && dy.isFinite } }
+extension CGRect { var isFiniteRect: Bool { origin.isFinitePoint && size.width.isFinite && size.height.isFinite } }
+
+/// 0…1, and 0 for a NaN or ±inf. `min(1, max(0, x))` hands a NaN on unchanged —
+/// `0 >= nan` is false, so `max` keeps the NaN — which is how one bad level would
+/// reach every eased value; this never does.
+@inline(__always) func finite01(_ x: Double) -> Double { x.isFinite ? min(1, max(0, x)) : 0 }
+@inline(__always) func finite01(_ x: CGFloat) -> CGFloat { x.isFinite ? min(1, max(0, x)) : 0 }
+
 @MainActor
 final class BlobSim {
     nonisolated static let cols = 27
@@ -614,8 +643,11 @@ final class BlobSim {
     }
 
     func setLevels(_ l: AudioLevels) {
-        rawInput = min(max(l.input, 0), 1)
-        rawOutput = min(max(l.output, 0), 1)
+        // Finite and 0…1, or 0. One NaN here would reach both eased levels, `react`,
+        // the eye rows and `Int(row.rounded())` in the face placement, which traps.
+        if !l.input.isFinite || !l.output.isFinite { BadNumber.noteOnce("BlobSim.setLevels", "input \(l.input) output \(l.output)") }
+        rawInput = finite01(l.input)
+        rawOutput = finite01(l.output)
     }
 
     /// The gate moved. Colours ease like phase colours do (`targetColor`); the
@@ -680,6 +712,12 @@ final class BlobSim {
     /// stretches it, the grab shears it, the change of velocity rings the wobble, the
     /// velocity elongates a throw and gives the eyes something to look along.
     func setMotion(lag l: CGVector, grab g: CGVector?, velocity v: CGVector, dragging d: Bool) {
+        // The body guards its own numbers (`BlobBody.step`); a bad one that got past
+        // it stays out of the jelly, which keeps last frame's motion.
+        guard l.isFiniteVector, v.isFiniteVector, g?.isFiniteVector ?? true else {
+            BadNumber.noteOnce("BlobSim.setMotion", "lag \(l) velocity \(v)")
+            return
+        }
         lag = l
         grab = g
         dvX += v.dx - velocity.dx
@@ -853,7 +891,9 @@ final class BlobSim {
 
     func step(_ dtRaw: Double) {
         // Clamped because a long frame gap (window hidden, machine asleep) would
-        // otherwise integrate into a violent snap on the next visible frame.
+        // otherwise integrate into a violent snap on the next visible frame. A gap that
+        // is not a number is no step at all.
+        guard dtRaw.isFinite else { BadNumber.noteOnce("BlobSim.step dt", "\(dtRaw)"); return }
         let dt = min(max(dtRaw, 0), 0.1)
         t += dt
         frameDt = dt
@@ -1405,6 +1445,7 @@ final class BlobSim {
             var s = from
             while s <= reach {
                 let col = cx + axisX * s * aspect, row = cy + axisY * s * sq
+                guard col.isFinite, row.isFinite else { break }
                 let ci = Int(col.rounded()), ri = Int(row.rounded())
                 if ci >= 0, ci < cols, ri >= 0, ri < rows {
                     let k = (s - from) / max(0.01, reach - from)
@@ -1777,6 +1818,7 @@ final class BlobSim {
             let crow = eye.row + box.midY / rowHeightPt
             let halfC = (box.width / 2 + 1.5) / cellW + 0.35
             let halfR = (box.height / 2 + 1.5) / rowHeightPt + 0.35
+            guard ccol.isFinite, crow.isFinite, halfC.isFinite, halfR.isFinite else { continue }
             let c0 = max(0, Int((ccol - halfC).rounded())), c1 = min(Self.cols - 1, Int((ccol + halfC).rounded()))
             let r0 = max(0, Int((crow - halfR).rounded())), r1 = min(Self.rows - 1, Int((crow + halfR).rounded()))
             guard c0 <= c1, r0 <= r1 else { continue }
@@ -1790,6 +1832,7 @@ final class BlobSim {
 
     /// Three cells of body under this spot (the relaxed fit), for an eased eye position.
     private func onBody(_ col: Double, row: Double) -> Bool {
+        guard col.isFinite, row.isFinite else { return false }
         let r = Int(row.rounded()), ci = Int(col.rounded())
         guard r >= 0, r < Self.rows, ci >= 1, ci < Self.cols - 1 else { return false }
         let base = r * Self.cols
@@ -1802,6 +1845,8 @@ final class BlobSim {
     /// wide and hangs into the face); relaxed, three cells on its row. Nil when there is
     /// no body to put it on.
     private func fittedColumn(_ col: Double, row: Double, toward: Double, strict: Bool) -> Double? {
+        // `Int(nan)` traps: a NaN row is no place for an eye (ORB_LEVELS=nan reproduced this).
+        guard col.isFinite, row.isFinite, toward.isFinite else { return nil }
         let r = Int(row.rounded())
         guard r >= 0, r < Self.rows else { return nil }
         let reach = strict ? 2 : 1
@@ -1852,6 +1897,10 @@ final class BlobSim {
     var rawLevelsActive: Bool { rawInput > 0.02 || rawOutput > 0.02 }
     /// The louder of the eased levels (0…1), for the notch island's widening and pulse.
     var islandLevel: Double { max(input, output) }
+
+    /// The levels as the sim holds them — the raw pair the engine last sent and the
+    /// eased pair — for the preview harness's readout (ORB_LEVELS).
+    var previewLevels: (rawInput: Double, rawOutput: Double, input: Double, output: Double) { (rawInput, rawOutput, input, output) }
 
     /// How far into the cursor form the body is (0…1), for the preview harness.
     var previewCursorK: Double { cursorK }
@@ -2258,6 +2307,8 @@ final class BlobFieldView: NSView {
     /// flipped (`draw`); the notch's face draws with it too.
     static func drawEye(_ cg: CGContext, glyph ch: Character, size: Double, at p: CGPoint, ink: RGB, glyphs: BlobGlyphs) {
         guard let g = glyphs.eyeGlyph(ch) else { return }
+        // Never a font size or a glyph position that is not a finite, positive number.
+        guard size.isFinite, size > 0, p.isFinitePoint else { BadNumber.noteOnce("drawEye", "size \(size) at \(p)"); return }
         cg.setFont(glyphs.eyeFont.cg)
         cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         let s = CGFloat(size)

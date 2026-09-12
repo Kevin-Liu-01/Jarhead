@@ -60,10 +60,12 @@ enum NotchInk {
     /// `column` is the notch's x-span, `island` the island rect this frame (its minY is
     /// the menu bar's bottom edge, the column's end), both in the view's flipped
     /// coordinates; `scale` the backing scale for the pixel snapping.
-    static func shape(column: ClosedRange<CGFloat>, island: CGRect, scale: CGFloat) -> Shape {
-        let s = max(1, scale)
+    static func shape(column: ClosedRange<CGFloat>, island islandIn: CGRect, scale: CGFloat) -> Shape {
+        let s = scale.isFinite ? max(1, scale) : 2
         func snap(_ v: CGFloat) -> CGFloat { (v * s).rounded() / s }
         let cL = snap(column.lowerBound), cR = snap(column.upperBound)
+        // An island that is not a rect (a spring gone bad) is the column alone, no island.
+        let island = islandIn.isFiniteRect ? islandIn : CGRect(x: cL, y: islandIn.minY.isFinite ? islandIn.minY : 0, width: cR - cL, height: 0)
         let y0 = snap(island.minY)
         let y1 = max(y0, snap(island.maxY))
         // Never narrower than the column: the spring undershoots a hair on the way back.
@@ -192,7 +194,10 @@ enum NotchInk {
     /// happen off the main thread.
     @MainActor
     static func gradient(size: CGSize, notchWidth: CGFloat, scale: CGFloat) -> Rendered? {
-        Cache.shared.image(for: key(size: size, notchWidth: notchWidth, scale: scale))
+        // `key` rounds the size into an Int, which traps on a NaN: no image for a size
+        // that is not one (plain ink that frame).
+        guard size.width.isFinite, size.height.isFinite, notchWidth.isFinite, scale.isFinite, size.width > 0, size.height > 0 else { return nil }
+        return Cache.shared.image(for: key(size: size, notchWidth: notchWidth, scale: scale))
     }
 
     /// The gradient, rendered here and now (blocking on the tile): for the bench and

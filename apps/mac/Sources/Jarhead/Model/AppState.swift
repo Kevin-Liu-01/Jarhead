@@ -208,12 +208,56 @@ public final class AppState: ObservableObject {
             }
     }
 
+    // MARK: - Crashes
+
+    /// The previous run's crash, while its report is fresh (App/CrashGuard: < 10 min old).
+    /// One dismissable line in the Console's rail and one row in the status menu; never a
+    /// modal. Nil once dismissed, or when the last run ended cleanly.
+    @Published public var lastCrash: CrashNotice?
+    /// Installed by the app: reveals the report file (Finder).
+    public var revealCrashHandler: (URL) -> Void = { _ in }
+
+    public func noteCrash(_ notice: CrashNotice) { lastCrash = notice }
+    public func dismissCrash() { lastCrash = nil }
+    public func revealCrash() {
+        if let c = lastCrash { revealCrashHandler(c.fileURL) }
+    }
+
     // Convenience views over the snapshot.
     public var phase: Phase { snapshot.phase }
     public var lastKevin: TranscriptItem? { snapshot.transcript.last { $0.speaker == .kevin } }
     public var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     public var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
     public var isAwake: Bool { snapshot.phase != .asleep && snapshot.phase != .error }
+}
+
+/// What the last crash report says, for the rail and the menu (AppState.lastCrash).
+public struct CrashNotice: Equatable {
+    /// When the report was written.
+    public var at: Date
+    /// The report's `reason:` line: the exception name and reason, or the signal.
+    public var reason: String
+    public var fileURL: URL
+    /// The guard relaunched the app after it (false past the three-in-ten-minutes cap).
+    public var relaunched: Bool
+
+    public init(at: Date, reason: String, fileURL: URL, relaunched: Bool) {
+        self.at = at; self.reason = reason; self.fileURL = fileURL; self.relaunched = relaunched
+    }
+
+    /// "just now", "40 s ago", "2 min ago", "3 h ago".
+    public static func ago(_ at: Date, now: Date = Date()) -> String {
+        let s = Int(max(0, now.timeIntervalSince(at)))
+        if s < 5 { return "just now" }
+        if s < 60 { return "\(s) s ago" }
+        if s < 3600 { return "\(s / 60) min ago" }
+        return "\(s / 3600) h ago"
+    }
+
+    /// The one line: "Crashed 2 min ago · Failed to create tap due to format mismatch".
+    public func line(now: Date = Date()) -> String {
+        "Crashed \(CrashNotice.ago(at, now: now)) · \(reason)"
+    }
 }
 
 /// The wake word gate's state machine, as the UI sees it.

@@ -182,6 +182,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private inputLevel = 0;
   private snapshotTimer: NodeJS.Timeout | undefined;
   private tickTimer: NodeJS.Timeout | undefined;
+  /** When tick() last logged process memory (the OOM watch; 0 = log on the first tick). */
+  private memoryLoggedAt = 0;
   private readonly excludePids = new Set<number>();
   private readonly now: () => number;
   private sessionStartedAt = 0;
@@ -2310,6 +2312,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.pruneMarks();
     if (Ledger.fileNameFor(now) !== this.usageDay) this.loadUsageToday();
     this.watchdog();
+    if (now - this.memoryLoggedAt >= Engine.MEMORY_LOG_MS) {
+      this.memoryLoggedAt = now;
+      this.logMemory();
+    }
     const idleMs = this.settings.idleSleepMinutes * 60_000;
     if (this.live && !this.connecting && this.live.currentState === "started" && !this.delegator?.active && idleMs > 0 && now - this.lastAddressedAt > idleMs) {
       log.info(`idle for ${this.settings.idleSleepMinutes} min; sleeping`);
@@ -2325,6 +2331,39 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.live) this.transcript.settle(this.live.nowMs);
     void this.pollPermissions();
     this.emit("event", { type: "levels", levels: this.levels() });
+  }
+
+  /** How often tick() writes the memory line. */
+  private static readonly MEMORY_LOG_MS = 5 * 60_000;
+  /** Above this heap the line becomes a warning naming what is held. */
+  private static readonly HEAP_WARN_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+  /**
+   * The memory watch (REDESIGN §16): `process.memoryUsage()` every five minutes at info,
+   * so a V8 heap OOM (node-2026-09-11-151650.ips: `node::OOMErrorHandler`, path masked,
+   * possibly this daemon) can be read against a trend next time rather than guessed at.
+   * Past 1.5 GB of heap the line is a warning and names the holders this class can
+   * count: the two transcripts, the delegations kept and live, the marks and their
+   * captures in flight, the open conversations (each holds a live tail), the problems.
+   * Screenshots are files under `shots/`, not buffers here. No heap flag changes: a watch.
+   */
+  private logMemory(): void {
+    const m = process.memoryUsage();
+    const mb = (n: number): number => Math.round(n / 1_048_576);
+    const line = `memory: rss ${mb(m.rss)} MB · heap ${mb(m.heapUsed)} / ${mb(m.heapTotal)} MB · external ${mb(m.external)} MB · arrayBuffers ${mb(m.arrayBuffers)} MB`;
+    if (m.heapUsed <= Engine.HEAP_WARN_BYTES) {
+      log.info(line);
+      return;
+    }
+    const holders = [
+      `transcript ${this.transcript.all().length} items + ${this.heldTranscript.length} held`,
+      `delegations ${this.lastDelegations.length} kept + ${this.delegator?.all().length ?? 0} live`,
+      `marks ${this.marks.length} (${this.markCaptures.size} captures in flight)`,
+      `open conversations ${this.openConversations.size}`,
+      `problems ${this.problems.length}`,
+      `close timers ${this.closeTimers.size}`,
+    ];
+    log.warn(`${line} — heap over ${mb(Engine.HEAP_WARN_BYTES)} MB; holders: ${holders.join(", ")}`);
   }
 
   /**

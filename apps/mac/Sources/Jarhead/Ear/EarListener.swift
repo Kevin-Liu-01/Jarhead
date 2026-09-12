@@ -247,7 +247,9 @@ final class EarListener: @unchecked Sendable {
         guard n > 0, let p = buffer.floatChannelData?[0] else { return 0 }
         var acc: Double = 0
         for i in 0 ..< n { acc += Double(p[i] * p[i]) }
-        return (acc / Double(n)).squareRoot()
+        // Finite and 0…1 whatever the samples held: a NaN here would poison the noise
+        // floor for good (every comparison false) and the roll deferral with it.
+        return clampLevel((acc / Double(n)).squareRoot())
     }
 
     // MARK: transcripts (on `queue`)

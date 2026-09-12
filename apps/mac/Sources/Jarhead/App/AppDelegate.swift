@@ -29,10 +29,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// these are fed from the sink payloads and are what the audio decision reads.
     private var phaseSeen: Phase = .asleep
     private var connectedSeen = false
+    /// The previous run's crash report, when fresh (CrashGuard.install), until it is shown.
+    private var crashNotice: CrashGuard.Notice?
+
+    /// `CFBundleShortVersionString`, or "dev" for a `swift build` binary.
+    static let appVersion: String = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
+
+    override init() {
+        super.init()
+        // The crash guard before anything else can crash: the report writer, the relaunch,
+        // and the previous run's report if it is fresh (shown once the surfaces exist).
+        crashNotice = CrashGuard.install(stateDir: AppDelegate.stateDir(), appVersion: AppDelegate.appVersion)
+        // The wake listener's diagnostics (formats before/after a device change, failed starts) ride the crash ring too.
+        WakeWordListener.log = { appLog("WakeListener: \($0)") }
+    }
 
     // MARK: - launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appLog("launch: Jarhead \(AppDelegate.appVersion) pid \(ProcessInfo.processInfo.processIdentifier)")
         installDockIcon()
 
         orb = OrbPanelController(state: state)
@@ -55,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audio.onMicChunk = { [client] pcm in client?.sendMic(pcm) }
         audio.onMicLevel = { [client] level in client?.sendMicLevel(level) }
         audio.onStatus = { [weak self] text in
-            NSLog("Audio: %@", text)
+            appLog("audio: \(text)")
             // A dead mic is not a log line: say so where Kevin looks.
             guard text.hasPrefix("audio failed") else { return }
             DispatchQueue.main.async {
@@ -121,15 +136,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The daemon: start or attach, then connect.
         do {
             let location = try RepoLocator.locate()
+            CrashGuard.setCommit(AppDelegate.commit(of: location.repo))
             let d = DaemonProcess(location: location, socketPath: socketPath, state: state)
             daemon = d
             d.start()
         } catch {
             state.daemonDetail = error.localizedDescription
             state.toast(error.localizedDescription, tone: .error)
-            NSLog("Jarhead: %@", error.localizedDescription)
+            appLog("daemon: \(error.localizedDescription)")
         }
         client.start()
+
+        // The previous run's crash, while its report is fresh: one dismissable line in the
+        // Console's rail and one row in the status menu, and the same line in daemon.log
+        // next to the engine's, so both halves of the story sit in one file. Never a modal.
+        state.revealCrashHandler = { url in NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        if let n = crashNotice {
+            let notice = CrashNotice(at: n.at, reason: n.reason, fileURL: n.url, relaunched: n.relaunched)
+            state.noteCrash(notice)
+            daemon?.noteCrash(notice)
+            crashNotice = nil
+        }
 
         // Setup wizard on first run (once the daemon has told us the settings). The
         // payload carries the value; the snapshot itself is still the old one in here.
@@ -159,6 +186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .map(\.phase)
             .removeDuplicates()
             .sink { [weak self] (phase: Phase) in
+                // What a crash report says the app was doing (CrashGuard: the phase line and the ring).
+                CrashGuard.setPhase(phase)
+                CrashGuard.remember("phase → \(phase.rawValue)")
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.phaseSeen = phase
@@ -169,12 +199,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.$connected
             .removeDuplicates()
             .sink { [weak self] (on: Bool) in
+                CrashGuard.remember(on ? "daemon connected" : "daemon disconnected")
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.connectedSeen = on
                     self.updateAudioActivity()
                 }
             }
+            .store(in: &cancellables)
+        state.$wakeGate
+            .removeDuplicates()
+            .sink { (gate: WakeGateState) in CrashGuard.remember("wake gate: \(String(describing: gate))") }
             .store(in: &cancellables)
         state.$snapshot
             .map(\.settings.micDeviceId)
@@ -185,10 +220,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The first read of every permission (read-only; the daemon gets the list on connect).
         permissions.start()
 
+        // JARHEAD_CRASH_TEST=exception|signal: a dev build crashes on purpose two seconds
+        // in, to see the report written, the relaunch spawned and the notice on the next run.
+        if let kind = ProcessInfo.processInfo.environment["JARHEAD_CRASH_TEST"] { CrashGuard.armTestCrash(kind) }
+
         // Microphone: ask once, tell the daemon, and never start audio before we know.
         // JARHEAD_NO_AUDIO=1 skips the request entirely (headless test launches).
         if ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] == "1" {
-            NSLog("Jarhead: JARHEAD_NO_AUDIO=1, audio disabled")
+            appLog("JARHEAD_NO_AUDIO=1, audio disabled")
             return
         }
         refreshMicrophoneGrant(openSettingsIfDenied: false)
@@ -203,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let previous = self.micGrant
             self.micGrant = grant
+            CrashGuard.remember("microphone grant: \(grant.rawValue)")
             self.client.sendPermission(which: "microphone", state: grant)
             self.permissions.set(.microphone, grant: grant)
             self.wake.setMicrophone(granted: grant == .granted)
@@ -307,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let wantActive = micGrant == .granted && connectedSeen && AppState.voiceAudioRuns(in: phaseSeen)
         guard wantActive != audioActive else { return }
         audioActive = wantActive
+        CrashGuard.remember(wantActive ? "voice audio: start (gate lets go, mic + speaker up)" : "voice audio: stop (gate may listen)")
         if wantActive {
             wake.setVoiceAudioActive(true)
             audio.start()
@@ -350,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appLog("quit: terminating in phase \(state.phase.rawValue)")
         // Stop the engine first so the Live session (which bills by the second) closes:
         // the transport's stop interrupts whatever runs, closes the session and sleeps.
         if state.connected { client.send(.stop) }
@@ -360,6 +402,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Give the sleep command a moment to leave the socket before we tear it down.
         Thread.sleep(forTimeInterval: 0.25)
         client?.stop()
+        // A clean quit: the daemon hears `bye` before its stdin closes (DaemonProcess.stop),
+        // so it shuts down instead of lingering for a relaunch that is not coming.
         daemon?.stop(timeout: 5)
         statusItem?.remove()
     }
@@ -379,12 +423,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `$JARHEAD_STATE_DIR`, else `~/.jarhead` — the same rule as packages/core.
+    static func stateDir() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let s = env["JARHEAD_STATE_DIR"], !s.isEmpty { return URL(fileURLWithPath: (s as NSString).expandingTildeInPath, isDirectory: true) }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarhead", isDirectory: true)
+    }
+
     /// `$JARHEAD_SOCKET`, else `<state dir>/jarhead.sock` — the same rule as packages/core.
     static func socketPath() -> String {
         let env = ProcessInfo.processInfo.environment
         if let s = env["JARHEAD_SOCKET"], !s.isEmpty { return (s as NSString).expandingTildeInPath }
-        let stateDir = (env["JARHEAD_STATE_DIR"].map { ($0 as NSString).expandingTildeInPath })
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".jarhead").path
-        return (stateDir as NSString).appendingPathComponent("jarhead.sock")
+        return stateDir().appendingPathComponent("jarhead.sock").path
+    }
+
+    /// The checkout's commit, short, for the crash report: `.git/HEAD` and the ref it names.
+    static func commit(of repo: URL) -> String {
+        let git = repo.appendingPathComponent(".git")
+        guard let head = try? String(contentsOf: git.appendingPathComponent("HEAD"), encoding: .utf8) else { return "unknown" }
+        let line = head.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sha = line
+        if line.hasPrefix("ref: ") {
+            let ref = String(line.dropFirst(5))
+            if let s = try? String(contentsOf: git.appendingPathComponent(ref), encoding: .utf8) {
+                sha = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if let packed = try? String(contentsOf: git.appendingPathComponent("packed-refs"), encoding: .utf8),
+                      let row = packed.split(separator: "\n").first(where: { $0.hasSuffix(" " + ref) }) {
+                sha = String(row.prefix(40))
+            } else {
+                return ref.replacingOccurrences(of: "refs/heads/", with: "")
+            }
+        }
+        return sha.count >= 7 ? String(sha.prefix(7)) : sha
     }
 }

@@ -95,6 +95,22 @@ State lives in `~/.jarhead`: `env` (keys, mode 0600, written by Setup),
 `settings.json`, `ledger/<date>.jsonl` (everything that happened),
 `shots/` (what the brain saw), `worktrees/` (self-edits in progress).
 
+## When it crashes
+
+It comes back, and it tells you. An uncaught exception or a fatal signal writes
+`~/.jarhead/crashes/<time>.txt` — the reason, a symbolicated backtrace, version
+and commit, uptime, the phase, the daemon's pid and the app's last 40 log lines —
+then hands the crash on so the system's `.ips` report is still written, and
+relaunches the app once (at most three times in ten minutes; past that it stays
+down and the report says so). The daemon does not die with the app: a quit sends
+it a `bye` first, so a stdin that closes *without* one means a crash and the
+daemon lingers 90 s for the relaunch with the Codex thread warm (`pnpm jarhead
+status` still works while it waits). On the next launch a fresh report is one
+dismissable line in the Console's right rail and one row in the menu-bar menu —
+"Crashed 2 min ago · <reason>", *Details* reveals the file — and the same line is
+in `daemon.log` next to the engine's. `JARHEAD_CRASH_TEST=exception|signal` crashes
+a dev build on purpose two seconds in; `JARHEAD_NO_RELAUNCH=1` disables the relaunch.
+
 ## Brains
 
 The brain is a setting, never a vendor. Every brain drives the same tools
