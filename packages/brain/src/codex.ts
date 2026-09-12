@@ -11,7 +11,7 @@ import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
 import type { ToolRunner } from "./runner.ts";
-import { CODEX_MCP_SERVER, codexMcpConfigArgs, toml } from "./codex-config.ts";
+import { CODEX_MCP_SERVER, codexMcpConfigArgs, codexPromptTrimArgs, prepareCodexHome, toml, type CodexHome } from "./codex-config.ts";
 import { CodexAppServer, type AppServerItem, type TurnResult, type UserInput } from "./codex-app-server.ts";
 
 export { CODEX_MCP_SERVER } from "./codex-config.ts";
@@ -249,6 +249,10 @@ export interface CodexExecOptions {
   readonly toolTimeoutSec?: number | undefined;
   /** PNGs attached to the prompt with `-i` (the regions Kevin circled). */
   readonly images?: readonly string[] | undefined;
+  /** `-c service_tier=…`; unset = the config's. */
+  readonly serviceTier?: string | undefined;
+  /** Switch off the coding-session prompt blocks (default true; see codexPromptTrimArgs). */
+  readonly trimPrompt?: boolean | undefined;
 }
 
 /** The argv of one delegation; the prompt itself arrives on stdin (`-`). */
@@ -270,15 +274,67 @@ export function codexExecArgs(o: CodexExecOptions): string[] {
     ...(o.model ? ["-m", o.model] : []),
     ...(o.effort ? ["-c", `model_reasoning_effort=${toml(codexEffort(o.effort))}`] : []),
     ...codexMcpConfigArgs(o),
+    // --ignore-user-config skips the CODEX_HOME config.toml, so the prompt trims and the tier ride the argv here too.
+    ...(o.trimPrompt === false ? [] : codexPromptTrimArgs()),
+    ...(o.serviceTier ? ["-c", `service_tier=${toml(o.serviceTier)}`] : []),
     "-C",
     o.cwd,
     "-",
   ];
 }
 
+/**
+ * Jarhead's own base prompt for the app-server thread (`thread/start.baseInstructions`),
+ * in place of Codex's coding-agent text. That text tells the model to "start with a
+ * message in the commentary channel" when a request needs tools — measured as a
+ * 4.4 s narration generation (median) before the first tool call — and spends
+ * ~5.6k tokens on patches, PR descriptions, plans, skills and plugins. Code mode's
+ * calling convention comes from the `exec` tool's own description, not from here.
+ */
+export function codexBaseInstructions(userName = "Kevin"): string {
+  return `You are the brain of Jarhead, a voice assistant that uses ${userName}'s Mac for him. The developer message that follows holds your standing orders; obey it. You act through the jarhead tools, which you call through the exec function as \`await tools.mcp__jarhead__<name>({...})\`, and speed is the point: when a request needs a tool, your very first output is the tool call — no commentary message before it, no plan, no narration; Jarhead shows him every call as it happens and speaks for you. Write a message only as the final answer (one or two spoken sentences, plain words, no Markdown, no headings, no lists, no file links) or when a tool returned needs_confirmation, in which case the final answer is that one question. Keep reasoning short. Nothing here is a coding task: there is no repository, no patch to write, no tests to run, no skills, plugins or sub-agents to use, and your own shell is not for acting on his Mac.`;
+}
+
+const QUESTION_START = /^(what|what's|whats|why|how|is|are|am|can|could|would|should|do|does|did|where|who|whose|which|when|will|tell me|explain|describe)\b/i;
+const IMPERATIVE_VERBS = new Set([
+  "open", "close", "quit", "click", "tap", "press", "type", "scroll", "search", "find", "look", "show", "hide", "switch", "go", "play", "pause", "stop", "mute", "unmute", "read", "copy", "paste", "save", "select", "focus", "launch", "start", "run", "zoom",
+  "take", "screenshot", "minimize", "minimise", "maximize", "maximise", "move", "drag", "turn", "set", "toggle", "refresh", "reload", "navigate", "enter", "hit", "send", "delete", "undo", "redo", "cut", "dismiss", "cancel", "confirm", "check", "mark", "circle",
+  "point", "highlight", "draw", "clear", "expand", "collapse", "create", "add", "remove", "insert", "pick", "choose", "bring", "put", "double", "right", "lower", "raise", "increase", "decrease", "volume", "fullscreen", "back", "forward", "next", "previous",
+  "wait", "again", "repeat", "reply", "answer", "call", "text", "mail", "email", "message", "download", "upload", "install", "print", "rename", "sort", "filter", "resize", "snap", "arrange", "tile", "split", "empty", "trash", "eject", "restart", "log", "sign",
+]);
+const CONFIRMATION_WORDS = /^(yes|yeah|yep|yup|no|nope|ok|okay|sure|go ahead|do it|go for it|cancel|never mind|nevermind|stop)\b/i;
+
+/**
+ * A short imperative request — a few words, starting with a verb, not a question —
+ * or a one-word answer to a confirmation: the kind of turn that never needed
+ * medium reasoning. Used only when the simple-effort knob is set (opt-in A/B).
+ */
+export function isSimpleRequest(request: string): boolean {
+  let text = request.trim().toLowerCase();
+  text = text.replace(/^(hey|hi|ok|okay)?[\s,]*jar\s*head[\s,.!]*/i, "").replace(/^(please|now|just|can you|could you|would you)[\s,]+/i, "").replace(/[\s,]*(please|now|for me)[.!\s]*$/i, "");
+  if (!text || text.includes("?")) return false;
+  if (CONFIRMATION_WORDS.test(text)) return true;
+  if (QUESTION_START.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 7) return false;
+  const first = (words[0] ?? "").replace(/[^a-z]/g, "");
+  return IMPERATIVE_VERBS.has(first);
+}
+
 /** What the Codex brain adds to the shared standing orders. */
 export function codexAddendum(userName = "Kevin"): string {
-  return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it or to read from it. The sandbox does not stop you reading ~/.jarhead/env, ~/.ssh or the other secret stores; the standing orders do, and every read goes through read_file, list_dir, search_files and web_fetch of the "${CODEX_MCP_SERVER}" MCP server so those stores stay refused. Every action goes through that server's tools too (screenshot, zoom, left_click, type, key, scroll, open_app, read_focused_text, run_shell, read_file, edit_file, write_file, search_files, web_fetch, applescript, agents_list, self_edit, speak_progress and the rest) — use those, not your own shell, to read and change files on this Mac. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.`;
+  return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it or to read from it. The sandbox does not stop you reading ~/.jarhead/env, ~/.ssh or the other secret stores; the standing orders do, and every read goes through read_file, list_dir, search_files and web_fetch of the "${CODEX_MCP_SERVER}" MCP server so those stores stay refused. Every action goes through that server's tools too — use those, not your own shell, to read and change files on this Mac. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.
+
+Any AGENTS.md pointer index, skills catalog or multi-agent role text in your context is ${userName}'s Codex-app preset, not Jarhead's: do not load the wiki, its hub or its command index, run npm status, or read SKILL.md files unless the task is literally about them. His wiki is ~/repos/Kevin-Wiki-v3 (the old ~/Documents/GitHub/kevin-wiki no longer exists); its pages are under ~/repos/Kevin-Wiki-v3/wiki and the rest of the repo is mostly archived copies, so a wiki search is one search_files call with root ~/repos/Kevin-Wiki-v3/wiki and glob "*.md", widened to the repo root only when that finds nothing.
+
+The ${CODEX_MCP_SERVER} tools may reach you without descriptions or parameter schemas, so here they are; arguments are one JSON object, coordinates are pixels of the last screenshot.
+Look: screenshot {quick?} (quick: a reduced-resolution shot; zoom for small text); zoom {region: [x0, y0, x1, y1]} a full-resolution crop; frontmost_app {} the front app and window, about 20 ms; list_windows {}; find_element {name, role?} a control on the front window by its label, with its centre; element_at {coordinate: [x, y]}; read_focused_text {} the focused field's text — fails in Chromium browsers, use browser_read there.
+Act: left_click {coordinate: [x, y]} (also double_click, right_click); click_element {name, role?} clicks the one control with that label, no screenshot, and answers with what it clicked; type {text} into the focused element (OK means delivered, not which field); key {text: "Return" | "cmd+s" | "Escape", repeat?}; scroll {scroll_direction: "down", scroll_amount: 3, coordinate?}; open_app {name} answers with the app it opened; focus_app {name} only echoes the name, frontmost_app confirms; left_click_drag {start_coordinate, coordinate}; wait {duration}.
+Browser pages in Safari, Chrome, Arc or Edge (Apple events, tens of milliseconds; never applescript for a page): browser_read {} the page as text; browser_find {text} an element and its bounds; browser_click {text} or {selector} for a link or button not on the screenshot (a visible one: left_click or click_element); browser_type {text, submit?} into the page's focused field; browser_navigate {url} answers "is loading", browser_read confirms the page; browser_tabs {}.
+Files: read_file {path, offset?, limit?}; list_dir {path, depth?}; search_files {root, pattern, glob?} — a regular expression, (?i) accepted, case-insensitive when all lowercase, ripgrep when installed and otherwise a JavaScript regex walk (no PCRE-only syntax), at most 200 hits; edit_file {path, old, new}; write_file {path, content}.
+Shell and web: run_shell {command, cwd?, background?, timeout?} is a login shell and slow (seconds); applescript {script} runs osascript, often seconds — never for the front app (frontmost_app) or a browser page (the browser tools); web_search {query}; web_fetch {url}; open_url {url}.
+Voice and drawing: speak_progress {text} says one sentence now; show_circle {x, y, radius, label?}, show_arrow {from, to}, show_rect {rect: [x, y, w, h]}, show_text {x, y, text}, show_stroke {points}, show_clear {} draw fading shapes on his screen.
+Agents and self: agents_list {}, agent_send {agent, text}, agent_read {agent}, agent_wait {agent, timeout?}, agent_start {tool, cwd, prompt}; self_edit {task}, self_review {id}, self_apply {id}, self_discard {id}, self_status {}.`;
 }
 
 // ------------------------------------------------------------------ the brain
@@ -324,6 +380,18 @@ export interface CodexBrainOptions {
   readonly appServerRetryMs?: number | undefined;
   /** Test seam for the app-server process. */
   readonly spawnImpl?: typeof spawn | undefined;
+  /**
+   * Per-turn effort A/B (opt-in): short imperative requests (`isSimpleRequest`) run
+   * at this effort, everything else at `effort`. Default: env JARHEAD_CODEX_SIMPLE_EFFORT
+   * (unset = off). Logged per turn as "effort low (simple: …)".
+   */
+  readonly simpleEffort?: Effort | undefined;
+  /** Prime every fresh thread with one tiny background turn (default: on unless env JARHEAD_CODEX_PRIME is 0/false). */
+  readonly primeThreads?: boolean | undefined;
+  /** `-c service_tier=…` for both entry points (default: env JARHEAD_CODEX_SERVICE_TIER, else Kevin's config line). */
+  readonly serviceTier?: string | undefined;
+  /** Which base prompt the thread gets: Jarhead's (`codexBaseInstructions`, default) or Codex's own (env JARHEAD_CODEX_BASE=codex). */
+  readonly baseInstructions?: "jarhead" | "codex" | undefined;
 }
 
 /** One `codex exec --json` event, as far as this brain reads it. */
@@ -411,10 +479,43 @@ export class CodexBrain implements Brain {
   private baseDetail = "";
   /** The next warm turn carries the recent exchanges as text (a fresh thread knows nothing). */
   private carryHistory = false;
+  /** Jarhead's own CODEX_HOME (or the source home when it could not be built); set by start(). */
+  private home: CodexHome | undefined;
 
   constructor(private readonly opts: CodexBrainOptions) {
     this.probe = opts.probe;
     this.model = opts.model?.trim() || undefined;
+  }
+
+  /** Where Codex runs from: `<stateDir>/codex-home`, or Kevin's ~/.codex when that could not be built. */
+  get codexHome(): CodexHome | undefined {
+    return this.home;
+  }
+
+  private env(): NodeJS.ProcessEnv {
+    return this.opts.env ?? process.env;
+  }
+
+  /** The effort for short imperative turns, when the A/B knob is on. */
+  private simpleEffort(): Effort | undefined {
+    if (this.opts.simpleEffort) return this.opts.simpleEffort;
+    const v = this.env()["JARHEAD_CODEX_SIMPLE_EFFORT"];
+    return v === "low" || v === "medium" || v === "high" || v === "xhigh" || v === "max" ? v : undefined;
+  }
+
+  private primeThreads(): boolean {
+    if (this.opts.primeThreads !== undefined) return this.opts.primeThreads;
+    const v = (this.env()["JARHEAD_CODEX_PRIME"] ?? "").trim().toLowerCase();
+    return !(v === "0" || v === "false" || v === "off" || v === "no");
+  }
+
+  private serviceTier(): string | undefined {
+    return this.opts.serviceTier ?? (this.env()["JARHEAD_CODEX_SERVICE_TIER"]?.trim() || undefined);
+  }
+
+  private baseInstructions(): string | undefined {
+    const which = this.opts.baseInstructions ?? ((this.env()["JARHEAD_CODEX_BASE"] ?? "").trim().toLowerCase() === "codex" ? "codex" : "jarhead");
+    return which === "codex" ? undefined : codexBaseInstructions(this.opts.userName);
   }
 
   /** "app-server" (warm) or "exec" (per task): what the next delegation will use. */
@@ -452,6 +553,10 @@ export class CodexBrain implements Brain {
         }
       }
       mkdirSync(this.cwd(), { recursive: true });
+      // Codex's home: Jarhead's own, with Kevin's login linked in and his model line
+      // copied — none of his skills, AGENTS.md, plugins or hooks (REDESIGN §15).
+      this.home = prepareCodexHome({ stateDir: this.opts.stateDir, sourceHome: this.opts.codexHome ?? codexHomeDir(this.env()) });
+      (this.home.isolated ? log.info : log.warn)(this.home.detail);
       const socket = await this.ensureToolSocket();
       const model = this.model ?? probe.configModel;
       // The warm transport gets a short patience window; past it the brain is ready
@@ -486,8 +591,8 @@ export class CodexBrain implements Brain {
       return Promise.resolve("codex exec per task");
     }
     const bin = probe.bin;
-    const base = this.opts.env ?? process.env;
-    const codexHome = this.opts.codexHome ?? codexHomeDir(base);
+    const base = this.env();
+    const codexHome = this.home?.path ?? this.opts.codexHome ?? codexHomeDir(base);
     const server = new CodexAppServer({
       bin: bin.path,
       cwd: this.cwd(),
@@ -495,14 +600,22 @@ export class CodexBrain implements Brain {
       codexHome,
       model: this.model ?? probe.configModel,
       effort: this.opts.effort,
+      serviceTier: this.serviceTier(),
       node: this.node(),
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
       developerInstructions: `${brainSystemPrompt(this.opts.userName)}\n\n${codexAddendum(this.opts.userName)}`,
+      baseInstructions: this.baseInstructions(),
+      primeThreads: this.primeThreads(),
       startTimeoutMs: this.opts.appServerStartTimeoutMs,
       killGraceMs: this.opts.killGraceMs,
       spawnImpl: this.opts.spawnImpl,
+    });
+    // A rollover (background, after the turn that filled the thread) means the next
+    // turn's thread knows nothing: the recent exchanges ride along as text.
+    server.on("rollover", () => {
+      this.carryHistory = this.history.length > 0;
     });
     const t0 = Date.now();
     const starting = (async (): Promise<string> => {
@@ -639,16 +752,19 @@ export class CodexBrain implements Brain {
 
   private async handleWarm(task: BrainTask, sink: BrainSink, server: CodexAppServer): Promise<BrainResult> {
     const attached = existingAttachments(task);
-    // A thread that grew past its rollover point is replaced before this task; the
-    // recent exchanges ride along as text so a "yes" still knows what it confirms.
-    if (server.needsFreshThread()) {
-      try {
-        const id = await server.freshThread();
-        this.carryHistory = true;
-        log.info(`context rolled over to a fresh thread ${id.slice(0, 8)} (${server.tokenUsage?.totalTokens ?? "?"} tokens used)`);
-      } catch (e) {
-        log.warn(`could not start a fresh thread (${(e as Error).message}); staying on the old one`);
-      }
+    // A replacement thread started in the background after the last turn is awaited
+    // here (usually long done), a primer still running is interrupted, and a thread
+    // that filled up with no rollover yet is replaced now; the `rollover` listener
+    // has set carryHistory, so a "yes" still knows what it confirms.
+    await server.settleThread();
+    if (task.signal.aborted) return { status: "cancelled" };
+    // Per-turn effort A/B (opt-in): a few imperative words run at the simple effort.
+    const simple = this.simpleEffort();
+    let effort: Effort | undefined;
+    if (simple) {
+      const isSimple = isSimpleRequest(task.request);
+      effort = isSimple ? simple : this.opts.effort;
+      log.info(`effort ${effort ? codexEffort(effort) : "thread default"} (${isSimple ? "simple" : "not simple"}: "${task.request.slice(0, 80)}")`);
     }
     const parts: string[] = [];
     if (this.carryHistory && this.history.length > 0) {
@@ -670,15 +786,19 @@ export class CodexBrain implements Brain {
     task.signal.addEventListener("abort", onAbort, { once: true });
     let result: TurnResult;
     try {
-      result = await server.turn(input, {
-        onItemStarted: (item) => this.onWarmItemStarted(warm, server, item),
-        onItemCompleted: (item) => this.onWarmItemCompleted(warm, item),
-        onWarning: (m) => log.debug(`codex warning: ${m}`),
-        onError: (m, willRetry) => {
-          if (willRetry) sink.step({ kind: "note", text: `codex: ${m.slice(0, 200)} (retrying)` });
-          else this.failWarm(warm, server, m);
+      result = await server.turn(
+        input,
+        {
+          onItemStarted: (item) => this.onWarmItemStarted(warm, server, item),
+          onItemCompleted: (item) => this.onWarmItemCompleted(warm, item),
+          onWarning: (m) => log.debug(`codex warning: ${m}`),
+          onError: (m, willRetry) => {
+            if (willRetry) sink.step({ kind: "note", text: `codex: ${m.slice(0, 200)} (retrying)` });
+            else this.failWarm(warm, server, m);
+          },
         },
-      });
+        { effort },
+      );
     } catch (e) {
       result = { status: "failed", error: (e as Error).message, turnId: "" };
     } finally {
@@ -797,9 +917,10 @@ export class CodexBrain implements Brain {
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
       images: attached.map((a) => a.path),
+      serviceTier: this.serviceTier(),
     });
-    const base = this.opts.env ?? process.env;
-    const env = codexEnv(base, this.opts.codexHome ?? codexHomeDir(base));
+    const base = this.env();
+    const env = codexEnv(base, this.home?.path ?? this.opts.codexHome ?? codexHomeDir(base));
     this.opts.runner.attach(sink, task);
     return new Promise<BrainResult>((resolve) => {
       let child: ChildProcess;

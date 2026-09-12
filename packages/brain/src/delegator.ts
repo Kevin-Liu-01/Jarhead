@@ -7,6 +7,7 @@ import type { Delegation, DelegationStep, DelegationTimings, ScreenMark, Transcr
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { markNote } from "./attachments.ts";
 import { addressesJarhead, normalizeUtterance, type Reconciliation, type Reflex, type ReflexOutcome } from "./reflex.ts";
+import { progressLine } from "./responses.ts";
 
 /**
  * Where the voice meets the brain.
@@ -75,6 +76,22 @@ export interface DelegatorOptions {
   readonly prefireLongQuietMs?: number | undefined;
   /** How long a prefired reflex waits to be adopted by Live's delegation before its record is closed as never delegated (default 8 s). */
   readonly prefireTtlMs?: number | undefined;
+  /**
+   * Wall clock of the session timeline's zero (the engine's `session.started`), or
+   * 0 when no session is open. With it, the triggering utterance's `endMs` becomes
+   * `DelegationTimings.speechEndAt` — the moment Kevin stopped talking, on the same
+   * clock as every other stamp. Without it the field stays absent.
+   */
+  readonly sessionStartedAt?: (() => number) | undefined;
+  /**
+   * Speak the brain's first tool call that does something — a click, a type, a
+   * search, a command; never a look (see SILENT_TOOLS) — as one short line through
+   * the commentary channel, the moment its step lands, unless the brain has
+   * already said something itself. Kevin hears the action as it happens instead
+   * of waiting for the summary. Fire-and-forget: nothing waits on it. Default off;
+   * the engine turns it on.
+   */
+  readonly voiceFirstTool?: boolean | undefined;
 }
 
 /** What the delegator needs to run a reflex; the engine builds it over its ToolRunner. */
@@ -131,14 +148,30 @@ export interface DelegatorEvents {
  */
 export interface DelegationTimingsExtra extends DelegationTimings {
   readonly firstToolAt?: number;
-  readonly firstActionAt?: number;
+  // firstActionAt and speechEndAt moved into the contract's DelegationTimings (packages/protocol).
   readonly toolRoundTripMs?: readonly number[];
   readonly reflex?: boolean;
   /** How long the eyes' pre-warm shot took, when one was taken. */
   readonly eyesMs?: number;
 }
 
+/**
+ * What stamps `firstActionAt` — a step that changed something Kevin can see or
+ * that acted on the Mac: the hands' acting members, the tools that act without
+ * the hands, and the overlays drawn on his screen ("circle where Slack is": the
+ * circle IS the visible action; `show_clear` removes, it does not show). Only a
+ * step whose tool returned ok counts (a click that was refused, a `type` with no
+ * text, a shell command the policy stopped did nothing). The bench keeps a copy
+ * of this set (packages/cli/src/bench-brain.ts); both tests pin it.
+ */
+export const ACTING_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"]);
+
 const STOP_PATTERN = /^\s*(stop|cancel|never ?mind|forget it|abort|that'?s enough|hold on)\b/i;
+/** Tools that only look, remember or already speak: not worth a spoken line when they are the brain's first move. */
+const SILENT_TOOLS: ReadonlySet<string> = new Set([
+  "screenshot", "zoom", "cursor_position", "frontmost_app", "list_windows", "element_at", "find_element", "read_focused_text", "wait",
+  "browser_tabs", "browser_find", "agents_list", "self_status", "recall", "remember", "speak_progress", "show_clear",
+]);
 /** A prefired reflex is adopted by the delegation for its utterance within this long; then its record is finished as never delegated. */
 const PREFIRE_TTL_MS = 8000;
 const MAX_ROUND_TRIP_SAMPLES = 40;
@@ -166,6 +199,8 @@ interface Prefired {
 export class Delegator extends EventEmitter<DelegatorEvents> {
   private readonly delegations: Delegation[] = [];
   private running: { delegation: Delegation; abort: AbortController; marks: Marks; looking?: boolean } | undefined;
+  /** A failed reflex batch's account of itself, handed to the brain task that follows (by delegation id). */
+  private readonly reflexNotes = new Map<string, readonly string[]>();
   private lastDelegationEndMs = 0;
   private readonly now: () => number;
   private unbind: (() => void)[] = [];
@@ -417,12 +452,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const abort = new AbortController();
     // A reflex that already ran for this very utterance: its record becomes this delegation's.
     const prefired = this.claimPrefired(requestItems);
+    // When Kevin stopped talking: the last of his utterances that ended before Live's
+    // delegation event (the request's last item when the transcript lagged the event),
+    // placed on the wall clock through the session's start. Absent without a session clock.
+    const spoke = requestItems.filter((i) => i.endMs <= offsetMs).at(-1) ?? requestItems.at(-1);
+    const sessionStart = this.opts.sessionStartedAt?.() ?? 0;
+    const speechEndAt = spoke && sessionStart > 0 ? sessionStart + spoke.endMs : undefined;
     let delegation: Delegation;
     if (prefired && this.current(prefired.id)?.status === "running") {
-      delegation = this.update(prefired.id, (d) => ({ ...d, liveId, offsetMs, request }))!;
+      delegation = this.update(prefired.id, (d) => ({ ...d, liveId, offsetMs, request, timings: { ...d.timings, ...(speechEndAt !== undefined ? { speechEndAt } : {}) } }))!;
     } else {
       const id = newId("dlg");
-      const timings: DelegationTimings = { delegatedAt: marks.startedAt };
+      const timings: DelegationTimings = { delegatedAt: marks.startedAt, ...(speechEndAt !== undefined ? { speechEndAt } : {}) };
       delegation = { id, liveId, createdAt: marks.startedAt, offsetMs, request, status: "running", steps: [], timings };
       this.pushDelegation(delegation);
       this.opts.ledger?.append({ at: marks.startedAt, type: "delegation.created", delegation });
@@ -496,6 +537,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
     const windowMs = this.opts.dialogueWindowMs ?? 120_000;
     const uptoMs = live.nowMs || offsetMs;
+    const reflexNotes = this.reflexNotes.get(id);
+    this.reflexNotes.delete(id);
     const task: BrainTask = {
       delegationId: liveId,
       request,
@@ -510,6 +553,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       offsetMs,
       signal: abort.signal,
       ...(attachments.length ? { attachments } : {}),
+      ...(reflexNotes ? { notes: reflexNotes } : {}),
     };
 
     let result: BrainResult;
@@ -582,6 +626,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     }
     if (!outcome.ok) {
       this.addStep(id, { kind: "note", text: `reflex ${reflex.label} did not apply (${outcome.result.kind === "error" ? outcome.result.message.slice(0, 200) : outcome.result.kind}); the brain takes it` });
+      // The batch's own account (what it did, where it stopped) rides with the task so the model does not repeat the walk.
+      if (outcome.did) this.reflexNotes.set(id, [`reflex "${reflex.label}": ${outcome.did.slice(0, 400)}`]);
       return false;
     }
     this.markReflex(id);
@@ -591,8 +637,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       this.finish(id, { status: "done", summary: outcome.result.question });
       return true;
     }
-    sink.commentary(reflex.said);
-    this.finish(id, { status: "done", summary: reflex.said });
+    // The verified landing (what the tool results say happened), not the grammar's line.
+    const said = outcome.reflex.said || reflex.said;
+    sink.commentary(said);
+    this.finish(id, { status: "done", summary: said });
     return true;
   }
 
@@ -674,7 +722,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       if (!looking && (step.kind === "tool" || step.kind === "screenshot" || step.kind === "confirm")) {
         const name = step.tool?.name;
         if (timings.firstToolAt === undefined) timings = { ...timings, firstToolAt: full.at };
-        if (timings.firstActionAt === undefined && name && ACTING_MEMBERS.has(name) && step.kind === "tool") timings = { ...timings, firstActionAt: full.at };
+        // The first action: an acting tool (ACTING_TOOLS) whose step is a `tool` that returned ok — not a
+        // look, not an `error` step (the runner records a failed tool as one), not a `confirm` question.
+        if (timings.firstActionAt === undefined && name && ACTING_TOOLS.has(name) && step.kind === "tool" && step.tool?.ok === true) timings = { ...timings, firstActionAt: full.at };
         if (step.tool && Number.isFinite(step.tool.ms)) {
           const samples = timings.toolRoundTripMs ?? [];
           if (samples.length < MAX_ROUND_TRIP_SAMPLES) timings = { ...timings, toolRoundTripMs: [...samples, Math.round(step.tool.ms)] };
@@ -685,9 +735,33 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.opts.ledger?.append({ at: full.at, type: "delegation.step", delegationId: id, step: full });
   }
 
+  /**
+   * The line to speak for the brain's first acting tool, or undefined: only with
+   * `voiceFirstTool` on, only once per delegation, only while nothing has been
+   * spoken yet, and never for a look (SILENT_TOOLS) or a step that did not run.
+   */
+  private firstToolLine(step: Omit<DelegationStep, "id" | "at">, marks: Marks): string | undefined {
+    if (!this.opts.voiceFirstTool || step.kind !== "tool" || !step.tool) return undefined;
+    if (marks.has("firstCommentary") || marks.has("voicedTool") || SILENT_TOOLS.has(step.tool.name)) return undefined;
+    marks.mark("voicedTool");
+    return progressLine(step.tool.name, step.tool.input);
+  }
+
   private makeSink(id: string, liveId: string | null, marks: Marks): BrainSink {
     const { live } = this.opts;
     const lastThinkingAt = { value: 0 };
+    // Say a line and record it. `firstCommentaryAt` measures the brain's own first words, so only a
+    // line from the brain stamps it — never Jarhead's synthetic first-tool line (voiceFirstTool).
+    const say = (text: string, fromBrain: boolean): void => {
+      if (this.running?.delegation.id !== id) return;
+      if (fromBrain && !marks.has("firstCommentary")) {
+        marks.mark("firstCommentary");
+        this.update(id, (d) => ({ ...d, timings: { ...d.timings, firstCommentaryAt: this.now() } }));
+      }
+      this.addStep(id, { kind: "commentary", text });
+      this.queueCommentary(id, liveId, text);
+    };
+    const commentary = (text: string): void => say(text, true);
     return {
       thinking: (text) => {
         if (this.running?.delegation.id !== id) return;
@@ -703,15 +777,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         lastThinkingAt.value = t;
         for (const chunk of chunkForAppend(text)) live.appendThinking(liveId, chunk);
       },
-      commentary: (text) => {
-        if (this.running?.delegation.id !== id) return;
-        if (!marks.has("firstCommentary")) {
-          marks.mark("firstCommentary");
-          this.update(id, (d) => ({ ...d, timings: { ...d.timings, firstCommentaryAt: this.now() } }));
-        }
-        this.addStep(id, { kind: "commentary", text });
-        this.queueCommentary(id, liveId, text);
-      },
+      commentary,
       step: (step) => {
         if (this.running?.delegation.id !== id) return;
         if (step.kind === "tool" || step.kind === "screenshot") this.emit("phase", "acting");
@@ -721,6 +787,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         }
         if (step.kind === "confirm") this.update(id, (d) => ({ ...d, status: "awaiting-confirmation" }));
         this.addStep(id, step);
+        // Kevin hears the first thing the brain did, right as its step lands (the tool itself already ran).
+        // Jarhead's line, not the brain's: it does not count as the brain's first commentary.
+        const line = this.firstToolLine(step, marks);
+        if (line) say(line, false);
       },
       screenshot: (path, note) => {
         if (this.running?.delegation.id !== id) return;
@@ -790,8 +860,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     if (finished) {
       this.opts.ledger?.append({ at: doneAt, type: "delegation.finished", delegationId: id, status: finished.status, timings: finished.timings, ...(finished.summary ? { summary: finished.summary } : {}) });
       const t = finished.timings as DelegationTimingsExtra;
+      // Every mark is ms relative to the delegation; speech@ is negative (Kevin stopped talking before Live delegated).
       const rel = (v: number | undefined): string => (v === undefined ? "-" : String(v - t.delegatedAt));
-      log.info(`delegation ${id} ${finished.status} in ${doneAt - run.marks.startedAt}ms (thinking@${rel(t.firstThinkingAt)} tool@${rel(t.firstToolAt)} action@${rel(t.firstActionAt)} commentary@${rel(t.firstCommentaryAt)}${t.reflex ? " reflex" : ""}${t.toolRoundTripMs?.length ? ` tools ${t.toolRoundTripMs.join("/")}ms` : ""})`);
+      log.info(`delegation ${id} ${finished.status} in ${doneAt - run.marks.startedAt}ms (speech@${rel(t.speechEndAt)} thinking@${rel(t.firstThinkingAt)} tool@${rel(t.firstToolAt)} action@${rel(t.firstActionAt)} commentary@${rel(t.firstCommentaryAt)}${t.reflex ? " reflex" : ""}${t.toolRoundTripMs?.length ? ` tools ${t.toolRoundTripMs.join("/")}ms` : ""})`);
     }
     this.emit("phase", "idle");
   }

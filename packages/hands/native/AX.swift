@@ -83,20 +83,82 @@ func axErrorName(_ error: AXError) -> String {
     }
 }
 
-func opFocusedText() throws -> JSONObject {
-    try requireAccessibility()
+/// The focused element system-wide, or the AX error that stood in the way.
+private func focusedElement() -> (AXUIElement?, AXError) {
     var focusedRef: CFTypeRef?
     let error = AXUIElementCopyAttributeValue(systemWideElement, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+    return (error == .success ? axElement(from: focusedRef) : nil, error)
+}
+
+/// Chromium-based browsers and Electron apps: their web content is exposed to AX clients
+/// only once asked (`AXManualAccessibility`, as AXTree.swift sets for the tree walk), and
+/// until then the focused element reads as nothing, or as a bare element with no role.
+/// Names for the Chrome family; the Electron framework on disk for everything else
+/// (Slack, Discord, Notion, VS Code, Cursor, Figma, Linear, Obsidian …).
+private let chromiumNames: Set<String> = ["google chrome", "google chrome canary", "chromium", "brave browser", "microsoft edge", "vivaldi", "arc", "opera", "orion", "dia", "zen"]
+
+func isChromiumOrElectron(_ app: NSRunningApplication) -> Bool {
+    if let name = app.localizedName?.lowercased(), chromiumNames.contains(name) { return true }
+    if let id = app.bundleIdentifier?.lowercased(), id.contains("chrom") || id.contains("electron") { return true }
+    guard let url = app.bundleURL else { return false }
+    let frameworks = url.appendingPathComponent("Contents/Frameworks", isDirectory: true)
+    return FileManager.default.fileExists(atPath: frameworks.appendingPathComponent("Electron Framework.framework").path)
+        || FileManager.default.fileExists(atPath: frameworks.appendingPathComponent("Chromium Embedded Framework.framework").path)
+}
+
+/// The processes whose web accessibility (`AXManualAccessibility`) this helper has switched
+/// on already. The switch is per process lifetime, so it is asked for once: the type / key
+/// gate reads the focused element before every keystroke, and a 60 ms wait for a switch
+/// that already landed would tax every key into a Chromium app whose focus reads as nothing.
+private let webAccessibilityLock = NSLock()
+private var webAccessibilityOn: Set<pid_t> = []
+
+/// Switch a Chromium / Electron process's web accessibility on. Returns false when it was on
+/// already (nothing to wait for).
+@discardableResult
+func enableWebAccessibility(pid: pid_t, app: AXUIElement) -> Bool {
+    webAccessibilityLock.lock()
+    let first = webAccessibilityOn.insert(pid).inserted
+    webAccessibilityLock.unlock()
+    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    return first
+}
+
+func opFocusedText() throws -> JSONObject {
+    try requireAccessibility()
+    var (element, error) = focusedElement()
     if error == .apiDisabled { throw HandsError.permissionDenied(accessibilityHint) }
-    guard error == .success, let element = axElement(from: focusedRef) else {
-        throw HandsError.notFound("no focused UI element (\(axErrorName(error)))")
+    var role = element.flatMap { axString($0, kAXRoleAttribute) }
+    var retried = false
+    if element == nil || role == nil {
+        // Nothing, or a shell of an element: for a Chromium / Electron front app, switch its
+        // web accessibility on and look once more (the switch lands asynchronously; ~60 ms).
+        // Switched on already: nothing to wait for — one quick look at the app's own focus.
+        if let front = onMain({ NSWorkspace.shared.frontmostApplication }), isChromiumOrElectron(front) {
+            let app = AXUIElementCreateApplication(front.processIdentifier)
+            AXUIElementSetMessagingTimeout(app, 1.0)
+            if enableWebAccessibility(pid: front.processIdentifier, app: app) { sleepMs(60) }
+            retried = true
+            // The app element's own focused element first (system-wide can lag it), then system-wide.
+            var appFocused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &appFocused) == .success, let e = axElement(from: appFocused), axString(e, kAXRoleAttribute) != nil {
+                element = e
+            } else {
+                let again = focusedElement()
+                if let e = again.0 { element = e } else { error = again.1 }
+            }
+            role = element.flatMap { axString($0, kAXRoleAttribute) }
+            debugLog("focused_text: retried after AXManualAccessibility on \(front.localizedName ?? "?"): \(role ?? "still nothing")")
+        }
+    }
+    guard let element else {
+        throw HandsError.notFound("no focused UI element (\(axErrorName(error)))\(retried ? " even after enabling web accessibility on the front app" : "")")
     }
 
-    let role = axString(element, kAXRoleAttribute)
     let subrole = axString(element, kAXSubroleAttribute)
     let secure = role == kAXTextFieldRole && subrole == kAXSecureTextFieldSubrole
     let frame = axFrame(element)
-    return [
+    var out: JSONObject = [
         "role": orNull(role),
         "subrole": orNull(subrole),
         "title": orNull(axString(element, kAXTitleAttribute)),
@@ -107,6 +169,8 @@ func opFocusedText() throws -> JSONObject {
         "app": orNull(axAppName(element)),
         "frame": frame.map { rectJSON($0) } ?? NSNull(),
     ]
+    if retried { out["retried"] = true }
+    return out
 }
 
 func opElementAt(_ params: Params) throws -> JSONObject {

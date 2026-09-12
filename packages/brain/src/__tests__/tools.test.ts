@@ -144,6 +144,18 @@ test("file tools: list_dir descends to a depth and skips node_modules; search_fi
   assert.ok(!swift.includes("a.ts"));
   assert.match(resultText((await runner.run("search_files", { root, pattern: "zzz-nothing" })).result), /no matches/);
   assert.match(resultText((await runner.run("search_files", { root, pattern: "(" })).result), /not a valid regular expression/);
+  // A model without a parameter schema writes (?i): honoured, not "Invalid group"; an all-lowercase
+  // pattern is case-insensitive on its own, an uppercase letter asks for that case; the secret store stays out.
+  writeFileSync(join(root, "src", "Design.md"), "Design System\nno design here\n");
+  const ci = resultText((await runner.run("search_files", { root, pattern: "(?i)design", glob: "*.md" })).result);
+  assert.match(ci, /2 matches/);
+  assert.match(ci, /Design\.md:1: Design System/);
+  assert.match(resultText((await runner.run("search_files", { root, pattern: "design", glob: "*.md" })).result), /2 matches/);
+  assert.match(resultText((await runner.run("search_files", { root, pattern: "Design", glob: "*.md" })).result), /1 match\b/);
+  assert.match(resultText((await runner.run("search_files", { root, pattern: "(?im)^design", glob: "*.md" })).result), /1 match\b/);
+  const secret = resultText((await runner.run("search_files", { root, pattern: "(?i)SECRET" })).result);
+  assert.ok(!secret.includes(".env") && !secret.includes("needle"), secret);
+  assert.match(resultText((await runner.run("search_files", { root, pattern: "(?i)(" })).result), /not a valid regular expression/);
   assert.match(resultText((await runner.run("list_dir", { path: join(home, ".ssh") })).result), /refused/);
 
   const g = globToRegExp("src/**/*.swift");
@@ -321,6 +333,20 @@ test("tool table: the new specs are complete, zod-shaped, and have progress line
   assert.equal(progressLine("web_fetch", { url: "https://example.com/x" }), "Fetching example.com.");
   assert.equal(progressLine("self_apply", {}), "Applying the change to myself.");
   assert.match(specByName("self_apply")!.description, /apply the change to Jarhead and restart it\?/);
+  // What the other brains and the MCP listing read says what was measured: applescript is a slow process, never
+  // for the front app or a page; search_files honours (?i) and smart case; read_focused_text fails in Chromium.
+  assert.match(specByName("applescript")!.description, /often seconds — never for what a fast tool answers: frontmost_app for the front app .*browser_\* tools/);
+  assert.match(specByName("search_files")!.description, /Case-insensitive when the pattern has no uppercase letter.*\(\?i\)/);
+  assert.match(specByName("read_focused_text")!.description, /Fails in Chromium browsers .*use browser_read or browser_find there/);
+  assert.match(specByName("frontmost_app")!.description, /about 20 ms/);
+  assert.match(specByName("click_element")!.description, /that is the verification, no screenshot needed/);
+  assert.match(specByName("type")!.description, /OK means the keystrokes were delivered/);
+  // Results that only echo the request are not sold as verification, and no description carries a
+  // quick-shot pixel size (screen.ts's QUICK_SHOT_BUDGET changes without this file knowing).
+  assert.match(specByName("type")!.description, /names neither the field nor the text/);
+  assert.match(specByName("focus_app")!.description, /only echoes the name; frontmost_app confirms/);
+  assert.match(specByName("browser_navigate")!.description, /loading, not loaded; browser_read confirms/);
+  assert.ok(!/\b1280\b/.test(JSON.stringify(specByName("screenshot"))), "no stale quick-shot size in the screenshot spec");
 });
 
 test("gates read what Kevin said, never what Jarhead said: named folders and named hosts", async (t) => {

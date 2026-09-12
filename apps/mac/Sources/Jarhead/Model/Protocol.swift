@@ -70,6 +70,10 @@ public struct DelegationTimings: Codable, Equatable {
     public var firstThinkingAt: Double?
     public var firstCommentaryAt: Double?
     public var doneAt: Double?
+    /// Wall clock when Kevin's triggering utterance ended (the transcript's end placed on the session's start clock); absent when the session start is unknown.
+    public var speechEndAt: Double?
+    /// Wall clock of the first acting tool (click, type, key, scroll, open_app, applescript, run_shell, a file write, a browser action) that returned ok.
+    public var firstActionAt: Double?
 }
 
 public struct Delegation: Codable, Identifiable, Equatable {

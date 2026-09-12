@@ -91,8 +91,22 @@ export class Transcript {
     return closed;
   }
 
+  /**
+   * Close every open utterance now (a new one is starting). Each item closed here
+   * is emitted as `final` exactly as `settle` would: the engine's ledger and its
+   * `utterance` event hang on that emission, and a command Jarhead answers within
+   * the merge gap used to be closed here silently and never reach the ledger —
+   * 4 of 51 delegations had their triggering utterance on record.
+   */
   finalizeOpen(): void {
-    this.items = this.items.map((i) => (i.final ? i : { ...i, final: true }));
+    const closed: TranscriptItem[] = [];
+    this.items = this.items.map((i) => {
+      if (i.final) return i;
+      const f = { ...i, final: true };
+      closed.push(f);
+      return f;
+    });
+    for (const f of closed) this.emit(f, "final");
   }
 
   all(): readonly TranscriptItem[] {

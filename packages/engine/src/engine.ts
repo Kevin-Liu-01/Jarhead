@@ -151,6 +151,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private readonly firedReflexes: FiredReflexes;
   /** The on-device ear: partials matched against the grammar, dictation. */
   private readonly earReflexes: EarReflexes;
+  /** Wall clock of the last output frame that was audible (RMS above `AUDIBLE_OUTPUT_LEVEL`); the ear's speaking hold reads this, not every frame. */
+  private lastAudibleOutputAt = 0;
   /**
    * Kevin pressed pause: the Live session is closed (the meter stops) and the
    * conversation is held here — transcript, marks, brain and hands stay warm —
@@ -262,6 +264,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       suppressed: () => this.earHeld(),
       ...(opts.earStableMs !== undefined ? { stableMs: opts.earStableMs } : {}),
       ...(opts.earCarefulMs !== undefined ? { carefulMs: opts.earCarefulMs } : {}),
+    });
+    // The ear's "the voice is speaking" hold reads audible output, not output frames:
+    // `audio` is emitted per ungated frame after `outputLevel` is set (see the session
+    // wiring), and the API streams silence as frames too.
+    this.on("audio", () => {
+      if (this.outputLevel >= Engine.AUDIBLE_OUTPUT_LEVEL) this.lastAudibleOutputAt = this.now();
     });
   }
 
@@ -1264,6 +1272,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       live,
       transcript: this.transcript,
       brain: this.brainProxy,
+      // Kevin hears the first acting tool as it lands ("clicking the search bar"), not
+      // a narration generation before it: the model's first output is the tool call.
+      voiceFirstTool: true,
       confirmations: this.confirmations,
       ledger: this.ledger,
       now: this.now,
@@ -1296,6 +1307,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : undefined),
       // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
       onStop: (reason) => void this.interrupt(reason, "said"),
+      // The session timeline's zero on the wall clock: the triggering utterance's end becomes timings.speechEndAt.
+      sessionStartedAt: () => this.sessionStartedAt,
     });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
@@ -1929,8 +1942,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   // match runs through the same gated hands as a brain's tool call and is
   // remembered so Live's delegation for the same words is finished as done.
 
-  /** On-device partial/final transcript from the app's ear (the reflex path). */
+  /**
+   * On-device partial/final transcript from the app's ear (the reflex path). A
+   * negative `segment` is not words: it is the app's ear reporting its own state
+   * ("on (listening)", "off: Speech Recognition not decided", "ear: on-device model
+   * missing") — the app's NSLog lines are not kept by the unified log on this Mac, so
+   * this is the one place the ear's health is visible in production (daemon.log).
+   */
   ear(text: string, isFinal: boolean, segment: number, at: number): void {
+    if (segment < 0) {
+      log.info(`ear (app): ${text.slice(0, 200)}`);
+      return;
+    }
     if (!this.live) return;
     log.debug(`ear ${isFinal ? "final" : "partial"} #${segment} @${at}: ${text.slice(0, 80)}`);
     this.earReflexes.hear(text, isFinal, segment, at);
@@ -1941,6 +1964,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     return this.live !== undefined && !this.paused && !this.muted && this.settings.reflexes !== false;
   }
 
+  /** Output frames at or above this RMS (`rms()`'s 0–1 scale) are Jarhead audibly speaking; the silence the API streams between sentences is ~0. */
+  static readonly AUDIBLE_OUTPUT_LEVEL = 0.02;
+
   /**
    * Why the ear must hold still right now, or undefined. While the voice is audible
    * the recogniser may be hearing Jarhead's own words back through the microphone
@@ -1949,11 +1975,20 @@ export class Engine extends EventEmitter<EngineEvents> {
    * brain task runs, a scroll under its hands would move what it just looked at.
    * The words heard meanwhile are consumed by the ear, not queued; "stop" is not
    * held (it is what Kevin says over Jarhead's voice).
+   *
+   * "Speaking" is judged on the output transcript and on *audible* frames, never on
+   * the mere arrival of output audio: GPT-Live-1 streams output audio continuously,
+   * silence included, so `lastOutputAudioAt` is always "just now" while a session is
+   * open — judged on it, the ear was held for the whole session and no partial ever
+   * reached the grammar (39 production delegations, zero ear reflexes).
    */
   private earHeld(): string | undefined {
     if (this.muted) return "muted";
     if (this.delegator?.active) return "a task is running";
-    if (!this.outputGated && (this.now() - this.lastOutputSpeechAt < Engine.SPEAKING_WINDOW_MS || this.now() - this.lastOutputAudioAt < Engine.SPEAKING_WINDOW_MS)) return "the voice is speaking";
+    const now = this.now();
+    const speaking = now - this.lastOutputSpeechAt < Engine.SPEAKING_WINDOW_MS;
+    const audible = now - this.lastAudibleOutputAt < Engine.SPEAKING_WINDOW_MS && now - this.lastOutputAudioAt < Engine.SPEAKING_WINDOW_MS;
+    if (!this.outputGated && (speaking || audible)) return "the voice is speaking";
     return undefined;
   }
 
@@ -2029,8 +2064,14 @@ export class Engine extends EventEmitter<EngineEvents> {
         const outcome = await this.reflexRunner.run(reflex);
         if (outcome.result.kind === "needs-confirmation") {
           // The runner recorded a question nobody will relay; the model path asks properly.
-          if (this.confirmations.pending?.id === outcome.result.pendingId) this.confirmations.clear();
-          log.info(`ear reflex ${reflex.label} dropped: the policy wants a yes (${outcome.result.question.slice(0, 80)})`);
+          // Unless Live's delegation for the same words joined this very run (`shared`): it
+          // got the same outcome and relays the question, so the pending must stay for the yes.
+          if (outcome.shared) {
+            log.info(`ear reflex ${reflex.label} asks (${outcome.result.question.slice(0, 80)}); the delegation that joined it relays the question, the pending stays`);
+          } else if (this.confirmations.pending?.id === outcome.result.pendingId) {
+            this.confirmations.clear();
+          }
+          if (!outcome.shared) log.info(`ear reflex ${reflex.label} dropped: the policy wants a yes (${outcome.result.question.slice(0, 80)})`);
           return { ...outcome, ok: false, dropped: "needs confirmation" };
         }
         if (outcome.result.kind === "error" && /^(refused|not a reflex)/.test(outcome.result.message)) {

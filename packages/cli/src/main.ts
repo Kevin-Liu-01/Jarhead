@@ -5,9 +5,10 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient } from "@jarhead/daemon";
-import type { Delegation, EngineEvent, PermissionInfo, TranscriptItem } from "@jarhead/protocol";
+import type { Delegation, Effort, EngineEvent, PermissionInfo, TranscriptItem } from "@jarhead/protocol";
 import { render, runChecks, summarizePermissions } from "./doctor.ts";
 import { bench } from "./bench.ts";
+import { benchBrain } from "./bench-brain.ts";
 
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
@@ -22,20 +23,28 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <wake|sleep|mute|unmute|stop|pause|resume>   send a command to the running daemon
   pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
+  pnpm jarhead bench --brain          the five representative commands on the REAL brain (Codex here) with a stand-in Live and canned hands:
+                                      delegation → first thinking / first tool / first action / done, model steps, tool calls, rollovers,
+                                      bootstrap calls (docs/LATENCY.md). Nothing on the Mac is touched; the turns cost Kevin's ChatGPT plan.
 
 flags
   --speak        (probe) also play the voice through ffplay
   --timeout N    (probe) seconds to wait after the utterance (default 25)
-  --runs N       (bench) samples per metric (default 5)
+  --runs N       (bench) samples per metric (default 5); (bench --brain) runs per command on the brain path (default 2)
   --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on Kevin's login)
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
-  --json         (bench) print the table as JSON
+  --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort) — one flag for an A/B
+  --no-reflex    (bench --brain) skip the reflexes-on phase: brain path only
+  --allow-api-spend  (bench --brain) run even when Codex is not signed in — the auto brain then costs REAL API dollars; off by default the bench refuses
+  --only a,b     (bench --brain) restrict to these command ids (wiki-search, open-safari, whats-on-screen, click-search-type, scroll-down)
+  --out FILE     (bench --brain) also write the JSON report to FILE
+  --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -312,6 +321,14 @@ try {
       await sendCommand({ type: "say-text", text: rest.join(" ") });
       break;
     case "bench":
+      if (flags.has("--brain")) {
+        // The representative-command benchmark on the real brain (bench-brain.ts): its own options, its own report.
+        const effort = flagValue("effort");
+        if (effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error(`--effort must be low, medium, high, xhigh or max (got ${effort})`);
+        const only = flagValue("only")?.split(",").map((s) => s.trim()).filter(Boolean);
+        if (!(await benchBrain({ runs: Math.max(1, Number(flagValue("runs") ?? 2) || 2), ...(effort ? { effort: effort as Effort } : {}), noReflex: flags.has("--no-reflex"), allowApiSpend: flags.has("--allow-api-spend"), json: flags.has("--json"), ...(flagValue("out") ? { out: flagValue("out") } : {}), ...(only?.length ? { only } : {}) })).ok) process.exit(1);
+        break;
+      }
       if (!(await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json"), gate: !flags.has("--no-gate") })).ok) process.exit(1);
       break;
     case "cmd": {

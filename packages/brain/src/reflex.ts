@@ -1,5 +1,5 @@
 import { HANDS_OFF_APPS, classifyAction, logger } from "@jarhead/core";
-import type { ToolResult } from "@jarhead/hands";
+import { ACTING_MEMBERS, type ToolResult } from "@jarhead/hands";
 import type { ToolRunner } from "./runner.ts";
 
 /**
@@ -44,13 +44,28 @@ export type ReflexKind =
   | "double_click"
   | "circle"
   | "dictate_start"
-  | "dictate_stop";
+  | "dictate_stop"
+  | "search";
+
+/** One tool call of an ordered batch, and what it did once it ran ("focused Safari", "clicked the search field"). */
+export interface ReflexStep {
+  readonly tool: string;
+  readonly input: Record<string, unknown>;
+  readonly did: string;
+}
 
 export interface Reflex {
   readonly kind: ReflexKind;
   /** The tool to run and its input. Engine-level kinds (circle, dictation) name a pseudo tool the engine handles itself. */
   readonly tool: string;
   readonly input: Record<string, unknown>;
+  /**
+   * An ordered batch instead of one call: run in order through the runner, stopping
+   * at the first needs-confirmation, refusal or error, and the outcome says how far
+   * it got. A kind whose steps depend on what is in front (search) plans them at run
+   * time; `tool` / `input` then only name the plan.
+   */
+  readonly steps?: readonly ReflexStep[];
   /** What the voice says once it ran ("scrolled down."). */
   readonly said: string;
   /** For the ledger and the log: the command as understood. */
@@ -128,6 +143,31 @@ const DICTATE_STOP = /^(?:stop|end|finish) (?:dictating|dictation)$|^(?:end|exit
 /** At most four words: a control's name, not a description of where to find it. */
 const CLICK = /^(?:click|press|tap|hit)(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon))?$/;
 const DOUBLE_CLICK = /^double[- ]?click(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon|file|folder))?$/;
+/**
+ * "search <where> for <what>" / "search for <what> in|on <where>" / "look up <what>
+ * in|on <where>" / "find <what> in|on <where>". <where> is an app, a site the front
+ * browser tab shows, or "this page" / "here"; <what> is free text (≤ 80 chars, one
+ * line). Case-insensitive so `<what>` keeps Kevin's own capitalisation from Live's
+ * transcript (the ear's is lowercase anyway). Form A splits at the FIRST " for " (the
+ * where comes first and is short); form B takes the LAST " in " / " on " (the what
+ * may itself say "coffee in seattle").
+ */
+const SEARCH_WHERE = `((?:the |my )?[a-z0-9][a-z0-9.'-]*(?: [a-z0-9.'-]+){0,2})`;
+const SEARCH_A = new RegExp(`^search (?:in |on |through |inside |within )?${SEARCH_WHERE} for (.+)$`, "i");
+const SEARCH_B = new RegExp(`^(?:search for|look ?up|find|search) (.+) (?:in|on) ${SEARCH_WHERE}$`, "i");
+/** "this page" / "here": a find-in-page in whatever is in front. */
+const SEARCH_HERE = /^(?:this|the|the current) (?:page|tab|window|document|doc|file)$|^here$/;
+/** A query that is a stand-in for something Kevin is looking at, not words to type. */
+const SEARCH_NOT_A_QUERY = /^(?:it|that|this|those|these|them|him|her|the thing|the same|the same thing|what i (?:said|copied|mentioned))$/i;
+/**
+ * A query that carries a second instruction ("design and then open the first result",
+ * "design, then read me the headline"): the words after the marker are a task, not
+ * text to type, and a reflex that typed them all would drop the task silently (the
+ * delegation reconciles as "already done"). The whole sentence is the brain's.
+ */
+const SEARCH_COMPOUND = /(?:^|[\s,;])(?:and then|then|after that|afterwards|next|and (?:open|read|click|tell|show|copy|paste|scroll|press|type|send|close|play|take|go|find|search|select|pick|summari[sz]e|give|get|put|make|check|see)\b)/i;
+/** "find out what time it is …": "out" is not a word to type. */
+const SEARCH_FIND_OUT = /^out\b/i;
 /** "type the address from the email" describes something to look up; only literal words are typed by reflex. */
 const DESCRIBES = /^(?:the|a|an|my|that|this|it|what|whatever|something|everything|his|her|their|our|your)\b/;
 /** Pronouns and positions need a look; key names are keys, not controls ("press enter twice" is the brain's). */
@@ -238,6 +278,10 @@ export function parseReflex(utterance: string): Reflex | undefined {
     if (!target || NOT_A_LABEL.test(target) || !isLabel(target, t)) return undefined;
     return { kind: "double_click", tool: "click_element", input: { name: target, count: 2 }, said: `double-clicked ${target}.`, label: `double-click ${target}`, prefire: false, idempotent: false };
   }
+  {
+    const search = parseSearch(utterance, t);
+    if (search) return search;
+  }
   if ((m = OPEN.exec(t))) {
     const raw = m[1] ?? "";
     const goTo = /^go to /.test(t);
@@ -269,6 +313,176 @@ function isLabel(target: string, utterance: string): boolean {
   if (!STANDS_IN.test(target)) return true;
   if (target.split(" ").length > 1) return false;
   return !new RegExp(`\\bthe ${target}$`).test(utterance);
+}
+
+// ------------------------------------------------------------------- search
+
+/**
+ * "search the wiki for design": a multi-step reflex. `where` is normalised (no
+ * leading "the" / "my", lowercase); `what` keeps Kevin's case from the raw words.
+ * The steps are planned when it runs (what is in front decides): see `ReflexRunner`.
+ */
+function parseSearch(utterance: string, normalized: string): Reflex | undefined {
+  if (!/^(?:search|look ?up|find)\b/.test(normalized)) return undefined;
+  // The same stripping `normalizeUtterance` does, case kept, so `what` is typed as Kevin said it.
+  const raw = utterance
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(WAKE, "")
+    .replace(POLITE_HEAD, "")
+    .replace(/[.!?,;:]+$/g, "")
+    .replace(POLITE_TAIL, "")
+    .replace(/[.!?,;:]+$/g, "")
+    .trim();
+  let where: string;
+  let what: string;
+  let formB = false;
+  let m = SEARCH_A.exec(raw);
+  if (m) {
+    where = m[1] ?? "";
+    what = m[2] ?? "";
+  } else if ((m = SEARCH_B.exec(raw))) {
+    what = m[1] ?? "";
+    where = m[2] ?? "";
+    formB = true;
+  } else return undefined;
+  const whereSaid = where.trim().toLowerCase().replace(/\s+/g, " ");
+  where = whereSaid.replace(/^(?:the|my) /, "");
+  what = what.trim();
+  // Quoted words are words: 'search for "the best coffee in seattle" on google' is literal.
+  const quoted = /^["'“‘].+["'”’]$/.test(what);
+  what = what.replace(/^["'“‘]+|["'”’]+$/g, "").trim();
+  if (!where || !what || what.length > 80 || /[\r\n]/.test(what) || SEARCH_NOT_A_QUERY.test(what)) return undefined;
+  // A second instruction after the query is a task for the brain, never text to type.
+  if (!quoted && SEARCH_COMPOUND.test(what)) return undefined;
+  // "search for X in it" / "find X in that": a place Kevin is looking at, not a name.
+  if (/^(?:it|that|this|them|there)$/.test(where)) return undefined;
+  const here = SEARCH_HERE.test(whereSaid) || SEARCH_HERE.test(where);
+  if (formB && !quoted) {
+    // "find <what> in <where>" is also how people describe things ("find the bug in the code",
+    // "find out what time it is in tokyo", "search for a new job in seattle"): the place must be
+    // one the reflex knows by name, and the words must be words to type, not a description.
+    if (!here && !(where in SEARCH_APPS) && !(where in SEARCH_SITES)) return undefined;
+    if (DESCRIBES.test(what.toLowerCase()) || SEARCH_FIND_OUT.test(what)) return undefined;
+  }
+  return {
+    kind: "search",
+    tool: "search",
+    input: { where, what, here },
+    said: `searched ${here ? "this page" : whereSaid} for "${what.slice(0, 60)}".`,
+    label: `search ${here ? "this page" : where} for ${what.slice(0, 40)}`,
+    prefire: false,
+    idempotent: false,
+  };
+}
+
+/** A keyboard shortcut that puts the cursor in an app's or a site's search field; `submit` says whether Return runs the search or would open the first result. */
+export interface SearchShortcut {
+  readonly combo: string;
+  readonly submit: boolean;
+  /** Where the words land ("the address bar"), for the report. */
+  readonly what: string;
+}
+
+/** What Kevin calls an app → its name as macOS shows it (frontmost / focus_app compare on it). */
+export const SEARCH_APPS: Readonly<Record<string, string>> = {
+  safari: "Safari",
+  chrome: "Google Chrome",
+  "google chrome": "Google Chrome",
+  arc: "Arc",
+  firefox: "Firefox",
+  brave: "Brave Browser",
+  edge: "Microsoft Edge",
+  finder: "Finder",
+  notion: "Notion",
+  slack: "Slack",
+  cursor: "Cursor",
+  code: "Visual Studio Code",
+  vscode: "Visual Studio Code",
+  "vs code": "Visual Studio Code",
+  "visual studio code": "Visual Studio Code",
+  xcode: "Xcode",
+  notes: "Notes",
+  mail: "Mail",
+  messages: "Messages",
+  spotify: "Spotify",
+  terminal: "Terminal",
+  discord: "Discord",
+  linear: "Linear",
+  figma: "Figma",
+  obsidian: "Obsidian",
+  calendar: "Calendar",
+  reminders: "Reminders",
+  photos: "Photos",
+  music: "Music",
+  "app store": "App Store",
+};
+
+/**
+ * Site words → what the browser window's title carries when the front tab is on that
+ * site. A search reflex never navigates: a site the front tab is not on is the brain's.
+ */
+export const SEARCH_SITES: Readonly<Record<string, readonly string[]>> = {
+  wiki: ["wiki"],
+  google: ["google"],
+  gmail: ["gmail"],
+  youtube: ["youtube"],
+  github: ["github"],
+  twitter: ["twitter", "/ x"],
+  x: ["/ x", "x.com"],
+  reddit: ["reddit"],
+  "hacker news": ["hacker news"],
+  wikipedia: ["wikipedia"],
+  amazon: ["amazon"],
+  netflix: ["netflix"],
+  chatgpt: ["chatgpt"],
+  claude: ["claude"],
+  linkedin: ["linkedin"],
+  vercel: ["vercel"],
+  notion: ["notion"],
+  slack: ["slack"],
+  linear: ["linear"],
+  figma: ["figma"],
+  discord: ["discord"],
+  spotify: ["spotify"],
+  "google docs": ["google docs"],
+  "google drive": ["google drive"],
+  "stack overflow": ["stack overflow"],
+  npm: ["npm"],
+  maps: ["google maps"],
+  "google maps": ["google maps"],
+};
+
+/** The shortcut that focuses an app's own search, by the app's lowercase name; browsers get the address bar. */
+export const APP_SEARCH_SHORTCUTS: Readonly<Record<string, SearchShortcut>> = {
+  finder: { combo: "cmd+f", submit: true, what: "the Finder search field" },
+  notion: { combo: "cmd+k", submit: false, what: "Notion's quick find" },
+  slack: { combo: "cmd+g", submit: true, what: "Slack's search" },
+  "visual studio code": { combo: "cmd+shift+f", submit: false, what: "the search across files" },
+  cursor: { combo: "cmd+shift+f", submit: false, what: "the search across files" },
+  xcode: { combo: "cmd+shift+f", submit: true, what: "find in workspace" },
+  notes: { combo: "cmd+alt+f", submit: false, what: "the Notes search field" },
+  mail: { combo: "cmd+alt+f", submit: true, what: "the Mail search field" },
+  terminal: { combo: "cmd+f", submit: true, what: "find" },
+  obsidian: { combo: "cmd+shift+f", submit: false, what: "the search in all files" },
+  linear: { combo: "cmd+k", submit: false, what: "Linear's command palette" },
+  spotify: { combo: "cmd+k", submit: false, what: "Spotify's search" },
+};
+const ADDRESS_BAR: SearchShortcut = { combo: "cmd+l", submit: true, what: "the address bar" };
+/** On these sites a bare "/" focuses the search box. */
+export const SITE_SEARCH_SHORTCUTS: Readonly<Record<string, SearchShortcut>> = {
+  github: { combo: "/", submit: true, what: "GitHub's search" },
+  google: { combo: "/", submit: true, what: "Google's search box" },
+  youtube: { combo: "/", submit: true, what: "YouTube's search" },
+  twitter: { combo: "/", submit: true, what: "the search on X" },
+  x: { combo: "/", submit: true, what: "the search on X" },
+};
+export const FIND_IN_PAGE: SearchShortcut = { combo: "cmd+f", submit: true, what: "find in page" };
+
+/** The window title names the site (whole word, case folded): "kevin/jarhead · GitHub", "cats - YouTube", "Home / X". */
+export function titleMentions(title: string, words: readonly string[]): boolean {
+  const t = ` ${title.toLowerCase().replace(/\s+/g, " ")} `;
+  return words.some((w) => new RegExp(`(?:^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?:[^a-z0-9]|$)`).test(t));
 }
 
 /**
@@ -336,6 +550,8 @@ export interface FiredReflex {
   readonly dispatchedAt: number;
   doneAt?: number;
   ok?: boolean;
+  /** What a multi-step reflex did, in words ("typed “design” into the search field of Safari and pressed Return"). */
+  did?: string;
   /** Claimed by a delegation or a transcript utterance already; a second claimant is not "already done". */
   claimed?: boolean;
 }
@@ -452,8 +668,24 @@ export interface ReflexOutcome {
   readonly ms: number;
   /** True when the reflex did what it said; false means the brain should take the task. */
   readonly ok: boolean;
-  /** Wall clock when the tool was issued to the runner. */
+  /** Wall clock when the tool was issued to the runner (a batch: its first acting step). */
   readonly dispatchedAt?: number;
+  /**
+   * A batch's account of itself: what was done ("focused Notion; clicked the search
+   * field; typed “design”; pressed Return"), or how far it got and where it stopped
+   * ("did 2 steps (…); stopped at type: refused: …"). Reconciliation carries it so the
+   * brain's delegation for the same words is finished without redoing any of it.
+   */
+  readonly did?: string;
+  /** Steps run / steps planned, for a batch. */
+  readonly progress?: { readonly done: number; readonly total: number };
+  /**
+   * Two callers got this outcome: a run of the same words joined the one in flight
+   * (the ear's batch and Live's delegation for the same sentence). A question this
+   * outcome asks belongs to both — the ear must not clear the pending confirmation
+   * it would otherwise drop, because the delegation is about to relay it.
+   */
+  readonly shared?: boolean;
 }
 
 export interface ReflexRunnerOptions {
@@ -475,6 +707,29 @@ export const BROWSER_APPS = /^(google chrome|google chrome canary|chromium|brave
  */
 export class ReflexRunner {
   private readonly now: () => number;
+  /**
+   * Multi-step reflexes in flight, by label. The ear fires a search ~450 ms after the
+   * words and its batch runs for a few hundred ms; Live's delegation for the same words
+   * can land in the middle and would run the batch again (typing the query twice).
+   * A second run of the same label while one is in flight joins it.
+   */
+  private readonly inflight = new Map<string, { readonly promise: Promise<ReflexOutcome>; joined: boolean }>();
+  /**
+   * Multi-step reflexes that failed a moment ago, by label: the slower source asks for
+   * the same words within seconds and gets the same answer — with what was found — at
+   * once, instead of a second walk of the same window and the same refusal.
+   */
+  private readonly failures = new Map<string, { at: number; outcome: ReflexOutcome }>();
+  static readonly FAILURE_HOLD_MS = 4000;
+
+  /**
+   * The key the join and the failure memory use. Case folded: the ear's partials are
+   * lowercase and Live's transcript capitalises ("Design", "GitHub"), and the two must
+   * meet on the same key or the query is typed twice.
+   */
+  private static batchKey(reflex: Reflex): string {
+    return `${reflex.kind}:${reflex.label.toLowerCase()}`;
+  }
 
   constructor(private readonly opts: ReflexRunnerOptions) {
     this.now = opts.now ?? Date.now;
@@ -489,7 +744,53 @@ export class ReflexRunner {
     return (await this.opts.frontmostApp?.().catch(() => "")) ?? "";
   }
 
+  /** The frontmost app and its front window's title, through the runner (one helper round trip). */
+  private async frontmostWindow(): Promise<{ app: string; title: string }> {
+    try {
+      const r = await this.opts.runner.run("frontmost_app", {});
+      if (r.result.kind === "text") {
+        const f = JSON.parse(r.result.text) as { app?: string; window?: { title?: string } | null };
+        return { app: f.app ?? "", title: f.window?.title ?? "" };
+      }
+    } catch {
+      // fall through to the name alone
+    }
+    return { app: await this.frontmost(), title: "" };
+  }
+
   async run(reflex: Reflex): Promise<ReflexOutcome> {
+    if (reflex.kind === "search" || reflex.steps) {
+      const key = ReflexRunner.batchKey(reflex);
+      const running = this.inflight.get(key);
+      if (running) {
+        log.info(`reflex "${reflex.label}" is already in flight; joining it instead of running it again`);
+        running.joined = true;
+        return running.promise;
+      }
+      const failed = this.failures.get(key);
+      if (failed && this.now() - failed.at < ReflexRunner.FAILURE_HOLD_MS && failed.outcome.result.kind === "error") {
+        const message = `${failed.outcome.result.message} (tried ${this.now() - failed.at} ms ago on the ear's words; not retried)`;
+        return { ...failed.outcome, ms: 0, result: { kind: "error", message } };
+      }
+      const entry = { promise: undefined as unknown as Promise<ReflexOutcome>, joined: false };
+      // The wrapper runs when the batch settles — after any join that happened while it ran —
+      // so both callers see `shared` when there were two of them.
+      entry.promise = (reflex.kind === "search" ? this.runSearch(reflex) : this.runBatch(reflex, reflex.steps ?? [])).then((outcome) => {
+        if (!outcome.ok) this.failures.set(key, { at: this.now(), outcome });
+        else this.failures.delete(key);
+        return entry.joined ? { ...outcome, shared: true } : outcome;
+      });
+      this.inflight.set(key, entry);
+      try {
+        return await entry.promise;
+      } finally {
+        if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      }
+    }
+    return this.runOne(reflex);
+  }
+
+  private async runOne(reflex: Reflex): Promise<ReflexOutcome> {
     const notReflex = (why: string): ReflexOutcome => {
       log.info(`reflex "${reflex.label}" left to the brain: ${why}`);
       return { reflex, result: { kind: "error", message: `not a reflex: ${why}` }, ms: 0, ok: false };
@@ -521,5 +822,281 @@ export class ReflexRunner {
     const ok = r.kind !== "error";
     if (!ok) log.info(`reflex "${reflex.label}" failed (${r.message}); the brain takes it`);
     return { reflex, result: r, ms: outcome.ms, ok, dispatchedAt };
+  }
+
+  // ------------------------------------------------------------- batches
+
+  /**
+   * An ordered batch through the runner: each step's own gate applies (policy,
+   * confirmation handshake, ledger). It stops at the first step that did not go
+   * through — a `needs-confirmation` (the question is the answer, as for a single
+   * step: `ok` stays true and the delegator relays it, the ear drops it), a refusal or
+   * an error (`ok: false`, the brain takes the request) — and `did` says how far it got.
+   */
+  private async runBatch(reflex: Reflex, steps: readonly ReflexStep[]): Promise<ReflexOutcome> {
+    const b = new Batch(reflex, this.opts.runner, this.now, steps.length);
+    for (const step of steps) {
+      const stopped = await b.step(step);
+      if (stopped) return stopped;
+    }
+    return b.done();
+  }
+
+  /**
+   * "search <where> for <what>", planned from what is in front:
+   *   1. <where> names an app: `focus_app` it unless it is in front already. A site: the
+   *      front browser tab must be on it (the window title says so), else the brain
+   *      navigates — never a blind navigation from here. "this page" / "here": find in
+   *      page in whatever is in front.
+   *   2. the search field: `click_element {name: "search", role: "field"}` over the
+   *      front window's accessibility tree (a text field whose label, description or
+   *      placeholder says "search"); when there is none, the app's or site's standard
+   *      shortcut (address bar ⌘L, Finder ⌘F, GitHub "/", Notion ⌘K …).
+   *   3. select all, type <what>, Return (not for a palette that opens the first hit).
+   * Every step is gated as a brain's would be: a password field refuses `type`, a
+   * hands-off app asks — and the batch stops there and says so.
+   */
+  private async runSearch(reflex: Reflex): Promise<ReflexOutcome> {
+    const where = String(reflex.input["where"] ?? "");
+    const what = String(reflex.input["what"] ?? "");
+    const here = reflex.input["here"] === true;
+    const notReflex = (why: string): ReflexOutcome => {
+      log.info(`reflex "${reflex.label}" left to the brain: ${why}`);
+      return { reflex, result: { kind: "error", message: `not a reflex: ${why}` }, ms: 0, ok: false, did: `nothing done: ${why}` };
+    };
+    const front = await this.frontmostWindow();
+    if (!front.app) return notReflex("could not tell which app is in front");
+
+    let app = front.app;
+    let shortcut: SearchShortcut | undefined;
+    let tryField = true;
+    // A site's search field is on the page: a browser's own address bar (which always says
+    // "search") must not take the words — Google would get what the wiki should.
+    let fieldRole = "field";
+    // <where> is a site on the front tab: only the page's own field or the site's shortcut may
+    // take the words. The address bar is the browser's search, chosen only when <where> IS
+    // the browser ("search safari for …") — never as a fallback for a site.
+    let siteSearch = false;
+    const focus: ReflexStep[] = [];
+    let mustFront: string | undefined;
+    if (here) {
+      shortcut = FIND_IN_PAGE;
+      tryField = false;
+    } else {
+      const site = SEARCH_SITES[where];
+      const asApp = SEARCH_APPS[where] ?? (site ? undefined : appName(where));
+      const frontIsApp = asApp !== undefined && front.app.toLowerCase() === asApp.toLowerCase();
+      const inBrowser = BROWSER_APPS.test(front.app);
+      // In order: the app itself is in front; the front browser tab is on the site; the app
+      // (also a site: Notion, Slack, Linear …) is focused; a site the tab is not on, or named
+      // with no browser up, is the brain's — a search never navigates.
+      if (frontIsApp) {
+        app = asApp;
+      } else if (site && inBrowser && titleMentions(front.title, site)) {
+        shortcut = SITE_SEARCH_SHORTCUTS[where];
+        fieldRole = "pagefield";
+        siteSearch = true;
+      } else if (asApp) {
+        app = asApp;
+        mustFront = asApp;
+        // Activation lands a beat after the call; the tree and the type gate read the new front window then.
+        focus.push({ tool: "focus_app", input: { name: asApp }, did: `focused ${asApp}` }, { tool: "wait", input: { duration: 0.12 }, did: "waited for it" });
+      } else if (site && inBrowser) {
+        return notReflex(`${front.app}'s front tab ("${front.title.slice(0, 60)}") is not on ${where}; the brain navigates there first`);
+      } else if (site) {
+        return notReflex(`${where} is a site and ${front.app} is in front, not a browser; the brain opens it`);
+      } else {
+        return notReflex(`"${where}" is not an app or a site the reflex knows`);
+      }
+      if (!shortcut && !siteSearch) shortcut = BROWSER_APPS.test(app) ? ADDRESS_BAR : APP_SEARCH_SHORTCUTS[app.toLowerCase()];
+    }
+
+    const b = new Batch(reflex, this.opts.runner, this.now);
+    for (const step of focus) {
+      const stopped = await b.step(step);
+      if (stopped) return stopped;
+    }
+    if (mustFront) {
+      // `focus_app` returns as soon as activation is asked for, not when it lands. Every
+      // keystroke after this goes to whatever is in front, so the app must be seen there
+      // first — once more after a beat for a slow (Electron) app — or nothing is typed.
+      let now = await this.frontmostWindow();
+      if (now.app.toLowerCase() !== mustFront.toLowerCase()) {
+        const wait = await b.step({ tool: "wait", input: { duration: 0.1 }, did: "waited for it once more" });
+        if (wait) return wait;
+        now = await this.frontmostWindow();
+      }
+      if (now.app.toLowerCase() !== mustFront.toLowerCase()) return b.stop("focus_app", `${mustFront} did not come to the front (${now.app || "nothing"} is)`);
+    }
+    let landed = "";
+    let submit = true;
+    if (tryField) {
+      // The one text field on the front window that is about search; the toolset checks
+      // the app is in front and the point is the field before the click goes out. (The
+      // helper's default 250 ms walk budget bounds the look; the toolset does not pass a
+      // shorter one through.)
+      const field = await b.step({ tool: "click_element", input: { name: "search", role: fieldRole, app }, did: `clicked the search field of ${app}` }, { soft: true });
+      if (!field) landed = "the search field";
+      else if (field.result.kind === "needs-confirmation") return field;
+      else {
+        const why = field.result.kind === "error" ? field.result.message : field.result.kind;
+        // Only "the tree has no such field" falls to a shortcut. Anything else — the app is
+        // not in front, the field is covered, the policy refused — says the keys would land
+        // somewhere else, and the batch stops there.
+        if (!NO_SUCH_FIELD.test(why)) return b.stop("click_element", why);
+        if (!shortcut) return b.stop("click_element", `no search field on the front window of ${app} (${why.slice(0, 120)}) and no search shortcut known for ${siteSearch ? where : app}`);
+        log.info(`reflex "${reflex.label}": no search field by accessibility (${why.slice(0, 100)}); ${shortcut.combo} instead`);
+        b.note(`no search field on the front window of ${app} (${why.slice(0, 120)})`);
+      }
+    }
+    if (!landed && shortcut) {
+      if (shortcut.combo === "/") {
+        // "/" is a shortcut only while nothing takes text; with a field or a textarea focused
+        // (a comment draft) it is a character — and ⌘A + the words would replace the draft.
+        const before = await b.focused({ soft: true });
+        if (before.stopped) return before.stopped;
+        if (before.field && TEXT_INPUT_ROLE.test(before.field.role)) return b.stop("key", `a text input (${before.field.role}${before.field.title ? ` "${before.field.title.slice(0, 40)}"` : ""}) is focused in ${app}; "/" would be typed into it`);
+      }
+      const key = await b.step({ tool: "key", input: { text: shortcut.combo }, did: `pressed ${shortcut.combo} for ${shortcut.what}` });
+      if (key) return key;
+      const wait = await b.step({ tool: "wait", input: { duration: 0.15 }, did: "waited for the field" });
+      if (wait) return wait;
+      landed = shortcut.what;
+      submit = shortcut.submit;
+    }
+    // Before a key goes out: the focus must be in a text field of the app (a tool result, not
+    // a hope — the click or the shortcut may have moved nothing). One more look after a beat.
+    let f = await b.focused();
+    if (f.stopped) return f.stopped;
+    if (!f.field || !SEARCH_FIELD_ROLE.test(f.field.role) || (f.field.app && f.field.app.toLowerCase() !== app.toLowerCase())) {
+      const wait = await b.step({ tool: "wait", input: { duration: 0.1 }, did: "waited for the focus" });
+      if (wait) return wait;
+      f = await b.focused();
+      if (f.stopped) return f.stopped;
+    }
+    if (!f.field) return b.stop("read_focused_text", `nothing is focused after ${landed} in ${app}${f.error ? ` (${f.error.slice(0, 120)})` : ""}`);
+    if (f.field.app && f.field.app.toLowerCase() !== app.toLowerCase()) return b.stop("read_focused_text", `the focus is in ${f.field.app}, not ${app}`);
+    if (!SEARCH_FIELD_ROLE.test(f.field.role)) return b.stop("read_focused_text", `the focus after ${landed} is ${f.field.role}${f.field.title ? ` "${f.field.title.slice(0, 40)}"` : ""}, not a text field`);
+    const tail: ReflexStep[] = [
+      { tool: "key", input: { text: "cmd+a" }, did: "selected what was there" },
+      { tool: "type", input: { text: what }, did: `typed "${what.slice(0, 60)}"` },
+      ...(submit ? [{ tool: "key", input: { text: "Return" }, did: "pressed Return" }] : []),
+    ];
+    for (const step of tail) {
+      const stopped = await b.step(step);
+      if (stopped) return stopped;
+    }
+    const did = `typed "${what.slice(0, 60)}" into ${landed} of ${app}${submit ? " and pressed Return" : ""}`;
+    return b.done(did, `${did}.`);
+  }
+}
+
+/** `click_element`'s "nothing by that name" errors: the tree was searched and has no such field — a shortcut may still reach one. */
+const NO_SUCH_FIELD = /^no control named |^\d+ controls could be /;
+/** Roles words land in: focused, "/" is a character, and after a click or a shortcut the words go here. */
+const TEXT_INPUT_ROLE = /^AX(?:TextField|TextArea|ComboBox|SearchField)$/;
+/** Roles a search field has (a textarea is a draft, not a search). */
+const SEARCH_FIELD_ROLE = /^AX(?:TextField|SearchField|ComboBox)$/;
+
+/** What `read_focused_text` reported, as the batch reads it. */
+interface FocusedField {
+  readonly role: string;
+  readonly title?: string;
+  readonly app?: string;
+  readonly secure: boolean;
+}
+
+/** The running account of a batch: steps done, ms, the first acting step's issue time, and the stop. */
+class Batch {
+  private readonly dids: string[] = [];
+  private readonly notes: string[] = [];
+  private ms = 0;
+  private dispatchedAt: number | undefined;
+  private last: ToolResult = { kind: "text", text: "OK" };
+  private done_ = 0;
+
+  constructor(
+    private readonly reflex: Reflex,
+    private readonly runner: ToolRunner,
+    private readonly now: () => number,
+    private total = 0,
+  ) {}
+
+  /** Run one step. Returns the outcome that ends the batch when the step did not go through (`soft`: an error is reported to the caller, not final), else undefined. */
+  async step(step: ReflexStep, opts: { readonly soft?: boolean } = {}): Promise<ReflexOutcome | undefined> {
+    if (this.dispatchedAt === undefined && ACTING_MEMBERS.has(step.tool)) this.dispatchedAt = this.now();
+    this.total = Math.max(this.total, this.done_ + 1);
+    const out = await this.runner.run(step.tool, step.input);
+    this.ms += out.ms;
+    this.last = out.result;
+    if (out.result.kind === "needs-confirmation") {
+      // The runner recorded the handshake; the question is the whole answer (the delegator relays it, the ear drops it).
+      const did = `${this.soFar()}; stopped at ${step.tool}: needs a yes`;
+      log.info(`reflex "${this.reflex.label}" ${did}`);
+      return this.outcome(out.result, true, did);
+    }
+    if (out.result.kind === "error") {
+      if (opts.soft) return this.outcome(out.result, false, this.soFar());
+      return this.stop(step.tool, out.result.message);
+    }
+    this.dids.push(step.did);
+    this.done_++;
+    return undefined;
+  }
+
+  /** Something learned on the way that the brain should not learn again (a tree without the field). */
+  note(text: string): void {
+    this.notes.push(text);
+  }
+
+  /**
+   * Where the focus is, by `read_focused_text` through the runner (on the ledger like
+   * every step; not counted as one). A password field ends the batch here — not a
+   * single key may go into it. `soft`: "nothing focused" is an answer, not a stop.
+   */
+  async focused(opts: { readonly soft?: boolean } = {}): Promise<{ readonly field?: FocusedField; readonly stopped?: ReflexOutcome; readonly error?: string }> {
+    const out = await this.runner.run("read_focused_text", {});
+    this.ms += out.ms;
+    const r = out.result;
+    if (r.kind === "needs-confirmation") return { stopped: this.outcome(r, true, `${this.soFar()}; stopped at read_focused_text: needs a yes`) };
+    if (r.kind === "error") return opts.soft ? {} : { error: r.message };
+    if (r.kind !== "text") return {};
+    if (!r.text.startsWith("{")) {
+      if (/password field/.test(r.text)) return { stopped: this.stop("read_focused_text", "the focused field is a password field") };
+      return {};
+    }
+    try {
+      const f = JSON.parse(r.text) as { role?: unknown; title?: unknown; app?: unknown };
+      return { field: { role: typeof f.role === "string" ? f.role : "", ...(typeof f.title === "string" ? { title: f.title } : {}), ...(typeof f.app === "string" ? { app: f.app } : {}), secure: false } };
+    } catch {
+      return {};
+    }
+  }
+
+  /** The batch ends here, undone: what was done, where it stopped, why. */
+  stop(tool: string, why: string): ReflexOutcome {
+    const did = `${this.soFar()}; stopped at ${tool}: ${why}`;
+    log.info(`reflex "${this.reflex.label}" ${did}; the brain takes it`);
+    return this.outcome({ kind: "error", message: did }, false, did);
+  }
+
+  /**
+   * The batch ran through. `said` is what the voice says for it — built from where the
+   * words landed, so the spoken claim is the tool results' account, not the grammar's
+   * guess; the outcome's reflex carries it for the reconciliation.
+   */
+  done(did?: string, said?: string): ReflexOutcome {
+    const text = did ?? (this.dids.length ? this.dids.join(", ") : "nothing to do");
+    const outcome = this.outcome(this.last, true, this.notes.length ? `${text} (${this.notes.join("; ")})` : text);
+    return said ? { ...outcome, reflex: { ...this.reflex, said } } : outcome;
+  }
+
+  private soFar(): string {
+    const notes = this.notes.length ? `; ${this.notes.join("; ")}` : "";
+    return `did ${this.done_} step${this.done_ === 1 ? "" : "s"}${this.dids.length ? ` (${this.dids.join("; ")})` : ""}${notes}`;
+  }
+
+  private outcome(result: ToolResult, ok: boolean, did: string): ReflexOutcome {
+    return { reflex: this.reflex, result, ms: this.ms, ok, ...(this.dispatchedAt !== undefined ? { dispatchedAt: this.dispatchedAt } : {}), did, progress: { done: this.done_, total: Math.max(this.total, this.done_) } };
   }
 }

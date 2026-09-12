@@ -122,6 +122,7 @@ function promptParts(task: BrainTask, userName: string, regions: string): string
     `${userName} said: "${task.request}"`,
     regions,
     task.dialogue ? `Recent conversation:\n${task.dialogue}` : "",
+    task.notes?.length ? `Already done or found by Jarhead for this request (do not repeat it):\n${task.notes.map((n) => `- ${n}`).join("\n")}` : "",
   ].filter(Boolean);
 }
 

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ComputerToolset, ConfirmationState } from "../toolset.ts";
-import { Screen, fitScale } from "../screen.ts";
+import { QUICK_SHOT_BUDGET, Screen, fitScale, fitSize } from "../screen.ts";
 import type { NativeHands } from "../native.ts";
 
 class FakeHands implements NativeHands {
@@ -147,14 +147,32 @@ test("fitScale never upscales and respects both limits", () => {
   assert.throws(() => screen.toPoints(1, 1));
 });
 
-test("screenshot: quick: true asks the helper for the 1280-pixel budget and says so; the gate's probes go out together and only the ones the member needs", async () => {
+test("the quick budget: the pixel cap decides the shape — a 5120×1440 ultrawide comes out ~1977×556 (legible), 16:10 Retina displays ~1300×830, and a 2000 long edge never upscales", () => {
+  // Within a pixel of the helper's own rounding (it produced 1978×556 and 1304×843 on Kevin's displays).
+  const near = (got: { width: number; height: number }, w: number, h: number, what: string): void => {
+    assert.ok(Math.abs(got.width - w) <= 1 && Math.abs(got.height - h) <= 1, `${what}: ${got.width}x${got.height} ≈ ${w}x${h}`);
+  };
+  near(fitSize(5120, 1440, QUICK_SHOT_BUDGET), 1978, 556, "5120x1440 ultrawide");
+  near(fitSize(3456, 2234, QUICK_SHOT_BUDGET), 1304, 843, "14-inch Retina");
+  near(fitSize(2560, 1600, QUICK_SHOT_BUDGET), 1327, 829, "16:10");
+  assert.deepEqual(fitSize(1280, 800, QUICK_SHOT_BUDGET), { width: 1280, height: 800 }, "a small display is left alone");
+  for (const [w, h] of [[5120, 1440], [3456, 2234], [2560, 1600], [6016, 3384]] as const) {
+    const s = fitSize(w, h, QUICK_SHOT_BUDGET);
+    assert.ok(s.width * s.height <= QUICK_SHOT_BUDGET.maxPixels * 1.001, `${w}x${h} stays under the pixel cap`);
+    assert.ok(Math.max(s.width, s.height) <= QUICK_SHOT_BUDGET.maxLongEdge, `${w}x${h} stays under the long edge`);
+  }
+  assert.equal(QUICK_SHOT_BUDGET.maxLongEdge, 2000);
+  assert.equal(QUICK_SHOT_BUDGET.maxPixels, 1_100_000);
+});
+
+test("screenshot: quick: true asks the helper for the quick budget (2000 long edge, ~1.1 MP) and says so; the gate's probes go out together and only the ones the member needs", async () => {
   const hands = new FakeHands();
   const ts = new ComputerToolset({ hands });
   const quick = await ts.run("screenshot", { quick: true });
   assert.equal(quick.kind, "image");
   assert.match((quick as { note: string }).note, /\(quick budget\)$/);
   const req = hands.calls.find((c) => c.op === "screenshot")!.params;
-  assert.equal(req["maxLongEdge"], 1280);
+  assert.equal(req["maxLongEdge"], 2000);
   assert.equal(req["maxPixels"], 1_100_000);
   const full = hands.calls.filter((c) => c.op === "screenshot");
   await ts.run("screenshot", {});

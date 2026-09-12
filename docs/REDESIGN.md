@@ -966,6 +966,7 @@ utterances that need no reasoning, and the warm thread halves the rest.
   ms on a loaded Mac whatever the helper does; the < 120 ms figure holds for a
   quiet display on an idle machine only.
 - Contract wishes: `DelegationTimings.firstToolAt/firstActionAt/toolRoundTripMs/
+  (2026-09-12: `firstActionAt` and `speechEndAt` are in the contract now; `firstActionAt` stamps on the first acting tool that returned ok, overlays included; `speechEndAt` is the wall clock of the utterance that triggered the delegation — see §15 and docs/LATENCY.md.)
   eyesMs`, `Delegation.reflex`, a `stop` LedgerRow (today a stop with nothing
   running leaves only a log line), `ElementInfo.ancestors` from the helper for
   mark snapping.
@@ -1115,6 +1116,21 @@ lands on **confirm or refuse is dropped**: the runner had already recorded the
 must not arm a question nobody relayed) and the model path asks properly — "click
 Send" never sends by reflex. `Settings.reflexes` off → no reflexes anywhere (ear
 and delegation). Reflexes stay off when Live's own Responses backend is the brain.
+
+#### Added 2026-09-12: search (docs/LATENCY.md)
+
+`search (the) <where> for <what>` / `search for|look up|find <what> in|on <where>`
+is a multi-step reflex (`Reflex.steps[]`, run as one batch that stops at the first
+refusal, confirmation or error): focus the app if `<where>` names one and confirm
+it came to the front; find the search field (`click_element` name "search", role
+field or pagefield) else the app's/site's known shortcut (⌘L only when `<where>` is
+the browser itself, ⌘F, "/", ⌘K, ⌘G, ⌘⇧F…) after checking no text input already
+has focus; verify a text input has focus; ⌘A, type, Return. `<where>` must be a
+known app, a site the front tab's title names, or "here"; compound requests
+("search X for Y and then…") and describing phrases ("find the bug in the code")
+are not reflexes. No search field and no shortcut → hand over to the brain with
+the AX findings. Typed searches keep the 450 ms careful window; finals fire at
+once. Measured: partial → typed 452 ms median with fake hands.
 
 ### Reconciliation
 
@@ -1728,3 +1744,202 @@ to keep: a row's Request for Accessibility or Screen Recording is forwarded as
 never stacks the two), and the app's `PermissionsKit.meta` `required` set is the
 same seven as the engine's catalogue — pin it in a Swift test next to the
 engine's.
+
+## 15. Latency: the warm thread and the clean Codex home (2026-09-12)
+
+Kevin: "simple commands like 'search the wiki for design' produce a visible
+action within two to five seconds after I finish speaking", and later "tool
+uses should literally be sub 2 second". This section is builder I1's part of
+the answer: what the resident Codex thread cost, why, and what changed in
+`packages/brain/src/{codex-app-server,codex-config,codex}.ts`. Everything
+measured below was measured on this Mac on 2026-09-11/12 with the analysts'
+ledger pulls (39 delegations, then 51), `codex debug prompt-input` (renders the
+model-visible developer blocks with no model call), and a harness that drives
+the worktree's real `CodexAppServer` + `prepareCodexHome` against a fake tool
+socket (canned `frontmost_app`; nothing touches the Mac) — one small turn per
+data point, on Kevin's ChatGPT plan, n=1 unless said otherwise.
+
+### The baseline to beat (four analysts, real ledger + controlled runs)
+
+From delegation: first model thought **5.7 s** median; first model tool
+**11.3 s** median (p90 13.0); first visible action **12.5 s** median (p90 17.5,
+p95 19.8), zero delegations with an action inside 5 s; verified completion
+**22.1 s** median (p90 40.7); the spoken reply 0.7 s after done. Live
+acknowledges 0.2 s after delegation; speech end → delegation 0.4–1.6 s (n=4).
+Tool round trips 55 ms median (p95 211); app-server delegations spend 0.4–2.2 %
+of their wall time inside tools. Every model generation costs 3.4–4.1 s median
+(p90 5.9); a warm no-tool turn 1.8–3.1 s to first token, a cold one 4.3 s;
+effort low/medium/high made no difference on trivial turns. The multipliers
+that were Jarhead's to remove: a rollover bug that discarded the thread after
+most delegations; a prompt that carried Kevin's whole Codex-app preset; a
+narration generation before the first tool (4 of 10 controlled runs, +1.9–4.7
+s); and a fresh thread's first turn paying the MCP bridge start and the cold
+prompt.
+
+### The rollover bug
+
+`thread/tokenUsage/updated` carries two breakdowns: `total`, the thread's
+**cumulative bill** (every request's input and output added up: 19.4k → 38.8k
+→ 58.2k over three trivial turns), and `last`, the **last model request** —
+the context as it stands (23–33k in the same three turns). `needsFreshThread()`
+judged `total` against the 258 400 window at 0.7, so a delegation with a few
+tool calls (each a model request) pushed `total` past 181k and the thread, its
+prompt cache and its MCP bridge were thrown away: 6 rollovers in 18 warm
+delegations, 11 in the daemon.log, each costing the next task +1.3–5.7 s to its
+first tool (bridge restart 0.3–0.4 s, `userMessage` 1.25 s vs 0.65 s warm, the
+cache). The log line said "context rolled over … (? tokens used)".
+
+Now `TokenUsage.contextTokens` is `last.totalTokens` (else `last.inputTokens`)
+and `needsFreshThread()` judges that; usage notifications for another thread
+are ignored. The log reads `context 181k/258k (0.70) → fresh thread 01a0935d
+(after the turn that filled it, thread/start 940 ms)`. Proved in
+`codex-app-server.test.ts` with the analysts' sequence (bill 19.4k/38.8k/58.2k,
+context 23.1k/26.4k/33.0k: one thread; then context 181k: one rollover) and in
+`codex.test.ts` (three turns whose bill grows 25k each of a 100k window keep
+the thread and carry no history text).
+
+### Hiding the rollover that must happen
+
+When a turn fills the context, the replacement `thread/start` goes out with
+that turn's `turn/completed`, in the background — not at the next task. The
+brain awaits `settleThread()` before building a turn's input: it waits for a
+replacement still starting, interrupts a primer still running, and rolls over
+now if the context is full and nothing is on it. The `rollover` event sets
+`carryHistory`, so the next turn carries the last exchanges as text and a
+"yes" still knows what it confirms (`codex.test.ts`: the task rides `thread_2`
+with `Earlier in this session:` in its input; `codex-app-server.test.ts`: a turn
+arriving mid-`thread/start` waits for it rather than running on the full
+thread; `backgroundRollover: false` keeps the old at-the-next-turn behaviour).
+
+**Priming.** A thread's first turn pays the MCP servers' start (the bridge
+0.3–0.4 s; `turn/start` answers only after ~1–2 s) and the cold prompt. Every
+fresh thread — at brain start and after a rollover — now gets one tiny
+background turn (`PRIMER_TEXT`: "Reply with the single word ok. Do not call any
+tools."). A task that lands mid-primer interrupts it (`turn/interrupt`, ~35 ms)
+and goes out on the same thread. Measured with the harness (private home,
+Jarhead's base prompt, "What app is in front right now?", fake tools): first
+tool **3.24 s** and done in **5.9 s** on a primed thread vs **5.19 s / 8.7 s**
+on an unprimed one (n=1 each; the primer itself took 4.1 s off the task's
+path); the primed turn's request was 10 624 of 10 845 tokens cached. It costs
+one small model request per thread start (rare now: once per daemon start, once
+per ~180k of context). `JARHEAD_CODEX_PRIME=0` switches it off. Proved in both
+test files: primer first, a task after it not interrupted, a task during it
+interrupting it, `primerStats` counting.
+
+**Wake and sleep.** daemon.log's seven "warm app-server up after …" lines each
+follow a "daemon: listening" line: they are seven **daemon starts** ("stdin
+closed, shutting down" when the app quits; one SIGTERM), not wakes. Between
+them one thread served every wake — "brain warm at wake: yes (warm app-server,
+thread 01a0928f reused across tasks)" eleven times for one thread — and the
+engine's `sleep()` never touches the brain (`engine.stop()` does, at process
+end). Nothing to change in the brain: the thread already survives sleep/wake
+within the daemon's life. What ends it is the daemon dying with the app; the
+daemon outliving the app (apps/mac, `packages/daemon`) is the remaining lever.
+
+### The clean home
+
+Every fresh thread inherited Kevin's `~/.codex`: the skills catalog (`~8.4k`
+tokens: 260 of 718 skills listed, a budget warning per turn), his global
+`AGENTS.md` (`~0.7k` tokens: a "Start" list pointing at
+`~/Documents/GitHub/kevin-wiki`, which no longer exists → 13 bootstrap calls, 6
+no-such-file reads, `npm run status` 2.1 s; 22.5 s of the 40.8 s wiki-search
+delegation), the plugin marketplaces, the `notify` hook, multi-agent role text
+(`~0.7k`).
+
+`prepareCodexHome()` (codex-config.ts) builds and refreshes
+`<stateDir>/codex-home` at every brain start and both entry points run with
+`CODEX_HOME` there: `auth.json` a **symlink** to `~/.codex/auth.json` (one login,
+shared; a refresh writes through — Codex writes auth.json in place, truncate and
+write, so the link survives; should a future Codex rename a temp file over it,
+the next start moves the regular file aside as `auth.json.stray-<ts>` and
+re-links with a warning, never deleting the newer tokens); a `config.toml`
+Jarhead **writes** with only `model`, `model_reasoning_effort`, `service_tier`
+copied from Kevin's top-level lines (no plugins, marketplaces, notify, MCP
+servers); no `AGENTS.md`; an empty `skills/`. Falls back to `~/.codex` when
+there is no `auth.json` to link, or when `CODEX_HOME` already is the private
+home (linking auth.json onto itself would eat the login), with the reason
+logged; the app-server argv then still disables Kevin's `[mcp_servers.*]` as
+before. `codexEnv` still scrubs `SECRET_KEYS`; nothing under `~/.jarhead/env` is
+referenced. Kevin's `config.toml` gave Jarhead nothing but the model line: the
+computer-use, browser and REPL servers and 13 plugins were the reason it had to
+be neutralised, and `--disable apps` stays for the connector runtime.
+
+Skills are the one thing a private home does not remove: Codex discovers
+`~/.agents/skills` through `$HOME` and writes its bundled `.system` skills into
+the home. `skills.agents`, `skills.config` per directory, `features.skills`,
+`skip_host_skill_discovery` and `--disable multi_agent` did nothing (analyst,
+confirmed); **`skills.include_instructions=false`** removes the whole
+`<skills_instructions>` block. `codexPromptTrimArgs()` rides both argvs (exec's
+`--ignore-user-config` skips the config.toml, so `-c` is the only place):
+`skills.include_instructions=false`, `include_permissions_instructions=false`
+(shell escalation text, declined anyway), `include_collaboration_mode_instructions
+=false`, `features.plugins=false` (the `<recommended_plugins>` list).
+`codex debug prompt-input`, chars of developer text: Kevin's home **39 221**
+(`skills_instructions` 32 080, `multi_agent_role` 2 429, `recommended_plugins`
+4 441); private home 32 394; private home + trims **2 700** — the
+`<multi_agent_role>` and `<multi_agent_mode>` blocks, which follow the model's
+`multi_agent_version` and no flag removes. Kept on purpose:
+`<environment_context>` (~850 chars: cwd, sandbox, date, timezone).
+
+**Measured on the model** (harness, cold thread, "say ok", `last.inputTokens`):
+Kevin's home, Codex's base prompt **22 335** (the analysts' 21 589 plus I2's
+longer addendum); private home + trims, Codex's base **14 647**; private home +
+trims, Jarhead's base **10 747** — a 52 % smaller cold request.
+
+### Codex's preamble habit: Jarhead's base prompt
+
+`codex debug models` shows gpt-6-astra's base prompt (21 261 chars, ~5.6k
+tokens): "If the user's request requires calling tools, start with a message in
+the `commentary` channel" — the narration generation the analysts measured —
+plus patches, PR descriptions, plans, skills and plugins. Code mode's calling
+convention (`tools.mcp__jarhead__<name>` through `exec`) comes from the `exec`
+tool's own description, not from that text, so `thread/start.baseInstructions`
+now carries `codexBaseInstructions()` (codex.ts): the brain of a voice
+assistant, the first output for a tool-shaped request is the tool call, a
+message only as the final answer or the confirmation question, no coding task.
+Harness, "What app is in front right now?" on a cold private-home thread:
+Jarhead's base — `frontmost_app` called at 5.19 s with **no message before
+it**, final answer "Finder is in front, showing the Desktop." at 8.27 s, request
+10 819 tokens; Codex's base — the same call at 5.95 s, also without a preamble
+in this one sample, 14 732 tokens. So `baseInstructions` does not break tool
+calling and saves 3.9k tokens per request; whether it removes the 4-in-10
+narration cannot be claimed from n=1 — I2's addendum countermand stays in
+place, and `JARHEAD_CODEX_BASE=codex` restores Codex's own for an A/B.
+
+### Knobs, all opt-in, all in codex.ts
+
+- `JARHEAD_CODEX_SIMPLE_EFFORT=low`: `isSimpleRequest()` — a few words,
+  starting with an imperative verb, no question, or a confirmation answer —
+  runs at that effort, everything else at the brain's, set on **every** turn
+  because Codex keeps a turn's effort for the following turns; logged per turn
+  (`effort low (simple: "open Safari")`). Off unless set; I4's `bench
+  --effort` measures it. (The analysts saw no effort difference on trivial
+  turns, so the expectation is small.)
+- `JARHEAD_CODEX_SERVICE_TIER=priority`: `-c service_tier`. The catalog says
+  the model's default tier is `priority` ("Fast: 2x speed, increased usage")
+  while Kevin's config pins `default`; one A/B ("say ok", cold): priority
+  **5.87 s**, default **4.02 s** to first token — no gain at n=1, left off.
+- `JARHEAD_CODEX_PRIME=0`: no primer turns. `JARHEAD_CODEX_BASE=codex`: Codex's
+  base prompt.
+
+### Not changed, with numbers
+
+The MCP bridge is still `node + tsx`: the bridge answers `initialize` at
+299–308 ms warm (641 ms on a cold disk cache) under tsx and at 297–308 ms under
+Node 24's native `--experimental-transform-types` — the cost is loading the MCP
+SDK, zod and `@jarhead/*`, not the loader, and a prebuilt entry would need a
+build step the repo forbids. With the rollover fix and the primer the cost is
+rare and off the task's path.
+
+### What remains
+
+The model: 3.4–4.1 s per generation, and a tool-shaped request still needs one
+generation before its first call (3.2 s primed, 5.2 s cold, in the harness). A
+first turn on any thread still starts the MCP servers (hidden by the primer).
+The 711-token multi-agent block. The daemon dying with the app. And the prompt
+cache turned out to be keyed on the prefix across threads and processes (a
+fresh thread's first request showed 10 624 of 10 845 tokens cached when an
+earlier thread had the same developer instructions), so keeping the developer
+instructions byte-identical between threads is worth more than any per-thread
+warmth: a per-turn effort or tier is fine, a per-turn change to the standing
+orders is not.

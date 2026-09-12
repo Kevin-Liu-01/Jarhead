@@ -68,6 +68,22 @@ export interface DelegationTimings {
   readonly firstThinkingAt?: number;
   readonly firstCommentaryAt?: number;
   readonly doneAt?: number;
+  /**
+   * Wall clock when Kevin's triggering utterance ended: the last of his transcript
+   * items that ended before Live's delegation event, its session-timeline `endMs`
+   * placed on the clock of `session.started`. Absent when no utterance preceded the
+   * delegation or the session's start is not known. `delegatedAt − speechEndAt` is
+   * Live's own transcription and decision time; `firstActionAt − speechEndAt` is what
+   * Kevin waits for (docs/LATENCY.md).
+   */
+  readonly speechEndAt?: number;
+  /**
+   * Wall clock of the first acting tool that returned ok — a click, a type, a key, a
+   * scroll, an app opened or focused, an AppleScript, a shell command, a file write,
+   * a browser action. A look-only tool, a failed action and a confirmation question
+   * do not stamp it.
+   */
+  readonly firstActionAt?: number;
 }
 
 export interface Delegation {

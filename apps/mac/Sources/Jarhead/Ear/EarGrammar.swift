@@ -35,16 +35,27 @@ enum EarGrammar {
         // CLICK / DOUBLE_CLICK / CIRCLE
         "click", "click on", "double click", "button", "link", "checkbox", "menu", "icon",
         "circle", "highlight", "outline", "circle that",
+        // SEARCH (reflex.ts SEARCH_A / SEARCH_B): "search <where> for <what>", "search for <what> in|on <where>",
+        // "look up <what> in <where>", "find <what> on <where>"; the places are in `names` / `places`.
+        "search", "search for", "search the wiki for", "search google for", "look up", "lookup", "find",
+        "search this page for", "on this page", "in this page", "here", "this page", "this tab", "the current page",
         // stop words (ear.ts STOP_WORDS) and the app's own controls
         "stop", "pause", "resume", "cancel", "never mind", "hold on",
     ]
 
-    /// Apps and names a bare "open X" / "switch to X" may carry.
+    /// Apps and names a bare "open X" / "switch to X" / "search X for …" may carry (reflex.ts SEARCH_APPS).
     static let names: [String] = [
-        "Safari", "Chrome", "Slack", "Codex", "Terminal", "Cursor", "Finder", "Claude", "Xcode", "Notes", "Messages",
+        "Safari", "Chrome", "Google Chrome", "Arc", "Firefox", "Slack", "Codex", "Terminal", "Cursor", "Finder", "Claude", "Xcode",
+        "Notes", "Mail", "Messages", "Notion", "Linear", "Figma", "Spotify", "Discord", "Obsidian", "VS Code", "Visual Studio Code",
         "Jarhead",
     ]
 
+    /// Sites a search may name (reflex.ts SEARCH_SITES): the front browser tab must already be on them.
+    static let places: [String] = [
+        "the wiki", "wiki", "Google", "Gmail", "YouTube", "GitHub", "Twitter", "Reddit", "Hacker News", "Wikipedia", "Amazon",
+        "Netflix", "ChatGPT", "LinkedIn", "Vercel", "Google Docs", "Google Drive", "Stack Overflow", "npm", "Google Maps",
+    ]
+
     /// The whole bias list; the order does not matter to the recogniser.
-    static var contextualStrings: [String] { verbs + names }
+    static var contextualStrings: [String] { verbs + names + places }
 }

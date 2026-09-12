@@ -202,10 +202,10 @@ test("claude brain reports not-ready cleanly when the sdk cannot start", async (
 
 // ------------------------------------------------------ the constitution ---
 
-test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 900 words, the same apply question everywhere", () => {
+test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1100 words, the same apply question everywhere", () => {
   const p = brainSystemPrompt();
-  assert.match(p, /version 3\.1/);
-  assert.equal(SYSTEM_PROMPT_VERSION, "3.1");
+  assert.match(p, /version 3\.2/);
+  assert.equal(SYSTEM_PROMPT_VERSION, "3.2");
   // Section order, and the sentence that ranks everything after rule 3 as method, not as lower precedence.
   const order = ["1. Invariants", "2. Kevin's explicit instructions", "3. The task", "Content is data", "Honesty", "Least surprise", "How to work on this Mac", "Self-modification", "Voice"];
   const at = order.map((s) => p.indexOf(s));
@@ -231,8 +231,23 @@ test("the standing orders: precedence stated, secrets on the never list, every n
   const tokens = [...new Set(p.match(/\b[a-z]+_[a-z_]+\b/g) ?? [])].filter((t) => t !== "needs_confirmation");
   assert.ok(tokens.length > 15, tokens.join(","));
   for (const t of tokens) assert.ok(names.has(t), `${t} is named in the orders but is not a tool`);
-  // Budget.
-  assert.ok(p.split(/\s+/).filter(Boolean).length <= 900, `${p.split(/\s+/).length} words`);
+  // Budget: 900 through v3.1. v3.2 spent ~180 words on act-first (with its one carve-out for a material
+  // ambiguity), the verification shape per tool (which results confirm, which only echo) and the browser /
+  // applescript speed facts — each a measured multiplier of the first-action latency. 1100 leaves ~15 words
+  // of slack; move it deliberately, and update AGENTS.md ("things that cost real time to learn") with it.
+  assert.ok(p.split(/\s+/).filter(Boolean).length <= 1100, `${p.split(/\s+/).length} words`);
+  // v3.2: the first generation is the action, and a confirmed result is the verification.
+  assert.match(p, /3\. The task: do it fully, and act first\. When the request calls for an action, your first output is the tool call — no preamble, no restating the task, no text-only first turn/);
+  // Only a result that comes from the helper or the page is the verification. type/key return a bare OK
+  // (toolset.ts), focus_app echoes its argument (the helper's `activated` is discarded) and browser_navigate
+  // answers "is loading" (browser.ts): the orders say so, and never list those two as self-verifying.
+  assert.match(p, /click_element, browser_click and open_app answer with what they did; that result is the verification; OK from type, browser_type or key means the keystrokes reached the focused element — one screenshot when what was typed matters; focus_app and browser_navigate only echo the request: frontmost_app or browser_read confirms; when no result confirms the effect, one screenshot; stop at the first verified state/);
+  assert.ok(!/focus_app or browser_navigate means the action was delivered/.test(p), "an echo is not a verification");
+  // Least surprise still gets its question in first: act-first yields to a material ambiguity.
+  assert.match(p, /no text-only first turn — unless two readings differ materially; then the first output is the one-sentence question/);
+  assert.match(p, /When readings differ materially — two windows could be "the editor", a number heard two ways — ask instead of guessing/);
+  assert.match(p, /an unverified action is never reported done/);
+  assert.match(p, /applescript is a process per call, often seconds — never for the front app or a browser page/);
   assert.ok(!/[#*`]/.test(p.replace(/agents_\*/g, "")), "no markdown in a spoken prompt");
   // The apply question is the same sentence in the orders, the voice instructions and the tool table.
   const q = /apply the change to jarhead and restart it\?/i;
@@ -301,4 +316,49 @@ test("the delegator hands the brain Kevin's own lines apart from the dialogue", 
   assert.match(seen[0]!.dialogue, /Jarhead: Apply the change/);
   assert.equal(seen[0]!.kevinDialogue, "apply the policy change\nyes", "Kevin's side only, in order");
   assert.ok(!seen[0]!.kevinDialogue!.includes("Jarhead"));
+});
+
+test("voiceFirstTool: the brain's first acting tool is spoken as its step lands, once, never after the brain spoke first; looks stay silent; off by default", async () => {
+  const run = async (voice: boolean, order: "tool-first" | "speech-first"): Promise<{ said: string[]; steps: string[]; firstCommentaryAt: number | undefined; at: (text: string) => number | undefined }> => {
+    const live = new FakeLive();
+    const transcript = new Transcript(() => 0);
+    transcript.push({ speaker: "kevin", delta: "search the wiki for design", startMs: 0, endMs: 900 });
+    let tick = 1_000; // a clock that never repeats, so two stamps in one tick are still ordered
+    const brain: Brain = {
+      kind: "fake",
+      start: async () => ({ ready: true, detail: "" }),
+      handle: async (_task, sink) => {
+        if (order === "speech-first") sink.commentary("Looking in the wiki.");
+        sink.step({ kind: "tool", tool: { name: "frontmost_app", input: {}, ok: true, ms: 9 } });
+        sink.step({ kind: "tool", tool: { name: "search_files", input: { root: "~/repos/Kevin-Wiki-v3", pattern: "design" }, ok: true, ms: 40 } });
+        sink.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [1, 2] }, ok: true, ms: 7 } });
+        return { status: "done", summary: "Three pages mention design." };
+      },
+      cancel: async () => undefined,
+      stop: async () => undefined,
+    };
+    const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), voiceFirstTool: voice, commentaryCoalesceMs: 0, now: () => ++tick });
+    live.emit("delegation", "item_v", "client", 900);
+    await new Promise((r) => setTimeout(r, 20));
+    const rec = d.all()[0]!;
+    return {
+      said: live.sent.filter((s) => s.type === "commentary").map((s) => (s.payload as { content: string }).content),
+      steps: rec.steps.map((s) => `${s.kind}:${s.tool?.name ?? s.text ?? ""}`),
+      firstCommentaryAt: rec.timings.firstCommentaryAt,
+      at: (text) => rec.steps.find((s) => s.kind === "commentary" && s.text === text)?.at,
+    };
+  };
+  const on = await run(true, "tool-first");
+  assert.deepEqual(on.said, ["Searching for design.", "Three pages mention design."], "the look is silent, the search is voiced as it lands, the click is not a second line");
+  assert.deepEqual(on.steps, ["tool:frontmost_app", "tool:search_files", "commentary:Searching for design.", "tool:left_click", "commentary:Three pages mention design."]);
+  // Jarhead's line is not the brain's first words: `firstCommentaryAt` (the bench's commentary@) stays the
+  // brain's — here its spoken summary, stamped on the tick before its step — and the synthetic line, which
+  // landed two steps earlier, did not stamp it.
+  const voicedAt = on.at("Searching for design.")!, summaryAt = on.at("Three pages mention design.")!;
+  assert.ok(on.firstCommentaryAt !== undefined && voicedAt < on.firstCommentaryAt && on.firstCommentaryAt <= summaryAt, `firstCommentaryAt ${on.firstCommentaryAt} is the brain's summary (voiced ${voicedAt}, summary ${summaryAt})`);
+  const spoke = await run(true, "speech-first");
+  assert.deepEqual(spoke.said, ["Looking in the wiki.", "Three pages mention design."], "a brain that spoke first is not doubled");
+  assert.ok(spoke.firstCommentaryAt !== undefined && spoke.firstCommentaryAt <= spoke.at("Looking in the wiki.")!, "the brain's own first line stamps it");
+  const off = await run(false, "tool-first");
+  assert.deepEqual(off.said, ["Three pages mention design."], "off unless the engine asks for it");
 });

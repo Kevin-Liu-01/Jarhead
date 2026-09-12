@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { LineSplitter, logger } from "@jarhead/core";
 import type { Effort } from "@jarhead/protocol";
-import { codexDisableUserServersArgs, codexMcpConfigArgs, toml, type CodexMcpConfig } from "./codex-config.ts";
+import { codexDisableUserServersArgs, codexMcpConfigArgs, codexPromptTrimArgs, toml, type CodexMcpConfig } from "./codex-config.ts";
 
 /**
  * A warm Codex: one `codex app-server` process, one thread, many turns.
@@ -43,9 +43,25 @@ import { codexDisableUserServersArgs, codexMcpConfigArgs, toml, type CodexMcpCon
  * on the server's `turn/completed{interrupted}`, or locally after a grace period
  * when the server never says so. Resolving locally at once would leave a zombie
  * turn acting through the bridge with no delegation attached.
+ *
+ * The thread's lifetime (2026-09-12, docs/REDESIGN.md §15). `thread/tokenUsage/
+ * updated` carries `total` (the thread's cumulative bill: 19.4k → 38.8k → 58.2k
+ * over three trivial turns) and `last` (the last model request: ~23–33k, the size
+ * of the context as it stands). Rollover used to judge `total` against the window,
+ * so the thread — and its prompt cache, and its MCP bridge — was thrown away after
+ * every delegation with a few tool calls (6 rollovers in 18 warm delegations, each
+ * costing the next task 1.3–5.7 s to its first tool). It judges `last` now. When a
+ * rollover is due it happens right after the turn that filled the thread completes,
+ * in the background, not at the next task; and a fresh thread (at start or after a
+ * rollover) can be *primed* with one tiny turn so its first real turn finds the
+ * bridge started and the developer instructions cached — a task that arrives
+ * mid-primer interrupts it and runs at once.
  */
 
 const log = logger("brain.codex.app-server");
+
+/** The primer turn: one word back, no tools; it exists to start the MCP servers and warm the prompt cache. */
+export const PRIMER_TEXT = "Reply with the single word ok. Do not call any tools.";
 
 export interface AppServerOptions extends CodexMcpConfig {
   readonly bin: string;
@@ -57,6 +73,20 @@ export interface AppServerOptions extends CodexMcpConfig {
   readonly effort?: Effort | undefined;
   /** The standing orders, set once per thread. */
   readonly developerInstructions: string;
+  /**
+   * Replaces Codex's own base prompt (the coding-agent text that tells the model
+   * to "start with a message in the commentary channel" before tool calls — a
+   * 4.4 s narration generation measured before the first tool). Unset = Codex's.
+   */
+  readonly baseInstructions?: string | undefined;
+  /** `-c service_tier=…` ("priority" is the model's 2× speed tier; Kevin's config pins "default"). Unset = the config.toml's. */
+  readonly serviceTier?: string | undefined;
+  /** Switch off the prompt blocks a coding session gets (skills catalog, escalation text, plugins list); default true. */
+  readonly trimPrompt?: boolean | undefined;
+  /** Prime every fresh thread with `PRIMER_TEXT` in the background (one small model request per thread start); default false. */
+  readonly primeThreads?: boolean | undefined;
+  /** Start the replacement thread right after the turn that filled the old one completes (default true); false = at the next turn. */
+  readonly backgroundRollover?: boolean | undefined;
   /** initialize + thread/start must finish within this (default 25 s). */
   readonly startTimeoutMs?: number | undefined;
   /** Kill grace after stdin is closed (default 3 s). */
@@ -108,9 +138,37 @@ export interface TurnResult {
 }
 
 export interface TokenUsage {
+  /** The thread's cumulative bill (`total.totalTokens`): every request's input and output added up. Not the context. */
   readonly totalTokens: number;
+  /** `last.totalTokens`: the last model request, input plus output. */
   readonly lastTurnTokens: number;
+  /** `last.inputTokens`: what the last request carried in. */
+  readonly lastInputTokens: number;
+  /** `last.cachedInputTokens`: how much of that the prompt cache served (a primed thread shows it on its first real turn). */
+  readonly lastCachedInputTokens: number;
+  /**
+   * The context as it stands — what the next request will carry: the last request's
+   * input plus its output (`last.totalTokens`, else `last.inputTokens`). This is what
+   * rollover judges.
+   */
+  readonly contextTokens: number;
   readonly contextWindow: number | undefined;
+}
+
+/** What `rollover` announces: the old thread, the new one, and the context that triggered it. */
+export interface RolloverInfo {
+  readonly from: string | undefined;
+  readonly to: string;
+  readonly contextTokens: number;
+  readonly contextWindow: number | undefined;
+  /** "context 181k/258k (0.70)" — the log line's core. */
+  readonly report: string;
+}
+
+/** Per-turn overrides. */
+export interface TurnOptions {
+  /** Codex applies a turn's effort to the following turns too, so a caller that lowers it once must set it every turn. */
+  readonly effort?: Effort | undefined;
 }
 
 export type UserInput = { readonly type: "text"; readonly text: string; readonly text_elements: readonly never[] } | { readonly type: "localImage"; readonly path: string; readonly detail?: "auto" | "low" | "high" | "original" };
@@ -134,6 +192,8 @@ interface ActiveTurn {
 export interface AppServerEvents {
   /** The process ended (reason for the log); a running turn has already failed. */
   exit: [reason: string];
+  /** A fresh thread replaced the full one; the brain carries the recent exchanges over as text. */
+  rollover: [info: RolloverInfo];
 }
 
 /** Jarhead's effort scale → Codex's `model_reasoning_effort` values. */
@@ -159,7 +219,9 @@ export function appServerArgs(o: AppServerOptions): string[] {
     "notify=[]",
     ...codexMcpConfigArgs(o),
     ...(o.disableUserServers === false ? [] : codexDisableUserServersArgs(o.codexHome)),
+    ...(o.trimPrompt === false ? [] : codexPromptTrimArgs()),
     ...(o.effort ? ["-c", `model_reasoning_effort=${toml(appServerEffort(o.effort))}`] : []),
+    ...(o.serviceTier ? ["-c", `service_tier=${toml(o.serviceTier)}`] : []),
   ];
 }
 
@@ -173,6 +235,13 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
   private stopped = false;
   private startedAt = 0;
   private stderrTail = "";
+  /** A replacement thread being started (background rollover); `settleThread` awaits it. */
+  private rolling: Promise<void> | undefined;
+  /** The primer turn on a fresh thread, if one is running; a real turn interrupts it. */
+  private priming: Promise<TurnResult> | undefined;
+  /** How many threads this process has opened (the first at start, one more per rollover). */
+  private threadsStarted = 0;
+  private primes = { started: 0, completed: 0, interrupted: 0 };
 
   constructor(private readonly opts: AppServerOptions) {
     super();
@@ -193,6 +262,26 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
   /** ms since the process was spawned. */
   get uptimeMs(): number {
     return this.startedAt ? Date.now() - this.startedAt : 0;
+  }
+
+  /** Threads opened in this process's life: 1 after start, +1 per rollover. */
+  get threadCount(): number {
+    return this.threadsStarted;
+  }
+
+  /** Primer turns started / completed / interrupted by a real task. */
+  get primerStats(): { started: number; completed: number; interrupted: number } {
+    return { ...this.primes };
+  }
+
+  /** True while a primer turn is on the thread. */
+  get isPriming(): boolean {
+    return this.priming !== undefined;
+  }
+
+  /** True while a replacement thread is being started. */
+  get isRollingOver(): boolean {
+    return this.rolling !== undefined;
   }
 
   /** Spawn, initialize, start the thread. Throws when any of that fails within the start timeout; the caller falls back to exec. */
@@ -235,7 +324,10 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
       return { ...started, initMs, threadMs: Date.now() - t1 };
     })();
     try {
-      return await Promise.race([boot, deadline]);
+      const r = await Promise.race([boot, deadline]);
+      // Off the caller's path: the first thread's bridge start and prompt cache.
+      this.prime("start");
+      return r;
     } catch (e) {
       await this.stop();
       throw e;
@@ -251,6 +343,7 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
         sandbox: "read-only",
         ephemeral: true,
         developerInstructions: this.opts.developerInstructions,
+        ...(this.opts.baseInstructions ? { baseInstructions: this.opts.baseInstructions } : {}),
         sessionStartSource: "startup",
         ...(this.opts.model ? { model: this.opts.model } : {}),
       },
@@ -260,39 +353,132 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
     if (!threadId) throw new Error("thread/start returned no thread id");
     this.threadId = threadId;
     this.usage = undefined;
-    log.info(`thread ${threadId} (${r.model ?? "default model"}${r.reasoningEffort ? `, effort ${r.reasoningEffort}` : ""})`);
+    this.threadsStarted++;
+    log.info(`thread ${threadId} (${r.model ?? "default model"}${r.reasoningEffort ? `, effort ${r.reasoningEffort}` : ""}${this.opts.baseInstructions ? ", Jarhead's base instructions" : ""})`);
     return { threadId, model: r.model ?? "", effort: r.reasoningEffort ?? null };
   }
 
   /**
-   * Whether the thread has grown past the rollover point: the context is Codex's
-   * (a compaction would cost a model call anyway), so the next task starts a new
-   * thread and the brain carries the last exchanges over as text.
+   * Whether the context as it stands (`TokenUsage.contextTokens`: the last model
+   * request's size, not the thread's cumulative bill) has passed the rollover
+   * share of the model's window. The context is Codex's (a compaction would cost a
+   * model call anyway), so a fresh thread replaces the full one and the brain
+   * carries the last exchanges over as text.
    */
   needsFreshThread(): boolean {
     const u = this.usage;
     if (!u) return false;
     const ratio = this.opts.contextRolloverRatio ?? 0.7;
-    if (u.contextWindow && u.contextWindow > 0) return u.totalTokens / u.contextWindow > ratio;
-    return u.totalTokens > (this.opts.contextRolloverTokens ?? 240_000);
+    if (u.contextWindow && u.contextWindow > 0) return u.contextTokens / u.contextWindow > ratio;
+    return u.contextTokens > (this.opts.contextRolloverTokens ?? 240_000);
   }
 
-  /** Start a fresh thread (the old, ephemeral one is simply left behind). */
+  /** "context 181k/258k (0.70)" — the current context against the window, for the log. */
+  contextReport(): string {
+    const u = this.usage;
+    if (!u) return "context unknown";
+    const k = (n: number): string => `${Math.round(n / 1000)}k`;
+    if (u.contextWindow && u.contextWindow > 0) return `context ${k(u.contextTokens)}/${k(u.contextWindow)} (${(u.contextTokens / u.contextWindow).toFixed(2)})`;
+    return `context ${k(u.contextTokens)} (no window reported; limit ${k(this.opts.contextRolloverTokens ?? 240_000)})`;
+  }
+
+  /**
+   * Start a fresh thread now (the old, ephemeral one is simply left behind) and
+   * announce it as a rollover. Joins a background rollover already in flight.
+   */
   async freshThread(): Promise<string> {
+    // A primer or a background replacement in flight is settled first (the primer is
+    // interrupted on its own thread id); a settle that already rolled over is the
+    // fresh thread asked for, so it is not rolled a second time.
+    const before = this.threadId;
+    if (this.priming || this.rolling) await this.settleThread();
     if (this.active) throw new Error("a turn is running");
-    const { threadId } = await this.startThread();
-    return threadId;
+    if (this.threadId === before) await this.rollOver("asked for");
+    if (!this.threadId) throw new Error("no thread after the rollover");
+    return this.threadId;
+  }
+
+  /**
+   * Before a real turn: wait for a replacement thread being started in the
+   * background, interrupt a primer still running, and roll over now if the context
+   * is full and nothing is already on it. Afterwards the thread is free and the
+   * `rollover` event (if any) has fired, so the caller knows to carry history.
+   */
+  async settleThread(): Promise<void> {
+    if (this.rolling) await this.rolling;
+    if (this.priming) {
+      const primer = this.priming;
+      await this.interrupt();
+      await primer.catch(() => undefined);
+    }
+    if (this.needsFreshThread() && !this.active) await this.rollOver("at the next turn");
+    if (this.rolling) await this.rolling;
+  }
+
+  /** The fresh-thread machinery: one at a time; never throws (the caller stays on the old thread). */
+  private rollOver(why: string): Promise<void> {
+    if (this.rolling) return this.rolling;
+    const from = this.threadId;
+    const report = this.contextReport();
+    const usage = this.usage;
+    const t0 = Date.now();
+    this.rolling = (async () => {
+      try {
+        const { threadId } = await this.startThread();
+        log.info(`${report} → fresh thread ${threadId.slice(0, 8)} (${why}, thread/start ${Date.now() - t0} ms)`);
+        this.emit("rollover", { from, to: threadId, contextTokens: usage?.contextTokens ?? 0, contextWindow: usage?.contextWindow, report });
+        this.prime("rollover");
+      } catch (e) {
+        log.warn(`could not start a fresh thread (${(e as Error).message}); staying on ${from?.slice(0, 8) ?? "?"}`);
+      } finally {
+        this.rolling = undefined;
+      }
+    })();
+    return this.rolling;
+  }
+
+  /**
+   * One tiny turn on a fresh thread, in the background: the MCP servers start on a
+   * thread's first turn (the bridge ~0.3–0.4 s, turn/start answering only after
+   * ~1–2 s) and the developer instructions enter the prompt cache (first token
+   * 4.3 s cold vs 1.8–3.1 s warm, measured). A real turn that arrives meanwhile
+   * interrupts it (`settleThread`). Costs one small model request per thread.
+   */
+  private prime(why: "start" | "rollover"): void {
+    if (!this.opts.primeThreads || !this.running || this.active || !this.threadId) return;
+    const t0 = Date.now();
+    const thread = this.threadId.slice(0, 8);
+    this.primes.started++;
+    this.priming = this.turn([{ type: "text", text: PRIMER_TEXT, text_elements: [] }], {})
+      .then((r) => {
+        if (r.status === "completed") {
+          this.primes.completed++;
+          log.info(`thread ${thread} primed in ${Date.now() - t0} ms (${why}): bridge up, prompt cached`);
+        } else {
+          this.primes.interrupted++;
+          log.info(`thread ${thread} primer ${r.status} after ${Date.now() - t0} ms (${why})${r.error ? `: ${r.error}` : ""}`);
+        }
+        return r;
+      })
+      .catch((e: Error) => {
+        log.debug(`primer on ${thread} did not run: ${e.message}`);
+        return { status: "failed", error: e.message, turnId: "" } as TurnResult;
+      })
+      .finally(() => {
+        this.priming = undefined;
+      });
   }
 
   /** One turn on the thread. Resolves on turn/completed; rejects only when the request itself fails. */
-  turn(input: readonly UserInput[], handlers: TurnHandlers): Promise<TurnResult> {
+  turn(input: readonly UserInput[], handlers: TurnHandlers, turnOpts: TurnOptions = {}): Promise<TurnResult> {
     if (!this.running || !this.threadId) return Promise.reject(new Error("codex app-server is not running"));
     if (this.active) return Promise.reject(new Error("a turn is already running"));
     const threadId = this.threadId;
+    const effort = turnOpts.effort ?? this.opts.effort;
     return new Promise<TurnResult>((resolve, reject) => {
       const active: ActiveTurn = { turnId: "", handlers, resolve, interruptRequested: false, graceTimer: undefined };
       this.active = active;
-      this.request("turn/start", { threadId, input, ...(this.opts.effort ? { effort: appServerEffort(this.opts.effort) } : {}) })
+      this.request("turn/start", { threadId, input, ...(effort ? { effort: appServerEffort(effort) } : {}) })
         .then((r) => {
           const turnId = (r as { turn?: { id?: string } }).turn?.id;
           if (!turnId) throw new Error("turn/start returned no turn id");
@@ -482,8 +668,14 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
         return;
       }
       case "thread/tokenUsage/updated": {
-        const u = params["tokenUsage"] as { total?: { totalTokens?: number }; last?: { totalTokens?: number }; modelContextWindow?: number | null } | undefined;
-        if (u) this.usage = { totalTokens: u.total?.totalTokens ?? 0, lastTurnTokens: u.last?.totalTokens ?? 0, contextWindow: u.modelContextWindow ?? undefined };
+        // {threadId, turnId, tokenUsage: {total, last, modelContextWindow}}; `total` is the
+        // thread's running bill, `last` the last request — the context as it stands.
+        if (typeof params["threadId"] === "string" && this.threadId && params["threadId"] !== this.threadId) return;
+        const u = params["tokenUsage"] as { total?: { totalTokens?: number }; last?: { totalTokens?: number; inputTokens?: number; cachedInputTokens?: number }; modelContextWindow?: number | null } | undefined;
+        if (!u) return;
+        const lastTotal = u.last?.totalTokens ?? 0;
+        const lastInput = u.last?.inputTokens ?? 0;
+        this.usage = { totalTokens: u.total?.totalTokens ?? 0, lastTurnTokens: lastTotal, lastInputTokens: lastInput, lastCachedInputTokens: u.last?.cachedInputTokens ?? 0, contextTokens: lastTotal || lastInput, contextWindow: u.modelContextWindow ?? undefined };
         return;
       }
       case "turn/completed": {
@@ -493,6 +685,9 @@ export class CodexAppServer extends EventEmitter<AppServerEvents> {
         this.active = undefined;
         const status = turn.status === "interrupted" ? "interrupted" : turn.status === "failed" ? "failed" : "completed";
         active.resolve({ status, turnId: turn.id, ...(turn.error?.message ? { error: turn.error.message } : {}) });
+        // The thread filled up on this turn: replace it now, so the next task finds a
+        // warm one instead of paying thread/start (and the bridge start) on its own path.
+        if (this.opts.backgroundRollover !== false && this.running && this.needsFreshThread()) void this.rollOver("after the turn that filled it");
         return;
       }
       case "warning":

@@ -19,15 +19,23 @@ struct AXNode {
     let title: String?
     let description: String?
     let value: String?
+    /// A text field's placeholder ("Search…", "Type / to search"): how a person names an empty field.
+    let placeholder: String?
     let frame: CGRect?
     let pressable: Bool
     let element: AXUIElement
+
+    /// A field words are typed into: the one kind of control whose label may be *about* a thing ("Search the wiki").
+    var isTextInput: Bool {
+        role == kAXTextFieldRole || role == kAXTextAreaRole || role == kAXComboBoxRole || role == "AXSearchField" || subrole == kAXSearchFieldSubrole
+    }
 
     /// The words a person would call this control by.
     var labels: [String] {
         var out: [String] = []
         if let title, !title.isEmpty { out.append(title) }
         if let description, !description.isEmpty { out.append(description) }
+        if let placeholder, !placeholder.isEmpty, isTextInput { out.append(placeholder) }
         if let value, !value.isEmpty, value.count <= 60, role != kAXTextFieldRole, role != kAXTextAreaRole { out.append(value) }
         return out
     }
@@ -38,6 +46,7 @@ struct AXNode {
         if let title, !title.isEmpty { o["title"] = title }
         if let description, !description.isEmpty { o["description"] = description }
         if let value, !value.isEmpty { o["value"] = value }
+        if let placeholder, !placeholder.isEmpty { o["placeholder"] = placeholder }
         if let frame {
             o["x"] = Double(frame.origin.x); o["y"] = Double(frame.origin.y)
             o["w"] = Double(frame.width); o["h"] = Double(frame.height)
@@ -68,9 +77,10 @@ private let clickableRoles: Set<String> = [
     kAXSliderRole, kAXIncrementorRole, kAXToolbarRole, "AXTab", "AXSwitch", "AXToggle",
 ]
 
+/// One IPC per element carries all of these; the placeholder rides along at no extra round trip.
 private let walkAttributes: [String] = [
     kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute,
-    kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute,
+    kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute, kAXPlaceholderValueAttribute,
 ]
 
 private func stringValue(_ value: CFTypeRef?, limit: Int) -> String? {
@@ -91,12 +101,6 @@ private func frameValue(position: CFTypeRef?, size: CFTypeRef?) -> CGRect? {
     var sz = CGSize.zero
     guard AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &sz) else { return nil }
     return CGRect(origin: p, size: sz)
-}
-
-/// Chromium and Electron expose their web content to AX clients only once asked. The
-/// manual switch has none of the resizing side effects `AXEnhancedUserInterface` has.
-private func enableWebAccessibility(_ app: AXUIElement) {
-    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 }
 
 /// Walk the window breadth-first. One IPC per element (all attributes at once), a short
@@ -136,6 +140,7 @@ private func walk(window: AXUIElement, maxNodes: Int, maxDepth: Int, maxMs: Doub
             title: stringValue(at(2), limit: 200),
             description: stringValue(at(3), limit: 200),
             value: stringValue(at(4), limit: 200),
+            placeholder: stringValue(at(8), limit: 200),
             frame: frame,
             pressable: pressable,
             element: element
@@ -202,7 +207,10 @@ final class AXTreeCache {
         if let existing, existing.window == title, existing.ageMs <= maxAgeMs {
             return (existing, true)
         }
-        enableWebAccessibility(app)
+        // Chromium and Electron expose their web content to AX clients only once asked. The
+        // manual switch has none of the resizing side effects `AXEnhancedUserInterface` has;
+        // the shared memory (AX.swift) lets the focused-element read skip its wait once it is on.
+        enableWebAccessibility(pid: pid, app: app)
         let start = DispatchTime.now()
         var walked = walk(window: window, maxNodes: maxNodes, maxDepth: maxDepth, maxMs: maxMs)
         if walked.nodes.count < sparseTreeNodes, !walked.truncated, existing == nil {
@@ -256,11 +264,27 @@ func similarity(_ a: String, _ b: String) -> Double {
     return 1 - Double(levenshtein(ca, cb)) / Double(longest)
 }
 
+/// A browser's own address bar, by the label the browser gives it (Chrome / Edge / Brave
+/// "Address and search bar", Safari "Address and Search" / "Smart Search Field", Firefox
+/// "Search or enter address", Arc "Address bar"): it always says "search", and a search on a
+/// *site* must not land in it.
+private let addressBarLabel = try! NSRegularExpression(pattern: "\\b(address|url|smart search|enter address|search or enter)\\b", options: [.caseInsensitive])
+
+func isAddressBar(_ node: AXNode) -> Bool {
+    guard node.isTextInput else { return false }
+    return node.labels.contains { label in addressBarLabel.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)) != nil }
+}
+
 private func roleMatches(_ node: AXNode, wanted: String?) -> Bool {
     guard let wanted, !wanted.isEmpty else { return true }
     let w = wanted.lowercased().replacingOccurrences(of: " ", with: "")
     let r = node.role.lowercased()
-    return r == w || r == "ax" + w || r.hasSuffix(w) || (w == "button" && r == "axpopupbutton") || (w == "field" && (r == "axtextfield" || r == "axtextarea")) || (w == "tab" && (r == "axradiobutton" || r == "axtab"))
+    // "field": anything words are typed into — a text field, a text area, a combo box, a
+    // search field (a subrole: Finder's toolbar search is an AXButton/AXSearchField that
+    // opens into a field on a click). "pagefield": the same minus a browser's address bar,
+    // for a search on the page or site the tab shows.
+    if w == "pagefield" { return node.isTextInput && !isAddressBar(node) }
+    return r == w || r == "ax" + w || r.hasSuffix(w) || (w == "button" && r == "axpopupbutton") || ((w == "field" || w == "textfield" || w == "searchfield") && node.isTextInput) || (w == "tab" && (r == "axradiobutton" || r == "axtab"))
 }
 
 private func onSomeDisplay(_ frame: CGRect?, displays: [CGRect]) -> Bool {
@@ -274,13 +298,23 @@ struct ElementMatch {
     let label: String
 }
 
-/// Exact (case- and punctuation-insensitive) matches first; failing that, fuzzy ones at or
-/// above `threshold`. Only visible, clickable elements count. Two candidates at the same
-/// tier are two candidates: the caller decides that means no reflex.
+/// `wanted` appears in `label` as whole words ("search" in "search the wiki", "type / to search").
+private func containsWords(_ label: String, _ wanted: String) -> Bool {
+    let padded = " \(label) "
+    return padded.contains(" \(wanted) ")
+}
+
+/// Exact (case- and punctuation-insensitive) matches first; then, for text inputs only, a
+/// label that *contains* the words ("Search the wiki", a placeholder "Search…" already
+/// normalises to exact) — a field's label is about what goes in it, and typing there is
+/// judged by the type gate, not by this name; failing both, fuzzy ones at or above
+/// `threshold`. Only visible, clickable elements count. Two candidates at the same tier
+/// are two candidates: the caller decides that means no reflex.
 func findMatches(in nodes: [AXNode], name: String, role: String?, threshold: Double) -> (matches: [ElementMatch], tier: String) {
     let wanted = normalizeLabel(name)
     guard !wanted.isEmpty else { return ([], "none") }
     var exact: [ElementMatch] = []
+    var contains: [ElementMatch] = []
     var fuzzy: [ElementMatch] = []
     let displays = activeDisplayIDs().map { CGDisplayBounds($0) }
     for node in nodes {
@@ -288,14 +322,20 @@ func findMatches(in nodes: [AXNode], name: String, role: String?, threshold: Dou
         guard node.pressable || clickableRoles.contains(node.role) else { continue }
         guard onSomeDisplay(node.frame, displays: displays) else { continue }
         var bestFuzzy: ElementMatch?
+        var bestContains: ElementMatch?
         for raw in node.labels {
             let label = normalizeLabel(raw)
             if label.isEmpty { continue }
             if label == wanted { exact.append(ElementMatch(node: node, score: 1, label: raw)); break }
+            if node.isTextInput, containsWords(label, wanted) {
+                let score = Double(wanted.count) / Double(label.count)
+                if score > (bestContains?.score ?? 0) { bestContains = ElementMatch(node: node, score: score, label: raw) }
+            }
             let score = similarity(label, wanted)
             if score >= threshold, score > (bestFuzzy?.score ?? 0) { bestFuzzy = ElementMatch(node: node, score: score, label: raw) }
         }
         if exact.last?.node.index == node.index { continue }
+        if let bestContains { contains.append(bestContains); continue }
         if let bestFuzzy { fuzzy.append(bestFuzzy) }
     }
     // The same control often appears twice in a tree (a cell and its static text child, a
@@ -313,6 +353,8 @@ func findMatches(in nodes: [AXNode], name: String, role: String?, threshold: Dou
     }
     let e = dedupe(exact)
     if !e.isEmpty { return (e, "exact") }
+    let c = dedupe(contains)
+    if !c.isEmpty { return (c, "contains") }
     let f = dedupe(fuzzy)
     return (f, f.isEmpty ? "none" : "fuzzy")
 }

@@ -41,6 +41,34 @@ test("settle finalizes stale utterances and render shows a window", () => {
   assert.equal(t.render(10_000, 3300), "Kevin: hello\nJarhead: hi");
 });
 
+test("an utterance closed by the next one is emitted as final once — the ledger keeps the command Jarhead answered at once — and settle does not emit it again", () => {
+  const t = new Transcript(() => 0);
+  const finals: string[] = [];
+  const kinds: string[] = [];
+  t.onChange((item, kind) => {
+    kinds.push(`${kind}:${item.speaker}`);
+    if (kind === "final") finals.push(`${item.speaker}:${item.text}`);
+  });
+  t.push({ speaker: "kevin", delta: "jarhead scroll down", startMs: 0, endMs: 900 });
+  // Jarhead answers 200 ms later: Kevin's utterance is closed by finalizeOpen (inside push), not by settle.
+  t.push({ speaker: "jarhead", delta: " On it.", startMs: 1100, endMs: 1400 });
+  assert.deepEqual(finals, ["kevin:jarhead scroll down"], "the closed utterance was emitted as final");
+  assert.deepEqual(kinds, ["start:kevin", "final:kevin", "start:jarhead"], "final lands before the new utterance starts");
+  assert.equal(t.all()[0]?.final, true);
+  assert.equal(t.settle(5000).length, 1, "settle closes only the still-open jarhead line");
+  assert.deepEqual(finals, ["kevin:jarhead scroll down", "jarhead:On it."], "nothing is emitted twice");
+  // Explicit finalizeOpen with several open items (both speakers): one final each, nothing for what was already final.
+  const t2 = new Transcript(() => 0);
+  const closed: string[] = [];
+  t2.onChange((item, kind) => kind === "final" && closed.push(item.text));
+  t2.push({ speaker: "kevin", delta: "one", startMs: 0, endMs: 500 });
+  t2.settle(3000);
+  t2.push({ speaker: "kevin", delta: "two", startMs: 4000, endMs: 4500 });
+  t2.finalizeOpen();
+  t2.finalizeOpen();
+  assert.deepEqual(closed, ["one", "two"]);
+});
+
 test("joinFragments handles punctuation and word pieces", () => {
   assert.equal(joinFragments("hey", ", jar"), "hey, jar");
   assert.equal(joinFragments("hey, jar", "head"), "hey, jarhead");

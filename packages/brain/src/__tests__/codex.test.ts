@@ -1,15 +1,15 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { CodexBrain, codexAddendum, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "../codex.ts";
-import { appServerArgs } from "../codex-app-server.ts";
-import { codexUserMcpServers } from "../codex-config.ts";
+import { CodexBrain, codexAddendum, codexBaseInstructions, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, isSimpleRequest, probeCodex, socketAnswers } from "../codex.ts";
+import { PRIMER_TEXT, appServerArgs } from "../codex-app-server.ts";
+import { codexPromptTrimArgs, codexUserMcpServers, prepareCodexHome } from "../codex-config.ts";
 import { brainSystemPrompt } from "../brain.ts";
 import { makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -68,7 +68,8 @@ if (args[0] === "app-server") {
       } else if (it.type === "error") notif("warning", { threadId, message: it.message });
       await sleep(Number(env.FAKE_CODEX_DELAY_MS ?? 5));
     }
-    notif("thread/tokenUsage/updated", { ...p, tokenUsage: { total: { totalTokens: Number(env.FAKE_CODEX_TOKENS ?? 20000) * turnN }, last: { totalTokens: 20000 }, modelContextWindow: 100000 } });
+    // total = the thread's running bill (grows every turn); last = the last request, the context as it stands.
+    notif("thread/tokenUsage/updated", { ...p, tokenUsage: { total: { totalTokens: Number(env.FAKE_CODEX_TOKENS ?? 20000) * turnN, inputTokens: Number(env.FAKE_CODEX_TOKENS ?? 20000) * turnN - 100 }, last: { totalTokens: Number(env.FAKE_CODEX_LAST_TOKENS ?? 20000), inputTokens: Number(env.FAKE_CODEX_LAST_TOKENS ?? 20000) - 100, cachedInputTokens: 0 }, modelContextWindow: 100000 } });
     notif("turn/completed", { ...p, turn: { id: turnId, status: "completed", error: null } });
   }
   function handle(msg) {
@@ -114,9 +115,9 @@ process.stdin.on("end", async () => {
   return bin;
 }
 
-/** A CODEX_HOME with auth.json (fake tokens) and optionally a config.toml naming a model. */
+/** Kevin's CODEX_HOME stand-in (auth.json with fake tokens, optionally a config.toml naming a model); the brain builds its own `<stateDir>/codex-home` beside it. */
 function fakeCodexHome(dir: string, opts: { signedIn?: boolean; authFile?: boolean; model?: string } = {}): string {
-  const home = join(dir, "codex-home");
+  const home = join(dir, "kevin-codex");
   mkdirSync(home, { recursive: true });
   if (opts.authFile !== false) {
     const auth = opts.signedIn === false ? { auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: null } : { auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { id_token: "id", access_token: "acc", refresh_token: "ref", account_id: "acct" }, last_refresh: "2026-09-10T00:00:00Z" };
@@ -144,10 +145,10 @@ interface AppServerLog {
   requests: Array<{ id?: number; method: string; params?: Record<string, unknown> }>;
 }
 
-function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; transport?: "auto" | "app-server" | "exec" }) {
+function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; authFile?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; lastTokens?: number; transport?: "auto" | "app-server" | "exec"; prime?: boolean; effort?: "low" | "medium"; simpleEffort?: "low"; env?: Record<string, string> }) {
   const dir = mkdtempSync(join(tmpdir(), "jh-codex-"));
   const bin = fakeCodex(dir);
-  const codexHome = fakeCodexHome(dir, { ...(opts.configModel ? { model: opts.configModel } : {}), ...(opts.signedIn !== undefined ? { signedIn: opts.signedIn } : {}) });
+  const codexHome = fakeCodexHome(dir, { ...(opts.configModel ? { model: opts.configModel } : {}), ...(opts.signedIn !== undefined ? { signedIn: opts.signedIn } : {}), ...(opts.authFile !== undefined ? { authFile: opts.authFile } : {}) });
   const logFile = join(dir, "exec.json");
   const { runner } = makeRunner();
   const brain = new CodexBrain({
@@ -158,20 +159,25 @@ function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socket
     socketPath: opts.socketPath ?? join(dir, "no-daemon.sock"),
     ownPid: opts.ownPid,
     model: opts.model,
-    effort: "low",
+    effort: opts.effort ?? "low",
+    simpleEffort: opts.simpleEffort,
     maxSteps: opts.maxSteps,
     maxWallMs: opts.maxWallMs,
     killGraceMs: opts.killGraceMs ?? 500,
     appServerStartTimeoutMs: opts.appServerStartTimeoutMs,
     appServerPatienceMs: opts.appServerPatienceMs,
     transport: opts.transport,
+    // The primer is one more turn on the fake; the tests that want it say so.
+    primeThreads: opts.prime ?? false,
     // Jarhead's secrets are in the daemon's environment; none of them may reach Codex.
-    env: { ...process.env, OPENAI_API_KEY: "sk-the-voice-key-must-not-leak", ANTHROPIC_API_KEY: "sk-ant-must-not-leak", JARHEAD_BRAIN_API_KEY: "brain-key-must-not-leak", FAKE_CODEX_FIXTURE: FIXTURE, FAKE_CODEX_LOG: logFile, ...(opts.mode ? { FAKE_CODEX_MODE: opts.mode } : {}), ...(opts.appServer ? { FAKE_CODEX_APPSERVER: opts.appServer } : {}), ...(opts.appServerDelayMs ? { FAKE_CODEX_APPSERVER_DELAY_MS: String(opts.appServerDelayMs) } : {}), ...(opts.tokens ? { FAKE_CODEX_TOKENS: String(opts.tokens) } : {}) },
+    env: { ...process.env, OPENAI_API_KEY: "sk-the-voice-key-must-not-leak", ANTHROPIC_API_KEY: "sk-ant-must-not-leak", JARHEAD_BRAIN_API_KEY: "brain-key-must-not-leak", FAKE_CODEX_FIXTURE: FIXTURE, FAKE_CODEX_LOG: logFile, ...(opts.mode ? { FAKE_CODEX_MODE: opts.mode } : {}), ...(opts.appServer ? { FAKE_CODEX_APPSERVER: opts.appServer } : {}), ...(opts.appServerDelayMs ? { FAKE_CODEX_APPSERVER_DELAY_MS: String(opts.appServerDelayMs) } : {}), ...(opts.tokens ? { FAKE_CODEX_TOKENS: String(opts.tokens) } : {}), ...(opts.lastTokens ? { FAKE_CODEX_LAST_TOKENS: String(opts.lastTokens) } : {}), ...(opts.env ?? {}) },
   });
   t.after(() => brain.stop());
   const execLog = (): ExecLog => JSON.parse(readFileSync(logFile, "utf8")) as ExecLog;
   const appServerLog = (): AppServerLog => JSON.parse(readFileSync(`${logFile}.appserver`, "utf8")) as AppServerLog;
-  return { brain, dir, bin, codexHome, execLog, appServerLog };
+  /** The home the brain builds for Codex: `<stateDir>/codex-home`. */
+  const privateHome = join(dir, "codex-home");
+  return { brain, dir, bin, codexHome, privateHome, execLog, appServerLog };
 }
 
 test("codex: the finder walks JARHEAD_CODEX_BIN, PATH, then the app bundles; auth.json and config.toml are read without a subprocess", async () => {
@@ -264,7 +270,10 @@ test("codex brain: one delegation replays a recorded run through the sink and th
   assert.ok(exec.args.some((a) => a.startsWith("mcp_servers.jarhead.args=[") && a.includes("mcp-bridge.ts")));
   // process.cwd() reports the real path (/private/var…) for a /var temp dir.
   assert.equal(exec.cwd, realpathSync(join(dir, "codex-cwd")), "Codex works in an empty directory of its own");
-  assert.equal(exec.codexHome, codexHome);
+  // The exec fallback runs from Jarhead's own CODEX_HOME too: the login linked in from Kevin's, nothing else of his.
+  assert.equal(exec.codexHome, join(dir, "codex-home"));
+  assert.equal(readlinkSync(join(dir, "codex-home", "auth.json")), join(codexHome, "auth.json"));
+  assert.ok(exec.args.includes("skills.include_instructions=false") && exec.args.includes("features.plugins=false"), "the prompt trims ride exec's argv (--ignore-user-config skips the config.toml)");
   assert.deepEqual(exec.leaked, [], "none of Jarhead's secrets reaches Codex; the ChatGPT login does the work");
   const scrubbed = codexEnv({ OPENAI_API_KEY: "a", ANTHROPIC_API_KEY: "b", JARHEAD_BRAIN_API_KEY: "c", PATH: "/bin" }, "/ch");
   assert.deepEqual(scrubbed, { PATH: "/bin", CODEX_HOME: "/ch" });
@@ -421,8 +430,8 @@ test("codex brain: circled regions are attached with -i and named in the prompt;
 
 // ------------------------------------------------------------- the warm path
 
-test("codex brain: with an app-server the brain is warm — one thread, developer instructions once, a turn per task, the user's own MCP servers off, no --ignore-user-config needed", async (t) => {
-  const { brain, dir, codexHome, appServerLog } = makeBrain(t, { appServer: "ok", configModel: "gpt-6-astra" });
+test("codex brain: with an app-server the brain is warm — one thread, developer instructions once, a turn per task, from Jarhead's own CODEX_HOME with the coding-session prompt blocks off", async (t) => {
+  const { brain, dir, codexHome, privateHome, appServerLog } = makeBrain(t, { appServer: "ok", configModel: "gpt-6-astra" });
   const started = await brain.start();
   assert.equal(started.ready, true, started.detail);
   assert.match(started.detail, /tools over a private socket; warm app-server \(thread thread_1, initialize \d+ ms, thread\/start \d+ ms\)$/);
@@ -436,12 +445,23 @@ test("codex brain: with an app-server the brain is warm — one thread, develope
   assert.ok(configs.some((c) => c.startsWith("mcp_servers.jarhead.command=")));
   assert.ok(configs.includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}}`));
   assert.ok(configs.includes('mcp_servers.jarhead.default_tools_approval_mode="approve"'));
-  assert.ok(configs.includes("mcp_servers.node_repl.enabled=false"), `the server in config.toml is switched off: ${configs.join(" | ")}`);
+  // Kevin's config.toml never loads: CODEX_HOME is Jarhead's, whose config.toml declares no servers — so there is nothing to switch off.
+  assert.ok(!configs.some((c) => c.startsWith("mcp_servers.node_repl")), `no server of Kevin's to disable: ${configs.join(" | ")}`);
+  for (const trim of codexPromptTrimArgs().filter((a) => a !== "-c")) assert.ok(configs.includes(trim), `${trim} rides the argv`);
   assert.ok(configs.includes('model_reasoning_effort="low"'));
   assert.equal(log.cwd, realpathSync(join(dir, "codex-cwd")));
-  assert.equal(log.codexHome, codexHome);
+  assert.equal(log.codexHome, privateHome, "CODEX_HOME is <stateDir>/codex-home");
+  assert.equal(brain.codexHome?.isolated, true);
+  assert.equal(readlinkSync(join(privateHome, "auth.json")), join(codexHome, "auth.json"), "the login is Kevin's, linked");
+  const written = readFileSync(join(privateHome, "config.toml"), "utf8");
+  assert.match(written, /^model = "gpt-6-astra"$/m, "his model line, copied");
+  assert.match(written, /^model_reasoning_effort = "xhigh"$/m);
+  const settings = written.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+  assert.deepEqual(settings, ['model = "gpt-6-astra"', 'model_reasoning_effort = "xhigh"'], `nothing else of his (no notify, servers, plugins, marketplaces): ${written}`);
+  assert.equal(existsSync(join(privateHome, "AGENTS.md")), false, "no AGENTS.md");
+  assert.deepEqual(readdirSync(join(privateHome, "skills")), [], "an empty skills dir");
   assert.deepEqual(log.leaked, [], "no Jarhead secret reaches the app-server");
-  assert.deepEqual(log.requests.map((r) => r.method), ["initialize", "initialized", "thread/start"]);
+  assert.deepEqual(log.requests.map((r) => r.method), ["initialize", "initialized", "thread/start"], "no primer unless asked");
   const threadStart = log.requests[2]!.params!;
   assert.equal(threadStart["approvalPolicy"], "never");
   assert.equal(threadStart["sandbox"], "read-only");
@@ -449,6 +469,8 @@ test("codex brain: with an app-server the brain is warm — one thread, develope
   assert.equal(threadStart["model"], "gpt-6-astra");
   assert.ok(String(threadStart["developerInstructions"]).startsWith(brainSystemPrompt().slice(0, 60)), "the standing orders are set once, per thread");
   assert.ok(String(threadStart["developerInstructions"]).includes(codexAddendum()));
+  assert.equal(threadStart["baseInstructions"], codexBaseInstructions(), "Jarhead's base prompt replaces Codex's coding-agent one (and its preamble rule)");
+  assert.match(codexBaseInstructions(), /your very first output is the tool call — no commentary message before it/);
 
   // A task is one turn: the same events as exec, mapped from the v2 item shapes.
   const sinkLog = makeSink();
@@ -479,9 +501,9 @@ test("codex brain: with an app-server the brain is warm — one thread, develope
   assert.equal(brain.activeTransport, "exec", "stopped: nothing warm");
 });
 
-test("codex brain: circled regions ride a warm turn as localImage inputs; a grown context rolls over to a fresh thread with the recent exchanges as text", async (t) => {
-  // FAKE_CODEX_TOKENS 80000 × turns against a 100k window: after the first turn the thread is past 70 %.
-  const { brain, dir, appServerLog } = makeBrain(t, { appServer: "ok", tokens: 80_000 });
+test("codex brain: circled regions ride a warm turn as localImage inputs; a full context rolls over to a fresh thread with the recent exchanges as text", async (t) => {
+  // last.totalTokens 80000 against a 100k window: after the first turn the context stands past 70 %.
+  const { brain, dir, appServerLog } = makeBrain(t, { appServer: "ok", lastTokens: 80_000 });
   assert.equal((await brain.start()).ready, true);
   const png = join(dir, "mark_1.png");
   writeFileSync(png, "PNG");
@@ -494,15 +516,152 @@ test("codex brain: circled regions ride a warm turn as localImage inputs; a grow
   assert.ok(input[0]!.text!.includes("Attached image 1: Kevin circled"));
   assert.ok(!input[0]!.text!.includes("Attached image 2"));
 
-  // The context grew past the rollover point: the next task starts thread_2 and carries the exchange as text.
+  // The context stands past the rollover point: thread_2 was started right after that turn (in the
+  // background, not at the next task), and the next task rides it with the exchange as text.
+  await new Promise((r) => setTimeout(r, 80));
+  log = appServerLog();
+  assert.deepEqual(log.requests.filter((r) => r.method === "thread/start").map((r) => r.params!["ephemeral"]), [true, true], "the replacement thread is up before the next task arrives");
   assert.equal((await brain.handle(makeTask("do it again"), makeSink().sink)).status, "done");
   log = appServerLog();
-  assert.deepEqual(log.requests.filter((r) => r.method === "thread/start").map((r) => r.params!["ephemeral"]), [true, true], "a second thread");
   const turns = log.requests.filter((r) => r.method === "turn/start");
-  assert.equal(turns[1]!.params!["threadId"], "thread_2");
+  assert.equal(turns[1]!.params!["threadId"], "thread_2", "the task rode the replacement thread (this fake reports a full context after every turn, so a third thread may already be starting)");
   const text = (turns[1]!.params!["input"] as Array<{ text?: string }>)[0]!.text!;
   assert.ok(text.includes('Earlier in this session:\nKevin said: "what is this"\nYou answered: Finder is in front.'), text.slice(0, 300));
   assert.ok(text.endsWith('Kevin said: "do it again"'));
+
+  // Three trivial turns whose bill grows 25k each while the context stays at 23k never roll over (the bug: total was judged).
+  const steady = makeBrain(t, { appServer: "ok", tokens: 25_000, lastTokens: 23_000 });
+  assert.equal((await steady.brain.start()).ready, true);
+  for (const req of ["a", "b", "c"]) assert.equal((await steady.brain.handle(makeTask(req), makeSink().sink)).status, "done");
+  await new Promise((r) => setTimeout(r, 50));
+  const steadyLog = steady.appServerLog();
+  assert.equal(steadyLog.requests.filter((r) => r.method === "thread/start").length, 1, "one thread across three turns: total 25k → 50k → 75k of a 100k window is the bill, not the context");
+  assert.equal(steadyLog.requests.filter((r) => r.method === "turn/start").length, 3);
+  assert.ok(!(steadyLog.requests.filter((r) => r.method === "turn/start")[2]!.params!["input"] as Array<{ text?: string }>)[0]!.text!.includes("Earlier in this session"), "no history text: the thread itself remembers");
+});
+
+test("codex brain: Jarhead's CODEX_HOME — built and refreshed at start, links the login, copies only the model lines, falls back to ~/.codex without an auth.json, never links a home onto itself", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-codex-home-"));
+  const source = join(dir, "kevin-codex");
+  mkdirSync(source, { recursive: true });
+  writeFileSync(join(source, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "acc" } }));
+  writeFileSync(join(source, "config.toml"), `notify = ["/x/SkyComputerUseClient", "turn-ended"]\nmodel = "gpt-6-astra"\nmodel_reasoning_effort = "high"\nservice_tier = "default"\n\n[marketplaces.openai-bundled]\nsource = "x"\n\n[plugins."chrome@openai-bundled"]\nenabled = true\n\n[mcp_servers.node_repl]\ncommand = "y"\n`);
+  writeFileSync(join(source, "AGENTS.md"), "# Kevin Codex Preset");
+  mkdirSync(join(source, "skills", "one"), { recursive: true });
+  const stateDir = join(dir, "state");
+  const home = prepareCodexHome({ stateDir, sourceHome: source });
+  assert.equal(home.isolated, true, home.detail);
+  assert.equal(home.path, join(stateDir, "codex-home"));
+  assert.ok(lstatSync(join(home.path, "auth.json")).isSymbolicLink());
+  assert.equal(readlinkSync(join(home.path, "auth.json")), join(source, "auth.json"));
+  assert.equal(JSON.parse(readFileSync(join(home.path, "auth.json"), "utf8")).tokens.access_token, "acc", "reads through to Kevin's login");
+  const config = readFileSync(join(home.path, "config.toml"), "utf8");
+  assert.equal(config.split("\n").filter((l) => l && !l.startsWith("#")).join("\n"), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\nservice_tier = "default"', `only the model lines: ${config}`);
+  assert.equal(existsSync(join(home.path, "AGENTS.md")), false);
+  assert.deepEqual(readdirSync(join(home.path, "skills")), []);
+  assert.match(home.detail, /private CODEX_HOME .*codex-home: auth\.json → .*kevin-codex\/auth\.json, model gpt-6-astra from .*kevin-codex, no AGENTS\.md, no skills/);
+  assert.equal(codexUserMcpServers(home.path).names.length, 0, "nothing of his to disable in the app-server argv");
+
+  // Refresh: an AGENTS.md that appeared is removed, a changed model line is copied, a regular auth.json (a Codex that renamed over the link) is moved aside and re-linked.
+  writeFileSync(join(home.path, "AGENTS.md"), "stray");
+  writeFileSync(join(source, "config.toml"), 'model = "gpt-7"\n');
+  const { unlinkSync } = await import("node:fs");
+  unlinkSync(join(home.path, "auth.json"));
+  writeFileSync(join(home.path, "auth.json"), JSON.stringify({ tokens: { access_token: "newer" } }));
+  const again = prepareCodexHome({ stateDir, sourceHome: source });
+  assert.equal(again.isolated, true);
+  assert.equal(existsSync(join(home.path, "AGENTS.md")), false);
+  assert.match(readFileSync(join(home.path, "config.toml"), "utf8"), /^model = "gpt-7"$/m);
+  assert.ok(!/model_reasoning_effort/.test(readFileSync(join(home.path, "config.toml"), "utf8")), "a line his config no longer has is not invented");
+  assert.equal(readlinkSync(join(home.path, "auth.json")), join(source, "auth.json"), "re-linked");
+  const strays = readdirSync(home.path).filter((f) => f.startsWith("auth.json.stray-"));
+  assert.equal(strays.length, 1, "the regular file was kept aside, not deleted");
+  assert.equal(JSON.parse(readFileSync(join(home.path, strays[0]!), "utf8")).tokens.access_token, "newer");
+
+  // No auth.json to link: the source home is used as is, with the reason.
+  const bare = join(dir, "bare");
+  mkdirSync(bare);
+  const fallback = prepareCodexHome({ stateDir: join(dir, "state2"), sourceHome: bare });
+  assert.equal(fallback.isolated, false);
+  assert.equal(fallback.path, bare);
+  assert.match(fallback.detail, /no auth\.json at .*bare to link/);
+  assert.equal(existsSync(join(dir, "state2", "codex-home")), false, "nothing built");
+
+  // CODEX_HOME already pointing at <stateDir>/codex-home: never link auth.json onto itself.
+  const self = prepareCodexHome({ stateDir, sourceHome: home.path });
+  assert.equal(self.isolated, false);
+  assert.equal(self.path, home.path);
+  assert.ok(lstatSync(join(home.path, "auth.json")).isSymbolicLink() && readlinkSync(join(home.path, "auth.json")) === join(source, "auth.json"), "the link is untouched");
+
+  // Through the brain: without an auth.json the fallback home is Kevin's, so his servers are switched off in the argv as before.
+  const viaStatus = makeBrain(t, { appServer: "ok", authFile: false, configModel: "gpt-6-astra" });
+  assert.equal((await viaStatus.brain.start()).ready, true);
+  assert.equal(viaStatus.brain.codexHome?.isolated, false);
+  const log = viaStatus.appServerLog();
+  assert.equal(log.codexHome, viaStatus.codexHome, "CODEX_HOME is the source home");
+  assert.ok(log.args.includes("mcp_servers.node_repl.enabled=false"), "the belt for the fallback: his config.toml loads, so its servers are disabled");
+});
+
+test("codex brain: a primed thread — one tiny background turn after thread/start; a task that lands mid-primer interrupts it and runs at once", async (t) => {
+  const primed = makeBrain(t, { appServer: "ok", prime: true });
+  assert.equal((await primed.brain.start()).ready, true);
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && !primed.appServerLog().requests.some((r) => r.method === "turn/completed" || (r.method === "turn/start" && primed.appServerLog().requests.length > 4))) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 150));
+  let log = primed.appServerLog();
+  const primer = log.requests.find((r) => r.method === "turn/start")!;
+  assert.equal((primer.params!["input"] as Array<{ text: string }>)[0]!.text, PRIMER_TEXT, "the primer is the thread's first turn");
+  assert.equal((await primed.brain.handle(makeTask("what app is open"), makeSink().sink)).status, "done");
+  log = primed.appServerLog();
+  const turns = log.requests.filter((r) => r.method === "turn/start");
+  assert.equal(turns.length, 2, "primer, then the task");
+  assert.ok((turns[1]!.params!["input"] as Array<{ text: string }>)[0]!.text.includes('Kevin said: "what app is open"'));
+  assert.ok(!log.requests.some((r) => r.method === "turn/interrupt"), "a primer that had finished is not interrupted");
+
+  // A task during the primer: the primer is interrupted first, then the task's turn starts.
+  const busy = makeBrain(t, { appServer: "hang-turn", prime: true });
+  assert.equal((await busy.brain.start()).ready, true);
+  await new Promise((r) => setTimeout(r, 100));
+  const abort = new AbortController();
+  const pending = busy.brain.handle(makeTask("wait", abort.signal), makeSink().sink);
+  await new Promise((r) => setTimeout(r, 200));
+  const methods = busy.appServerLog().requests.map((r) => r.method).filter((m) => m.startsWith("turn/"));
+  assert.deepEqual(methods.slice(0, 3), ["turn/start", "turn/interrupt", "turn/start"], `primer, its interrupt, the task: ${methods.join(" ")}`);
+  abort.abort();
+  assert.deepEqual(await pending, { status: "cancelled" });
+});
+
+test("codex brain: per-turn effort A/B — a few imperative words run at the simple effort, everything else at the brain's, logged per turn; off unless the knob is set", async (t) => {
+  for (const [text, simple] of [
+    ["open Safari", true],
+    ["jarhead, search the wiki for design", true],
+    ["Hey Jarhead click send please", true],
+    ["yes", true],
+    ["go ahead", true],
+    ["what app is open", false],
+    ["what's on my screen?", false],
+    ["can you find the invoice from last march and tell me the total", false],
+    ["open the file I was editing yesterday and summarize its second section", false],
+    ["the weather", false],
+  ] as const) assert.equal(isSimpleRequest(text), simple, text);
+
+  const ab = makeBrain(t, { appServer: "ok", effort: "medium", simpleEffort: "low" });
+  assert.equal((await ab.brain.start()).ready, true);
+  assert.equal((await ab.brain.handle(makeTask("open Safari"), makeSink().sink)).status, "done");
+  assert.equal((await ab.brain.handle(makeTask("what app is open"), makeSink().sink)).status, "done");
+  const efforts = ab.appServerLog().requests.filter((r) => r.method === "turn/start").map((r) => r.params!["effort"]);
+  assert.deepEqual(efforts, ["low", "medium"], "Codex keeps a turn's effort for the following turns, so the brain sets it every turn");
+
+  const off = makeBrain(t, { appServer: "ok", effort: "medium" });
+  assert.equal((await off.brain.start()).ready, true);
+  assert.equal((await off.brain.handle(makeTask("open Safari"), makeSink().sink)).status, "done");
+  assert.deepEqual(off.appServerLog().requests.filter((r) => r.method === "turn/start").map((r) => r.params!["effort"]), ["medium"], "no knob, no A/B");
+
+  // The knob from the environment (JARHEAD_CODEX_SIMPLE_EFFORT=low), the way the daemon gets it.
+  const viaEnv = makeBrain(t, { appServer: "ok", effort: "medium", env: { JARHEAD_CODEX_SIMPLE_EFFORT: "low" } });
+  assert.equal((await viaEnv.brain.start()).ready, true);
+  assert.equal((await viaEnv.brain.handle(makeTask("click send"), makeSink().sink)).status, "done");
+  assert.deepEqual(viaEnv.appServerLog().requests.filter((r) => r.method === "turn/start").map((r) => r.params!["effort"]), ["low"]);
 });
 
 test("codex brain: a stop interrupts the warm turn; a crashed app-server fails the turn and the next task runs on exec until the retry window passes", async (t) => {
@@ -546,10 +705,14 @@ test("codex brain: an app-server that never answers initialize is given up withi
   assert.throws(() => exec.appServerLog(), "never spawned");
 
   // The argv builder alone.
-  const args = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", effort: "max", developerInstructions: "x", disableUserServers: false });
+  const args = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", effort: "max", serviceTier: "priority", developerInstructions: "x", disableUserServers: false });
   assert.deepEqual(args.slice(0, 5), ["app-server", "--listen", "stdio://", "--disable", "apps"]);
   assert.ok(args.includes("notify=[]"));
   assert.ok(args.includes('model_reasoning_effort="xhigh"'));
+  assert.ok(args.includes('service_tier="priority"'), "the tier knob, when set");
+  assert.ok(args.includes("skills.include_instructions=false") && args.includes("include_permissions_instructions=false") && args.includes("include_collaboration_mode_instructions=false") && args.includes("features.plugins=false"), "the coding-session prompt blocks are off");
+  assert.ok(!appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", developerInstructions: "x", disableUserServers: false, trimPrompt: false }).includes("skills.include_instructions=false"), "trimPrompt: false keeps them");
+  assert.ok(!args.some((a) => a.startsWith("service_tier=") && !a.includes("priority")), "no tier unless set");
   assert.ok(args.includes('mcp_servers.jarhead.default_tools_approval_mode="approve"'));
   const { names, unaddressable } = codexUserMcpServers(fakeCodexHome(mkdtempSync(join(tmpdir(), "jh-codex-cfg-")), { model: "m" }));
   assert.deepEqual(names, ["node_repl"], "[mcp_servers.node_repl] is a server; its [mcp_servers.node_repl.env] sub-table is not another");

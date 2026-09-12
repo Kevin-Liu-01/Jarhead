@@ -76,7 +76,7 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
   it by whole word or file name. Do not add a hunk-narrowed rail for a
   security-critical file: hunk regexes are dodged by editing the lines around
   them. Bump `SYSTEM_PROMPT_VERSION` when the standing orders change;
-  `brain.test.ts` pins the prompt's order, budget (900 words) and tool names.
+  `brain.test.ts` pins the prompt's order, budget (1100 words, v3.2) and tool names.
 - **Secrets never enter a child, and never leave a result.** `scrubbedEnv` /
   `codexEnv` strip `SECRET_KEYS` from every process the brain spawns (shell,
   AppleScript, Codex, Claude Code); `loginShellCommand` unsets them again inside
@@ -96,6 +96,7 @@ pnpm build:mac                # native Jarhead.app → build/Jarhead.app (apps/m
 pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps it quiet
 pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep|mute|unmute|stop|pause|resume|agent.refresh
 pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path; exit 1 when p95 to dispatch > 250 ms with the real helper
+pnpm jarhead bench --brain [--runs N] [--effort low] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
 apps/mac/Scripts/console-preview.sh [scenario] [out.png]   # Console with fake data (fixtures in apps/mac/Scripts/mock)
 apps/mac/Scripts/onboarding-preview.sh [step] [out.png]    # Setup window with fake data (welcome … done)
@@ -384,3 +385,27 @@ to his microphone and bills per second.
 - Engine tests that follow a permission change should wait for
   `snapshot().permissions.all` to carry the row rather than a fixed settle(): the
   fresh-helper poll is on a timer.
+- Codex app-server `thread/tokenUsage/updated`: `.total` is the thread's CUMULATIVE
+  bill (it grows by the whole prompt every generation); `.last` is the current
+  context. Judging a rollover on `.total` threw the warm thread away after most
+  multi-tool delegations (measured 6 of 18) — always compare `.last` to the window.
+- `codex debug prompt-input` renders the model-visible developer blocks with no
+  model call; `codex debug models` carries the base instructions template. On
+  0.154 only `skills.include_instructions=false` removes the skills catalog
+  (~8.4k tokens); `project_doc_max_bytes=0`, `features.skills=false` and the
+  `--disable multi_agent` family do nothing to the prompt. MCP tool schemas are
+  NOT inlined (code-mode exec): the model sees names only, so the tool table it
+  needs lives in the Codex addendum.
+- Jarhead's Codex runs in a private `CODEX_HOME` (`~/.jarhead/codex-home`:
+  auth.json symlinked to `~/.codex/auth.json`, a config.toml with only the model
+  keys, no AGENTS.md, empty skills). Kevin's global `~/.codex/AGENTS.md` points at
+  `~/Documents/GitHub/kevin-wiki`, which no longer exists (the wiki is
+  `~/repos/Kevin-Wiki-v3`); inherited, it cost 22.5 s of a 40.8 s wiki search.
+- GPT-Live-1 streams output audio continuously, silence included: `earHeld()`
+  judged "the voice is speaking" on frame ARRIVAL and held the ear for the whole
+  session (0 reflex fires in 39 production delegations). Judge speaking on the
+  output transcript or on audible frames (`outputLevel ≥ 0.02`), never on arrival.
+- Every model generation on gpt-6-astra costs ~3.4 s (p90 5.9) regardless of
+  effort on non-reasoning turns; latency ≈ 0.7 s + generations × 3.4 s. Cut
+  generations (act first, verify from results, no closing screenshot), not tool
+  time (55 ms median).

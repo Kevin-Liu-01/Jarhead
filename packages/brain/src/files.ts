@@ -288,14 +288,62 @@ export interface SearchOptions {
   /** Test seam / override: the ripgrep binary; undefined tries PATH and the usual homes. */
   readonly rg?: string | false | undefined;
   readonly signal?: AbortSignal | undefined;
+  /**
+   * Letter case: true / false decide; undefined lets the pattern decide — a
+   * leading (?i) or no uppercase letter in it means case-insensitive (ripgrep's
+   * smart case), so "design" finds "Design" and "Design" finds only that.
+   */
+  readonly caseInsensitive?: boolean | undefined;
+}
+
+/**
+ * The inline flag groups a model writes at the front of a pattern — (?i), (?s),
+ * (?m) or a combination like (?im) — split off, since JavaScript's RegExp rejects
+ * them ("Invalid group") while ripgrep's regex accepts them. The letters become
+ * RegExp flags for the walk and options for ripgrep; anything else stays in the
+ * pattern and fails the way an invalid pattern does.
+ */
+export function splitInlineFlags(pattern: string): { readonly pattern: string; readonly flags: ReadonlySet<string> } {
+  const flags = new Set<string>();
+  let rest = pattern;
+  let m: RegExpExecArray | null;
+  while ((m = /^\(\?([ims]+)\)/.exec(rest)) !== null) {
+    for (const f of m[1]!) flags.add(f);
+    rest = rest.slice(m[0].length);
+  }
+  return { pattern: rest, flags };
+}
+
+/** ripgrep's smart case: a literal uppercase letter in the pattern (escapes such as \S aside) asks for an exact case. */
+export function hasUppercase(pattern: string): boolean {
+  return /[A-Z]/.test(pattern.replace(/\\./g, ""));
+}
+
+/** How a search treats case and line structure, decided once for ripgrep and the walk alike. */
+export interface SearchMode {
+  readonly pattern: string;
+  readonly insensitive: boolean;
+  readonly multiline: boolean;
+  readonly dotAll: boolean;
+}
+
+export function searchMode(pattern: string, caseInsensitive?: boolean): SearchMode {
+  const split = splitInlineFlags(pattern);
+  return {
+    pattern: split.pattern,
+    insensitive: caseInsensitive ?? (split.flags.has("i") || !hasUppercase(split.pattern)),
+    multiline: split.flags.has("m"),
+    dotAll: split.flags.has("s"),
+  };
 }
 
 /** ripgrep when it answers, otherwise a bounded walk; secret stores are skipped either way. */
 export async function searchFiles(root: string, pattern: string, opts: SearchOptions = {}): Promise<{ hits: SearchHit[]; via: "rg" | "walk"; note?: string }> {
   const max = opts.max ?? SEARCH_MAX_RESULTS;
+  const mode = searchMode(pattern, opts.caseInsensitive);
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern);
+    regex = new RegExp(mode.pattern, `${mode.insensitive ? "i" : ""}${mode.multiline ? "m" : ""}${mode.dotAll ? "s" : ""}`);
   } catch (e) {
     throw new Error(`pattern is not a valid regular expression: ${(e as Error).message}`);
   }
@@ -306,7 +354,7 @@ export async function searchFiles(root: string, pattern: string, opts: SearchOpt
     if (isMacOSBlock(e) && macOSBlockedLine(root)) throw new Error(explainFsError(e, root));
   }
   if (opts.rg !== false) {
-    const viaRg = await ripgrep(root, pattern, opts.glob, max, opts.rg, opts.signal);
+    const viaRg = await ripgrep(root, mode, opts.glob, max, opts.rg, opts.signal);
     if (viaRg) return { hits: viaRg.filter((h) => !secretReasonEither(h.path)), via: "rg" };
   }
   return { hits: walkSearch(root, regex, opts.glob, max), via: "walk" };
@@ -314,13 +362,18 @@ export async function searchFiles(root: string, pattern: string, opts: SearchOpt
 
 const RG_CANDIDATES = ["rg", "/opt/homebrew/bin/rg", "/usr/local/bin/rg"];
 
-function ripgrep(root: string, pattern: string, glob: string | undefined, max: number, bin: string | undefined, signal: AbortSignal | undefined): Promise<SearchHit[] | undefined> {
+/** ripgrep's flags for a mode: case decided explicitly either way (a user config could say --smart-case), multiline only when a flag asked. */
+export function ripgrepModeArgs(mode: SearchMode): string[] {
+  return [mode.insensitive ? "-i" : "-s", ...(mode.multiline || mode.dotAll ? ["--multiline"] : []), ...(mode.dotAll ? ["--multiline-dotall"] : [])];
+}
+
+function ripgrep(root: string, mode: SearchMode, glob: string | undefined, max: number, bin: string | undefined, signal: AbortSignal | undefined): Promise<SearchHit[] | undefined> {
   const candidates = bin ? [bin] : RG_CANDIDATES;
   const tryOne = (i: number): Promise<SearchHit[] | undefined> =>
     new Promise((resolve) => {
       const file = candidates[i];
       if (!file) return resolve(undefined);
-      const args = ["-n", "--no-heading", "--color", "never", "--max-count", "50", "--max-filesize", "1M", ...(glob ? ["-g", glob] : []), "-e", pattern, root];
+      const args = ["-n", "--no-heading", "--color", "never", "--max-count", "50", "--max-filesize", "1M", ...ripgrepModeArgs(mode), ...(glob ? ["-g", glob] : []), "-e", mode.pattern, root];
       execFile(file, args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, ...(signal ? { signal } : {}) }, (err, stdout) => {
         const code = (err as { code?: number | string } | null)?.code;
         if (err && code === "ENOENT") return resolve(tryOne(i + 1));

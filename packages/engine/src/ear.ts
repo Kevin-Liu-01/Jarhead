@@ -66,6 +66,8 @@ export interface ReflexLedgerRow {
   readonly dropped?: string;
   /** Final result, or a partial that ended terminally, or the stability window. */
   readonly fired: "final" | "terminal" | "stable";
+  /** A multi-step reflex's account of itself (what it did, or how far it got). */
+  readonly did?: string;
 }
 
 export interface DictationHooks {
@@ -164,6 +166,9 @@ export class EarReflexes {
       this.segments.clear();
       seg = { id: segment, words: [], consumed: 0, lastAt: now };
       this.segments.set(segment, seg);
+      // One line per segment (the app rolls one every ~50 s): the proof, in the daemon's
+      // log, that the app's ear reaches the engine at all — a partial is otherwise debug-level.
+      log.info(`ear: segment #${segment} open (${isFinal ? "final" : "partial"} "${text.slice(0, 60)}", ${now - at} ms after the app heard it${this.opts.enabled() ? "" : "; reflexes off"})`);
     }
     this.current = seg;
     const words = text ? text.split(" ") : [];
@@ -207,7 +212,11 @@ export class EarReflexes {
     if (held) {
       this.clearTimer(seg);
       seg.consumed = words.length;
-      log.debug(`ear: "${phrase}" held (${held})`);
+      // A command the grammar would have taken is worth a line at info: a hold that never
+      // lifts (a stuck "speaking" signal) is otherwise invisible in production.
+      const wouldHave = this.opts.match(cleaned);
+      if (wouldHave) log.info(`ear: "${phrase}" matched ${wouldHave.label} but held (${held}); consumed`);
+      else log.debug(`ear: "${phrase}" held (${held})`);
       return;
     }
     const reflex = this.opts.match(cleaned);
@@ -261,8 +270,12 @@ export class EarReflexes {
       .run(reflex, phrase)
       .then((outcome) => {
         const doneAt = this.now();
-        if (outcome.ok) this.opts.fired.record({ id, phrase, reflex, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: true });
-        this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: outcome.ok, ...(outcome.dropped ? { dropped: outcome.dropped } : {}), fired: how });
+        const did = outcome.did !== undefined ? { did: outcome.did } : {};
+        // The outcome's reflex, not the grammar's: a batch hands back one whose `said` is where
+        // the words actually landed, and that is what the delegation speaks when it reconciles.
+        if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: true, ...did });
+        if (outcome.did) log.info(`ear: ${reflex.label} ${outcome.ok ? "done" : "did not apply"} in ${doneAt - dispatchedAt} ms: ${outcome.did.slice(0, 200)}`);
+        this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "ear", earAt, matchedAt, dispatchedAt: outcome.dispatchedAt ?? dispatchedAt, doneAt, ok: outcome.ok, ...(outcome.dropped ? { dropped: outcome.dropped } : {}), fired: how, ...did });
       })
       .catch((e: unknown) => {
         const doneAt = this.now();

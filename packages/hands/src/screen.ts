@@ -29,11 +29,20 @@ export const DEFAULT_SHOT_BUDGET: ShotBudget = { maxLongEdge: 2000, maxPixels: 2
 /**
  * The quick budget: what a screenshot costs when the point is to act now, not to
  * read small print — the pre-warm shot handed to a brain as its task begins, a
- * reflex "screenshot this", the bench. A 1280-pixel long edge is a quarter of the
- * pixels of the default and encodes in roughly a third of the time; zoom is there
+ * reflex "screenshot this", the bench. The pixel cap (~1.1 MP, less than half the
+ * default) is what bounds the encode time; the long edge is left at 2000 so the cap
+ * decides the shape: a 5120×1440 ultrawide comes out ~1977×556 (legible; at a
+ * 1280 edge it was 1280×360 and the model spent a zoom on it), a 16:10 Retina
+ * display ~1300×830 (3456×2234 → 1304×843; 2560×1600 → 1326×829). Zoom is there
  * for anything that needs the full budget.
  */
-export const QUICK_SHOT_BUDGET: ShotBudget = { maxLongEdge: 1280, maxPixels: 1_100_000 };
+export const QUICK_SHOT_BUDGET: ShotBudget = { maxLongEdge: 2000, maxPixels: 1_100_000 };
+
+/** The pixel size the budget yields for a w×h capture (what `fitScale` gives, rounded as the helper rounds). */
+export function fitSize(w: number, h: number, budget: ShotBudget = DEFAULT_SHOT_BUDGET): { width: number; height: number } {
+  const s = fitScale(w, h, budget);
+  return { width: Math.round(w * s), height: Math.round(h * s) };
+}
 
 export class Screen {
   private mapping: ScreenMapping | undefined;

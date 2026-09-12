@@ -23,7 +23,7 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
   screenshot: {
     name: "screenshot",
     description: "Capture the display under the cursor (or a given display id) and return it as an image. Always take a fresh screenshot before clicking on something you have not seen since the screen changed. Coordinates for every other tool are pixels of the LAST screenshot.",
-    parameters: { type: "object", properties: { display: { type: ["number", "string"], description: "display id, 'main', or 'cursor' (default)" }, quick: { type: "boolean", description: "true for a faster, smaller image (1280 px long edge) when you only need to see where things are; zoom for small text" } } },
+    parameters: { type: "object", properties: { display: { type: ["number", "string"], description: "display id, 'main', or 'cursor' (default)" }, quick: { type: "boolean", description: "true for a faster, reduced-resolution image when you only need to see where things are; zoom for small text" } } },
   },
   zoom: {
     name: "zoom",
@@ -45,7 +45,7 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
     description: "Scroll at a coordinate. scroll_amount is in wheel clicks (about 60 px each).",
     parameters: { type: "object", properties: { coordinate, scroll_direction: { type: "string", enum: ["up", "down", "left", "right"] }, scroll_amount: { type: "number" }, text: modifiers }, required: ["scroll_direction", "scroll_amount"] },
   },
-  type: { name: "type", description: "Type text into the focused element. Refused in password fields.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+  type: { name: "type", description: "Type text into the focused element. OK means the keystrokes were delivered to it; the result names neither the field nor the text, so when what landed where matters, one screenshot (not read_focused_text). Refused in password fields.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   key: { name: "key", description: "Press a key or chord: 'Return', 'Tab', 'Escape', 'cmd+s', 'cmd+shift+p', 'ctrl+c', 'Down'.", parameters: { type: "object", properties: { text: { type: "string" }, repeat: { type: "integer", minimum: 1, maximum: 100 } }, required: ["text"] } },
   hold_key: { name: "hold_key", description: "Hold a key for a duration in seconds.", parameters: { type: "object", properties: { text: { type: "string" }, duration: { type: "number" } }, required: ["text", "duration"] } },
   wait: { name: "wait", description: "Wait for a number of seconds (for a page or app to settle).", parameters: { type: "object", properties: { duration: { type: "number" } }, required: ["duration"] } },
@@ -53,11 +53,11 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
 
 const DESKTOP_SPECS: Record<(typeof DESKTOP_TOOLS)[number], ToolSpec> = {
   open_app: { name: "open_app", description: "Launch or bring an application to the front by name (e.g. 'Safari', 'Slack', 'Cursor').", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  focus_app: { name: "focus_app", description: "Bring a running app to the front by name.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  focus_app: { name: "focus_app", description: "Bring a running app to the front by name. The result only echoes the name; frontmost_app confirms what is in front.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   list_windows: { name: "list_windows", description: "List on-screen windows: app, title, position and size in global points. Cheap; use it to know what is open before taking screenshots.", parameters: { type: "object", properties: {} } },
-  read_focused_text: { name: "read_focused_text", description: "Read the value and selected text of the focused element via accessibility (exact text, no OCR). Password fields are never read.", parameters: { type: "object", properties: {} } },
+  read_focused_text: { name: "read_focused_text", description: "Read the value and selected text of the focused element via accessibility (exact text, no OCR). Fails in Chromium browsers (Chrome, Arc, Edge…), whose web content is not the system's focused element: use browser_read or browser_find there. Not needed after a type that returned OK. Password fields are never read.", parameters: { type: "object", properties: {} } },
   element_at: { name: "element_at", description: "Describe the UI element at a screenshot coordinate via accessibility (role, title, value).", parameters: { type: "object", properties: { coordinate }, required: ["coordinate"] } },
-  frontmost_app: { name: "frontmost_app", description: "Which app and window is in front.", parameters: { type: "object", properties: {} } },
+  frontmost_app: { name: "frontmost_app", description: "Which app and window is in front, in about 20 ms. Use this, never applescript, to learn the front app.", parameters: { type: "object", properties: {} } },
   find_element: {
     name: "find_element",
     description: "Find a control on the front window by its visible label through accessibility (no screenshot needed): exact name first, then a close match. Returns whether exactly one matched, its role, label and centre in global points, and the other candidates when there were several. Cheap (a few ms on a cached tree); use it before click_element, or to learn what a button is called.",
@@ -65,7 +65,7 @@ const DESKTOP_SPECS: Record<(typeof DESKTOP_TOOLS)[number], ToolSpec> = {
   },
   click_element: {
     name: "click_element",
-    description: "Click the one control on the front window with this visible label, found through accessibility — no screenshot, no coordinates. Fails (without clicking) when nothing or more than one control carries the name; then take a screenshot and left_click. Same gates as left_click: irreversible-looking labels (Send, Pay, Delete…) return needs_confirmation.",
+    description: "Click the one control on the front window with this visible label, found through accessibility — no screenshot, no coordinates. The result names what was clicked and where: that is the verification, no screenshot needed. Fails (without clicking) when nothing or more than one control carries the name; then take a screenshot and left_click. Same gates as left_click: irreversible-looking labels (Send, Pay, Delete…) return needs_confirmation.",
     parameters: { type: "object", properties: { name: { type: "string" }, role: { type: "string" }, button: { type: "string", enum: ["left", "right"] }, count: { type: "integer", minimum: 1, maximum: 2 } }, required: ["name"] },
   },
 };
@@ -117,7 +117,7 @@ export const SYSTEM_SPECS: readonly ToolSpec[] = [
   },
   {
     name: "search_files",
-    description: "Search file contents under a folder for a regular expression (ripgrep when present, otherwise a walk). Returns path:line: text for up to 200 matches. glob narrows the files, e.g. '*.ts' or 'src/**/*.swift'. Secret stores are skipped.",
+    description: "Search file contents under a folder for a regular expression (ripgrep when present, otherwise a walk). Case-insensitive when the pattern has no uppercase letter (write 'Design' for an exact case); a leading inline flag group — (?i), (?s), (?m) or (?im) — is honoured. Returns path:line: text for up to 200 matches. glob narrows the files, e.g. '*.ts' or 'src/**/*.swift'. Secret stores are skipped.",
     parameters: { type: "object", properties: { root: { type: "string" }, pattern: { type: "string" }, glob: { type: "string" } }, required: ["root", "pattern"] },
   },
   {
@@ -132,7 +132,7 @@ export const SYSTEM_SPECS: readonly ToolSpec[] = [
   },
   {
     name: "applescript",
-    description: "Run an AppleScript with osascript and return its result. Same gates as run_shell: `do shell script` goes through the shell policy, keystrokes into password managers or System Settings are refused, anything that sends mail or messages or deletes returns needs_confirmation, and power or login changes are never. Good for app-native automation (Finder, Music, Calendar, Notes, Safari tabs).",
+    description: "Run an AppleScript with osascript and return its result. Slow: a process per call, often seconds — never for what a fast tool answers: frontmost_app for the front app (about 20 ms), the browser_* tools for a page or tabs in Safari, Chrome or Arc, open_app / focus_app to switch apps. Same gates as run_shell: `do shell script` goes through the shell policy, keystrokes into password managers or System Settings are refused, anything that sends mail or messages or deletes returns needs_confirmation, and power or login changes are never. Good for app-native automation (Finder, Music, Calendar, Notes).",
     parameters: { type: "object", properties: { script: { type: "string" } }, required: ["script"] },
   },
   { name: "open_url", description: "Open an http or https URL in Kevin's default browser.", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
@@ -234,10 +234,10 @@ export const BROWSER_SPECS: readonly ToolSpec[] = [
   },
   {
     name: "browser_navigate",
-    description: "Open a URL in the front tab of the browser (a new window when it has none). Asks first when the URL looks like a payment or sign-in page. http/https only.",
+    description: "Open a URL in the front tab of the browser (a new window when it has none). The result says the page is loading, not loaded; browser_read confirms it. Asks first when the URL looks like a payment or sign-in page. http/https only.",
     parameters: { type: "object", properties: { url: { type: "string" }, app: { type: "string" } }, required: ["url"] },
   },
-  { name: "browser_tabs", description: "List the tabs of the front browser window: index, title, URL, and which is active.", parameters: { type: "object", properties: { app: { type: "string" } } } },
+  { name: "browser_tabs", description: "List the tabs of the front browser window: index, title, URL, and which is active. One Apple event; use it instead of applescript for tabs.", parameters: { type: "object", properties: { app: { type: "string" } } } },
 ];
 
 export const COMPUTER_TOOL_SPECS: readonly ToolSpec[] = COMPUTER_MEMBERS.map((m) => COMPUTER_SPECS[m]);

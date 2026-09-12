@@ -415,3 +415,91 @@ test("a typed mismatch where ⌘Z cannot reach (the focus is not a text field): 
     await engine.stop();
   }
 });
+
+test("search through the ear: \"search the wiki for design\" with the wiki up in the front browser clicks the page's search field, types the words and presses Return after the careful window; Live's delegation for the same words is finished as already done with what was done on the record", async () => {
+  const w = world();
+  const { engine, live, hands, brain, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.frontApp = "Google Chrome";
+    const original = hands.request.bind(hands);
+    hands.request = async <T>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
+      if (op === "frontmost") return { app: hands.frontApp, pid: 1, window: { title: "Design system — Kevin's Wiki", x: 0, y: 0, w: 1200, h: 800, windowId: 1 } } as T;
+      if (op === "find_element" && String(params["name"]) === "search") {
+        hands.ops.push({ op, params, at: clock.t });
+        const el = { i: 4, depth: 3, role: "AXTextField", title: "Search the wiki", app: hands.frontApp, score: 0.4, label: "Search the wiki", x: 500, y: 400, w: 60, h: 24, center: { x: 530, y: 412 }, pressable: false };
+        return { app: hands.frontApp, window: "Design system — Kevin's Wiki", found: true, unique: true, candidates: 1, tier: "contains", element: el, cached: true, treeMs: 3, nodes: 120, truncated: false, ms: 1 } as T;
+      }
+      return original<T>(op, params);
+    };
+    hands.ops.length = 0;
+    const rows: { action: string; ok: boolean; did?: string; fired: string }[] = [];
+    engine.on("reflex.fired", (row) => rows.push(row));
+
+    const heardAt = clock.t;
+    engine.ear("search the wiki for design", false, 1, heardAt);
+    await settle(20);
+    assert.equal(hands.named("type").length, 0, "a careful kind waits out its window");
+    await settle(120);
+    assert.deepEqual(hands.named("find_element").map((f) => [f.params["name"], f.params["role"]]), [["search", "pagefield"]], "the page's field, never the address bar");
+    assert.equal(hands.named("click").length, 1, "the field was clicked");
+    assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), ["cmd+a", "Return"]);
+    assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["design"]);
+    assert.equal(rows.length, 1);
+    assert.deepEqual([rows[0]!.action, rows[0]!.ok, rows[0]!.fired], ["search wiki for design", true, "stable"]);
+    assert.equal(rows[0]!.did, 'typed "design" into the search field of Google Chrome and pressed Return');
+
+    // Live catches up with the same words: finished as done, the reflex's line spoken, nothing typed twice.
+    clock.t += 500;
+    delegate(w, "Jarhead, search the wiki for design.", "item_1");
+    await settle(60);
+    assert.equal(brain.tasks.length, 0, "no brain");
+    assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["design"], "typed once");
+    const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
+    assert.equal(d.status, "done");
+    assert.equal(d.summary, "already did it");
+    // The line spoken is where the words landed (the batch's account, verified by its tool results), not the grammar's guess.
+    assert.deepEqual(live.commentary, ['typed "design" into the search field of Google Chrome and pressed Return.']);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("the ear is not held by output audio that is silence: GPT-Live-1 streams frames continuously, so only audible frames (or the output transcript) count as the voice speaking", async () => {
+  const w = world();
+  const { engine, live, hands, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    hands.ops.length = 0;
+    // Silence, as the API streams between sentences: frames keep arriving, nothing is audible.
+    for (let i = 0; i < 5; i++) live.emit("audio", Buffer.alloc(480, 0));
+    engine.ear("scroll down", true, 1, clock.t);
+    await settle(30);
+    assert.equal(hands.named("scroll").length, 1, "silent frames do not hold the ear");
+    // Audible output (Jarhead talking): the same words are held.
+    live.emit("audio", Buffer.alloc(480, 7));
+    engine.ear("scroll down scroll up", true, 1, clock.t);
+    await settle(30);
+    assert.equal(hands.named("scroll").length, 1, "audible frames hold the ear");
+    // The hold lapses with the speaking window; then the next words act.
+    clock.t += 1300;
+    engine.ear("scroll down scroll up scroll left", true, 1, clock.t);
+    await settle(30);
+    assert.equal(hands.named("scroll").length, 2);
+    // The app's ear reports its own state on a negative segment: logged, never judged.
+    engine.ear("off: Speech Recognition not decided", true, -1, clock.t);
+    engine.ear("on (listening)", true, -1, clock.t);
+    await settle(30);
+    assert.equal(hands.named("scroll").length, 2);
+  } finally {
+    await engine.stop();
+  }
+});

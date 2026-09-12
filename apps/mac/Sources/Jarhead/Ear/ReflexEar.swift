@@ -142,7 +142,7 @@ final class ReflexEar {
     }
 
     private func handleListenerStatus(_ status: EarListener.Status) {
-        NSLog("Ear: %@", status.text)
+        report(status.text)
         switch status {
         case .started:
             blocked = nil
@@ -173,6 +173,20 @@ final class ReflexEar {
     private func note(_ reason: String) {
         guard reason != lastReason else { return }
         lastReason = reason
-        NSLog("Ear: %@", reason)
+        report(reason)
     }
+
+    /// The ear's state, logged here and told to the engine. The app's NSLog lines are not
+    /// kept by the unified log on Kevin's Mac, so the daemon's log is where a production
+    /// session can be read back: the report rides the `ear` frame with a negative segment
+    /// (`Engine.ear` logs it as "ear (app): …" and judges no words), so no wire change is
+    /// needed. One line per change of mind; while disconnected the client drops it.
+    private func report(_ text: String) {
+        NSLog("Ear: %@", text)
+        let nowMs = Int((Date().timeIntervalSince1970 * 1000).rounded())
+        send(text, true, ReflexEar.statusSegment, nowMs)
+    }
+
+    /// The `segment` of an `ear` frame that carries a status line instead of words.
+    static let statusSegment = -1
 }

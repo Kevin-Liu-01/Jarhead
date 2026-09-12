@@ -19,7 +19,7 @@ import type { Delegation } from "@jarhead/protocol";
  * built Swift helper when it is there, or a fake (`--fake-hands`). Measures:
  *
  *   tool round trip          runner.run("frontmost_app") through the helper
- *   quick screenshot         runner.run("screenshot", { quick: true }), 1280-px long edge
+ *   quick screenshot         runner.run("screenshot", { quick: true }), the quick budget (2000-px long edge, 1.1 MP)
  *   eyes (pre-warm shot)     the delegator's own shot at delegation time
  *   delegation → first tool  the brain's first tool step (the eyes' shot excluded)
  *   delegation → first action the first member that moves or types
@@ -184,8 +184,15 @@ export interface BenchOptions {
   readonly gate?: boolean;
 }
 
-/** The grammar phrases the ear section feeds; each is one acting op through the gated toolset. */
-export const EAR_PHRASES: readonly string[] = ["scroll down", "scroll up a bit", "scroll to the top", "page down", "press enter", "press escape", "select all", "copy", "undo", "zoom in"];
+/**
+ * The grammar phrases the ear section feeds; each is one acting op through the gated
+ * toolset — except the two search phrases, a batch (focus / the search field or the
+ * app's shortcut / select all / type / Return) whose dispatch is its first acting op.
+ * They name Finder so the stand-in hands (Finder in front, no "search" field in its
+ * tree) take the ⌘F shortcut path, and the real helper's redirect (an acting op
+ * becomes a cursor read) keeps Finder unfocused and nothing typed.
+ */
+export const EAR_PHRASES: readonly string[] = ["scroll down", "scroll up a bit", "scroll to the top", "page down", "press enter", "press escape", "select all", "copy", "undo", "zoom in", "search finder for readme", "look up readme in finder"];
 /** Acting helper ops the bench redirects to a harmless cursor read on the real helper. */
 const ACTING_OPS = new Set(["scroll", "key", "type", "click", "move", "drag", "mouse_down", "mouse_up", "hold_key", "open_app", "focus_app", "browser_navigate", "browser_js"]);
 export const EAR_DISPATCH_TARGET_MS = 250;
@@ -246,7 +253,7 @@ export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
       add("tool round trip (frontmost_app)", performance.now() - a);
       const b = performance.now();
       const shot = await engine.runner.run("screenshot", { quick: true });
-      add("quick screenshot (1280 px)", performance.now() - b);
+      add("quick screenshot (2000 px / 1.1 MP)", performance.now() - b);
       if (i === 0 && shot.result.kind === "image") log(`  quick screenshot: ${shot.result.width}x${shot.result.height} px, ${Math.round((shot.result.pngBase64.length * 3) / 4 / 1024)} KB PNG`);
       if (i === 0 && !useFakeHands) {
         const c = performance.now();
@@ -454,7 +461,7 @@ export async function bench(opts: BenchOptions): Promise<{ ok: boolean }> {
   const targets: Record<string, number> = {
     "tool round trip (frontmost_app)": 80,
     "tool round trip (in delegation)": 80,
-    "quick screenshot (1280 px)": 120,
+    "quick screenshot (2000 px / 1.1 MP)": 120,
     "eyes: pre-warm shot": 120,
     "delegation → first action": opts.codex ? 1200 : 300,
     "reflex: utterance end → tool issued (prefired)": 300,
