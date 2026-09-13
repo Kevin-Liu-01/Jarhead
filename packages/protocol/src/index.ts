@@ -37,6 +37,8 @@ export interface TranscriptItem {
   readonly at: number;
   /** False while fragments are still arriving for this utterance. */
   readonly final: boolean;
+  /** "typed": Kevin typed it in the Console (on the record like a spoken line). */
+  readonly source?: "typed";
 }
 
 // ------------------------------------------------------------ delegations ---
@@ -93,11 +95,107 @@ export interface Worker {
   readonly startedAt: number;
   readonly doneAt?: number;
   readonly steps: number;
+  /** The app it is working in, for the blob (one release; `Thread.app` is the record). */
+  readonly app?: string;
 }
 /** Workers alive at once, per delegation and in total. */
 export const WORKER_MAX = 2;
 /** How long a finished worker stays in the snapshot for the Console before it is dropped. */
 export const WORKER_LINGER_MS = 30_000;
+
+// ---- threads: independent lines of work, each as capable as the main conversation ----
+//
+// Kevin (2026-09-13): "we should be able to see independent workers or threads and convos …
+// multiple blobs doing their own work … just as feature rich as if it were the main thread
+// … keep track of those using extremely performant data structure representations".
+// A Thread has its own brain (a warm codex app-server process), its own conversation
+// (Delegation records tagged with `threadId`, streamed to the Console per viewer), its
+// own lane, budget and blob. `main` is the voice's own thread. The engine keeps one
+// table (Maps by id, name and app; an event ring) that answers "what is Spotify doing"
+// and "stop the Slack one" without a model call. Workers (above) are threads spawned by
+// a thread; the `Worker` shapes stay one release as aliases.
+export const MAIN_THREAD_ID = "main";
+export type ThreadLane = "voice" | "screen" | "background";
+export const THREAD_STATUSES = ["idle", "queued", "starting", "thinking", "acting", "waiting-screen", "waiting-kevin", "paused", "done", "failed", "stopped"] as const;
+export type ThreadStatus = (typeof THREAD_STATUSES)[number];
+export const THREAD_TERMINAL: ReadonlySet<ThreadStatus> = new Set<ThreadStatus>(["done", "failed", "stopped"]);
+/** Live threads at once, main included. */
+export const THREAD_MAX_LIVE = 4;
+/** A spawned thread never spawns. */
+export const THREAD_SPAWN_DEPTH = 1;
+export const THREAD_NAME_CHARS = 16;
+/** A finished thread stays in the snapshot this long (the Console keeps it longer from events). */
+export const THREAD_LINGER_MS = 30_000;
+/** Summaries in one snapshot; live threads are never evicted. */
+export const THREADS_MAX = 16;
+export const THREAD_PAGE = 60;
+export const THREAD_STEPS_DEFAULT = 25;
+export const THREAD_STEPS_MAX = 40;
+export const THREAD_SECONDS_DEFAULT = 180;
+export const THREAD_SECONDS_MAX = 300;
+export interface Thread {
+  /** "main" or "t_…" — also the `worker` field a tool.run frame carries. */
+  readonly id: string;
+  /** ≤ 16 chars, unique among live threads (case-insensitive), spoken as-is. */
+  readonly name: string;
+  readonly lane: ThreadLane;
+  readonly status: ThreadStatus;
+  readonly parentId?: string;
+  readonly parentDelegationId?: string;
+  /** Live's delegation id to append this thread's lines to when its parent turn is gone. */
+  readonly liveId?: string;
+  /** The brief, redacted, ≤ 200 ("" for main). */
+  readonly task: string;
+  /** Last tool + outcome, or the reason it ended; ≤ 200. */
+  readonly detail?: string;
+  /** Apps claimed (open_app / focus_app / `tell application "X"` / a browser host), ≤ 4. */
+  readonly apps: readonly string[];
+  /** The newest of `apps`, where the blob parks. */
+  readonly app?: string;
+  /** Last acting point in global points, from a tagged orb.fly. */
+  readonly at?: Point;
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly doneAt?: number;
+  readonly turns: number;
+  readonly steps: number;
+  readonly waits: number;
+  readonly budget: { readonly steps: number; readonly seconds: number };
+  /** ≤ 160 while waiting-kevin. */
+  readonly question?: string;
+  readonly currentDelegationId?: string;
+  readonly lastScreenshotPath?: string;
+  /** Accepts a follow-up turn ("spotify, skip this song"). */
+  readonly canSay: boolean;
+  readonly canStop: boolean;
+}
+/** One change on one thread; ≤ 200 B on the wire, coalesced 50 ms per thread. */
+export type ThreadEvent = { readonly seq: number; readonly at: number; readonly threadId: string } & (
+  | { readonly kind: "started"; readonly thread: Thread }
+  | { readonly kind: "status"; readonly status: ThreadStatus; readonly detail?: string }
+  | { readonly kind: "step"; readonly steps: number; readonly tool?: string; readonly ok?: boolean }
+  | { readonly kind: "turn"; readonly delegationId: string; readonly request: string }
+  | { readonly kind: "question"; readonly question: string }
+  | { readonly kind: "said"; readonly text: string }
+  | { readonly kind: "at"; readonly x: number; readonly y: number; readonly app?: string }
+  | { readonly kind: "ended"; readonly status: "done" | "failed" | "stopped"; readonly summary?: string }
+);
+/** One row of a thread's conversation, numbered by `seq` so a pane patches a card in O(1) and pages by number. */
+export type ThreadEntry =
+  | { readonly kind: "utterance"; readonly seq: number; readonly item: TranscriptItem }
+  | { readonly kind: "delegation"; readonly seq: number; readonly delegation: Delegation }
+  | { readonly kind: "step"; readonly seq: number; readonly delegationId: string; readonly step: DelegationStep }
+  | { readonly kind: "status"; readonly seq: number; readonly delegationId: string; readonly status: DelegationStatus; readonly summary?: string; readonly timings: DelegationTimings }
+  | { readonly kind: "system"; readonly seq: number; readonly at: number; readonly symbol: string; readonly text: string; readonly mono?: string; readonly trailing?: string };
+export interface ThreadTranscript {
+  readonly threadId: string;
+  readonly entries: readonly ThreadEntry[];
+  readonly total: number;
+  readonly complete: boolean;
+  readonly live: boolean;
+  readonly cursor?: { readonly startSeq: number; readonly endSeq: number };
+  readonly readMs?: number;
+}
 
 // ---- memory: what Jarhead knows about Kevin across sessions ------------------
 //
@@ -196,6 +294,10 @@ export interface Delegation {
   readonly steps: readonly DelegationStep[];
   readonly summary?: string;
   readonly timings: DelegationTimings;
+  /** The thread that ran it; absent = "main". */
+  readonly threadId?: string;
+  /** Steps in the ledger when `steps` is a cut window (the small snapshot). */
+  readonly stepCount?: number;
 }
 
 // ----------------------------------------------------------------- agents ---
@@ -229,6 +331,8 @@ export interface AgentInfo {
   /** Total messages in the conversation, when known. */
   readonly messageCount?: number;
   readonly hint?: AgentHint;
+  /** Whether a message can be sent into this session now, and how (typed, not cue-parsed). */
+  readonly send?: { readonly ok: boolean; readonly reason?: string; readonly mode?: "queue" | "resume" };
 }
 
 // ------------------------------------------------------- conversations ---
@@ -254,6 +358,8 @@ export interface AgentMessage {
   readonly tool?: AgentToolCall;
   /** Reasoning / thinking text rather than a reply. */
   readonly thinking?: boolean;
+  /** A message Kevin just sent, echoed before the session confirms it. */
+  readonly pending?: boolean;
 }
 
 /**
@@ -272,6 +378,8 @@ export interface AgentTranscript {
   readonly live: boolean;
   /** Byte range of the session file these messages came from; `agent.history` pages before `startOffset`. */
   readonly cursor?: { readonly startOffset: number; readonly endOffset: number };
+  /** How long the page took to read, for the Console's line. */
+  readonly readMs?: number;
 }
 
 // ------------------------------------------------------------- marks ---
@@ -370,6 +478,16 @@ export interface Settings {
   readonly accent: Accent;
   /** Durable memory of Kevin across sessions (extraction, retrieval, the Memory rail). */
   readonly memory: boolean;
+  /** Every acting tool answers with what is now in front (the observation line); off for the A/B. */
+  readonly observe: boolean;
+  /** Let Jarhead re-run an armed action itself on Kevin's yes (rail-adjacent; unwired until named). */
+  readonly replayFinish: boolean;
+  /** A typed line while asleep wakes Jarhead (opens a paid session). Off: refuse with a toast, keep the text. */
+  readonly typedWakes: boolean;
+  /** A new request naming an unclaimed app while main has acted: supersede (today) or spawn a thread. */
+  readonly threadOverflow: "supersede" | "spawn";
+  /** Warm codex app-server processes kept ready for threads (0..3). */
+  readonly warmThreads: number;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -395,6 +513,11 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en",
   accent: "american",
   memory: true,
+  observe: true,
+  replayFinish: false,
+  typedWakes: false,
+  threadOverflow: "supersede",
+  warmThreads: 2,
 };
 
 /**
@@ -534,6 +657,8 @@ export interface Snapshot {
   readonly workers?: readonly Worker[];
   /** What Jarhead remembers about Kevin: counts, mode, the last run, what the last turn used. */
   readonly memory?: MemorySummary;
+  /** Every live thread (main first) and those finished within THREAD_LINGER_MS; ≤ THREADS_MAX. */
+  readonly threads?: readonly Thread[];
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
@@ -619,7 +744,11 @@ export type EngineEvent =
   /** Drop whatever is queued for the speaker (stop, cancel, sleep). */
   | { readonly type: "speaker-flush" }
   /** A page of an opened agent's conversation (`replace`), or new turns while it is open (`append`). */
-  | { readonly type: "agent.transcript"; readonly transcript: AgentTranscript; readonly mode: "replace" | "append" | "prepend" };
+  | { readonly type: "agent.transcript"; readonly transcript: AgentTranscript; readonly mode: "replace" | "append" | "prepend" }
+  /** One change on one thread (broadcast, ≤ 200 B); a spawned thread's steps never rebuild the snapshot. */
+  | { readonly type: "thread.event"; readonly event: ThreadEvent }
+  /** A page of a thread's conversation (`replace`), new rows (`append`) or older ones (`prepend`); viewers only. */
+  | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" };
 
 /**
  * A settings change. `null` clears an optional field (JSON has no way to send
@@ -697,6 +826,19 @@ export type EngineCommand =
   | { readonly type: "memory.add"; readonly text: string; readonly kind?: MemoryKind }
   /** Run extraction over what is new now (the quiet-tick run, on demand). */
   | { readonly type: "memory.run" }
+  // ---- threads (the Console's panes, the satellites' drops, the CLI). `viewer` names the pane.
+  | { readonly type: "thread.open"; readonly threadId: string; readonly viewer?: string }
+  | { readonly type: "thread.close"; readonly threadId: string; readonly viewer?: string }
+  /** Older rows before `before` (a seq), THREAD_PAGE at a time. */
+  | { readonly type: "thread.history"; readonly threadId: string; readonly before: number }
+  /** Stop one thread; "main" parks the main turn and leaves the others alive. */
+  | { readonly type: "thread.stop"; readonly threadId: string }
+  | { readonly type: "thread.pause"; readonly threadId: string }
+  | { readonly type: "thread.resume"; readonly threadId: string }
+  /** Allow / Deny the question a thread holds the floor with; refused when the floor is another thread's. */
+  | { readonly type: "thread.answer"; readonly threadId: string; readonly yes: boolean }
+  /** A follow-up turn on that thread's own brain, in Kevin's words. */
+  | { readonly type: "thread.say"; readonly threadId: string; readonly text: string }
   /** Older turns before message `before`. */
   | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
   /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
@@ -739,14 +881,14 @@ export type OverlayCommand =
   /** A freehand stroke (Kevin's circle echoed back, or a brain drawing). */
   | { readonly cmd: "stroke"; readonly points: readonly Point[]; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone }
   /** The blob flies to a point and hovers there for dwellMs (default 2 s) before drifting home. */
-  | { readonly cmd: "orb.fly"; readonly x: number; readonly y: number; readonly dwellMs?: number; readonly reason?: string }
+  | { readonly cmd: "orb.fly"; readonly x: number; readonly y: number; readonly dwellMs?: number; readonly reason?: string; readonly thread?: string }
   /**
    * The blob draws: it flies to the first point, becomes a cursor, and drags the
    * stroke along the points (closing it when `closed`), then goes home. The stroke
    * stays on the layer for ttlMs. This is how Jarhead points at things and how it
    * outlines what Kevin circled — a hand-drawn line, not a stamped shape.
    */
-  | { readonly cmd: "orb.trace"; readonly points: readonly Point[]; readonly closed?: boolean; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone; readonly reason?: string }
+  | { readonly cmd: "orb.trace"; readonly points: readonly Point[]; readonly closed?: boolean; readonly label?: string; readonly ttlMs?: number; readonly tone?: OverlayTone; readonly reason?: string; readonly thread?: string }
   | { readonly cmd: "orb.home" }
   | { readonly cmd: "clear" };
 
@@ -782,6 +924,11 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "memory.forgotten"; readonly id: string; readonly by: "kevin" | "reflex" | "cli" }
   | { readonly at: number; readonly type: "memory.restored"; readonly id: string }
   | { readonly at: number; readonly type: "memory.run"; readonly sessionId?: string; readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number }
+  // ---- threads: the table rebuilds from these at daemon start. Status rows only for starting / waiting-* / paused, never thinking↔acting.
+  | { readonly at: number; readonly type: "thread.started"; readonly thread: Thread }
+  | { readonly at: number; readonly type: "thread.status"; readonly threadId: string; readonly status: ThreadStatus; readonly detail?: string }
+  | { readonly at: number; readonly type: "thread.said"; readonly threadId: string; readonly text: string }
+  | { readonly at: number; readonly type: "thread.ended"; readonly threadId: string; readonly status: "done" | "failed" | "stopped"; readonly summary?: string; readonly steps: number; readonly seconds: number }
   // ---- conversation cleanup: tombstone rows appended to TODAY's file; the bytes of the
   // conversation stay where they were written. `chainId` is any session id of the chain
   // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both
@@ -813,6 +960,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
   "worker.stop",
   "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
+  "thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {

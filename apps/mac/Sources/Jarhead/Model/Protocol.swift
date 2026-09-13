@@ -29,6 +29,8 @@ public struct TranscriptItem: Codable, Identifiable, Equatable {
     public var endMs: Double
     public var at: Double
     public var final: Bool
+    /// "typed" when Kevin typed it in the Console.
+    public var source: String?
 }
 
 public enum DelegationStatus: String, Codable {
@@ -104,6 +106,116 @@ public struct Worker: Codable, Identifiable, Equatable, Sendable {
     public var startedAt: Double
     public var doneAt: Double?
     public var steps: Int
+    public var app: String?
+}
+
+// MARK: - Threads: independent lines of work, each as capable as the main conversation (mirror of Thread).
+
+public enum ThreadLane: String, Codable, Equatable, Sendable {
+    case voice, screen, background
+    public init(from decoder: Decoder) throws {
+        self = ThreadLane(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .background
+    }
+}
+
+public enum ThreadStatus: String, Codable, Equatable, Sendable {
+    case idle, queued, starting, thinking, acting, paused, done, failed, stopped
+    case waitingScreen = "waiting-screen"
+    case waitingKevin = "waiting-kevin"
+    public init(from decoder: Decoder) throws {
+        self = ThreadStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .thinking
+    }
+    /// Not done, failed or stopped.
+    public var isLive: Bool { !(self == .done || self == .failed || self == .stopped) }
+    /// Live and doing something (main between turns is idle).
+    public var isBusy: Bool { isLive && self != .idle }
+}
+
+/// Named `WorkThread` here because Foundation's `Thread` is in scope; the wire type is `Thread`.
+public struct WorkThread: Codable, Identifiable, Equatable, Sendable {
+    public struct Budget: Codable, Equatable, Sendable {
+        public var steps: Int
+        public var seconds: Int
+    }
+    public var id: String
+    public var name: String
+    public var lane: ThreadLane
+    public var status: ThreadStatus
+    public var parentId: String?
+    public var parentDelegationId: String?
+    public var liveId: String?
+    public var task: String
+    public var detail: String?
+    public var apps: [String]
+    public var app: String?
+    public var at: Point2?
+    public var startedAt: Double
+    public var updatedAt: Double
+    public var doneAt: Double?
+    public var turns: Int
+    public var steps: Int
+    public var waits: Int
+    public var budget: Budget
+    public var question: String?
+    public var currentDelegationId: String?
+    public var lastScreenshotPath: String?
+    public var canSay: Bool
+    public var canStop: Bool
+}
+
+/// One change on one thread (the wire's `thread.event`); `kind` says which fields are set.
+public struct ThreadEvent: Codable, Equatable {
+    public var seq: Int
+    public var at: Double
+    public var threadId: String
+    public var kind: String
+    public var thread: WorkThread?
+    public var status: ThreadStatus?
+    public var detail: String?
+    public var steps: Int?
+    public var tool: String?
+    public var ok: Bool?
+    public var delegationId: String?
+    public var request: String?
+    public var question: String?
+    public var text: String?
+    public var summary: String?
+    public var x: Double?
+    public var y: Double?
+    public var app: String?
+}
+
+/// One row of a thread's conversation, numbered by `seq`; `kind` says which fields are set.
+public struct ThreadEntry: Codable, Equatable, Identifiable {
+    public var kind: String
+    public var seq: Int
+    public var item: TranscriptItem?
+    public var delegation: Delegation?
+    public var delegationId: String?
+    public var step: DelegationStep?
+    public var status: DelegationStatus?
+    public var summary: String?
+    public var timings: DelegationTimings?
+    public var at: Double?
+    public var symbol: String?
+    public var text: String?
+    public var mono: String?
+    public var trailing: String?
+    public var id: Int { seq }
+}
+
+public struct ThreadTranscript: Codable, Equatable {
+    public struct Cursor: Codable, Equatable {
+        public var startSeq: Int
+        public var endSeq: Int
+    }
+    public var threadId: String
+    public var entries: [ThreadEntry]
+    public var total: Int
+    public var complete: Bool
+    public var live: Bool
+    public var cursor: Cursor?
+    public var readMs: Double?
 }
 
 // MARK: - Memory: what Jarhead knows about Kevin across sessions (mirror of MemoryItem / MemorySummary).
@@ -193,6 +305,10 @@ public struct Delegation: Codable, Identifiable, Equatable {
     public var steps: [DelegationStep]
     public var summary: String?
     public var timings: DelegationTimings
+    /// The thread that ran it; nil = main.
+    public var threadId: String?
+    /// Steps in the ledger when `steps` is a cut window.
+    public var stepCount: Int?
 }
 
 /// Mirror of the TS `AgentKind`: "claude-code" | "sessions" (Codex sessions arrive as `sessions`, id `sessions:codex:<id>`).
@@ -248,6 +364,13 @@ public struct AgentInfo: Codable, Identifiable, Equatable {
     public var messageCount: Int?
     /// One word on why the status is what it is (archived, blocked, running, quiet, ended, unseen, resumed).
     public var hint: String?
+    /// Whether a message can be sent into this session now, and how.
+    public var send: SendGate?
+    public struct SendGate: Codable, Equatable {
+        public var ok: Bool
+        public var reason: String?
+        public var mode: String?
+    }
 
     /// The tool, inferred from the id when the connector did not say.
     public var resolvedTool: AgentTool {
@@ -289,6 +412,8 @@ public struct AgentMessage: Codable, Identifiable, Equatable {
     public var at: Double
     public var tool: AgentToolCall?
     public var thinking: Bool?
+    /// A message Kevin just sent, echoed before the session confirms it.
+    public var pending: Bool?
 }
 
 public struct AgentTranscript: Codable, Equatable {
@@ -299,6 +424,7 @@ public struct AgentTranscript: Codable, Equatable {
     public var live: Bool
     /// Byte range of the session file these messages came from; older pages are read before `startOffset`.
     public var cursor: TranscriptCursor?
+    public var readMs: Double?
 
     public struct TranscriptCursor: Codable, Equatable {
         public var startOffset: Int
@@ -442,6 +568,12 @@ public struct Settings: Codable, Equatable {
     public var language: String?
     public var accent: String?
     public var memory: Bool?
+    /// Observation lines on acting tools; typed-while-asleep wakes; thread overflow rule; warm thread processes. Optional on the wire.
+    public var observe: Bool?
+    public var replayFinish: Bool?
+    public var typedWakes: Bool?
+    public var threadOverflow: String?
+    public var warmThreads: Int?
 
     public var languageTag: String { language ?? "en" }
     public var accentKind: String { accent ?? "american" }
@@ -654,6 +786,12 @@ public struct Snapshot: Codable, Equatable {
     public var workers: [Worker]?
     /// What Jarhead remembers about Kevin (counts, mode, the last run). Optional on the wire.
     public var memory: MemorySummary?
+    /// Live threads (main first) and those finished within the linger. Optional on the wire.
+    public var threads: [WorkThread]?
+
+    public var allThreads: [WorkThread] { threads ?? [] }
+    public var liveThreads: [WorkThread] { allThreads.filter { $0.status.isLive } }
+    public var spawnedLiveThreads: [WorkThread] { liveThreads.filter { $0.id != "main" } }
 
     public var allWorkers: [Worker] { workers ?? [] }
     public var runningWorkers: [Worker] { allWorkers.filter { $0.status.isRunning } }
@@ -696,6 +834,15 @@ public enum EngineCommand: Equatable {
     case memoryEdit(id: String, text: String, kind: String?)
     case memoryAdd(text: String, kind: String?)
     case memoryRun
+    // Threads (the Console's panes, a satellite's drop, the CLI). `viewer` names the pane.
+    case threadOpen(threadId: String, viewer: String?)
+    case threadClose(threadId: String, viewer: String?)
+    case threadHistory(threadId: String, before: Int)
+    case threadStop(threadId: String)
+    case threadPause(threadId: String)
+    case threadResume(threadId: String)
+    case threadAnswer(threadId: String, yes: Bool)
+    case threadSay(threadId: String, text: String)
     case agentHistory(agentId: String, before: String)
     /// Kevin circled a region (global points, y down) — with his stroke.
     case markAdd(rect: Rect, path: [Point2]?)
@@ -759,6 +906,20 @@ public enum EngineCommand: Equatable {
             if let kind { o["kind"] = kind }
             return o
         case .memoryRun: return ["type": "memory.run"]
+        case .threadOpen(let id, let viewer):
+            var o: [String: Any] = ["type": "thread.open", "threadId": id]
+            if let viewer { o["viewer"] = viewer }
+            return o
+        case .threadClose(let id, let viewer):
+            var o: [String: Any] = ["type": "thread.close", "threadId": id]
+            if let viewer { o["viewer"] = viewer }
+            return o
+        case .threadHistory(let id, let before): return ["type": "thread.history", "threadId": id, "before": before]
+        case .threadStop(let id): return ["type": "thread.stop", "threadId": id]
+        case .threadPause(let id): return ["type": "thread.pause", "threadId": id]
+        case .threadResume(let id): return ["type": "thread.resume", "threadId": id]
+        case .threadAnswer(let id, let yes): return ["type": "thread.answer", "threadId": id, "yes": yes]
+        case .threadSay(let id, let text): return ["type": "thread.say", "threadId": id, "text": text]
         case .agentHistory(let id, let before): return ["type": "agent.history", "agentId": id, "before": before]
         case .markAdd(let rect, let path):
             var o: [String: Any] = ["type": "mark.add", "rect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]]
@@ -817,6 +978,11 @@ public struct SettingsPatch: Equatable {
     public var language: String?
     public var accent: String?
     public var memory: Bool?
+    public var observe: Bool?
+    public var replayFinish: Bool?
+    public var typedWakes: Bool?
+    public var threadOverflow: String?
+    public var warmThreads: Int?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
@@ -828,6 +994,11 @@ public struct SettingsPatch: Equatable {
         self.wake = wake
         self.reflexes = reflexes; self.orbHome = orbHome
         self.workers = workers; self.language = language; self.accent = accent; self.memory = memory
+    }
+
+    /// The thread knobs, set after init (rarely patched; Settings › Threads).
+    public mutating func setThreads(observe: Bool? = nil, replayFinish: Bool? = nil, typedWakes: Bool? = nil, threadOverflow: String? = nil, warmThreads: Int? = nil) {
+        self.observe = observe; self.replayFinish = replayFinish; self.typedWakes = typedWakes; self.threadOverflow = threadOverflow; self.warmThreads = warmThreads
     }
 
     public var json: [String: Any] {
@@ -851,6 +1022,11 @@ public struct SettingsPatch: Equatable {
         if let v = language { o["language"] = v }
         if let v = accent { o["accent"] = v }
         if let v = memory { o["memory"] = v }
+        if let v = observe { o["observe"] = v }
+        if let v = replayFinish { o["replayFinish"] = v }
+        if let v = typedWakes { o["typedWakes"] = v }
+        if let v = threadOverflow { o["threadOverflow"] = v }
+        if let v = warmThreads { o["warmThreads"] = v }
         return o
     }
 }
@@ -861,7 +1037,7 @@ public struct Rect: Codable, Equatable {
     public var x: Double, y: Double, w: Double, h: Double
 }
 
-public struct Point2: Codable, Equatable {
+public struct Point2: Codable, Equatable, Sendable {
     public var x: Double, y: Double
 }
 
@@ -882,9 +1058,10 @@ public enum OverlayCommand: Equatable {
     case text(x: Double, y: Double, text: String, ttlMs: Double?, tone: OverlayTone)
     case stroke(points: [Point2], label: String?, ttlMs: Double?, tone: OverlayTone)
     /// The blob flies to a point and hovers dwellMs (default 2 s) before drifting home.
-    case orbFly(x: Double, y: Double, dwellMs: Double?, reason: String?)
+    /// `thread` names the thread whose blob flies; nil = the main blob.
+    case orbFly(x: Double, y: Double, dwellMs: Double?, reason: String?, thread: String?)
     /// The blob flies to the first point, becomes a cursor, and drags the stroke along the points.
-    case orbTrace(points: [Point2], closed: Bool, label: String?, ttlMs: Double?, tone: OverlayTone, reason: String?)
+    case orbTrace(points: [Point2], closed: Bool, label: String?, ttlMs: Double?, tone: OverlayTone, reason: String?, thread: String?)
     case orbHome
     case clear
 
@@ -921,12 +1098,12 @@ public enum OverlayCommand: Equatable {
             self = .stroke(points: pts, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone)
         case "orb.fly":
             guard let x = num("x"), let y = num("y") else { return nil }
-            self = .orbFly(x: x, y: y, dwellMs: num("dwellMs"), reason: json["reason"] as? String)
+            self = .orbFly(x: x, y: y, dwellMs: num("dwellMs"), reason: json["reason"] as? String, thread: json["thread"] as? String)
         case "orb.trace":
             guard let raw = json["points"] as? [Any] else { return nil }
             let pts = raw.compactMap(pt)
             guard pts.count >= 2 else { return nil }
-            self = .orbTrace(points: pts, closed: (json["closed"] as? Bool) ?? false, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone, reason: json["reason"] as? String)
+            self = .orbTrace(points: pts, closed: (json["closed"] as? Bool) ?? false, label: json["label"] as? String, ttlMs: num("ttlMs"), tone: tone, reason: json["reason"] as? String, thread: json["thread"] as? String)
         case "orb.home":
             self = .orbHome
         case "point":
@@ -994,6 +1171,11 @@ public struct LedgerRow: Codable, Identifiable {
     public var cause: String?
     public var phrase: String?
     public var farewell: Bool?
+    /// `thread.*` rows: the record at start, the thread id, and at the end its steps and seconds.
+    public var thread: WorkThread?
+    public var threadId: String?
+    public var steps: Int?
+    public var seconds: Double?
     public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? worker?.id ?? "")" }
 }
 

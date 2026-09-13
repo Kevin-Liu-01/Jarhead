@@ -642,9 +642,9 @@ public final class OrbPanelController {
             .sink { [weak self] cmd in
                 guard let self else { return }
                 switch cmd {
-                case .orbFly(let x, let y, let dwellMs, let reason):
+                case .orbFly(let x, let y, let dwellMs, let reason, _):
                     self.fly(to: CGPoint(x: x, y: y), dwellMs: dwellMs, reason: reason)
-                case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason):
+                case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason, _):
                     self.trace(points: points.map { CGPoint(x: $0.x, y: $0.y) }, closed: closed, label: label, ttlMs: ttlMs, tone: tone, reason: reason)
                 case .orbHome:
                     self.flyHome()
@@ -1375,7 +1375,7 @@ public final class OrbPanelController {
                 if CACurrentMediaTime() < p.expires { fly(to: p.target, dwellMs: p.dwellMs, reason: p.reason) }
             } else if let p = pendingTrace {
                 pendingTrace = nil
-                if CACurrentMediaTime() < p.expires, case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason) = p.cmd {
+                if CACurrentMediaTime() < p.expires, case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason, _) = p.cmd {
                     trace(points: points.map { CGPoint(x: $0.x, y: $0.y) }, closed: closed, label: label, ttlMs: ttlMs, tone: tone, reason: reason)
                 }
             }
@@ -1722,7 +1722,7 @@ public final class OrbPanelController {
         let now = CACurrentMediaTime()
         let dropping = now - droppedAt < Self.dropWindup + 0.05
         if flight == .none, body.isActive, !dropping {
-            pendingTrace = (.orbTrace(points: pts.map { Point2(x: $0.x, y: $0.y) }, closed: false, label: label, ttlMs: ttlMs, tone: tone, reason: reason), now + 3.0)
+            pendingTrace = (.orbTrace(points: pts.map { Point2(x: $0.x, y: $0.y) }, closed: false, label: label, ttlMs: ttlMs, tone: tone, reason: reason, thread: nil), now + 3.0)
             return
         }
         pendingFly = nil

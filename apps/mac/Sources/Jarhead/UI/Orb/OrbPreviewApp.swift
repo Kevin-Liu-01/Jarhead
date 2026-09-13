@@ -839,7 +839,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     print(self.stamp, String(format: "orb.fly -> CG %.0f,%.0f (dwell %.0f ms) from CG %.0f,%.0f", target.x, target.y, dwell,
                                  self.orb.previewFrameCG.midX, self.orb.previewFrameCG.midY))
                     fflush(stdout)
-                    self.state.overlayCommands.send(.orbFly(x: target.x, y: target.y, dwellMs: dwell, reason: "preview \(i + 1)"))
+                    self.state.overlayCommands.send(.orbFly(x: target.x, y: target.y, dwellMs: dwell, reason: "preview \(i + 1)", thread: nil))
                     // The command is delivered on the next turn of the run loop; report what it did.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         guard let self else { return }
@@ -880,7 +880,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                                              tone.rawValue, label ?? "none"))
                     fflush(stdout)
                     self.state.overlayCommands.send(.orbTrace(points: self.tracePoints.map { Point2(x: $0.x, y: $0.y) }, closed: closed, label: label,
-                                                             ttlMs: nil, tone: tone, reason: "preview"))
+                                                             ttlMs: nil, tone: tone, reason: "preview", thread: nil))
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         guard let self else { return }
                         print(String(format: "  -> flight %@, tracing %d, cursor %.2f", self.orb.previewFlightPhase, self.orb.previewIsTracing ? 1 : 0, self.orb.previewCursorK))
