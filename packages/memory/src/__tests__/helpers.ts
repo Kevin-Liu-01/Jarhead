@@ -6,8 +6,11 @@ import type { LedgerRow, MemoryItem, TranscriptItem } from "@jarhead/protocol";
 import type { Candidate, ExtractInput } from "../types.ts";
 import type { Extractor } from "../extract/extractor.ts";
 
-/** The fixture's session start (local 2026-09-11 10:00); every row is T0 + an offset. */
-export const T0 = new Date(2026, 8, 11, 10, 0, 0).getTime();
+/**
+ * The fixture's session start: 2026-09-11 10:00 Pacific = 17:00 UTC, as the absolute ms the
+ * JSONL rows carry — never a local-time Date, or CI (UTC) reads the fixture seven hours off.
+ */
+export const T0 = 1789146000000;
 
 export function fresh(): string {
   return mkdtempSync(join(tmpdir(), "jh-memory-"));
