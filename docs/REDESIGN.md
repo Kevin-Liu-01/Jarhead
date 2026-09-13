@@ -1790,7 +1790,7 @@ lines are untouched):
    uid's directory (never `sudo` from a script), or no write bit — before anything
    is written; the signed stage stays in `build/stage/` for inspection.
 2. First install (nothing there): `cp -R` of the stage. Otherwise a rollback
-   snapshot to gitignored `build/previous/Jarhead.app.previous` (not `.app`: see
+   snapshot to gitignored `build/previous/Jarhead.app.zip` (not `.app`: see
    "Learned since" below), then `/usr/bin/rsync -rlptD
    -c --delay-updates --delete-after --itemize-changes build/stage/Jarhead.app/
    /Applications/Jarhead.app/`. `-rlptD` is `-a` without owner/group; `-c` compares
@@ -1809,7 +1809,7 @@ lines are untouched):
    sha256 walk proves the installed tree is exactly the signed stage (rsync's exit
    code on a permission error is not trusted), and the directory inode after equals
    the one before. Any failure prints the rollback line
-   (`rsync -rlptD -c --delete-after build/previous/Jarhead.app.previous/ /Applications/Jarhead.app/`)
+   (`rsync -rlptD -c --delete-after build/previous/Jarhead.app.zip/ /Applications/Jarhead.app/`)
    and exits 1. `build/Jarhead.app` stays a symlink to the installed bundle.
 4. One Jarhead: `lsregister -f /Applications/Jarhead.app`, then the Bundle table
    (`lsregister -dump Bundle`: ~2 s on an idle Mac, 66–85 s at load average 300
@@ -1870,7 +1870,7 @@ assert what a system tool's output *means*, never its exact shape across macOS b
 **The snapshot was the second Jarhead.** `lsregister -dump` on Kevin's Mac listed
 `build/previous/Jarhead.app` next to `/Applications/Jarhead.app` — a full bundle with
 Jarhead's id, and LaunchServices registers any `*.app` directory it meets, so the
-`-u` a build earlier bought nothing. The snapshot is `build/previous/Jarhead.app.previous`
+`-u` a build earlier bought nothing. The snapshot is `build/previous/Jarhead.app.zip`
 now: `snapshotNameOk` refuses a `previous` ending in `.app` before anything is
 written, `performInstall` retires the old name first (`InstallSpec.retire` — the
 build's own artifact, never the Trash), the record at the gone path is stale by the

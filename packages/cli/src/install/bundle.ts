@@ -68,6 +68,7 @@ export function planInstall(probe: TargetProbe, uid: number, path = "/Applicatio
 }
 
 export const RSYNC = "/usr/bin/rsync";
+export const DITTO = "/usr/bin/ditto";
 
 /**
  * -rlptD is -a minus owner/group (never rewritten); -c compares by checksum so a
@@ -82,18 +83,20 @@ export function rsyncArgs(stage: string, installed: string): string[] {
 }
 
 /**
- * The rollback snapshot of the installed bundle into build/previous/ before an update.
- * `previous` must not be named `*.app`: LaunchServices reads any directory with that
- * suffix as a bundle, and a snapshot called build/previous/Jarhead.app was registered
- * as a second Jarhead (`lsregister -dump` showed it). `snapshotNameOk` is the guard.
+ * The rollback snapshot of the installed bundle into build/previous/ before an update — a ZIP
+ * archive (`ditto -c -k`), never a directory: LaunchServices registered a directory snapshot as a
+ * second Jarhead whatever it was called (build/previous/Jarhead.app first, then Jarhead.app.previous
+ * — Spotlight finds the Info.plist inside). An archive has no bundle to find. `snapshotNameOk` is
+ * the guard; `--sequesterRsrc --keepParent` keeps resource forks and the top-level Jarhead.app.
  */
 export function snapshotArgs(installed: string, previous: string): string[] {
-  return ["-rlptD", "-c", "--delete", `${installed}/`, `${previous}/`];
+  return ["-c", "-k", "--sequesterRsrc", "--keepParent", installed, previous];
 }
 
-/** A snapshot directory LaunchServices will not take for a bundle: its name does not end in `.app`. */
+/** A snapshot LaunchServices will not take for a bundle: a `.zip` file, never anything ending in `.app`. */
 export function snapshotNameOk(previous: string): boolean {
-  return !/\.app$/i.test(previous.replace(/\/+$/, ""));
+  const p = previous.replace(/\/+$/, "");
+  return /\.zip$/i.test(p) && !/\.app$/i.test(p);
 }
 
 export interface RsyncSummary {
@@ -243,14 +246,14 @@ export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter
 
 /** The line a failure prints: how to put the snapshot back by hand. */
 export function rollbackLine(previous: string, installed: string): string {
-  return `rollback:  ${RSYNC} -rlptD -c --delete-after ${previous}/ ${installed}/`;
+  return `rollback:  ${DITTO} -x -k ${previous} /tmp/jarhead-rollback && ${RSYNC} -rlptD -c --delete-after /tmp/jarhead-rollback/Jarhead.app/ ${installed}/`;
 }
 
 export interface InstallSpec {
   /** The signed stage bundle (build/stage/Jarhead.app). */
   readonly stage: string;
   readonly installed: string;
-  /** Where the rollback snapshot goes (build/previous/Jarhead.app.previous — never a name ending in .app; see snapshotNameOk). */
+  /** Where the rollback snapshot goes (build/previous/Jarhead.app.zip — an archive, never a directory; see snapshotNameOk). */
   readonly previous: string;
   /**
    * Earlier snapshot directories to retire before the snapshot (build/previous/Jarhead.app):
@@ -306,7 +309,7 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   const plan = planInstall(io.probe(spec.installed), spec.uid, spec.installed);
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
   if (!snapshotNameOk(spec.previous)) {
-    return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} ends in .app`, lines: ["LaunchServices registers any *.app directory as a bundle — a second Jarhead; name the snapshot Jarhead.app.previous"] };
+    return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle — a second Jarhead; snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
   }
   // Snapshots from before the rename: a full bundle named Jarhead.app under build/previous,
   // which LaunchServices took for a second Jarhead on every scan. Gone before the new
@@ -329,7 +332,7 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
     if (cp.code !== 0) return fail(`cp -R exited ${cp.code}`, cp.stderr.trim());
   } else {
     io.mkdirp(dirname(spec.previous));
-    const snap = io.exec(RSYNC, snapshotArgs(spec.installed, spec.previous));
+    const snap = io.exec(DITTO, snapshotArgs(spec.installed, spec.previous));
     rollbackOk = snap.code === 0;
     if (!rollbackOk) io.warn(`rollback snapshot failed (${snap.code}); continuing without one: ${snap.stderr.trim()}`);
     const r = io.exec(RSYNC, rsyncArgs(spec.stage, spec.installed));

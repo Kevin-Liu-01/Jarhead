@@ -91,7 +91,7 @@ version did) gave it a new inode every build and the running app came back as a
 second, "recent" Dock tile. So the step now: refuses a target that is a symlink, a
 regular file or another user's directory (`planInstall`); on a first install copies
 the stage whole (`cp -R`); otherwise snapshots the current bundle to gitignored
-`build/previous/Jarhead.app.previous` (a name LaunchServices never takes for an app) and runs `/usr/bin/rsync -rlptD -c --delay-updates
+`build/previous/Jarhead.app.zip` (an archive — LaunchServices registered every directory snapshot, whatever its name) and runs `/usr/bin/rsync -rlptD -c --delay-updates
 --delete-after --itemize-changes build/stage/Jarhead.app/ /Applications/Jarhead.app/`
 — each changed file is renamed over the old name, so the running app keeps the
 inodes it has mapped; never `-a`, never `-E` (openrsync's xattr emulation writes

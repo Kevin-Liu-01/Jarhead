@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, snapshotNameOk, type InstallIO, type ParityReport, type TargetProbe } from "../install/bundle.ts";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, DITTO, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, snapshotNameOk, type InstallIO, type ParityReport, type TargetProbe } from "../install/bundle.ts";
 
 /**
  * The install step's pure parts, and — on a Mac — openrsync itself between two temp
@@ -44,13 +44,14 @@ test("rsyncArgs is one pinned argv: -rlptD -c --delay-updates --delete-after --i
   assert.deepEqual(args, ["-rlptD", "-c", "--delay-updates", "--delete-after", "--itemize-changes", "/r/build/stage/Jarhead.app/", "/Applications/Jarhead.app/"]);
   for (const bad of ["-a", "-E", "--inplace", "--extended-attributes", "-rlptDE", "-aE"]) assert.ok(!args.includes(bad), bad);
   assert.equal(RSYNC, "/usr/bin/rsync");
-  assert.deepEqual(snapshotArgs("/Applications/Jarhead.app", "/r/build/previous/Jarhead.app.previous"), ["-rlptD", "-c", "--delete", "/Applications/Jarhead.app/", "/r/build/previous/Jarhead.app.previous/"]);
+  assert.deepEqual(snapshotArgs("/Applications/Jarhead.app", "/r/build/previous/Jarhead.app.zip"), ["-c", "-k", "--sequesterRsrc", "--keepParent", "/Applications/Jarhead.app", "/r/build/previous/Jarhead.app.zip"]);
   assert.deepEqual([...CODESIGN_VERIFY_ARGS], ["--verify", "--strict", "--deep", "--verbose=1"]);
   // The snapshot's name: LaunchServices registers any *.app directory as a bundle (build/previous/Jarhead.app was a second Jarhead in `lsregister -dump`).
-  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.previous"), true);
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.zip"), true);
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.previous"), false, "a directory snapshot is registered by Spotlight whatever it is called");
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app"), false);
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.APP/"), false, "any case, trailing slash trimmed");
-  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.previous"), true);
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.previous"), false, "a directory of any name is registered once Spotlight finds the Info.plist inside; only an archive is safe");
 });
 
 test("parseItemized is version-agnostic: this Mac's openrsync (directory with a trailing slash) and the macos-15 runner's (no slash, every deletion twice) give the same deleted SET, each path once; dirs made ignored; ._ entries flagged", () => {
@@ -173,7 +174,7 @@ test("openrsync in place: the destination directory keeps its inode, changed fil
 // ---- performInstall: step 5 of build:mac over scripted seams — the order and every fail path.
 
 const LEGACY = "/r/build/previous/Jarhead.app";
-const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app.previous", retire: [LEGACY], link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
+const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app.zip", retire: [LEGACY], link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
 const ABSENT: TargetProbe = { exists: false, isSymlink: false, isDirectory: false };
 const DIR: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true };
 const OK_REQ = 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n';
@@ -188,7 +189,7 @@ function scripted(o: { probes?: TargetProbe[]; legacy?: boolean; snapshotCode?: 
     exec: (cmd, args) => {
       trace.push(`exec ${cmd} ${args.join(" ")}`);
       if (cmd === "cp") return { code: o.cpCode ?? 0, stdout: "", stderr: o.cpCode ? "cp: /Applications/Jarhead.app: Permission denied" : "" };
-      if (cmd === RSYNC && args.includes("--delete")) return { code: o.snapshotCode ?? 0, stdout: "", stderr: o.snapshotCode ? "rsync: mkdir failed" : "" };
+      if (cmd === DITTO) return { code: o.snapshotCode ?? 0, stdout: "", stderr: o.snapshotCode ? "ditto: can't create archive" : "" };
       if (cmd === RSYNC) return { code: o.rsyncCode ?? 0, stdout: o.rsyncOut ?? ITEMIZED, stderr: o.rsyncCode ? "rsync error: some files could not be transferred" : "" };
       if (cmd === CODESIGN && args[0] === "--verify") return { code: o.verifyCode ?? 0, stdout: "", stderr: o.verifyCode ? "/Applications/Jarhead.app: a sealed resource is missing or invalid" : "/Applications/Jarhead.app: valid on disk\n" };
       if (cmd === CODESIGN && args[0] === "-d") return { code: 0, stdout: "", stderr: o.requirement ?? OK_REQ };
@@ -219,7 +220,7 @@ test("performInstall, update: plan → mkdir previous → snapshot → rsync in 
     "probe /Applications/Jarhead.app",
     `probe ${LEGACY}`,
     "mkdirp /r/build/previous",
-    `exec ${RSYNC} ${snapshotArgs(SPEC.installed, SPEC.previous).join(" ")}`,
+    `exec ${DITTO} ${snapshotArgs(SPEC.installed, SPEC.previous).join(" ")}`,
     `exec ${RSYNC} ${rsyncArgs(SPEC.stage, SPEC.installed).join(" ")}`,
     `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`,
     `exec ${CODESIGN} ${CODESIGN_REQUIREMENT_ARGS.join(" ")} /Applications/Jarhead.app`,
@@ -233,7 +234,7 @@ test("performInstall, update: plan → mkdir previous → snapshot → rsync in 
   if (r.ok) {
     assert.deepEqual(r.plan, { kind: "update", inode: 103261417 });
     assert.equal(r.rollback, rollbackLine(SPEC.previous, SPEC.installed));
-    assert.equal(r.rollback, `rollback:  ${RSYNC} -rlptD -c --delete-after /r/build/previous/Jarhead.app.previous/ /Applications/Jarhead.app/`);
+    assert.equal(r.rollback, `rollback:  ${DITTO} -x -k /r/build/previous/Jarhead.app.zip /tmp/jarhead-rollback && ${RSYNC} -rlptD -c --delete-after /tmp/jarhead-rollback/Jarhead.app/ /Applications/Jarhead.app/`);
     assert.equal(r.line, "install    /Applications/Jarhead.app kept (inode 103261417) · 2 files replaced, 1 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
     assert.deepEqual(r.retired, [], "no old snapshot to retire");
   }
@@ -257,8 +258,8 @@ test("performInstall retires the old .app-named snapshot (build/previous/Jarhead
   const refused = performInstall({ ...SPEC, previous: LEGACY }, bad.io);
   assert.ok(!refused.ok);
   if (!refused.ok) {
-    assert.equal(refused.what, `refusing to install: the snapshot path ${LEGACY} ends in .app`);
-    assert.match(refused.lines[0] ?? "", /second Jarhead; name the snapshot Jarhead\.app\.previous/);
+    assert.equal(refused.what, `refusing to install: the snapshot path ${LEGACY} is not a .zip archive`);
+    assert.match(refused.lines[0] ?? "", /second Jarhead; snapshot to a \.zip archive/);
   }
   assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the retire, the snapshot or any write");
 });
@@ -337,7 +338,7 @@ test("performInstall: a failed snapshot is a warning, continues, and drops the r
   const r = performInstall(SPEC, noSnap.io);
   assert.ok(!r.ok);
   if (!r.ok) assert.deepEqual(r.lines, [], "no snapshot → no rollback to offer");
-  assert.deepEqual(noSnap.warnings, ["rollback snapshot failed (1); continuing without one: rsync: mkdir failed"]);
+  assert.deepEqual(noSnap.warnings, ["rollback snapshot failed (1); continuing without one: ditto: can't create archive"]);
   const okNoSnap = performInstall(SPEC, scripted({ snapshotCode: 1 }).io);
   assert.ok(okNoSnap.ok && okNoSnap.rollback === undefined);
 
@@ -349,24 +350,28 @@ test("performInstall: a failed snapshot is a warning, continues, and drops the r
   assert.ok(replaced.trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"), "the install stands; the warning is for Kevin");
 });
 
-test("openrsync snapshot: snapshotArgs into a missing build/previous/Jarhead.app.previous creates it as an exact copy; a second snapshot over it drops what the bundle no longer has", { skip: process.platform !== "darwin" }, () => {
+test("ditto snapshot: snapshotArgs writes build/previous/Jarhead.app.zip holding Jarhead.app whole; a second snapshot replaces it and drops what the bundle no longer has; an archive is never a bundle LaunchServices can register", { skip: process.platform !== "darwin" }, () => {
   const root = mkdtempSync(join(tmpdir(), "jh-snapshot-"));
   try {
     const installed = join(root, "Applications", "Jarhead.app");
-    const previous = join(root, "build", "previous", "Jarhead.app.previous");
+    const previous = join(root, "build", "previous", "Jarhead.app.zip");
     assert.ok(snapshotNameOk(previous));
     mkdirSync(join(installed, "Contents", "MacOS"), { recursive: true });
     writeFileSync(join(installed, "Contents", "MacOS", "Jarhead"), "bin");
     writeFileSync(join(installed, "Contents", "Info.plist"), "plist");
     mkdirSync(join(root, "build", "previous"), { recursive: true });
-    execFileSync(RSYNC, snapshotArgs(installed, previous), { encoding: "utf8" });
-    assert.ok(parityOk(compareTrees(installed, previous)), "created from nothing");
+    execFileSync(DITTO, snapshotArgs(installed, previous), { encoding: "utf8" });
+    const out1 = join(root, "out1");
+    execFileSync(DITTO, ["-x", "-k", previous, out1], { encoding: "utf8" });
+    assert.ok(parityOk(compareTrees(installed, join(out1, "Jarhead.app"))), "the archive holds the bundle whole, under its own name");
     rmSync(join(installed, "Contents", "Info.plist"));
     writeFileSync(join(installed, "Contents", "MacOS", "Jarhead"), "bin2");
-    execFileSync(RSYNC, snapshotArgs(installed, previous), { encoding: "utf8" });
-    const parity = compareTrees(installed, previous);
+    execFileSync(DITTO, snapshotArgs(installed, previous), { encoding: "utf8" });
+    const out2 = join(root, "out2");
+    execFileSync(DITTO, ["-x", "-k", previous, out2], { encoding: "utf8" });
+    const parity = compareTrees(installed, join(out2, "Jarhead.app"));
     assert.ok(parityOk(parity), JSON.stringify(parity));
-    assert.ok(!readdirSync(join(previous, "Contents")).includes("Info.plist"), "--delete keeps the snapshot honest");
+    assert.ok(!readdirSync(join(out2, "Jarhead.app", "Contents")).includes("Info.plist"), "a second snapshot is the bundle as it is now");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
