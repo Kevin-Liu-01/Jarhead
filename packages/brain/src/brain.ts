@@ -1,4 +1,4 @@
-import type { DelegationStep, Delegation } from "@jarhead/protocol";
+import type { DelegationStep, Delegation, ThreadLane } from "@jarhead/protocol";
 
 /**
  * A brain does the work Live delegates. It never speaks to the socket directly:
@@ -36,6 +36,8 @@ export interface BrainTask {
   readonly notes?: readonly string[];
   /** What Jarhead durably knows about Kevin (@jarhead/memory, rendered ≤ BRAIN_MEMORY_TOKENS), shown under its own label. Never read by a gate. */
   readonly memory?: string;
+  /** The thread this task runs on (a spawned thread's id, spoken name and lane); absent = the main conversation. Never read by a gate. */
+  readonly thread?: { readonly id: string; readonly name: string; readonly lane: ThreadLane };
 }
 
 /** An image handed to a brain with its task — a PNG on this Mac and what it shows. */

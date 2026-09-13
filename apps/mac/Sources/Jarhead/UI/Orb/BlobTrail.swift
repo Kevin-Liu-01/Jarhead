@@ -16,7 +16,7 @@ enum BlobGhostImage {
     /// Every other cell of the field, as its own glyph, in the flight colour, on
     /// nothing: the blob's silhouette as a dotted stencil. Same metrics as the live
     /// field so a ghost dropped at the panel's frame lines up with where the blob was.
-    static func render(cells: [UInt8], ramp: BlobRamp, color: RGB, size: CGSize, scale: CGFloat) -> CGImage? {
+    static func render(cells: [UInt8], ramp: BlobRamp, color: RGB, size: CGSize, scale: CGFloat, grid: BlobGrid = .main) -> CGImage? {
         let w = Int(size.width * scale), h = Int(size.height * scale)
         guard w > 0, h > 0,
               let cg = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
@@ -24,7 +24,7 @@ enum BlobGhostImage {
                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         cg.scaleBy(x: scale, y: scale)
 
-        let field = BlobMetrics.fieldSize
+        let field = BlobMetrics.fieldSize(grid)
         let origin = CGPoint(x: (size.width - field.width) / 2, y: (size.height - field.height) / 2)
         let cw = BlobMetrics.cellWidth, rh = BlobMetrics.rowHeight
         let shift = BlobMetrics.baselineShift
@@ -35,10 +35,10 @@ enum BlobGhostImage {
         var positions = [[CGPoint]](repeating: [], count: fontCount)
 
         var i = 0
-        for row in 0..<BlobSim.rows {
+        for row in 0..<grid.rows {
             // The bitmap is y-up; the field's row 0 is its top.
             let baseline = size.height - (origin.y + (CGFloat(row) + 0.5) * rh + shift)
-            for col in 0..<BlobSim.cols {
+            for col in 0..<grid.cols {
                 let idx = Int(cells[i]); i += 1
                 guard idx > 0, (row + col) % 2 == 0, idx < table.count, let ref = table[idx] else { continue }
                 runs[ref.font].append(ref.glyph)

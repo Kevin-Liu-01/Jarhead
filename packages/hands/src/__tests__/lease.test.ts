@@ -457,6 +457,99 @@ test("release learns only the lane's own app: what Kevin fronted while a lane he
   assert.equal(hands.named("focus_app").length, 1, "no re-front over an app whose lane is gone");
 });
 
+// Ranks (pass 4, the threads' admission order): a free lease goes to the LOWEST rank waiting, whichever polled
+// first — two screen threads take the screen in the order they were started instead of racing the 250 ms poll.
+// A priority taker (Jarhead's hands, dictation) ignores ranks; an unranked waiter is last in line; a cut empties the line.
+
+test("rank: two non-priority waiters, rank 2 first in the poll and rank 1 behind it — rank 1 is granted first, rank 2 after it lets go; the line is visible lowest first", async () => {
+  const { clock, lease } = world();
+  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  lease.touch("jarhead");
+  // Rank 2 starts polling first, rank 1 a poll later; both wait on Jarhead's activity.
+  const second = lease.acquire("t_b", { priority: false, rank: 2 });
+  await tick();
+  const first = lease.acquire("t_a", { priority: false, rank: 1 });
+  await tick();
+  assert.deepEqual(lease.waiting, ["t_a", "t_b"], "lowest rank first");
+  const bState = settled(second);
+  lease.release("jarhead", "turn-end");
+  assert.deepEqual(await first, { ok: true }, "rank 1 has it, though rank 2 polled first");
+  assert.equal(lease.holder, "t_a");
+  await clock.sleep(USER_IDLE_POLL_MS * 2);
+  assert.equal(bState.done, false, "rank 2 still waits: the screen is rank 1's");
+  assert.deepEqual(lease.waiting, ["t_b"]);
+  lease.release("t_a", "turn-end");
+  assert.deepEqual(await second, { ok: true });
+  assert.equal(lease.holder, "t_b");
+  assert.deepEqual(lease.waiting, [], "nobody in line once granted");
+});
+
+test("rank: a lower rank arriving while a higher one is already free to take the lease is judged before the take; priority ignores ranks; an unranked waiter is last; cancelAll empties the line and every waiter returns cut", async () => {
+  const { clock, lease } = world();
+  // Free lease, rank 3 waits only on its gate (two helper round trips); rank 1 lands meanwhile.
+  const late = lease.acquire("t_c", { priority: false, rank: 3 });
+  const early = lease.acquire("t_a", { priority: false, rank: 1 });
+  await tick();
+  await tick();
+  const [c, a] = await Promise.all([Promise.race([late, clock.sleep(USER_IDLE_POLL_MS * 3).then(() => "waiting" as const)]), early]);
+  assert.deepEqual(a, { ok: true }, "rank 1 took it");
+  assert.equal(c, "waiting", "rank 3 saw rank 1 ahead in line and waited");
+  assert.equal(lease.holder, "t_a");
+  // Priority: Jarhead's hands take it after MIN_HOLD regardless of anyone's rank in line.
+  clock.t += MIN_HOLD_MS;
+  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  assert.equal(lease.holder, "jarhead");
+  // An unranked waiter is last: rank 9 beats it.
+  const unranked = lease.acquire("w_old", { priority: false });
+  await tick();
+  const ranked = lease.acquire("t_z", { priority: false, rank: 9 });
+  await tick();
+  assert.deepEqual(lease.waiting.slice(-2), ["t_z", "w_old"]);
+  // A cut: the line is empty and every waiter returns `cut` on its next poll.
+  lease.cancelAll("Kevin pressed stop");
+  assert.deepEqual(lease.waiting, []);
+  assert.deepEqual(await late, { ok: false, reason: "cut" });
+  assert.deepEqual(await unranked, { ok: false, reason: "cut" });
+  assert.deepEqual(await ranked, { ok: false, reason: "cut" });
+  assert.equal(lease.holder, undefined);
+});
+
+test("rank: a waiter that runs out of patience, or is aborted, leaves the line — rank 1 past its deadline (or cancelled) no longer holds rank 2 back, which is granted on its next poll", async () => {
+  const { clock, lease } = world();
+  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  lease.touch("jarhead");
+  // Rank 1 with a short patience (six polls — every waiter's poll sleep moves the one virtual clock), rank 2 behind it, both waiting on Jarhead's activity.
+  const a = lease.acquire("t_a", { priority: false, rank: 1, timeoutMs: USER_IDLE_POLL_MS * 6 });
+  await tick();
+  const b = lease.acquire("t_b", { priority: false, rank: 2 });
+  await tick();
+  assert.deepEqual(lease.waiting, ["t_a", "t_b"]);
+  const ra = await a;
+  assert.equal(ra.ok, false, "rank 1 ran out of patience");
+  assert.deepEqual(lease.waiting, ["t_b"], "the deadline took rank 1 out of the line (the finally)");
+  lease.release("jarhead", "turn-end");
+  assert.deepEqual(await b, { ok: true }, "rank 2 is granted on its next poll: nobody ahead in line any more");
+  assert.equal(lease.holder, "t_b");
+  assert.deepEqual(lease.waiting, []);
+  lease.release("t_b", "turn-end");
+  // Aborted mid-wait: the same.
+  assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
+  lease.touch("jarhead");
+  const ctl = new AbortController();
+  const c = lease.acquire("t_c", { priority: false, rank: 1, signal: ctl.signal });
+  await tick();
+  const d = lease.acquire("t_d", { priority: false, rank: 2 });
+  await tick();
+  assert.deepEqual(lease.waiting, ["t_c", "t_d"]);
+  ctl.abort();
+  assert.deepEqual(await c, { ok: false, reason: "cancelled" });
+  assert.deepEqual(lease.waiting, ["t_d"], "the abort took rank 1 out of the line");
+  lease.release("jarhead", "turn-end");
+  assert.deepEqual(await d, { ok: true });
+  assert.equal(lease.holder, "t_d");
+  await clock.sleep(0);
+});
+
 test("the fake matches the helper: mouse_up is never refused busy (a refused release would leave a posted button held down), while focus_moved still applies to it", async () => {
   const hands = new FakeHands();
   hands.kevinActed();

@@ -124,7 +124,7 @@ test("timings: with no acting tool nothing is stamped as an action, and speechEn
   }
 });
 
-test("timings: a worker's steps land on the parent with its name but stamp no firstToolAt / firstActionAt; 61 s of worker actions never move lastKevinAt (the presence gate's clock)", async () => {
+test("timings: a thread's steps land on ITS OWN delegation (threadId) with their own marks, never the parent's; the parent's first tool is its thread_start and it has no action; 61 s of thread actions never move lastKevinAt (the presence gate's clock)", async () => {
   const w = world();
   const { engine, brain, clock } = w;
   const lastKevinAt = (): number => (engine as unknown as { lastKevinAt: number }).lastKevinAt;
@@ -147,17 +147,25 @@ test("timings: a worker's steps land on the parent with its name but stamp no fi
     delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
     await settle();
     const kevinBefore = lastKevinAt();
-    const started = await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
+    const started = await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
     assert.equal(started.result.kind, "text");
     await actedP;
-    assert.equal(lastKevinAt(), kevinBefore, "61 s of a worker's actions are not Kevin's presence");
+    assert.equal(lastKevinAt(), kevinBefore, "61 s of a thread's actions are not Kevin's presence");
     const d = engine.snapshot().delegations[0]!;
-    assert.equal(d.steps.filter((s) => s.worker === "Spotify" && s.kind === "tool").length, 6);
-    // worker_start is the main brain's own tool step; the worker's reads are not the main brain's first tool or action.
+    assert.equal(d.steps.filter((s) => s.worker === "Spotify" && s.kind === "tool").length, 0, "a thread's steps never land on the parent");
+    // thread_start is the main brain's own tool step; the thread's reads are on its own record, not the main brain's first tool or action.
     const t = d.timings as { firstToolAt?: number; firstActionAt?: number };
-    const workerStart = d.steps.find((s) => s.kind === "tool" && s.tool?.name === "worker_start")!;
-    assert.equal(t.firstToolAt, workerStart.at, "the first tool is the brain's own worker_start");
-    assert.equal(t.firstActionAt, undefined, "a worker's read is nobody's action; worker_start changes nothing on screen");
+    const threadStart = d.steps.find((s) => s.kind === "tool" && s.tool?.name === "thread_start")!;
+    assert.equal(t.firstToolAt, threadStart.at, "the first tool is the brain's own thread_start");
+    assert.equal(t.firstActionAt, undefined, "a thread's read is nobody's action; thread_start changes nothing on screen");
+    const threadId = engine.workers.threads().find((x) => x.name === "Spotify")!.id;
+    const own = engine.workers.turnsOf(threadId)[0]!;
+    assert.equal(own.threadId, threadId);
+    assert.equal(own.steps.filter((s) => s.kind === "tool" && s.tool?.name === "frontmost_app").length, 6, "on its own delegation");
+    const tt = own.timings as { firstToolAt?: number; firstActionAt?: number; toolRoundTripMs?: number[] };
+    assert.ok(tt.firstToolAt !== undefined, "its own first look is stamped on its own turn");
+    assert.equal(tt.firstActionAt, undefined, "a read is no action");
+    assert.equal(tt.toolRoundTripMs?.length, 6, "one round trip per look; the eyes' shot stamps nothing");
     brain.resolve?.({ status: "done", summary: "on it." });
     await until(() => engine.snapshot().delegations[0]!.status === "done");
   } finally {

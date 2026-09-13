@@ -114,6 +114,19 @@ struct NotchGeometry: Equatable {
         let bar = frame.maxY - screen.visibleFrame.maxY
         return frame.maxY - max(bar, notchHeight + 1)
     }
+
+    /// Where a dropped blob counts as "into the dock" (CG, y down): the notch's column
+    /// widened by a hand's breadth and reaching 70 pt under the menu bar — the island's
+    /// ground. What the drop means is the dropper's: the main blob's is a sleep
+    /// (`OrbPanelController.dropIntoDock`), a satellite's is its thread's stop
+    /// (`BlobFleet`) — never a sleep.
+    @MainActor
+    static func catchZoneCG(_ g: NotchGeometry) -> CGRect {
+        let n = g.notch
+        let reach: CGFloat = 70, wing: CGFloat = 48
+        let ak = NSRect(x: n.minX - wing, y: g.menuBarBottom - reach, width: n.width + 2 * wing, height: (n.maxY - g.menuBarBottom) + reach)
+        return CGSpace.rect(fromAppKit: ak)
+    }
 }
 
 // MARK: - Dock
@@ -284,6 +297,12 @@ final class NotchDock {
     /// one whose status is running). The island shows "Working · m:ss" while it is set.
     func setWorking(since: Double?) {
         view.workingSince = since
+    }
+
+    /// The live spawned threads (`BlobFleet.threadDots`): one 5 pt square each beside
+    /// the counter in the peek and on the strip, one mono line on the open island.
+    func setThreads(_ dots: [ThreadDot]) {
+        view.threads = dots
     }
 
     /// The gate's pill (question, verdict, countdown) under the notch while asleep.
@@ -498,6 +517,41 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// The phase, for the harness's working knob (`NotchDock.phaseChanged`).
     var currentPhase: Phase { sim.phase }
 
+    #if JARHEAD_ORB_PREVIEW
+    /// The harness's strip probe (`previewStripProbe`): park / work levels forced for
+    /// one offscreen draw, and that draw stopping after the strip.
+    var previewForcedLevels: (park: CGFloat, work: CGFloat)?
+    var previewStripOnly = false
+    #endif
+
+    /// The live spawned threads, from the fleet: drawn as one flat 5 pt square each in
+    /// the thread's phase colour (the island's language is squares and hairlines)
+    /// right of the counter in the peek and on the out-strip, and as one mono line on
+    /// the open island — "Slack · working · 0:03 | Spotify · working · 0:03". A change
+    /// of count re-lays the island (the peek widens by the dots); a change of status
+    /// or clock only redraws. A sleeping Jarhead has no threads: nothing tucked.
+    var threads: [ThreadDot] = [] {
+        didSet {
+            guard threads != oldValue else { return }
+            if threads.count != oldValue.count { setMode(mode, animated: true) } else { needsDisplay = true }
+            wake()
+        }
+    }
+    static let dotSide: CGFloat = 5
+    static let dotGap: CGFloat = 3
+    /// The dots' run: n squares, n − 1 gaps.
+    private var dotsWidth: CGFloat { threads.isEmpty ? 0 : CGFloat(threads.count) * Self.dotSide + CGFloat(threads.count - 1) * Self.dotGap }
+    /// What the island grows by for the dots (the run and 8 of padding); 0 without threads.
+    private var dotsExtraWidth: CGFloat { threads.isEmpty ? 0 : dotsWidth + 8 }
+    /// The island's third row: name · status word · m:ss per thread, " | " between.
+    private func threadLine(now: Date) -> String {
+        let t = now.timeIntervalSince1970
+        return threads.map { d in
+            let elapsed = t - d.since
+            return "\(d.name) · \(d.status.orbWord) · \(OrbStyle.mmss(elapsed.isFinite ? max(0, elapsed) : 0))"
+        }.joined(separator: " | ")
+    }
+
     /// Reduce Motion, from the one flag the controller keeps in step with the system
     /// setting (`BlobSim.reducedMotion`; the harness's ORB_REDUCE_MOTION sets the same
     /// flag), so the fades, the stagger and the spring agree with the face's own
@@ -583,11 +637,15 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
     /// "Working · 0:12": mono digits (the meter's font), the 0.72 step, an ink shadow under it.
     private static let workAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72)]
     private static let workShadow: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 0, alpha: 0.55)]
+    /// The threads line: the counter's mono at the same step, truncating at the island's edge.
+    private static let threadAttrs: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 1, alpha: 0.72), .paragraphStyle: truncating]
+    private static let threadShadow: [NSAttributedString.Key: Any] = [.font: pillFont, .foregroundColor: NSColor(white: 0, alpha: 0.55), .paragraphStyle: truncating]
     /// The counter's widest plausible text, measured once: the peek widens by this plus
     /// padding while working, so the island never re-lays itself as the digits roll.
     private static let workTextWidth: CGFloat = textWidth("Working · 00:00" as NSString, workAttrs)
-    /// What the peek island grows by while working (the counter, a gap from the face, padding).
-    private static var peekExtraWidth: CGFloat { workTextWidth > 0 ? workTextWidth + 18 : 0 }
+    /// What the peek island grows by while working (the counter, a gap from the face,
+    /// padding); the thread dots add `dotsExtraWidth` on top.
+    private static var workExtraWidth: CGFloat { workTextWidth > 0 ? workTextWidth + 18 : 0 }
 
     /// Three of the eight crashes of 2026-09-11 were `NSString.draw` on the island →
     /// CoreText `TAttributes::ApplyFont` → "attempt to insert nil object", on ordinary
@@ -704,11 +762,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         mode = m
         let n = geometry?.notch.width ?? 185
         if !parked {
-            // The blob is out. Working, the notch keeps a quiet strip of peek height with
-            // the counter alone on it (the face is on the body at its target); otherwise
-            // the island shrinks away to nothing: it left.
-            let strip = workingSince != nil
-            widthSpring.target = strip ? n + Self.peekExtraWidth : n
+            // The blob is out. Working — or with threads live — the notch keeps a quiet
+            // strip of peek height with the counter and the thread dots on it (the face
+            // is on the body at its target); otherwise the island shrinks away to
+            // nothing: it left.
+            let strip = workingSince != nil || !threads.isEmpty
+            widthSpring.target = strip ? n + (workingSince != nil ? Self.workExtraWidth : 0) + dotsExtraWidth : n
             heightSpring.target = strip ? NotchGeometry.peekHeight : 0
             openSpring.target = 0
         } else {
@@ -813,8 +872,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // level (the spring smooths it into a pulse; `draw` brightens the hairline with
         // it). Not under reduce motion, where the island holds its size.
         if parked, mode == .peek, let n = geometry?.notch.width {
-            // Working, the peek also carries the counter right of the face: room for it, eased in.
-            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * finite01(sim.islandLevel)) + Double(Self.peekExtraWidth * workLevel(now))
+            // Working, the peek also carries the counter right of the face: room for it,
+            // eased in; and the thread dots after it.
+            widthSpring.target = Double(n) + (sim.reducedMotion ? 0 : 30 * finite01(sim.islandLevel)) + Double(Self.workExtraWidth * workLevel(now) + dotsExtraWidth)
         }
         if !springsSettled {
             let step = min(dt, 1.0 / 30)
@@ -832,8 +892,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             lastRender = now
             needsDisplay = true
         }
-        // Working counts as busy (the counter rolls once a second, at the idle rate).
-        let busy = animating || (parked && !sim.isStatic) || (parked && sim.rawLevelsActive) || workingSince != nil
+        // Working counts as busy (the counter rolls once a second, at the idle rate); so do live threads (their m:ss roll too).
+        let busy = animating || (parked && !sim.isStatic) || (parked && sim.rawLevelsActive) || workingSince != nil || !threads.isEmpty
         if busy {
             idleSince = -1
         } else if idleSince < 0 {
@@ -911,10 +971,12 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         let transport: NSRect
         let word: NSRect
         let line: NSRect
+        /// The third row: one mono line for the live threads (empty without them; nothing shifts).
+        let threads: NSRect
         let stop: NSRect
         let mute: NSRect
         /// Every rect a number: the only layout that reaches a draw.
-        var isFinite: Bool { transport.isFiniteRect && word.isFiniteRect && line.isFiniteRect && stop.isFiniteRect && mute.isFiniteRect }
+        var isFinite: Bool { transport.isFiniteRect && word.isFiniteRect && line.isFiniteRect && threads.isFiniteRect && stop.isFiniteRect && mute.isFiniteRect }
     }
 
     private func contentLayout(in island: NSRect) -> ContentLayout {
@@ -929,7 +991,25 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         let width = max(20, stop.minX - 12 - textLeft)
         let word = NSRect(x: textLeft, y: island.minY + 27, width: width, height: 18)
         let line = NSRect(x: textLeft, y: island.minY + 49, width: width, height: 16)
-        return ContentLayout(transport: transport, word: word, line: line, stop: stop, mute: mute)
+        let threads = NSRect(x: textLeft, y: island.minY + 69, width: width, height: 14)
+        return ContentLayout(transport: transport, word: word, line: line, threads: threads, stop: stop, mute: mute)
+    }
+
+    /// The thread dots: one flat `dotSide` square per live spawned thread in its phase
+    /// colour, `dotGap` apart, the run starting at `x`, centred on `midY`. No gradient,
+    /// no circle: the island's language is squares and hairlines.
+    private func drawThreadDots(_ cg: CGContext, x: CGFloat, midY: CGFloat, alpha: CGFloat) {
+        let a = finite01(alpha)
+        guard a > 0.005, !threads.isEmpty, x.isFinite, midY.isFinite else { return }
+        cg.saveGState()
+        cg.setAlpha(a)
+        var dx = x
+        for d in threads {
+            cg.setFillColor(d.tone.cgColor)
+            cg.fill(CGRect(x: dx, y: midY - Self.dotSide / 2, width: Self.dotSide, height: Self.dotSide))
+            dx += Self.dotSide + Self.dotGap
+        }
+        cg.restoreGState()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -964,13 +1044,22 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         cg.setFillColor(CGColor(gray: 0, alpha: 1))
         cg.addPath(shape.path)
         cg.fillPath()
+        #if JARHEAD_ORB_PREVIEW
+        let park = previewForcedLevels.map { finite01($0.park) } ?? finite01(parkLevel(now))
+        let work = previewForcedLevels.map { finite01($0.work) } ?? finite01(workLevel(now))
+        #else
         let park = finite01(parkLevel(now))
         let work = finite01(workLevel(now))
-        // The blob is out at its target and a delegation runs: the counter alone on the
-        // strip (no face — that is on the body), fading with the park level's inverse.
-        if work > 0.005, park < 0.995, island.isFiniteRect, island.height >= 1 {
-            drawWorkingStrip(cg, shape: shape, island: island, color: sim.displayColor, alpha: work * (1 - park))
+        #endif
+        // The blob is out at its target and a delegation runs (or threads are live): the
+        // counter and the thread dots alone on the strip (no face — that is on the body),
+        // fading with the park level's inverse; the counter with the work level too.
+        if work > 0.005 || !threads.isEmpty, park < 0.995, island.isFiniteRect, island.height >= 1 {
+            drawWorkingStrip(cg, shape: shape, island: island, color: sim.displayColor, alpha: 1 - park, work: work)
         }
+        #if JARHEAD_ORB_PREVIEW
+        if previewStripOnly { return }
+        #endif
         guard park > 0.005, island.isFiniteRect, island.height >= 1 else { return }
 
         // Everything on the island is clipped to the ink and fades with the park level:
@@ -1020,8 +1109,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         // under-copy (`drawEye`) keeps it readable over the gradient's light end.
         let face = sim.face
         let lipFace = mode == .tucked && open < 0.5
-        // Working in the peek: the face gives half the counter's width to keep the pair centred.
-        let peekShift: CGFloat = lipFace ? 0 : -(Self.peekExtraWidth / 2) * work
+        // Working in the peek: the face gives half the counter's width (and the dots') to keep the pair centred.
+        let peekShift: CGFloat = lipFace ? 0 : -(Self.workExtraWidth * work + dotsExtraWidth) / 2
         let fl = faceLayout(island: island, open: open, lipFace: lipFace, shift: peekShift)
         // Cell shift: the look moves the pair by up to a glyph's third.
         let shiftX = CGFloat(sim.faceLookX) * CGFloat(fl.size) * 0.3
@@ -1059,7 +1148,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         cg.strokePath()
 
         // Working, peeking: "Working · 0:12" right of the face, fading as the island opens
-        // (on the open island it sits after the phase word instead).
+        // (on the open island it sits after the phase word instead). The thread dots
+        // follow the counter — or the face, once the counter has faded.
+        var afterCounter = fl.right + 8
         if work > 0.005, !lipFace, open < 0.995 {
             let alpha = finite01(work * (1 - open))
             let text = workingText()
@@ -1076,6 +1167,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
                 cg.restoreGState()
                 NSGraphicsContext.restoreGraphicsState()
             }
+            afterCounter = x + (rect.width + 8) * work
+        }
+        if !threads.isEmpty, !lipFace, open < 0.995 {
+            drawThreadDots(cg, x: afterCounter, midY: island.midY, alpha: 1 - open)
         }
 
         // The island's transport, words and buttons: laid out in the open island's rect,
@@ -1207,6 +1302,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
             let rect = l.line.offsetBy(dx: 0, dy: a.dy)
             Self.drawText(text, in: rect.offsetBy(dx: 0, dy: 1), Self.lineShadow)
             Self.drawText(text, in: rect, line.isEmpty ? Self.lineAttrsEmpty : Self.lineAttrs)
+            // The third row: the live threads, one mono line — "Slack · working · 0:03 | …" — truncating.
+            if !threads.isEmpty {
+                let tl = threadLine(now: Date()) as NSString
+                let trect = l.threads.offsetBy(dx: 0, dy: a.dy)
+                Self.drawText(tl, in: trect.offsetBy(dx: 0, dy: 1), Self.threadShadow)
+                Self.drawText(tl, in: trect, Self.threadAttrs)
+            }
             cg.restoreGState()
         }
 
@@ -1252,17 +1354,26 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         NSGraphicsContext.restoreGraphicsState()
     }
 
-    /// The working strip: the blob is out at its target, a delegation runs. The ink is
-    /// already down (the notch grown to peek height); this adds the phase colour as the
-    /// hairline along the bottom edge and "Working · 0:12" centred — nothing else, so
-    /// the notch reads as busy without competing with the body on the screen.
-    private func drawWorkingStrip(_ cg: CGContext, shape: NotchInk.Shape, island: NSRect, color: RGB, alpha: CGFloat) {
+    /// The working strip: the blob is out at its target, a delegation runs (or threads
+    /// are live). The ink is already down (the notch grown to peek height); this adds
+    /// the phase colour as the hairline along the bottom edge and "Working · 0:12"
+    /// centred with the thread dots right of it — nothing else, so the notch reads as
+    /// busy without competing with the body on the screen.
+    ///
+    /// Alphas: `alpha` is the park level's inverse. The counter is drawn at
+    /// `alpha · work` — `CGContext.setAlpha` REPLACES the state's alpha, it does not
+    /// multiply, so the product is computed here — and so is the hairline while no
+    /// thread is live: the strip is then exactly what it was before the fleet
+    /// (`work · (1 − park)` on both). With threads the strip is theirs: the hairline
+    /// and the dots hold at `alpha` while the counter comes and goes with `work`.
+    private func drawWorkingStrip(_ cg: CGContext, shape: NotchInk.Shape, island: NSRect, color: RGB, alpha: CGFloat, work: CGFloat) {
         let a = finite01(alpha)
-        guard a > 0.005 else { return }
+        let counter = finite01(a * finite01(work))
+        guard a > 0.005, counter > 0.005 || !threads.isEmpty else { return }
         cg.saveGState()
         cg.addPath(shape.path)
         cg.clip()
-        cg.setAlpha(a)
+        cg.setAlpha(threads.isEmpty ? counter : a)
         let inset = max(shape.bottomRadius, 2)
         cg.setStrokeColor(color.cgColor(alpha: 0.9))
         cg.setLineWidth(1)
@@ -1270,19 +1381,30 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver {
         cg.addLine(to: CGPoint(x: island.maxX - inset, y: island.maxY - 0.5))
         cg.strokePath()
         let text = workingText()
-        let w = Self.textWidth(text, Self.workAttrs)
+        let w = counter > 0.005 ? Self.textWidth(text, Self.workAttrs) : 0
+        // The counter and the dots as one centred run: the counter, 8 of air, the dots.
+        let dots = dotsWidth
+        let run = w + (w > 0 && dots > 0 ? 8 : 0) + dots
+        var x = island.midX - run / 2
         if w > 0, island.height >= 14 {
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
             cg.setShouldSmoothFonts(false)
             cg.setAllowsFontSubpixelPositioning(true)
             cg.setShouldSubpixelPositionFonts(true)
-            let rect = NSRect(x: island.midX - w / 2 - 1, y: island.midY - 8, width: min(w + 2, max(0, island.width - 12)), height: 16)
+            let rect = NSRect(x: x - 1, y: island.midY - 8, width: min(w + 2, max(0, island.width - 12)), height: 16)
             if rect.width > 24 {
+                cg.saveGState()
+                cg.setAlpha(counter)
                 Self.drawText(text, in: rect.offsetBy(dx: 0, dy: 1), Self.workShadow)
                 Self.drawText(text, in: rect, Self.workAttrs)
+                cg.restoreGState()
             }
             NSGraphicsContext.restoreGraphicsState()
+            x += w + 8
+        }
+        if dots > 0, island.height >= 12 {
+            drawThreadDots(cg, x: x, midY: island.midY, alpha: a)
         }
         cg.restoreGState()
     }
@@ -1460,6 +1582,52 @@ extension NotchView {
     }
     /// The island rect as the springs give it (view coordinates), before any guard.
     var previewIslandRectRaw: NSRect { islandRect }
+    /// The thread dots this view holds ("Slack:working Spotify:working"), for the harness.
+    var previewThreadDots: String { threads.map { "\($0.name):\($0.status.rawValue)" }.joined(separator: " ") }
+
+    /// The working strip's alphas, measured rather than read off the code: the strip
+    /// alone is rendered into a bitmap at forced park / work levels, and the hairline
+    /// (the chromatic pixels — the phase colour) and the counter (the achromatic ones —
+    /// white text) are summed as brightness over black, each as a fraction of the full
+    /// strip's (park 0, work 1). Both must follow work · (1 − park): 0.5 at park ½ and
+    /// 0.5 at work ½ — the formula the strip had before the fleet, which the settled
+    /// shots and the printed mode lines cannot see (only the 0.24 s transitions differ).
+    /// Needs the counter ("Working · m:ss": ORB_NOTCH_WORKING=1 in an acting phase) and
+    /// no live threads (the dots are chromatic too, and hold at 1 − park by design).
+    func previewStripProbe() -> String {
+        func render(park: CGFloat, work: CGFloat) -> (hair: Double, text: Double)? {
+            previewForcedLevels = (park, work)
+            previewStripOnly = true
+            defer { previewForcedLevels = nil; previewStripOnly = false }
+            guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+            cacheDisplay(in: bounds, to: rep)
+            guard let data = rep.bitmapData else { return nil }
+            let w = rep.pixelsWide, h = rep.pixelsHigh, bpr = rep.bytesPerRow, spp = rep.samplesPerPixel
+            var hair = 0.0, text = 0.0
+            for y in 0..<h {
+                let row = data + y * bpr
+                for x in 0..<w {
+                    let p = row + x * spp
+                    let r = Double(p[0]), g = Double(p[1]), b = Double(p[2])
+                    let hi = max(r, g, b), lo = min(r, g, b)
+                    guard hi > 8 else { continue }
+                    if hi - lo > 24 { hair += hi } else { text += hi }
+                }
+            }
+            return (hair, text)
+        }
+        guard threads.isEmpty else { return "notch strip probe: skipped — threads live (the dots would count as hairline)" }
+        guard let full = render(park: 0, work: 1) else { return "notch strip probe: nothing rendered" }
+        guard full.hair > 0, full.text > 0 else {
+            return String(format: "notch strip probe: full strip hairline %.0f text %.0f — no counter? (ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting)", full.hair, full.text)
+        }
+        guard let halfPark = render(park: 0.5, work: 1), let halfWork = render(park: 0, work: 0.5) else { return "notch strip probe: nothing rendered" }
+        let hp = halfPark.hair / full.hair, tp = halfPark.text / full.text
+        let hw = halfWork.hair / full.hair, tw = halfWork.text / full.text
+        let ok = [hp, tp, hw, tw].allSatisfy { abs($0 - 0.5) <= 0.08 }
+        return String(format: "notch strip probe: hairline %.2f @park½ %.2f @work½ | counter %.2f @park½ %.2f @work½ (want 0.50 each = work·(1−park); full hairline %.0f counter %.0f) %@",
+                      hp, hw, tp, tw, full.hair, full.text, ok ? "OK" : "FAIL")
+    }
 }
 
 extension NotchView.Press {

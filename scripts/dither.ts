@@ -6,10 +6,12 @@
  * the orb's ramp (`ORB_STOPS` = `Dither.orbStops`), the ink ramp (`INK_STOPS` =
  * `Dither.inkStops`), the classic 8×8 Bayer matrix (`BAYER8_RANKS` / `BAYER8` =
  * `Dither.bayer8Ranks` / `Dither.bayer8`), the piecewise-linear ramp and the ordered
- * quantiser, plus the orb's geometry and shading constants and a minimal PNG encoder.
- * Every shaded surface in a picture is quantised into a few bands and dithered with the
- * matrix in cells of whole pixels — the threshold sampled per cell, the geometry per
- * pixel — so the silhouettes stay crisp while the pattern stays chunky.
+ * quantiser, plus the orb's geometry and shading constants, the orb's face (`FACE`,
+ * `faceMask`: Kevin's `^ ^` as a cell mask, the same face on the icon and the banner) and
+ * a minimal PNG encoder. Every shaded surface in a picture is quantised into a few bands
+ * and dithered with the matrix in cells of whole pixels — the threshold sampled per cell,
+ * the geometry per pixel — so the silhouettes stay crisp while the pattern stays chunky.
+ * Flat fills (the face's paper and ink) stay flat.
  */
 
 import { deflateSync } from "node:zlib";
@@ -154,20 +156,183 @@ export function orbGeometry(u: number, v: number): OrbGeometry {
   return { sd: d - R, diag, d, R, nx, ny };
 }
 
+/** A gaussian sheen toward paper: centre in orb units (R = 1), width, strength. */
+export interface Gleam {
+  readonly x: number;
+  readonly y: number;
+  readonly sigma: number;
+  readonly amp: number;
+}
+
+/** The sheen's unquantised lift (0..amp) at a point in orb units. */
+export function gleamLift(h: Gleam, nx: number, ny: number): number {
+  const hx = nx - h.x;
+  const hy = ny - h.y;
+  return h.amp * Math.exp(-(hx * hx + hy * hy) / (2 * h.sigma * h.sigma));
+}
+
 /**
  * The orb's colour at a point INSIDE it (`g.sd <= 0`): the gradient quantised into `bands`
  * dithered bands, then the sphere shade toward the rim and the glassy highlight, both
- * dithered with the same threshold `t`.
+ * dithered with the same threshold `t`. `highlight` defaults to `ORB.highlight` (the
+ * faceless orb's spot, today's bytes); the face passes `FACE.gleam`, which sits above the
+ * eyes so the near-white ink and the paper lift never merge.
  */
-export function orbInside(g: OrbGeometry, bands: number, t: number): RGB {
+export function orbInside(g: OrbGeometry, bands: number, t: number, highlight: Gleam = ORB.highlight): RGB {
   const q = Math.min(bands, Math.floor(g.diag * bands + t)) / bands;
   let col = orbRamp(q);
   const rim = smoothstep(0.55, 1.0, g.d / g.R) * clamp01(0.5 + (g.nx + g.ny) / 2) * ORB.rimDarken;
   col = lerp3(col, ORB.rimTone, quantiseDither(rim, ORB.rimLevels, t));
-  const hx = g.nx - ORB.highlight.x;
-  const hy = g.ny - ORB.highlight.y;
-  const hl = ORB.highlight.amp * Math.exp(-(hx * hx + hy * hy) / (2 * ORB.highlight.sigma * ORB.highlight.sigma));
-  return lerp3(col, PAPER, quantiseDither(hl, ORB.highlightLevels, t));
+  return lerp3(col, PAPER, quantiseDither(gleamLift(highlight, g.nx, g.ny), ORB.highlightLevels, t));
+}
+
+// ---- the face: Kevin's `^ ^` on the orb -------------------------------------------
+//
+// "A blob with eyes is a creature; without, a loading indicator" (BlobField.swift). The
+// Dock tile and the banner wear the blob's own pleased face: a pair of chevrons in flat
+// PAPER, each boxed one cell deep in flat INK — the blob's rule "boxed in the ground
+// colour", with the icon's ground. Proportions are the blob's, in orb-radius units
+// (R = 1): the eye row 0.30 R above the centre, the pair about 30 % of the orb's width.
+// The face is a CELL mask (glyph = the signed distance at the cell's centre ≤ 0, box = a
+// Chebyshev dilation of the glyph), so the icon's 64-cell grid gives ONE pattern from 64
+// to 1024 (cell = size / 64) and the banner's 8 px cells give the same face at its own
+// resolution. Flat fills stay flat: the face never dithers. Two sizes cell sampling
+// cannot carry — 32 and 16 — are hand bitmaps (`faceMaskSmall`).
+
+/** 0 orb, 1 glyph (PAPER), 2 box (INK). */
+export type FaceCell = 0 | 1 | 2;
+
+export const FACE = {
+  /** The pair. `OO` (listening) is the runner-up and would need its own SDF; the tile ships pleased. */
+  pair: "^^" as const,
+  /** Eye row above the orb centre, R units (−5 cells on the icon grid) — the blob's −0.30. */
+  row: -0.307,
+  /** Eye centres at ±spread (±7.5 icon cells: ON a cell centre, so a 5-wide glyph is symmetric). */
+  spread: 0.461,
+  /** The chevron's outer box (5 × 4 icon cells; ratio 1.25 = SF Mono Bold `^`). */
+  w: 0.307,
+  h: 0.246,
+  /** Stroke width (1.3 icon cells; stable from 1.2 to 1.5 — 1.0 breaks the apex, 1.6 fills the feet). */
+  stroke: 0.08,
+  /** Box radius → max(1, round(outline · cells per R)) cells: 1 on the icon, 2 on the banner. */
+  outline: 0.06,
+  ink: PAPER as RGB,
+  box: INK as RGB,
+  /** Replaces ORB.highlight when the face is on: a smaller sheen at the upper-left rim, above the eyes. */
+  gleam: { x: -0.36, y: -0.76, sigma: 0.17, amp: 0.85 } as Gleam,
+  /** The 16 px tile: a dot pair with its shadow, or nothing. Judged on the contact strip. */
+  at16: "dots" as "dots" | "none",
+};
+
+/** Signed distance to a round-capped segment a→b of half-width r. */
+function capsule(px: number, py: number, ax: number, ay: number, bx: number, by: number, r: number): number {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const t = clamp01(((px - ax) * abx + (py - ay) * aby) / (abx * abx + aby * aby));
+  return Math.hypot(ax + abx * t - px, ay + aby * t - py) - r;
+}
+
+/** Signed distance (R units) from a point to the nearer eye glyph; ≤ 0 inside a stroke. */
+export function faceSdf(nx: number, ny: number): number {
+  const sw = FACE.stroke / 2;
+  let best = Infinity;
+  for (const side of [-1, 1]) {
+    const ex = side * FACE.spread;
+    const ey = FACE.row;
+    // Two legs from the apex down to the feet, inset by the half-stroke so the outer box is exactly w × h.
+    const ay = ey - FACE.h / 2 + sw;
+    const fy = ey + FACE.h / 2 - sw;
+    const dx = FACE.w / 2 - sw;
+    best = Math.min(best, capsule(nx, ny, ex, ay, ex - dx, fy, sw), capsule(nx, ny, ex, ay, ex + dx, fy, sw));
+  }
+  return best;
+}
+
+/**
+ * The face on a cols × rows cell grid (`cell` px per cell, cell (0,0) at canvas (0,0));
+ * the orb's centre at canvas (cx, cy) px with radius R px. Glyph = SDF ≤ 0 at the CELL
+ * CENTRE; box = Chebyshev dilation of the glyph by max(1, round(FACE.outline · R / cell))
+ * cells (a dilation, not SDF ≤ outline: it gives the blob's clean one-cell box and the same
+ * bits at every size).
+ */
+export function faceMask(cols: number, rows: number, cell: number, cx: number, cy: number, R: number): Uint8Array {
+  const m = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const nx = ((c + 0.5) * cell - cx) / R;
+      const ny = ((r + 0.5) * cell - cy) / R;
+      if (faceSdf(nx, ny) <= 0) m[r * cols + c] = 1;
+    }
+  }
+  const rad = Math.max(1, Math.round((FACE.outline * R) / cell));
+  const out = m.slice();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (m[r * cols + c]) continue;
+      let near = false;
+      for (let dy = -rad; dy <= rad && !near; dy++) {
+        for (let dx = -rad; dx <= rad; dx++) {
+          const rr = r + dy;
+          const cc = c + dx;
+          if (rr >= 0 && rr < rows && cc >= 0 && cc < cols && m[rr * cols + cc] === 1) {
+            near = true;
+            break;
+          }
+        }
+      }
+      if (near) out[r * cols + c] = 2;
+    }
+  }
+  return out;
+}
+
+/** The 32 px eye: a 3 × 2 chevron, drawn by hand (cell sampling has no room for a 5-wide glyph there). */
+export const FACE_MINI32: readonly string[] = [".#.", "#.#"];
+
+/**
+ * The two sizes cell sampling cannot carry, indexed per PIXEL (size × size):
+ * 32 → `FACE_MINI32` per eye at cols 11..13 / 18..20, rows 12..13 (centres ±3.5 px = ±0.43 R,
+ * the nearest whole pixel to FACE.spread; row −3 px = −0.37 R) with an 8-neighbour INK ring
+ * whose outermost cell sits at 0.80 R — one column further out (±4.5 px) puts the ring at
+ * 0.87 R, outside the circle's 0.82; 16 → PAPER at (6,6) and (9,6) with INK under each (a dot
+ * with its shadow), or nothing when `FACE.at16` is "none".
+ */
+export function faceMaskSmall(size: 16 | 32): Uint8Array {
+  const m = new Uint8Array(size * size);
+  if (size === 16) {
+    if (FACE.at16 === "none") return m;
+    m[6 * 16 + 6] = 1;
+    m[6 * 16 + 9] = 1;
+    m[7 * 16 + 6] = 2;
+    m[7 * 16 + 9] = 2;
+    return m;
+  }
+  const top = 12;
+  for (const left of [11, 18]) {
+    for (let gy = 0; gy < FACE_MINI32.length; gy++) {
+      const row = FACE_MINI32[gy] ?? "";
+      for (let gx = 0; gx < row.length; gx++) if (row[gx] === "#") m[(top + gy) * size + left + gx] = 1;
+    }
+  }
+  const out = m.slice();
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (m[y * size + x]) continue;
+      let near = false;
+      for (let dy = -1; dy <= 1 && !near; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const yy = y + dy;
+          const xx = x + dx;
+          if (yy >= 0 && yy < size && xx >= 0 && xx < size && m[yy * size + xx] === 1) {
+            near = true;
+            break;
+          }
+        }
+      }
+      if (near) out[y * size + x] = 2;
+    }
+  }
+  return out;
 }
 
 /**

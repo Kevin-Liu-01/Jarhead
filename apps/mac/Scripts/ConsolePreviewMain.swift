@@ -5,21 +5,49 @@ import SwiftUI
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
 //   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
-//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers|loading|wipe|timing|memory|threads
+//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers|loading|wipe|timing|memory|durability
+//                    |threads|thread-pane|thread-answer|typed-row|agent-pending
+//     threads      = Jarhead's threads (Snapshot.threads → AppState.threads): the main thread idle between
+//                    turns, Spotify acting in the background lane, Slack waiting on Kevin in the screen lane
+//                    with its question, Notes done a moment ago and lingering. The rail's Threads section
+//                    (waiting-kevin → busy → idle main → finished; status glyph · name · status word;
+//                    `00:12 · screen · 7 steps`), the right rail's Threads section (Stop per live row), the
+//                    parent card's thread chips. Its default action runs `check-threads` (the pure words of
+//                    this pass: the rail order, the glyphs, ThreadStore's cap / patching / paging, the event
+//                    and snapshot merges, the pending echo, the key table — run.log `check:` lines).
+//     thread-pane  = Slack's pane: its brief as the card's request, its own steps and screenshot, the
+//                    confirm step with Allow / Deny, the question strip over the composer, Stop hot, "‹ Now".
+//     thread-answer = the pane, then Allow the way the strip sends it at 1.0 s: run.log's `send:` line must be
+//                    {"type":"thread.answer","threadId":"t_sl4ck00","yes":true} — never say-text, never stop —
+//                    and `check:` pins that Return is never a yes (ConsoleConfirm.returnIsAYes false).
+//     typed-row    = live data with a line Kevin typed in the composer (TranscriptItem.source "typed"): its
+//                    row draws keyboard.fill where a spoken line draws person.fill; the composer says
+//                    "Type to Jarhead… (asleep: press Go)" while asleep (PREVIEW_PHASE=asleep).
+//     agent-pending = the blocked Claude session stepped into, a line sent to it at 0.5 s (the pending echo:
+//                    0.6 opacity, clock.fill, "Sending…"), snapped at 1.0 s (-mid.png), then the real user
+//                    turn lands at 1.6 s and the echo is gone: `probe-pending` prints the counts.
+//     thread-history = the main thread's pane over a PAGED record (61 entries; the newest page of 60 held,
+//                    `complete: false`): a page boundary split a card from its steps, so the steps stand as
+//                    four orphan rows at the top. Scrolled up (unstuck), "Load earlier" pressed the way the
+//                    button does (`send:` thread.history before: 2), then the engine's older page lands
+//                    (`thread-history:main` → prepend): the card takes its orphans in, no row doubles,
+//                    `complete` flips true, and `geometry` before / after says the row Kevin was reading
+//                    stayed put (the keepOffset hold on the non-lazy feed).
 //     memory       = the durable memory of Kevin: asleep, the Settings tab scrolled to its Memory section —
 //                    the Remember toggle, Matching, the counts with "learned … ago", Learn now, the budget
 //                    hint, and the rail under them (search, Live | Forgotten | Archived, ≤ 30 rows with
 //                    Edit / Forget / Restore behind ⋯ and the context menu, the Forget hint). The rows come
 //                    from FakeData.memoryItems through the same handlers the app installs. Its default action
 //                    runs `check-durability` (the pure words of this pass, run.log `check:` lines).
-//     threads      = long-horizon durability: the ended Codex thread (no process; its last tool call
-//                    `interrupted`, settled grey, never a pulse; no live dot — `isLive` is derived from
-//                    status + connection, never latched) stepped into with a 1 200-message transcript the
-//                    feed caps at 400 (LazyVStack; "Load earlier" offers the rest). Then a daemon reconnect
-//                    at 1.0 s (the pane must re-send ONE agent.open naming its viewer — the same token as
-//                    its first), the window hidden at 1.4 s (agent.close, same viewer) and shown at 1.8 s
-//                    (agent.open again): run.log's `send:` lines are the check. PREVIEW_CONNECTED=0 on `live`
-//                    is the caret gate's control: a non-final item sits still while disconnected.
+//     durability   = long-horizon durability (was `threads` before the Threads pass took the name): the ended
+//                    Codex thread (no process; its last tool call `interrupted`, settled grey, never a pulse;
+//                    no live dot — `isLive` is derived from status + connection, never latched) stepped into
+//                    with a 1 200-message transcript the feed caps at 400 (LazyVStack; "Load earlier" offers
+//                    the rest). Then a daemon reconnect at 1.0 s (the pane must re-send ONE agent.open naming
+//                    its viewer — the same token as its first), the window hidden at 1.4 s (agent.close, same
+//                    viewer) and shown at 1.8 s (agent.open again): run.log's `send:` lines are the check.
+//                    PREVIEW_CONNECTED=0 on `live` is the caret gate's control: a non-final item sits still
+//                    while disconnected.
 //     timing       = the pane switch at REAL speed (no PREVIEW_WIPE_SECONDS), traced: live data (with the
 //                    agents' transcripts and marks, so the conversation pane has rows), then four switches
 //                    — into the Jarhead chain, back to Now, into the blocked Claude session, back — the
@@ -164,6 +192,14 @@ import SwiftUI
 //     reconnect            the daemon came back (ConsoleSession.reconnectCount += 1): the open pane must re-send
 //                          agent.open as the same viewer; hide-window / show-window flip windowVisible (the
 //                          tail closes and reopens — one agent.close, one agent.open, the same viewer)
+//     thread-open:<id>     step into a thread's pane the way its rail row would (ConsoleSession.openThread;
+//                          the pane sends thread.open as its viewer); thread-answer:<id>:yes|no answers its
+//                          question the way the pane's Allow / Deny do (`send:` must be thread.answer);
+//                          thread-step:<±1> is ⌘⇧] / ⌘⇧[; thread-end:<id> lands an `ended` thread.event
+//                          (the row settles, the pane's Stop goes); check-threads prints this pass's pins
+//     agent-echo:<id>:<text>   the pending echo EngineClient.send adds for an agent.send (a row at once);
+//                          agent-land:<id>:<text> lands the real user turn the tool's file would (the echo
+//                          drops); probe-pending prints how many pending rows the open conversation holds
 //     rail-scroll:<pt>     scroll the right rail down by that many points (the Settings tab is taller than
 //                          the window; the Memory section sits under Session)
 //     key:<char>           send ⌘<char> to the window (key:f must open the search); undo runs the
@@ -303,7 +339,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
-        case "threads":
+        case "durability":
             // The ended Codex thread, with its long transcript (1 200 messages, the last call interrupted).
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
@@ -312,6 +348,50 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // and says `complete: false`, so "Load earlier" offers the rest and a `load-earlier:` action
             // prepends into the same cap the app has (the view's own ceiling is the pure check).
             state.applyTranscript(fake.longTranscript(agentId: FakeData.endedId, count: 1_200), mode: "replace")
+        case "threads", "thread-pane", "thread-answer":
+            // Jarhead's threads under one running delegation: the snapshot's summaries land the way
+            // EngineClient publishes them (applySnapshotThreads), each thread's conversation the way
+            // its `thread.open` page would (applyThreadTranscript replace).
+            var snap = fake.live()
+            snap.marks = fake.marks()
+            snap.phase = .listening
+            snap.problems = []
+            let split = fake.threadsDelegation()
+            snap.delegations.append(split)
+            snap.transcript += fake.threadsTranscript(from: split.createdAt)
+            snap.threads = fake.threads()
+            state.snapshot = snap
+            state.applySnapshotThreads(snap.threads)
+            for t in fake.threads() { state.applyThreadTranscript(fake.threadTranscript(t.id), mode: "replace") }
+        case "thread-history":
+            // The same threads; main's conversation is the newest page of a longer record, the way
+            // `thread.open` answers for a thread with more behind it (complete false; a card's steps
+            // on this page, the card itself on the one before).
+            var snap = fake.live()
+            snap.marks = fake.marks()
+            snap.phase = .listening
+            snap.problems = []
+            let split = fake.threadsDelegation()
+            snap.delegations.append(split)
+            snap.transcript += fake.threadsTranscript(from: split.createdAt)
+            snap.threads = fake.threads()
+            state.snapshot = snap
+            state.applySnapshotThreads(snap.threads)
+            for t in fake.threads() where t.id != "main" { state.applyThreadTranscript(fake.threadTranscript(t.id), mode: "replace") }
+            state.applyThreadTranscript(fake.pagedMain().newest, mode: "replace")
+        case "typed-row":
+            // A line Kevin typed in the composer, on the record beside the spoken ones.
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.snapshot.transcript += fake.typedTranscript()
+            if env["PREVIEW_PHASE"] == "asleep" {
+                state.snapshot.phase = .asleep
+                state.snapshot.session = nil
+            }
+        case "agent-pending":
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.transcripts = fake.transcripts()
         case "workers":
             // The split. The parent delegation stays running while its hands work (the notch and
             // the phase read from it as ever); the workers ride on the snapshot beside it.
@@ -381,8 +461,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         switch scenario {
         case "settings", "wake-locked", "memory": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
-        case "threads":
+        case "durability":
             pendingAgentOpen = FakeData.endedId
+            openPendingAgentAfterActivation()
+        case "agent-pending":
+            pendingAgentOpen = "sessions:claude:w1p2"
             openPendingAgentAfterActivation()
         case "confirm":
             state.toast("Waiting for your confirmation", tone: .warn)
@@ -460,7 +543,21 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Then "Load earlier" on the lazy feed: 60 older rows prepended above the 400 while the bottom is
         // pinned — `geometry` before and after (distance stays 0, the content grows), the action line
         // says held/shown/loaded (shown must grow by the page, or it sat above the fold unseen).
-        case "threads": defaultActions = "check-durability@0.3,reconnect@1.0,hide-window@1.4,show-window@1.8,geometry@2.2,load-earlier:60@2.4,geometry@3.0"
+        case "durability": defaultActions = "check-durability@0.3,reconnect@1.0,hide-window@1.4,show-window@1.8,geometry@2.2,load-earlier:60@2.4,geometry@3.0"
+        // The Threads pass: the pins into run.log, then Spotify ends by an `ended` event at 1.6 s (its
+        // row settles to the checkmark and drops to the finished group; the chips and the right rail follow).
+        case "threads": defaultActions = "check-threads@0.3,thread-end:\(FakeData.spotifyId)@1.6"
+        case "thread-pane": defaultActions = "thread-open:\(FakeData.slackId)@0.3"
+        // Allow the way the strip sends it: the `send:` line must be thread.answer, never say-text or stop.
+        case "thread-answer": defaultActions = "thread-open:\(FakeData.slackId)@0.3,thread-answer:\(FakeData.slackId):yes@1.0,check-threads@1.2"
+        case "typed-row": defaultActions = "check-threads@0.3"
+        // The paged main pane: scrolled up off the bottom, "Load earlier" pressed (the button's own path:
+        // `send:` thread.history), the engine's page landing, geometry before and after (the row stays).
+        case "thread-history": defaultActions = "thread-open:main@0.3,scroll-up@0.9,geometry@1.0,load-earlier-thread@1.1,thread-history:main@1.3,geometry@2.3"
+        // The echo at once, a mid picture with it up, the real turn landing, the count after.
+        // (No comma in the text: "," separates the actions.)
+        case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
+            + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -606,6 +703,74 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkDither(stamp: stamp)
             } else if action == "check-durability" {
                 checkDurabilityWords(stamp: stamp)
+            } else if action == "check-threads" {
+                checkThreadWords(stamp: stamp)
+            } else if action.hasPrefix("thread-open:") {
+                let id = String(action.dropFirst("thread-open:".count))
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["threadOpen": id])
+                print("action: thread-open \(id) at \(stamp)s → openThreadId=\(console?.openThreadIdForPreview ?? "nil") (the pane sends thread.open as its viewer)")
+            } else if action.hasPrefix("thread-answer:") {
+                // <id>:yes|no — the pane's Allow / Deny path (`send:` must be thread.answer).
+                let parts = action.dropFirst("thread-answer:".count).split(separator: ":", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { print("action: thread-answer needs <id>:yes|no"); return }
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil,
+                                                userInfo: ["threadAnswer": ["threadId": parts[0], "yes": parts[1] == "yes"] as [String: Any]])
+                print("action: thread-answer \(parts[0]) \(parts[1]) at \(stamp)s (the line above must be thread.answer — never say-text, never stop)")
+            } else if action.hasPrefix("thread-step:") {
+                let delta = Int(action.dropFirst("thread-step:".count)) ?? 1
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["threadStep": delta])
+                print("action: thread-step \(delta) at \(stamp)s → openThreadId=\(console?.openThreadIdForPreview ?? "nil")")
+            } else if action == "load-earlier-thread" {
+                // The pane's "Load earlier" the way the button does it (StreamFeed): the `send:` line must be
+                // thread.history before the first held seq; the engine's answer is `thread-history:<id>`.
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["loadEarlier": true])
+                let store = console?.openThreadIdForPreview.flatMap { state.threadStores[$0] }
+                print("action: load-earlier-thread at \(stamp)s → pane=\(console?.openThreadIdForPreview ?? "nil") startSeq=\(store?.startSeq ?? -1) held=\(store?.entries.count ?? -1) remaining=\(store?.remaining ?? -1) (the line above must be thread.history)")
+            } else if action.hasPrefix("thread-history:") {
+                // The engine's older page for `thread.history` (mode prepend): the entries before the first
+                // held seq, ≤ 60, `complete` when it reaches the record's first. Counts before and after —
+                // the orphan step / status rows must fold into the card the page brings and not double.
+                let id = String(action.dropFirst("thread-history:".count))
+                guard let before = state.threadStores[id], let start = before.startSeq else { print("action: thread-history \(id) at \(stamp)s → nothing held"); return }
+                let orphans = { (s: ThreadStore) in ThreadEntries.build(s).filter { if case .system(let sys) = $0 { return sys.id.hasPrefix("tstep:") || sys.id.hasPrefix("tstat:") } else { return false } }.count }
+                let page = (self.fake ?? FakeData(shot: "preview.png")).pagedMain().older(before: start)
+                state.applyThreadTranscript(page, mode: "prepend")
+                let after = state.threadStores[id]
+                let card = after?.entries.first?.delegation
+                print("action: thread-history \(id) at \(stamp)s → page \(page.entries.count) before seq \(start) · held \(before.entries.count)→\(after?.entries.count ?? -1)"
+                      + " orphans \(orphans(before))→\(after.map(orphans) ?? -1) folded \(before.foldedCount)→\(after?.foldedCount ?? -1) remaining \(before.remaining)→\(after?.remaining ?? -1)"
+                      + " complete \(before.complete)→\(after?.complete ?? false) first card steps=\(card?.steps.count ?? -1) status=\(card?.status.rawValue ?? "nil")"
+                      + ((after.map(orphans) ?? -1) == 0 && after?.complete == true ? "" : " (FAIL: orphans left or the page did not complete)"))
+            } else if action.hasPrefix("thread-end:") {
+                // An `ended` thread.event the way EngineClient lands one: the row settles, the pane's Stop goes.
+                let id = String(action.dropFirst("thread-end:".count))
+                let seq = (state.threads[id]?.steps ?? 0) + 1_000
+                let e = ThreadEvent(seq: seq, at: Date().timeIntervalSince1970 * 1000, threadId: id, kind: "ended", status: .done, summary: "playing Focus")
+                state.applyThreadEvent(e)
+                print("action: thread-end \(id) at \(stamp)s → status=\(state.threads[id]?.status.rawValue ?? "nil") order=\(state.orderedThreads.map(\.id).joined(separator: ","))")
+            } else if action.hasPrefix("agent-echo:") || action.hasPrefix("agent-land:") {
+                // <id>:<text>. echo = the pending row EngineClient.send adds; land = the real user turn from the tool's file.
+                let echo = action.hasPrefix("agent-echo:")
+                let rest = action.dropFirst((echo ? "agent-echo:" : "agent-land:").count)
+                // The id holds colons (sessions:claude:w1p2): the text starts after the third.
+                let pieces = rest.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+                guard pieces.count == 4 else { print("action: \(echo ? "agent-echo" : "agent-land") needs <a:b:c>:<text>"); return }
+                let id = pieces[0...2].joined(separator: ":"), text = pieces[3]
+                let at = Date().timeIntervalSince1970 * 1000
+                if echo {
+                    state.echoPendingSend(agentId: id, text: text, at: at)
+                } else {
+                    let real = AgentMessage(id: "u-landed-\(Int(at))", role: .user, text: text, at: at, tool: nil, thinking: nil)
+                    let current = state.transcripts[id]
+                    state.applyTranscript(AgentTranscript(agentId: id, messages: [real], total: (current?.total ?? 0) + 1, complete: current?.complete ?? false, live: current?.live ?? true), mode: "append")
+                }
+                let pending = state.transcripts[id]?.messages.filter { $0.pending == true }.count ?? -1
+                print("action: \(echo ? "agent-echo" : "agent-land") \(id) at \(stamp)s → pending rows \(pending), held \(state.transcripts[id]?.messages.count ?? -1)")
+            } else if action == "probe-pending" {
+                let id = console?.openAgentIdForPreview ?? "sessions:claude:w1p2"
+                let messages = state.transcripts[id]?.messages ?? []
+                let pending = messages.filter { $0.pending == true }
+                print("probe-pending: \(id) at \(stamp)s → held \(messages.count) pending \(pending.count) last='\(messages.last?.text ?? "")' lastPending=\(messages.last?.pending == true)")
             } else if action == "reconnect" {
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["reconnect": true])
                 print("action: reconnect at \(stamp)s (the pane must re-send agent.open as its viewer)")
@@ -1238,6 +1403,340 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (durability) at \(stamp)s")
     }
 
+    /// `check-threads`: the pure words behind the Threads pass, each named and compared (run.log:
+    /// `check: ok` / `check: FAIL`) — the package has no test target, so this is where they are
+    /// pinned. The rail's order and glyphs; ThreadStore's paging (a step patches its card, a re-send
+    /// upserts, a trimmed seq is skipped, 450 appends keep 400, a prepend raises the cap by its page);
+    /// AppState's event and snapshot merges (a stale seq dropped, an unknown thread dropped, a fresher
+    /// local record kept, a live thread the snapshot forgot settles failed, the linger prune); the
+    /// pending echo (added once, dropped by the real turn); the typed glyph; the composer's words and
+    /// kept text while asleep; the key table; the wire shape of the thread commands; that Return is
+    /// never a yes; the ledger's thread rows; every symbol exists.
+    private func checkThreadWords(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let fake = self.fake ?? FakeData(shot: "preview.png")
+        let t0 = fake.splitAt
+
+        // The rail's order: waiting on Kevin, then the busy ones, then the idle main, then the finished.
+        let all = fake.threads()
+        expect("rail order: waiting-kevin → busy → idle main → finished", AppState.railOrder(all).map(\.id).joined(separator: ","), "\(FakeData.slackId),\(FakeData.spotifyId),main,\(FakeData.notesId)")
+        expect("rail order: two busy by startedAt, newest first",
+               AppState.railOrder([fake.thread(FakeData.spotifyId, status: .acting, startedAt: t0 + 100), fake.thread("t_b", status: .thinking, startedAt: t0 + 900)]).map(\.id).joined(separator: ","), "t_b,\(FakeData.spotifyId)")
+        expect("rail rank: paused and queued are busy", "\(AppState.railRank(.paused))\(AppState.railRank(.queued))\(AppState.railRank(.waitingScreen))", "111")
+        let statuses: [ThreadStatus] = [.idle, .queued, .starting, .thinking, .acting, .waitingScreen, .waitingKevin, .paused, .done, .failed, .stopped]
+        expect("status words", statuses.map(\.words).joined(separator: ", "), "idle, queued, starting, thinking, acting, waiting for the screen, waiting for Kevin, paused, done, failed, stopped")
+        expect("isLive", statuses.map { $0.isLive ? "1" : "0" }.joined(), "11111111000")
+        expect("isBusy (idle is live, not busy)", statuses.map { $0.isBusy ? "1" : "0" }.joined(), "01111111000")
+        expect("glyphs: dots while idle/queued/starting/thinking/acting, symbols for the waits, paused and the ends",
+               statuses.map { ConsoleTheme.thread($0).dot ? ($0 == .idle || $0 == .queued ? "dot" : "pulse") : ConsoleTheme.thread($0).symbol }.joined(separator: ","),
+               "dot,dot,pulse,pulse,pulse,hourglass.tophalf.filled,hand.raised.fill,pause.fill,checkmark.circle.fill,xmark.octagon.fill,slash.circle.fill")
+        let slack = all.first { $0.id == FakeData.slackId }!
+        expect("thread meta ticks", ConsoleFormat.threadMeta(slack, now: slack.startedAt + 12_400), "00:12 · screen · 4 steps")
+        var main = all.first { $0.id == "main" }!
+        expect("main idle meta has no step count", ConsoleFormat.threadMeta(main, now: main.startedAt + 12_000), "00:12 · voice")
+        main.steps = 1
+        expect("one step is singular", ConsoleFormat.threadMeta(main, now: main.startedAt + 1_000), "00:01 · voice · 1 step")
+        let notes = all.first { $0.id == FakeData.notesId }!
+        expect("finished meta frozen at doneAt", ConsoleFormat.threadMeta(notes, now: 9_999_999_999_999), "00:03 · background · 3 steps")
+        expect("threads head count", ConsoleFormat.threadsCount(total: 4, busy: 2), "4 · 2 running")
+        expect("threads head count, none busy", ConsoleFormat.threadsCount(total: 1, busy: 0), "1")
+
+        // ThreadStore: a page, then the deltas.
+        var store = ThreadStore(page: fake.threadTranscript(FakeData.slackId))
+        let cardBefore = store.entries.first { $0.kind == "delegation" }?.delegation
+        // Five entries on the page; the step and the status fold into the card: three rows held.
+        expect("store: page held, its step and status folded into the card", "\(store.entries.count) total=\(store.total) complete=\(store.complete) live=\(store.live)", "3 total=5 complete=true live=true")
+        expect("store: the confirm step is the card's last (patched in from the page)", cardBefore?.steps.last?.kind.rawValue ?? "nil", "confirm")
+        expect("store: card status from the page's status entry", cardBefore?.status.rawValue ?? "nil", "awaiting-confirmation")
+        let delId = cardBefore?.id ?? "?"
+        let stepEntry = ThreadEntry(kind: "step", seq: 9, delegationId: delId, step: DelegationStep(id: "sl-new", at: t0 + 9_000, kind: .note, text: "Kevin allowed · typed", tool: nil, screenshotPath: nil))
+        store.append(ThreadTranscript(threadId: FakeData.slackId, entries: [stepEntry], total: 5, complete: true, live: true, cursor: ThreadTranscript.Cursor(startSeq: 9, endSeq: 9)))
+        let cardAfter = store.entries.first { $0.kind == "delegation" }?.delegation
+        expect("store: a step patches its card, adds no row", "\(store.entries.count) steps=\(cardAfter?.steps.count ?? -1) last=\(cardAfter?.steps.last?.id ?? "nil")", "3 steps=\(cardBefore!.steps.count + 1) last=sl-new")
+        expect("store: cursor widened by the append", "\(store.cursor?.startSeq ?? -1)…\(store.cursor?.endSeq ?? -1)", "1…9")
+        store.append(ThreadTranscript(threadId: FakeData.slackId, entries: [stepEntry], total: 5, complete: true, live: true))
+        expect("store: the same step re-sent upserts, does not double", String(store.entries.first { $0.kind == "delegation" }?.delegation?.steps.count ?? -1), String(cardBefore!.steps.count + 1))
+        let statusEntry = ThreadEntry(kind: "status", seq: 10, delegationId: delId, status: .done, summary: "sent to Ben", timings: cardBefore!.timings)
+        store.append(ThreadTranscript(threadId: FakeData.slackId, entries: [statusEntry], total: 6, complete: true, live: true))
+        expect("store: a status patches the card's end", "\(store.entries.first { $0.kind == "delegation" }?.delegation?.status.rawValue ?? "nil") · \(store.entries.first { $0.kind == "delegation" }?.delegation?.summary ?? "nil")", "done · sent to Ben")
+        let orphan = ThreadEntry(kind: "step", seq: 11, delegationId: "del_unknown", step: DelegationStep(id: "o1", at: t0, kind: .tool, text: nil, tool: ToolStep(name: "applescript", input: nil, output: nil, ok: true, ms: 12), screenshotPath: nil))
+        store.append(ThreadTranscript(threadId: FakeData.slackId, entries: [orphan], total: 7, complete: true, live: true))
+        expect("store: a step whose card is not held stays a row", "\(store.entries.count) last=\(store.entries.last?.kind ?? "nil")", "4 last=step")
+        expect("entries: the orphan reads as one quiet line", ThreadEntries.build(store).last.map { if case .system(let s) = $0 { return "\(s.id) \(s.symbol) \(s.text)" } else { return "other" } } ?? "nil", "tstep:11 terminal.fill applescript · ok · 12 ms")
+        expect("entries: kinds map to rows", ThreadEntries.build(store).map { switch $0 { case .utterance: return "u"; case .delegation: return "d"; case .system: return "s" } }.joined(), "sdus")
+        // The cap: 450 appended rows keep the newest 400, the oldest seqs are remembered as trimmed.
+        var big = ThreadStore(page: ThreadTranscript(threadId: "t_big", entries: [], total: 0, complete: true, live: true))
+        for i in 1...450 {
+            big.append(ThreadTranscript(threadId: "t_big", entries: [ThreadEntry(kind: "utterance", seq: i, item: TranscriptItem(id: "u\(i)", speaker: .jarhead, text: "line \(i)", startMs: 0, endMs: 0, at: Double(i), final: true))], total: i, complete: false, live: true))
+        }
+        expect("store: 450 appends keep 400", "\(big.entries.count) first=\(big.startSeq ?? -1) last=\(big.endSeq ?? -1) complete=\(big.complete)", "400 first=51 last=450 complete=false")
+        big.append(ThreadTranscript(threadId: "t_big", entries: [ThreadEntry(kind: "utterance", seq: 3, item: TranscriptItem(id: "u3", speaker: .jarhead, text: "edited", startMs: 0, endMs: 0, at: 3, final: true))], total: 450, complete: false, live: true))
+        expect("store: a trimmed seq re-sent is skipped, not the newest row", "\(big.entries.count) last=\(big.endSeq ?? -1)", "400 last=450")
+        expect("store: position(of:) for a held seq and a trimmed one", "\(big.position(of: 51) ?? -1),\(big.position(of: 450) ?? -1),\(big.position(of: 3) ?? -1)", "0,399,-1")
+        let older = (41...50).map { ThreadEntry(kind: "utterance", seq: $0, item: TranscriptItem(id: "u\($0)", speaker: .jarhead, text: "line \($0)", startMs: 0, endMs: 0, at: Double($0), final: true)) }
+        big.prepend(ThreadTranscript(threadId: "t_big", entries: older + [older[0]], total: 450, complete: false, live: true, cursor: ThreadTranscript.Cursor(startSeq: 41, endSeq: 50)))
+        expect("store: a prepend adds what is not held, once, in front, and raises the cap", "\(big.entries.count) first=\(big.startSeq ?? -1) loaded=\(big.prependedCount) pos41=\(big.position(of: 41) ?? -1) pos51=\(big.position(of: 51) ?? -1)", "410 first=41 loaded=10 pos41=0 pos51=10")
+        big.append(ThreadTranscript(threadId: "t_big", entries: [ThreadEntry(kind: "utterance", seq: 451, item: TranscriptItem(id: "u451", speaker: .jarhead, text: "line 451", startMs: 0, endMs: 0, at: 451, final: true))], total: 451, complete: false, live: true))
+        expect("store: past the raised cap the window slides one from the front", "\(big.entries.count) first=\(big.startSeq ?? -1) last=\(big.endSeq ?? -1)", "410 first=42 last=451")
+        // A trimmed card's steps no longer patch anything (the map forgot it).
+        var cards = ThreadStore(page: ThreadTranscript(threadId: "t_cards", entries: [], total: 0, complete: true, live: true))
+        for i in 1...401 {
+            let d = Delegation(id: "d\(i)", liveId: "l", createdAt: Double(i), offsetMs: 0, request: "r\(i)", status: .running, steps: [], summary: nil, timings: DelegationTimings(delegatedAt: Double(i)))
+            cards.append(ThreadTranscript(threadId: "t_cards", entries: [ThreadEntry(kind: "delegation", seq: i, delegation: d)], total: i, complete: false, live: true))
+        }
+        expect("store: a trimmed card leaves the delegation map", "\(cards.position(ofDelegation: "d1") ?? -1),\(cards.position(ofDelegation: "d2") ?? -1),\(cards.position(ofDelegation: "d401") ?? -1)", "-1,0,399")
+
+        // AppState: events and the snapshot.
+        let st = AppState()
+        let sp = fake.thread(FakeData.spotifyId, status: .acting, startedAt: t0)
+        st.applyThreadEvent(ThreadEvent(seq: 1, at: t0, threadId: sp.id, kind: "started", thread: sp))
+        expect("event started: held and ordered", "\(st.threads[sp.id]?.name ?? "nil") \(st.threadOrder.joined(separator: ","))", "Spotify \(sp.id)")
+        st.applyThreadEvent(ThreadEvent(seq: 2, at: t0 + 100, threadId: sp.id, kind: "step", steps: 3, tool: "applescript", ok: true))
+        expect("event step: steps and detail", "\(st.threads[sp.id]?.steps ?? -1) \(st.threads[sp.id]?.detail ?? "nil")", "3 applescript")
+        st.applyThreadEvent(ThreadEvent(seq: 3, at: t0 + 200, threadId: sp.id, kind: "question", question: "send it?"))
+        expect("event question: waiting-kevin with the question", "\(st.threads[sp.id]?.status.rawValue ?? "nil") \(st.threads[sp.id]?.question ?? "nil")", "waiting-kevin send it?")
+        st.applyThreadEvent(ThreadEvent(seq: 2, at: t0 + 300, threadId: sp.id, kind: "status", status: .thinking))
+        expect("event with a stale seq is dropped", st.threads[sp.id]?.status.rawValue ?? "nil", "waiting-kevin")
+        st.applyThreadEvent(ThreadEvent(seq: 4, at: t0 + 400, threadId: sp.id, kind: "status", status: .acting))
+        expect("event status clears the question when not waiting", "\(st.threads[sp.id]?.status.rawValue ?? "nil") q=\(st.threads[sp.id]?.question ?? "nil")", "acting q=nil")
+        st.applyThreadEvent(ThreadEvent(seq: 5, at: t0 + 500, threadId: "t_ghost", kind: "status", status: .acting))
+        expect("event for an unknown thread is dropped", String(st.threads.count), "1")
+        st.applyThreadEvent(ThreadEvent(seq: 6, at: t0 + 600, threadId: sp.id, kind: "at", x: 100, y: 200, app: "Spotify"))
+        expect("event at: the point and the app", "\(Int(st.threads[sp.id]?.at?.x ?? -1)),\(Int(st.threads[sp.id]?.at?.y ?? -1)) \(st.threads[sp.id]?.app ?? "nil") \(st.threads[sp.id]?.apps.joined(separator: "+") ?? "")", "100,200 Spotify Spotify")
+        st.applyThreadEvent(ThreadEvent(seq: 7, at: t0 + 700, threadId: sp.id, kind: "ended", status: .done, summary: "playing Focus"))
+        expect("event ended: settled, no say / stop", "\(st.threads[sp.id]?.status.rawValue ?? "nil") done=\(st.threads[sp.id]?.doneAt == t0 + 700) canSay=\(st.threads[sp.id]?.canSay ?? true) canStop=\(st.threads[sp.id]?.canStop ?? true) detail=\(st.threads[sp.id]?.detail ?? "")", "done done=true canSay=false canStop=false detail=playing Focus")
+        expect("threadsKnown stays false until a snapshot says", String(st.threadsKnown), "false")
+        st.applySnapshotThreads(nil)
+        expect("a nil snapshot list touches nothing", "\(st.threadsKnown) \(st.threads.count)", "false 1")
+        let fresher = fake.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0)
+        st.applyThreadEvent(ThreadEvent(seq: 8, at: t0 + 800, threadId: fresher.id, kind: "started", thread: fresher))
+        st.applyThreadEvent(ThreadEvent(seq: 9, at: t0 + 5_000, threadId: fresher.id, kind: "status", status: .acting, detail: "typing"))
+        var staleSlack = fresher; staleSlack.updatedAt = t0 + 900
+        let live = fake.thread("t_live", status: .thinking, startedAt: t0 + 50)
+        st.applyThreadEvent(ThreadEvent(seq: 10, at: t0 + 1_000, threadId: live.id, kind: "started", thread: live))
+        // The snapshot's copy of Spotify as the table would carry it after the `ended` event: done,
+        // with that event's clock (a snapshot never lists an older state with a newer updatedAt).
+        var spDone = sp; spDone.status = .done; spDone.doneAt = t0 + 700; spDone.updatedAt = t0 + 700; spDone.canSay = false; spDone.canStop = false
+        // A snapshot lists t_live once (a thread snapshots know), then the next has dropped it while live.
+        st.applySnapshotThreads([staleSlack, spDone, live])
+        expect("snapshot: a thread known only from its event stays as it was until a snapshot lists it", "\(st.threads[live.id]?.status.rawValue ?? "nil")", "thinking")
+        st.applySnapshotThreads([staleSlack, spDone])
+        expect("snapshot: a fresher local record is kept", "\(st.threads[fresher.id]?.status.rawValue ?? "nil") \(st.threads[fresher.id]?.detail ?? "nil")", "acting typing")
+        expect("snapshot: a live thread it listed and then forgot settles failed, its clock untouched",
+               "\(st.threads[live.id]?.status.rawValue ?? "nil") \(st.threads[live.id]?.detail ?? "nil") clock=\(st.threads[live.id]?.updatedAt == live.updatedAt) canStop=\(st.threads[live.id]?.canStop ?? true)", "failed gone from the engine clock=true canStop=false")
+        expect("snapshot: a finished thread it no longer lists stays for the linger", String(st.threads[sp.id] != nil), "true")
+        expect("threadsKnown after a snapshot", String(st.threadsKnown), "true")
+        expect("orderedThreads", st.orderedThreads.map(\.id).joined(separator: ","), "\(fresher.id),\(live.id),\(sp.id)")
+
+        // The spawn race (the reviewer's probe): EngineClient parks a snapshot up to 33 ms while a
+        // `started` event lands at once, so a snapshot built BEFORE the spawn is applied AFTER it.
+        let race = AppState()
+        var mainRec = fake.thread("main", status: .acting, startedAt: t0 - 60_000); mainRec.updatedAt = t0
+        race.applySnapshotThreads([mainRec])
+        var spawned = fake.thread(FakeData.spotifyId, status: .starting, startedAt: t0 + 10); spawned.updatedAt = t0 + 10
+        race.applyThreadEvent(ThreadEvent(seq: 7, at: t0 + 10, threadId: spawned.id, kind: "started", thread: spawned))
+        race.applySnapshotThreads([mainRec])
+        expect("spawn race: a snapshot that predates the thread leaves it live and stoppable",
+               "\(race.threads[spawned.id]?.status.rawValue ?? "nil") canStop=\(race.threads[spawned.id]?.canStop ?? false) detail=\(race.threads[spawned.id]?.detail ?? "nil")", "starting canStop=true detail=applescript")
+        var spawnedLive = spawned; spawnedLive.status = .acting; spawnedLive.updatedAt = t0 + 400
+        race.applySnapshotThreads([mainRec, spawnedLive])
+        expect("spawn race: the next snapshot lists it live", "\(race.threads[spawned.id]?.status.rawValue ?? "nil") canStop=\(race.threads[spawned.id]?.canStop ?? false)", "acting canStop=true")
+        race.applySnapshotThreads([mainRec])
+        expect("gone: listed once, then dropped while live → failed, clock kept",
+               "\(race.threads[spawned.id]?.status.rawValue ?? "nil") \(race.threads[spawned.id]?.detail ?? "nil") clock=\(race.threads[spawned.id]?.updatedAt == t0 + 400)", "failed gone from the engine clock=true")
+        race.applySnapshotThreads([mainRec, spawnedLive])
+        expect("gone heals: a listing wins over our guess whatever its clock", "\(race.threads[spawned.id]?.status.rawValue ?? "nil") canStop=\(race.threads[spawned.id]?.canStop ?? false) detail=\(race.threads[spawned.id]?.detail ?? "nil")", "acting canStop=true detail=applescript")
+        race.applyThreadEvent(ThreadEvent(seq: 8, at: t0 + 400, threadId: spawned.id, kind: "ended", status: .done, summary: "playing Focus"))
+        race.applySnapshotThreads([mainRec, spawnedLive])
+        expect("an end never un-ends: a parked snapshot on the same clock leaves the ended record", "\(race.threads[spawned.id]?.status.rawValue ?? "nil") canStop=\(race.threads[spawned.id]?.canStop ?? true)", "done canStop=false")
+        // A daemon restart: the new process numbers its events from 1; main keeps its id with a new startedAt.
+        race.applyThreadEvent(ThreadEvent(seq: 5_000, at: t0 + 500, threadId: "main", kind: "status", status: .thinking))
+        var mainAgain = mainRec; mainAgain.startedAt = t0 + 10_000; mainAgain.updatedAt = t0 + 10_000; mainAgain.status = .idle
+        race.applySnapshotThreads([mainAgain])
+        race.applyThreadEvent(ThreadEvent(seq: 3, at: t0 + 10_500, threadId: "main", kind: "question", question: "send it?"))
+        expect("restart: a record with a new startedAt resets the seq guard, so main's low-seq event lands", "\(race.threads["main"]?.question ?? "nil") \(race.threads["main"]?.status.rawValue ?? "nil")", "send it? waiting-kevin")
+        race.applyThreadEvent(ThreadEvent(seq: 900, at: t0 + 11_000, threadId: "main", kind: "status", status: .acting))
+        race.noteDaemonHello()
+        race.applyThreadEvent(ThreadEvent(seq: 1, at: t0 + 11_100, threadId: "main", kind: "status", status: .thinking, detail: "after hello"))
+        expect("hello: the seq guard starts over with the daemon", "\(race.threads["main"]?.status.rawValue ?? "nil") \(race.threads["main"]?.detail ?? "nil")", "thinking after hello")
+        race.applyThreadEvent(ThreadEvent(seq: 1, at: t0 + 11_200, threadId: "main", kind: "status", status: .acting))
+        expect("hello: after it the guard holds again", race.threads["main"]?.status.rawValue ?? "nil", "thinking")
+        st.pruneThreads(now: t0 + 700 + AppState.threadLingerMs - 1)
+        expect("prune: inside the linger, kept", String(st.threads[sp.id] != nil), "true")
+        st.heldThreadIds = [sp.id]
+        st.pruneThreads(now: t0 + 700 + AppState.threadLingerMs + 1)
+        expect("prune: past the linger but held (on screen), kept", String(st.threads[sp.id] != nil), "true")
+        st.heldThreadIds = []
+        st.pruneThreads(now: t0 + 700 + AppState.threadLingerMs + 1)
+        expect("prune: past the linger, gone from threads and the order", "\(st.threads[sp.id] == nil) \(st.threadOrder.contains(sp.id))", "true false")
+        st.applyThreadTranscript(fake.threadTranscript(FakeData.slackId), mode: "replace")
+        st.applyThreadTranscript(ThreadTranscript(threadId: FakeData.slackId, entries: [stepEntry], total: 5, complete: true, live: true), mode: "append")
+        expect("applyThreadTranscript append patches the held card", String(st.threadStores[FakeData.slackId]?.entries.first { $0.kind == "delegation" }?.delegation?.steps.last?.id ?? "nil"), "sl-new")
+        st.applyThreadTranscript(ThreadTranscript(threadId: "t_x", entries: [], total: 0, complete: true, live: false), mode: "append")
+        expect("applyThreadTranscript append with nothing held is a page", String(st.threadStores["t_x"] != nil), "true")
+        for i in 0..<10 { st.applyThreadTranscript(ThreadTranscript(threadId: "t_lru\(i)", entries: [], total: 0, complete: true, live: false), mode: "replace") }
+        st.evictThreadStores(keep: [FakeData.slackId])
+        expect("evict: the kept one and the newest 8 opened stay", "\(st.threadStores[FakeData.slackId] != nil) \(st.threadStores["t_lru9"] != nil) \(st.threadStores["t_lru1"] != nil) \(st.threadStores["t_x"] != nil)", "true true false false")
+
+        // The pending echo.
+        let echoState = AppState()
+        let agentId = "sessions:claude:w1p2"
+        echoState.applyTranscript(fake.transcripts()[agentId]!, mode: "replace")
+        let heldBefore = echoState.transcripts[agentId]?.messages.count ?? -1
+        echoState.echoPendingSend(agentId: agentId, text: "yes please", at: t0)
+        echoState.echoPendingSend(agentId: agentId, text: "yes please ", at: t0 + 1)
+        expect("echo: one pending row for two sends of the same words", "\(echoState.transcripts[agentId]?.messages.count ?? -1) pending=\(echoState.transcripts[agentId]?.messages.filter { $0.pending == true }.count ?? -1)", "\(heldBefore + 1) pending=1")
+        expect("echo: the row is Kevin's, pending, indexed", "\(echoState.transcripts[agentId]?.messages.last?.role.rawValue ?? "nil") \(echoState.transcripts[agentId]?.messages.last?.pending == true) \(echoState.messageIndex(agentId: agentId, id: echoState.transcripts[agentId]?.messages.last?.id ?? "") ?? -1)", "user true \(heldBefore)")
+        echoState.applyTranscript(AgentTranscript(agentId: agentId, messages: [AgentMessage(id: "pending:engine-1", role: .user, text: "yes please", at: t0 + 2, tool: nil, thinking: nil, pending: true)], total: 0, complete: false, live: true), mode: "append")
+        expect("echo: the engine's own echo with the same words folds in", String(echoState.transcripts[agentId]?.messages.filter { $0.pending == true }.count ?? -1), "1")
+        echoState.applyTranscript(AgentTranscript(agentId: agentId, messages: [AgentMessage(id: "c10", role: .user, text: "yes please", at: t0 + 3, tool: nil, thinking: nil)], total: 63, complete: false, live: true), mode: "append")
+        expect("echo: the real user turn drops it", "\(echoState.transcripts[agentId]?.messages.count ?? -1) pending=\(echoState.transcripts[agentId]?.messages.filter { $0.pending == true }.count ?? -1) last=\(echoState.transcripts[agentId]?.messages.last?.id ?? "nil")", "\(heldBefore + 1) pending=0 last=c10")
+        expect("echo: the index follows the drop", String(echoState.messageIndex(agentId: agentId, id: "c10") ?? -1), String(heldBefore))
+        echoState.echoPendingSend(agentId: agentId, text: "and the other thing", at: t0 + 4)
+        echoState.applyTranscript(AgentTranscript(agentId: agentId, messages: [AgentMessage(id: "c11", role: .user, text: "something else", at: t0 + 5, tool: nil, thinking: nil)], total: 64, complete: false, live: true), mode: "append")
+        expect("echo: a different real turn leaves the echo pending", String(echoState.transcripts[agentId]?.messages.filter { $0.pending == true }.count ?? -1), "1")
+        echoState.echoPendingSend(agentId: "sessions:nobody", text: "hi", at: t0)
+        expect("echo: no conversation held, nothing to show", String(echoState.transcripts["sessions:nobody"] == nil), "true")
+        expect("echo: stale after 20 s", String(AppState.pendingEchoStaleMs), "20000.0")
+
+        // The typed row, the composer, the confirm rule, the keys.
+        let typed = fake.typedTranscript()[0]
+        expect("typed row draws keyboard.fill", UtteranceRow.symbol(for: typed), "keyboard.fill")
+        expect("spoken row draws person.fill", UtteranceRow.symbol(for: fake.transcript()[0]), "person.fill")
+        expect("Jarhead's row draws the waveform", UtteranceRow.symbol(for: fake.transcript()[1]), "waveform")
+        expect("composer asleep, typed wakes off", ComposerBar.placeholder(phase: .asleep, typedWakes: false), "Type to Jarhead… (asleep: press Go)")
+        expect("composer asleep, typed wakes on (Kevin's word)", ComposerBar.placeholder(phase: .asleep, typedWakes: true), "Type to wake Jarhead…")
+        expect("composer in session", ComposerBar.placeholder(phase: .listening, typedWakes: false), "Say something…")
+        expect("composer paused", ComposerBar.placeholder(phase: .paused, typedWakes: false), "Paused — press Go or type to resume")
+        expect("composer keeps the words while asleep (the engine refuses)", "\(ComposerBar.keepsText(phase: .asleep, typedWakes: false))\(ComposerBar.keepsText(phase: .error, typedWakes: false))\(ComposerBar.keepsText(phase: .asleep, typedWakes: true))\(ComposerBar.keepsText(phase: .listening, typedWakes: false))", "truetruefalsefalse")
+        expect("Return is never a yes (ConsoleConfirm)", String(ConsoleConfirm.returnIsAYes), "false")
+        expect("key ⌘0 → Now", String(ConsoleWindow.command(flags: .command, chars: "0") == .showNow), "true")
+        expect("key ⌘⇧] (both spellings) → next thread", "\(ConsoleWindow.command(flags: [.command, .shift], chars: "}") == .nextThread) \(ConsoleWindow.command(flags: [.command, .shift], chars: "]") == .nextThread)", "true true")
+        expect("key ⌘⇧[ → previous thread", "\(ConsoleWindow.command(flags: [.command, .shift], chars: "{") == .prevThread) \(ConsoleWindow.command(flags: [.command, .shift], chars: "[") == .prevThread)", "true true")
+        expect("key ⌥⌘. → stop this thread", String(ConsoleWindow.command(flags: [.command, .option], chars: ".") == .stopThread), "true")
+        expect("key ⌘. stays Stop everything", String(ConsoleWindow.command(flags: .command, chars: ".") == .stop), "true")
+        expect("key ⌘⇧. is nothing", String(ConsoleWindow.command(flags: [.command, .shift], chars: ".") == nil), "true")
+        let walk = ConsoleSession()
+        let order = ["a", "b", "c"]
+        walk.stepThread(by: 1, order: order); let s1 = walk.openThreadId ?? "now"
+        walk.stepThread(by: 1, order: order); let s2 = walk.openThreadId ?? "now"
+        walk.stepThread(by: 1, order: order); walk.stepThread(by: 1, order: order); let s4 = walk.openThreadId ?? "now"
+        walk.stepThread(by: -1, order: order); let s5 = walk.openThreadId ?? "now"
+        walk.stepThread(by: -1, order: order); walk.stepThread(by: -1, order: order); walk.stepThread(by: -1, order: order); let s8 = walk.openThreadId ?? "now"
+        expect("⌘⇧] walks Now → a → b → c → Now; ⌘⇧[ from Now is the last", "\(s1) \(s2) \(s4) \(s5) \(s8)", "a b now c now")
+        walk.openAgentId = "x"
+        expect("an agent opening clears the thread", "\(walk.openThreadId ?? "nil") \(walk.openAgentId ?? "nil")", "nil x")
+        walk.openThread("a")
+        expect("a thread opening clears the agent, showsNow false", "\(walk.openAgentId ?? "nil") \(walk.openThreadId ?? "nil") \(walk.showsNow)", "nil a false")
+        walk.showNow()
+        expect("showNow clears the thread", "\(walk.openThreadId ?? "nil") \(walk.showsNow)", "nil true")
+
+        // The wire.
+        let answer = EngineCommand.threadAnswer(threadId: FakeData.slackId, yes: true).json
+        expect("thread.answer on the wire", "\(answer["type"] as? String ?? "") \(answer["threadId"] as? String ?? "") \(answer["yes"] as? Bool ?? false)", "thread.answer \(FakeData.slackId) true")
+        let open = EngineCommand.threadOpen(threadId: "main", viewer: "pane-1").json
+        expect("thread.open names its viewer", "\(open["type"] as? String ?? "") \(open["threadId"] as? String ?? "") \(open["viewer"] as? String ?? "")", "thread.open main pane-1")
+        let history = EngineCommand.threadHistory(threadId: "main", before: 41).json
+        expect("thread.history before a seq", "\(history["type"] as? String ?? "") \(history["before"] as? Int ?? -1)", "thread.history 41")
+        let say = EngineCommand.threadSay(threadId: FakeData.spotifyId, text: "skip this song").json
+        expect("thread.say on the wire", "\(say["type"] as? String ?? "") \(say["text"] as? String ?? "")", "thread.say skip this song")
+        expect("thread.stop / pause / resume", [EngineCommand.threadStop(threadId: "a"), .threadPause(threadId: "a"), .threadResume(threadId: "a")].map { $0.json["type"] as? String ?? "" }.joined(separator: ","), "thread.stop,thread.pause,thread.resume")
+        expect("remedy thread.stop decodes", String(EngineCommand(remedyJSON: ["type": .string("thread.stop"), "threadId": .string("t_1")]) == .threadStop(threadId: "t_1")), "true")
+        expect("remedy thread.stop without an id is nil", String(EngineCommand(remedyJSON: ["type": .string("thread.stop")]) == nil), "true")
+        let flags = ConsoleWindow.command(flags: [.command, .option], chars: ".")
+        expect("stopThread is not the transport's stop", String(flags != .stop), "true")
+
+        // The ledger's thread rows.
+        func row(_ at: Double, _ type: String) -> LedgerRow {
+            LedgerRow(at: at, type: type, item: nil, delegation: nil, delegationId: nil, step: nil, status: nil, summary: nil, text: nil, sessionId: nil, reason: nil, usageSeconds: nil, agent: nil)
+        }
+        var started = row(1_000, "thread.started"); started.thread = fake.thread(FakeData.spotifyId, status: .starting, startedAt: 1_000)
+        var status = row(2_000, "thread.status"); status.threadId = FakeData.spotifyId
+        var said = row(3_000, "thread.said"); said.threadId = FakeData.spotifyId; said.text = "playing Focus."
+        var ended = row(4_000, "thread.ended"); ended.threadId = FakeData.spotifyId; ended.status = .done; ended.steps = 3; ended.seconds = 9; ended.summary = "playing Focus"
+        let lines = StreamBuilder.fromLedger([started, status, said, ended]).compactMap { if case .system(let s) = $0 { return "\(s.symbol)|\(s.text)|\(s.mono ?? "-")|\(s.trailing ?? "-")" } else { return nil } }
+        expect("fromLedger: a thread's start, its spoken line, its end (the status rows are the log's)", lines.joined(separator: " ; "),
+               "square.stack.fill|Spotify · started|background|play the playlist Focus in Spotify ; waveform|Spotify: playing Focus.|-|- ; checkmark.circle.fill|Spotify · done|3 steps · 00:09|playing Focus")
+        expect("JarheadLog lists every thread row", JarheadLog.lines([started, status, said, ended]).filter { $0.kind == "thread" }.map(\.text).joined(separator: " ; "),
+               "Spotify · started · background · play the playlist Focus in Spotify ; Spotify · status ; Spotify: playing Focus. ; Spotify · done · 3 steps · 00:09 · playing Focus")
+        // The wire's "stopped" is no DelegationStatus: the loose row decodes it as the default (running) and the words read stopped.
+        var stopped = ended; stopped.status = .running
+        expect("thread.ended stopped (decoded as the default) reads stopped", ConsoleFormat.tombstone(stopped)?.text ?? "nil", "%NAME% · stopped")
+        expect("threadEndWords", [DelegationStatus.done, .failed, .cancelled, .running].map(ConsoleFormat.threadEndWords).joined(separator: ","), "done,failed,stopped,stopped")
+        // The chips: a card is handed its own threads, in the rail's order.
+        let card = StreamEntry.delegation(fake.threadsDelegation())
+        expect("a card is handed the threads it started, ordered", card.threads(from: all).map(\.name).joined(separator: ","), "Slack,Spotify,Notes")
+        expect("another card is handed none", String(StreamEntry.delegation(fake.doneDelegation()).threads(from: all).count), "0")
+        // Every symbol this pass draws exists on this macOS.
+        let symbols = statuses.map { ConsoleTheme.thread($0).symbol } + [ConsoleTheme.threadsSymbol, "keyboard.fill", "clock.fill", "square.stack.fill"]
+        let missing = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        expect("SF symbols exist", missing.isEmpty ? "all \(symbols.count)" : "missing \(missing.joined(separator: ","))", "all \(symbols.count)")
+        expect("no thread string offers the verb Delete", (statuses.map(\.words) + ["Load earlier", "Allow", "Deny", "Stop", "Pause", "Resume"]).contains { $0.contains("Delete") } ? "offers it" : "never", "never")
+
+        // The tombstone's symbol follows its word: a stopped thread never wears the checkmark.
+        expect("thread.ended symbols by word", ["done", "failed", "stopped"].map(ConsoleFormat.threadEndSymbol).joined(separator: ","), "checkmark.circle.fill,xmark.octagon.fill,slash.circle.fill")
+        expect("a stopped thread's ledger line wears the slash", ConsoleFormat.tombstone(stopped)?.symbol ?? "nil", "slash.circle.fill")
+        var failedRow = ended; failedRow.status = .failed
+        expect("a failed thread's ledger line wears the octagon", "\(ConsoleFormat.tombstone(failedRow)?.symbol ?? "nil") \(ConsoleFormat.tombstone(failedRow)?.text ?? "nil")", "xmark.octagon.fill %NAME% · failed")
+
+        // ⌥⌘. stops THIS thread: the pane's, main on Now, nothing over an agent or a past conversation, nothing without threads.
+        expect("⌥⌘. target", [ConsoleWindowController.stopTarget(threadsKnown: true, openThreadId: "t_a", showsNow: false),
+                              ConsoleWindowController.stopTarget(threadsKnown: true, openThreadId: nil, showsNow: true),
+                              ConsoleWindowController.stopTarget(threadsKnown: true, openThreadId: nil, showsNow: false),
+                              ConsoleWindowController.stopTarget(threadsKnown: false, openThreadId: "t_a", showsNow: false)].map { $0 ?? "nil" }.joined(separator: ","), "t_a,main,nil,nil")
+        // The sidebar and ⌘⇧] leave main to the Now row while Now is the stream (the flip is the integrator's line).
+        expect("Now is the stream this pass (SNAPSHOT_FULL_NOW)", String(ConsoleRootView.nowIsThreadPane), "false")
+        expect("walk / sidebar order without main while Now is the stream", ConsoleRootView.walkOrder(["t_a", "main", "t_b"]).joined(separator: ","), "t_a,t_b")
+
+        // A page boundary between a card and its steps: the newest page holds the steps as orphan
+        // rows; the older page brings the card, which takes them in — once — and the rows leave.
+        func orphanRows(_ s: ThreadStore) -> Int {
+            ThreadEntries.build(s).filter { if case .system(let sys) = $0 { return sys.id.hasPrefix("tstep:") || sys.id.hasPrefix("tstat:") } else { return false } }.count
+        }
+        let paged = fake.pagedMain()
+        var pagedStore = ThreadStore(page: paged.newest)
+        expect("paged: the newest page holds the split card's steps and status as orphan rows",
+               "\(pagedStore.entries.count) first=\(pagedStore.startSeq ?? -1) orphans=\(orphanRows(pagedStore)) remaining=\(pagedStore.remaining) complete=\(pagedStore.complete)", "60 first=2 orphans=4 remaining=1 complete=false")
+        let olderPage = paged.older(before: pagedStore.startSeq ?? 0)
+        expect("paged: the page before seq 2 is the card alone and completes the record", "\(olderPage.entries.count) \(olderPage.entries.first?.kind ?? "nil") complete=\(olderPage.complete)", "1 delegation complete=true")
+        pagedStore.prepend(olderPage)
+        let pagedCard = pagedStore.entries.first?.delegation
+        expect("paged: the card takes its orphans in and the rows leave",
+               "\(pagedStore.entries.count) orphans=\(orphanRows(pagedStore)) steps=\(pagedCard?.steps.map(\.id).joined(separator: "+") ?? "nil") status=\(pagedCard?.status.rawValue ?? "nil") summary=\(pagedCard?.summary ?? "nil") folded=\(pagedStore.foldedCount) remaining=\(pagedStore.remaining) complete=\(pagedStore.complete)",
+               "57 orphans=0 steps=pg-1+pg-2+pg-3 status=done summary=opened the PR folded=4 remaining=0 complete=true")
+        expect("paged: positions renumbered after the fold", "\(pagedStore.position(of: 1) ?? -1),\(pagedStore.position(of: 6) ?? -1),\(pagedStore.position(of: 61) ?? -1),card=\(pagedStore.position(ofDelegation: "del_pag3d") ?? -1),gone=\(pagedStore.position(of: 3) ?? -1)", "0,1,56,card=0,gone=-1")
+        pagedStore.prepend(paged.older(before: 2))
+        expect("paged: the same page again changes nothing", "\(pagedStore.entries.count) steps=\(pagedStore.entries.first?.delegation?.steps.count ?? -1) folded=\(pagedStore.foldedCount)", "57 steps=3 folded=4")
+        // A later delta for that card patches it where it now sits.
+        pagedStore.append(ThreadTranscript(threadId: "main", entries: [ThreadEntry(kind: "step", seq: 62, delegationId: "del_pag3d", step: DelegationStep(id: "pg-4", at: t0, kind: .note, text: "late note", tool: nil, screenshotPath: nil))], total: 62, complete: true, live: true))
+        expect("paged: a delta after the fold patches the moved card", "\(pagedStore.entries.count) steps=\(pagedStore.entries.first?.delegation?.steps.count ?? -1) remaining=\(pagedStore.remaining)", "57 steps=4 remaining=0")
+
+        // The bytes B2's ThreadLog emits for one page (thread-page-fixture.ts, no ledger), decoded the
+        // way EngineClient decodes a `thread.transcript` frame and run through the store.
+        struct Frame: Decodable { let type: String; let mode: String; let transcript: ThreadTranscript }
+        if let frame = try? JSONDecoder().decode(Frame.self, from: Data(FakeData.engineThreadPageJSON.utf8)) {
+            expect("engine page decodes", "\(frame.type) \(frame.mode) \(frame.transcript.entries.count) total=\(frame.transcript.total) complete=\(frame.transcript.complete) cursor=\(frame.transcript.cursor?.startSeq ?? -1)…\(frame.transcript.cursor?.endSeq ?? -1)", "thread.transcript replace 9 total=9 complete=true cursor=1…9")
+            let eng = ThreadStore(page: frame.transcript)
+            expect("engine page through the store: four rows, five entries folded", "\(eng.entries.count) folded=\(eng.foldedCount) remaining=\(eng.remaining) kinds=\(ThreadEntries.build(eng).map { switch $0 { case .utterance: return "u"; case .delegation: return "d"; case .system: return "s" } }.joined())", "4 folded=5 remaining=0 kinds=sudu")
+            let engCard = eng.entries.first { $0.kind == "delegation" }?.delegation
+            expect("engine card: the steps in order, the confirm last, awaiting, its thread", "\(engCard?.steps.map(\.kind.rawValue).joined(separator: ",") ?? "nil") \(engCard?.status.rawValue ?? "nil") thread=\(engCard?.threadId ?? "nil") doneAt=\(engCard?.timings.doneAt != nil)", "thinking,tool,screenshot,confirm awaiting-confirmation thread=t_f1xtur3 doneAt=true")
+            expect("engine page: the typed utterance draws keyboard.fill", frame.transcript.entries[1].item.map(UtteranceRow.symbol) ?? "nil", "keyboard.fill")
+            // A step without a delegationId (no engine writes one; a newer one might): one quiet row, never a loss.
+            var loose = frame.transcript.entries[4]; loose.delegationId = nil; loose.seq = 99
+            var eng2 = eng
+            eng2.append(ThreadTranscript(threadId: frame.transcript.threadId, entries: [loose], total: 10, complete: true, live: true))
+            expect("a step with no delegationId is one quiet row", "\(eng2.entries.count) \(ThreadEntries.build(eng2).last.map { if case .system(let s) = $0 { return "\(s.id) \(s.text)" } else { return "other" } } ?? "nil")", "5 tstep:99 open_app · ok · 640 ms")
+        } else {
+            expect("engine page decodes", "undecodable", "decodable")
+        }
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (threads) at \(stamp)s")
+    }
+
     /// The right rail's scroll view: the one whose width is the rail's.
     private static func railScrollView(in view: NSView?) -> NSScrollView? {
         guard let view = view else { return nil }
@@ -1688,6 +2187,225 @@ struct FakeData {
                    status: .waitingScreen, detail: "waiting for the screen: Kevin is typing", startedAt: t0 + 4500, doneAt: nil, steps: 2),
         ]
     }
+
+    // MARK: threads (Snapshot.threads, thread.event, thread.transcript)
+
+    static let slackId = "t_sl4ck00"
+    static let spotifyId = "t_sp0t1fy"
+    static let notesId = "t_n0tes01"
+
+    /// One thread as the engine's table would summarise it: `status` and `startedAt` vary, the
+    /// rest read from the errand (the brief, the lane, the app it claimed).
+    func thread(_ id: String, status: ThreadStatus, startedAt: Double) -> WorkThread {
+        let live = status.isLive
+        switch id {
+        case FakeData.slackId:
+            return WorkThread(id: id, name: "Slack", lane: .screen, status: status, parentId: "main", parentDelegationId: "del_thr3ads", liveId: session().id,
+                              task: "tell Ben on Slack that Kevin is running late", detail: status == .waitingKevin ? "click_element Send" : "type", apps: ["Slack"], app: "Slack",
+                              at: Point2(x: 812, y: 604), startedAt: startedAt, updatedAt: startedAt + 6_100, doneAt: live ? nil : startedAt + 6_100,
+                              turns: 1, steps: 4, waits: 1, budget: WorkThread.Budget(steps: 25, seconds: 180),
+                              question: status == .waitingKevin ? "Send “running late — there in 10” to Ben?" : nil,
+                              currentDelegationId: "del_t_slack_1", lastScreenshotPath: shot, canSay: live, canStop: live)
+        case FakeData.spotifyId:
+            return WorkThread(id: id, name: "Spotify", lane: .background, status: status, parentId: "main", parentDelegationId: "del_thr3ads", liveId: session().id,
+                              task: "play the playlist Focus in Spotify", detail: "applescript", apps: ["Spotify"], app: "Spotify", at: nil,
+                              startedAt: startedAt, updatedAt: startedAt + 1_700, doneAt: live ? nil : startedAt + 1_700,
+                              turns: 1, steps: 2, waits: 0, budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil,
+                              currentDelegationId: "del_t_spotify_1", lastScreenshotPath: nil, canSay: live, canStop: live)
+        case FakeData.notesId:
+            return WorkThread(id: id, name: "Notes", lane: .background, status: status, parentId: "main", parentDelegationId: "del_thr3ads", liveId: session().id,
+                              task: "append today's standup line to the Notes daily page", detail: "appended one line to Daily", apps: ["Notes"], app: "Notes", at: nil,
+                              startedAt: startedAt, updatedAt: startedAt + 3_200, doneAt: live ? nil : startedAt + 3_200,
+                              turns: 1, steps: 3, waits: 0, budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil,
+                              currentDelegationId: "del_t_notes_1", lastScreenshotPath: nil, canSay: live, canStop: live)
+        case "main":
+            return WorkThread(id: "main", name: "Jarhead", lane: .voice, status: status, parentId: nil, parentDelegationId: nil, liveId: session().id,
+                              task: "", detail: "Slack and Spotify alongside.", apps: [], app: nil, at: nil,
+                              startedAt: startedAt, updatedAt: splitAt + 800, doneAt: nil, turns: 4, steps: 0, waits: 0,
+                              budget: WorkThread.Budget(steps: 40, seconds: 300), question: nil, currentDelegationId: nil, lastScreenshotPath: nil, canSay: true, canStop: false)
+        default:
+            return WorkThread(id: id, name: id, lane: .background, status: status, parentId: "main", parentDelegationId: nil, liveId: nil, task: "", detail: nil, apps: [], app: nil, at: nil,
+                              startedAt: startedAt, updatedAt: startedAt, doneAt: live ? nil : startedAt, turns: 1, steps: 0, waits: 0,
+                              budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil, currentDelegationId: nil, lastScreenshotPath: nil, canSay: live, canStop: live)
+        }
+    }
+
+    /// Snapshot.threads for the `threads` scenarios: the main thread idle between turns, Spotify
+    /// acting (background), Slack waiting on Kevin (screen) with its question, Notes done a
+    /// moment ago and lingering. Never more than main + 3 (THREAD_MAX_LIVE).
+    func threads() -> [WorkThread] {
+        let t0 = splitAt
+        return [
+            thread("main", status: .idle, startedAt: session().startedAt),
+            thread(FakeData.notesId, status: .done, startedAt: t0 + 800),
+            thread(FakeData.spotifyId, status: .acting, startedAt: t0 + 3_500),
+            thread(FakeData.slackId, status: .waitingKevin, startedAt: t0 + 4_500),
+        ]
+    }
+
+    /// The main brain's own turn for the errand: it thought, started the three threads in one
+    /// exec batch (`thread_start`), said the split line and ended its turn — no `thread_wait`.
+    func threadsDelegation() -> Delegation {
+        let t0 = splitAt
+        func start(_ id: String, _ at: Double, _ name: String, _ task: String, _ lane: String) -> DelegationStep {
+            DelegationStep(id: id, at: at, kind: .tool, text: nil,
+                           tool: ToolStep(name: "thread_start", input: .object(["name": .string(name), "task": .string(task), "lane": .string(lane)]),
+                                          output: .string("\(name) started (\(lane))"), ok: true, ms: 3), screenshotPath: nil)
+        }
+        let steps: [DelegationStep] = [
+            DelegationStep(id: "th-s1", at: t0 + 420, kind: .thinking, text: "Three independent apps: Notes and Spotify take Apple events, Slack needs the pointer. One thread each, then end the turn.", tool: nil, screenshotPath: nil),
+            start("th-s2", t0 + 800, "Notes", "append today's standup line to the Notes daily page", "background"),
+            start("th-s3", t0 + 3_500, "Spotify", "play the playlist Focus in Spotify", "background"),
+            start("th-s4", t0 + 4_500, "Slack", "tell Ben on Slack that Kevin is running late", "screen"),
+            DelegationStep(id: "th-s5", at: t0 + 4_900, kind: .commentary, text: "Notes, Spotify and Slack alongside.", tool: nil, screenshotPath: nil),
+        ]
+        return Delegation(id: "del_thr3ads", liveId: session().id, createdAt: t0, offsetMs: 400,
+                          request: "Kevin asked to add today's standup line to Notes, put on Focus on Spotify and tell Ben on Slack he is running late.",
+                          status: .done, steps: steps, summary: "Started three threads: Notes and Spotify in the background, Slack on the screen.",
+                          timings: DelegationTimings(delegatedAt: t0, firstThinkingAt: t0 + 420, firstCommentaryAt: t0 + 4_900, doneAt: t0 + 5_100), threadId: "main")
+    }
+
+    /// What was heard and said around the split: the ask, "on it", the one coalesced split line,
+    /// Notes' finish line, and Slack's question spoken with its name.
+    func threadsTranscript(from t0: Double) -> [TranscriptItem] {
+        [
+            TranscriptItem(id: "th-u1", speaker: .kevin, text: "Jarhead, add today's standup line to my Notes, put on Focus on Spotify, and tell Ben on Slack I'm running late.", startMs: 0, endMs: 4200, at: t0 - 1200, final: true),
+            TranscriptItem(id: "th-u2", speaker: .jarhead, text: "On it.", startMs: 4400, endMs: 4800, at: t0 - 500, final: true),
+            TranscriptItem(id: "th-u3", speaker: .jarhead, text: "Notes, Spotify and Slack alongside.", startMs: 6000, endMs: 7200, at: t0 + 5_000, final: true),
+            TranscriptItem(id: "th-u4", speaker: .jarhead, text: "Notes: appended one line to Daily.", startMs: 8500, endMs: 10200, at: t0 + 4_100, final: true),
+            TranscriptItem(id: "th-u5", speaker: .jarhead, text: "Slack asks: send “running late — there in 10” to Ben?", startMs: 11000, endMs: 13500, at: t0 + 10_800, final: true),
+        ]
+    }
+
+    /// One thread's conversation as its `thread.open` page would land: a system row for its
+    /// start, its own delegation card (the brief as the request; its steps, screenshot and — for
+    /// Slack — the confirm step it waits on, folded in by the store), the lines spoken for it.
+    /// The main thread's is the live stream's own rows numbered by seq.
+    func threadTranscript(_ id: String) -> ThreadTranscript {
+        let t0 = splitAt
+        func sys(_ seq: Int, _ at: Double, _ symbol: String, _ text: String, mono: String? = nil, trailing: String? = nil) -> ThreadEntry {
+            ThreadEntry(kind: "system", seq: seq, at: at, symbol: symbol, text: text, mono: mono, trailing: trailing)
+        }
+        func utt(_ seq: Int, _ item: TranscriptItem) -> ThreadEntry { ThreadEntry(kind: "utterance", seq: seq, item: item) }
+        func card(_ seq: Int, _ d: Delegation) -> ThreadEntry { ThreadEntry(kind: "delegation", seq: seq, delegation: d) }
+        func step(_ seq: Int, _ delegationId: String, _ s: DelegationStep) -> ThreadEntry { ThreadEntry(kind: "step", seq: seq, delegationId: delegationId, step: s) }
+        func status(_ seq: Int, _ delegationId: String, _ st: DelegationStatus, summary: String?, timings: DelegationTimings) -> ThreadEntry {
+            ThreadEntry(kind: "status", seq: seq, delegationId: delegationId, status: st, summary: summary, timings: timings)
+        }
+        let talk = threadsTranscript(from: t0)
+        switch id {
+        case FakeData.slackId:
+            let s0 = t0 + 4_500
+            let d = Delegation(id: "del_t_slack_1", liveId: session().id, createdAt: s0, offsetMs: 0, request: "tell Ben on Slack that Kevin is running late", status: .running, steps: [
+                DelegationStep(id: "sl-1", at: s0 + 900, kind: .thinking, text: "Slack needs the pointer: take the screen, find Ben, type, then ask before Send.", tool: nil, screenshotPath: nil),
+                DelegationStep(id: "sl-2", at: s0 + 1_400, kind: .tool, text: nil, tool: ToolStep(name: "open_app", input: .object(["name": .string("Slack")]), output: .string("Slack is frontmost · now: Slack, Ben (DM), the message field focused"), ok: true, ms: 640), screenshotPath: nil),
+                DelegationStep(id: "sl-3", at: s0 + 2_100, kind: .screenshot, text: "Slack — Ben", tool: nil, screenshotPath: shot),
+                DelegationStep(id: "sl-4", at: s0 + 3_800, kind: .tool, text: nil, tool: ToolStep(name: "type", input: .object(["text": .string("running late — there in 10")]), output: .string("typed 26 chars · now: Slack, the message field holds the text"), ok: true, ms: 1_210), screenshotPath: nil),
+            ], summary: nil, timings: DelegationTimings(delegatedAt: s0, firstThinkingAt: s0 + 900, firstCommentaryAt: nil, doneAt: nil, speechEndAt: nil, firstActionAt: s0 + 1_400), threadId: id)
+            return ThreadTranscript(threadId: id, entries: [
+                sys(1, s0, ConsoleTheme.threadsSymbol, "Slack · started", mono: "screen", trailing: "tell Ben on Slack that Kevin is running late"),
+                card(2, d),
+                step(3, d.id, DelegationStep(id: "sl-5", at: s0 + 6_100, kind: .confirm, text: "Send “running late — there in 10” to Ben?", tool: nil, screenshotPath: nil)),
+                status(4, d.id, .awaitingConfirmation, summary: nil, timings: d.timings),
+                utt(5, talk[4]),
+            ], total: 5, complete: true, live: true, cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: 5), readMs: 3)
+        case FakeData.spotifyId:
+            let s0 = t0 + 3_500
+            let d = Delegation(id: "del_t_spotify_1", liveId: session().id, createdAt: s0, offsetMs: 0, request: "play the playlist Focus in Spotify", status: .running, steps: [
+                DelegationStep(id: "sp-1", at: s0 + 700, kind: .thinking, text: "An Apple event does it; no screen needed.", tool: nil, screenshotPath: nil),
+                DelegationStep(id: "sp-2", at: s0 + 1_700, kind: .tool, text: nil, tool: ToolStep(name: "applescript", input: .string("tell application \"Spotify\" to play track \"spotify:playlist:37i9dQZF1DWZeKCadgRdKQ\""), output: .string("ok · now: Spotify playing Focus"), ok: true, ms: 388), screenshotPath: nil),
+            ], summary: nil, timings: DelegationTimings(delegatedAt: s0, firstThinkingAt: s0 + 700, firstCommentaryAt: nil, doneAt: nil, speechEndAt: nil, firstActionAt: s0 + 1_700), threadId: id)
+            return ThreadTranscript(threadId: id, entries: [
+                sys(1, s0, ConsoleTheme.threadsSymbol, "Spotify · started", mono: "background", trailing: "play the playlist Focus in Spotify"),
+                card(2, d),
+            ], total: 2, complete: true, live: true, cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: 2), readMs: 2)
+        case FakeData.notesId:
+            let s0 = t0 + 800
+            let d = Delegation(id: "del_t_notes_1", liveId: session().id, createdAt: s0, offsetMs: 0, request: "append today's standup line to the Notes daily page", status: .done, steps: [
+                DelegationStep(id: "no-1", at: s0 + 500, kind: .thinking, text: "One Apple event on the Daily note.", tool: nil, screenshotPath: nil),
+                DelegationStep(id: "no-2", at: s0 + 1_500, kind: .tool, text: nil, tool: ToolStep(name: "applescript", input: .string("tell application \"Notes\" to tell note \"Daily\" of folder \"Standup\" to set body to body & \"<div>…\""), output: .string("ok"), ok: true, ms: 612), screenshotPath: nil),
+                DelegationStep(id: "no-3", at: s0 + 2_300, kind: .note, text: "appended one line to Daily", tool: nil, screenshotPath: nil),
+            ], summary: "appended one line to Daily", timings: DelegationTimings(delegatedAt: s0, firstThinkingAt: s0 + 500, firstCommentaryAt: nil, doneAt: s0 + 3_200, speechEndAt: nil, firstActionAt: s0 + 1_500), threadId: id)
+            return ThreadTranscript(threadId: id, entries: [
+                sys(1, s0, ConsoleTheme.threadsSymbol, "Notes · started", mono: "background", trailing: "append today's standup line to the Notes daily page"),
+                card(2, d),
+                utt(3, talk[3]),
+                sys(4, s0 + 3_200, "checkmark.circle.fill", "Notes · done", mono: "3 steps · 00:03", trailing: "appended one line to Daily"),
+            ], total: 4, complete: true, live: false, cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: 4), readMs: 2)
+        default:
+            // main: the live stream's own rows, in time order, numbered.
+            var rows: [(at: Double, entry: (Int) -> ThreadEntry)] = []
+            for item in live().transcript + talk { rows.append((item.at, { utt($0, item) })) }
+            for d in live().delegations + [threadsDelegation()] { rows.append((d.createdAt, { card($0, d) })) }
+            rows.sort { $0.at < $1.at }
+            let entries = rows.enumerated().map { $0.element.entry($0.offset + 1) }
+            return ThreadTranscript(threadId: "main", entries: entries, total: entries.count, complete: false, live: true,
+                                    cursor: ThreadTranscript.Cursor(startSeq: 1, endSeq: entries.count), readMs: 4)
+        }
+    }
+
+    /// A line Kevin typed in the composer (TranscriptItem.source "typed") and Jarhead's answer.
+    func typedTranscript() -> [TranscriptItem] {
+        [
+            TranscriptItem(id: "ty-1", speaker: .kevin, text: "open safari and pull up the gt repo", startMs: 0, endMs: 0, at: ago(9), final: true, source: "typed"),
+            TranscriptItem(id: "ty-2", speaker: .jarhead, text: "Safari's up on the gt repo.", startMs: 0, endMs: 1400, at: ago(6), final: true),
+        ]
+    }
+
+    /// The main thread's record as a longer log the engine pages: 61 entries. Seq 1 is a card
+    /// recorded at creation (no steps yet), 2–4 its steps and 5 its status — so the newest page
+    /// of 60 (seqs 2…61) holds the steps without the card, as four orphan rows, until "Load
+    /// earlier" brings seq 1. Then 39 lines of older chatter, then the live rows (the same rows
+    /// `threadTranscript("main")` numbers), in time order.
+    struct PagedMain {
+        let record: [ThreadEntry]
+        /// The page `thread.open` answers with: the newest 60, `complete: false`.
+        var newest: ThreadTranscript { page(before: nil) }
+        /// The page `thread.history {before}` answers with: ≤ 60 entries before that seq, `complete` at the record's first.
+        func older(before: Int) -> ThreadTranscript { page(before: before) }
+        private func page(before: Int?) -> ThreadTranscript {
+            let upto = before.map { b in record.firstIndex { $0.seq >= b } ?? record.count } ?? record.count
+            let start = max(0, upto - 60)
+            let entries = Array(record[start..<upto])
+            return ThreadTranscript(threadId: "main", entries: entries, total: record.count, complete: start == 0, live: true,
+                                    cursor: entries.isEmpty ? nil : ThreadTranscript.Cursor(startSeq: entries[0].seq, endSeq: entries[entries.count - 1].seq), readMs: 3)
+        }
+    }
+
+    func pagedMain() -> PagedMain {
+        let t0 = splitAt
+        let old = ago(3_600)
+        let card = Delegation(id: "del_pag3d", liveId: session().id, createdAt: old, offsetMs: 0, request: "Kevin asked to open the PR for the landing refresh.", status: .running, steps: [],
+                              summary: nil, timings: DelegationTimings(delegatedAt: old), threadId: "main", stepCount: 0)
+        var record: [ThreadEntry] = [
+            ThreadEntry(kind: "delegation", seq: 1, delegation: card),
+            ThreadEntry(kind: "step", seq: 2, delegationId: card.id, step: DelegationStep(id: "pg-1", at: old + 400, kind: .thinking, text: "The branch is pushed; gh opens the PR.", tool: nil, screenshotPath: nil)),
+            ThreadEntry(kind: "step", seq: 3, delegationId: card.id, step: DelegationStep(id: "pg-2", at: old + 900, kind: .tool, text: nil, tool: ToolStep(name: "run_shell", input: .object(["cmd": .string("gh pr create --fill")]), output: .string("https://github.com/gt/landing/pull/418"), ok: true, ms: 2_140), screenshotPath: nil)),
+            ThreadEntry(kind: "step", seq: 4, delegationId: card.id, step: DelegationStep(id: "pg-3", at: old + 3_200, kind: .commentary, text: "PR 418 is open.", tool: nil, screenshotPath: nil)),
+            ThreadEntry(kind: "status", seq: 5, delegationId: card.id, status: .done, summary: "opened the PR", timings: DelegationTimings(delegatedAt: old, firstThinkingAt: old + 400, firstCommentaryAt: old + 3_200, doneAt: old + 3_400)),
+        ]
+        for i in 0..<39 {
+            let kevin = i % 2 == 0
+            let at = old + 4_000 + Double(i) * 40_000
+            record.append(ThreadEntry(kind: "utterance", seq: record.count + 1,
+                                      item: TranscriptItem(id: "pg-u\(i)", speaker: kevin ? .kevin : .jarhead,
+                                                           text: kevin ? "Older line \(i + 1) — something Kevin said an hour ago." : "Older line \(i + 1) — and what Jarhead answered.",
+                                                           startMs: 0, endMs: 1_200, at: at, final: true)))
+        }
+        var rows: [(at: Double, entry: (Int) -> ThreadEntry)] = []
+        for item in live().transcript + threadsTranscript(from: t0) { rows.append((item.at, { ThreadEntry(kind: "utterance", seq: $0, item: item) })) }
+        for d in live().delegations + [threadsDelegation()] { rows.append((d.createdAt, { ThreadEntry(kind: "delegation", seq: $0, delegation: d) })) }
+        rows.sort { $0.at < $1.at }
+        for row in rows { record.append(row.entry(record.count + 1)) }
+        return PagedMain(record: record)
+    }
+
+    /// One `thread.transcript` frame as B2's ThreadLog/ThreadTurns emit it (Scripts: the tsx probe
+    /// thread-page-fixture.ts, no ledger, no network): a system row, a typed utterance, a card at
+    /// creation, four steps, its status, a spoken line — the bytes the store must decode.
+    static let engineThreadPageJSON = #"""
+    {"type":"thread.transcript","mode":"replace","transcript":{"threadId":"t_f1xtur3","entries":[{"kind":"system","at":1757800000250,"symbol":"square.stack.fill","text":"Slack · started","mono":"screen","seq":1},{"kind":"utterance","item":{"id":"u1","speaker":"kevin","text":"slack, tell ben I'm late","startMs":0,"endMs":900,"at":1757800000500,"final":true,"source":"typed"},"seq":2},{"kind":"delegation","delegation":{"id":"dlg_mu04afnbef4y3h","liveId":"live_1","createdAt":1757800000750,"offsetMs":120,"request":"tell Ben on Slack that Kevin is running late","status":"running","steps":[],"timings":{"delegatedAt":1757800000750},"threadId":"t_f1xtur3","stepCount":0},"seq":3},{"kind":"step","delegationId":"dlg_mu04afnbef4y3h","step":{"id":"step_mu04afnbk61q1b","at":1757800001000,"kind":"thinking","text":"Slack needs the pointer."},"seq":4},{"kind":"step","delegationId":"dlg_mu04afnbef4y3h","step":{"id":"step_mu04afnbot538t","at":1757800001250,"kind":"tool","tool":{"name":"open_app","input":{"name":"Slack"},"output":"Slack is frontmost · now: Slack, Ben (DM)","ok":true,"ms":640}},"seq":5},{"kind":"step","delegationId":"dlg_mu04afnbef4y3h","step":{"id":"step_mu04afnba77cgv","at":1757800001500,"kind":"screenshot","text":"Slack — Ben","screenshotPath":"/tmp/shot.png"},"seq":6},{"kind":"step","delegationId":"dlg_mu04afnbef4y3h","step":{"id":"step_mu04afnbymxlp0","at":1757800001750,"kind":"confirm","text":"Send “running late” to Ben?"},"seq":7},{"kind":"status","delegationId":"dlg_mu04afnbef4y3h","status":"awaiting-confirmation","timings":{"delegatedAt":1757800000750,"firstToolAt":1757800001250,"firstActionAt":1757800001250,"toolRoundTripMs":[640],"doneAt":1757800002000},"seq":8},{"kind":"utterance","item":{"id":"u2","speaker":"jarhead","text":"Slack asks: send “running late” to Ben?","startMs":1000,"endMs":2400,"at":1757800002250,"final":true},"seq":9}],"total":9,"complete":true,"live":true,"cursor":{"startSeq":1,"endSeq":9},"readMs":2}}
+    """#
 
     /// What was heard and said around the split: the ask, "on it", the one split line when the
     /// first hand started, and Notes' one finish line.

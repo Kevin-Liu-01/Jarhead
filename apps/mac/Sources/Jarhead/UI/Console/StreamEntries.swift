@@ -45,6 +45,13 @@ extension StreamEntry {
         guard case .delegation(let d) = self, !all.isEmpty else { return [] }
         return all.filter { $0.delegationId == d.id }
     }
+
+    /// The threads this row draws: the ones a delegation card started (`Thread.parentDelegationId`),
+    /// in the rail's order; none for the rest — the same seam as `workers(from:)`.
+    func threads(from all: [WorkThread]) -> [WorkThread] {
+        guard case .delegation(let d) = self, !all.isEmpty else { return [] }
+        return AppState.railOrder(all.filter { $0.parentDelegationId == d.id })
+    }
 }
 
 struct LedgerStats: Equatable {
@@ -79,9 +86,31 @@ enum StreamBuilder {
         // (starting, working, the waits, working again, the end); the stream keeps the first
         // "working" and the end — its waits are on the parent card as note steps already.
         var workersAnnounced: Set<String> = []
+        // A thread's name, from its `thread.started` row, for the rows that carry only its id.
+        var threadNames: [String: String] = [:]
 
         for (index, row) in rows.enumerated() {
             switch row.type {
+            case "thread.started":
+                // A thread's life on the record: one line when it starts, one when it ends (below);
+                // the status rows between (starting, the waits, paused) are the log's, not the stream's.
+                guard let t = row.thread else { break }
+                threadNames[t.id] = t.name
+                if let l = ConsoleFormat.tombstone(row) {
+                    out.append(.system(SystemEntry(id: "th:\(row.at):\(index)", at: row.at, symbol: l.symbol, text: ConsoleFormat.sentence(l.text), mono: l.mono, trailing: l.trailing)))
+                }
+            case "thread.ended":
+                guard row.threadId != nil, let l = ConsoleFormat.tombstone(row) else { break }
+                let name = row.threadId.flatMap { threadNames[$0] } ?? ConsoleFormat.shortId(row.threadId)
+                out.append(.system(SystemEntry(id: "th:\(row.at):\(index)", at: row.at, symbol: l.symbol, text: ConsoleFormat.sentence(l.text.replacingOccurrences(of: "%NAME%", with: name)),
+                                               mono: l.mono, trailing: l.trailing, tone: row.status == .failed ? .problem : .normal)))
+            case "thread.said":
+                // What the engine spoke for a thread ("Spotify: playing Focus."), on the record as a line.
+                guard let text = row.text, !text.isEmpty else { break }
+                let name = row.threadId.flatMap { threadNames[$0] } ?? ConsoleFormat.shortId(row.threadId)
+                out.append(.system(SystemEntry(id: "th:\(row.at):\(index)", at: row.at, symbol: "waveform", text: "\(name): \(text)")))
+            case "thread.status":
+                break
             case "session.started":
                 transport = nil
                 out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: "bolt.fill", text: "Session started",
@@ -242,6 +271,27 @@ extension ConsoleFormat {
         return cause == "stop" ? "stopped" : SleepCauseFormat.line(cause)
     }
 
+    /// A `thread.ended` row's status is the wire's "done" | "failed" | "stopped", which the loosely
+    /// typed LedgerRow decodes as a DelegationStatus ("stopped" is not one and lands on the
+    /// decoder's default, `running`): the thread words, with the default read as stopped.
+    static func threadEndWords(_ s: DelegationStatus) -> String {
+        switch s {
+        case .done: return "done"
+        case .failed: return "failed"
+        case .cancelled, .running, .awaitingConfirmation: return "stopped"
+        }
+    }
+
+    /// The tombstone's symbol from the same word (ConsoleTheme.thread's settled set), so a
+    /// stopped thread never wears the checkmark: done → check, failed → octagon, stopped → slash.
+    static func threadEndSymbol(_ words: String) -> String {
+        switch words {
+        case "done": return ConsoleTheme.thread(.done).symbol
+        case "failed": return ConsoleTheme.thread(.failed).symbol
+        default: return ConsoleTheme.thread(.stopped).symbol
+        }
+    }
+
     /// "HH:mm" — the rail's meta line has no room for seconds.
     static func clock(_ ms: Double) -> String {
         let t = time(ms)
@@ -270,6 +320,16 @@ extension ConsoleFormat {
         case "worker":
             guard let w = row.worker else { return nil }
             return ("person.2.fill", "worker", "\(w.name) · \(w.status.words)", ConsoleTheme.lane(w.lane), w.detail)
+        case "thread.started":
+            // The whole record rides the row: "Spotify · started" with its lane in mono and the brief trailing.
+            guard let t = row.thread else { return nil }
+            return (ConsoleTheme.threadsSymbol, "thread", "\(t.name) · started", ConsoleTheme.lane(t.lane), t.task.isEmpty ? nil : t.task)
+        case "thread.ended":
+            // The row carries the id, not the name: the caller fills %NAME% from the started row it saw.
+            guard row.threadId != nil else { return nil }
+            let status = row.status.map { ConsoleFormat.threadEndWords($0) } ?? "done"
+            let figures = [row.steps.map { "\($0) step\($0 == 1 ? "" : "s")" }, row.seconds.map { duration($0) }].compactMap { $0 }.joined(separator: " · ")
+            return (ConsoleFormat.threadEndSymbol(status), "thread", "%NAME% · \(status)", figures.isEmpty ? nil : figures, row.summary)
         case "conversation.trashed":
             return ("trash.fill", "trash", "moved to Trash", nil, row.by == "retention" ? "by retention" : nil)
         case "conversation.restored":

@@ -189,7 +189,7 @@ test("a late closed event from the old session records its row and folds its usa
     await engine.command({ type: "resume" });
     const next = lives[1]!;
     assert.equal(engine.snapshot().session?.id, "sess_2");
-    delegate(w, "jarhead what time is it", "item_2");
+    delegate(w, "jarhead what is on my screen right now", "item_2");
     await settle();
     assert.equal(brain.tasks.length, 1);
 

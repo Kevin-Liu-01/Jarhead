@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
-import { BAYER8, INK_STOPS, ORB, encodePng, orbGeometry, orbGlow, orbInside, quantiseDither, rampAt, type RGB } from "./dither.ts";
+import { BAYER8, FACE, INK_STOPS, ORB, encodePng, faceMask, orbGeometry, orbGlow, orbInside, quantiseDither, rampAt, type RGB } from "./dither.ts";
 
 /**
  * The README banner: docs/media/banner.png, 2560×800 px. The README shows it at
@@ -13,12 +13,15 @@ import { BAYER8, INK_STOPS, ORB, encodePng, orbGeometry, orbGlow, orbInside, qua
  * The field is the ink ramp (`INK_STOPS`: ink → raised ink → the accent), diagonal from
  * the upper left to the lower right — "an ink field that pools toward the accent" — in
  * five bands of 8 px Bayer cells. Over it sits the icon's orb (scripts/dither.ts `ORB`:
- * harmonics [], the `ORB_STOPS` diagonal ramp in five bands, the highlight, the rim
- * shade), radius 288 px at the centre, its three-level glow composited over the field.
- * Opaque, no wordmark (the README's <h1> is the wordmark), no hairline. Deterministic:
- * run it twice and the bytes match. The threshold is sampled per cell and the geometry
- * per pixel (the icon's rule), so the disc's edge stays crisp while the dither stays
- * chunky.
+ * harmonics [], the `ORB_STOPS` diagonal ramp in five bands, the sheen above the eyes, the
+ * rim shade), radius 288 px at the centre, its three-level glow composited over the field,
+ * WEARING THE SAME FACE as the Dock tile: Kevin's `^ ^` (`FACE`, `faceMask`) sampled on
+ * the banner's own 8 px cells — 36 cells per R, so the chevrons come out ≈ 11 × 9 cells
+ * with a 2-cell ink box; the icon's proportions, the banner's resolution. Opaque, no
+ * wordmark (the README's <h1> is the wordmark), no hairline. Deterministic: run it twice
+ * and the bytes match. The threshold is sampled per cell and the geometry per pixel (the
+ * icon's rule), so the disc's edge stays crisp while the dither stays chunky; the face is
+ * two flat fills and never dithers.
  */
 
 const W = 2560;
@@ -34,9 +37,13 @@ export function renderBanner(): Buffer {
   // `ORB.r` is the orb's radius in bodyR units: pick bodyR so the disc is ORB_RADIUS px.
   const bodyR = ORB_RADIUS / ORB.r;
   const bands = ORB.bands(W);
+  const cols = W / CELL;
+  // The face on the banner's cell grid; a cell is glyph, box or orb.
+  const face = faceMask(cols, H / CELL, CELL, cx, cy, ORB_RADIUS);
 
   for (let y = 0; y < H; y++) {
     const cellRow = (Math.floor(y / CELL) % 8) * 8;
+    const faceRow = Math.floor(y / CELL) * cols;
     const fy = (y + 0.5) / H;
     const sy = (y + 0.5 - cy) / bodyR;
     for (let x = 0; x < W; x++) {
@@ -45,9 +52,14 @@ export function renderBanner(): Buffer {
       const fx = (x + 0.5) / W;
       const fu = 0.5 + (fx - 0.5 + (fy - 0.5)) / 2;
       const field: RGB = rampAt(INK_STOPS, quantiseDither(fu, BANDS, t));
-      // The orb over it.
+      // The orb over it, and the face over the orb (inside the disc only).
       const g = orbGeometry((x + 0.5 - cx) / bodyR, sy);
-      const col = g.sd <= 0 ? orbInside(g, bands, t) : orbGlow(g, field, t);
+      let col = g.sd <= 0 ? orbInside(g, bands, t, FACE.gleam) : orbGlow(g, field, t);
+      if (g.sd <= 0) {
+        const hit = face[faceRow + Math.floor(x / CELL)];
+        if (hit === 1) col = FACE.ink;
+        else if (hit === 2) col = FACE.box;
+      }
       const i = (y * W + x) * 4;
       px[i] = Math.round(col[0]);
       px[i + 1] = Math.round(col[1]);

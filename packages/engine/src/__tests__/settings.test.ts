@@ -42,10 +42,10 @@ test("settings from an older settings.json still carry the wake defaults", () =>
   assert.deepEqual(engine.snapshot().settings.wake, { ...DEFAULT_SETTINGS.wake, enabled: false });
 });
 
-test("English by default: DEFAULT_SETTINGS says cedar / en / american / memory on; an old settings.json without the keys yields those defaults with no file rewrite; null keeps them; a real pick persists", () => {
-  assert.equal(DEFAULT_SETTINGS.voice, "cedar");
+test("English by default: DEFAULT_SETTINGS says ballad / en / british / memory on; an old settings.json without the keys yields those defaults with no file rewrite; null keeps them; a real pick persists", () => {
+  assert.equal(DEFAULT_SETTINGS.voice, "ballad");
   assert.equal(DEFAULT_SETTINGS.language, "en");
-  assert.equal(DEFAULT_SETTINGS.accent, "american");
+  assert.equal(DEFAULT_SETTINGS.accent, "british");
   assert.equal(DEFAULT_SETTINGS.memory, true);
   const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-lang-"));
   const before = JSON.stringify({ voice: "marin", wake: { enabled: false } });
@@ -53,13 +53,13 @@ test("English by default: DEFAULT_SETTINGS says cedar / en / american / memory o
   const engine = bare(stateDir);
   const s = engine.snapshot().settings;
   assert.equal(s.language, "en");
-  assert.equal(s.accent, "american");
+  assert.equal(s.accent, "british");
   assert.equal(s.memory, true);
   assert.equal(readFileSync(join(stateDir, "settings.json"), "utf8"), before, "reading defaults writes nothing");
   // null on a required field keeps its value (the native UI's "clear").
   engine.updateSettings({ language: null, accent: null, memory: null });
   assert.equal(engine.snapshot().settings.language, "en");
-  assert.equal(engine.snapshot().settings.accent, "american");
+  assert.equal(engine.snapshot().settings.accent, "british");
   assert.equal(engine.snapshot().settings.memory, true);
   engine.updateSettings({ accent: "british", memory: false });
   const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as Record<string, unknown>;

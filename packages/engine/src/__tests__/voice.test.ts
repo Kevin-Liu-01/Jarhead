@@ -18,9 +18,9 @@ type Started = Extract<LedgerRow, { type: "session.started" }>;
 type Pause = Extract<LedgerRow, { type: "pause" }>;
 type Resume = Extract<LedgerRow, { type: "resume" }>;
 
-const LANGUAGE = "# Language\nSpeak English, American accent, whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.";
+const LANGUAGE = "# Language\nSpeak English, British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.";
 
-test("wake: cedar, English with an American accent; # Personality before # Language before # Kevin, in brief (before # Continuity on a resume); the started row and the snapshot say voice, language and accent", async () => {
+test("wake: ballad, English with a British accent; # Personality before # Language before # Kevin, in brief (before # Continuity on a resume); the started row and the snapshot say voice, language and accent", async () => {
   const w = world();
   const { engine, live, lives, clock } = w;
   w.memory!.voiceText = "# Kevin, in brief\nKevin prefers short answers.\nUse this quietly; never announce that you remember it.";
@@ -30,7 +30,7 @@ test("wake: cedar, English with an American accent; # Personality before # Langu
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     const text = live.config?.instructions ?? "";
-    assert.equal(live.config?.audio?.output?.voice, "cedar");
+    assert.equal(live.config?.audio?.output?.voice, "ballad");
     assert.ok(text.includes(LANGUAGE), "the exact language section");
     const at = ["# Personality and tone", "# Language", "# Kevin, in brief"].map((h) => text.indexOf(h));
     assert.ok(at.every((i) => i >= 0), `every section present: ${JSON.stringify(at)}`);
@@ -39,11 +39,11 @@ test("wake: cedar, English with an American accent; # Personality before # Langu
     assert.ok(text.indexOf("# Names and numbers") < text.indexOf("# Language"), "the language section follows the standing orders");
     const started = rows<Started>(w, "session.started");
     assert.equal(started.length, 1);
-    assert.equal(started[0]!.voice, "cedar");
+    assert.equal(started[0]!.voice, "ballad");
     assert.equal(started[0]!.language, "en");
-    assert.equal(started[0]!.accent, "american");
-    assert.equal(engine.snapshot().session?.voice, "cedar");
-    assert.equal(engine.snapshot().session?.accent, "american");
+    assert.equal(started[0]!.accent, "british");
+    assert.equal(engine.snapshot().session?.voice, "ballad");
+    assert.equal(engine.snapshot().session?.accent, "british");
     // A resume: the same order, Continuity last.
     await engine.command({ type: "pause" });
     clock.t += 60_000;
@@ -76,7 +76,7 @@ test("a pick while asleep opens nothing; a pick while awake opens no new session
     assert.equal(lives.length, 1, "no new paid session on a pick");
     assert.ok(events.some((e) => e.type === "toast" && /heard at the next wake/.test(e.text)), "the toast says when it is heard");
     assert.equal(engine.snapshot().session?.voice, "marin", "the open session still speaks with what it started with");
-    assert.equal(engine.snapshot().session?.accent, "american");
+    assert.equal(engine.snapshot().session?.accent, "british");
     assert.equal(engine.snapshot().settings.voice, "verse");
     assert.equal(engine.snapshot().settings.accent, "british");
     // A patch that changes nothing about the voice says nothing.
@@ -111,7 +111,7 @@ test("voice.reopen: exactly one pause row and one resume row, a new session with
     assert.equal(next.currentState, "started");
     assert.equal(next.config?.audio?.output?.voice, "verse");
     const text = next.config?.instructions ?? "";
-    assert.match(text, /# Language\nSpeak English, British accent, whatever language you hear/);
+    assert.match(text, /# Language\nSpeak English, British accent — calm, dry, precise/);
     assert.match(text, /# Continuity/);
     assert.match(text, /The voice connection dropped \d+ seconds? ago and just came back\. This is the same conversation, picked up where it was cut\./);
     assert.match(text, /Kevin: jarhead what time is it/);

@@ -300,12 +300,35 @@ enum JarheadLog {
         out.reserveCapacity(rows.count)
         // The last transport row: what a close the engine asked for meant (ConsoleFormat.closeReason).
         var transport: String?
+        // A thread's name from its started row, for the rows that carry only its id.
+        var threadNames: [String: String] = [:]
         for (index, row) in rows.enumerated() {
             let id = "\(row.type):\(row.at):\(index)"
             func add(_ kind: String, _ text: String, _ tone: JarheadLogLine.Tone = .normal) {
                 out.append(JarheadLogLine(id: id, at: row.at, kind: kind, text: text, tone: tone))
             }
+            func threadName() -> String { row.threadId.flatMap { threadNames[$0] } ?? ConsoleFormat.shortId(row.threadId) }
             switch row.type {
+            case "thread.started":
+                // Every thread row, one line each: started (lane, brief), each status change with
+                // its detail, every line spoken for it, and how it ended with its figures.
+                guard let t = row.thread else { break }
+                threadNames[t.id] = t.name
+                add("thread", [t.name, "started", ConsoleTheme.lane(t.lane), t.task].filter { !$0.isEmpty }.joined(separator: " · "), .meter)
+            case "thread.status":
+                // The row's `status` is a ThreadStatus (starting, the waits, paused) that the loose
+                // LedgerRow decodes as a DelegationStatus and loses, and its `detail` has no field:
+                // one line per change, unnamed, until the mirror carries them (an open issue).
+                add("thread", "\(threadName()) · status", .meter)
+            case "thread.said":
+                add("thread", "\(threadName()): \(row.text ?? "")", .jarhead)
+            case "thread.ended":
+                let status = row.status.map { ConsoleFormat.threadEndWords($0) } ?? "done"
+                var parts = [threadName(), status]
+                if let steps = row.steps { parts.append("\(steps) step\(steps == 1 ? "" : "s")") }
+                if let seconds = row.seconds { parts.append(ConsoleFormat.duration(seconds)) }
+                if let summary = row.summary, !summary.isEmpty { parts.append(ConversationFormat.oneLine(summary, max: 200)) }
+                add("thread", parts.joined(separator: " · "), row.status == .failed ? .problem : .meter)
             case "session.started":
                 transport = nil
                 var text = "started · \(ConsoleFormat.shortId(row.sessionId))"

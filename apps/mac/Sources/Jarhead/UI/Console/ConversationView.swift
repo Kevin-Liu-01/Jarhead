@@ -132,8 +132,16 @@ extension ConversationPane {
     }
 
     /// One line for a composer that is off: the session is gone, or its connector
-    /// says it cannot take input. nil when sending is fine.
+    /// says it cannot take input. nil when sending is fine. The typed gate (`AgentInfo.send`,
+    /// computed by the connector from the same evidence as the status) is read first and its
+    /// reason shown verbatim — "Open in a terminal", "Archived in Codex", "Not signed in"; the cue
+    /// parsing below stays for a daemon from before the gate.
     static func cannotSendReason(_ agent: AgentInfo) -> String? {
+        if let gate = agent.send {
+            if gate.ok { return nil }
+            let reason = gate.reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return reason.isEmpty ? "This session can't take messages." : ConsoleFormat.sentence(reason)
+        }
         let detail = agent.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hint = detail.components(separatedBy: " · ").last?.trimmingCharacters(in: .whitespaces) ?? ""
         if agent.status == .offline {
@@ -144,6 +152,17 @@ extension ConversationPane {
             return hint.isEmpty ? detail : hint
         }
         return nil
+    }
+
+    /// What Send will do, from the typed gate: "queued in Codex" while a live owner drains it,
+    /// "resumes the session" when nobody does; nil without a gate.
+    static func sendModeWords(_ agent: AgentInfo) -> String? {
+        guard let gate = agent.send, gate.ok else { return nil }
+        switch gate.mode {
+        case "queue": return "queued in \(agent.resolvedTool.label)"
+        case "resume": return "resumes the session"
+        default: return nil
+        }
     }
 
     /// Where Reveal goes: a file or folder the detail names, else the working
@@ -545,31 +564,51 @@ private struct AssistantTurn: View {
     }
 }
 
-/// Kevin's turn: the text on a raised surface, set against the right edge.
+/// Kevin's turn: the text on a raised surface, set against the right edge. A pending echo (a
+/// line just sent, before the tool's file confirms it) sits at 0.6 opacity under `clock.fill`;
+/// past `AppState.pendingEchoStaleMs` it says so — "Queued · not picked up yet" — since a
+/// `codex queue` that exited 0 says nothing about anyone draining it.
 private struct UserTurn: View {
     let message: AgentMessage
+
+    private var pending: Bool { message.pending == true }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             Spacer(minLength: 20 + iconGap)
-            Text(message.text.isEmpty ? "…" : message.text)
-                .font(ConsoleTheme.sans(13))
-                .lineSpacing(3)
-                .foregroundStyle(ConsoleTheme.fg)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
-                .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
-                .frame(maxWidth: turnMaxWidth, alignment: .trailing)
-            ConsoleIcon(name: "person.fill", tint: ConsoleTheme.titanium)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(message.text.isEmpty ? "…" : message.text)
+                    .font(ConsoleTheme.sans(13))
+                    .lineSpacing(3)
+                    .foregroundStyle(ConsoleTheme.fg)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
+                    .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
+                if pending {
+                    TimelineView(.periodic(from: .now, by: 5)) { ctx in
+                        let stale = ctx.date.timeIntervalSince1970 * 1000 - message.at >= AppState.pendingEchoStaleMs
+                        Text(stale ? "Queued · not picked up yet" : "Sending…")
+                            .font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                            .contentTransition(.opacity)
+                            .animation(Motion.fade, value: stale)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: turnMaxWidth, alignment: .trailing)
+            ConsoleIcon(name: pending ? "clock.fill" : "person.fill", tint: ConsoleTheme.titanium)
                 .padding(.leading, iconGap)
                 .padding(.top, 4)
-                .accessibilityLabel("Kevin")
+                .help(pending ? "Sent; waiting for the session to take it" : "Kevin")
+                .accessibilityLabel(pending ? "Kevin, sending" : "Kevin")
             RightStamp(at: message.at).padding(.top, 7)
         }
         .padding(.vertical, 5)
+        .opacity(pending ? 0.6 : 1)
+        .animation(Motion.fade, value: pending)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Kevin: \(message.text)")
+        .accessibilityLabel("Kevin\(pending ? ", pending" : ""): \(message.text)")
     }
 }
 
@@ -859,7 +898,7 @@ private struct ConversationComposer: View {
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
                         .disabled(!hasText)
-                        .help("Send (Return)")
+                        .help(ConversationPane.sendModeWords(agent).map { "Send (Return) — \($0)" } ?? "Send (Return)")
                         .accessibilityLabel("Send")
                     }
                     .transition(.opacity)

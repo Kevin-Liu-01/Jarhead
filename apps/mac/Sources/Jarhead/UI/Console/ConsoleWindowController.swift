@@ -56,6 +56,39 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
     var openAgentIdForPreview: String? { session.openAgentId }
     /// The Jarhead conversation on screen, for the preview harness's scripted actions.
     var openJarheadIdForPreview: String? { session.openJarheadSessionId }
+    /// The thread on screen, for the preview harness's scripted actions.
+    var openThreadIdForPreview: String? { session.openThreadId }
+
+    /// Show the Console on a thread's pane — a satellite blob's click (AppDelegate installs
+    /// `state.openThreadHandler = { [weak self] id in self?.console.openThread(id) }`), the CLI.
+    public func openThread(_ id: String) {
+        show()
+        withAnimation(Motion.wipeAnimation) { session.openThread(id) }
+    }
+
+    /// ⌘⇧] / ⌘⇧[: the next / previous thread in the rail's order (AppState.railOrder, less main
+    /// while Now is the stream — ConsoleRootView.walkOrder); Now at either end.
+    func stepThread(by delta: Int) {
+        withAnimation(Motion.wipeAnimation) { session.stepThread(by: delta, order: ConsoleRootView.walkOrder(state.orderedThreads.map(\.id))) }
+    }
+
+    /// ⌥⌘.: stop THIS thread — the open pane's, or "main" on Now (the engine parks the main
+    /// turn; the spawned threads carry on; the session stays open). Never the transport's Stop;
+    /// nothing while an agent or a past conversation holds the centre (no thread is "this" one),
+    /// nothing at all for a daemon that does not speak threads.
+    @discardableResult
+    func stopOpenThread() -> Bool {
+        guard let id = ConsoleWindowController.stopTarget(threadsKnown: state.threadsKnown, openThreadId: session.openThreadId, showsNow: session.showsNow) else { return false }
+        state.threadStop(id)
+        return true
+    }
+
+    /// Which thread ⌥⌘. stops, pure for the harness: the pane's; "main" on Now; nil elsewhere or without threads.
+    static func stopTarget(threadsKnown: Bool, openThreadId: String?, showsNow: Bool) -> String? {
+        guard threadsKnown else { return nil }
+        if let openThreadId { return openThreadId }
+        return showsNow ? "main" : nil
+    }
 
     // MARK: - window
 
@@ -141,6 +174,18 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             // connecting. The engine answers with the phase.
             state.transportToggle()
             return true
+        case .showNow:
+            // ⌘0: whatever is open steps out; the live stream takes the centre.
+            withAnimation(Motion.wipeAnimation) { session.showNow() }
+            return true
+        case .nextThread:
+            stepThread(by: 1)
+            return true
+        case .prevThread:
+            stepThread(by: -1)
+            return true
+        case .stopThread:
+            return stopOpenThread()
         }
     }
 
@@ -159,22 +204,44 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
     public func windowDidDeminiaturize(_ notification: Notification) { setVisible(true) }
 }
 
-/// Handles ⌘W / ⌘. / ⌘K / ⌘P itself so the Console works whatever the main menu holds.
-/// (⌥⇧Space and ⌥⇧P, the global Go/Pause hotkeys, are Carbon's and never reach the window.)
+/// Handles ⌘W / ⌘. / ⌘K / ⌘P / ⌘0, ⌘⇧] / ⌘⇧[ and ⌥⌘. itself so the Console works whatever the
+/// main menu holds. (⌥⇧Space and ⌥⇧P, the global Go/Pause hotkeys, are Carbon's and never reach
+/// the window.) ⌘. is Stop everything; ⌥⌘. is Stop this thread — the same key with Option, so
+/// the hand that knows one finds the other.
 final class ConsoleWindow: NSWindow {
     var commandHandler: ((ConsoleKeyCommand) -> Bool)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command, let chars = event.charactersIgnoringModifiers {
-            switch chars {
-            case "w": if commandHandler?(.close) == true { return true }
-            case ".": if commandHandler?(.stop) == true { return true }
-            case "k": if commandHandler?(.focusComposer) == true { return true }
-            case "p": if commandHandler?(.transportToggle) == true { return true }
-            default: break
-            }
+        if let command = ConsoleWindow.command(flags: flags, chars: event.charactersIgnoringModifiers) {
+            if commandHandler?(command) == true { return true }
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// The key → command table, pure so the harness can pin it. `chars` is
+    /// `charactersIgnoringModifiers`, which keeps Shift: ⌘⇧] arrives as "}" on a US keyboard
+    /// and as "]" on one whose shifted bracket is elsewhere — both are the next thread.
+    static func command(flags: NSEvent.ModifierFlags, chars: String?) -> ConsoleKeyCommand? {
+        guard let chars else { return nil }
+        if flags == .command {
+            switch chars {
+            case "w": return .close
+            case ".": return .stop
+            case "k": return .focusComposer
+            case "p": return .transportToggle
+            case "0": return .showNow
+            default: return nil
+            }
+        }
+        if flags == [.command, .shift] {
+            switch chars {
+            case "]", "}": return .nextThread
+            case "[", "{": return .prevThread
+            default: return nil
+            }
+        }
+        if flags == [.command, .option], chars == "." { return .stopThread }
+        return nil
     }
 }

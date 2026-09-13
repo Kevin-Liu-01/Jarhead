@@ -1,4 +1,4 @@
-import { HANDS_OFF_APPS, classifyAction, logger } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, classifyAppleScript, logger } from "@jarhead/core";
 import { ACTING_MEMBERS, type ToolResult } from "@jarhead/hands";
 import type { ToolRunner } from "./runner.ts";
 
@@ -17,10 +17,19 @@ import type { ToolRunner } from "./runner.ts";
  * through to the brain too — the attempt is on the ledger, the task is not lost.
  *
  * Conservative by construction: the WHOLE utterance must be the command (after
- * the wake word and politeness are stripped), so "scroll down to the footer and
- * click save" is the brain's, and "click <text>" first asks the policy whether a
- * control with that name may be clicked without a question — a Send or a Delete
- * is left to the brain, which knows how to ask.
+ * the wake word, the fillers and politeness are stripped), so "scroll down to the
+ * footer and click save" is the brain's, and "click <text>" first asks the policy
+ * whether a control with that name may be clicked without a question — a Send or a
+ * Delete is left to the brain, which knows how to ask. `parseReflexTail` is the one
+ * relaxation, for the way Kevin actually talks (0 of 119 production requests parsed
+ * whole; his utterances start with "um", "yeah," and end with the command): the LAST
+ * clause alone, and only for a kind that is harmless to repeat.
+ *
+ * Meta rows (`meta: true`) act on Jarhead, not the Mac: the thread verbs ("what is
+ * Spotify doing", "stop the Slack one") are answered from the engine's thread table
+ * and "what time is it" from the clock — zero generations, never held while a task
+ * runs, spoken from the result. Their names come from the caller (`ctx.threadNames`,
+ * the LIVE threads), never a static list.
  */
 
 const log = logger("brain.reflex");
@@ -46,7 +55,26 @@ export type ReflexKind =
   | "dictate_start"
   | "dictate_stop"
   | "search"
-  | "sleep";
+  | "sleep"
+  /** Play / pause / next / previous / volume by Apple event to the music app (background-safe; policy must say run). */
+  | "media"
+  /** Minimise, hide, full screen: a shortcut with an obvious inverse. */
+  | "window"
+  /** Jarhead answers from what it knows (the clock); no tool. */
+  | "say"
+  | "thread_status"
+  | "thread_list"
+  | "thread_stop"
+  | "thread_pause"
+  | "thread_resume";
+
+/** What the caller knows that the grammar does not: the live thread names, the clock. */
+export interface ReflexContext {
+  /** The LIVE threads' names from the table; the thread verbs match only these. Absent or empty: no thread verb parses. */
+  readonly threadNames?: readonly string[] | undefined;
+  /** The clock for "what time is it" (default Date.now). */
+  readonly now?: (() => number) | undefined;
+}
 
 /** One tool call of an ordered batch, and what it did once it ran ("focused Safari", "clicked the search field"). */
 export interface ReflexStep {
@@ -82,18 +110,48 @@ export interface Reflex {
   readonly idempotent: boolean;
   /** Only meaningful with a browser in front (its shortcuts): the runner checks the frontmost app first. */
   readonly browserOnly?: boolean;
+  /**
+   * About Jarhead, not the Mac (a thread's status, a stop by name, the time): answered
+   * by the engine from what it knows, never held while a task runs, and the RESULT text
+   * is what the voice says (`said` is empty until then).
+   */
+  readonly meta?: boolean;
 }
 
 /** Wake words and politeness that may wrap a command without changing it. */
 const WAKE = /^(?:(?:hey|ok|okay|yo)[,\s]+)?(?:jarhead|jar head|jarred|jared|jar-head)[,.!\s]*/i;
 const POLITE_HEAD = /^(?:(?:please|now|just|can you|could you|would you|go ahead and|and|then|okay|ok)[,\s]+)+/i;
 const POLITE_TAIL = /(?:[,\s]+(?:please|now|for me|thanks|thank you|jarhead|jar head))+$/i;
+/**
+ * What Kevin's utterances start with before the command (heard rows, 09-10..12: "um",
+ * "oh", "yeah,", "awesome.", "[chuckle]") — the ear's list and a few more; exported so
+ * the ear and the `reflex-miss` miner strip the same words (one list, not three). Each
+ * needs a separator after it AND words after that, so a bare "yes", "okay" or "okay."
+ * is left whole for the yes gate (a lone filler is not a head, it is the utterance).
+ * Not "right": "right click save" is a command of its own, and stripping the word would
+ * turn it into a left click. The ear's stop test reads through `normalizeUtterance`, so
+ * this list is also what may precede a stop word: "oh stop", "actually, cancel" cut
+ * (pinned in reflex-grammar.test.ts as a decision, not a side effect).
+ */
+export const FILLER_HEAD = /^(?:(?:um+|uh+|erm|hmm+|so|like|okay|ok|alright|all right|hey|yeah|yes|yep|oh|awesome|great|nice|cool|well|basically|actually|anyway)[,.!\s]+)+(?=\S)/i;
+/** Transcriber tags in the words ("[chuckle]", "(laughs)"): never part of a command. */
+const TAGS = /\s*[[(](?:chuckles?|laughs?|laughter|sighs?|coughs?|inaudible|pause|music|noise|clears throat|crosstalk)[\])]\s*/gi;
 
-/** The utterance with the wake word, politeness, and punctuation removed; lowercase. */
+/** The head of an utterance stripped: tags, fillers, the wake word, fillers again ("jarhead, um, scroll down"), politeness. Case kept. */
+function stripHead(text: string): string {
+  let t = text.replace(TAGS, " ").trim().replace(/\s+/g, " ");
+  // Fillers, the wake word and politeness come in any order ("alright then, um, jarhead, please …"): peel until nothing peels.
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    t = t.replace(FILLER_HEAD, "").replace(WAKE, "").replace(POLITE_HEAD, "");
+    if (t === before) break;
+  }
+  return t;
+}
+
+/** The utterance with the wake word, fillers, politeness, and punctuation removed; lowercase. */
 export function normalizeUtterance(text: string): string {
-  let t = text.trim().replace(/\s+/g, " ");
-  t = t.replace(WAKE, "");
-  t = t.replace(POLITE_HEAD, "");
+  let t = stripHead(text);
   t = t.replace(/[.!?,;:]+$/g, "");
   t = t.replace(POLITE_TAIL, "");
   t = t.replace(/[.!?,;:]+$/g, "").trim();
@@ -158,8 +216,122 @@ const POLITE_TAIL_KEEP_NOW = /(?:[,\s]+(?:please|for me|thanks|thank you|jarhead
 function isSleepCue(utterance: string, normalized: string): boolean {
   const fold = (s: string): string => s.replace(/[’‘]/g, "'");
   if (SLEEP.test(fold(normalized))) return true;
-  const keptNow = fold(utterance.trim().replace(/\s+/g, " ").replace(WAKE, "").replace(POLITE_HEAD, "").replace(/[.!?,;:]+$/g, "").replace(POLITE_TAIL_KEEP_NOW, "").replace(/[.!?,;:]+$/g, "").trim().toLowerCase());
+  const keptNow = fold(stripHead(utterance).replace(/[.!?,;:]+$/g, "").replace(POLITE_TAIL_KEEP_NOW, "").replace(/[.!?,;:]+$/g, "").trim().toLowerCase());
   return SLEEP.test(keptNow);
+}
+/** Minimise / hide: ⌘M and ⌘H, each with an obvious inverse (the Dock, a click on the app). */
+const MINIMISE = /^(?:minimi[sz]e (?:this|the|that|the current) window|minimi[sz]e (?:it|this))$/;
+const HIDE = /^hide (?:this|the|that|the current) (?:window|app)$/;
+/** Full screen is a toggle (⌃⌘F), said either way. */
+const FULL_SCREEN = /^(?:(?:enter |go |make it |toggle |make this |put (?:this|it) in )?full ?screen|(?:exit|leave) full ?screen)$/;
+/** The clock: Jarhead answers, no tool, never a generation. */
+const TIME = /^(?:what time is it(?: now| right now)?|what(?:'s| is) the time(?: now)?|do you have the time|got the time|time check)$/;
+const DATE = /^(?:what(?:'s| is) (?:the|today's) date(?: today)?|what day is it(?: today)?|what(?:'s| is) today(?:'s date)?|what day of the week is it)$/;
+/**
+ * Media by Apple event to the music app: play / pause are idempotent, next / previous
+ * and the volume steps have an inverse; nothing here touches the pointer or the
+ * keyboard (not FOCUS_APPLESCRIPT), so a background thread could run them too. The
+ * ear fires these with no wake word, so a ONE-WORD row is room talk that pauses the
+ * music: bare "play" and "pause" are the two DECISIONS names and stay; bare "next",
+ * "previous", "skip", "resume", "unpause", "louder", "quieter", "softer" are out — the
+ * two-word forms ("skip this song", "resume the music", "volume up") carry them. "stop
+ * the music" is left out on purpose: "stop" is the interrupt, whatever follows it.
+ */
+const MEDIA_PLAY = /^(?:play|play (?:the )?music|resume (?:the )?music|resume playback|unpause (?:the )?music|play it again|keep playing)(?: (?:on|in) (?:spotify|apple music|music))?$/;
+const MEDIA_PAUSE = /^(?:pause|pause (?:the |this )?(?:music|song|track|playback)|pause it|pause (?:spotify|apple music|music))$/;
+const MEDIA_NEXT = /^(?:skip (?:this|that|the|it)(?: (?:song|track))?|skip (?:the )?(?:song|track)|next (?:song|track)|play (?:the )?next (?:song|track)|skip (?:ahead|forward))$/;
+const MEDIA_PREV = /^(?:previous (?:song|track)|last (?:song|track)|go back a (?:song|track)|play (?:the )?(?:previous|last) (?:song|track)|play that again|start (?:this|the) (?:song|track) (?:over|again))$/;
+const MEDIA_VOLUME = /^(?:turn (?:the )?(?:volume|music|sound) (up|down)|volume (up|down)|(?:make it|a bit|a little) (louder)|(?:make it|a bit|a little) (quieter|softer)|(lower the volume|turn it down a bit))$/;
+const MEDIA_MUTE = /^(mute|unmute) (?:the )?(?:music|spotify|sound|audio|volume|mac|speakers)$/;
+const MEDIA_APPLE_MUSIC = /\b(?:apple music|music app|itunes)\b/;
+
+/** The music app a media row drives: Apple Music only when named; Spotify otherwise (Kevin's). */
+function mediaApp(normalized: string): "Spotify" | "Music" {
+  return MEDIA_APPLE_MUSIC.test(normalized) ? "Music" : "Spotify";
+}
+
+/** `tell application "X" to <verb>` — only when the app is running: an Apple event to a closed app would launch it. */
+function mediaScript(app: string, verb: string): string {
+  return `if application "${app}" is running then tell application "${app}" to ${verb}`;
+}
+
+/**
+ * A media row, or undefined: the utterance must be one of the media phrases whole AND the
+ * policy must say `run` for the script — a confirm or a refuse drops the reflex here (the
+ * brain path asks; a reflex never does).
+ */
+function parseMedia(t: string): Reflex | undefined {
+  const app = mediaApp(t);
+  let m: RegExpExecArray | null;
+  const row = (verb: string, said: string, label: string, idempotent: boolean): Reflex | undefined => {
+    const script = mediaScript(app, verb);
+    if (classifyAppleScript({ script }).verdict !== "run") return undefined;
+    return { kind: "media", tool: "applescript", input: { script }, said, label: `${label} (${app})`, prefire: false, idempotent };
+  };
+  if (MEDIA_PLAY.test(t)) return row("play", "playing.", "media play", true);
+  if (MEDIA_PAUSE.test(t)) return row("pause", "paused.", "media pause", true);
+  if (MEDIA_NEXT.test(t)) return row("next track", "next track.", "media next", false);
+  if (MEDIA_PREV.test(t)) return row("previous track", "previous track.", "media previous", false);
+  if ((m = MEDIA_VOLUME.exec(t))) {
+    const up = m[1] === "up" || m[2] === "up" || m[3] !== undefined;
+    return row(`set sound volume to (sound volume ${up ? "+" : "-"} 10)`, up ? "louder." : "quieter.", `media volume ${up ? "up" : "down"}`, false);
+  }
+  if ((m = MEDIA_MUTE.exec(t))) {
+    const mute = m[1] === "mute";
+    const script = `set volume output muted ${mute}`;
+    if (classifyAppleScript({ script }).verdict !== "run") return undefined;
+    return { kind: "media", tool: "applescript", input: { script }, said: mute ? "muted." : "unmuted.", label: mute ? "mute" : "unmute", prefire: false, idempotent: true };
+  }
+  return undefined;
+}
+
+/** "it's 4:52 pm." / "it's Saturday, September 13." from the clock, in Kevin's local time. */
+function clockLine(kind: "time" | "date", nowMs: number): string {
+  const d = new Date(nowMs);
+  if (kind === "time") return `it's ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(/\s?([AP])M$/i, (_s, ap: string) => ` ${ap.toLowerCase()}m`)}.`;
+  return `it's ${d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}.`;
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
+
+/** `(?: (?:one|thread|hand|worker))?` — how Kevin may refer to a thread by its name. */
+const THREAD_TAIL = "(?: (?:one|thread|hand|worker))?";
+const THREAD_LIST = /^(?:what(?:'s| is) running|what are you (?:doing|working on|up to)(?: (?:right )?now)?|how many things are (?:running|going)|status|status report|what(?:'s| is) going on|what are the threads doing|list (?:the )?threads|what(?:'s| is) everyone doing)$/;
+
+/**
+ * The thread verbs, matched against the LIVE names the caller supplies: a status
+ * question, a stop / pause / resume by name. Every row is meta (answered from the
+ * table by the engine, spoken from the result), idempotent, never prefired. "stop"
+ * alone is not here — it is the interrupt; "stop <live name>" is that thread's.
+ */
+function parseThreadVerb(t: string, utterance: string, ctx: ReflexContext | undefined): Reflex | undefined {
+  const names = (ctx?.threadNames ?? []).map((n) => n.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (ctx?.threadNames !== undefined && THREAD_LIST.test(t) && (names.length > 0 || addressesJarhead(utterance))) {
+    return { kind: "thread_list", tool: "thread_list", input: {}, said: "", label: "thread list", prefire: false, idempotent: true, meta: true };
+  }
+  if (names.length === 0) return undefined;
+  const byLower = new Map(names.map((n) => [n.toLowerCase(), n] as const));
+  const alt = `(${[...byLower.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join("|")})`;
+  const rows: ReadonlyArray<readonly [ReflexKind, RegExp, string]> = [
+    // "… right now" loses its "now" to the politeness tail before the grammar sees it: "right" alone is accepted too.
+    ["thread_status", new RegExp(`^(?:what(?:'s| is) (?:the )?${alt}${THREAD_TAIL} (?:doing|up to|on|working on)(?: right now| now| right)?)$`), "status of"],
+    ["thread_status", new RegExp(`^(?:how(?:'s| is) (?:the )?${alt}${THREAD_TAIL} (?:doing|going|coming along|getting on))$`), "status of"],
+    ["thread_status", new RegExp(`^(?:is (?:the )?${alt}${THREAD_TAIL} (?:done|finished|done yet|finished yet|still (?:going|working|running|busy)))$`), "status of"],
+    ["thread_status", new RegExp(`^(?:where(?:'s| is) (?:the )?${alt}${THREAD_TAIL}(?: at)?)$`), "status of"],
+    ["thread_stop", new RegExp(`^(?:stop|cancel|kill|end) (?:the )?${alt}${THREAD_TAIL}$`), "stop"],
+    ["thread_pause", new RegExp(`^(?:pause|hold) (?:the )?${alt}${THREAD_TAIL}$`), "pause"],
+    ["thread_resume", new RegExp(`^(?:resume|continue|carry on|go on|unpause)(?: with)? (?:the )?${alt}${THREAD_TAIL}$`), "resume"],
+  ];
+  for (const [kind, re, verb] of rows) {
+    const m = re.exec(t);
+    if (!m) continue;
+    const name = byLower.get((m[1] ?? "").toLowerCase());
+    if (!name) continue;
+    return { kind, tool: kind, input: { name }, said: "", label: `${verb} ${name}`, prefire: false, idempotent: true, meta: true };
+  }
+  return undefined;
 }
 /** At most four words: a control's name, not a description of where to find it. */
 const CLICK = /^(?:click|press|tap|hit)(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon))?$/;
@@ -219,10 +391,17 @@ const SITES: Readonly<Record<string, string>> = {
   localhost: "http://localhost:3000/",
 };
 
-/** A spoken address: "github.com", "github.com/kevin", "localhost:3000", "https://…". */
+/**
+ * A spoken address: "github.com", "github.com/kevin", "localhost:3000", "https://…".
+ * Words with a space in them are never one address: at 2633faf "go to github.com.
+ * jarhead scroll down" collapsed into `https://github.com.jarheadscrolldown/` — a real
+ * navigation to a garbage host. Refused here, the whole does not parse and the tail
+ * ("jarhead scroll down") is the reflex.
+ */
 function urlOf(raw: string): string | undefined {
   // "localhost 3000" / "localhost port 3000" is an address with a port.
-  const s = spokenDots(raw.trim()).replace(/^localhost(?: port)? (\d{2,5})$/, "localhost:$1").replace(/\s+/g, "").replace(/\/+$/, "");
+  const s = spokenDots(raw.trim()).replace(/^localhost(?: port)? (\d{2,5})$/, "localhost:$1").replace(/\/+$/, "");
+  if (/\s/.test(s)) return undefined;
   if (/^https?:\/\//i.test(s)) return s;
   if (/^localhost(:\d+)?(\/\S*)?$/i.test(s)) return `http://${s}/`;
   if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(:\d+)?(\/\S*)?$/i.test(s)) return `https://${s}${/\//.test(s.split(/[?#]/)[0] ?? "") ? "" : "/"}`;
@@ -244,8 +423,8 @@ function appName(raw: string): string | undefined {
 
 const key = (kind: ReflexKind, combo: string, said: string, label: string, extra: Partial<Reflex> = {}): Reflex => ({ kind, tool: "key", input: { text: combo }, said, label, prefire: false, idempotent: false, ...extra });
 
-/** Parse one utterance; undefined when it is not a whole, unambiguous one-step command. */
-export function parseReflex(utterance: string): Reflex | undefined {
+/** Parse one utterance; undefined when it is not a whole, unambiguous one-step command. `ctx` carries the live thread names and the clock. */
+export function parseReflex(utterance: string, ctx?: ReflexContext): Reflex | undefined {
   const t = normalizeUtterance(utterance);
   if (!t || t.length > 120) return undefined;
   let m: RegExpExecArray | null;
@@ -255,6 +434,23 @@ export function parseReflex(utterance: string): Reflex | undefined {
   // The dismissal, before OPEN takes "go to sleep" for an app. Never a tool: `ReflexRunner.match`
   // leaves it out and the ear / the Delegator hand the phrase to the engine's one sleep function.
   if (isSleepCue(utterance, t)) return { kind: "sleep", tool: "sleep", input: { phrase: utterance.trim().replace(/\s+/g, " ") }, said: "night.", label: "go to sleep", prefire: false, idempotent: true };
+  // The thread verbs, before anything else could take a live name ("pause spotify" is the
+  // Spotify thread's while one is live; the music row's otherwise).
+  {
+    const thread = parseThreadVerb(t, utterance, ctx);
+    if (thread) return thread;
+  }
+  if (TIME.test(t) || DATE.test(t)) {
+    const text = clockLine(TIME.test(t) ? "time" : "date", (ctx?.now ?? Date.now)());
+    return { kind: "say", tool: "say", input: { text }, said: text, label: TIME.test(t) ? "what time is it" : "what is the date", prefire: false, idempotent: true, meta: true };
+  }
+  {
+    const media = parseMedia(t);
+    if (media) return media;
+  }
+  if (MINIMISE.test(t)) return key("window", "cmd+m", "minimised.", "minimise window");
+  if (HIDE.test(t)) return key("window", "cmd+h", "hidden.", "hide app");
+  if (FULL_SCREEN.test(t)) return key("window", "ctrl+cmd+f", /^(?:exit|leave)/.test(t) ? "left full screen." : "full screen.", "full screen");
   if ((m = SCROLL.exec(t))) {
     const dir = m[1] as "up" | "down" | "left" | "right";
     const tail = m[2] ?? "";
@@ -297,7 +493,7 @@ export function parseReflex(utterance: string): Reflex | undefined {
   if (CIRCLE.test(t)) return { kind: "circle", tool: "circle", input: {}, said: "circled it.", label: "circle that", prefire: true, idempotent: true };
   if ((m = TYPE.exec(t))) {
     // The words as heard, first letter as Kevin would type it; the voice transcript is lowercase.
-    const text = utterance.trim().replace(WAKE, "").replace(POLITE_HEAD, "").replace(/^(?:type|write)\s+/i, "").replace(/[.!?,;:]+$/, "").replace(POLITE_TAIL, "").replace(/[.!?,;:]+$/, "").trim();
+    const text = stripHead(utterance).replace(/^(?:type|write)\s+/i, "").replace(/[.!?,;:]+$/, "").replace(POLITE_TAIL, "").replace(/[.!?,;:]+$/, "").trim();
     if (!text || text.length > 200 || DESCRIBES.test(text.toLowerCase())) return undefined;
     return { kind: "type", tool: "type", input: { text }, said: `typed "${text.slice(0, 40)}".`, label: `type ${text.slice(0, 40)}`, prefire: false, idempotent: false };
   }
@@ -329,6 +525,48 @@ export function parseReflex(utterance: string): Reflex | undefined {
 }
 
 /**
+ * The kinds a last clause may run on its own: harmless to repeat, or with an obvious
+ * inverse, and never words to type or a control to click (the brain judges those whole).
+ */
+export const TAIL_KINDS: ReadonlySet<ReflexKind> = new Set<ReflexKind>(["scroll", "page", "screenshot", "circle", "zoom", "tab", "reload", "back", "forward", "open_app", "go_to", "media", "window", "say", "thread_status", "thread_list", "thread_stop", "thread_pause", "thread_resume"]);
+
+/** Where a last clause may start: after a sentence's end, after "then" / "and then" / "after that", or at a wake word inside the words. */
+const CLAUSE_END = /[.!?;…]+["')\]]?\s+/g;
+const THEN_MARKER = /,?\s+(?:and then|then|after that|and now|now)\s+/gi;
+const WAKE_INSIDE = /\b(?:hey\s+)?(?:jarhead|jar head|jarred|jared|jar-head)\b/gi;
+
+/**
+ * When the whole utterance is not a command, its LAST clause may be one: "yeah okay.
+ * jarhead, scroll down" → scroll; "um so read me the headline, then page down" → page.
+ * Only for TAIL_KINDS ("… then type hello" is the brain's). Returns the reflex with the
+ * head it leaves to the brain, or undefined. The caller decides whether the words were
+ * addressed to Jarhead (the wake word in the tail, or mid-exchange) before running it.
+ */
+export function parseReflexTail(utterance: string, ctx?: ReflexContext): { readonly reflex: Reflex; readonly head: string; readonly tail: string } | undefined {
+  const text = utterance.replace(TAGS, " ").replace(/\s+/g, " ").trim();
+  if (!text || parseReflex(text, ctx)) return undefined;
+  // Each candidate: where the tail starts, and where the head ends (a sentence keeps its full stop; a "then" is nobody's).
+  const last = (re: RegExp, headKeepsMatch: boolean): { tailAt: number; headEnd: number } | undefined => {
+    let found: { tailAt: number; headEnd: number } | undefined;
+    for (const m of text.matchAll(re)) {
+      if (m.index === undefined || m.index === 0) continue;
+      const end = m.index + m[0].length;
+      found = { tailAt: re === WAKE_INSIDE ? m.index : end, headEnd: headKeepsMatch ? end : m.index };
+    }
+    return found;
+  };
+  for (const c of [last(CLAUSE_END, true), last(THEN_MARKER, false), last(WAKE_INSIDE, false)]) {
+    if (!c || c.tailAt >= text.length) continue;
+    const tail = text.slice(c.tailAt).trim();
+    if (!tail || tail.length >= text.length) continue;
+    const reflex = parseReflex(tail, ctx);
+    if (!reflex || !TAIL_KINDS.has(reflex.kind)) continue;
+    return { reflex, head: text.slice(0, c.headEnd).trim().replace(/[,;]+$/, ""), tail };
+  }
+  return undefined;
+}
+
+/**
  * A click target is a control's name, not a stand-in for one. "thing", "one" and
  * the pronouns are never names; a phrase ending in a generic noun ("the blue
  * one", "the second row", "the settings icon") describes where to look, and so
@@ -353,11 +591,7 @@ function isLabel(target: string, utterance: string): boolean {
 function parseSearch(utterance: string, normalized: string): Reflex | undefined {
   if (!/^(?:search|look ?up|find)\b/.test(normalized)) return undefined;
   // The same stripping `normalizeUtterance` does, case kept, so `what` is typed as Kevin said it.
-  const raw = utterance
-    .trim()
-    .replace(/\s+/g, " ")
-    .replace(WAKE, "")
-    .replace(POLITE_HEAD, "")
+  const raw = stripHead(utterance)
     .replace(/[.!?,;:]+$/g, "")
     .replace(POLITE_TAIL, "")
     .replace(/[.!?,;:]+$/g, "")
@@ -571,7 +805,7 @@ export interface FiredReflex {
   /** The normalised words it answered. */
   readonly phrase: string;
   readonly reflex: Reflex;
-  readonly source: "ear" | "live";
+  readonly source: "ear" | "live" | "typed";
   /** Wall clock: when the app heard the words, when the grammar matched, when the tool was issued, when it answered. */
   readonly earAt: number;
   readonly matchedAt: number;
@@ -723,6 +957,15 @@ export interface ReflexRunnerOptions {
   /** True when a browser is in front (browser-only reflexes need one). Defaults to a name check on `frontmostApp`. */
   readonly browserInFront?: () => Promise<boolean>;
   readonly now?: () => number;
+  /** The LIVE threads' names from the engine's table, read per match; absent, no thread verb parses. */
+  readonly threadNames?: (() => readonly string[]) | undefined;
+  /**
+   * The engine's answer for a meta reflex that names a pseudo tool (thread_status,
+   * thread_list, thread_stop, thread_pause, thread_resume): from the table, no
+   * hands, no generation. Absent, the pseudo tool goes to the runner and is refused as
+   * unknown — the brain takes the words as today.
+   */
+  readonly meta?: ((reflex: Reflex) => Promise<ToolResult> | ToolResult) | undefined;
 }
 
 /** Browsers whose shortcuts the tab / reload / back reflexes drive. */
@@ -768,9 +1011,21 @@ export class ReflexRunner {
    * transcript fragment. A sleep cue is not a reflex to run: `parseReflex` still parses
    * it (the ear and the Delegator ask it directly), but nothing here runs it as a tool.
    */
-  match(utterance: string): Reflex | undefined {
-    const reflex = parseReflex(utterance);
+  match(utterance: string, ctx?: ReflexContext): Reflex | undefined {
+    const reflex = parseReflex(utterance, ctx ?? this.context());
     return reflex?.kind === "sleep" ? undefined : reflex;
+  }
+
+  /** The last clause of an utterance that is not a command whole (`parseReflexTail`), with the same names and clock. */
+  matchTail(utterance: string, ctx?: ReflexContext): ReturnType<typeof parseReflexTail> {
+    const got = parseReflexTail(utterance, ctx ?? this.context());
+    return got?.reflex.kind === "sleep" ? undefined : got;
+  }
+
+  /** What the grammar needs from the engine right now: the live thread names, the clock. */
+  private context(): ReflexContext {
+    const names = this.opts.threadNames?.();
+    return { ...(names !== undefined ? { threadNames: names } : {}), now: this.now };
   }
 
   private async frontmost(): Promise<string> {
@@ -828,6 +1083,18 @@ export class ReflexRunner {
       log.info(`reflex "${reflex.label}" left to the brain: ${why}`);
       return { reflex, result: { kind: "error", message: `not a reflex: ${why}` }, ms: 0, ok: false };
     };
+    // Jarhead answers from what it knows: the clock line is the result, no tool, no hands.
+    if (reflex.kind === "say") return { reflex, result: { kind: "text", text: String(reflex.input["text"] ?? reflex.said) }, ms: 0, ok: true, dispatchedAt: this.now() };
+    // A thread verb: the engine's table answers (the pseudo tool is not the runner's).
+    if (reflex.meta && this.opts.meta) {
+      const dispatchedAt = this.now();
+      try {
+        const result = await this.opts.meta(reflex);
+        return { reflex, result, ms: this.now() - dispatchedAt, ok: result.kind !== "error", dispatchedAt };
+      } catch (e) {
+        return { reflex, result: { kind: "error", message: (e as Error).message }, ms: this.now() - dispatchedAt, ok: false, dispatchedAt };
+      }
+    }
     if (reflex.browserOnly) {
       const inFront = this.opts.browserInFront ? await this.opts.browserInFront().catch(() => false) : BROWSER_APPS.test(await this.frontmost());
       if (!inFront) return notReflex("no browser in front");

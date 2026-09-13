@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Brain, CodexProbe, ToolRunner } from "@jarhead/brain";
 import { ACTING_MEMBERS } from "@jarhead/hands";
-import { ACTING_TOOLS, BLOCKED_TOOLS, BRAIN_BENCH_COMMANDS, ROLLOVER_LOG_RE, WikiHands, analyzeRun, benchScreenPng, parseWireLine, percentile, pngSize, renderReport, runBrainBench, stat, summarize, syntheticScreenPng, type AnalyzeInput, type RunnerCall, type WireRow } from "../bench-brain.ts";
+import { ACTING_TOOLS, BLOCKED_TOOLS, BRAIN_BENCH_COMMANDS, ROLLOVER_LOG_RE, WikiHands, analyzeRun, benchScreenPng, compareReports, parseWireLine, percentile, pngSize, renderReport, runBrainBench, stat, summarize, syntheticScreenPng, type AnalyzeInput, type RunnerCall, type WireRow } from "../bench-brain.ts";
 
 /**
  * The brain bench without Codex: the canned screen is a real PNG, the canned
@@ -244,4 +244,42 @@ test("bench --brain: a whole run with a stand-in brain — the reflex path catch
 test("bench --brain: without Codex the bench refuses before an engine or a brain starts — the auto brain would cost API dollars — unless --allow-api-spend", async () => {
   const probe: CodexProbe = { bin: undefined, version: undefined, signedIn: false, authMode: undefined, desktopRunning: false, configModel: undefined, detail: "codex binary not found (test)" };
   await assert.rejects(runBrainBench({ runs: 1, json: true, probe, print: () => undefined }), /Codex is not available \(codex binary not found \(test\)\).*--allow-api-spend/);
+});
+
+test("bench --brain: verificationShots and observedResults per run and in the summary; --compare prints deltas against a baseline", () => {
+  const base = 200_000;
+  const calls = (rows: Array<[number, string, string, string?]>): RunnerCall[] => rows.map(([rel, name, kind, output]) => ({ at: base + rel, ms: 2, name, input: "{}", kind, ok: kind === "text" || kind === "image", blocked: false, ...(output !== undefined ? { output } : {}) }));
+  const delegation = { id: "dlg_v", liveId: "brain-path_click-search-type_1", createdAt: base, offsetMs: 0, request: "jarhead click the search bar and type hello", status: "done" as const, steps: [], timings: { delegatedAt: base, doneAt: base + 9000 } };
+  const input = (runnerCalls: RunnerCall[]): AnalyzeInput => ({ phase: "brain-path", cmd: BRAIN_BENCH_COMMANDS[3]!, run: 1, liveId: delegation.liveId, delegation, timedOut: false, t0: base, t1: base + 9100, wire: [], runnerCalls, logLines: [], commentary: [] });
+  // Before the observation lever: click → screenshot → type → screenshot (two verifying shots, no now: line).
+  const before = analyzeRun(input(calls([[3000, "left_click", "text", "OK"], [3100, "screenshot", "image"], [6000, "browser_type", "text", "typed hello"], [6100, "screenshot", "image"]])));
+  assert.deepEqual([before.actingCalls, before.verificationShots, before.observedResults], [2, 2, 0]);
+  // After: both results carry the line; one shot remains (the model still looked once); a refused click counts as neither.
+  const after = analyzeRun(input(calls([[3000, "left_click", "text", "OK\nnow: Safari — \"Kevin Wiki\"; focused: AXTextField \"Search the wiki\"; 150 ms after the click"], [6000, "browser_type", "text", "typed hello\nnow: Safari — \"Kevin Wiki\"; focused: AXTextField \"Search the wiki\" = \"hello\"; 150 ms after the type"], [6100, "screenshot", "image"], [8000, "left_click", "question", "About to click Send — say yes"]])));
+  assert.deepEqual([after.actingCalls, after.verificationShots, after.observedResults], [2, 1, 2]);
+  const sBefore = summarize([before]);
+  const sAfter = summarize([after]);
+  assert.deepEqual(sBefore.verificationShots, { acting: 2, shots: 2, share: 1 });
+  assert.deepEqual(sAfter.verificationShots, { acting: 2, shots: 1, share: 0.5 });
+  assert.deepEqual(sAfter.observedResults, { acting: 2, withLine: 2, share: 1 });
+  assert.equal(sAfter.generationsPerCommand.median, after.generations, "the same number as brainPath.overall.generations under the speed pass's name");
+  const baseline = { meta: { startedAt: "2026-09-12T02:35:00.000Z" }, records: [before], summary: sBefore };
+  const current = { meta: {}, records: [after], summary: sAfter };
+  const cmp = compareReports(current, baseline, "docs/latency/after.json");
+  assert.equal(cmp.baseline, "docs/latency/after.json");
+  assert.equal(cmp.baselineStartedAt, "2026-09-12T02:35:00.000Z");
+  assert.deepEqual(cmp.verificationShare, { before: 1, after: 0.5 });
+  const row = cmp.rows.find((r) => r.cmd === "click-search-type");
+  assert.ok(row);
+  assert.equal(row.generations, after.generations - before.generations);
+  assert.equal(row.doneMs, 0, "the same done time in both fixtures");
+  assert.ok(cmp.rows.some((r) => r.cmd === "all"), "the overall row is compared too");
+  const lines = renderReport({ ...current, compare: cmp });
+  assert.ok(lines.some((l) => /acting calls followed by a verifying shot 1\/2 \(50 %, target ≤ 15 %\); acting results carrying a now: line 2\/2 \(100 %/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /against docs\/latency\/after\.json \(2026-09-12T02:35:00\.000Z\)/.test(l)));
+  assert.ok(lines.some((l) => /verifying-shot share 100 % → 50 %/.test(l)));
+  // An old baseline without the new summary fields still compares (its shares read as unknown).
+  const old = compareReports(current, { meta: {}, records: [], summary: { ...sBefore, verificationShots: undefined, generationsPerCommand: undefined } as unknown as typeof sBefore }, "old.json");
+  assert.equal(old.verificationShare.before, undefined);
+  assert.equal(old.generationsP95.before, sBefore.brainPath.overall.generations.p95);
 });

@@ -60,7 +60,7 @@ test("ear → hands: a partial scrolls after the stability window through the ga
 
 test("ear: a final fires at once; \"click send\" is dropped by the policy with no pending confirmation left behind; \"click save\" clicks the one control by name; two candidates click nothing", async () => {
   const w = world();
-  const { engine, hands } = w;
+  const { engine, hands, handsBg } = w;
   try {
     await engine.start();
     await engine.ready();
@@ -80,8 +80,9 @@ test("ear: a final fires at once; \"click send\" is dropped by the policy with n
 
     engine.ear("click save", true, 2, 2);
     await settle();
-    assert.equal(hands.named("find_element").length, 1);
-    assert.equal(hands.named("click").length, 1, "the one Save button was clicked at its centre");
+    assert.equal(handsBg.named("find_element").length, 1, "the look went to the reading helper (SplitHands)");
+    assert.equal(hands.named("find_element").length, 0, "never the acting one");
+    assert.equal(hands.named("click").length, 1, "the one Save button was clicked at its centre, on the acting helper");
     // `expectFront`: the pid the gate's own probe saw in front rides on the click, so the helper posts nothing if the app moved.
     assert.deepEqual(hands.named("click")[0]!.params, { x: 530, y: 412, button: "left", count: 1, modifiers: [], expectFront: { pid: 1 } });
     assert.equal(rows[1]?.ok, true);
@@ -203,6 +204,30 @@ test("dictation: \"start dictating\" types the ear's finals into the focused fie
     assert.equal(hands.named("type").length, 3);
     assert.equal(engine.isDictating, false);
     assert.equal(engine.currentPhase, "listening");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("typed while dictating: a line from the Console's composer is the voice's, never a reflex — 'open safari' typed during dictation opens nothing", async () => {
+  const w = world();
+  const { engine, live, hands } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    engine.ear("start dictating", true, 1, 1);
+    await settle();
+    assert.equal(engine.isDictating, true);
+    hands.ops.length = 0;
+    await engine.command({ type: "say-text", text: "open safari" });
+    assert.equal(hands.named("open_app").length, 0, "no reflex while dictating");
+    assert.ok(live.instructions.some((i) => /Kevin just typed .*"open safari"\. Respond to it now/.test(i)), "the voice takes the line");
+    engine.ear("stop dictating", true, 2, 2);
+    await settle(40);
+    assert.equal(engine.isDictating, false);
   } finally {
     await engine.stop();
   }
@@ -420,7 +445,7 @@ test("a typed mismatch where ⌘Z cannot reach (the focus is not a text field): 
 
 test("search through the ear: \"search the wiki for design\" with the wiki up in the front browser clicks the page's search field, types the words and presses Return after the careful window; Live's delegation for the same words is finished as already done with what was done on the record", async () => {
   const w = world();
-  const { engine, live, hands, brain, clock } = w;
+  const { engine, live, hands, handsBg, brain, clock } = w;
   try {
     await engine.start();
     await engine.ready();
@@ -428,17 +453,19 @@ test("search through the ear: \"search the wiki for design\" with the wiki up in
     await engine.wake("test");
     await settle();
     hands.frontApp = "Google Chrome";
-    const original = hands.request.bind(hands);
-    hands.request = async <T>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
+    // The looks (frontmost, find_element) go to the READING helper (SplitHands); the click, the keys and the typing to the acting one.
+    const original = handsBg.request.bind(handsBg);
+    handsBg.request = async <T>(op: string, params: Record<string, unknown> = {}): Promise<T> => {
       if (op === "frontmost") return { app: hands.frontApp, pid: 1, window: { title: "Design system — Kevin's Wiki", x: 0, y: 0, w: 1200, h: 800, windowId: 1 } } as T;
       if (op === "find_element" && String(params["name"]) === "search") {
-        hands.ops.push({ op, params, at: clock.t });
+        handsBg.ops.push({ op, params, at: clock.t });
         const el = { i: 4, depth: 3, role: "AXTextField", title: "Search the wiki", app: hands.frontApp, score: 0.4, label: "Search the wiki", x: 500, y: 400, w: 60, h: 24, center: { x: 530, y: 412 }, pressable: false };
         return { app: hands.frontApp, window: "Design system — Kevin's Wiki", found: true, unique: true, candidates: 1, tier: "contains", element: el, cached: true, treeMs: 3, nodes: 120, truncated: false, ms: 1 } as T;
       }
       return original<T>(op, params);
     };
     hands.ops.length = 0;
+    handsBg.ops.length = 0;
     const rows: { action: string; ok: boolean; did?: string; fired: string }[] = [];
     engine.on("reflex.fired", (row) => rows.push(row));
 
@@ -447,7 +474,7 @@ test("search through the ear: \"search the wiki for design\" with the wiki up in
     await settle(20);
     assert.equal(hands.named("type").length, 0, "a careful kind waits out its window");
     await settle(120);
-    assert.deepEqual(hands.named("find_element").map((f) => [f.params["name"], f.params["role"]]), [["search", "pagefield"]], "the page's field, never the address bar");
+    assert.deepEqual(handsBg.named("find_element").map((f) => [f.params["name"], f.params["role"]]), [["search", "pagefield"]], "the page's field, never the address bar");
     assert.equal(hands.named("click").length, 1, "the field was clicked");
     assert.deepEqual(hands.named("key").map((k) => k.params["combo"]), ["cmd+a", "Return"]);
     assert.deepEqual(hands.named("type").map((t) => t.params["text"]), ["design"]);
@@ -640,6 +667,41 @@ test("ear: a dismissal is judged before the hold and only to Jarhead — a final
     engine.ear("goodnight jarhead", true, 5, clock.t);
     await settle();
     assert.equal(rows<SleepRow>(w, "sleep").length, 1);
+  } finally {
+    await engine.stop();
+  }
+});
+
+// ---------------------------------------------------------------- threads (pass 4)
+
+test("ear: a meta kind passes the hold — 'what are you doing' over a running brain task is answered from the table on the delegation under way (no generation), while an ordinary reflex is still held; 'what time is it' is Jarhead's own line from the clock", async () => {
+  const w = world();
+  const { engine, live, hands, brain, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    await settle();
+    delegate(w, "jarhead what is on my screen", "item_1");
+    await settle();
+    assert.equal(brain.tasks.length, 1);
+    hands.ops.length = 0;
+    live.commentary.length = 0;
+    // Held: a scroll under the brain's hands.
+    engine.ear("scroll down", true, 1, clock.t);
+    await settle(60);
+    assert.equal(hands.named("scroll").length, 0, "an ordinary reflex is held while the task runs");
+    // Not held: a meta kind acts on Jarhead, not the screen (with no thread live the overview wants the wake word).
+    engine.ear("jarhead what are you doing", true, 2, clock.t);
+    await until(() => live.commentary.length > 0, 1500);
+    assert.match(live.commentary[0]!, /^I am working on it — \d+ seconds in$/);
+    assert.equal(brain.tasks.length, 1, "no generation");
+    assert.equal(brain.cancels, 0, "the running turn untouched");
+    engine.ear("what time is it", true, 3, clock.t);
+    await until(() => live.commentary.length > 1, 1500);
+    assert.match(live.commentary[1]!, /^it's \d{1,2}:\d{2} [ap]m\.$/);
+    assert.equal(hands.ops.length, 0, "no hands for either");
   } finally {
     await engine.stop();
   }

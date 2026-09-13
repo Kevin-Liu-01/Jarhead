@@ -28,6 +28,11 @@ struct StreamPane: View, Equatable {
     /// The daemon client is connected (AppState.connected). While it is not, the snapshot on
     /// screen is the last one republished and nothing in it is being typed.
     var connected = true
+    /// The spawned threads (AppState.threads): each card shows the ones it started as chips.
+    var threads: [WorkThread] = []
+    /// Settings.typedWakes: a typed line while asleep opens a paid session (default off — the
+    /// engine refuses and the composer keeps the words).
+    var typedWakes = false
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -36,6 +41,7 @@ struct StreamPane: View, Equatable {
         a.transcript == b.transcript && a.delegations == b.delegations && a.phase == b.phase && a.hasSession == b.hasSession
             && a.ledgerDay == b.ledgerDay && a.ledgerEntries == b.ledgerEntries && a.ledgerLoading == b.ledgerLoading
             && a.clearedAt == b.clearedAt && a.workers == b.workers && a.connected == b.connected
+            && a.threads == b.threads && a.typedWakes == b.typedWakes
     }
 
     /// The caret may show at all: the live feed, a session open, the daemon connected. A ledger
@@ -70,7 +76,12 @@ struct StreamPane: View, Equatable {
             ZStack {
                 // A past day's workers are its `worker` rows (system lines); only the live feed has the list.
                 StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear, workers: ledgerDay == nil ? workers : [],
-                           caretsOn: Self.caretsOn(ledgerDay: ledgerDay, hasSession: hasSession, connected: connected))
+                           caretsOn: Self.caretsOn(ledgerDay: ledgerDay, hasSession: hasSession, connected: connected),
+                           threads: ledgerDay == nil ? threads : [])
+                    // The live feed's confirm rows answer the main conversation's question
+                    // (`thread.answer main`: the engine arms only when it holds the floor); a ledger
+                    // day is the record and offers no buttons.
+                    .environment(\.consoleConfirm, ledgerDay == nil ? ConsoleConfirm(threadId: "main") : nil)
                     .id(feedKey)
                     .transition(.identity)
                 Color.clear
@@ -80,7 +91,7 @@ struct StreamPane: View, Equatable {
             }
             .clipped()
             .animation(Motion.wipeAnimation, value: feedKey)
-            ComposerBar(phase: phase, stopHot: delegationRunning)
+            ComposerBar(phase: phase, stopHot: delegationRunning, typedWakes: typedWakes)
         }
         .animation(Motion.gentle, value: ledgerDay == nil)
     }
@@ -404,11 +415,19 @@ struct StreamFeed: View {
     /// The streaming caret may show (StreamPane.caretsOn): only the live feed with a session
     /// open and the daemon connected. Off for a ledger day and a past Jarhead conversation.
     var caretsOn = false
+    /// The live threads; each card is handed the ones it started (StreamEntry.threads(from:)). [] elsewhere.
+    var threads: [WorkThread] = []
+    /// "Load earlier" at the top while more remains (a ThreadPane's paged stream); nil draws none.
+    var earlier: StreamEarlier? = nil
+    /// The empty state's "Try again" (a pane whose open went unanswered); nil offers none.
+    var retry: (() -> Void)? = nil
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.consoleTransport) private var transport
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var tracker = ConsoleFeedTracker()
+    /// "Load earlier" is out; cleared when the first row changes, or after a while.
+    @State private var loadingEarlier = false
 
     /// The one row that may carry the caret: the newest utterance (the item being spoken or
     /// heard). An older non-final item — a cut answer whose settle never came — sits still.
@@ -445,9 +464,11 @@ struct StreamFeed: View {
                             // materialised rows are cheap; a stable document is not optional.
                             let caretId = caretsOn ? Self.caretId(entries) : nil
                             VStack(alignment: .leading, spacing: 0) {
+                                if let earlier { loadEarlierRow(earlier) }
                                 ForEach(entries) { entry in
-                                    StreamRow(entry: entry, workers: entry.workers(from: workers), caret: entry.id == caretId)
-                                        .rowAppear(animated: settled)
+                                    StreamRow(entry: entry, workers: entry.workers(from: workers), caret: entry.id == caretId,
+                                              threads: entry.threads(from: threads))
+                                        .rowAppear(animated: settled && !loadingEarlier)
                                         // The found row's ground, on its own opacity: the layout never moves.
                                         .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active).opacity(highlightId == entry.id ? 1 : 0))
                                         .id(entry.id)
@@ -513,7 +534,58 @@ struct StreamFeed: View {
                 if let target, entries.contains(where: { $0.id == target }) { scroll(to: target, proxy: proxy) }
             }
             .onChange(of: modeKey) { tracker.reset() }
+            .onChange(of: entries.first?.id) { oldId, _ in
+                let wasLoading = loadingEarlier
+                loadingEarlier = false
+                // An older page landed above the row Kevin was reading: the probe holds his place
+                // as the document grows (ConsoleScrollProbeView.keepOffset). Only for a page he asked for.
+                guard wasLoading, !tracker.stuck, oldId != nil, let geo = tracker.lastGeometry else { return }
+                DispatchQueue.main.async { tracker.probe?.keepOffset(previousContent: geo.content) }
+            }
+            .task(id: loadingEarlier) {
+                guard loadingEarlier else { return }
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                loadingEarlier = false
+            }
+            // The preview harness pressing "Load earlier" (`load-earlier-thread`): the button's own path,
+            // so the run.log carries the `thread.history` send and the keepOffset hold is the real one.
+            .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification)) { note in
+                guard note.userInfo?["loadEarlier"] as? Bool == true, let earlier, !loadingEarlier else { return }
+                loadingEarlier = true
+                earlier.load()
+            }
         }
+    }
+
+    /// "Load earlier" ↔ "Loading…", both 24pt so the swap is a crossfade with no layout under it.
+    private func loadEarlierRow(_ earlier: StreamEarlier) -> some View {
+        HStack {
+            Spacer(minLength: 0)
+            ZStack {
+                if loadingEarlier {
+                    HStack(spacing: 8) {
+                        ConsoleGlyphs(cols: 8, rows: 1)
+                        Text("Loading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                    }
+                    .frame(height: 24)
+                    .transition(.opacity)
+                } else {
+                    Button {
+                        loadingEarlier = true
+                        earlier.load()
+                    } label: {
+                        Label("Load earlier", systemImage: "arrow.up")
+                    }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                    .help(earlier.remaining > 0 ? "\(earlier.remaining) earlier entr\(earlier.remaining == 1 ? "y" : "ies")" : "Earlier entries")
+                    .transition(.opacity)
+                }
+            }
+            .animation(Motion.fade, value: loadingEarlier)
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 8)
     }
 
     /// Rows from the next turn on are "new": the ones in this frame show at once.
@@ -554,11 +626,24 @@ struct StreamFeed: View {
                 Button(action: undo) { Label("Undo", systemImage: "arrow.uturn.backward") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 28))
                     .help("Bring the cleared items back")
+            } else if let retry {
+                Button(action: retry) { Label("Try again", systemImage: "arrow.clockwise") }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                    .help("Ask the engine for the page again")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+}
+
+/// "Load earlier" for a paged feed (a thread's): what to ask for, and how many rows remain
+/// behind it. `key` is the first held seq — the row changes when a page lands, which is how
+/// the feed knows the load answered.
+struct StreamEarlier {
+    let key: Int
+    let remaining: Int
+    let load: () -> Void
 }
 
 /// The "Latest" pill the stream and a conversation share.
@@ -586,11 +671,13 @@ struct StreamRow: View, Equatable {
     /// This row may carry the streaming caret (the feed's newest utterance, in a live feed with
     /// a session open and the daemon connected); the item's `final` still decides whether it does.
     var caret = false
+    /// This card's spawned threads (StreamEntry.threads(from:)); [] for the rest.
+    var threads: [WorkThread] = []
 
     var body: some View {
         switch entry {
         case .utterance(let t): UtteranceRow(item: t, caret: caret)
-        case .delegation(let d): DelegationCard(delegation: d, workers: workers)
+        case .delegation(let d): DelegationCard(delegation: d, workers: workers, threads: threads)
         case .system(let s): SystemRow(entry: s)
         }
     }
@@ -618,13 +705,22 @@ struct UtteranceRow: View {
     /// Blinks while the item is still being written AND the gate is open.
     static func showsCaret(final: Bool, gate: Bool) -> Bool { !final && gate }
 
+    /// The icon column: Kevin spoken is `person.fill`, Kevin typed (TranscriptItem.source "typed",
+    /// the Console's composer) is `keyboard.fill`, Jarhead is the waveform.
+    static func symbol(for item: TranscriptItem) -> String {
+        guard item.speaker == .kevin else { return "waveform" }
+        return item.source == "typed" ? "keyboard.fill" : "person.fill"
+    }
+
     var body: some View {
         let kevin = item.speaker == .kevin
+        let typed = kevin && item.source == "typed"
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Stamp(at: item.at)
-            ConsoleIcon(name: kevin ? "person.fill" : "waveform", tint: kevin ? ConsoleTheme.titanium : ConsoleTheme.speaking)
+            ConsoleIcon(name: Self.symbol(for: item), tint: kevin ? ConsoleTheme.titanium : ConsoleTheme.speaking)
                 .padding(.leading, stampGap)
-                .accessibilityLabel(kevin ? "Kevin" : "Jarhead")
+                .help(typed ? "Typed in the Console" : (kevin ? "Said" : "Jarhead"))
+                .accessibilityLabel(typed ? "Kevin, typed" : (kevin ? "Kevin" : "Jarhead"))
             HStack(alignment: .lastTextBaseline, spacing: 3) {
                 Text(item.text.isEmpty ? "…" : item.text)
                     .font(ConsoleTheme.sans(13))
@@ -692,6 +788,8 @@ struct DelegationCard: View {
     let delegation: Delegation
     /// This delegation's workers (its second pair of hands), as chips under the timeline.
     var workers: [Worker] = []
+    /// The threads this delegation started (`Thread.parentDelegationId`), as chips that open their panes.
+    var threads: [WorkThread] = []
 
     /// One turn after the card appeared; what was there from the start shows at once.
     @State private var settled = false
@@ -720,6 +818,11 @@ struct DelegationCard: View {
 
             if !workers.isEmpty {
                 WorkerStrip(workers: workers, animated: settled)
+                    .padding(EdgeInsets(top: 2, leading: 10, bottom: 4, trailing: 10))
+            }
+
+            if !threads.isEmpty {
+                ThreadStrip(threads: threads, animated: settled)
                     .padding(EdgeInsets(top: 2, leading: 10, bottom: 4, trailing: 10))
             }
 
@@ -800,6 +903,64 @@ private struct WorkerChip: View {
         .help([worker.name, ConsoleTheme.lane(worker.lane), worker.task, worker.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(worker.name), \(meta.label), \(ConsoleTheme.lane(worker.lane)) lane")
+    }
+}
+
+/// The delegation's threads as chips in one wrapping row: `● Spotify · acting`. A chip is a
+/// button — it opens the thread's pane (ConsoleSession.openThread) — flat, a hairline box on the
+/// ground; its glyph and word crossfade as the thread turns. Nothing here animates layout.
+struct ThreadStrip: View {
+    let threads: [WorkThread]
+    /// False while the card is arriving: chips there from the start show at once.
+    var animated = true
+
+    @EnvironmentObject private var session: ConsoleSession
+
+    var body: some View {
+        ConsoleFlow(hSpacing: 6, vSpacing: 6) {
+            ForEach(threads) { t in
+                ThreadChip(thread: t) {
+                    withAnimation(Motion.wipeAnimation) { session.openThread(t.id) }
+                }
+                .rowAppear(animated: animated)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Threads: " + threads.map { "\($0.name) \($0.status.words)" }.joined(separator: ", "))
+    }
+}
+
+private struct ThreadChip: View {
+    let thread: WorkThread
+    let open: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        let meta = ConsoleTheme.thread(thread.status)
+        Button(action: open) {
+            HStack(spacing: 4) {
+                ConsoleThreadGlyph(status: thread.status)
+                Text(thread.name).font(ConsoleTheme.sans(11, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
+                Text("· \(meta.label)").font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
+                    .contentTransition(.opacity)
+                    .animation(Motion.fade, value: meta.label)
+            }
+            .padding(.trailing, 8)
+            .frame(height: 22)
+            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? ConsoleTheme.hover : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .animation(ConsoleMotion.hover, value: hovering)
+        .help([thread.name, ConsoleTheme.lane(thread.lane), thread.task, thread.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") + "\nOpens its pane")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(thread.name), \(meta.label), \(ConsoleTheme.lane(thread.lane)) lane")
+        .accessibilityHint("Opens the thread")
     }
 }
 
@@ -910,6 +1071,7 @@ struct StepRow: View {
     var live = false
 
     @Environment(\.consoleActions) private var actions
+    @Environment(\.consoleConfirm) private var confirm
     @EnvironmentObject private var session: ConsoleSession
 
     var body: some View {
@@ -945,8 +1107,16 @@ struct StepRow: View {
             }
         case .confirm:
             row("hand.raised.fill", waiting ? ConsoleTheme.speaking : ConsoleTheme.titanium) {
-                Text(step.text ?? "").font(ConsoleTheme.sans(12, waiting ? .medium : .regular))
-                    .foregroundStyle(waiting ? ConsoleTheme.fg : ConsoleTheme.fg2)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(step.text ?? "").font(ConsoleTheme.sans(12, waiting ? .medium : .regular))
+                        .foregroundStyle(waiting ? ConsoleTheme.fg : ConsoleTheme.fg2)
+                    // The question still open, in a live pane: Allow / Deny answer that pane's thread
+                    // (`thread.answer`). Clicks only — never a Return default (ConsoleConfirm).
+                    if waiting, let confirm {
+                        Spacer(minLength: 8)
+                        ConfirmButtons(threadId: confirm.threadId)
+                    }
+                }
             }
             .accessibilityHint(waiting ? "Waiting for Kevin" : "")
         case .error:
@@ -980,6 +1150,30 @@ struct StepRow: View {
             StepDelta(ms: step.at - delegatedAt, at: step.at)
         }
         .padding(.vertical, 3)
+    }
+}
+
+/// Allow / Deny on a waiting confirm row: `thread.answer` for the pane's thread. The engine arms
+/// the one pending action only when that thread's question holds the floor (else a toast names
+/// whose does); Deny drops the question. No `.keyboardShortcut` anywhere here, by rule.
+private struct ConfirmButtons: View {
+    let threadId: String
+
+    @Environment(\.consoleActions) private var actions
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button("Allow") { actions.send(.threadAnswer(threadId: threadId, yes: true)) }
+                .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 22, small: true))
+                .help("Yes — a click, never Return")
+            Button("Deny") { actions.send(.threadAnswer(threadId: threadId, yes: false)) }
+                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                .help("No — the question is dropped")
+        }
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Allow or deny")
     }
 }
 
@@ -1226,6 +1420,9 @@ struct LightboxView: View {
 struct ComposerBar: View {
     let phase: Phase
     let stopHot: Bool
+    /// Settings.typedWakes (default off): a typed line while asleep opens a paid session. Off,
+    /// the engine refuses with a toast ("asleep — press Go") and the words stay in the field.
+    var typedWakes = false
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.consoleTransport) private var transport
@@ -1243,9 +1440,20 @@ struct ComposerBar: View {
     private var connecting: Bool { phase == .connecting }
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    private var placeholder: String {
-        if paused { return "Paused — press Go or type to resume" }
-        return inSession ? "Say something…" : "Type to Jarhead…"
+    private var placeholder: String { ComposerBar.placeholder(phase: phase, typedWakes: typedWakes) }
+
+    /// The field's words: what typing does in this phase. Paused: resumes (the engine's own
+    /// rule). Asleep: refused unless typed lines wake — and the placeholder says which.
+    static func placeholder(phase: Phase, typedWakes: Bool) -> String {
+        if phase == .paused { return "Paused — press Go or type to resume" }
+        if ConsoleTheme.sessionPhases.contains(phase) { return "Say something…" }
+        return typedWakes ? "Type to wake Jarhead…" : "Type to Jarhead… (asleep: press Go)"
+    }
+
+    /// Whether a submitted line stays in the field: asleep (or in error) with typed wakes off, the
+    /// engine refuses it — no paid session on a stray Return — so the words are kept for the Go.
+    static func keepsText(phase: Phase, typedWakes: Bool) -> Bool {
+        (phase == .asleep || phase == .error) && !typedWakes
     }
 
     /// The Go/Pause button's spoken name, for accessibility.
@@ -1327,6 +1535,6 @@ struct ComposerBar: View {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         actions.send(.sayText(t))
-        text = ""
+        if !ComposerBar.keepsText(phase: phase, typedWakes: typedWakes) { text = "" }
     }
 }

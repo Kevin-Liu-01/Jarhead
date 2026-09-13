@@ -37,6 +37,10 @@ import SwiftUI
 // coverage MASK with the same tile (the bilinear + box pass before it is a smoothing of
 // that mask, not a visible blur). Per-frame code does dictionary lookups and layout; it
 // never touches a pixel buffer.
+// The Dock icon and the README banner wear the blob's `^ ^` (scripts/dither.ts FACE: one cell
+// pattern from 64 to 1024, hand bitmaps at 32 and 16). Below the Dock's 32 px class — the 14 pt
+// `JarheadMark` in the Console, the notch island's gradient — the orb stays FACELESS: a face that
+// small reads as noise, not as Jarhead.
 enum Dither {
     // MARK: palette
 

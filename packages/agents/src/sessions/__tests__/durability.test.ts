@@ -318,7 +318,7 @@ test("waitSettled on a run whose child stopped talking: resolves when the rail's
   const c = new SessionsConnector({ home, ...pinned(home, { FAKE_CODEX_MODE: "hang" }), codexBin: fakeCodex(home), processes: async () => [], processCacheMs: 0, leases: { runStallMs: 150 }, codexTurnBudgetMs: 20_000, codexKillGraceMs: 100, maxAgeDays: 100_000 });
   const agentId = `sessions:codex:${id}`;
   assert.equal((await c.list()).find((a) => a.id === agentId)?.status, "ended", "no process owns the rollout");
-  assert.deepEqual(await c.send(agentId, "go on"), { accepted: true, detail: "resumed headlessly" }, "an ended thread is still resumable");
+  assert.deepEqual(await c.send(agentId, "go on"), { accepted: true, detail: "resumed headlessly", mode: "resume" }, "an ended thread is still resumable");
   const t0 = performance.now();
   const settled = await c.waitSettled(agentId, 5_000);
   const took = ms(t0);

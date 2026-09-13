@@ -5,11 +5,14 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
-import type { AgentInfo, Delegation, Effort, EngineEvent, MemoryItem, MemoryKind, MemoryState, MemorySummary, PermissionInfo, Problem, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
+import { type AgentInfo, type Delegation, type Effort, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type PermissionInfo, type Problem, type SleepCause, type Thread, type TranscriptItem, type Worker } from "@jarhead/protocol";
 import { MEMORY_ID, agentsByStatus, agoWords, memoryLine, render, runChecks, summarizePermissions } from "./doctor.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
 import { benchBrain } from "./bench-brain.ts";
+import { ledgerSpeed, renderSpeed } from "./ledger-speed.ts";
+import { reflexMisses, renderMisses } from "./reflex-miss.ts";
+import { resolveThread, threadsLines, workersFallbackLines } from "./threads-cli.ts";
 
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
@@ -25,6 +28,9 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead ledger restore <day>   move a day back from the Trash
   pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
   pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
+  pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
+                                      tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
+  pnpm jarhead reflex-miss [--days N]  the short commands Kevin said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
   pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about Kevin: one sentence per item, over the daemon (50 by default, 200 at most)
   pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words (embeddings when a key is present, keywords without)
   pnpm jarhead memory forget <id>    hide an item from every prompt; it stays in Jarhead's own record under Forgotten. Nothing is deleted
@@ -32,11 +38,14 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in Kevin's words (redacted and refused like anything extracted)
   pnpm jarhead memory run            read the closed conversations not read yet, now (it runs on its own at a quiet moment; never while a voice session is open)
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; agents by status —
-                                      working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; workers: the second hands at work; memory: counts and the last learn)
+                                      working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
+                                      with name · status · lane · steps · id; memory: counts and the last learn)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|stop|interrupt|wake|resume|mute|unmute|agent.refresh>   send a command to the running daemon
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
-  pnpm jarhead cmd worker.stop <id>   stop one worker (its id from \`jarhead status\`); the others and the session carry on
+  pnpm jarhead cmd thread.stop <id|name>   stop one thread (its id or name from \`jarhead status\`; "main" parks the main turn); the others and the session carry on
+  pnpm jarhead cmd thread.pause <id|name> | thread.resume <id|name>   hold one thread's brain turn and release its screen; run its continuation turn
+  pnpm jarhead cmd worker.stop <id>   the older name for thread.stop by id
   pnpm jarhead dock [--fix] [--json]  one Jarhead: the Dock tiles and LaunchServices records for /Applications/Jarhead.app, read-only.
                                       --fix removes Jarhead's recent tiles, rebuilds the pin, unregisters stale bundle paths (the Trash's contents are not touched)
                                       and restarts the Dock only when it changed something. The daemon reads the Dock itself 20 s after it starts
@@ -55,6 +64,9 @@ flags
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
   --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort) — one flag for an A/B
+  --observe off  (bench --brain) run with Settings.observe off: acting results without the now: line — the A/B for the observation lever
+  --compare F    (bench --brain) print median deltas per command against a previous --out report
+  --days N       (ledger --speed, reflex-miss) how many day files back, today included
   --no-reflex    (bench --brain) skip the reflexes-on phase: brain path only
   --allow-api-spend  (bench --brain) run even when Codex is not signed in — the auto brain then costs REAL API dollars; off by default the bench refuses
   --only a,b     (bench --brain) restrict to these command ids (wiki-search, open-safari, whats-on-screen, click-search-type, scroll-down)
@@ -68,7 +80,7 @@ flags
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind", "--days", "--compare", "--observe"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -483,7 +495,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; workers?: Worker[]; memory?: MemorySummary; problems: string[]; problemsTyped?: Problem[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; workers?: Worker[]; threads?: Thread[]; memory?: MemorySummary; problems: string[]; problemsTyped?: Problem[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
@@ -498,10 +510,9 @@ async function status(): Promise<void> {
   const byStatus = agentsByStatus(s.agents);
   console.log(`  agents     ${s.agents.length}${byStatus ? ` (${byStatus})` : ""}${s.hiddenAgents?.length ? ` (${s.hiddenAgents.length} hidden)` : ""}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
   console.log(`  memory     ${memoryLine(s.memory)}`);
-  // Workers are the brain's second hands (not agents: those are Kevin's coding sessions); running ones and those finished within the linger window.
-  const workers = s.workers ?? [];
-  console.log(`  workers    ${workers.length}${workers.length ? ` (${workers.filter((w) => !["done", "failed", "cancelled"].includes(w.status)).length} running)` : ""}`);
-  for (const w of workers) console.log(`    ${w.status === "done" ? "✔" : w.status === "failed" ? "✘" : w.status === "cancelled" ? "–" : "⟳"} ${w.name.padEnd(16)} ${w.status.padEnd(22)} ${w.lane.padEnd(10)} ${w.steps} step${w.steps === 1 ? "" : "s"} · ${w.id}${w.detail ? ` · ${w.detail}` : ""}`);
+  // Threads are the lines of work (not agents: those are Kevin's coding sessions): main and the spawned ones, live and those finished within the linger window.
+  // An older daemon has no thread table: its workers list is all it has, and the line says so.
+  for (const line of s.threads ? threadsLines(s.threads) : workersFallbackLines(s.workers ?? [])) console.log(line);
   // The Trash: whole day files Jarhead moved out of the way; emptying it is Kevin's, in Finder.
   if (s.trash) console.log(`  trash      ${s.trash.days === 0 ? "empty" : `${s.trash.days} ${s.trash.days === 1 ? "day" : "days"} · ${human(s.trash.bytes)}`} · ${s.trash.path}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
@@ -513,6 +524,36 @@ async function status(): Promise<void> {
   };
   if (s.problems.length) console.log(`  problems\n${s.problems.map(problemLine).join("\n")}`);
   console.log("");
+}
+
+/** One snapshot from the running daemon, or an error when none answers within `waitMs`. */
+async function readSnapshot(waitMs = 1500): Promise<Record<string, unknown>> {
+  const client = await daemon();
+  try {
+    return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the daemon sent no snapshot")), waitMs);
+      client.on("message", (m) => {
+        if (m.type !== "snapshot") return;
+        clearTimeout(timer);
+        resolve(m.snapshot as Record<string, unknown>);
+      });
+    });
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * `thread.stop|pause|resume <id|name>`: a name is looked up in the daemon's thread table
+ * (case-insensitive, live first; `resolveThread`), an id is sent as it is. "main" is the
+ * voice's own thread — stopping it parks the main turn and leaves the spawned threads alone.
+ */
+async function threadCommand(sub: "thread.stop" | "thread.pause" | "thread.resume", arg: string | undefined): Promise<void> {
+  if (!arg) throw new Error(`usage: jarhead cmd ${sub} <threadId|name>  (both are on \`jarhead status\`; "main" is the voice's thread)`);
+  const snap = await readSnapshot();
+  const { threadId, target } = resolveThread((snap["threads"] as Thread[] | undefined) ?? [], arg);
+  if (target) console.log(`  ${target.name} · ${target.status} · ${threadId}`);
+  await sendCommand({ type: sub, threadId }, 800);
 }
 
 /** Every SleepCause, checked against the protocol's union so a new cause cannot go unlisted here. */
@@ -560,8 +601,20 @@ try {
       await hands(rest[0], rest[1]);
       break;
     case "ledger":
+      if (flags.has("--speed")) {
+        // The day files are read here, no daemon needed (the Engine's Ledger opens the state dir).
+        const days = Math.max(1, Number(flagValue("days") ?? 1) || 1);
+        for (const line of renderSpeed(ledgerSpeed(new Engine().ledger, days))) console.log(line);
+        break;
+      }
       await ledgerCommand(rest);
       break;
+    case "reflex-miss": {
+      const days = Math.max(1, Number(flagValue("days") ?? 7) || 7);
+      const { days: picked, groups } = reflexMisses(new Engine().ledger, days);
+      for (const line of renderMisses(picked, groups)) console.log(line);
+      break;
+    }
     case "memory":
       await memoryCommand(rest);
       break;
@@ -578,7 +631,9 @@ try {
         const effort = flagValue("effort");
         if (effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error(`--effort must be low, medium, high, xhigh or max (got ${effort})`);
         const only = flagValue("only")?.split(",").map((s) => s.trim()).filter(Boolean);
-        if (!(await benchBrain({ runs: Math.max(1, Number(flagValue("runs") ?? 2) || 2), ...(effort ? { effort: effort as Effort } : {}), noReflex: flags.has("--no-reflex"), allowApiSpend: flags.has("--allow-api-spend"), json: flags.has("--json"), ...(flagValue("out") ? { out: flagValue("out") } : {}), ...(only?.length ? { only } : {}) })).ok) process.exit(1);
+        const observe = flagValue("observe");
+        if (observe !== undefined && !["on", "off"].includes(observe)) throw new Error(`--observe must be on or off (got ${observe})`);
+        if (!(await benchBrain({ runs: Math.max(1, Number(flagValue("runs") ?? 2) || 2), ...(effort ? { effort: effort as Effort } : {}), noReflex: flags.has("--no-reflex"), allowApiSpend: flags.has("--allow-api-spend"), json: flags.has("--json"), ...(flagValue("out") ? { out: flagValue("out") } : {}), ...(only?.length ? { only } : {}), ...(observe ? { observe: observe === "on" } : {}), ...(flagValue("compare") ? { compare: flagValue("compare") } : {}) })).ok) process.exit(1);
         break;
       }
       if (!(await bench({ runs: Math.max(1, Number(flagValue("runs") ?? 5) || 5), codex: flags.has("--codex"), fakeHands: flags.has("--fake-hands"), json: flags.has("--json"), gate: !flags.has("--no-gate") })).ok) process.exit(1);
@@ -597,7 +652,11 @@ try {
         await sendCommand({ type: "worker.stop", workerId: arg }, 800);
         break;
       }
-      if (!sub || !["go", "pause", "stop", "interrupt", "wake", "resume", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|stop|interrupt|wake|sleep [cause]|resume|mute|unmute|agent.refresh|worker.stop <id>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
+      if (sub === "thread.stop" || sub === "thread.pause" || sub === "thread.resume") {
+        await threadCommand(sub, arg);
+        break;
+      }
+      if (!sub || !["go", "pause", "stop", "interrupt", "wake", "resume", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|stop|interrupt|wake|sleep [cause]|resume|mute|unmute|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>|worker.stop <id>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
       await sendCommand({ type: sub });
       break;
     }

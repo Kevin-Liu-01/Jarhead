@@ -6,8 +6,10 @@ export { ComputerToolset, ConfirmationState, COMPUTER_MEMBERS, DESKTOP_TOOLS, AC
 export type { ToolResult, ActionEvent, PendingConfirmation, Grantable, ConfirmationGrant, ArmedConfirmation, ToolsetOptions, ComputerMember, DesktopTool } from "./toolset.ts";
 export { screencaptureFallback, screencaptureIndex } from "./fallback.ts";
 export { fakeHandsSpawn, FakeHands, FAKE_ACTING_OPS } from "./fake.ts";
-export { HandsPool } from "./pool.ts";
-export type { HandsPoolOptions } from "./pool.ts";
+export { HandsPool, SplitHands, ACTING_OPS, READ_OPS, defaultRoute } from "./pool.ts";
+export type { HandsPoolOptions, HandsRoute, HandsPair } from "./pool.ts";
+export { ScreenStateCache, renderObservation, renderCompositeLook, axLabels, OBSERVATION_MAX_CHARS, STATE_BUDGET_MS, WINDOWS_MAX, LABELS_MAX } from "./state.ts";
+export type { ScreenState, ScreenStateWant, ScreenStateCacheOptions, AxLabel } from "./state.ts";
 export { FocusLease, isBusyResult, LEASE_IDLE_MS, MIN_HOLD_MS, SETTLE_MS, WAIT_MAX_MS, KEVIN_QUIET_MS, USER_IDLE_POLL_MS, ACTIVATED_TTL_MS } from "./lease.ts";
 export type { LeaseOutcome, LeaseGrant, LeaseRelease, LeaseReleaseWhy, AcquireOptions, FocusLeaseOptions } from "./lease.ts";
 export { ConfirmationDesk, LaneConfirmationState, queuedText, spokenQuestion, QUEUED_ID_PREFIX } from "./lanes.ts";

@@ -27,13 +27,16 @@ struct RightRail: View, Equatable {
     let ledgerStats: LedgerStats?
     let tab: ConsoleSession.Tab
     let wake: WakeGateInputs
+    /// Jarhead's threads in the rail's order (AppState.orderedThreads, kept from events with the
+    /// five-minute linger); nil from a daemon without threads — the Workers section stands then.
+    var threads: [WorkThread]? = nil
 
     @EnvironmentObject private var session: ConsoleSession
 
     static func == (a: RightRail, b: RightRail) -> Bool {
         a.snapshot == b.snapshot && a.ledgerDays == b.ledgerDays && a.ledgerDay == b.ledgerDay
             && a.ledgerLoading == b.ledgerLoading && a.ledgerStats == b.ledgerStats && a.tab == b.tab
-            && a.wake == b.wake
+            && a.wake == b.wake && a.threads == b.threads
     }
 
     var body: some View {
@@ -52,7 +55,8 @@ struct RightRail: View, Equatable {
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
                                  brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped,
-                                 workers: snapshot.allWorkers, memory: snapshot.memory)
+                                 workers: snapshot.allWorkers, memory: snapshot.memory, threads: threads,
+                                 openThread: { [session] id in withAnimation(Motion.wipeAnimation) { session.openThread(id) } })
                             .transition(.identity)
                     case .settings:
                         SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash,
@@ -255,8 +259,15 @@ struct NowPanel: View {
     var workers: [Worker] = []
     /// What Jarhead remembers (Snapshot.memory); `lastUsedIds` is what the last delegation was given.
     var memory: MemorySummary? = nil
+    /// Jarhead's threads in the rail's order; nil from a daemon without threads (the Workers section shows instead).
+    var threads: [WorkThread]? = nil
+    /// A thread row's click: open its pane (ConsoleSession.openThread, filled in by the rail).
+    var openThread: (String) -> Void = { _ in }
 
     @Environment(\.consoleActions) private var actions
+
+    /// The Threads section is drawn: the daemon speaks threads and lists at least one.
+    private var showsThreads: Bool { !(threads ?? []).isEmpty }
 
     /// The typed list when the daemon sends one, else nothing (the plain lines render).
     private var typed: [Problem]? {
@@ -410,12 +421,31 @@ struct NowPanel: View {
             }
             .animation(Motion.gentle, value: marks.map(\.id))
 
-            // The delegation's second pair of hands, one row each (the ProblemRow idiom): the
-            // status glyph, the name and status word, elapsed · lane in mono, the last line,
-            // and Stop while it runs. The section arrives with the first worker and leaves
-            // half a minute after the last one finishes (the snapshot keeps them that long);
-            // a row rises in and drops out on its own ink.
-            if !workers.isEmpty {
+            // Jarhead's threads, one row each (the ProblemRow idiom): the status glyph, the name
+            // (a click opens its pane) and status word, `00:12 · background · 7 steps` in mono, the
+            // last line (or the question it waits on), and Stop while it is live. The section
+            // arrives with the first thread and keeps a finished one five minutes; a row rises
+            // in and drops out on its own ink. Below, the Workers section stands for a daemon
+            // from before threads.
+            if let threads, !threads.isEmpty {
+                RailSection("Threads", count: threads.count, trailing: {
+                    let busy = threads.filter { $0.status.isBusy }.count
+                    if busy > 0 {
+                        Text("\(busy) running").font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                            .contentTransition(ConsoleMotion.numeric)
+                            .transition(.opacity)
+                    }
+                }) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(threads) { t in
+                            ThreadRailRow(thread: t, open: { openThread(t.id) }, stop: { actions.send(.threadStop(threadId: t.id)) })
+                                .transition(Motion.appear)
+                        }
+                    }
+                    .animation(Motion.gentle, value: threads.map(\.id))
+                }
+                .transition(Motion.appear)
+            } else if !workers.isEmpty {
                 RailSection("Workers", count: workers.count) {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(workers) { w in
@@ -506,8 +536,9 @@ struct NowPanel: View {
             .animation(Motion.gentle, value: problems)
             .animation(Motion.gentle, value: typed?.map(\.id) ?? [])
         }
-        // The Workers and Memory sections arriving or leaving reflow the panel under them.
+        // The Threads / Workers and Memory sections arriving or leaving reflow the panel under them.
         .animation(Motion.gentle, value: workers.isEmpty)
+        .animation(Motion.gentle, value: showsThreads)
         .animation(Motion.gentle, value: usedIds.isEmpty)
     }
 
@@ -573,6 +604,100 @@ private struct ProblemRow: View {
         if let json = problem.remedy?.command, case .string(let type)? = json["type"] { return "Sends \(type)" }
         if let target = problem.remedy?.open, !target.isEmpty { return "Opens \(ConsoleFormat.truncPath(target, max: 48))" }
         return "Check this again"
+    }
+}
+
+/// One thread (the ProblemRow idiom): the status glyph on the icon column; the name — a button
+/// that opens its pane — and its status word, with a 22pt ghost Stop trailing while it is live;
+/// `00:03 · background · 2 steps` in mono under them, the seconds rolling until it settles; the
+/// question it waits on, else its last line, under that. Stop sends `thread.stop` for this
+/// thread alone — never `transportStop`: the other threads, the main brain and the meter carry
+/// on (for main it parks the turn). The tooltip has the brief.
+private struct ThreadRailRow: View {
+    let thread: WorkThread
+    let open: () -> Void
+    let stop: () -> Void
+
+    @State private var hovering = false
+
+    private var meta: ConsoleTheme.ThreadMeta { ConsoleTheme.thread(thread.status) }
+    private var isMain: Bool { thread.id == "main" }
+
+    /// The line under the meta: the question while it waits on Kevin, else the last thing it did.
+    private var line: String? {
+        if thread.status == .waitingKevin, let q = thread.question?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty { return "asks: \(q)" }
+        if let d = thread.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty { return d }
+        return nil
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: iconGap) {
+            ConsoleThreadGlyph(status: thread.status)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Button(action: open) {
+                        Text(thread.name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
+                            .lineLimit(1)
+                            .underline(hovering, color: ConsoleTheme.fg3)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)
+                    .onHover { hovering = $0 }
+                    .help("Open \(thread.name)'s pane")
+                    .accessibilityLabel("Open \(thread.name)")
+                    // The word turns as the thread works, waits and finishes; a crossfade, never a cut.
+                    Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.speaking : ConsoleTheme.fg2)
+                        .lineLimit(1).truncationMode(.tail)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: meta.label)
+                    Spacer(minLength: 4)
+                    if thread.status.isLive, thread.canStop {
+                        Button("Stop", action: stop)
+                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                            .layoutPriority(1)
+                            .help(isMain ? "Stop this turn — the threads carry on, the session stays open" : "Stop \(thread.name) — the others and the session carry on")
+                            .accessibilityLabel("Stop \(thread.name)")
+                            .transition(.opacity)
+                    }
+                }
+                .frame(minHeight: 22)
+                elapsed
+                if let line {
+                    Text(line).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.fg2 : ConsoleTheme.fg3)
+                        .lineLimit(2).truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: line)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .opacity(thread.status.isLive ? 1 : 0.62)
+        .animation(Motion.gentle, value: thread.status.isLive)
+        .help("\(thread.name) · \(ConsoleTheme.lane(thread.lane)) lane" + (thread.task.isEmpty ? "" : " · \(thread.task)") + "\nstarted \(ConsoleFormat.time(thread.startedAt)) · \(thread.steps) steps · \(thread.turns) turn\(thread.turns == 1 ? "" : "s")")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Thread \(thread.name), \(meta.label)" + (line.map { ". \($0)" } ?? ""))
+    }
+
+    /// "00:03 · background · 2 steps", the seconds rolling while the thread is live; frozen once it settles.
+    @ViewBuilder private var elapsed: some View {
+        if thread.status.isLive {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                metaLine(now: ctx.date.timeIntervalSince1970 * 1000)
+            }
+        } else {
+            metaLine(now: thread.doneAt ?? thread.updatedAt)
+        }
+    }
+
+    private func metaLine(now: Double) -> some View {
+        let text = ConsoleFormat.threadMeta(thread, now: now)
+        return Text(text).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+            .lineLimit(1)
+            .contentTransition(ConsoleMotion.numeric)
+            .animation(Motion.snappy, value: text)
     }
 }
 

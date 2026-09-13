@@ -18,6 +18,19 @@ struct ConsoleRootView: View {
     /// Folded once per list, not per body — this body runs on every 20 Hz level tick.
     @State private var chains: [JarheadChain] = []
 
+    /// Now is ThreadPane("main") — the main conversation over its own seq-paged stream — rather
+    /// than the StreamPane over the snapshot's cards. False this pass (`Engine.SNAPSHOT_FULL_NOW`
+    /// is true and the snapshot still carries the cards); the flip is the integrator's one-line
+    /// follow-up. While false, main has no row of its own in the sidebar's Threads section (the
+    /// Now row IS the main conversation) and ⌘⇧] / ⌘⇧[ walk the spawned threads only; the right
+    /// rail still lists main (its status, and Stop for its turn) and that row opens its pane.
+    nonisolated static let nowIsThreadPane = false
+
+    /// The ids ⌘⇧] / ⌘⇧[ walk and the sidebar lists, from the rail's order: without main while Now is the stream.
+    nonisolated static func walkOrder(_ ids: [String]) -> [String] {
+        nowIsThreadPane ? ids : ids.filter { $0 != "main" }
+    }
+
     var body: some View {
         let snap = state.snapshot
         // The session Kevin stepped into, while it is still on the rail.
@@ -32,16 +45,26 @@ struct ConsoleRootView: View {
         let past = chains.filter { chain in liveId.map { !chain.contains($0) } ?? true }
         let openChain = session.openJarheadSessionId.flatMap { id in chains.first { $0.id == id } }
         let chainGone = session.openJarheadSessionId != nil && openChain == nil && !state.jarheadSessions.isEmpty
+        // The thread stepped into (AppState.threads: from events and the snapshot, finished ones
+        // kept five minutes and never pruned while open — `heldThreadIds`). Gone from a store the
+        // daemon feeds: the pane closes, back to Now.
+        let threads = state.orderedThreads
+        // The sidebar's rows: main only once Now is its pane (else the Now row above is main).
+        let railIds = Set(ConsoleRootView.walkOrder(threads.map(\.id)))
+        let railThreads = threads.filter { railIds.contains($0.id) }
+        let openThread = session.openThreadId.flatMap { state.threads[$0] }
+        let threadGone = session.openThreadId != nil && openThread == nil && state.threadsKnown
         // Which pane holds the centre; a change happens behind the curtain (Motion.curtain): the
         // arriving pane renders plainly and a sheet of ground-coloured Bayer cells over it goes rank
         // by rank, so stepping into a conversation or back to Now never cuts and never masks.
-        let paneKey = openAgent.map { "agent:\($0.id)" } ?? openChain.map { "jarhead:\($0.id)" } ?? "now"
+        let paneKey = openAgent.map { "agent:\($0.id)" } ?? openChain.map { "jarhead:\($0.id)" } ?? openThread.map { "thread:\($0.id)" } ?? "now"
         VStack(spacing: 0) {
             ConsoleHeader(phase: snap.phase, connected: state.connected, daemonDetail: state.daemonDetail)
                 .equatable()
             HStack(spacing: 0) {
                 AgentsRail(agents: snap.agents, connectors: snap.connectors, jarhead: past, now: JarheadNowInfo(snapshot: snap),
-                           hiddenAgents: state.hiddenAgentIds(in: snap), trash: snap.trash)
+                           hiddenAgents: state.hiddenAgentIds(in: snap), trash: snap.trash,
+                           threads: railThreads, threadsKnown: state.threadsKnown)
                     .equatable()
                     .frame(width: ConsoleLayout.agentsRailWidth)
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
@@ -70,11 +93,30 @@ struct ConsoleRootView: View {
                             .equatable()
                             .id(chain.id)
                             .transition(.identity)
+                    } else if let thread = openThread {
+                        // One thread's conversation over its own stream (`thread.open` as this pane's
+                        // viewer): its id is the pane's identity, so switching threads closes one stream
+                        // and opens the next. "main" is Now seen as a thread — the same feed the Now
+                        // stream will be once the snapshot stops carrying the cards (SNAPSHOT_FULL_NOW).
+                        ThreadPane(thread: thread, store: state.threadStores[thread.id], phase: snap.phase,
+                                   connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
+                            .equatable()
+                            .id(thread.id)
+                            .transition(.identity)
+                    } else if ConsoleRootView.nowIsThreadPane, session.ledgerDay == nil, let main = state.threads["main"] {
+                        // Now as the main thread's own pane (the flip; see `nowIsThreadPane`). A ledger
+                        // day underneath, or a daemon without threads, still draws the StreamPane below.
+                        ThreadPane(thread: main, store: state.threadStores["main"], phase: snap.phase,
+                                   connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
+                            .equatable()
+                            .id("now:main")
+                            .transition(.identity)
                     } else {
                         StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
                                    hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                                    ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
-                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected)
+                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected,
+                                   threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes ?? false)
                             .equatable()
                             .transition(.identity)
                     }
@@ -91,7 +133,8 @@ struct ConsoleRootView: View {
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
                 RightRail(snapshot: snap, ledgerDays: session.ledgerDays, ledgerDay: session.ledgerDay,
                           ledgerLoading: session.ledgerLoading, ledgerStats: session.ledgerStats, tab: session.tab,
-                          wake: WakeGateInputs(gate: state.wakeGate, heard: state.wakeHeard, passphraseSet: state.wakePassphraseSet))
+                          wake: WakeGateInputs(gate: state.wakeGate, heard: state.wakeHeard, passphraseSet: state.wakePassphraseSet),
+                          threads: state.threadsKnown ? threads : nil)
                     .equatable()
                     .frame(width: ConsoleLayout.rightRailWidth)
             }
@@ -134,6 +177,22 @@ struct ConsoleRootView: View {
         // The list came back without the open chain (an id the ledger no longer knows): back to Now.
         .onChange(of: chainGone) {
             if chainGone { session.closeJarhead() }
+        }
+        // The open thread left the store (a daemon that forgot it): back to Now.
+        .onChange(of: threadGone) {
+            if threadGone { session.openThreadId = nil }
+        }
+        // The thread on screen is held (never pruned under Kevin) and newest in the LRU; the
+        // conversations no pane shows go past the newest eight (AppState.evictThreadStores).
+        .onChange(of: session.openThreadId, initial: true) { _, id in
+            state.heldThreadIds = Set([id].compactMap { $0 })
+            if let id { state.noteThreadStoreUsed(id) }
+            state.evictThreadStores(keep: state.heldThreadIds)
+        }
+        // The same for the agents' conversations: bounded per agent at 400 already, now bounded across them.
+        .onChange(of: session.openAgentId) { _, id in
+            if let id { state.noteTranscriptOpened(id) }
+            state.evictTranscripts(keep: Set([id].compactMap { $0 }))
         }
         // The Jarhead list: when the Console opens (the view tree survives a close, so
         // the window coming back to key is the reopen), and — from AppState's own watch —
@@ -251,6 +310,14 @@ struct ConsoleRootView: View {
         // as the same viewer), and the window hidden / shown (the tail closes and reopens).
         if info["reconnect"] as? Bool == true { session.reconnectCount += 1 }
         if let visible = info["windowVisible"] as? Bool { session.windowVisible = visible }
+        // The thread scenarios: open a thread's pane the way a rail row would; answer its question
+        // the way the pane's Allow / Deny do (`thread.answer`, never say-text or stop); step with
+        // ⌘⇧] / ⌘⇧[ the way the window does.
+        if let id = info["threadOpen"] as? String { withAnimation(Motion.wipeAnimation) { session.openThread(id) } }
+        if let spec = info["threadAnswer"] as? [String: Any], let id = spec["threadId"] as? String, let yes = spec["yes"] as? Bool {
+            state.threadAnswer(id, yes: yes)
+        }
+        if let delta = info["threadStep"] as? Int { withAnimation(Motion.wipeAnimation) { session.stepThread(by: delta, order: ConsoleRootView.walkOrder(state.orderedThreads.map(\.id))) } }
         // A search hit, the way SearchHitRow opens one: the first of the current hits, or one named outright.
         if info["hitFirst"] as? Bool == true {
             if let hit = session.searchHits?.first { jarheadActions.openJarheadHit(hit) } else { print("probe: hit-first → no hits yet") }

@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let state = AppState()
 
     private var orb: OrbPanelController!
+    /// The satellites: one small blob per live spawned thread, beside the main orb.
+    private var fleet: BlobFleet!
     private var overlay: OverlayManager!
     private var console: ConsoleWindowController!
     private var onboarding: OnboardingWindowController!
@@ -53,8 +55,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
 
         orb = OrbPanelController(state: state)
+        // The fleet: one satellite blob per live spawned thread, driven by AppState's
+        // thread table (`thread.event` deltas + `snapshot.threads`, in arrival order) and
+        // the tagged flies; a satellite's click opens its thread in the Console.
+        fleet = BlobFleet(state: state, orb: orb)
+        fleet.observe(threads: Publishers.CombineLatest(state.$threads, state.$threadOrder)
+            .map { (threads: [String: WorkThread], order: [String]) -> [WorkThread] in order.compactMap { threads[$0] } }
+            .removeDuplicates()
+            .eraseToAnyPublisher())
+        fleet.onOpenThread = { [weak self] id in self?.state.openThreadHandler(id) }
         overlay = OverlayManager(state: state)
         console = ConsoleWindowController(state: state)
+        // A thread's pane, from a satellite's click (or anything else that asks AppState).
+        state.openThreadHandler = { [weak self] id in
+            guard let self else { return }
+            self.console.openThread(id)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         onboarding = OnboardingWindowController(state: state)
         state.openOnboardingHandler = { [weak self] in self?.onboarding.show() }
         state.openPermissionsSetupHandler = { [weak self] in self?.onboarding.show(at: .permissions) }

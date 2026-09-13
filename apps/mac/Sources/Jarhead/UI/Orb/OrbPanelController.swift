@@ -281,7 +281,55 @@ public final class OrbPanelController {
     /// status item and the ⌥⎋ hotkey should post it too.
     public nonisolated static let stopPressedNotification = Notification.Name("jarhead.stopPressed")
 
+    /// The main thread's id on the wire (`MAIN_THREAD_ID`): a fly tagged with it is this blob's, like an untagged one.
+    nonisolated static let mainThreadId = "main"
+
     private var sim: BlobSim { blobView.sim }
+
+    // MARK: - The fleet (satellites)
+
+    /// The satellite fleet (`BlobFleet`), when the app has one: its bodies are obstacles
+    /// to this one, and it re-orders its panels under this one whenever this panel comes
+    /// forward (`bringPanelForward`). Weak: the fleet holds the controller.
+    public weak var fleet: BlobFleet?
+
+    /// Order the orb panel front — and the satellites right under it, so the main blob
+    /// always paints over its fleet: every site that used to call `orderFrontRegardless`.
+    private func bringPanelForward() {
+        panel.orderFrontRegardless()
+        fleet?.mainCameForward()
+    }
+
+    /// The body's centre and collision radius (CG), for the fleet's landing chooser and
+    /// its rank slots; the rect the satellites treat as occupied.
+    public var mainBodyCenterCG: CGPoint { body.center }
+    public var mainBodyRadius: CGFloat { body.radius }
+    public var mainBodyRect: CGRect { CGRect(x: body.center.x - body.radius, y: body.center.y - body.radius, width: 2 * body.radius, height: 2 * body.radius) }
+    /// The main body is on the move (a flight, a throw, Kevin's hand): the fleet watches for its settle.
+    public var mainBodyMoving: Bool { body.isActive || body.dragging }
+    /// The orb panel's window number and whether it is showing: satellites order themselves just under it.
+    public var orbWindowNumber: Int { panel.windowNumber }
+    public var orbPanelVisible: Bool { panel.isVisible }
+    public var isTucked: Bool { tucked }
+    /// The notch's geometry when the dock exists, else the display's notch if any: the catch zone's basis.
+    var notchGeometryCurrent: NotchGeometry? { notch?.geometry ?? NotchGeometry.current() }
+    /// The screen the orb is on (the panel's, or the notch's while tucked): the fleet's display link is made from it.
+    public var orbScreen: NSScreen? { panel.isVisible ? panel.screen : (notch?.panel.screen ?? panel.screen) }
+    /// Where a satellite with nowhere to be anchors its rank slot: the main body when it
+    /// is out (the slots arc above it), the row under the notch while tucked (the slots
+    /// arc below it, clear of the island), else the perch. Nil before placement.
+    public var fleetAnchorCG: (point: CGPoint, radius: CGFloat, below: Bool)? {
+        if panel.isVisible, !tucked { return (body.center, body.radius, false) }
+        if tucked, let n = notch { return (CGPoint(x: n.dockPointCG.x, y: n.dockPointCG.y + 70), body.radius, true) }
+        if let p = perch { return (p, body.radius, false) }
+        return nil
+    }
+    /// The live spawned threads' dots for the notch (`BlobFleet.threadDots`), kept for a dock built later.
+    func setThreadDots(_ dots: [ThreadDot]) {
+        threadDots = dots
+        notch?.setThreads(dots)
+    }
+    private var threadDots: [ThreadDot] = []
 
     public init(state: AppState) {
         self.state = state
@@ -413,7 +461,7 @@ public final class OrbPanelController {
             return
         }
         blobView.paused = false
-        panel.orderFrontRegardless()
+        bringPanelForward()
         blobView.poke()
     }
 
@@ -472,7 +520,7 @@ public final class OrbPanelController {
         let mouse = CGSpace.point(fromAppKit: NSEvent.mouseLocation)
         let goal = CGPoint(x: mouse.x, y: mouse.y - 40)
         blobView.paused = false
-        panel.orderFrontRegardless()
+        bringPanelForward()
         statusModel.shown = true
         userMoved = true
         body.summon(to: goal)
@@ -636,15 +684,17 @@ public final class OrbPanelController {
         // Flights and traces. The overlay layer draws the shapes; the blob answers
         // these — and `clear`, which takes a line it is drawing down with the shapes.
         // `clear` is the brain's ordinary show_clear as much as a Stop's, so it is not
-        // a Stop here: the Stop comes on `stopPressedNotification` below.
+        // a Stop here: the Stop comes on `stopPressedNotification` below. A fly or
+        // trace tagged with a spawned thread's id is that thread's satellite's
+        // (`BlobFleet.route`); untagged — or tagged "main" — it is this blob's.
         state.overlayCommands
             .receive(on: DispatchQueue.main)
             .sink { [weak self] cmd in
                 guard let self else { return }
                 switch cmd {
-                case .orbFly(let x, let y, let dwellMs, let reason, _):
+                case .orbFly(let x, let y, let dwellMs, let reason, let thread) where thread == nil || thread == Self.mainThreadId:
                     self.fly(to: CGPoint(x: x, y: y), dwellMs: dwellMs, reason: reason)
-                case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason, _):
+                case .orbTrace(let points, let closed, let label, let ttlMs, let tone, let reason, let thread) where thread == nil || thread == Self.mainThreadId:
                     self.trace(points: points.map { CGPoint(x: $0.x, y: $0.y) }, closed: closed, label: label, ttlMs: ttlMs, tone: tone, reason: reason)
                 case .orbHome:
                     self.flyHome()
@@ -732,7 +782,7 @@ public final class OrbPanelController {
         panel.keyAllowed = false
         guard panel.isKeyWindow else { return }
         panel.orderOut(nil)
-        panel.orderFrontRegardless()
+        bringPanelForward()
     }
 
     /// A display came or went, or moved. A resting body is not stepped, so it would
@@ -826,6 +876,7 @@ public final class OrbPanelController {
         dock.dragOut = { [weak self] p in self?.dragOutOfNotch(at: p) }
         dock.dragMoved = { [weak self] p in self?.pointerDragged(to: p) }
         dock.dragEnded = { [weak self] in self?.pointerUp(clickCount: 1, time: ProcessInfo.processInfo.systemUptime) }
+        dock.setThreads(threadDots)
         return dock
     }
 
@@ -853,7 +904,7 @@ public final class OrbPanelController {
         // whole and opaque, and a window ordered in ahead of its alpha could composite
         // one frame of a full body under the notch before the grow-in began.
         setPresentation(scale: reduced ? 1 : Self.dropStartScale, alpha: 0, aboutTop: true)
-        panel.orderFrontRegardless()
+        bringPanelForward()
         droppedAt = CACurrentMediaTime()
         slip = Slip(kind: .drop, duration: Motion.seconds(Motion.dropOut), from: start,
                     to: CGPoint(x: start.x, y: start.y + Self.dropHop), drivesPosition: hand == nil && !reduced, scales: !reduced)
@@ -935,15 +986,11 @@ public final class OrbPanelController {
         notch?.hide()
     }
 
-    /// Where a dropped blob counts as "into the dock" (CG, y down): the notch's column
-    /// widened by a hand's breadth and reaching 70 pt under the menu bar — the island's
-    /// ground. Nil on a display without a notch.
+    /// Where a dropped blob counts as "into the dock" (CG, y down): `NotchGeometry.catchZoneCG`
+    /// — the same zone a satellite's drop is judged by. Nil on a display without a notch.
     private func dockCatchZoneCG() -> CGRect? {
         guard let g = notch?.geometry ?? NotchGeometry.current() else { return nil }
-        let n = g.notch
-        let reach: CGFloat = 70, wing: CGFloat = 48
-        let ak = NSRect(x: n.minX - wing, y: g.menuBarBottom - reach, width: n.width + 2 * wing, height: (n.maxY - g.menuBarBottom) + reach)
-        return CGSpace.rect(fromAppKit: ak)
+        return NotchGeometry.catchZoneCG(g)
     }
 
     /// Kevin dropped the blob into the notch dock: that is putting it to sleep. Awake,
@@ -1451,7 +1498,7 @@ public final class OrbPanelController {
         // the wake starts. Already in the air, it just retargets.
         sim.flight = true
         blobView.paused = false
-        panel.orderFrontRegardless()
+        bringPanelForward()
         if body.isActive, !dropping { takeOff() } else { scheduleTakeoff(after: dropping ? Self.dropWindup : nil) }
         blobView.poke()
     }
@@ -1625,7 +1672,7 @@ public final class OrbPanelController {
         sim.flight = !quiet
         sim.flightMoving = !quiet
         blobView.paused = false
-        panel.orderFrontRegardless()
+        bringPanelForward()
         if notchMode {
             body.drift(to: CGPoint(x: home.x, y: home.y + Self.tuckStaging), spring: .tuck)
             #if JARHEAD_ORB_PREVIEW
@@ -1738,7 +1785,7 @@ public final class OrbPanelController {
         // Which side of the line the body rides: the outside of the stroke's turn.
         sim.cursorHand = path.hand
         blobView.paused = false
-        panel.orderFrontRegardless()
+        bringPanelForward()
         if body.isActive, !dropping { takeOff() } else { scheduleTakeoff(after: dropping ? Self.dropWindup : nil) }
         blobView.poke()
     }
@@ -1934,8 +1981,10 @@ public final class OrbPanelController {
         }
     }
 
+    /// The windows found, the harness's slabs, and the satellites' bodies (a satellite
+    /// Kevin drags the main blob into is something to squish against).
     private func applyObstacles(_ found: [Obstacle]) {
-        body.obstacles = found + extraObstacles
+        body.obstacles = found + extraObstacles + (fleet?.obstacles(excluding: nil) ?? [])
         scanning = false
     }
 
@@ -2433,6 +2482,10 @@ extension OrbPanelController {
     /// ORB_LEVELS readout; "" / nil without a dock.
     public var previewNotchSprings: String { notch?.previewSprings ?? "" }
     public var previewNotchIslandRaw: NSRect? { notch?.previewIslandRaw }
+    /// The thread dots the notch view holds right now ("" without a dock).
+    public var previewNotchThreadDots: String { notch?.view.previewThreadDots ?? "" }
+    /// The working strip's measured alphas at forced levels (`NotchView.previewStripProbe`); nil without a dock.
+    public var previewNotchStripProbe: String? { notch?.view.previewStripProbe() }
     /// The sim's levels — raw as sent, eased, and the island level — for the same readout.
     public var previewSimLevels: String {
         let l = sim.previewLevels
@@ -2574,10 +2627,10 @@ extension OrbPanelController {
     public var previewCellsArt: String {
         let glyphs = sim.ramp.glyphs
         var rows: [String] = []
-        for r in 0..<BlobSim.rows {
+        for r in 0..<sim.grid.rows {
             var line = ""
-            for c in 0..<BlobSim.cols {
-                let v = Int(sim.cells[r * BlobSim.cols + c])
+            for c in 0..<sim.grid.cols {
+                let v = Int(sim.cells[r * sim.grid.cols + c])
                 line.append(v == 0 ? "·" : glyphs[min(glyphs.count - 1, v)])
             }
             rows.append(String(format: "%2d %@", r, line))

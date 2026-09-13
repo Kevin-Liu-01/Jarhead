@@ -53,6 +53,52 @@
 #   ORB_TRACE="…" ORB_CLEAR_AT=3.2 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                           # the brain's show_clear mid-line: the line comes down and the pen morphs back quietly — no Stop, no pill
 #   ORB_FLY="700,300" ORB_CLEAR_AT=2.6 ORB_EXIT_AFTER=7 Scripts/orb-preview.sh                       # … and during a plain fly the hover is left alone (a clear is not a Stop)
 #
+#   The fleet (BlobFleet: one satellite blob per live spawned thread, max 3). ORB_FLEET fakes snapshot.threads at
+#   ORB_FLEET_AT (default 1.2 s; 1.6 in notch mode): "Name:lane:status[@x,y][:app]" per thread, ";" between —
+#   "working" is acting; @x,y is the record's acting point (Thread.at), :app its app (Thread.app, parked by
+#   that app's front window; none under ORB_NO_WINDOWS). Every satellite prints its landing and face; the
+#   `fleet check:` line asserts pairwise centres ≥ 92 pt and each ≤ 3 body radii from its target.
+#   ORB_X=200 ORB_Y=620 ORB_PHASES=thinking ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 \
+#     ORB_FLEET="Slack:screen:working@1000,300;Spotify:background:working:Spotify;Mail:screen:working@1300,700" ORB_FLEET_FLY="Slack@1000,300;Mail@1300,700@2.4" ORB_EXIT_AFTER=8 Scripts/orb-preview.sh
+#                                                                                                     # fleet-three: two satellites beside their targets (tagged orb.fly {thread}), one at a rank slot beside the
+#                                                                                                     # main blob (no window named Spotify) → preview-blob-fleet-three.png; faces `o o` / `> >`
+#   … ORB_FLEET_STATUS="Mail=waiting-screen@3;Spotify=done@4;Slack=failed@5" ORB_EXIT_AFTER=8 …    # the faces by status: Mail `- -` (waiting on the screen), Spotify `^ ^` 1.2 s then the fade (panel out by
+#                                                                                                     # 5.5 s), Slack `x x` 1.6 s with the pill "Slack failed" → fleet-waiting / fleet-done / fleet-failed.png;
+#                                                                                                     # prints satellites 3→2→1→0 and the panel pool (3 panels, no allocation after the first spawn)
+#   … ORB_FLEET_FLY="Slack@1000,300;Mail@1000,300@1.64" ORB_FLEET_SHOT=avoid …                      # fleet-avoid: two flies to ONE point 40 ms apart land on two sides of it (≥ 92 pt apart); the second's
+#                                                                                                     # landing line names the side it fell to ("up-left occupied → up")
+#   … ORB_REDUCE_MOTION=1 ORB_FLEET_SHOT=reduce …                                                    # fleet-reduce: satellites appear and move as fades (no "flies" lines, body speed 0), faces still blink
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_FLEET="…three…" ORB_EXIT_AFTER=10 Scripts/orb-preview.sh
+#                                                                                                     # fleet-notch-peek (three 5 pt squares right of "Working · 0:12"), fleet-notch-island (third row
+#                                                                                                     # "Slack · working · 0:03 | Spotify · working · 0:03 | Mail · working · 0:03"), fleet-notch-strip
+#                                                                                                     # (the main blob out at its fly; counter + dots on the strip); the dots → 0 after a done + 1.2 s
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_FLY_AT=99 ORB_FLEET="Slack:screen:working@1000,300" ORB_FLEET_DRAG="Slack->dock@3" ORB_EXIT_AFTER=6 Scripts/orb-preview.sh
+#                                                                                                     # fleet-drag-stop: the satellite dragged into NotchGeometry.catchZoneCG → exactly one
+#                                                                                                     # `send: {"type":"thread.stop",…}`, never a sleep, never set-settings (the `fleet sends:` line at exit
+#                                                                                                     # counts them); it shivers and fades → preview-blob-fleet-drag-stop.png. "Mail->600,600@3" parks it there.
+#   … ORB_FLEET_CLICK="Spotify@2.5" …                                                                 # a posted click on the satellite → openThread(t_spotify) + openConsole(); prints its menu items
+#   … ORB_FLEET_BUDGET_LOG=1 ORB_FLEET_FLY="Slack@1000,300;Mail@1300,700;Slack@600,700@4;Mail@1000,300@6" ORB_EXIT_AFTER=12 …
+#                                                                                                     # fleet-budget: per-second mean / p95 fleet-frame ms and the rung (0 on this Mac with three bodies moving)
+#   … ORB_FLEET_BUDGET_LOG=1 ORB_FLEET_BUDGET_FORCE_MS=9 ORB_FLEET_BUDGET_FOR=4 ORB_EXIT_AFTER=12 …   # the ladder: a synthetic 9 ms per frame steps 0→1→2→3 (→4) a window apart, recovers to 0 within 2 s of the load ending
+#   … ORB_FLEET_BUDGET_FORCE_MS=9 ORB_FLEET_BUDGET_FOR=7 ORB_FLEET_LATE="7.5:Notes:screen:working" ORB_FLEET_STATUS="Spotify=done@8;Mail=done@8.3" ORB_EXIT_AFTER=12.5 …
+#                                                                                                     # rung 4 (held load): the third satellite stays, the late fourth is a dot only ("is a dot only"), and it
+#                                                                                                     # gets a satellite only once fewer than two remain (after the second done leaves)
+#   … ORB_FLEET_STATUS="Spotify=done@3" ORB_FLEET_LATE="3.2:Notes:screen:working" ORB_EXIT_AFTER=7 …  # the pool: a fourth live thread while a finished one's panel still fades is a dot only (+0.3 s), then
+#                                                                                                     # takes that panel (+1.5 s); `made` stays 3 — no fourth SatellitePanel is ever allocated
+#   … ORB_FLEET="Slack:screen:working" ORB_FLEET_FLY="Ghost@900,500@2;Notes@1200,600@2.4" ORB_FLEET_LATE="3:Notes:screen:working" ORB_EXIT_AFTER=6 …
+#                                                                                                     # pendingFlies: a tagged fly for a thread that never appears is dropped after 2 s (`fleet pending:` 1 → 0);
+#                                                                                                     # one whose record arrives inside 2 s is taken at the spawn ("takes the fly kept for it", then its flight)
+#   … ORB_FLEET="Slack:screen:working" ORB_FLEET_TRACE="Slack@900,400;1100,400;1100,520;900,520@closed@2" ORB_EXIT_AFTER=6 …
+#                                                                                                     # a tagged orb.trace: the satellite flies beside the first point, exactly one untagged `.stroke` with the
+#                                                                                                     # closing point (5 for a closed 4-point rect), the main blob unmoved
+#   … ORB_FLEET="Slack:screen:working@1000,300" ORB_FLEET_HOVER="Slack@3" ORB_EXIT_AFTER=6 …        # the name tag: the pointer enters the cell → OrbPill 'Slack' (fleet-hover.png), still up 0.6 s after it
+#                                                                                                     # leaves, gone 1.5 s after (tagShow 1.2 s); the cell has one tracking area
+#   … ORB_STOP_AT=3 … / … ORB_SLEEP_AT=4 …                                                            # every satellite shivers and is gone within 300 ms (the `fleet: retired N` line, then the counts)
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_FLY_AT=99 ORB_NOTCH_STRIP_PROBE=2.5 ORB_EXIT_AFTER=3 Scripts/orb-preview.sh
+#                                                                                                     # the working strip without threads: the hairline and the counter both at work·(1−park) — 0.50 at
+#                                                                                                     # park ½ and at work ½, measured off an offscreen render (the pre-fleet alpha; the transitions only)
+#   ORB_SELFTEST=1 Scripts/orb-preview.sh                                                             # the pure checks (FleetBudget ladder on a synthetic clock, landing(for:avoiding:)); exit 0 / 1
+#
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's
 # layers (ORB_SHOT_INPROCESS=1 forces that). The harness never talks to the daemon or

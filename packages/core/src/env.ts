@@ -182,7 +182,7 @@ export function readConfig(): JarheadConfig {
     openaiApiKey: env["OPENAI_API_KEY"] || undefined,
     anthropicApiKey: env["ANTHROPIC_API_KEY"] || undefined,
     liveModel: env["JARHEAD_LIVE_MODEL"] || "gpt-live-1",
-    liveVoice: env["JARHEAD_VOICE"] || "cedar",
+    liveVoice: env["JARHEAD_VOICE"] || "ballad",
     brain: brain !== undefined && BRAINS.includes(brain) ? brain : "auto",
     brainModel: env["JARHEAD_BRAIN_MODEL"] || "",
     codexBin: env["JARHEAD_CODEX_BIN"] || undefined,

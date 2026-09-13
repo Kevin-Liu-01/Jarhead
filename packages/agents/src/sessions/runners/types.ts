@@ -73,9 +73,9 @@ export type ContinueMode = "resume" | "queue";
 
 export type ContinueOutcome =
   /** A driver of ours is running the turn. */
-  | { readonly kind: "run"; readonly handle: RunHandle; readonly detail: string }
+  | { readonly kind: "run"; readonly mode: ContinueMode; readonly handle: RunHandle; readonly detail: string }
   /** The text reached the process that owns the session; nothing of ours is running. */
-  | { readonly kind: "delivered"; readonly detail: string }
+  | { readonly kind: "delivered"; readonly mode: ContinueMode; readonly detail: string }
   | { readonly kind: "refused"; readonly reason: string };
 
 export interface ContinueOptions {

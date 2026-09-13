@@ -149,12 +149,13 @@ test("mid-task 'power down' through the ear (a held ear still hears a dismissal)
     delegate(w, "jarhead find the save button", "item_1");
     await settle();
     assert.equal(brain.tasks.length, 1);
+    // The main toolset's gate probe reads on the reading helper (SplitHands) and is held there; the type behind it never reaches the acting one.
     hands.hold = "frontmost";
     handsBg.hold = "frontmost";
     const typing = engine.toolset.run("type", { text: "hello" }).catch(() => ({ kind: "error" as const, message: "threw" }));
-    const reading = handsBg.request("frontmost").catch((e: Error) => ({ kind: "error" as const, message: e.message }));
     await settle();
-    assert.ok(hands.named("frontmost").length > 0 && handsBg.named("frontmost").length > 0, "one op pending on each helper");
+    assert.ok(handsBg.named("frontmost").length > 0, "the gate's probe is pending on the reading helper");
+    const reading = handsBg.request("frontmost").catch((e: Error) => ({ kind: "error" as const, message: e.message }));
     live.instructions.length = 0;
 
     engine.ear("power down", true, 1, clock.t);

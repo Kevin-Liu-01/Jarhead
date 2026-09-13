@@ -245,10 +245,11 @@ test("pause while workers run: every worker is cancelled with its brain's cancel
     handsBg.hold = "frontmost";
     await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
     await settle(50);
-    hands.hold = "frontmost";
+    // The main toolset's gate probe reads on the reading helper (SplitHands); the type itself is the acting helper's pending.
+    hands.hold = "type";
     const typing = engine.toolset.run("type", { text: "hi" });
     await settle();
-    assert.ok(hands.named("frontmost").length > 0 && handsBg.named("frontmost").length > 0);
+    assert.ok(hands.named("type").length > 0 && handsBg.named("frontmost").length > 0);
 
     await engine.command({ type: "pause" });
     assert.equal(engine.isPaused, true);

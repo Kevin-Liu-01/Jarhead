@@ -39,6 +39,6 @@ if [[ "${1:-}" == "--build-only" ]]; then
   exit 0
 fi
 if [[ $# -eq 0 ]]; then
-  exec "$BIN" Scripts/fixtures/snapshot-f6c3b40.json Scripts/fixtures/snapshot-workers.json
+  exec "$BIN" Scripts/fixtures/snapshot-f6c3b40.json Scripts/fixtures/snapshot-workers.json Scripts/fixtures/snapshot-threads.json
 fi
 exec "$BIN" "$@"

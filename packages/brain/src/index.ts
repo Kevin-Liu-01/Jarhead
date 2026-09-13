@@ -38,3 +38,11 @@ export type { BatchCall } from "./batch.ts";
 export { screenNote } from "./attachments.ts";
 export type { DelegationTimingsExtra, ReflexSource } from "./delegator.ts";
 // mcp-bridge.ts is a script (the stdio MCP server Codex starts); import it directly, not from here.
+// Threads pass (2026-09-13): the timings helper both the Delegator and the engine's threads stamp with, the tail/thread reflex grammar, the thread tool table.
+export { stampStep, ACTING_TOOLS, MAX_ROUND_TRIP_SAMPLES } from "./timings.ts";
+export type { TimingsExtra, StampOptions } from "./timings.ts";
+export { parseReflexTail, TAIL_KINDS, FILLER_HEAD } from "./reflex.ts";
+export type { ReflexContext } from "./reflex.ts";
+export { THREAD_SPECS, WORKER_TOOL_ALIASES, THREAD_TOOL_NAMES, threadToolName, OBSERVATION_CLAUSE } from "./tools.ts";
+export { STOP_NAME_WAIT_MS, NAMED_STOP_FRAGMENT_ECHO_MS } from "./delegator.ts";
+export type { DelegatorThreads, NamedStopVia } from "./delegator.ts";

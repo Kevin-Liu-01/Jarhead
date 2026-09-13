@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -237,6 +238,13 @@ export function summarizeToolInput(toolName: string, input: Record<string, unkno
   return "";
 }
 
+/** The composer's short word for a Codex that cannot run: the health line carries the long one. */
+function codexReason(reason: string | undefined): string {
+  if (reason && /not signed in/i.test(reason)) return "Codex not signed in";
+  if (reason && /not found/i.test(reason)) return "Codex not installed";
+  return reason ? `Codex unavailable: ${truncate(reason, 60)}` : "Codex unavailable";
+}
+
 const YES = /^\s*(yes|y|yeah|yep|allow|go ahead|ok|okay|approve|do it)\b/i;
 const NO = /^\s*(no|n|nope|deny|stop|don'?t|cancel)\b/i;
 
@@ -251,7 +259,12 @@ interface Snapshot {
   /** Registry entries whose pid is alive. */
   readonly owners: SessionOwner[];
   readonly degraded: string | undefined;
+  /** Whether the Codex CLI can run anything right now (binary found, signed in) — the send gate's evidence, taken with the processes. */
+  readonly codex: { readonly ok: boolean; readonly reason?: string };
 }
+
+/** What `AgentInfo.send` carries: typed, so the Console never reads the detail's words to decide whether the composer works. */
+type SendGate = NonNullable<AgentInfo["send"]>;
 
 /** A resumed session's question for Kevin, held until send("yes"/"no"), resolvePermission(), or the timeout. */
 export interface PendingAsk {
@@ -307,6 +320,8 @@ export class SessionsConnector implements AgentConnector {
   /** Conversations opened through transcript()/watch(), by runKey; each knows its file and where the last read ended. */
   private readonly sources = new Map<string, TranscriptSource>();
   private snapshotCache: Snapshot | undefined;
+  /** cwd → is it a folder, remembered for processCacheMs (the send gate stats it per listing). LRU, cap 512: a hit moves to the back. */
+  private readonly cwdSeen = new Map<string, { ok: boolean; at: number }>();
   private lastListed = new Map<string, Listed>();
   private lastListedAt = 0;
   private othersCache: { at: number; names: string[] } | undefined;
@@ -365,18 +380,71 @@ export class SessionsConnector implements AgentConnector {
   private async snapshot(): Promise<Snapshot> {
     const now = this.now();
     if (this.snapshotCache && now - this.snapshotCache.at < this.processCacheMs) return this.snapshotCache;
-    const [procs, registry] = await Promise.all([
+    const [procs, registry, codex] = await Promise.all([
       this.opts.processes
         ? this.opts.processes().then((processes): ProcessSnapshot => ({ processes, pids: new Set(processes.map((p) => p.pid)), degraded: undefined }))
         : listAgentProcesses(this.opts.exec ? { exec: this.opts.exec } : {}),
       readClaudeRegistry(this.registryDir),
+      // A binary lookup and one auth.json read: the gate answers "not signed in" without a spawn.
+      this.runners.codex.usable().catch((e: Error) => ({ ok: false, reason: e.message })),
     ]);
     // A registry file outlives its process; only entries ps still sees are owners. With ps
     // itself down there is no pid list, so nothing counts and the snapshot is degraded anyway.
     const owners = registry.filter((o) => procs.pids.has(o.pid));
-    const snap: Snapshot = { at: now, processes: procs.processes, owners, degraded: procs.degraded };
+    const snap: Snapshot = { at: now, processes: procs.processes, owners, degraded: procs.degraded, codex: codex.reason !== undefined ? { ok: codex.ok, reason: codex.reason } : { ok: codex.ok } };
     this.snapshotCache = snap;
     return snap;
+  }
+
+  /** The session's folder is still a folder — a sync stat, remembered as long as a process snapshot is. */
+  private cwdPresent(cwd: string | undefined): boolean {
+    if (!cwd) return false;
+    const now = this.now();
+    const seen = this.cwdSeen.get(cwd);
+    if (seen && now - seen.at < this.processCacheMs) {
+      // A Map keeps insertion order, so a re-set of an existing key would keep its OLD place: delete first, then the eviction below is least-recently-used.
+      this.cwdSeen.delete(cwd);
+      this.cwdSeen.set(cwd, seen);
+      return seen.ok;
+    }
+    let ok = false;
+    try {
+      ok = statSync(cwd).isDirectory();
+    } catch {
+      ok = false;
+    }
+    this.cwdSeen.delete(cwd);
+    this.cwdSeen.set(cwd, { ok, at: now });
+    if (this.cwdSeen.size > 512) this.cwdSeen.delete(this.cwdSeen.keys().next().value as string);
+    return ok;
+  }
+
+  /**
+   * Whether a line can be sent into `s` now, and how — from the same evidence `statusFor`
+   * and the runners' `canContinue` read, so the composer and the send agree: a run of ours
+   * takes the next turn (a yes/no while it asks — `pendingPermission`); a live owner takes a queue (Codex) or
+   * refuses (Claude Code, which has no queue); degraded detection refuses; a Codex that
+   * cannot run or a folder that is gone refuses; else a resume. Synchronous and spawn-free;
+   * the reason is short enough to sit in the composer as it is.
+   */
+  private sendGate(s: DiscoveredSession, snap: Snapshot, run: RunHandle | undefined): SendGate {
+    // A run of ours takes the next line (a yes/no answers its open question first — `pendingPermission`
+    // says so; the gate's mode vocabulary on the wire is queue | resume).
+    if (run && run.status !== "offline") return { ok: true, mode: "resume" };
+    if (s.source === "subagent") return { ok: false, reason: "a Codex sub-agent run; continue its parent thread" };
+    if (s.source === "automation") return { ok: false, reason: "a Codex automation run" };
+    if (s.archived) return { ok: false, reason: s.tool === "codex" ? "archived in Codex" : "archived" };
+    const own = this.ownPids();
+    const processes = own.size ? snap.processes.filter((p) => !own.has(p.pid)) : snap.processes;
+    const live = liveProcessesFor(s, processes, snap.owners);
+    if (live.length > 0) {
+      if (s.tool === "codex") return snap.codex.ok ? { ok: true, mode: "queue" } : { ok: false, reason: codexReason(snap.codex.reason) };
+      return { ok: false, reason: live.some((p) => p.interactive) ? "open in a terminal" : "open in Claude Desktop" };
+    }
+    if (snap.degraded) return { ok: false, reason: "cannot tell who owns it" };
+    if (s.tool === "codex" && !snap.codex.ok) return { ok: false, reason: codexReason(snap.codex.reason) };
+    if (!this.cwdPresent(s.cwd)) return { ok: false, reason: "folder is gone" };
+    return { ok: true, mode: "resume" };
   }
 
   /** Pids of the children this connector is running; they own their sessions on our behalf, not on someone else's. */
@@ -418,10 +486,10 @@ export class SessionsConnector implements AgentConnector {
           ? `resumed: ${run.statusDetail}`
           : "resumed by Jarhead";
       const { status, hint } = deriveStatus(this.runEvidence(s, run, snap.degraded), now, this.leases);
-      return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s, extra), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt), messageCount: s.messageCount, hint };
+      return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s, extra), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt), messageCount: s.messageCount, hint, send: this.sendGate(s, snap, run) };
     }
     const { status, hint } = statusFor(s, snap.processes, now, this.leases, snap.owners, snap.degraded);
-    return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt, messageCount: s.messageCount, hint };
+    return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt, messageCount: s.messageCount, hint, send: this.sendGate(s, snap, undefined) };
   }
 
   /**
@@ -668,27 +736,27 @@ export class SessionsConnector implements AgentConnector {
           // A yes/no while blocked answers the question rather than starting a turn.
           if (YES.test(text)) {
             this.answer(s.id, existing, true);
-            return { accepted: true, detail: `allowed ${tool}` };
+            return { accepted: true, detail: `allowed ${tool}`, mode: "answer" };
           }
           if (NO.test(text)) {
             this.answer(s.id, existing, false);
-            return { accepted: true, detail: `denied ${tool}` };
+            return { accepted: true, detail: `denied ${tool}`, mode: "answer" };
           }
         }
         existing.send(text);
-        return { accepted: true, detail: "sent to the resumed session" };
+        return { accepted: true, detail: "sent to the resumed session", mode: "resume" };
       }
       // Our own turn is running: the next one waits behind it in the same run.
       if (existing.status === "working") {
         existing.send(text);
-        return { accepted: true, detail: "sent to the resumed session" };
+        return { accepted: true, detail: "sent to the resumed session", mode: "resume" };
       }
       // Idle between turns. Kevin may have opened the thread in Codex since; ask again who owns it.
       const can = await this.runnerFor(s.tool).canContinue(s, await this.ownership(s));
       if (!can.ok) return { accepted: false, detail: can.reason };
       if (can.mode === "resume") {
         existing.send(text);
-        return { accepted: true, detail: "sent to the resumed session" };
+        return { accepted: true, detail: "sent to the resumed session", mode: "resume" };
       }
       return this.fileOutcome(key, await this.runnerFor(s.tool).continue(s, text, can.mode, this.sinkFor(id, s)));
     }
@@ -715,11 +783,11 @@ export class SessionsConnector implements AgentConnector {
   /** Record a run the runner handed back and turn the outcome into a SendResult. */
   private fileOutcome(key: string, outcome: ContinueOutcome): SendResult {
     if (outcome.kind === "refused") return { accepted: false, detail: outcome.reason };
-    if (outcome.kind === "delivered") return { accepted: true, detail: outcome.detail };
+    if (outcome.kind === "delivered") return { accepted: true, detail: outcome.detail, mode: outcome.mode };
     const old = this.runs.get(key);
     if (old && old !== outcome.handle) void old.close();
     this.runs.set(key, outcome.handle);
-    return { accepted: true, detail: outcome.detail };
+    return { accepted: true, detail: outcome.detail, mode: outcome.mode };
   }
 
   /** The sink a runner reports through: files the handle, forwards changes, cleans up when it ends. */
@@ -1064,7 +1132,7 @@ export class SessionsConnector implements AgentConnector {
       // path below, so the Console sees "blocked" only for questions that are still open.
       const provisionalBlock = run?.status === "blocked" && parsed?.tool === "claude" && this.headAsk(parsed.localId) === undefined;
       if (listed && run && run.status !== "offline" && !provisionalBlock) {
-        const info = this.info(listed.session, this.snapshotCache ?? { at: 0, processes: [], owners: [], degraded: undefined });
+        const info = this.info(listed.session, this.snapshotCache ?? { at: 0, processes: [], owners: [], degraded: undefined, codex: { ok: false, reason: "not probed yet" } });
         this.lastListed.set(info.id, { session: listed.session, info });
         this.notifyAll(info);
         return;

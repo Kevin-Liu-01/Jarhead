@@ -92,6 +92,10 @@ export interface BrainBenchOptions {
   readonly delegationTimeoutMs?: number | undefined;
   /** Where lines go (default console.log / console.error). */
   readonly print?: ((line: string) => void) | undefined;
+  /** `Settings.observe` for the run: false = the A/B without the observation line on acting results (default: the setting's default, on). */
+  readonly observe?: boolean | undefined;
+  /** A previous report (--out FILE) to print deltas against, per command. */
+  readonly compare?: string | undefined;
 }
 
 export interface BenchCommand {
@@ -601,6 +605,10 @@ export interface RunRecord {
   readonly toolCount: number;
   /** The model's tool calls in order; a suffix says what came back: `(err)`, `(blocked)`, `(asked)` for a confirmation question. */
   readonly toolNames: readonly string[];
+  /** Acting calls that returned ok, how many were followed by a screenshot/zoom as the next model call (the verifying shot the observation line is meant to make unnecessary), and how many carried a `now:` line. */
+  readonly actingCalls: number;
+  readonly verificationShots: number;
+  readonly observedResults: number;
   /** The app-server thread this run's turn went out on (wire only). */
   readonly threadId?: string;
   /**
@@ -664,6 +672,10 @@ export function analyzeRun(input: AnalyzeInput): RunRecord {
   // The first action: an acting tool that returned ok — not an error, not a confirmation question
   // (`ok` is false for both; the delegator's stamp refuses a `confirm` step the same way).
   const firstAction = modelCalls.find((c) => ACTING_TOOLS.has(c.name) && c.ok && c.kind !== "question");
+  // P1 of the speed pass: an acting call followed by a shot is the model verifying by eye; a `now:` line in the result is the observation that should make that shot unnecessary.
+  const actingOk = modelCalls.filter((c) => ACTING_TOOLS.has(c.name) && c.ok && c.kind !== "question");
+  const verificationShots = modelCalls.filter((c, i) => ACTING_TOOLS.has(c.name) && c.ok && c.kind !== "question" && (modelCalls[i + 1]?.name === "screenshot" || modelCalls[i + 1]?.name === "zoom")).length;
+  const observedResults = actingOk.filter((c) => /(^|\n)now: /.test(c.output ?? "")).length;
   const steps = (d?.steps ?? []).map((s: DelegationStep) => ({ rel: s.at - base, kind: s.kind, ...(s.text ? { text: s.text.slice(0, 300) } : {}), ...(s.tool ? { tool: s.tool.name } : {}) }));
   const everything = [...calls.map((c) => `${c.name} ${c.input}`), ...codexShell.map((c) => `shell ${c.command}`)];
   const noSuchFile = calls.filter((c) => c.kind === "error" && !c.blocked && FILE_TOOLS.has(c.name) && NO_SUCH_FILE_RE.test(c.output ?? "")).map((c) => `${c.name} ${c.input.slice(0, 100)} → ${(c.output ?? "").slice(0, 80)}`);
@@ -736,6 +748,9 @@ export function analyzeRun(input: AnalyzeInput): RunRecord {
     codexShell,
     toolCount: modelCalls.length,
     toolNames: modelCalls.map((c) => `${c.name}${c.blocked ? "(blocked)" : c.kind === "question" ? "(asked)" : c.ok ? "" : "(err)"}`),
+    actingCalls: actingOk.length,
+    verificationShots,
+    observedResults,
     ...(threadId !== undefined ? { threadId } : {}),
     rollovers,
     bootstrap: {
@@ -785,6 +800,12 @@ export interface CommandSummary {
 
 export interface BenchSummary {
   readonly brainPath: { readonly overall: CommandSummary; readonly perCommand: readonly CommandSummary[] };
+  /** Generations per command on the brain path (the same numbers as brainPath.overall.generations, under the name the speed pass tracks). */
+  readonly generationsPerCommand: Stat;
+  /** Acting calls followed by a verifying screenshot/zoom: count and share (target ≤ 15 %). */
+  readonly verificationShots: { readonly acting: number; readonly shots: number; readonly share: number };
+  /** Acting calls whose result carried the observation line: count and share (target ≥ 95 % with Settings.observe on). */
+  readonly observedResults: { readonly acting: number; readonly withLine: number; readonly share: number };
   readonly reflexPath: readonly { readonly cmd: string; readonly status: string; readonly doneMs: number; readonly firstActionMs?: number; readonly summary?: string }[];
   readonly generationGapMs: Stat;
   readonly toolRoundTripMs: Stat;
@@ -812,8 +833,14 @@ function summarizeCommand(cmd: string, recs: readonly RunRecord[]): CommandSumma
 export function summarize(records: readonly RunRecord[]): BenchSummary {
   const brain = records.filter((r) => r.phase === "brain-path");
   const cmds = [...new Set(brain.map((r) => r.cmd))];
+  const acting = brain.reduce((n, r) => n + r.actingCalls, 0);
+  const shots = brain.reduce((n, r) => n + r.verificationShots, 0);
+  const withLine = brain.reduce((n, r) => n + r.observedResults, 0);
   return {
     brainPath: { overall: summarizeCommand("all", brain), perCommand: cmds.map((c) => summarizeCommand(c, brain.filter((r) => r.cmd === c))) },
+    generationsPerCommand: stat(brain.map((r) => r.generations)),
+    verificationShots: { acting, shots, share: acting ? shots / acting : 0 },
+    observedResults: { acting, withLine, share: acting ? withLine / acting : 0 },
     reflexPath: records.filter((r) => r.phase === "reflex-path").map((r) => ({ cmd: r.cmd, status: r.status, doneMs: r.t.done, ...(r.t.firstAction !== undefined ? { firstActionMs: r.t.firstAction } : {}), ...(r.summary ? { summary: r.summary } : {}) })),
     generationGapMs: stat(brain.flatMap((r) => r.generationGapsMs)),
     toolRoundTripMs: stat(brain.flatMap((r) => r.runnerCalls.filter((c) => !c.preBrain && !c.blocked).map((c) => c.ms))),
@@ -832,6 +859,46 @@ export interface BrainBenchReport {
   readonly meta: Record<string, unknown>;
   readonly records: readonly RunRecord[];
   readonly summary: BenchSummary;
+  /** Deltas against a previous report (--compare FILE), when one was given. */
+  readonly compare?: CompareReport;
+}
+
+export interface CompareRow {
+  readonly cmd: string;
+  /** This run's median minus the baseline's, ms (negative = faster); undefined when either side lacks the command. */
+  readonly firstActionMs?: number;
+  readonly doneMs?: number;
+  readonly generations?: number;
+}
+
+export interface CompareReport {
+  readonly baseline: string;
+  readonly baselineStartedAt?: string;
+  readonly rows: readonly CompareRow[];
+  readonly generationsP95: { readonly before: number; readonly after: number };
+  readonly verificationShare: { readonly before: number | undefined; readonly after: number };
+}
+
+/** This report against an older one: per-command median deltas of the first action, done and the model steps, plus the two headline shares. Pure. */
+export function compareReports(current: BrainBenchReport, baseline: BrainBenchReport, baselinePath: string): CompareReport {
+  const before = new Map(baseline.summary.brainPath.perCommand.map((c) => [c.cmd, c]));
+  const delta = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined || b === undefined || !Number.isFinite(a) || !Number.isFinite(b) ? undefined : a - b);
+  const rows: CompareRow[] = [...current.summary.brainPath.perCommand, current.summary.brainPath.overall].map((c) => {
+    const b = c.cmd === "all" ? baseline.summary.brainPath.overall : before.get(c.cmd);
+    const firstActionMs = delta(c.metrics.firstAction.median, b?.metrics.firstAction.median);
+    const doneMs = delta(c.metrics.done.median, b?.metrics.done.median);
+    const generations = delta(c.generations.median, b?.generations.median);
+    return { cmd: c.cmd, ...(firstActionMs !== undefined ? { firstActionMs } : {}), ...(doneMs !== undefined ? { doneMs } : {}), ...(generations !== undefined ? { generations } : {}) };
+  });
+  // Older reports predate these fields; read what is there.
+  const bs = baseline.summary as Partial<BenchSummary>;
+  return {
+    baseline: baselinePath,
+    ...(typeof baseline.meta["startedAt"] === "string" ? { baselineStartedAt: baseline.meta["startedAt"] } : {}),
+    rows,
+    generationsP95: { before: bs.generationsPerCommand?.p95 ?? baseline.summary.brainPath.overall.generations.p95, after: current.summary.generationsPerCommand.p95 },
+    verificationShare: { before: bs.verificationShots?.share, after: current.summary.verificationShots.share },
+  };
 }
 
 // ------------------------------------------------------------------ the run
@@ -974,7 +1041,8 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
   // The thread the last turn went out on: the start thread first; a run whose turn/start names another is a rollover.
   let lastThreadId: string | undefined;
   try {
-    engine.updateSettings({ idleSleepMinutes: 0, reflexes: !opts.noReflex });
+    engine.updateSettings({ idleSleepMinutes: 0, reflexes: !opts.noReflex, ...(opts.observe !== undefined ? { observe: opts.observe } : {}) });
+    meta["observe"] = engine.snapshot().settings.observe;
     await engine.wake("bench");
 
     // The product's resident thread: wait for the warm app-server so the first delegation is the warm path.
@@ -1077,7 +1145,15 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
     meta["execFallbacks"] = logLines.filter((l) => /falling back to codex exec|runs on exec/.test(l.message)).length;
     await Promise.race([engine.stop(), new Promise((r) => setTimeout(r, 10_000))]);
   }
-  const report: BrainBenchReport = { meta, records, summary: summarize(records) };
+  let report: BrainBenchReport = { meta, records, summary: summarize(records) };
+  if (opts.compare) {
+    try {
+      const baseline = JSON.parse(readFileSync(opts.compare, "utf8")) as BrainBenchReport;
+      report = { ...report, compare: compareReports(report, baseline, opts.compare) };
+    } catch (e) {
+      say(`--compare ${opts.compare}: not read (${(e as Error).message}); no deltas`);
+    }
+  }
   if (opts.out) {
     writeFileSync(opts.out, JSON.stringify(report, null, 2));
     say(`wrote ${opts.out}`);
@@ -1108,6 +1184,17 @@ export function renderReport(report: BrainBenchReport): string[] {
   out.push(`  model step gap (>${GENERATION_GAP_MIN_MS} ms between consecutive model events): median ${sec(g.median)} s, p95 ${sec(g.p95)} s, max ${sec(g.max)} s (n=${g.n}) — the per-generation cost`);
   out.push(`  tool round trip inside the runner: median ${ms(summary.toolRoundTripMs.median)} ms, p95 ${ms(summary.toolRoundTripMs.p95)} ms (n=${summary.toolRoundTripMs.n})`);
   out.push(`  context rollovers ${summary.rollovers}; wiki-bootstrap calls ${summary.bootstrapCalls}; npm run status in ${summary.npmRunStatusRuns} run(s); no-such-file errors ${summary.noSuchFile}; narration before the first tool in ${summary.narrationFirst} run(s); timed out ${summary.timedOut}`);
+  const pctOf = (v: number): string => `${Math.round(v * 100)} %`;
+  out.push(`  generations per command: median ${ms(summary.generationsPerCommand.median)}, p95 ${ms(summary.generationsPerCommand.p95)} (target p95 ≤ 4); acting calls followed by a verifying shot ${summary.verificationShots.shots}/${summary.verificationShots.acting} (${pctOf(summary.verificationShots.share)}, target ≤ 15 %); acting results carrying a now: line ${summary.observedResults.withLine}/${summary.observedResults.acting} (${pctOf(summary.observedResults.share)}; observe ${meta["observe"] === false ? "OFF — the A/B" : "on"})`);
+  if (report.compare) {
+    const c = report.compare;
+    out.push("");
+    out.push(`  against ${c.baseline}${c.baselineStartedAt ? ` (${c.baselineStartedAt})` : ""}: median deltas, this run minus the baseline (negative = faster)`);
+    out.push(`  ${pad("command", 20)}${pad("1st action", 14)}${pad("done", 14)}steps`);
+    const signed = (v: number | undefined, unit: string): string => (v === undefined ? "-" : `${v > 0 ? "+" : ""}${unit === "s" ? (v / 1000).toFixed(1) : Math.round(v)}${unit === "s" ? " s" : ""}`);
+    for (const r of c.rows) out.push(`  ${pad(r.cmd, 20)}${pad(signed(r.firstActionMs, "s"), 14)}${pad(signed(r.doneMs, "s"), 14)}${signed(r.generations, "")}`);
+    out.push(`  generations p95 ${ms(c.generationsP95.before)} → ${ms(c.generationsP95.after)}; verifying-shot share ${c.verificationShare.before === undefined ? "-" : pctOf(c.verificationShare.before)} → ${pctOf(c.verificationShare.after)}`);
+  }
   if (summary.speechToDelegationMs.n) out.push(`  speech end → delegation: median ${ms(summary.speechToDelegationMs.median)} ms (n=${summary.speechToDelegationMs.n}) — the stand-in Live delegates the moment the utterance ends, so ≈ 0 here; on the real path this is Live's own transcription and decision time (the ledger has it)`);
   if (summary.reflexPath.length) {
     out.push("");

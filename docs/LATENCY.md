@@ -402,3 +402,37 @@ click-and-type re-verification recurs, tighten rule 3's "one screenshot" to "non
 when the result confirms" for `browser_type`; (3) more reflex grammar for Kevin's
 own top phrases (the ear now reaches the engine); (4) a faster Codex model tier if
 one is offered for the ChatGPT plan.
+
+## 10. The speed levers of the threads pass, and how to measure each (2026-09-13)
+
+The floor did not move — one generation is still 3.8 s median in the harness (§5) and
+4.4–5.0 s in production, and effort / tier measured as no gain (§4) — so the threads pass
+cuts GENERATIONS and lets several lines of work run at once. Each lever below names the
+number it promises and the command that reads it back. Numbers marked **measured** come
+from the ledger or a bench run on this Mac; the rest are the targets the levers were
+built to and stay **reasoned** until a day of use is read back with `pnpm jarhead ledger
+--speed`.
+
+| lever | what it removes | promise | how to measure |
+|---|---|---|---|
+| observation line (`Settings.observe`, default on) | the verifying screenshot after 45 % of acting steps (**measured**, 85/189 on 09-10..12) and the 5.3 s median generation that reads it | acting step → screenshot ≤ 15 %; ≥ 95 % of acting results carry `now:`; generations per command p95 ≤ 4 (from 7) | `pnpm jarhead bench --brain --runs 5 --compare docs/latency/after.json` (rows `verificationShots`, `observedResults`, `generationsPerCommand`; `--observe off` is the A/B); after a day: `pnpm jarhead ledger --speed --days 1` |
+| composite look (`ScreenStateCache` into `notes[0]`) | the look-first generation on 15 of ~93 tool tasks (**measured**) and coordinate clicks where a label exists | first action, brain path, ≤ 4.0 s median in the harness (from 4.4) | `bench --brain` row "1st action" (report it apart from the product-mix number) |
+| SplitHands | reads queued behind a `type` (≥ 8 ms per grapheme) or an `open_app` (up to 30 s) on the one serial helper; read p95 370 ms in production (**measured**, n=58) | a read during a 2 s type < 20 ms; read-only round trip p95 ≤ 80 ms | `pnpm jarhead bench --runs 20` rows "read during a type" and "tool round trip (frontmost_app)"; `ledger --speed` "tool round trip, read-only" |
+| acting serializer | racy parallel acts inside one generation; queued acts running after a needs-confirmation | reads overlap, acts in order, halted acts answer "not run: … waiting for Kevin's answer" | engine tests `observe` / `serializer` (invariants I1–I7); no production number — it is a correctness lever |
+| reflex tail + rows | 0 of 119 requests parsed (**measured**): fillers at the head, ≥ 9-word clauses at the tail | each hit removes ≥ 1 generation (4.5–14 s wall) | `pnpm jarhead reflex-miss --days 7` weekly; `bench` "ear" rows unchanged (122 / 455 ms) |
+| thread verbs from the table | "what is spotify doing" superseding the running turn at ≥ 2 generations | 0 generations, engine cost ≤ 5 ms, running turn untouched; "stop the slack one" stops one | `pnpm jarhead bench --fake-hands` rows "status reflex" and "targeted stop" |
+| warm brain pool (`Settings.warmThreads` 2) | the second thread's cold boot inside `runJob` (0.6–2.9 s; 555 / 1048 ms for the two spares ever logged, **measured**) | the first two thread starts return in < 5 ms; the third awaits its boot as `starting` | daemon.log "spare ready" ×2 after wake; `brain-pool` tests |
+
+What the bench measured on this Mac with fake hands and the stand-in brain the day the rows
+landed (`pnpm jarhead bench --fake-hands --runs 3`, load ≈ 4): the numbers in the run log
+below this section's commit — read them as the BEFORE for SplitHands and the observer, since
+the engine wiring lands after the rows. Rows that need the threads engine (status reflex,
+targeted stop) report "not measured" until `thread_start` is admitted; the bench says so
+instead of failing.
+
+The two honest caveats stand from §9: the brain-path-only first action cannot go under one
+generation plus ~0.65 s of hand-off (≈ 3.6–4.3 s), so the ≤ 3.0 s median target is a
+product-mix number (reflex tails + replay + brain path) and must be reported as such; and
+the observation's 150 ms settle can read "nothing changed" before a page load lands — the
+`<N> ms after` suffix and the `--observe off` A/B are the guards, and `browser_navigate` is
+the first tool to drop it if the model starts double-acting.

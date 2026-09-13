@@ -3,22 +3,30 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync,
 import { join } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type Reconciliation, type Reflex, type ReflexOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorOptions, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
-import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
+import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type MemoryBridgeSeams } from "./memory-bridge.ts";
-import { WorkerAwareRunner, WorkerPool, type WorkerBrainFactory, type WorkerParent, type WorkerVoice } from "./workers.ts";
+import { ActionObserver, ActingSerializer } from "./observe.ts";
+import { LaneRunner, ThreadLog, ThreadScheduler, ThreadTable, WorkerAwareRunner, type ThreadBrainFactory, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
+  MAIN_THREAD_ID,
+  THREAD_PAGE,
+  THREAD_TERMINAL,
   type Accent,
   type AgentInfo,
+  type AgentMessage,
   type AgentStatus,
   type AudioLevels,
   type ConnectorHealth,
   type Delegation,
+  type DelegationStatus,
+  type DelegationStep,
+  type DelegationTimings,
   type EngineCommand,
   type EngineEvent,
   type LedgerRow,
@@ -38,6 +46,8 @@ import {
   type SetupStatus,
   type SleepCause,
   type Snapshot,
+  type Thread,
+  type ThreadEntry,
   type TranscriptItem,
   type TrashInfo,
   type UsageToday,
@@ -89,8 +99,10 @@ export interface EngineOptions {
   readonly hands?: NativeHands;
   /** The second helper's stand-in (the reading / background lane); absent, `hands` answers both. */
   readonly backgroundHands?: NativeHands;
-  /** Builds a worker's brain over its lane runner (tests inject a scripted fake); absent, the engine builds one for the running brain kind. */
-  readonly makeWorkerBrain?: WorkerBrainFactory;
+  /** Builds a thread's brain over its lane runner (tests inject a scripted fake); absent, the engine builds one for the running brain kind. */
+  readonly makeWorkerBrain?: ThreadBrainFactory;
+  /** The observer's settle before it reads the screen after an acting tool (default OBSERVE_SETTLE_MS 150 / 400 for browser tools); tests set 0. */
+  readonly observeSettleMs?: number;
   /** What a fresh helper process would print for `--permissions` (tests; the real client runs the binary). */
   readonly probePermissions?: () => Promise<HelloPermissions>;
   /** The ear's stability window for a partial of a prefire kind — scroll, page, screenshot, circle (default 120 ms); tests shorten it. */
@@ -134,6 +146,18 @@ interface OpenConversation {
   cursor?: PageCursor;
   firstId: string | undefined;
   status?: AgentStatus;
+}
+
+/**
+ * A thread pane some surface stepped into (`thread.open`): its viewers (pane tokens the daemon prefixes with
+ * its client id), the one subscription to the thread's log, and the entries held for the next coalesced
+ * `append` (THREAD_TRANSCRIPT_COALESCE_MS, ≤ 10 frames/s per open pane; a step entry ≤ 1 KB; viewers only).
+ */
+interface OpenThread {
+  readonly viewers: Set<string>;
+  unwatch: (() => void) | undefined;
+  pending: ThreadEntry[];
+  timer: NodeJS.Timeout | undefined;
 }
 
 /** What the engine knows about a problem beyond its line: its kind, its one remedy, when it was first seen. */
@@ -187,12 +211,30 @@ export class Engine extends EventEmitter<EngineEvents> {
   readonly lease: FocusLease;
   readonly toolset: ComputerToolset;
   readonly agents: AgentRegistry;
-  /** The main lane's runner: `worker_*` answered from the pool, screen tools under the lease. */
+  /** The main lane's runner: `thread_*` (and the `worker_*` aliases) answered from the scheduler, screen tools under the lease, every acting result observed and serialized. */
   readonly runner: WorkerAwareRunner;
-  /** The workers: a second pair of hands inside one delegation. */
-  readonly workers: WorkerPool;
-  /** Builds a worker's brain for the running brain kind; undefined while it cannot run a second thread (Responses, a test brain without a seam). */
-  private workerBrainFactory: WorkerBrainFactory | undefined;
+  /**
+   * The threads: the scheduler over the one table — the main thread's record included, so "what are you doing"
+   * and the snapshot's `threads` come from one place — and the warm brain pool. Spawned threads' turns never touch
+   * the snapshot: one `thread.event` per change, their conversations over `thread.transcript` to viewers.
+   */
+  readonly threads: ThreadScheduler;
+  /** The main toolset's hands: reads on the reading helper, acts on the acting one — a look never queues behind a `type`. */
+  readonly splitHands: SplitHands;
+  /** What the screen is like right now, from the reading helper: the observer's `now:` line reads it, the composite look reads it, the AX tick feeds it. */
+  readonly screenState: ScreenStateCache;
+  /** After every acting tool of any lane: the `now:` line on its result (Settings.observe, the A/B). */
+  readonly observer: ActionObserver;
+  /** The main lane's acting queue — one act in flight, a needs-confirmation halts the rest; each thread lane gets its own as its brain is built. */
+  readonly serializer: ActingSerializer;
+  /** Builds a thread's brain for the running brain kind; undefined while it cannot run a second thread (Responses, a test brain without a seam). */
+  private workerBrainFactory: ThreadBrainFactory | undefined;
+  /** The main thread's conversation for its pane (thread.open "main"): utterances, cards, steps and statuses by seq. */
+  private readonly mainLog = new ThreadLog();
+  /** Delegation ids already carded on the main log; a later `change` for one patches through its steps, never a second card. */
+  private readonly mainCarded = new Set<string>();
+  /** Thread panes some surface stepped into, by thread id. */
+  private readonly openThreads = new Map<string, OpenThread>();
   /** The sleep in flight: the ear, Live and the dock saying so at once are one sleep. */
   private sleeping: Promise<void> | undefined;
   /** Ends the farewell wait early when a harder cause (Stop, the dock) lands mid-farewell. */
@@ -365,6 +407,21 @@ export class Engine extends EventEmitter<EngineEvents> {
     // Over the ACTING helper: `user_idle` is judged against the events that helper posted itself
     // (its own typing is not Kevin's), and the re-front's `focus_app` is an acting op.
     this.lease = new FocusLease({ hands: this.pool.focus, now: this.now });
+    // The main toolset reads on the reading helper and acts on the acting one (DECISIONS §11c): the gate's
+    // probes, the observer's reads and the model's own looks never wait behind a `type` or an `open_app`.
+    // No verdict moves — `expectFront`, `busy`, STALE_FRAME are judged in the acting helper and in the gate.
+    this.splitHands = new SplitHands(this.pool);
+    this.screenState = new ScreenStateCache(this.pool.background, { now: this.now });
+    // The `now:` line after every acting tool (§11a): read 150 ms after it landed on the reading helper, redacted
+    // like every text a model gets, off under Settings.observe = false (the A/B).
+    this.observer = new ActionObserver({
+      state: this.screenState,
+      redact: (s) => this.runner.redactor.redact(s),
+      enabled: () => this.settings.observe !== false,
+      now: this.now,
+      ...(opts.observeSettleMs !== undefined ? { settleMs: opts.observeSettleMs, slowSettleMs: opts.observeSettleMs } : {}),
+    });
+    this.serializer = new ActingSerializer();
     const toolsetBase: Omit<ToolsetOptions, "hands" | "screen" | "confirmations"> = {
       excludePids: () => [...this.excludePids, process.pid],
       annotate: (cmd) => this.emit("overlay", cmd),
@@ -372,7 +429,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       presenceAt: () => this.lastKevinAt || undefined,
       now: this.now,
     };
-    this.toolset = new ComputerToolset({ ...toolsetBase, hands: this.hands, confirmations: this.desk.lane(WorkerAwareRunner.ACTOR, "Jarhead") });
+    this.toolset = new ComputerToolset({ ...toolsetBase, hands: this.splitHands, confirmations: this.desk.lane(WorkerAwareRunner.ACTOR, "Jarhead") });
     const connectors =
       opts.connectors ??
       defaultConnectors({
@@ -400,8 +457,15 @@ export class Engine extends EventEmitter<EngineEvents> {
         ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
       },
     };
-    // Workers get the same runner and toolset options over their own lane (hands, Screen, desk lane).
-    this.workers = new WorkerPool({
+    // The table: what the last daemon left — a thread live when it died is ended `failed` with one row each,
+    // and nothing acts — plus the main thread's own record, idle. Every summary, event and status line reads from it.
+    const rebuilt = ThreadTable.rebuildFrom(this.ledger, { now: this.now });
+    const table = rebuilt.table;
+    if (!table.get(MAIN_THREAD_ID)) table.started(this.mainRecord());
+    // Threads get the same runner and toolset options over their own lane (hands, Screen, desk lane), the memory
+    // block and the composite look the main task gets, and the observer; the LIST of threads changing is the one
+    // time the scheduler asks for a snapshot — a step or a status is one `thread.event` on the wire.
+    this.threads = new ThreadScheduler({
       now: this.now,
       ledger: this.ledger,
       desk: this.desk,
@@ -409,13 +473,19 @@ export class Engine extends EventEmitter<EngineEvents> {
       hands: { focus: this.pool.focus, background: this.pool.background },
       runnerOptions: () => runnerBase,
       toolsetOptions: () => toolsetBase,
-      makeBrain: () => this.opts.makeWorkerBrain ?? this.workerBrainFactory,
+      makeBrain: () => this.threadBrainFactory(),
       parentFor: (task) => this.workerParentFor(task),
       voice: () => this.workerVoice(),
       enabled: () => this.settings.workers !== false,
       onChange: () => this.scheduleSnapshot(),
+      table,
+      onEvent: (e) => this.emit("event", { type: "thread.event", event: e }),
+      warmThreads: () => this.settings.warmThreads,
+      memory: (query, signal) => this.memory.brainBlock(query, signal),
+      look: () => this.compositeLook(),
+      observer: this.observer,
     });
-    this.runner = new WorkerAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.workers, lease: this.lease, desk: this.desk });
+    this.runner = new WorkerAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.threads, lease: this.lease, desk: this.desk, observer: this.observer, serializer: serializerLike(this.serializer) });
     // Durable memory (K: "jarhead preferences save across sessions"): built over the runner's
     // redactor (nothing reaches an extractor or the store unredacted), Kevin's OpenAI key when
     // there is one, and Settings.memory read live. Extraction runs from tick() only when quiet.
@@ -430,18 +500,32 @@ export class Engine extends EventEmitter<EngineEvents> {
       onChange: () => this.scheduleSnapshot(),
       ...(opts.memory ?? {}),
     });
-    // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up.
-    this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName(), browserInFront: async () => BROWSER_APPS.test(this.frontApp || (await this.frontmostAppName())), now: this.now });
+    // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up. The
+    // grammar reads the LIVE thread names from the table, and a thread verb is answered from it (`meta`).
+    this.reflexRunner = new ReflexRunner({
+      runner: this.runner,
+      frontmostApp: () => this.frontmostAppName(),
+      browserInFront: async () => BROWSER_APPS.test(this.frontApp || (await this.frontmostAppName())),
+      now: this.now,
+      threadNames: () => this.threads.threadNames(),
+      meta: (reflex) => this.metaReflex(reflex),
+    });
     this.firedReflexes = new FiredReflexes(this.now, Engine.RECONCILE_WINDOW_MS);
     this.earReflexes = new EarReflexes({
       now: this.now,
       enabled: () => this.reflexesOn(),
-      match: (u) => this.matchReflex(u),
-      run: (reflex, phrase) => this.runEarReflex(reflex, phrase),
+      match: (u, o) => this.matchReflex(u, o),
+      run: (reflex, phrase, via) => this.runEarReflex(reflex, phrase, via ?? "ear"),
       // A spoken "stop" interrupts: work and speech end, the session stays open and listening.
       onStop: () => {
-        if (this.delegator?.active || this.workers.running() > 0 || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
+        if (this.delegator?.active || this.threads.running() > 0 || (this.now() - this.lastOutputSpeechAt < 1200 && !this.outputGated)) void this.interrupt("ear", "said");
       },
+      // With ≥ 2 spawned threads live the speech is gated on the stop word and the work cut waits STOP_NAME_WAIT_MS
+      // for a name; "stop the slack one" then fires the thread_stop reflex → metaReflex → stopNamed (§6). With ≤ 1
+      // the ear's stop is the old one — unless Live's fragments just stopped a thread by name: the same utterance.
+      liveThreads: () => this.threads.table.spawnedLiveCount(),
+      recentNamedStop: () => this.delegator?.namedStopEcho("live") ?? false,
+      onGateSpeech: () => this.gateSpeech("Kevin said stop"),
       // A dismissal ("go to sleep", "goodnight jarhead", "that's all"): the one sleep function, with the farewell.
       onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
       // Room talk never sleeps it: a bare "goodnight" counts only mid-exchange (Jarhead spoke or was spoken to within
@@ -485,16 +569,32 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
         this.emit("utterance", item);
+        // The main thread's pane: every utterance as it settles (typed lines included).
+        this.mainLog.append({ kind: "utterance", item });
         // Kevin's final line: the spoken memory reflexes ("remember that …", "forget that") answer with a toast; every other line is pre-embedded for the delegation that may follow.
         if (item.speaker === "kevin") {
           void this.memory.onHeard(item, this.live?.session?.id).then((toast) => {
             if (toast) this.toast(toast, "info");
           });
         }
+      } else if (!Engine.SNAPSHOT_FULL_NOW) {
+        // Phase B: a fragment does not rebuild the snapshot (≤ 5 emits/s while Kevin speaks); the final does.
+        return;
       }
       this.scheduleSnapshot();
     });
     return t;
+  }
+
+  /** The main thread's record: the voice's own conversation, `idle` between turns; its budget is the main brain's (40 steps, 5 min). */
+  private mainRecord(): Thread {
+    const at = this.now();
+    return { id: MAIN_THREAD_ID, name: "Jarhead", lane: "voice", status: "idle", task: "", apps: [], startedAt: at, updatedAt: at, turns: 0, steps: 0, waits: 0, budget: { steps: 40, seconds: 300 }, canSay: true, canStop: true };
+  }
+
+  /** @deprecated the scheduler under the workers pass's name, one release. */
+  get workers(): ThreadScheduler {
+    return this.threads;
   }
 
   /** Everything said so far, earlier sessions first: what the Console shows and a resume is reminded of. */
@@ -525,6 +625,23 @@ export class Engine extends EventEmitter<EngineEvents> {
   static readonly CANCEL_CAP_MS = 1500;
   /** How many finished delegations the snapshot keeps across sessions (a pause and resume must not empty the Console). */
   static readonly MAX_DELEGATIONS = 50;
+  /**
+   * Phase B (DECISIONS §9). True: the snapshot's `transcript` (200 items) and `delegations` (50, every step) keep
+   * today's shape byte for byte, and every step rebuilds it. False: `transcript` is cut to SNAPSHOT_TRANSCRIPT,
+   * `delegations` to SNAPSHOT_DELEGATIONS × SNAPSHOT_STEPS with `stepCount`, a fragment or a step no longer
+   * rebuilds it (the main pane reads `thread.transcript`). The flip is a one-line follow-up once ThreadPane("main")
+   * is the live Now and the CLI `status` / orb readers are re-verified against the cut shape.
+   */
+  static SNAPSHOT_FULL_NOW = true;
+  static readonly SNAPSHOT_TRANSCRIPT = 40;
+  static readonly SNAPSHOT_DELEGATIONS = 8;
+  static readonly SNAPSHOT_STEPS = 12;
+  /** A typed line runs as a reflex first (M5): "open safari" is a hands op within ~300 ms and the voice is told it is done. */
+  static TYPED_REFLEXES = true;
+  /** With ≥ 2 spawned threads live a stop word gates the speech at once and cuts the work this much later unless a name follows — at both sources (§6). */
+  static readonly STOP_NAME_WAIT_MS = STOP_NAME_WAIT_MS;
+  /** A thread pane's `append` frames are held this long and sent as one (≤ 10/s per open pane). */
+  static readonly THREAD_TRANSCRIPT_COALESCE_MS = 100;
 
   // ------------------------------------------------------------- settings
 
@@ -1227,7 +1344,7 @@ export class Engine extends EventEmitter<EngineEvents> {
           return { label: "OpenAI Responses", brain: new ResponsesBrain({ runner: this.runner, model: wanted === "openai-responses" ? model : undefined, effort: "low" }) };
       }
     };
-    const workerFactoryFor = (kind: Kind): WorkerBrainFactory | undefined => (kind === "openai-responses" ? undefined : (w) => build(kind, w)?.brain);
+    const workerFactoryFor = (kind: Kind): ThreadBrainFactory | undefined => (kind === "openai-responses" ? undefined : (w) => build(kind, w)?.brain);
 
     // `auto` walks the contract order (codex → claude-code → anthropic-api →
     // openai-compatible → openai-responses) and takes the first that is ready.
@@ -1514,6 +1631,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.lastDelegations = [...this.lastDelegations, ...this.delegator.all()].slice(-Engine.MAX_DELEGATIONS);
       this.delegator.dispose();
       this.delegator = undefined;
+      // The main turn went with its Delegator; the spawned threads did not (the scheduler is the engine's).
+      this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, "idle"));
     }
     // Whatever was still open is an utterance now (on the ledger, out as an event), and
     // this session's words move to the held record; the next session starts its own clock.
@@ -1639,24 +1758,35 @@ export class Engine extends EventEmitter<EngineEvents> {
       refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : this.sleeping ? "going to sleep" : undefined),
       // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
       onStop: (reason) => void this.interrupt(reason, "said"),
+      // …and with ≥ 2 threads live the speech half comes first, on the stop word, while the work cut waits for a name.
+      onGateSpeech: () => this.gateSpeech("Kevin said stop"),
       // The session timeline's zero on the wall clock: the triggering utterance's end becomes timings.speechEndAt.
       sessionStartedAt: () => this.sessionStartedAt,
       // Live's path for a dismissal (the voice's attention gate is the addressing test there): the one sleep function.
       onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
-      // The workers a delegation's brain split off: the parent drains before it finishes; Kevin's yes reaches the floor's lane.
+      // The threads a delegation's brain split off: the parent drains before it finishes; Kevin's yes reaches the floor's lane.
       workers: {
-        drain: (id, signal) => this.workers.drain(id, signal),
-        running: (id) => this.workers.running(id),
-        resume: (laneId) => this.workers.resume(laneId),
-        floorLane: () => this.workers.floorLane(),
+        drain: (id, signal) => this.threads.drain(id, signal),
+        running: (id) => this.threads.running(id),
+        resume: (laneId) => this.threads.resume(laneId),
+        floorLane: () => this.threads.floorLane(),
         inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
       },
+      // The table and the scheduler: thread verbs and follow-ups by name answered before the supersede, the 350 ms stop rule, the overflow rule.
+      threads: this.delegatorThreads(),
+      // The composite look for notes[0], raced with the eyes' shot; a cache read of what the reading helper already knows.
+      look: () => this.compositeLook(),
       // What Jarhead knows about Kevin, ≤ BRAIN_MEMORY_TOKENS per delegation, raced at 250 ms
       // (B4 wires `DelegatorOptions.memory` and `BrainTask.memory`; spread so it typechecks before that lands).
       ...this.memoryForDelegator(),
     });
-    delegator.on("change", () => this.scheduleSnapshot());
-    delegator.on("phase", () => this.recomputePhase());
+    delegator.on("change", (d) => this.onMainChange(d));
+    delegator.on("step", (id, step) => this.onMainStep(id, step));
+    delegator.on("settled", (id, status, summary, timings) => this.onMainSettled(id, status, summary, timings));
+    delegator.on("phase", (phase) => {
+      this.recomputePhase();
+      this.mainPhase(phase);
+    });
     delegator.on("cancelled", () => this.flushSpeaker());
     delegator.on("reflex", (label, ms, prefired) => {
       log.info(`reflex ${label} in ${ms}ms${prefired ? " (ahead of the delegation)" : ""}`);
@@ -1900,18 +2030,77 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.inputLevel = level;
   }
 
-  /** Text Kevin typed in the Console. Typing while paused resumes first: the words then reach the new session. */
+  /**
+   * Text Kevin typed in the Console (DECISIONS §10). On the record FIRST — `Transcript.pushTyped`, so the `heard`
+   * row is written and the request window, the yes check and the reflexes read typed words as they read speech —
+   * then, with TYPED_REFLEXES on, offered to the ear's grammar (a hands op within ~300 ms and the voice told it is
+   * done), a typed yes armed as a spoken one is (or relayed to the thread whose question holds the floor, never
+   * superseding the main turn), and finally the one instruction to Live. Typing while paused resumes first: the
+   * words reach the new session. Typing while ASLEEP is REFUSED with a toast and the text kept in the composer —
+   * `Settings.typedWakes` (default false): a stray Return must never open a paid session; with it on, the line
+   * wakes Jarhead and reaches the new session. One log line with ms per call.
+   */
   async sayText(text: string): Promise<void> {
+    const t0 = performance.now();
     const t = text.trim();
     if (!t) return;
     if (this.pauseInfo) await this.resume();
-    if (!this.live) return;
+    if (!this.live) {
+      if (this.settings.typedWakes !== true) {
+        this.toast("asleep — press Go", "warn");
+        log.info(`say-text: ${t.length} chars while asleep → refused in ${Math.round(performance.now() - t0)} ms (Settings.typedWakes off; the text stays in the composer)`);
+        return;
+      }
+      await this.wake("typed");
+      if (!this.live) {
+        this.toast("not sent · could not wake", "warn");
+        log.info(`say-text: ${t.length} chars → the wake failed in ${Math.round(performance.now() - t0)} ms`);
+        return;
+      }
+    }
+    const live = this.live;
     this.kevinSpoke();
-    if (YES_PATTERN.test(t)) {
+    const item = this.transcript.pushTyped(t, live.nowMs);
+    const isYes = YES_PATTERN.test(t);
+    if (isYes) {
+      // A typed yes while a thread's question holds the floor is that thread's: relayed, the main turn untouched.
+      const floor = this.threads.floorThread();
+      if (floor && floor.id !== MAIN_THREAD_ID) {
+        const r = await this.threads.answerYes(floor.id);
+        if (item) this.delegator?.typedHandled(item);
+        live.appendInstructions(null, r.ok ? `Kevin just typed "${t}": his yes went to ${floor.name}'s question. Say one word and wait.` : `Kevin just typed "${t}", but ${r.reason ?? "it was refused"}. Tell him in one sentence.`);
+        log.info(`say-text: yes → ${floor.name} (${r.ok ? "relayed" : (r.reason ?? "refused")}) in ${Math.round(performance.now() - t0)} ms`);
+        return;
+      }
       // A typed yes grants the way a spoken one does: only with its ledger row.
       this.confirmations.arm((g) => this.ledger.append({ at: this.now(), type: "grant", chainId: this.confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }));
     }
-    this.live.appendInstructions(null, `Kevin just typed (treat it exactly like speech): "${t}". Respond to it now; delegate if it asks for anything the backend does.`);
+    // The reflex first (M5): the hands act before the voice has decided anything; the instruction then says so,
+    // and the words are done with (they must not ride into the next spoken request).
+    let did: string | undefined;
+    let meta = false;
+    if (Engine.TYPED_REFLEXES && !isYes) {
+      const outcome = await this.earReflexes.typed(t, this.now());
+      if (outcome?.ok) {
+        meta = outcome.reflex.meta === true;
+        // A meta reflex's answer (a status line from the table, the clock) travels by this instruction ALONE — the ear's
+        // path did not speak it as an aside for a typed line — so Live says it once; a named stop has no line of its own.
+        did = meta ? (outcome.result.kind === "text" ? outcome.result.text : "") : outcome.reflex.said || outcome.reflex.label;
+        if (item) this.delegator?.typedHandled(item);
+      }
+    }
+    const typed = `Kevin just typed (treat it exactly like speech): "${t}".`;
+    live.appendInstructions(
+      null,
+      did === undefined
+        ? `${typed} Respond to it now; delegate if it asks for anything the backend does.`
+        : meta
+          ? did
+            ? `${typed} Jarhead already answered it: "${did}" Say that to Kevin, in these words, and wait.`
+            : `${typed} Jarhead already handled it. Say one word and wait.`
+          : `${typed} Jarhead already did it: ${did} Say one word, or the answer, and wait.`,
+    );
+    log.info(`say-text: ${t.length} chars → ${live.session?.id ?? "(connecting)"} in ${Math.round(performance.now() - t0)} ms${did !== undefined ? ` (reflex: ${(did || "handled").slice(0, 60)})` : ""}`);
   }
 
   /**
@@ -1928,10 +2117,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     const running = this.delegator?.active;
     this.gatedFrames = 0;
     this.flushSpeaker();
-    // Both helpers' pending requests (each signals its own in-flight type), the lease, every worker.
+    // Both helpers' pending requests (each signals its own in-flight type), the lease, every thread, the acting queue.
     const dropped = this.pool.cancelAll(reason);
     this.lease.cancelAll(reason);
-    const workers = this.workers.cancelAll(reason);
+    const workers = this.threads.cancelAll(reason);
+    this.serializer.drain(reason);
     const { jobs } = this.runner.abortTask(abortReason);
     // The question on the floor and every queued one go; the grants sleep until the same conversation resumes.
     this.confirmations.clear();
@@ -1955,11 +2145,34 @@ export class Engine extends EventEmitter<EngineEvents> {
   async interrupt(source = "interrupt", how: "pressed" | "said" = "said"): Promise<void> {
     const t0 = this.now();
     const reason = `Kevin ${how} stop`;
-    // Only a session that has started is spoken to: one still opening has no id for the row and would
-    // hear "stop speaking" as its first instruction after session.started.
-    const open = !this.connecting && this.live?.session ? this.live : undefined;
+    const open = this.openSession();
     // The gate first, so a frame arriving between here and the flush is dropped too.
     if (open) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
+    await this.cutWork(source, how, reason, open, t0);
+  }
+
+  /** Only a session that has started is spoken to: one still opening has no id for the row and would hear "stop speaking" as its first instruction after session.started. */
+  private openSession(): LiveSession | undefined {
+    return !this.connecting && this.live?.session ? this.live : undefined;
+  }
+
+  /**
+   * The SPEECH half of a stop on its own (§6): the voice gated locally until Kevin's next words or OUTPUT_GATE_MS,
+   * the speaker flushed. The Delegator's fragment path and the ear call it the moment a stop word lands with two
+   * or more threads live, while the WORK cut waits STOP_NAME_WAIT_MS for a name; `interrupt` is the two halves at once.
+   */
+  gateSpeech(reason: string): void {
+    const open = this.openSession();
+    if (!open) return;
+    this.outputGateUntil = this.now() + Engine.OUTPUT_GATE_MS;
+    this.gatedFrames = 0;
+    this.flushSpeaker();
+    this.recomputePhase();
+    log.info(`speech gated (${reason}) for ${Engine.OUTPUT_GATE_MS} ms; the work cut waits for a name`);
+  }
+
+  /** The WORK half of a stop: everything a stop cuts, the `stop` row, the one instruction, the toast — the brain's own cancel capped. */
+  private async cutWork(source: string, how: "pressed" | "said", reason: string, open: LiveSession | undefined, t0: number): Promise<void> {
     const { running, dropped, jobs, cancel } = this.cutEverything(reason, "stop");
     if (open || running) this.ledger.append({ at: t0, type: "stop", how, ...(running ? { cancelled: running.id } : {}) });
     open?.appendInstructions(null, `${reason}. Stop speaking now and wait.`);
@@ -2068,45 +2281,433 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
   }
 
-  // -------------------------------------------------------------- workers
-  // The pool lives in ./workers.ts; the engine gives it what only the engine knows: the
-  // delegation behind a task, the parent's voice, the brain kind's factory, the two helpers.
+  // -------------------------------------------------------------- threads
+  // The scheduler lives in ./threads/; the engine gives it what only the engine knows — the delegation behind a
+  // task, the parent's voice, the brain kind's factory, the two helpers, the memory block, the composite look —
+  // and answers the thread verbs, the thread.* commands and the panes from its table.
 
-  /** The runner a `tool.run {worker}` frame lands on (the daemon's `runnerFor`); undefined for a worker nobody owns — refused there. */
+  /** The runner a `tool.run {worker}` frame lands on (the daemon's `runnerFor`; the field stays `worker` on the wire, the value is the thread id); undefined for a thread nobody owns — refused there. */
   runnerFor(worker: string): ToolRunner | undefined {
-    return this.workers.laneRunner(worker);
+    return this.threads.runnerFor(worker);
   }
 
   /**
-   * The desk promoted a queued question onto the floor. A worker's is spoken with its
-   * name by the pool ("Spotify asks: …"). The MAIN lane's ("Jarhead") has no worker to
-   * speak for it — its brain was told to wait, and may be blocked in worker_wait or done
+   * The desk promoted a queued question onto the floor. A thread's is spoken with its
+   * name by the scheduler ("Spotify asks: …"). The MAIN lane's ("Jarhead") has no thread to
+   * speak for it — its brain was told to wait, and may be blocked in thread_wait or done
    * — so Jarhead asks in its own words on the delegation under way (running or draining;
    * Jarhead's own line, never gated), else through the voice's instructions. Either way
    * the question Kevin's next yes lands on is the one he heard, and no other.
    */
   private speakPromoted(name: string, question: string): void {
-    if (this.workers.speakQuestion(name, question)) return;
+    if (this.threads.speakQuestion(name, question)) return;
     const d = this.delegator?.active;
     if (d) this.delegator?.workerSay(d.id, "Jarhead", `May I ${question}? Say yes.`);
     else this.live?.appendInstructions(null, `Your earlier question is Kevin's to answer now. Ask him: "${question}".`);
   }
 
-  /** The delegation a main-lane task belongs to, with Kevin's words for the worker's gates. */
-  private workerParentFor(task: BrainTask | undefined): WorkerParent | undefined {
+  /** The delegation a main-lane task belongs to, with Kevin's words for the thread's gates; a thread of main's sits at depth one. */
+  private workerParentFor(task: BrainTask | undefined): ThreadParent | undefined {
     if (!task) return undefined;
     const d = this.delegator?.all().find((x) => x.liveId === task.delegationId && x.status === "running");
     if (!d) return undefined;
-    return { id: d.id, liveId: d.liveId, request: task.request, ...(task.kevinDialogue !== undefined ? { kevinDialogue: task.kevinDialogue } : {}), offsetMs: task.offsetMs };
+    return { id: d.id, liveId: d.liveId, request: task.request, ...(task.kevinDialogue !== undefined ? { kevinDialogue: task.kevinDialogue } : {}), offsetMs: task.offsetMs, threadId: MAIN_THREAD_ID, depth: 0 };
   }
 
   /**
-   * How a worker's two lines and its steps reach the parent delegation: the Delegator's
-   * own hooks — the parent's `say(text, false)` and 600 ms coalescer for the lines, the
-   * parent's timeline with `step.worker` for the steps — while the parent runs or drains.
+   * How a thread's lines reach the parent delegation: the Delegator's own hooks — the
+   * parent's `say(text, false)` and 600 ms coalescer while the parent runs or drains, and
+   * the record's own Live id (`Thread.liveId`) once its slot has closed.
    */
-  private workerVoice(): WorkerVoice | undefined {
+  private workerVoice(): ThreadVoice | undefined {
     return this.delegator;
+  }
+
+  /** The factory the scheduler builds a thread's brain with; each lane gets its own acting queue (I1: one act in flight PER lane). */
+  private threadBrainFactory(): ThreadBrainFactory | undefined {
+    const inner = this.opts.makeWorkerBrain ?? this.workerBrainFactory;
+    if (!inner) return undefined;
+    return (spec) => {
+      if (spec.runner instanceof LaneRunner) spec.runner.setHooks({ serializer: serializerLike(new ActingSerializer()) });
+      return inner(spec);
+    };
+  }
+
+  /**
+   * "stop the Slack one" — the ear's, the Delegator's fragment path's, a thread verb's, a typed line's: that live
+   * thread alone, by Kevin, with a toast. `via` says which source served it; the Delegator is told, so Live's
+   * delegation for the same words says and stops nothing twice, and Live's fragments echoing the ear's named
+   * stop (or the ear's partial echoing Live's) cut nothing Kevin did not name — the two sources hear one utterance.
+   */
+  async stopNamed(name: string, how: "said" | "pressed" = "said", via: "ear" | "live" | "other" = "other"): Promise<boolean> {
+    const t = this.threads.table.byNameLive(name);
+    if (!t) return false;
+    // The fact BEFORE the stop is awaited: the other source's word for the same utterance may land while the thread's
+    // turn is being ended (the stop publishes `stopped` first, then waits on its brain), and must find it already noted.
+    this.delegator?.noteNamedStop(t.name, via);
+    const cut = await this.threads.stop(t.id, "kevin");
+    if (cut) this.toast(`${t.name} stopped`, "info");
+    log.info(`stop ${t.name} (${how}, ${via}): ${cut ? "stopped" : "had already finished"}`);
+    return cut;
+  }
+
+  /** The Delegator's view of the threads (`DelegatorOptions.threads`): names, lines, verbs and the overflow hooks, all from the table and the scheduler. */
+  private delegatorThreads(): NonNullable<DelegatorOptions["threads"]> {
+    const t = this.threads;
+    const live = (name: string): Thread | undefined => t.table.byNameLive(name);
+    return {
+      liveNames: () => t.threadNames(),
+      recentNames: () =>
+        t
+          .threads()
+          .filter((x) => x.id !== MAIN_THREAD_ID && THREAD_TERMINAL.has(x.status))
+          .map((x) => x.name),
+      byNameLive: (name) => {
+        const x = live(name);
+        return x ? { id: x.id, name: x.name } : undefined;
+      },
+      statusLine: (name) => t.statusLine(name),
+      followUp: (id, request, o) => t.followUp(id, request, o),
+      stopNamed: (name) => this.stopNamed(name, "said", "live"),
+      floorThread: () => t.floorThread(),
+      pauseNamed: async (name) => {
+        const x = live(name);
+        return x ? t.pause(x.id, "kevin") : false;
+      },
+      resumeNamed: async (name) => {
+        const x = live(name);
+        if (!x || x.status !== "paused") return false;
+        await t.resume(x.id);
+        return true;
+      },
+      overflow: () => (this.settings.threadOverflow === "spawn" ? "spawn" : "supersede"),
+      appClaimed: (app) => t.table.byApp(app).length > 0,
+      spawn: (parentDelegationId, name, task) => this.spawnOverflow(parentDelegationId, name, task),
+    };
+  }
+
+  /** The overflow rule's spawn (Settings.threadOverflow = "spawn"): a thread named after the app, under the running delegation, on the screen lane. */
+  private spawnOverflow(parentDelegationId: string, name: string, task: string): boolean {
+    const d = this.delegator?.all().find((x) => x.id === parentDelegationId && x.status === "running");
+    if (!d) return false;
+    const r = this.threads.start({ id: d.id, liveId: d.liveId, request: task, offsetMs: d.offsetMs, threadId: MAIN_THREAD_ID, depth: 0 }, { name, task, lane: "screen" });
+    if (r.kind !== "text") log.info(`overflow thread ${name} refused: ${r.kind === "error" ? r.message : r.kind}`);
+    return r.kind === "text";
+  }
+
+  /**
+   * Whose words a meta reflex is being run for right now: set by `runEarReflex` around the ReflexRunner's call,
+   * read by `metaReflex` on entry (the runner calls the meta hook before its first await, so nothing interleaves).
+   */
+  private metaVia: "ear" | "typed" | "other" = "other";
+
+  /**
+   * A meta reflex from the ear — a thread verb — answered from the table: zero generations, no hands. A named stop
+   * answers an empty text (the scheduler speaks "<Name> stopped." itself) — also when the name was stopped a moment
+   * ago by the other source (the same utterance heard twice is answered once); the rest is the line Kevin hears.
+   */
+  private async metaReflex(reflex: Reflex): Promise<ToolResult> {
+    const via = this.metaVia;
+    const t = this.threads;
+    const name = typeof reflex.input["name"] === "string" ? reflex.input["name"] : undefined;
+    switch (reflex.kind) {
+      case "thread_status":
+        return { kind: "text", text: t.statusLine(name) };
+      case "thread_list":
+        return { kind: "text", text: t.statusLine() };
+      case "thread_stop":
+        if (!name) return { kind: "error", message: "no thread named" };
+        if (await this.stopNamed(name, "said", via === "ear" ? "ear" : "other")) return { kind: "text", text: "" };
+        return this.delegator?.stoppedByNameRecently(name) ? { kind: "text", text: "" } : { kind: "text", text: t.statusLine(name) };
+      case "thread_pause": {
+        const x = name ? t.table.byNameLive(name) : undefined;
+        return x && (await t.pause(x.id, "kevin")) ? { kind: "text", text: `${x.name} paused.` } : { kind: "text", text: t.statusLine(name) };
+      }
+      case "thread_resume": {
+        const x = name ? t.table.byNameLive(name) : undefined;
+        if (x && x.status === "paused") {
+          await t.resume(x.id);
+          return { kind: "text", text: `${x.name} resumed.` };
+        }
+        return { kind: "text", text: t.statusLine(name) };
+      }
+      default:
+        return { kind: "error", message: `not a reflex: ${reflex.kind} is not the engine's to answer` };
+    }
+  }
+
+  /**
+   * Jarhead's own line with no delegation of its own to carry it (a thread verb answered from the ear): on the
+   * delegation under way when there is one — never gated, through the 600 ms coalescer — else the voice is told
+   * to say it now. Never a generation.
+   */
+  private speakAside(text: string): void {
+    const line = text.trim();
+    if (!line) return;
+    const d = this.delegator?.active;
+    if (d && this.delegator) {
+      this.delegator.workerSay(d.id, "Jarhead", line);
+      return;
+    }
+    this.live?.appendInstructions(null, `Say this to Kevin now, in these words: "${line}" Then wait.`);
+  }
+
+  // ---- the main thread's record: idle between turns, thinking/acting with the Delegator's phase, a question while one waits.
+
+  private onMainChange(d: Delegation): void {
+    const fresh = !this.mainCarded.has(d.id);
+    if (fresh) {
+      this.mainCarded.add(d.id);
+      if (this.mainCarded.size > 400) {
+        const oldest = this.mainCarded.values().next().value;
+        if (oldest !== undefined) this.mainCarded.delete(oldest);
+      }
+      this.mainLog.append({ kind: "delegation", delegation: d });
+      this.threads.publish(this.threads.table.turn(MAIN_THREAD_ID, d.id, d.request));
+    }
+    // Today every change rebuilds the snapshot; Phase B keeps the per-step rebuild off the wire (a card, a status still do).
+    if (Engine.SNAPSHOT_FULL_NOW || fresh || d.status !== "running") this.scheduleSnapshot();
+  }
+
+  private onMainStep(id: string, step: DelegationStep): void {
+    this.mainLog.append({ kind: "step", delegationId: id, step });
+    // A thread's line on the parent's record is the thread's, not a step of main's.
+    if (step.worker) return;
+    if (step.kind !== "tool" && step.kind !== "screenshot" && step.kind !== "confirm" && step.kind !== "error") return;
+    this.threads.publish(
+      this.threads.table.step(MAIN_THREAD_ID, {
+        ...(step.tool ? { tool: step.tool.name, ok: step.tool.ok } : {}),
+        ...(step.kind === "screenshot" ? { screenshot: true } : {}),
+        ...(step.screenshotPath ? { screenshotPath: step.screenshotPath } : {}),
+      }),
+    );
+    if (step.kind === "confirm" && step.text) this.threads.publish(this.threads.table.question(MAIN_THREAD_ID, step.text));
+  }
+
+  private onMainSettled(id: string, status: DelegationStatus, summary: string | undefined, timings: DelegationTimings): void {
+    this.mainLog.append({ kind: "status", delegationId: id, status, ...(summary !== undefined ? { summary } : {}), timings });
+  }
+
+  /** The Delegator's phase on the main record — `idle` reads `waiting-kevin` while the main lane's question holds the floor. */
+  private mainPhase(phase: "thinking" | "acting" | "idle"): void {
+    const status = phase === "idle" && this.desk.floor?.laneId === WorkerAwareRunner.ACTOR ? "waiting-kevin" : phase;
+    this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, status));
+  }
+
+  // ---- the thread.* commands (the Console's panes, the satellites' drops, the CLI).
+
+  /** `thread.stop {threadId}`: "main" parks the main turn — its threads carry on, never the interrupt; a spawned thread (by id or live name) is stopped by Kevin. */
+  private async stopThread(threadId: string): Promise<void> {
+    if (threadId === MAIN_THREAD_ID) {
+      const running = this.delegator?.active;
+      if (!running || !this.delegator) {
+        this.toast("nothing running on the main thread", "info");
+        return;
+      }
+      await this.delegator.parkRunning("Kevin stopped this thread", { status: "cancelled", summary: "Kevin stopped this thread" });
+      this.toast("main thread stopped", "info");
+      log.info(`thread.stop main: parked ${running.id}; the threads carry on`);
+      return;
+    }
+    const t = this.threads.get(threadId) ?? this.threads.table.byNameLive(threadId);
+    const cut = t ? await this.threads.stop(t.id, "kevin") : false;
+    this.toast(!t ? "no such thread" : cut ? `${t.name} stopped` : `${t.name} had already finished`, t ? "info" : "warn");
+  }
+
+  private async pauseThread(threadId: string): Promise<void> {
+    if (threadId === MAIN_THREAD_ID) {
+      this.toast("the main thread pauses with the transport (Pause)", "info");
+      return;
+    }
+    const t = this.threads.get(threadId) ?? this.threads.table.byNameLive(threadId);
+    const ok = t ? await this.threads.pause(t.id, "kevin") : false;
+    this.toast(!t ? "no such thread" : ok ? `${t.name} paused` : `${t.name} is not running`, t ? "info" : "warn");
+  }
+
+  private async resumeThread(threadId: string): Promise<void> {
+    if (threadId === MAIN_THREAD_ID) return this.resume();
+    const t = this.threads.get(threadId) ?? this.threads.table.byNameLive(threadId);
+    if (!t) {
+      this.toast("no such thread", "warn");
+      return;
+    }
+    if (t.status !== "paused") {
+      this.toast(`${t.name} is not paused`, "info");
+      return;
+    }
+    await this.threads.resume(t.id);
+    this.toast(`${t.name} resumed`, "info");
+  }
+
+  /**
+   * The Console's Allow / Deny on a thread's pane (`thread.answer`). A yes arms ONLY when that thread's question
+   * is the one on the floor — for "main", the main lane's — else it is refused ("another question is on the
+   * floor: <Name>'s"): a click on Slack's pane never says yes to Spotify's action. A no forgets that lane's
+   * question alone. Never a default keyboard action anywhere.
+   */
+  private async answerThread(threadId: string, yes: boolean): Promise<void> {
+    const floor = this.desk.floor;
+    if (threadId === MAIN_THREAD_ID) {
+      if (!yes) {
+        // The main lane's question alone goes — on the floor or queued. Its record leaves `waiting-kevin` now (no
+        // Delegator phase follows a click), and the voice, which a spoken no would have reached, is told the same.
+        const question = this.desk.pendingOf(WorkerAwareRunner.ACTOR)?.description;
+        if (question === undefined) {
+          this.toast("no question is waiting", "info");
+          return;
+        }
+        this.desk.drop(WorkerAwareRunner.ACTOR);
+        this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, this.delegator?.active ? "thinking" : "idle"));
+        this.live?.appendInstructions(null, `Kevin denied "${question.slice(0, 160)}" in the Console. Say one word and wait.`);
+        this.toast("denied", "info");
+        log.info(`thread.answer no main: dropped "${question.slice(0, 80)}"`);
+        return;
+      }
+      if (!floor) {
+        this.toast("no question is waiting", "info");
+        return;
+      }
+      if (floor.laneId !== WorkerAwareRunner.ACTOR) {
+        this.toast(`another question is on the floor: ${floor.name}'s`, "warn");
+        log.info(`thread.answer yes main refused: the floor is ${floor.name}'s`);
+        return;
+      }
+      // The main thread's yes is the typed yes: on the record, armed with its grant row, the voice told.
+      await this.sayText("yes");
+      return;
+    }
+    const t = this.threads.get(threadId);
+    if (!t) {
+      this.toast("no such thread", "warn");
+      return;
+    }
+    if (yes) {
+      const r = await this.threads.answerYes(t.id);
+      this.toast(r.ok ? `${t.name}: allowed` : (r.reason ?? "refused"), r.ok ? "info" : "warn");
+      log.info(`thread.answer yes ${t.name}: ${r.ok ? "armed and resumed" : `refused (${r.reason ?? "?"})`}`);
+      return;
+    }
+    await this.threads.answerNo(t.id);
+    this.toast(`${t.name}: denied`, "info");
+  }
+
+  /** `thread.say`: to "main" it is the composer's line (`sayText`); to a spawned thread a follow-up turn on its own brain. */
+  private async sayToThread(threadId: string, text: string): Promise<void> {
+    if (threadId === MAIN_THREAD_ID) return this.sayText(text);
+    const t0 = performance.now();
+    const t = this.threads.get(threadId);
+    const ok = t ? await this.threads.followUp(t.id, text) : false;
+    if (!ok) this.toast(t ? `${t.name} is not live` : "no such thread", "warn");
+    log.info(`thread.say ${t?.name ?? threadId}: ${ok ? "a follow-up turn" : "refused"} in ${Math.round(performance.now() - t0)} ms`);
+  }
+
+  // ---- thread panes: the agent.open shape over a seq-numbered log, per viewer, to viewers only.
+
+  private threadLog(threadId: string): ThreadLog | undefined {
+    return threadId === MAIN_THREAD_ID ? this.mainLog : this.threads.log(threadId);
+  }
+
+  private threadLive(threadId: string): boolean {
+    if (threadId === MAIN_THREAD_ID) return this.live !== undefined;
+    const t = this.threads.get(threadId);
+    return t !== undefined && !THREAD_TERMINAL.has(t.status);
+  }
+
+  private threadTranscript(threadId: string, entries: readonly ThreadEntry[], total: number, complete: boolean, cursor?: { readonly startSeq: number; readonly endSeq: number }, readMs?: number): Extract<EngineEvent, { type: "thread.transcript" }> {
+    return { type: "thread.transcript", transcript: { threadId, entries, total, complete, live: this.threadLive(threadId), ...(cursor ? { cursor } : {}), ...(readMs !== undefined ? { readMs } : {}) }, mode: "replace" };
+  }
+
+  /** `thread.open`: register the viewer, subscribe once to the log, send the newest page (`replace`) with a seq cursor. */
+  private openThread(threadId: string, viewer?: string): void {
+    const t0 = performance.now();
+    const key = viewer ?? `anon:${++this.anonViewers}`;
+    let open = this.openThreads.get(threadId);
+    if (!open) {
+      open = { viewers: new Set(), unwatch: undefined, pending: [], timer: undefined };
+      this.openThreads.set(threadId, open);
+    }
+    open.viewers.add(key);
+    const logOf = this.threadLog(threadId);
+    if (!logOf) {
+      this.emit("event", this.threadTranscript(threadId, [], 0, true));
+      log.info(`thread.open ${threadId} viewer ${key}: no such thread`);
+      return;
+    }
+    if (!open.unwatch) open.unwatch = logOf.onEntry((e) => this.queueThreadEntry(threadId, e));
+    const page = logOf.page(undefined, THREAD_PAGE);
+    const readMs = Math.round(performance.now() - t0);
+    this.emit("event", this.threadTranscript(threadId, page.entries, page.total, page.complete, { startSeq: page.startSeq, endSeq: page.endSeq }, readMs));
+    log.info(`thread.open ${threadId} viewer ${key}: page ${page.entries.length}/${page.total} in ${readMs} ms`);
+  }
+
+  private closeThread(threadId: string, viewer?: string): void {
+    const open = this.openThreads.get(threadId);
+    if (!open) return;
+    if (viewer !== undefined) open.viewers.delete(viewer);
+    else {
+      const anon = [...open.viewers].find((v) => v.startsWith("anon:"));
+      if (anon) open.viewers.delete(anon);
+    }
+    if (open.viewers.size > 0) return;
+    this.dropThreadPane(threadId, open);
+  }
+
+  private dropThreadPane(threadId: string, open: OpenThread): void {
+    this.openThreads.delete(threadId);
+    open.unwatch?.();
+    if (open.timer) clearTimeout(open.timer);
+    open.pending = [];
+  }
+
+  /** `thread.history {before}`: THREAD_PAGE older entries from the log's ring as a `prepend`; `complete` when the ring's oldest is in it. */
+  private threadHistory(threadId: string, before: number): void {
+    const t0 = performance.now();
+    const logOf = this.threadLog(threadId);
+    if (!logOf) {
+      this.toast(`no thread ${threadId}`, "warn");
+      return;
+    }
+    const page = logOf.page(before, THREAD_PAGE);
+    const readMs = Math.round(performance.now() - t0);
+    this.emit("event", { ...this.threadTranscript(threadId, page.entries, page.total, page.complete, { startSeq: page.startSeq, endSeq: page.endSeq }, readMs), mode: "prepend" });
+    log.info(`thread.history ${threadId} before ${before}: ${page.entries.length} in ${readMs} ms`);
+  }
+
+  /** A new entry on an open thread's log: held THREAD_TRANSCRIPT_COALESCE_MS and sent with the rest as one `append`. */
+  private queueThreadEntry(threadId: string, entry: ThreadEntry): void {
+    const open = this.openThreads.get(threadId);
+    if (!open) return;
+    open.pending.push(entry);
+    if (open.timer) return;
+    open.timer = setTimeout(() => {
+      open.timer = undefined;
+      this.flushThreadEntries(threadId);
+    }, Engine.THREAD_TRANSCRIPT_COALESCE_MS);
+    open.timer.unref?.();
+  }
+
+  private flushThreadEntries(threadId: string): void {
+    const open = this.openThreads.get(threadId);
+    if (!open || open.pending.length === 0) return;
+    const entries = open.pending;
+    open.pending = [];
+    const total = this.threadLog(threadId)?.total ?? entries[entries.length - 1]!.seq;
+    this.emit("event", { ...this.threadTranscript(threadId, entries, total, false), mode: "append" });
+  }
+
+  /**
+   * The composite look for `BrainTask.notes[0]` (DECISIONS §11b): what the reading helper already knows — the
+   * front app and window from the AX tick, the labelled controls from the ear-hints read, what the observer last
+   * saw — rendered in the pixels of the last screenshot when one was taken. A cache read, never a probe: the
+   * eyes' shot is the one round trip a task pays at its start; a stale or empty cache gives no preamble.
+   */
+  private async compositeLook(): Promise<string | undefined> {
+    const state = this.screenState.get(Engine.EAR_HINTS_REREAD_MS + Engine.AX_WARM_MS);
+    if (!state || (!state.front && !state.ax && !state.focused)) return undefined;
+    // The AX tick knows the app and the window by name only; for the rendering that is a front app with no frame.
+    const front = state.front ?? (state.ax ? { app: state.ax.app, pid: 0, window: { title: state.ax.window, x: 0, y: 0, w: 0, h: 0, windowId: 0 } } : undefined);
+    const toPixels = this.toolset.screen.last ? (p: Point): Point => this.toolset.screen.fromPoints(p.x, p.y) : undefined;
+    return renderCompositeLook({ ...state, ...(front ? { front } : {}) }, toPixels) || undefined;
   }
 
   // ------------------------------------------------------- conversations
@@ -2123,6 +2724,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   // and a clean shutdown tells every open pane live:false before the tails close.
 
   private async openAgent(agentId: string, viewer?: string): Promise<void> {
+    const t0 = performance.now();
     // Register the viewer first so a close() that races the page read is not lost.
     const key = viewer ?? `anon:${++this.anonViewers}`;
     const open = this.openConversations.get(agentId);
@@ -2143,7 +2745,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     entry.firstId = page.messages[0]?.id;
     // One tail per conversation however many viewers show it; its deltas cannot arrive before the page below is emitted.
     if (!entry.unwatch) this.attachTail(agentId, entry);
-    this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry.unwatch !== undefined }, mode: "replace" });
+    const readMs = Math.round(performance.now() - t0);
+    this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry.unwatch !== undefined, readMs }, mode: "replace" });
+    log.info(`agent.open ${agentId} viewer ${key}: page ${page.messages.length}/${page.total} in ${readMs} ms`);
   }
 
   /** The agent's last known status, for the entry (a status already `ended` at open settles nothing: the page reads it as is). */
@@ -2283,6 +2887,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       open.unwatch?.();
       closed++;
     }
+    for (const [threadId, open] of [...this.openThreads]) {
+      for (const v of [...open.viewers]) if (v.startsWith(prefix)) open.viewers.delete(v);
+      if (open.viewers.size > 0) continue;
+      this.dropThreadPane(threadId, open);
+      closed++;
+    }
     if (closed) log.info(`client ${clientId} left: ${closed} conversation tail(s) closed`);
   }
 
@@ -2297,11 +2907,13 @@ export class Engine extends EventEmitter<EngineEvents> {
    * `complete` says whether the first message is in it.
    */
   private async agentHistory(agentId: string, before: string): Promise<void> {
+    const t0 = performance.now();
     const entry = this.openConversations.get(agentId);
     const atStart = entry?.cursor !== undefined && entry.firstId !== undefined && before === entry.firstId;
     const opts: TranscriptOptions = { limit: DEFAULT_PAGE, before, ...(atStart && entry?.cursor ? { beforeOffset: entry.cursor.startOffset } : {}) };
     try {
       const page = await this.agents.transcript(agentId, opts);
+      log.info(`agent.history ${agentId}: ${page.messages.length} in ${Math.round(performance.now() - t0)} ms`);
       if (entry && page.cursor) {
         // The served range grows backward only when the page reached below it; a gap fill leaves the start where it was.
         const start = entry.cursor?.startOffset;
@@ -2323,6 +2935,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       open.unwatch?.();
     }
     this.openConversations.clear();
+    for (const [threadId, open] of [...this.openThreads]) {
+      this.flushThreadEntries(threadId);
+      this.emit("event", { type: "thread.transcript", transcript: { threadId, entries: [], total: this.threadLog(threadId)?.total ?? 0, complete: false, live: false }, mode: "append" });
+      this.dropThreadPane(threadId, open);
+    }
   }
 
   // --------------------------------------------------------------- marks
@@ -2577,7 +3194,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * ever on Kevin's press — browsing 22 voices must never churn paid starts.
    */
   async reopenVoice(): Promise<void> {
-    if (this.delegator?.active !== undefined || this.workers.running() > 0) {
+    if (this.delegator?.active !== undefined || this.threads.running() > 0) {
       this.toast("busy — heard at the next wake", "info");
       return;
     }
@@ -2724,9 +3341,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     // a colleague working Spotify by Apple events would still scroll for you.
     const active = this.delegator?.active;
     const draining = this.delegator?.draining;
-    if (active && (!draining || active.id !== draining.id) && !this.runner.waitingOnWorkers) return "a task is running";
-    // A screen-lane worker has the pointer: a reflex click would land in its work. Jarhead's own
-    // hold (a reflex that just ran, dictation) is the ear's own doing and holds nothing.
+    if (active && (!draining || active.id !== draining.id) && !this.runner.waitingOnThreads) return "a task is running";
+    // A SCREEN thread is at work (thinking, acting, waiting for the screen): a reflex click would land in its
+    // work. Background threads never hold the ear — a colleague working Spotify by Apple events still scrolls
+    // for you. Jarhead's own hold (a reflex that just ran, dictation) is the ear's own doing and holds nothing.
+    if (this.threads.anyScreenBusy()) return "a task is running";
     const holder = this.lease.holder;
     if (holder !== undefined && holder !== WorkerAwareRunner.ACTOR && holder !== "dictation") return "a task is running";
     const now = this.now();
@@ -2757,10 +3376,20 @@ export class Engine extends EventEmitter<EngineEvents> {
     return own === phrase || similarity(tail, phrase) >= RECONCILE_THRESHOLD;
   }
 
-  /** The grammar, gated by the setting and by dictation (while dictating, words are text, not commands). */
-  private matchReflex(utterance: string): Reflex | undefined {
+  /**
+   * The grammar, gated by the setting and by dictation (while dictating, words are text, not
+   * commands). The thread names it knows are the LIVE ones; `recentNames` adds the threads that
+   * ended within the linger — for the name after a stop word only, so "the slack one" still
+   * parses once the other stop source got to Slack first (the table answers false, nothing more).
+   */
+  private matchReflex(utterance: string, opts?: { readonly recentNames?: boolean }): Reflex | undefined {
     if (this.settings.reflexes === false || this.dictating) return undefined;
-    return this.reflexRunner.match(utterance);
+    if (!opts?.recentNames) return this.reflexRunner.match(utterance);
+    const recent = this.threads
+      .threads()
+      .filter((x) => x.id !== MAIN_THREAD_ID && THREAD_TERMINAL.has(x.status))
+      .map((x) => x.name);
+    return this.reflexRunner.match(utterance, { threadNames: [...new Set([...this.threads.threadNames(), ...recent])], now: this.now });
   }
 
   /**
@@ -2813,7 +3442,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * policy wants a question for is dropped — the pending question it left is
    * cleared so a later "yes" cannot arm it — and the model path will ask.
    */
-  private async runEarReflex(reflex: Reflex, _phrase: string): Promise<ReflexOutcome & { readonly dropped?: string }> {
+  private async runEarReflex(reflex: Reflex, _phrase: string, via: "ear" | "typed" = "ear"): Promise<ReflexOutcome & { readonly dropped?: string }> {
     const dispatchedAt = this.now();
     this.lastAddressedAt = dispatchedAt;
     switch (reflex.kind) {
@@ -2826,6 +3455,20 @@ export class Engine extends EventEmitter<EngineEvents> {
         return { reflex, result: ok ? { kind: "text", text: "OK" } : { kind: "error", message: "nothing to circle" }, ms: this.now() - t0, ok, dispatchedAt };
       }
       default: {
+        if (reflex.meta) {
+          // A thread verb or the clock: the RESULT text is what Kevin hears, from Jarhead itself, now — no generation.
+          // By ONE channel: spoken as an aside for the ear's words; for a typed line the typed instruction carries it.
+          this.metaVia = via;
+          let outcome: ReflexOutcome;
+          try {
+            outcome = await this.reflexRunner.run(reflex);
+          } finally {
+            this.metaVia = "other";
+          }
+          if (outcome.ok && outcome.result.kind === "text" && via !== "typed") this.speakAside(outcome.result.text);
+          if (outcome.ok) this.emit("reflex", reflex.label, outcome.ms, true);
+          return outcome;
+        }
         const outcome = await this.reflexRunner.run(reflex);
         if (outcome.result.kind === "needs-confirmation") {
           // The runner recorded a question nobody will relay; the model path asks properly.
@@ -2955,8 +3598,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (brain?.warmUp) {
       void brain.warmUp().then((r) => log.info(`brain warm at wake: ${r.warm ? "yes" : "not yet"} (${r.detail})`)).catch((e: Error) => log.debug(`brain warm-up: ${e.message}`));
     }
-    // One spare worker process, so the first split lands at once (no model request: primeThreads off).
-    if (this.settings.workers !== false) this.workers.warmSpare();
+    // The warm thread brains (Settings.warmThreads processes), so the first splits land at once (no model request: primeThreads off).
+    if (this.settings.workers !== false) this.threads.warm();
     if (!this.hands.available && !this.hands.ready) return;
     if (!(this.brain instanceof ResponsesBrain)) {
       // The wake shot goes to the reading helper (ScreenCaptureKit's first capture is the slow one) and
@@ -2982,6 +3625,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         .request<AxTreeResult>("ax_tree", { summary: true, maxAgeMs: Engine.AX_WARM_MS - 100, maxMs: 80 }, 1500)
         .then((r) => {
           if (r.app) this.frontApp = r.app;
+          // What the tick knows feeds the composite look for free: the app and the window by name.
+          if (r.app) this.screenState.absorb({ ax: { ...(this.screenState.get(Number.POSITIVE_INFINITY)?.ax ?? { labels: [] }), app: r.app, window: r.window } });
           this.noteAxForHints(r);
         })
         .catch((e: Error) => log.debug(`ax warm: ${e.message}`))
@@ -3037,6 +3682,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       .request<AxTreeResult>("ax_tree", { maxAgeMs: Engine.AX_WARM_MS + 200, maxMs: 80 }, 1500)
       .then((tree) => {
         if (!this.live) return;
+        // The labelled controls, read once per change of the tree: the composite look's list, at no extra probe.
+        this.screenState.absorb({ ax: axLabels(tree) });
         this.sendEarHints(earHintsFrom(tree.nodes ?? [], tree.app, tree.window, this.agentsList.map((a) => a.name)));
       })
       .catch((e: Error) => log.debug(`ear hints: ${e.message}`))
@@ -3103,12 +3750,28 @@ export class Engine extends EventEmitter<EngineEvents> {
         // The app's dock drop sends cause "dock"; a bare sleep is the legacy command. Only a spoken cue gets the farewell.
         return this.fallAsleep(cmd.cause ?? "command", { ...(cmd.phrase ? { phrase: cmd.phrase } : {}), farewell: cmd.cause === "said" });
       case "worker.stop": {
-        const w = this.workers.get(cmd.workerId);
-        const cut = await this.workers.stop(cmd.workerId, "kevin");
-        // A row still lingering for the Console after its worker finished: nothing was stopped, and the word says so.
+        const w = this.threads.get(cmd.workerId);
+        const cut = await this.threads.stop(cmd.workerId, "kevin");
+        // A row still lingering for the Console after its thread finished: nothing was stopped, and the word says so.
         this.toast(!w ? "no such worker" : cut ? `${w.name} stopped` : `${w.name} had already finished`, w ? "info" : "warn");
         return;
       }
+      case "thread.stop":
+        return this.stopThread(cmd.threadId);
+      case "thread.pause":
+        return this.pauseThread(cmd.threadId);
+      case "thread.resume":
+        return this.resumeThread(cmd.threadId);
+      case "thread.answer":
+        return this.answerThread(cmd.threadId, cmd.yes === true);
+      case "thread.say":
+        return this.sayToThread(cmd.threadId, String(cmd.text ?? ""));
+      case "thread.open":
+        return this.openThread(cmd.threadId, cmd.viewer);
+      case "thread.close":
+        return this.closeThread(cmd.threadId, cmd.viewer);
+      case "thread.history":
+        return this.threadHistory(cmd.threadId, Number(cmd.before) || 0);
       case "mute":
         return this.setMuted(true);
       case "unmute":
@@ -3127,8 +3790,18 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.problems = [];
         return this.scheduleSnapshot();
       case "agent.send": {
+        // M7: the pane shows Kevin's line at once — one `pending` echo before the await (dropped by the app when the
+        // real turn lands) — then a toast with the agent's NAME and how the line travelled, and one log line with ms.
+        const t0 = performance.now();
+        const name = this.agentsList.find((a) => a.id === cmd.agentId)?.name ?? cmd.agentId;
+        const open = this.openConversations.get(cmd.agentId);
+        const echo: AgentMessage = { id: `pending:${newId("msg")}`, role: "user", text: cmd.text, at: this.now(), pending: true };
+        this.emit("event", { type: "agent.transcript", transcript: { agentId: cmd.agentId, messages: [echo], total: open?.total ?? 0, complete: false, live: open?.unwatch !== undefined }, mode: "append" });
         const r = await this.agents.send(cmd.agentId, cmd.text);
-        this.toast(r.accepted ? `sent to ${cmd.agentId}` : `not sent: ${r.detail ?? "refused"}`, r.accepted ? "info" : "warn");
+        const ms = Math.round(performance.now() - t0);
+        const mode = r.mode === "queue" ? "queued" : r.mode === "resume" ? "resumed" : r.mode === "answer" ? "answered" : undefined;
+        this.toast(r.accepted ? `Sent to ${name}${mode ? ` · ${mode}` : ""}` : `Not sent · ${r.detail ?? "refused"}`, r.accepted ? "info" : "warn");
+        log.info(`agent.send ${name}: ${r.accepted ? (r.mode ?? "sent") : `refused: ${r.detail ?? "?"}`} in ${ms} ms`);
         return;
       }
       case "agent.refresh": {
@@ -3252,9 +3925,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     // A question queued behind one Kevin moved on from comes up now (the desk cannot see the root's drop).
     this.desk.promote();
     const idleMs = this.settings.idleSleepMinutes * 60_000;
-    // Not idle while a task runs — or while a worker still works for one (Live stays open for its
-    // question and for the spoken stop; its caps bound the worst case at about five minutes).
-    const busy = this.delegator?.active !== undefined || this.workers.running() > 0;
+    // Not idle while a task runs — or while a thread still works (Live stays open for its question and
+    // for the spoken stop; its caps bound the worst case at about five minutes).
+    const busy = this.delegator?.active !== undefined || this.threads.running() > 0;
+    // The table's clock: acting→thinking after 4 s without a step, the spares topped up, the idle threads ended.
+    this.threads.tick(now);
     // Five seconds before the idle sleep, one clause ("going to sleep") — and the sleep then
     // falls due on a fixed deadline, so the announcement (Jarhead's own speech moves
     // lastAddressedAt) cannot postpone it; only Kevin's input does (kevinSpoke).
@@ -4073,9 +4748,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       ...(this.pauseInfo ? { pause: this.pauseInfo } : {}),
       usageToday: this.usageToday(),
       // A cleared Now stream (K1) hides items at or before the mark HERE only: the ledger, Live's context and every gate still see them.
-      transcript: this.nowVisible(this.wholeTranscript(), (i) => i.at).slice(-200),
+      transcript: this.snapshotTranscript(),
       // Delegations survive a pause and resume (and a sleep): the Console keeps the day's work, newest last.
-      delegations: this.nowVisible([...this.pastDelegations(), ...(this.delegator?.all() ?? [])], (d) => d.createdAt).slice(-Engine.MAX_DELEGATIONS),
+      delegations: this.snapshotDelegations(),
       agents: this.agentsList,
       connectors: this.connectorHealth,
       settings: this.settings,
@@ -4089,11 +4764,25 @@ export class Engine extends EventEmitter<EngineEvents> {
       // The Trash line and the hidden agents (K1); both are read when they change, not here.
       trash: this.trashInfo,
       hiddenAgents: this.hiddenAgents,
-      // Running workers and those finished within WORKER_LINGER_MS, for the Console's rail.
-      workers: this.workers.list(),
+      // The spawned threads in the Worker shape, one release, for older surfaces.
+      workers: this.threads.list(),
       // What Jarhead remembers: counts, mode, the last run, what the last turn used — never a vector.
       memory: this.memory.summary(),
+      // Every live thread (main first) and those finished within THREAD_LINGER_MS, ≤ THREADS_MAX summaries.
+      threads: this.threads.threads(),
     };
+  }
+
+  /** The snapshot's utterances: today's 200; Phase B's SNAPSHOT_TRANSCRIPT. */
+  private snapshotTranscript(): readonly TranscriptItem[] {
+    return this.nowVisible(this.wholeTranscript(), (i) => i.at).slice(-(Engine.SNAPSHOT_FULL_NOW ? 200 : Engine.SNAPSHOT_TRANSCRIPT));
+  }
+
+  /** The snapshot's main-thread delegations: today's MAX_DELEGATIONS with every step; Phase B's SNAPSHOT_DELEGATIONS × SNAPSHOT_STEPS with `stepCount`. */
+  private snapshotDelegations(): readonly Delegation[] {
+    const all = this.nowVisible([...this.pastDelegations(), ...(this.delegator?.all() ?? [])], (d) => d.createdAt);
+    if (Engine.SNAPSHOT_FULL_NOW) return all.slice(-Engine.MAX_DELEGATIONS);
+    return all.slice(-Engine.SNAPSHOT_DELEGATIONS).map((d) => (d.steps.length > Engine.SNAPSHOT_STEPS ? { ...d, steps: d.steps.slice(-Engine.SNAPSHOT_STEPS), stepCount: d.stepCount ?? d.steps.length } : d.stepCount === undefined ? { ...d, stepCount: d.steps.length } : d));
   }
 
   /**
@@ -4312,6 +5001,15 @@ export class Engine extends EventEmitter<EngineEvents> {
 
 function normalizeForLog(s: string): string {
   return s.replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+/**
+ * The runners' `ActingSerializerLike.run<T>` over observe.ts's `ActingSerializer.run` (typed to RunOutcome): the
+ * runner only ever hands it a tool call, so the two are one thing — this is the seam between the threads'
+ * runner interface and the speed pass's class, kept here rather than in either builder's file.
+ */
+function serializerLike(s: ActingSerializer): { run<T>(name: string, fn: () => Promise<T>): Promise<T> } {
+  return { run: <T>(name: string, fn: () => Promise<T>): Promise<T> => s.run(name, fn as unknown as () => Promise<RunOutcome>) as unknown as Promise<T> };
 }
 
 /** A stroke drawn right-to-left gives a negative size; the capture needs a positive box at least a point wide. */

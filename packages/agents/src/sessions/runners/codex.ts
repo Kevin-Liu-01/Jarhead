@@ -159,14 +159,14 @@ export class CodexRunner implements SessionRunner {
     const bin = (await this.binary())!;
     if (mode === "queue") {
       const q = await this.queue(bin, s.id, text);
-      if (q.ok) return { kind: "delivered", detail: "queued into the open Codex thread; Codex will run it there" };
+      if (q.ok) return { kind: "delivered", mode: "queue", detail: "queued into the open Codex thread; Codex will run it there" };
       return { kind: "refused", reason: `that thread is open in Codex and queueing into it failed: ${q.error}` };
     }
     const cwd = await checkCwd(s.cwd);
     if (cwd.error || !s.cwd) return { kind: "refused", reason: cwd.error ?? "that thread has no working directory on record" };
     const handle = new CodexRun({ bin: bin.path, threadId: s.id, cwd: s.cwd, env: await this.childEnv(), budget: this.budgets(), sink, now: this.now });
     handle.send(text);
-    return { kind: "run", handle, detail: "resumed headlessly" };
+    return { kind: "run", mode: "resume", handle, detail: "resumed headlessly" };
   }
 
   async start(cwd: string, prompt: string, sink: RunSink): Promise<RunHandle> {

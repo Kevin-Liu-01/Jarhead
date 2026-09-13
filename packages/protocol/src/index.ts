@@ -332,7 +332,7 @@ export interface AgentInfo {
   readonly messageCount?: number;
   readonly hint?: AgentHint;
   /** Whether a message can be sent into this session now, and how (typed, not cue-parsed). */
-  readonly send?: { readonly ok: boolean; readonly reason?: string; readonly mode?: "queue" | "resume" };
+  readonly send?: { readonly ok: boolean; readonly reason?: string; readonly mode?: "queue" | "resume" | "answer" };
 }
 
 // ------------------------------------------------------- conversations ---
@@ -497,7 +497,7 @@ export const DEFAULT_WAKE: WakeSettings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  voice: "cedar",
+  voice: "ballad",
   brain: "auto",
   brainModel: "",
   effort: "medium",
@@ -511,7 +511,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shotsRetentionDays: 14,
   workers: true,
   language: "en",
-  accent: "american",
+  accent: "british",
   memory: true,
   observe: true,
   replayFinish: false,
@@ -926,9 +926,10 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "memory.run"; readonly sessionId?: string; readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number }
   // ---- threads: the table rebuilds from these at daemon start. Status rows only for starting / waiting-* / paused, never thinking↔acting.
   | { readonly at: number; readonly type: "thread.started"; readonly thread: Thread }
-  | { readonly at: number; readonly type: "thread.status"; readonly threadId: string; readonly status: ThreadStatus; readonly detail?: string }
+  | { readonly at: number; readonly type: "thread.status"; readonly threadId: string; readonly status: ThreadStatus; readonly threadStatus?: ThreadStatus; readonly detail?: string }
   | { readonly at: number; readonly type: "thread.said"; readonly threadId: string; readonly text: string }
-  | { readonly at: number; readonly type: "thread.ended"; readonly threadId: string; readonly status: "done" | "failed" | "stopped"; readonly summary?: string; readonly steps: number; readonly seconds: number }
+  /** `threadStatus` repeats `status` for the Swift mirror, whose `status` column is the delegation's. */
+  | { readonly at: number; readonly type: "thread.ended"; readonly threadId: string; readonly status: "done" | "failed" | "stopped"; readonly threadStatus?: ThreadStatus; readonly summary?: string; readonly steps: number; readonly seconds: number }
   // ---- conversation cleanup: tombstone rows appended to TODAY's file; the bytes of the
   // conversation stay where they were written. `chainId` is any session id of the chain
   // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both

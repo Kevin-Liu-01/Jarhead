@@ -66,6 +66,13 @@ export interface AcquireOptions {
   readonly signal?: AbortSignal | undefined;
   /** Default WAIT_MAX_MS. */
   readonly timeoutMs?: number | undefined;
+  /**
+   * A non-priority waiter's place in line (a thread's admission index): a free lease goes
+   * to the lowest rank waiting, whichever polled first, so two screen threads take the
+   * screen in the order they were started instead of racing the 250 ms poll. Absent =
+   * last in line. A priority taker (Jarhead's hands, dictation) ignores ranks.
+   */
+  readonly rank?: number | undefined;
 }
 
 export interface FocusLeaseOptions {
@@ -119,6 +126,8 @@ export class FocusLease {
   private readonly activations = new Map<string, Activation>();
   /** Bumped by `cancelAll`; every waiter compares and gives up. */
   private generation = 0;
+  /** Non-priority actors waiting right now, by rank (Infinity = unranked): the lowest is granted first. */
+  private readonly waiters = new Map<string, number>();
 
   constructor(private readonly opts: FocusLeaseOptions) {
     this.now = opts.now ?? Date.now;
@@ -188,6 +197,19 @@ export class FocusLease {
     return this.remembered.get(actor) ?? this.intended.get(actor);
   }
 
+  /** The non-priority actors in line for the screen, lowest rank first (tests, the log). */
+  get waiting(): readonly string[] {
+    return [...this.waiters.entries()].sort((a, b) => a[1] - b[1]).map(([actor]) => actor);
+  }
+
+  /** Someone with a lower rank is waiting too: this actor's turn is not yet. */
+  private behindInLine(actor: string): string | undefined {
+    const mine = this.waiters.get(actor);
+    if (mine === undefined) return undefined;
+    for (const [other, rank] of this.waiters) if (other !== actor && rank < mine) return `${other} is ahead in line`;
+    return undefined;
+  }
+
   /**
    * Take the screen, or wait for it. Resolves `ok` with the lease held (and `refocused`
    * when the taker's remembered app was re-fronted), or `ok: false` with the reason the
@@ -198,35 +220,43 @@ export class FocusLease {
     const gen = this.generation;
     const deadline = this.now() + (o.timeoutMs ?? WAIT_MAX_MS);
     let reason = "the screen is busy";
-    for (;;) {
-      if (o.signal?.aborted) return { ok: false, reason: "cancelled" };
-      if (this.generation !== gen) return { ok: false, reason: "cut" };
-      const h = this.held;
-      if (h?.actor === actor) {
-        h.lastActAt = this.now();
-        return { ok: true };
-      }
-      let blocked = this.blockedBy(actor, o.priority);
-      if (!blocked) {
-        // The gate is two helper round trips; the lease may have moved meanwhile — a
-        // priority taker landed, the idle holder woke and began an op, a cut — so the
-        // verdict from before it counts for nothing: judge again before taking anything.
-        const gate = o.priority ? undefined : await this.workerGate(actor);
+    // In line while waiting (non-priority only): the lowest rank present is granted first.
+    if (!o.priority) this.waiters.set(actor, o.rank ?? Number.POSITIVE_INFINITY);
+    try {
+      for (;;) {
         if (o.signal?.aborted) return { ok: false, reason: "cancelled" };
         if (this.generation !== gen) return { ok: false, reason: "cut" };
-        if (this.held?.actor === actor) return { ok: true };
-        blocked = this.blockedBy(actor, o.priority) ?? gate;
-        if (!blocked) {
-          const prev = this.held;
-          const now = this.now();
-          this.held = { actor, priority: o.priority, since: now, lastActAt: now };
-          if (prev) log.debug(`${prev.actor} → ${actor}`);
-          return this.settle(actor, gen);
+        const h = this.held;
+        if (h?.actor === actor) {
+          h.lastActAt = this.now();
+          return { ok: true };
         }
+        let blocked = this.blockedBy(actor, o.priority) ?? (o.priority ? undefined : this.behindInLine(actor));
+        if (!blocked) {
+          // The gate is two helper round trips; the lease may have moved meanwhile — a
+          // priority taker landed, the idle holder woke and began an op, a cut — so the
+          // verdict from before it counts for nothing: judge again before taking anything.
+          const gate = o.priority ? undefined : await this.workerGate(actor);
+          if (o.signal?.aborted) return { ok: false, reason: "cancelled" };
+          if (this.generation !== gen) return { ok: false, reason: "cut" };
+          if (this.held?.actor === actor) return { ok: true };
+          blocked = this.blockedBy(actor, o.priority) ?? gate ?? (o.priority ? undefined : this.behindInLine(actor));
+          if (!blocked) {
+            const prev = this.held;
+            const now = this.now();
+            this.held = { actor, priority: o.priority, since: now, lastActAt: now };
+            if (prev) log.debug(`${prev.actor} → ${actor}`);
+            // Out of the line before the settle: the next in rank may judge the lease free once this one lets go.
+            this.waiters.delete(actor);
+            return this.settle(actor, gen);
+          }
+        }
+        reason = blocked;
+        if (this.now() >= deadline) return { ok: false, reason };
+        await this.sleep(this.opts.pollMs ?? USER_IDLE_POLL_MS);
       }
-      reason = blocked;
-      if (this.now() >= deadline) return { ok: false, reason };
-      await this.sleep(this.opts.pollMs ?? USER_IDLE_POLL_MS);
+    } finally {
+      this.waiters.delete(actor);
     }
   }
 
@@ -395,6 +425,8 @@ export class FocusLease {
     this.held = undefined;
     this.inFlight = 0;
     this.activations.clear();
+    // Every waiter returns `cut` on its next poll and leaves the line itself; the line is empty now regardless.
+    this.waiters.clear();
   }
 
   /**

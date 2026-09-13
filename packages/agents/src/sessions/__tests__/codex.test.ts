@@ -242,24 +242,28 @@ test("speakable: fenced code, inline code, emphasis, headings, links and bullets
 
 test("health(): the Codex line tells the truth — version and origin, login, desktop app, thread count; and the exact reason otherwise", async () => {
   const h = makeHome();
+  // The thread count is what the 14-day window (DEFAULT_MAX_AGE_DAYS) holds at `now`: the fixtures are dated
+  // 2026-09-01 (C1) and 2026-08-30 (the archived C2), so this test's clock is pinned three days after them —
+  // on Date.now the archived one fell out of the window on 2026-09-13 and the line read "1 thread".
+  const clock = { opts: { now: () => T("2026-09-04T12:00:00.000Z") } };
   try {
-    const notSignedIn = connector(h, { procs: [] });
+    const notSignedIn = connector(h, { procs: [], ...clock });
     const a = await notSignedIn.health();
     assert.equal(a.ok, true, "the session store is listable");
     assert.equal(a.detail.split(" | ")[0], "Codex 0.153.4 (JARHEAD_CODEX_BIN) · not signed in (~/.codex/auth.json missing) · desktop app not running · 2 threads");
 
     h.signIn();
-    const signedIn = connector(h, { procs: [desktop([C1])] });
+    const signedIn = connector(h, { procs: [desktop([C1])], ...clock });
     const b = await signedIn.health();
     assert.equal(b.detail.split(" | ")[0], "Codex 0.153.4 (JARHEAD_CODEX_BIN) · signed in · desktop app running · 2 threads");
     assert.equal(b.detail.split(" | ")[1], "claude not found: looked in JARHEAD_CLAUDE_BIN (unset), PATH, ~/.local/bin, ~/.claude/local, ~/.bun/bin · 0 sessions", "an empty ~/.claude/projects is a store with nothing in it");
 
     h.signIn("api-key");
-    assert.match((await connector(h).health()).detail, /^Codex 0\.153\.4 \(JARHEAD_CODEX_BIN\) · signed in \(API key\) · desktop app not running · 2 threads/);
+    assert.match((await connector(h, clock).health()).detail, /^Codex 0\.153\.4 \(JARHEAD_CODEX_BIN\) · signed in \(API key\) · desktop app not running · 2 threads/);
     rmSync(join(h.codexRoot, "auth.json"));
-    assert.match((await connector(h, { env: { OPENAI_API_KEY: "sk-env" } }).health()).detail, /^Codex 0\.153\.4 \(JARHEAD_CODEX_BIN\) · signed in \(OPENAI_API_KEY from the environment\) · /, "Jarhead's own key would be what Codex uses; say so");
+    assert.match((await connector(h, { env: { OPENAI_API_KEY: "sk-env" }, ...clock }).health()).detail, /^Codex 0\.153\.4 \(JARHEAD_CODEX_BIN\) · signed in \(OPENAI_API_KEY from the environment\) · /, "Jarhead's own key would be what Codex uses; say so");
 
-    const missing = connector(h, { codexBin: null });
+    const missing = connector(h, { codexBin: null, ...clock });
     const c = await missing.health();
     assert.equal(c.detail.split(" | ")[0], "codex not found: looked in JARHEAD_CODEX_BIN (unset), PATH, ChatGPT.app, Codex.app, ~/.codex/bin, ~/.bun/bin, ~/.local/bin · desktop app not running · 2 threads");
 
@@ -316,7 +320,7 @@ test("send(): nobody owns the thread → `codex exec resume` in the thread's cwd
     assert.equal(listed?.status, "ended", "before: a finished thread, no process on it");
 
     const sent = await c.send(ID1, "the hero");
-    assert.deepEqual(sent, { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(sent, { accepted: true, detail: "resumed headlessly", mode: "resume" });
     const working = (await c.list()).find((a) => a.id === ID1);
     assert.equal(working?.status, "working");
     assert.equal(working?.detail, "codex · 3 msgs · demo-site · resumed: thinking");
@@ -340,7 +344,7 @@ test("send(): nobody owns the thread → `codex exec resume` in the thread's cwd
     assert.match(fresh?.lastAssistantText ?? "", /^Switched \*\*the hero\*\* to DM Sans/);
 
     const again = await c.send(ID1, "and the footer");
-    assert.deepEqual(again, { accepted: true, detail: "sent to the resumed session" });
+    assert.deepEqual(again, { accepted: true, detail: "sent to the resumed session", mode: "resume" });
     assert.equal((await c.waitSettled(ID1, 3_000)).status, "idle");
     assert.equal(h.logged().length, 2, "each turn is its own codex exec");
     assert.equal(h.logged()[1]?.args[8], "and the footer");
@@ -365,14 +369,14 @@ test("send(): the thread is open in Codex Desktop → `codex queue` into it, nev
     const c = connector(h, { procs: [desktop([C1])] });
     assert.equal((await c.list()).find((a) => a.id === ID1)?.status, "idle", "the app-server holds its rollout");
     const queued = await c.send(ID1, "also the footer");
-    assert.deepEqual(queued, { accepted: true, detail: "queued into the open Codex thread; Codex will run it there" });
+    assert.deepEqual(queued, { accepted: true, detail: "queued into the open Codex thread; Codex will run it there", mode: "queue" });
     assert.deepEqual(h.logged().map((x) => x.args), [["queue", "--thread", C1, "--message", "also the footer"]]);
     assert.equal(h.logged()[0]?.cwd, realpathSync(process.cwd()), "queue talks to the thread store, not to the thread's folder: spawned wherever we are");
     assert.equal((await c.list()).find((a) => a.id === ID1)?.status, "idle", "nothing of ours is running");
 
     // The thread's folder is gone: an open thread still takes a message (a resume could not have run there).
     rmSync(h.cwd, { recursive: true, force: true });
-    assert.deepEqual(await c.send(ID1, "and the footer"), { accepted: true, detail: "queued into the open Codex thread; Codex will run it there" });
+    assert.deepEqual(await c.send(ID1, "and the footer"), { accepted: true, detail: "queued into the open Codex thread; Codex will run it there", mode: "queue" });
     assert.equal(h.logged().length, 2);
 
     // The rollout itself is gone while the listing still has the thread: the CLI's refusal is the answer.
@@ -394,7 +398,7 @@ test("send(): a writer lock nobody holds is a leftover → resumed, no queue; de
     // `codex queue` exits 0 with or without a daemon (checked against 0.153.4), so it could not
     // tell a live lock from a stale one; the process snapshot did, and the CLI takes stale locks itself.
     const stale = connector(h);
-    assert.deepEqual(await stale.send(ID1, "hi"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await stale.send(ID1, "hi"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     assert.equal((await stale.waitSettled(ID1, 3_000)).status, "idle");
     assert.deepEqual(h.logged().map((x) => x.args[0]), ["exec"], "straight to the resume: a queue here would file a message nobody drains");
     await stale.closeAll();
@@ -443,10 +447,10 @@ test("send(): between turns, ownership is asked again — Kevin opening the thre
     h.signIn();
     let procs: AgentProcess[] = [];
     const c = connector(h, { opts: { processes: async () => procs } });
-    assert.deepEqual(await c.send(ID1, "one"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await c.send(ID1, "one"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     assert.equal((await c.waitSettled(ID1, 3_000)).status, "idle");
     procs = [desktop([C1])];
-    assert.deepEqual(await c.send(ID1, "two"), { accepted: true, detail: "queued into the open Codex thread; Codex will run it there" });
+    assert.deepEqual(await c.send(ID1, "two"), { accepted: true, detail: "queued into the open Codex thread; Codex will run it there", mode: "queue" });
     assert.deepEqual(h.logged().map((x) => x.args[0]), ["exec", "queue"]);
     await c.closeAll();
   } finally {
@@ -460,7 +464,7 @@ test("send(): our own `codex exec resume` child is not mistaken for another owne
     h.signIn();
     let procs: AgentProcess[] = [];
     const c = connector(h, { env: { FAKE_CODEX_DELAY_MS: "300" }, opts: { processes: async () => procs } });
-    assert.deepEqual(await c.send(ID1, "one"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await c.send(ID1, "one"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     await until(() => h.logged().length === 1, 3_000, "the child to start");
     // What ps shows for the child we just spawned — the runner's own argv, which names the thread after `--`.
     const pid = h.logged()[0]?.pid ?? 0;
@@ -469,11 +473,11 @@ test("send(): our own `codex exec resume` child is not mistaken for another owne
     const classified = classifyCommand(command);
     assert.deepEqual(classified, { tool: "codex", interactive: false, sessionId: C1 }, "our own resume argv is read like a human's `codex resume <id>`");
     procs = [{ pid, ppid: process.pid, startedAt: Date.now(), tool: "codex", command, cwd: h.cwd, interactive: classified!.interactive, sessionId: classified!.sessionId, heldSessionIds: [] }];
-    assert.deepEqual(await c.send(ID1, "two"), { accepted: true, detail: "sent to the resumed session" }, "a turn during our own turn queues behind it");
+    assert.deepEqual(await c.send(ID1, "two"), { accepted: true, detail: "sent to the resumed session", mode: "resume" }, "a turn during our own turn queues behind it");
     await until(() => h.logged().length === 2, 3_000, "the second exec");
     assert.equal((await c.waitSettled(ID1, 3_000)).status, "idle");
     // The child is gone but a snapshot taken seconds ago would still list it: still ours, still a resume.
-    assert.deepEqual(await c.send(ID1, "three"), { accepted: true, detail: "sent to the resumed session" });
+    assert.deepEqual(await c.send(ID1, "three"), { accepted: true, detail: "sent to the resumed session", mode: "resume" });
     assert.equal((await c.waitSettled(ID1, 3_000)).status, "idle");
     assert.deepEqual(h.logged().map((x) => x.args[0]), ["exec", "exec", "exec"], "no queue: the only 'owner' was us");
     await c.closeAll();
@@ -548,7 +552,7 @@ test("interrupt(): SIGINT ends the turn; a child that ignores it is SIGKILLed af
   try {
     h.signIn();
     const c = connector(h, { env: { FAKE_CODEX_MODE: "hang" }, opts: { codexKillGraceMs: 150 } });
-    assert.deepEqual(await c.send(ID1, "run forever"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await c.send(ID1, "run forever"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     await until(() => h.logged().length === 1, 3_000, "the spawn");
     await new Promise((r) => setTimeout(r, 100));
     assert.equal((await c.list()).find((a) => a.id === ID1)?.status, "working");
@@ -597,7 +601,7 @@ test("errors: top-level `error` events are notices — the status stays working 
     const stop = c.subscribe((a) => {
       if (a.id === ID1) seen.push(`${a.status}: ${a.detail}`);
     });
-    assert.deepEqual(await c.send(ID1, "hi"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await c.send(ID1, "hi"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     // 8 s: under full-suite load the 400 ms fake delay plus the 50 ms coalescer can slip past 3 s.
     await until(() => seen.includes("working: codex · 3 msgs · demo-site · resumed: reconnecting 5/5"), 8_000, "the retry to show as detail");
     const settled = await c.waitSettled(ID1, 3_000);
@@ -639,7 +643,7 @@ test("errors: turn.failed and a crash without turn.completed leave status unknow
     assert.equal(k.detail, "codex · 3 msgs · demo-site · resumed: Error: stream disconnected before completion");
     // A run in "unknown" is not offline: the next send tries again rather than giving up on the thread.
     const retry = connector(h, {});
-    assert.deepEqual(await retry.send(ID1, "again"), { accepted: true, detail: "resumed headlessly" });
+    assert.deepEqual(await retry.send(ID1, "again"), { accepted: true, detail: "resumed headlessly", mode: "resume" });
     assert.equal((await retry.waitSettled(ID1, 3_000)).status, "idle");
     await crashed.closeAll();
     await retry.closeAll();

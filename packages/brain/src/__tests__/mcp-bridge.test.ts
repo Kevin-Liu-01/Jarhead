@@ -17,7 +17,8 @@ const BRIDGE = fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url));
 const TSX = join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 
 /** The four specs WORKER_SPECS adds to the table (tools.ts); the bridge serves them like any other. */
-const WORKER_TOOLS = ["worker_start", "worker_wait", "worker_read", "worker_stop"] as const;
+/** The four thread specs (tools.ts THREAD_SPECS); worker_* are aliases the scheduler answers, not specs. */
+const THREAD_TOOLS = ["thread_start", "thread_wait", "thread_read", "thread_stop"] as const;
 
 class FakeEngine extends EventEmitter implements EngineLike {
   calls: { name: string; input: unknown }[] = [];
@@ -67,7 +68,7 @@ test("mcp bridge: tool specs become MCP tools verbatim and results become MCP co
   // (WORKER_SPECS, tools.ts). A tool added or lost anywhere in the table moves this number on purpose.
   assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 67);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
-  for (const n of WORKER_TOOLS) assert.ok(names.has(n), `${n} is in the table the bridge serves`);
+  for (const n of THREAD_TOOLS) assert.ok(names.has(n), `${n} is in the table the bridge serves`);
 
   assert.deepEqual(toMcpContent({ kind: "text", text: "hi" }), { content: [{ type: "text", text: "hi" }] });
   const img = toMcpContent({ kind: "image", pngBase64: "AAAA", width: 10, height: 5, note: "n" });

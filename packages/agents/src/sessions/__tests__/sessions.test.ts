@@ -1052,7 +1052,7 @@ test("permissions: a resumed session's question stays open until Kevin answers; 
     assert.equal(c.resolvePermission(`sessions:codex:${C1}`, true), false);
 
     const yes = await c.send(id, "yes, go ahead");
-    assert.deepEqual(yes, { accepted: true, detail: "allowed Bash" });
+    assert.deepEqual(yes, { accepted: true, detail: "allowed Bash", mode: "answer" });
     assert.equal(c.pendingPermission(id), undefined);
     assert.equal((await c.waitSettled(id, 2_000)).status, "idle");
     assert.deepEqual(sdk.decisions, [{ behavior: "allow" }]);
@@ -1125,7 +1125,7 @@ test("permissions: parallel tool calls each reach Kevin in turn, and the session
     assert.equal((await c.waitSettled(id, 2_000)).status, "blocked", "an open question is settled");
     assert.ok(Date.now() - t0 < 500, `and settled at once, not at the timeout (${Date.now() - t0} ms)`);
 
-    assert.deepEqual(await c.send(id, "yes"), { accepted: true, detail: "allowed Bash" });
+    assert.deepEqual(await c.send(id, "yes"), { accepted: true, detail: "allowed Bash", mode: "answer" });
     await until(() => sdk.decisions.length === 1, 2_000, "the first decision");
     assert.deepEqual(sdk.decisions, [{ behavior: "allow" }]);
     assert.equal(c.pendingPermission(id)?.summary, "curl -X POST https://example.com/hook", "the second question follows");

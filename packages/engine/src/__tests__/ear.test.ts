@@ -290,6 +290,99 @@ test("ear: while off or held (paused, muted, the voice speaking, a task running)
   assert.equal(h.ran.length, 2);
 });
 
+/** An ear over a table of two live threads: the name window, the segment roll, Live's echo. */
+function threadHarness(opts: { live: () => number; echo?: () => boolean; names: string[]; recent?: string[] }): { ear: EarReflexes; ran: { label: string; phrase: string }[]; rows: ReflexLedgerRow[]; stops: number; gates: number; clock: { t: number }; fired: FiredReflexes } {
+  const clock = { t: 1_000_000 };
+  const fired = new FiredReflexes(() => clock.t);
+  const h = { ear: undefined as unknown as EarReflexes, ran: [] as { label: string; phrase: string }[], rows: [] as ReflexLedgerRow[], stops: 0, gates: 0, clock, fired };
+  h.ear = new EarReflexes({
+    now: () => clock.t,
+    enabled: () => true,
+    // The engine's grammar: live names, plus the ones that just ended when asked (the name after a stop word).
+    match: (u, o) => parseReflex(u, { threadNames: o?.recentNames ? [...opts.names, ...(opts.recent ?? [])] : opts.names }),
+    run: async (reflex, phrase) => {
+      h.ran.push({ label: reflex.label, phrase });
+      return { reflex, result: { kind: "text", text: "" }, ms: 1, ok: true, dispatchedAt: clock.t };
+    },
+    onStop: () => void h.stops++,
+    onGateSpeech: () => void h.gates++,
+    liveThreads: opts.live,
+    ...(opts.echo ? { recentNamedStop: opts.echo } : {}),
+    stopNameWaitMs: 60,
+    dictation: { active: () => false, start: () => undefined, stop: () => undefined, type: async () => true, newline: async () => undefined, deleteWord: async () => undefined },
+    fired,
+    ledger: (row) => h.rows.push(row),
+    stableMs: 30,
+    carefulMs: 60,
+  });
+  return h;
+}
+
+test("ear: the name window survives a segment roll — 'stop' in segment 1, 'the slack one' as the first words of segment 2 fires 'stop Slack' (remembered for Live's reconcile, one gate); a roll with no name cuts everything when the window runs out", async () => {
+  const h = threadHarness({ live: () => 2, names: ["Slack", "Spotify"] });
+  h.ear.hear("stop", false, 1, h.clock.t);
+  await tick(5);
+  assert.equal(h.gates, 1, "the speech is gated on the stop word");
+  assert.equal(h.stops, 0, "the work waits for a name");
+  // The recogniser rolled its request between the stop word and the name.
+  h.ear.hear("the slack one", false, 2, h.clock.t);
+  await tick(5);
+  assert.deepEqual(h.ran, [{ label: "stop Slack", phrase: "stop the slack one" }], "the new segment's words are judged as the name");
+  assert.equal(h.gates, 1, "gated once, not again at the fire");
+  await tick(100);
+  assert.equal(h.stops, 0, "the name closed the window: no cut");
+  assert.equal(h.rows.length, 1);
+  assert.deepEqual([h.rows[0]!.action, h.rows[0]!.fired, h.rows[0]!.ok], ["stop Slack", "terminal", true]);
+  assert.equal(h.fired.peek("stop the slack one")?.kind, "done", "Live's delegation of the words will find it done");
+  // A roll with no name after the stop word: the timer decides, and cuts.
+  h.ear.hear("stop", false, 3, h.clock.t);
+  await tick(5);
+  assert.equal(h.gates, 2);
+  h.ear.hear("scroll down", false, 4, h.clock.t);
+  await tick(100);
+  assert.equal(h.stops, 1, "no name in the window: everything is cut when it runs out");
+  assert.equal(h.ran.length, 1, "'scroll down' was not the name and did not fire as a reflex meanwhile");
+});
+
+test("ear: Live's fragment path just stopped a thread by name (recentNamedStop) — the ear's stop word with one thread live opens the name window instead of cutting, 'stop the slack one' parses through the recent names, and an empty window closes quiet; with the echo gone a bare stop is today's cut", async () => {
+  let echo = true;
+  const h = threadHarness({ live: () => 1, echo: () => echo, names: ["Spotify"], recent: ["Slack"] });
+  h.ear.hear("stop", false, 1, h.clock.t);
+  await tick(5);
+  assert.equal(h.gates, 1);
+  assert.equal(h.stops, 0, "not cut: Live's words just served a named stop");
+  h.ear.hear("stop the slack one", false, 1, h.clock.t);
+  await tick(5);
+  assert.deepEqual(h.ran.map((r) => r.label), ["stop Slack"], "the name of a thread that just ended still parses");
+  await tick(100);
+  assert.equal(h.stops, 0);
+  // The echo with no name following: quiet.
+  h.ear.hear("stop", false, 2, h.clock.t);
+  await tick(5);
+  assert.equal(h.gates, 2);
+  await tick(100);
+  assert.equal(h.stops, 0, "an empty window on the echo cuts nothing");
+  // No echo any more: the old rule.
+  echo = false;
+  h.ear.hear("stop", false, 3, h.clock.t);
+  await tick(5);
+  assert.equal(h.stops, 1, "cut on the partial, as today");
+});
+
+test("ear: a typed line while dictating is text, not a command — typed() runs nothing", async () => {
+  const h = harness();
+  h.ear.hear("start dictating", true, 1, 1);
+  await tick(5);
+  assert.equal(h.dictation.active, true);
+  assert.equal(await h.ear.typed("open safari", h.clock.t), undefined);
+  assert.deepEqual(h.ran.map((r) => r.label), ["start dictating"], "no reflex ran for the typed line");
+  h.dictation.active = false;
+  const out = await h.ear.typed("scroll down", h.clock.t);
+  assert.equal(out?.ok, true);
+  assert.deepEqual(h.ran.map((r) => r.label), ["start dictating", "scroll down"]);
+  assert.equal(h.rows.at(-1)!.source, "typed");
+});
+
 test("FiredReflexes: peek finds without claiming, reconcile claims; a longer utterance that ends with the phrase is partial, never done", () => {
   const clock = { t: 10_000 };
   const f = new FiredReflexes(() => clock.t, 4000);

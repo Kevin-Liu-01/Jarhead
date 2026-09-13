@@ -64,9 +64,13 @@ export function attachmentsPreamble(attachments: readonly BrainAttachment[] | un
  * The note on the pre-warm screenshot: the display under the cursor as the task
  * began. It is the "last screenshot" the toolset maps coordinates through, so the
  * model can click on it straight away instead of spending its first turn looking.
+ * With the composite look (`controls` > 0) the task's first note lists the front
+ * window's labelled controls with their centres in this image's pixels: the model
+ * can `click_element` by name or `left_click` a centre without a zoom to read the labels.
  */
-export function screenNote(width: number, height: number, detail = ""): string {
-  return `the screen right now (${width}x${height} px${detail ? `, ${detail}` : ""}), taken as this task began. This counts as your last screenshot: click coordinates are pixels of this image. Act on it directly; take another screenshot only after the screen has changed.`;
+export function screenNote(width: number, height: number, detail = "", controls = 0): string {
+  const listed = controls > 0 ? ` The ${controls} controls listed in the notes below are on this screenshot, centres in its pixels: click_element them by name, or left_click a centre.` : "";
+  return `the screen right now (${width}x${height} px${detail ? `, ${detail}` : ""}), taken as this task began. This counts as your last screenshot: click coordinates are pixels of this image.${listed} Act on it directly; take another screenshot only after the screen has changed.`;
 }
 
 /**

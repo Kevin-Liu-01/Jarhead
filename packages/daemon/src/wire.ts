@@ -89,7 +89,12 @@ export type DaemonMessage =
   | { readonly type: "ear.hints"; readonly strings: readonly string[] }
   /** Full-text hits over the ledger for the Console's search box. */
   | { readonly type: "ledger.hits"; readonly id: string; readonly hits: unknown[] }
+  /** A page of an agent's conversation: sent to the clients viewing that agent (`agent.open`), never to the CLI's join/leave clients. */
   | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
+  /** One change on one thread (a ThreadEvent; ≤ 200 B once the table caps its text, `started` excepted — it carries the record): broadcast, so the orb's satellites and the rail follow without a snapshot. */
+  | { readonly type: "thread.event"; readonly event: unknown }
+  /** A page of a thread's conversation (a ThreadTranscript): sent only to the clients that opened that thread (`thread.open`). */
+  | { readonly type: "thread.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
    * ToolResult as the runner produced it (text / image {pngBase64, width, height,
@@ -134,11 +139,12 @@ export type ClientMessage =
    * that gives an external brain (Codex) the same tools the in-process brains
    * have. Only local unix-socket clients exist, so there is no further auth.
    *
-   * `worker` names the worker whose brain is calling (the `w_…` id the bridge was
-   * started with as `JARHEAD_WORKER`): the daemon routes the call to that worker's
-   * lane runner — its lane's refusals, its budget, its place in the confirmation
-   * queue — and refuses a worker it does not know rather than falling back to the
-   * main runner, which holds the pointer. Absent: the main brain's call.
+   * `worker` names the thread whose brain is calling (the `t_…` id — or a `w_…` worker
+   * id for one release — the bridge was started with as `JARHEAD_WORKER`; the field
+   * keeps its wire name): the daemon routes the call to that thread's lane runner — its
+   * lane's refusals, its budget, its place in the confirmation queue — and refuses an id
+   * it does not know rather than falling back to the main runner, which holds the
+   * pointer. Absent: the main brain's call.
    */
   | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown; readonly worker?: string }
   /**

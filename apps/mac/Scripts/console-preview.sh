@@ -5,7 +5,22 @@
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
 #           search | search-hit | problems | cleared | workers | loading | wipe | timing |
-#           memory | threads (default live)
+#           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending (default live)
+#   The Threads pass: `threads` is Jarhead's threads (Snapshot.threads → AppState.threads) — the main
+#   thread idle, Spotify acting (background), Slack waiting on Kevin (screen) with its question, Notes
+#   done and lingering — the left rail's Threads section (waiting-kevin → busy → idle main → finished;
+#   glyph · name · status word; `00:12 · screen · 7 steps`), the right rail's Threads section (Stop per
+#   live row), the parent card's thread chips; its default actions print the pass's `check:` pins
+#   (check-threads) into .build/console-preview/run.log and end Spotify by an `ended` event at 1.6 s.
+#   `thread-pane` steps into Slack's pane (its brief as the card's request, its own steps and screenshot,
+#   the confirm step with Allow / Deny, the question strip over the composer, Stop hot, "‹ Now");
+#   `thread-answer` then Allows the way the strip does: run.log's `send:` line must be
+#   {"type":"thread.answer","threadId":"t_sl4ck00","yes":true} — never say-text, never stop.
+#   `typed-row` is a line Kevin typed (TranscriptItem.source "typed"): keyboard.fill on its row;
+#   PREVIEW_PHASE=asleep shows the composer's "Type to Jarhead… (asleep: press Go)". `agent-pending`
+#   sends a line into the blocked Claude session at 0.5 s (the pending echo at 0.6 opacity under
+#   clock.fill, snapped to -mid.png at 1.0 s) and lands the real turn at 1.6 s (the echo is gone;
+#   `probe-pending` lines say pending 0→1→0). PREVIEW_SETTLE=2.4 for these.
 #   `memory` is the durable memory of Kevin: the Settings tab scrolled to its Memory section — the
 #   Remember toggle, Matching, the counts ("7 live", "1 forgotten · 1 archived", "1 waiting"), "learned 12m ago"
 #   beside Learn now, the budget hint,
@@ -15,14 +30,14 @@
 #   rail's verbs through its own rows (Forget m_dark, Edit m_kev, Forgotten's Restore m_light, back to
 #   Live): run.log must carry `send: memory.forget` / `memory.edit` (no kind) / `memory.restore` and a
 #   `memory-rail:` line per verb saying the row left at once. PREVIEW_SETTLE=3 for it.
-#   `threads` is long-horizon durability: the ended Codex thread stepped into — no live dot (isLive is
-#   derived from status + connection, never the stale tail flag), its last tool call `interrupted`
-#   (settled grey, no pulse), a 1 200-message transcript the model trims to 400 — then a daemon reconnect
-#   at 1.0 s, the window hidden at 1.4 s and shown at 1.8 s: run.log must carry agent.open, agent.close,
-#   agent.open naming ONE viewer; then "Load earlier" (60 rows, mode prepend) at 2.4 s between two
-#   `geometry` lines: the bottom stays pinned (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for
-#   it. PREVIEW_CONNECTED=0 on `live` is the caret gate's control (the streaming caret must not blink
-#   while disconnected).
+#   `durability` (was `threads` before the Threads pass took the name) is long-horizon durability: the
+#   ended Codex thread stepped into — no live dot (isLive is derived from status + connection, never the
+#   stale tail flag), its last tool call `interrupted` (settled grey, no pulse), a 1 200-message
+#   transcript the model trims to 400 — then a daemon reconnect at 1.0 s, the window hidden at 1.4 s and
+#   shown at 1.8 s: run.log must carry agent.open, agent.close, agent.open naming ONE viewer; then "Load
+#   earlier" (60 rows, mode prepend) at 2.4 s between two `geometry` lines: the bottom stays pinned
+#   (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for it. PREVIEW_CONNECTED=0 on `live` is the
+#   caret gate's control (the streaming caret must not blink while disconnected).
 #   `loading` is the dither pass's loading states: a ledger day picked and its read pinned in
 #   flight, a search pinned in flight — the stream's "Reading…" (16×2 glyphs), the rail's
 #   "Reading" row and the Jarhead section's "Searching…" (8×1); its default action prints the
@@ -111,7 +126,14 @@ if [[ -n "${PREVIEW_ACTION:-}" ]]; then export PREVIEW_ACTION; fi
 if [[ "$SCENARIO" == "switch" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; fi
 if [[ "$SCENARIO" == "wipe" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-8}"; export PREVIEW_WIPE_SECONDS="${PREVIEW_WIPE_SECONDS:-2}"; fi
 if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; fi
-if [[ "$SCENARIO" == "threads" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
+if [[ "$SCENARIO" == "durability" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
+# The Threads pass's scenarios run their actions to 1.8 s (an `ended` event, an Allow, a landed turn).
+case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+# `thread-history` (the paged main pane: scroll up, Load earlier, the page lands, geometry after) runs to 2.3 s.
+# Its run.log: `send: {"type":"thread.history",…,"before":2}`, `action: thread-history main … orphans 4→0 … complete false→true`,
+# and two `geometry` lines whose `distance` agree (the row Kevin was reading stayed put while the page grew above it).
+if [[ "$SCENARIO" == "thread-history" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.9}"; fi
+if [[ -n "${PREVIEW_PHASE:-}" ]]; then export PREVIEW_PHASE; fi
 # The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
 # its default actions run to 2.3 s (the verbs), so the shot waits for them.
 if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi

@@ -11,7 +11,7 @@ import { htmlToText, parseDuckDuckGo } from "../web.ts";
 import { globToRegExp } from "../files.ts";
 import { redactSecrets, runShell, secretValues, truncateOutput } from "../shell.ts";
 import { zodShape } from "../claude.ts";
-import { ALL_TOOL_SPECS, AGENT_SPECS, SELF_SPECS, SYSTEM_SPECS, WORKER_SPECS, specByName } from "../tools.ts";
+import { ALL_TOOL_SPECS, AGENT_SPECS, OBSERVATION_CLAUSE, SELF_SPECS, SYSTEM_SPECS, THREAD_SPECS, THREAD_TOOL_NAMES, WORKER_SPECS, WORKER_TOOL_ALIASES, specByName, threadToolName } from "../tools.ts";
 import { progressLine } from "../responses.ts";
 import { FakeHands, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -343,64 +343,93 @@ test("tool table: the new specs are complete, zod-shaped, and have progress line
   assert.match(specByName("type")!.description, /OK means the keystrokes were delivered/);
   // Results that only echo the request are not sold as verification, and no description carries a
   // quick-shot pixel size (screen.ts's QUICK_SHOT_BUDGET changes without this file knowing).
-  assert.match(specByName("type")!.description, /names neither the field nor the text/);
-  assert.match(specByName("focus_app")!.description, /only echoes the name; frontmost_app confirms/);
+  assert.match(specByName("focus_app")!.description, /only echoes the name; its now: line says what is actually in front/);
   assert.match(specByName("browser_navigate")!.description, /loading, not loaded; browser_read confirms/);
   assert.ok(!/\b1280\b/.test(JSON.stringify(specByName("screenshot"))), "no stale quick-shot size in the screenshot spec");
 });
 
-test("tool table: the four worker specs sit after the agents, are zod-shaped, carry the split rule and the lane text, cap worker_wait at 240 s, have progress lines, and are not the runner's without a pool", async () => {
-  assert.deepEqual(WORKER_SPECS.map((s) => s.name), ["worker_start", "worker_wait", "worker_read", "worker_stop"]);
+test("tool table: the four thread specs replace the worker specs after the agents (67 stays), carry the split rule, the same-turn rule and 'do not thread_wait', cap thread_wait at 240 s, accept worker_* as aliases by name, have progress lines, and are not the runner's without a scheduler", async () => {
+  assert.deepEqual(THREAD_SPECS.map((s) => s.name), ["thread_start", "thread_wait", "thread_read", "thread_stop"]);
   const names = ALL_TOOL_SPECS.map((s) => s.name);
-  assert.equal(names.indexOf("worker_start"), names.indexOf("agent_start") + 1, "WORKER_SPECS follow AGENT_SPECS in the table");
+  assert.equal(names.indexOf("thread_start"), names.indexOf("agent_start") + 1, "THREAD_SPECS follow AGENT_SPECS in the table");
   assert.equal(ALL_TOOL_SPECS.length, 67);
-  assert.equal(AGENT_SPECS.length, 5, "a Worker is not an Agent: the agent tools are unchanged");
-  // The rule the standing orders do not carry: keep the screen part, split only independent work,
-  // background hands use Apple events / browser / files / shell / web — and Jarhead speaks the split.
-  const start = specByName("worker_start")!;
+  assert.equal(AGENT_SPECS.length, 5, "a Thread is not an Agent: the agent tools are unchanged");
+  assert.ok(!names.some((n) => n.startsWith("worker_")), "the worker_* names are gone from the spec list");
+  assert.equal(WORKER_SPECS, THREAD_SPECS, "the deprecated alias still compiles for one release");
+  // Aliases: the scheduler answers the old names for one release; the mapping is by name only.
+  assert.deepEqual(WORKER_TOOL_ALIASES, { worker_start: "thread_start", worker_wait: "thread_wait", worker_read: "thread_read", worker_stop: "thread_stop" });
+  for (const [old, now] of Object.entries(WORKER_TOOL_ALIASES)) assert.equal(threadToolName(old), now);
+  assert.equal(threadToolName("thread_read"), "thread_read");
+  assert.equal(threadToolName("left_click"), undefined);
+  assert.deepEqual([...THREAD_TOOL_NAMES].sort(), ["thread_read", "thread_start", "thread_stop", "thread_wait", "worker_read", "worker_start", "worker_stop", "worker_wait"]);
+  // The rule the standing orders do not carry: one thread per independent app, in the same turn as the
+  // brain's own first action; do not thread_wait; a thread's speak_progress speaks once with its name.
+  const start = specByName("thread_start")!;
+  assert.match(start.description, /One thread per independent app/);
+  assert.match(start.description, /in the SAME turn as your own first action/);
   assert.match(start.description, /Keep the part that needs the screen yourself/);
   assert.match(start.description, /split off only work that does not depend on yours/);
   assert.match(start.description, /never touches the pointer, keyboard or front app/);
   assert.match(start.description, /applescript \(Apple events/);
   assert.match(start.description, /browser_\* tools, files, run_shell and the web/);
   assert.match(start.description, /lane 'screen' waits its turn for the pointer and keyboard/);
-  assert.match(start.description, /At most 2 at once/);
+  assert.match(start.description, /At most 3 alongside you/);
   assert.match(start.description, /Jarhead tells Kevin the split in one line, so do not announce it/);
-  assert.match(start.description, /finish line is spoken for you, so never repeat it/);
+  // The serializer's rule, in the model's words: a thread_start rides alongside the first action and is never halted by its question.
+  assert.match(start.description, /may be issued alongside your first action in one exec: it never waits for it and is never held back by its question/);
+  assert.match(start.description, /Do not thread_wait: end your turn/);
+  assert.match(start.description, /finish line for you, so never repeat it/);
+  assert.match(start.description, /speak_progress speaks once, with your name/);
   const startShape = zodShape(start);
   assert.deepEqual(Object.keys(startShape).sort(), ["budget", "lane", "name", "task"]);
   assert.ok(startShape["lane"]!.safeParse("background").success && startShape["lane"]!.safeParse("screen").success && !startShape["lane"]!.safeParse("both").success);
   assert.ok(startShape["budget"]!.safeParse(undefined).success, "budget is optional");
-  // zodShape mirrors the nested `budget` object (claude.ts's object case), so the Claude MCP path validates the caps too.
   assert.ok(startShape["budget"]!.safeParse({ steps: 10, seconds: 60 }).success, "budget parses as an object");
-  assert.ok(!startShape["budget"]!.safeParse("10").success, "budget is not a string");
-  assert.ok(!startShape["budget"]!.safeParse({ steps: "ten" }).success, "steps must be a number");
+  assert.ok(!startShape["budget"]!.safeParse("10").success && !startShape["budget"]!.safeParse({ steps: "ten" }).success);
   const startBudget = start.parameters.properties["budget"] as { type: string; properties: Record<string, { minimum: number; maximum: number }> };
-  assert.equal(startBudget.type, "object");
   assert.deepEqual([startBudget.properties["steps"]!.minimum, startBudget.properties["steps"]!.maximum, startBudget.properties["seconds"]!.minimum, startBudget.properties["seconds"]!.maximum], [1, 40, 10, 300], "the engine's caps, as the model sees them");
-  const wait = specByName("worker_wait")!;
+  assert.match((start.parameters.properties["name"] as { description: string }).description, /≤ 16 characters, unique among live threads/);
+  const wait = specByName("thread_wait")!;
   assert.match(wait.description, /default 120, at most 240/);
-  assert.match(wait.description, /'all'/);
+  assert.match(wait.description, /Rarely right/);
+  assert.match(wait.description, /end your turn instead/);
   assert.match(wait.description, /what Kevin was already told so you do not repeat it/);
   const waitTimeout = wait.parameters.properties["timeout"] as { minimum: number; maximum: number };
   assert.deepEqual([waitTimeout.minimum, waitTimeout.maximum], [1, 240], "shorter than the 300 s wall clock the main brain runs under");
-  assert.ok(zodShape(wait)["timeout"]!.safeParse(240).success && zodShape(wait)["timeout"]!.safeParse(undefined).success, "timeout is a number, optional (zodShape carries no bounds; the JSON schema above does)");
-  assert.match(specByName("worker_stop")!.description, /Kevin hears one line that it stopped/);
-  for (const n of ["worker_read", "worker_stop"]) assert.deepEqual(Object.keys(zodShape(specByName(n)!)), ["name"], n);
-  // Progress lines for the timeline (never voiced as a first tool: SILENT_TOOLS in the delegator).
+  assert.match(specByName("thread_read")!.description, /queued, starting, thinking, acting, waiting for the screen, waiting on Kevin's yes, paused, done, failed, stopped/, "the one status vocabulary");
+  assert.match(specByName("thread_stop")!.description, /Kevin hears one line that it stopped/);
+  for (const n of ["thread_read", "thread_stop"]) assert.deepEqual(Object.keys(zodShape(specByName(n)!)), ["name"], n);
+  // Progress lines for the timeline exist for the old names (responses.ts is not this pass's file: the thread_* lines are a seam).
   assert.equal(progressLine("worker_start", { name: "Spotify", task: "play Focus" }), "Starting Spotify on the side.");
-  assert.equal(progressLine("worker_wait", { name: "all" }), "Waiting for the other hands.");
-  assert.equal(progressLine("worker_wait", { name: "Spotify" }), "Waiting for Spotify.");
-  assert.equal(progressLine("worker_read", { name: "Slack" }), "Checking on Slack.");
-  assert.equal(progressLine("worker_stop", { name: "Slack" }), "Stopping Slack.");
-  // A plain ToolRunner has no pool: the worker tools are the engine's WorkerAwareRunner's, not its.
+  // A plain ToolRunner has no scheduler: the thread tools (and their aliases) are the engine's runner's, not its.
   const { runner } = makeRunner();
   runner.attach(makeSink().sink, makeTask("play focus on spotify"));
-  for (const n of ["worker_start", "worker_wait", "worker_read", "worker_stop"]) {
+  for (const n of ["thread_start", "thread_wait", "thread_read", "thread_stop", "worker_start"]) {
     const r = await runner.run(n, { name: "Spotify", task: "play Focus" });
     assert.equal(r.result.kind, "error", n);
     assert.match(resultText(r.result), new RegExp(`unknown tool ${n}`), `${n} is not available here`);
   }
+});
+
+test("tool table: the six acting tools carry the observation clause once, word for word; the looks and the confirming tools do not", () => {
+  assert.match(OBSERVATION_CLAUSE, /^The result ends with a `now:` line — the front app, the focused element and what is under the pointer, read 150 ms after it landed: that is your verification; take a screenshot only when it says something you did not expect\.$/);
+  for (const n of ["left_click", "type", "key", "scroll", "open_app", "focus_app"]) {
+    const d = specByName(n)!.description;
+    assert.equal(d.split(OBSERVATION_CLAUSE).length, 2, `${n} carries the clause exactly once`);
+    assert.ok(d.length < 700, `${n}: still one paragraph (${d.length})`);
+  }
+  for (const n of ["screenshot", "zoom", "frontmost_app", "find_element", "click_element", "read_focused_text", "browser_read", "thread_start", "run_shell"]) assert.ok(!specByName(n)!.description.includes("now:"), `${n} says nothing about the line`);
+  // The pins from before, kept true: what the results do and do not say.
+  assert.match(specByName("type")!.description, /OK means the keystrokes were delivered/);
+  assert.match(specByName("type")!.description, /names the field when accessibility knows it/);
+  assert.match(specByName("type")!.description, /Refused in password fields/);
+  assert.match(specByName("focus_app")!.description, /only echoes the name; its now: line says what is actually in front/);
+  assert.match(specByName("click_element")!.description, /that is the verification, no screenshot needed/);
+  // The descriptions are static (byte-identical across processes for the prompt cache) while Settings.observe is an
+  // A/B: with the line off — or before the observer is wired — the model must not be told to trust a line that never
+  // comes, so the two tools whose old fallback the clause replaced keep it in one breath.
+  assert.match(specByName("focus_app")!.description, /when no now: line follows, frontmost_app confirms/);
+  assert.match(specByName("type")!.description, /when no now: line follows and what landed matters — one screenshot/);
 });
 
 test("gates read what Kevin said, never what Jarhead said: named folders and named hosts", async (t) => {

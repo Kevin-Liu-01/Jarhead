@@ -127,6 +127,8 @@ export const MEMORY_PROMPT_LABEL = "What you know about Kevin (durable memory; u
 
 function promptParts(task: BrainTask, userName: string, regions: string): string[] {
   return [
+    // A spawned thread's identity, first: one job, its own brain, Jarhead speaks its lines with its name.
+    task.thread ? `You are Jarhead's thread ${task.thread.name} (${task.thread.lane} lane): one job of your own; Jarhead speaks your finish line for you.` : "",
     task.confirmation ? `${userName} just said YES to the pending confirmation. Do that action now, then report.` : "",
     `${userName} said: "${task.request}"`,
     regions,

@@ -1176,6 +1176,9 @@ public struct LedgerRow: Codable, Identifiable {
     public var threadId: String?
     public var steps: Int?
     public var seconds: Double?
+    /// The thread's own status word on `thread.status` / `thread.ended` rows (`status` above is the delegation's), and the change's detail.
+    public var threadStatus: ThreadStatus?
+    public var detail: String?
     public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? worker?.id ?? "")" }
 }
 

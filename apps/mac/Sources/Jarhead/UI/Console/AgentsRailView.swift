@@ -83,6 +83,11 @@ struct AgentsRail: View, Equatable {
     var hiddenAgents: Set<String> = []
     /// What the trash holds, for the Trash head's Reveal (Snapshot.trash).
     var trash: TrashInfo? = nil
+    /// Jarhead's threads in the rail's order (AppState.orderedThreads: waiting on Kevin → busy →
+    /// the idle main → finished within the linger); [] draws no section.
+    var threads: [WorkThread] = []
+    /// The daemon speaks threads (AppState.threadsKnown); an older one never gets the section.
+    var threadsKnown = false
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -92,14 +97,20 @@ struct AgentsRail: View, Equatable {
 
     static func == (a: AgentsRail, b: AgentsRail) -> Bool {
         a.agents == b.agents && a.connectors == b.connectors && a.jarhead == b.jarhead && a.now == b.now
-            && a.hiddenAgents == b.hiddenAgents && a.trash == b.trash
+            && a.hiddenAgents == b.hiddenAgents && a.trash == b.trash && a.threads == b.threads && a.threadsKnown == b.threadsKnown
     }
 
     /// What is selected, for the glide when the selection moves without a click (a
     /// conversation closing, a rail that came back without the open row).
     private var selectionKey: String {
-        session.openAgentId.map { "agent:\($0)" } ?? session.openJarheadSessionId.map { "jarhead:\($0)" } ?? "now"
+        session.openAgentId.map { "agent:\($0)" } ?? session.openJarheadSessionId.map { "jarhead:\($0)" }
+            ?? session.openThreadId.map { "thread:\($0)" } ?? "now"
     }
+
+    /// The Threads section is drawn: the daemon speaks threads and lists at least one.
+    private var showsThreads: Bool { threadsKnown && !threads.isEmpty }
+    /// The rows' order and status, so a status turning reflows the section under Motion.gentle.
+    private var threadsKey: [String] { threads.map { "\($0.id)|\($0.status.rawValue)" } }
 
     private struct Group: Identifiable {
         let tool: AgentTool
@@ -254,6 +265,7 @@ struct AgentsRail: View, Equatable {
                     // the selection glides to wherever it moved, click or not.
                     .animation(Motion.gentle, value: agents.map(\.id))
                     .animation(Motion.gentle, value: layoutKey)
+                    .animation(Motion.gentle, value: threadsKey)
                     .animation(Motion.gentle, value: down.map(\.kind))
                     .animation(Motion.gentle, value: hiddenAgents)
                     .animation(Motion.gentle, value: session.archivedOpen)
@@ -294,6 +306,16 @@ struct AgentsRail: View, Equatable {
                           clear: { actions.cleanup(.clearNow(at: ConsoleFormat.nowMs)) })
         }
         .background { selected(nowOn) }
+
+        // Threads: Jarhead's lines of work right now — the ones waiting on Kevin first, then
+        // the busy ones, the idle main, the finished within the linger. A row opens the
+        // thread's pane (its own cards, steps, screenshots, Allow / Deny, composer); the main
+        // thread's row is the same conversation as Now seen as a thread. Stop per row.
+        if showsThreads {
+            threadsHead(total: threads.count, busy: threads.filter { $0.status.isBusy }.count).padding(.top, 8)
+                .transition(Motion.appear)
+            ForEach(threads) { thread in threadRow(thread, now: now) }
+        }
 
         if !pinnedChains.isEmpty {
             groupHead("Pinned", symbol: "pin.fill", count: pinnedChains.count).padding(.top, 8)
@@ -338,6 +360,42 @@ struct AgentsRail: View, Equatable {
                 ForEach(trashed) { chain in chainRow(chain, now: now) }
             }
         }
+    }
+
+    /// One thread's row, wired: a click opens its pane (or, open already, goes back to Now); the
+    /// menu's Stop / Pause / Resume act on that thread alone. No ⌘-click selection: nothing to trash.
+    private func threadRow(_ thread: WorkThread, now: Double) -> some View {
+        let open = session.openThreadId == thread.id
+        return ThreadRow(thread: thread, now: now, open: open,
+                         toggle: {
+                             withAnimation(Motion.wipeAnimation) {
+                                 if open { actions.showNow() } else { session.openThread(thread.id) }
+                             }
+                         },
+                         stop: { actions.send(.threadStop(threadId: thread.id)) },
+                         pause: { actions.send(.threadPause(threadId: thread.id)) },
+                         resume: { actions.send(.threadResume(threadId: thread.id)) })
+            .background { selected(open) }
+            .transition(Motion.appear)
+    }
+
+    /// 24pt: the section's symbol, "Threads", and "3 · 2 running" in mono.
+    private func threadsHead(total: Int, busy: Int) -> some View {
+        let count = ConsoleFormat.threadsCount(total: total, busy: busy)
+        return HStack(spacing: iconGap) {
+            ConsoleIcon(name: ConsoleTheme.threadsSymbol)
+            Text("Threads").font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
+            Spacer(minLength: 4)
+            Text(count).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                .contentTransition(ConsoleMotion.numeric)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, railInset)
+        .frame(height: 24)
+        .animation(Motion.snappy, value: count)
+        .help("Jarhead's lines of work: waiting on you first, then the busy ones, then the finished (kept five minutes)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Threads, \(count)")
     }
 
     /// One past conversation's row, wired: open on a plain click, select on ⌘ / ⇧, the menus' verbs, the inline rename.
@@ -894,6 +952,118 @@ struct JarheadNowRow: View {
         // feed's "Asleep. Press Go." must stay in front of any cleared state.
         Button("Clear", action: clear)
             .disabled(info.sessionId == nil)
+    }
+}
+
+/// One thread: the status glyph on the icon column, the name (medium while its pane is open),
+/// the status word at the right — the ⋯ takes its place while hovering — and one mono meta
+/// line, `00:12 · screen · 7 steps`, the seconds rolling while it is live. The menu (right-click,
+/// or the ⋯): Open, Stop (`thread.stop`, this thread only; main parks its turn), and for a
+/// spawned thread Pause / Resume. Never a Delete: a finished thread ages off the rail and
+/// lives in the ledger.
+struct ThreadRow: View {
+    let thread: WorkThread
+    let now: Double
+    let open: Bool
+    let toggle: () -> Void
+    var stop: () -> Void = {}
+    var pause: () -> Void = {}
+    var resume: () -> Void = {}
+
+    @State private var hovering = false
+
+    private var meta: ConsoleTheme.ThreadMeta { ConsoleTheme.thread(thread.status) }
+    private var isMain: Bool { thread.id == "main" }
+
+    private var tooltip: String {
+        var lines = [thread.name + (isMain ? " — the main conversation, as a thread" : "")]
+        if !thread.task.isEmpty { lines.append(thread.task) }
+        if let q = thread.question, !q.isEmpty { lines.append("asks: \(q)") } else if let d = thread.detail, !d.isEmpty { lines.append(d) }
+        lines.append("started \(ConsoleFormat.time(thread.startedAt)) · \(ConsoleTheme.lane(thread.lane)) lane · \(thread.turns) turn\(thread.turns == 1 ? "" : "s")")
+        return lines.joined(separator: "\n")
+    }
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(alignment: .top, spacing: iconGap) {
+                ConsoleThreadGlyph(status: thread.status)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(thread.name)
+                            .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        // The word turns as the thread works, waits and finishes; the ⋯ takes its place on hover.
+                        Text(meta.label)
+                            .font(ConsoleTheme.sans(11)).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.speaking : ConsoleTheme.fg3)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                            .contentTransition(.opacity)
+                            .animation(Motion.fade, value: meta.label)
+                            .opacity(hovering ? 0 : 1)
+                    }
+                    .frame(height: 20)
+                    metaLine
+                }
+            }
+            .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // A finished thread sits back; the words stay legible.
+        .opacity(thread.status.isLive ? 1 : 0.62)
+        .overlay(alignment: .topTrailing) {
+            if hovering {
+                RowOverflow(help: "More") { menuItems }
+                    .padding(.top, 4).padding(.trailing, railInset)
+                    .transition(.opacity)
+            }
+        }
+        .contextMenu { menuItems }
+        .onHover { hovering = $0 }
+        .animation(ConsoleMotion.hover, value: hovering)
+        .animation(Motion.fade, value: thread.status.isLive)
+        .help(tooltip)
+        .accessibilityLabel("Thread \(thread.name), \(meta.label)")
+        .accessibilityHint(open ? "Open in the centre" : "Opens the thread")
+        .accessibilityAddTraits(open ? .isSelected : [])
+    }
+
+    /// `00:12 · screen · 7 steps`, rolling while the thread is live; frozen at its end after.
+    @ViewBuilder private var metaLine: some View {
+        if thread.status.isLive {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                metaText(now: ctx.date.timeIntervalSince1970 * 1000)
+            }
+        } else {
+            metaText(now: thread.doneAt ?? thread.updatedAt)
+        }
+    }
+
+    private func metaText(now: Double) -> some View {
+        let text = ConsoleFormat.threadMeta(thread, now: now)
+        return Text(text)
+            .font(ConsoleTheme.mono(11)).monospacedDigit()
+            .foregroundStyle(ConsoleTheme.fg3)
+            .lineLimit(1).truncationMode(.tail)
+            .contentTransition(ConsoleMotion.numeric)
+            .animation(Motion.snappy, value: text)
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        Button(open ? "Back to Now" : "Open", action: toggle)
+        if thread.status.isLive {
+            if !isMain, thread.status != .idle {
+                if thread.status == .paused { Button("Resume", action: resume) } else { Button("Pause", action: pause) }
+            }
+            if thread.canStop {
+                Divider()
+                Button(isMain ? "Stop this turn" : "Stop \(thread.name)", action: stop)
+            }
+        }
     }
 }
 

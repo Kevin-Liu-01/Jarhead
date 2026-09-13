@@ -194,6 +194,41 @@ enum ConsoleTheme {
     /// The lane's word on a worker's mono meta line: "background" (Apple events, browser,
     /// files, shell, web — the pointer is never its) or "screen" (waits for the pointer).
     static func lane(_ l: WorkerLane) -> String { l.rawValue }
+    /// A thread's lane: "voice" (the main conversation), "screen", "background".
+    static func lane(_ l: ThreadLane) -> String { l.rawValue }
+
+    struct ThreadMeta: Equatable {
+        let label: String
+        let color: Color
+        /// A dot on the icon column (pulsing while `live`) instead of the symbol.
+        let dot: Bool
+        let live: Bool
+        let symbol: String
+    }
+
+    /// A thread's status as one glyph, the same set the worker rows used so the rail reads as
+    /// before: a still grey dot for the idle main, a pulsing dot while it starts / thinks / acts
+    /// (the connecting grey, the thinking violet, the acting green), the hourglass while it waits
+    /// for the screen, the raised hand while it waits for Kevin, the pause bars while paused, and
+    /// the delegation's settled symbols once done, failed or stopped.
+    static func thread(_ s: ThreadStatus) -> ThreadMeta {
+        switch s {
+        case .idle: return ThreadMeta(label: s.words, color: titanium, dot: true, live: false, symbol: "circle.fill")
+        case .queued: return ThreadMeta(label: s.words, color: connecting, dot: true, live: false, symbol: "circle.fill")
+        case .starting: return ThreadMeta(label: s.words, color: connecting, dot: true, live: true, symbol: "circle.fill")
+        case .thinking: return ThreadMeta(label: s.words, color: thinking, dot: true, live: true, symbol: "circle.fill")
+        case .acting: return ThreadMeta(label: s.words, color: acting, dot: true, live: true, symbol: "circle.fill")
+        case .waitingScreen: return ThreadMeta(label: s.words, color: fg3, dot: false, live: false, symbol: "hourglass.tophalf.filled")
+        case .waitingKevin: return ThreadMeta(label: s.words, color: speaking, dot: false, live: false, symbol: "hand.raised.fill")
+        case .paused: return ThreadMeta(label: s.words, color: titanium, dot: false, live: false, symbol: "pause.fill")
+        case .done: return ThreadMeta(label: s.words, color: acting, dot: false, live: false, symbol: "checkmark.circle.fill")
+        case .failed: return ThreadMeta(label: s.words, color: error, dot: false, live: false, symbol: "xmark.octagon.fill")
+        case .stopped: return ThreadMeta(label: s.words, color: fg3, dot: false, live: false, symbol: "slash.circle.fill")
+        }
+    }
+
+    /// The Threads section's own symbol (the rail head, the ledger's thread rows).
+    static let threadsSymbol = "square.stack.fill"
 
     struct GrantMeta {
         let label: String
@@ -236,10 +271,10 @@ enum ConsoleTheme {
         let name: String
     }
 
-    /// cedar and marin first (the defaults the engine has shipped), the rest alphabetical —
+    /// ballad first (the default: the male voice with the British lean, Jarhead's Jarvis), then cedar and marin (earlier defaults), the rest alphabetical —
     /// the order `voices` has always had, so a saved pick keeps its place in the menu.
     static let voiceOptions: [VoiceOption] = [
-        VoiceOption(id: "cedar", name: "Cedar"), VoiceOption(id: "marin", name: "Marin"),
+        VoiceOption(id: "ballad", name: "Ballad"), VoiceOption(id: "cedar", name: "Cedar"), VoiceOption(id: "marin", name: "Marin"),
         VoiceOption(id: "alloy", name: "Alloy"), VoiceOption(id: "ash", name: "Ash"), VoiceOption(id: "ballad", name: "Ballad"),
         VoiceOption(id: "beacon", name: "Beacon"), VoiceOption(id: "bossa", name: "Bossa"), VoiceOption(id: "cinder", name: "Cinder"),
         VoiceOption(id: "coral", name: "Coral"), VoiceOption(id: "delta", name: "Delta"), VoiceOption(id: "echo", name: "Echo"),
@@ -471,6 +506,10 @@ extension EngineCommand {
             // One worker, never the transport: the session stays open.
             guard let id = str("workerId"), !id.isEmpty else { return nil }
             self = .workerStop(workerId: id)
+        case "thread.stop":
+            // One thread, never the transport: the session and the other threads stay.
+            guard let id = str("threadId"), !id.isEmpty else { return nil }
+            self = .threadStop(threadId: id)
         case "ledger.restore-day":
             guard let day = str("day") else { return nil }
             self = .ledgerRestoreDay(day: day)
@@ -643,6 +682,21 @@ enum ConsoleFormat {
     static func workerMeta(_ w: Worker, now: Double) -> String {
         let end = w.doneAt ?? now
         return "\(duration(max(0, end - w.startedAt) / 1000)) · \(ConsoleTheme.lane(w.lane))"
+    }
+
+    /// A thread's mono meta: "00:12 · screen · 7 steps" — how long it has run (ticking while
+    /// live, frozen at `doneAt` after), its lane, its step count. The main thread has no steps
+    /// of its own to count between turns, so an idle main reads "00:12 · voice".
+    static func threadMeta(_ t: WorkThread, now: Double) -> String {
+        let end = t.doneAt ?? now
+        var parts = [duration(max(0, end - t.startedAt) / 1000), ConsoleTheme.lane(t.lane)]
+        if t.steps > 0 || t.id != "main" { parts.append(t.steps == 1 ? "1 step" : "\(t.steps) steps") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The Threads head's count: "3 · 2 running" — how many are on the rail, how many are busy.
+    static func threadsCount(total: Int, busy: Int) -> String {
+        busy > 0 ? "\(total) · \(busy) running" : "\(total)"
     }
 }
 
@@ -854,6 +908,29 @@ struct ConsoleWorkerGlyph: View {
         ZStack {
             if meta.live {
                 ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)
+            } else {
+                ConsoleIcon(name: meta.symbol, tint: meta.color).transition(.opacity)
+            }
+        }
+        .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: status)
+        .help(meta.label)
+        .accessibilityLabel(meta.label)
+    }
+}
+
+/// A thread's status as one glyph on the icon column: a dot while it is starting, thinking or
+/// acting (pulsing then; still and grey for the idle main), a solid symbol while it waits (the
+/// hourglass, the raised hand), while paused, and once it settles; the two crossfade as the
+/// status turns, so a thread finishing never cuts.
+struct ConsoleThreadGlyph: View {
+    let status: ThreadStatus
+
+    var body: some View {
+        let meta = ConsoleTheme.thread(status)
+        ZStack {
+            if meta.dot {
+                ConsoleDot(color: meta.color, live: meta.live, size: meta.live ? 7 : 6).transition(.opacity)
             } else {
                 ConsoleIcon(name: meta.symbol, tint: meta.color).transition(.opacity)
             }
@@ -1320,6 +1397,33 @@ enum ConsoleKeyCommand {
     /// ⌘P: the transport's Go / Pause (AppState.transportToggle) — go when asleep or
     /// paused, pause in session (the session closes, the conversation is kept).
     case transportToggle
+    /// ⌘0: back to Now. ⌘⇧] / ⌘⇧[: the next / previous thread in the rail's order.
+    case showNow, nextThread, prevThread
+    /// ⌥⌘.: stop the open thread only (`thread.stop`; main parks its turn, the others carry
+    /// on). ⌘. stays Stop everything.
+    case stopThread
+}
+
+/// Which thread's question a confirm row's Allow / Deny answers (`thread.answer`). Set on the
+/// environment by a live pane — the Now stream for "main", a ThreadPane for its thread — and
+/// read by StepRow's waiting `confirm` row; nil (the default: a ledger day, a past conversation)
+/// draws no buttons. The buttons are clicks only: `returnIsAYes` is false and nothing ever binds
+/// them to Return — a bare Return in a composer must never be a yes to a pending action.
+struct ConsoleConfirm: Equatable {
+    let threadId: String
+    /// Pinned false for good; read by the strips so the rule is in one place and in run.log.
+    static let returnIsAYes = false
+}
+
+private struct ConsoleConfirmKey: EnvironmentKey {
+    static let defaultValue: ConsoleConfirm? = nil
+}
+
+extension EnvironmentValues {
+    var consoleConfirm: ConsoleConfirm? {
+        get { self[ConsoleConfirmKey.self] }
+        set { self[ConsoleConfirmKey.self] = newValue }
+    }
 }
 
 /// The transport for the composer's Go/Pause: AppState's Transport region behind a

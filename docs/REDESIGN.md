@@ -514,8 +514,12 @@ is the row's icon; the colour is the status dot's ring and the conversation head
   meters, the thumbnail skeletons, the capsule's floor and every loading state are
   this material; view switches dissolve through it (`Motion.wipe`); the thinking
   indicator steps its ranks as ASCII at 8 fps. The icon and the README banner share
-  the palette, the matrix and the orb through `scripts/dither.ts` (`pnpm build:media`).
-  Flat fills stay flat.
+  the palette, the matrix and the orb through `scripts/dither.ts` (`pnpm build:media`),
+  and both wear the blob's `^ ^` (`FACE`, `faceMask`; §20): flat paper chevrons boxed
+  one cell deep in flat ink, one cell pattern from 64 to 1024, hand bitmaps at 32 and
+  16. The 14 pt `JarheadMark` in the Console and the notch island carry the orb
+  faceless — below the Dock's 32 px class a face reads as a status, not a creature
+  (the rule sits in `Dither.swift`'s header). Flat fills stay flat.
 - **The blob stays where it worked** in both homes; the notch dock is only for the
   awake↔asleep transitions. Into the notch it goes by approach + slip: a
   critically damped approach (`Motion.approach`) to a staging point 16 pt under
@@ -2973,3 +2977,154 @@ twelve-hour "held conversation" (an open question for Kevin; the ten-minute paus
 decay stands), mid-conversation extraction (the spoken reflex covers the
 immediate case), memory tools for the brain (the engine hook does it without a
 rail), health facts (the prompt excludes them; an opt-in kind later).
+
+## 20. Threads, satellites, messages — and the face (2026-09-13)
+
+Kevin, verbatim: "we should be able to see indepeendent workers or threads and convos or
+there can be multiple blobs donig their own work. doing multiple things at once should be
+proper. same with messages working actually properly. and these multiple threads should be
+fast and just as feature rich as if it were the main thread, we want jarhead to be able to
+do a bunch of things at once easily and know when and be able to keep track of those using
+extremely performant data structure representations of tasks and paradigms and full
+context and make it faster and tool use and responses so much faster. and make the logo a
+jarhead like face you know so its more thematic."
+
+### Threads, not workers
+
+A **Thread** is a line of work with its own brain, conversation, lane, budget and blob.
+`main` is the voice's own thread (`MAIN_THREAD_ID`); spawned threads are `t_…`, on a
+`screen` or `background` lane. One status vocabulary everywhere: `idle · queued · starting ·
+thinking · acting · waiting-screen · waiting-kevin · paused · done · failed · stopped`
+(`THREAD_STATUSES`; the Swift mirror is `WorkThread` / `ThreadStatus`, unknown → thinking).
+`THREAD_MAX_LIVE` 4 (main + 3), depth 1, names ≤ 16, budgets 25 steps / 180 s (caps 40 / 300)
+per turn, `THREAD_LINGER_MS` 30 s in the snapshot, `THREADS_MAX` 16 summaries. The `Worker`
+shapes, `Snapshot.workers`, `worker.stop` and the `worker_*` tool names stay one release as
+aliases; `Settings.workers` remains the on/off flag.
+
+The engine keeps ONE table (`packages/engine/src/threads/table.ts`): Maps by id, live name
+and app, a live set in age order, a status count vector, an event ring of 512 with a
+monotonic `seq`, `tick()` flipping acting→thinking after 4 s without a step, and
+`statusLine(name?)` — deterministic English the voice speaks with zero generations ("Spotify:
+on step 4 — applescript play, 9 seconds in."). Every read is O(1); the whole table is
+≈ 100 KB. It rebuilds from the ledger's `thread.*` rows at daemon start; a thread still live
+in a rebuilt table gets one `thread.ended {failed, "the daemon restarted"}` row and nothing
+acts. The scheduler (`threads/scheduler.ts`) owns spawned threads' turns: their own
+`Delegation` records (`Delegation.threadId`), a per-turn `AbortController`, admission,
+lanes + the FocusLease with `rank` (Kevin's hands > main > threads by age), pause / resume /
+stop / drain, and the brain pool (`threads/brain-pool.ts`: `Settings.warmThreads` spare
+`codex app-server` processes, default 2, retry after 60 s). A spawned thread is as rich as
+main: the full base prompt, the memory block, marks, the eyes' shot plus the composite look,
+its own screenshots, confirmations spoken with its name, follow-ups by name ("spotify, skip
+this song"), one budgeted `speak_progress`. It never spawns and never runs `self_*`.
+
+Spawned threads never schedule a snapshot: one `thread.event` (≤ 200 B, coalesced 50 ms per
+thread) per change, broadcast; the conversation travels as a seq-paged `thread.transcript`
+(`ThreadEntry` utterance | delegation | step | status | system) to VIEWERS only, opened with
+`thread.open {threadId, viewer}` and paged with `thread.history {before: seq}` — the
+agents' viewer-token shape, so the daemon routes both kinds to the clients that opened them
+and the CLI's join/leave clients receive none. Phase B (the small snapshot: transcript 40,
+delegations 8 × 12 steps + `stepCount`) sits behind `Engine.SNAPSHOT_FULL_NOW`, still
+`true` this pass — the flip is a one-line follow-up once `ThreadPane("main")` is the live
+Now and the CLI / orb readers are re-verified.
+
+**Voice verbs cost nothing.** "what is spotify doing", "what are you doing", "stop the
+slack one", "pause spotify" are judged at BOTH sources (the Delegator's fragment path and
+the ear) before the supersede block and answered from the table — the running turn is never
+ended by a question. The stop rule: a bare stop word cuts everything, byte-identical to
+today with ≤ 1 live thread; `stop <live name>` stops that thread; with ≥ 2 spawned threads
+live the SPEECH gate fires at once and the WORK cut waits `STOP_NAME_WAIT_MS` 350 ms for a
+name (`interrupt()` is `gateSpeech()` + `cutWork()`). Overflow (a new request naming an
+unclaimed app while main has acted) defaults to `supersede` — today's behaviour;
+`Settings.threadOverflow: "spawn"` is one setting away.
+
+### Satellites
+
+`BlobFleet` (`UI/Orb/BlobFleet.swift`): one satellite per live spawned thread (max 3), keyed
+by thread id, driven by `AppState.threads` from `thread.event` + `snapshot.threads` — never
+whole-snapshot reconciliation. A satellite is the orb panel's recipe minus key, `.floating`,
+below the main orb, its own `BlobSim` on a 19 × 11 grid (main stays 27 × 15), ONE fleet
+`CADisplayLink` (60 while moving, 10–24 idle, paused when still) under a `FleetBudget` ladder
+(mean ≤ 6 ms over 30 frames, `ORB_FLEET_BUDGET_LOG=1`). Faces by status: thinking `o o`,
+acting `> >`, waiting-screen `- -`, waiting-kevin `O O` with a pill "asks: …", done `^ ^` for
+1.2 s then fade, failed `x x` 1.6 s, stopped `- -`. A mono name tag on hover; landings that
+avoid the main blob and each other (pairwise ≥ 92 pt); a flight to `Thread.at` (a tagged
+`orb.fly {thread}` from the thread's own pointer tools) or to `Thread.app`'s window centre;
+click → the thread's pane; a drag into the notch's catch zone → `thread.stop` for that
+thread — never sleep, never an `orbPosition` write. The notch peek shows one 5 pt square per
+live spawned thread and the island a third line ("Slack · working · 0:03 | Spotify ·
+working · 0:03"). Reduce Motion → fades. The main blob's untagged path is unchanged.
+
+### Messages
+
+Typed lines land on the record FIRST: `Transcript.pushTyped(text, nowMs)` closes any open
+utterance (emitted `final`, as `push` does), then adds one item `{source: "typed", final:
+true, startMs = endMs = nowMs}` and emits it once as `final` — so the `heard` row is
+written, the request window and `isYes` read typed words as speech, and a typed "open
+safari" runs the reflex within 300 ms. Typed while ASLEEP is REFUSED with the toast "asleep
+— press Go" and the text kept (`Settings.typedWakes`, default false: a stray Return must
+never open a paid session). Typed while paused resumes (as before). `agent.send` echoes one
+`pending: true` row before the await and toasts "Sent to <name> · queued | resumed" or "Not
+sent · <reason>"; `AgentInfo.send {ok, reason?, mode?}` is TYPED from the same evidence
+`statusFor` reads (archived in Codex · open in a terminal · open in Claude Desktop · cannot
+tell who owns it · Codex not signed in · Codex not installed · folder is gone · queue ·
+resume), so the composer never parses cue words again; `SendResult.mode` is `queue | resume
+| answer`. `agent.transcript` and `thread.transcript` reach only viewers. One `log.info`
+with ms per say-text / agent.open / agent.history / agent.send / thread.open / thread.history.
+The Console gains a Threads section (waiting-kevin → busy → idle main → finished), a
+`ThreadPane` per thread as rich as Now (cards, steps, screenshots, Allow / Deny →
+`thread.answer` with NO default Return action, a composer → `thread.say`, Stop / Pause per
+thread), ⌘0 Now, ⌘⇧] / ⌘⇧[ next / previous thread, ⌥⌘. stop this thread, ⌘. stop
+everything. `thread.answer yes` arms only when the desk's floor is that thread's, else it is
+refused "another question is on the floor: <Name>'s"; `no` forgets that lane's question;
+`thread.stop main` parks the main turn and never interrupts everything.
+
+### Speed (docs/LATENCY.md §10 has the levers and the commands that measure them)
+
+The floor is one model generation (3.8 s median in the harness, 4.4–5 s in production);
+effort and tier were measured as dead knobs. So the levers cut generations: (a) OBSERVATION
+— every acting tool's result carries a ≤ 240-char `now:` line (front app, focused element,
+what is under the pointer) read 150 ms after it landed (400 ms after `browser_click` /
+`browser_navigate`), through an `ActionObserver` hooked in the runner subclass, never in
+`runner.ts`; `Settings.observe` (default true) is the A/B. (b) COMPOSITE LOOK — the eyes'
+shot at delegation time also carries frontmost, windows and a shallow AX tree (a
+`ScreenStateCache` keyed by display config + front pid, ≤ 300 ms, ≤ 3 probes in parallel)
+into `BrainTask.notes[0]`. (c) SPLIT HANDS — `SplitHands` routes read-only ops to the
+background helper so a read never queues behind a `type` or an `open_app` on the acting
+one. (d) ACTING SERIALIZER — concurrent `tool.run` frames are legal: reads run together,
+acts run in order under the lease and HALT after a needs-confirmation. (e) REFLEXES —
+filler strip + TAIL matching, media, window and time rows (Apple events only when policy
+says run), thread verbs; `pnpm jarhead reflex-miss --days N` mines the misses from Kevin's
+own words. (f) VOICE — status / stop / pause from the table. Not built: in-process
+concurrent Codex turns (the app-server rejects a second turn — the BrainPool is the shape)
+and confirmation replay (rail-adjacent; `Settings.replayFinish` exists, default false,
+unwired).
+
+### The face
+
+The Dock tile wears Kevin's `^ ^` — the blob's own pleased face, named his in
+`BlobField.swift` — on the dithered round orb: a 5 × 4-cell chevron pair with a 1-cell INK
+box at the blob's proportions (eye row 0.30 R above the centre, the pair ≈ 30 % of the
+orb's width), ONE cell pattern from 64 to 1024 because cell = size / 64 keeps the orb at
+32.5 cells, hand bitmaps at 32 (a 3 × 2 chevron with an 8-neighbour ring, eyes at ±3.5 px)
+and 16 (a dot pair with its shadow), the gleam moved above the eyes to the upper-left rim
+so the near-white ink and the paper lift never merge. Two bugs went with it: the orb's
+centre sat half a pixel up-left of the squircle's (`(size − 1) / 2` vs `x + 0.5 − size / 2`
+— no face can mirror across that), and `build-mac.ts` rebuilt the icns only when it was
+MISSING, so the Dock showed a pre-Bayer, pre-circle tile for days; it now rebuilds whenever
+`scripts/{make-icon,icon-render,dither}.ts` is newer. The renderer is pure
+(`scripts/icon-render.ts`, `renderIcon` + `checkIcon`), the face lives with the material
+(`scripts/dither.ts` `FACE` / `faceMask`), the banner wears the same face on its 8 px cells,
+and `scripts/__tests__/icon.test.ts` pins the 64-cell pattern exactly, ×2 … ×16
+replication, the two bitmaps, flat fills, 0 asymmetric pixels at all seven sizes, every face
+pixel within 0.82 R, ≤ 64 colours inside the orb and byte determinism. The pure-refactor
+commit is byte-identical (`pnpm build:icon && git status --porcelain docs/media
+apps/mac/Resources` empty); the face commit changes every size.
+
+**Rails touched, by name (only on Kevin's word):** `packages/live/src/instructions.ts` (four
+lines: threads as a capability, delegate on thread questions, "<Name>: …" narration once,
+a question beginning with a thread's name is that thread's); `codexAddendum` in `codex.ts`
+(the Threads line, the observation sentence, the batching rule); `packages/brain/src/brain.ts`
+(one optional field `BrainTask.thread?: { id; name; lane }`, no prompt text, no version bump).
+Not touched: `policy.ts`, `core/index.ts`, `runner.ts` (subclassed), the `toolset.ts`
+handshake hunk, `Wake/**`, `selfedit.ts`, `shell.ts`, `files.ts`, `mcp-bridge.ts`,
+`codex-config.ts`, the signing lines of `build-mac.ts`, `SECRET_KEYS`, `Engine.stop()`.

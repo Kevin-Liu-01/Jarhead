@@ -20,15 +20,33 @@ final class ConsoleSession: ObservableObject {
 
     @Published var tab: Tab = .now
 
-    /// The agent session stepped into. Setting one of the two open ids clears the
-    /// other: the centre shows one conversation, or Now.
+    /// The agent session stepped into. Setting one of the three open ids clears the
+    /// other two: the centre shows one conversation, or Now.
     @Published var openAgentId: String? {
-        didSet { if openAgentId != nil, openJarheadSessionId != nil { openJarheadSessionId = nil } }
+        didSet {
+            guard openAgentId != nil else { return }
+            if openJarheadSessionId != nil { openJarheadSessionId = nil }
+            if openThreadId != nil { openThreadId = nil }
+        }
     }
     /// The past Jarhead conversation stepped into — a chain's id (its first session's);
     /// nil is Now, the default.
     @Published var openJarheadSessionId: String? {
-        didSet { if openJarheadSessionId != nil, openAgentId != nil { openAgentId = nil } }
+        didSet {
+            guard openJarheadSessionId != nil else { return }
+            if openAgentId != nil { openAgentId = nil }
+            if openThreadId != nil { openThreadId = nil }
+        }
+    }
+    /// The thread stepped into — "main" or a spawned thread's id — whose ThreadPane holds the
+    /// centre (paneKey "thread:<id>"). Set by the rail rows, a satellite blob's click
+    /// (AppState.openThread), ⌘⇧] / ⌘⇧[; cleared by Now, an agent or a past conversation.
+    @Published var openThreadId: String? {
+        didSet {
+            guard openThreadId != nil else { return }
+            if openAgentId != nil { openAgentId = nil }
+            if openJarheadSessionId != nil { openJarheadSessionId = nil }
+        }
     }
     /// The chain whose rows are on screen — set only once its read has landed, so an open
     /// id alone (set early for the rail's highlight) never passes for a loaded conversation.
@@ -127,7 +145,7 @@ final class ConsoleSession: ObservableObject {
 
     var isLedgerMode: Bool { ledgerDay != nil }
     /// The centre shows the live stream: nothing stepped into, no ledger day.
-    var showsNow: Bool { openAgentId == nil && openJarheadSessionId == nil && !isLedgerMode }
+    var showsNow: Bool { openAgentId == nil && openJarheadSessionId == nil && openThreadId == nil && !isLedgerMode }
 
     /// Posted (userInfo `sessionId`, optional `view` = "log") to step the Console into the
     /// Jarhead conversation holding that session — the preview harness and any surface
@@ -153,15 +171,36 @@ final class ConsoleSession: ObservableObject {
         if tab == .ledger { tab = .now }
     }
 
-    /// Back to Now: no conversation open, no ledger day.
+    /// Back to Now: no conversation open, no thread pane, no ledger day.
     func showNow() {
         openAgentId = nil
+        openThreadId = nil
         closeJarhead()
         if isLedgerMode { showLive() }
     }
 
     func openAgent(_ id: String) {
         openAgentId = id
+    }
+
+    /// Step into a thread's pane ("main" is the main conversation as a thread; Now stays the
+    /// stream). A ledger day underneath steps out: the pane is live, the day was the record.
+    func openThread(_ id: String) {
+        openThreadId = id
+        if isLedgerMode { showLive() }
+    }
+
+    /// ⌘⇧] / ⌘⇧[: the next / previous thread in `order` (the rail's, AppState.railOrder). From
+    /// Now, next is the first and previous the last; from a thread it steps, and past either end
+    /// it comes back to Now — so the keys walk Now → threads → Now. Nothing without threads.
+    func stepThread(by delta: Int, order: [String]) {
+        guard !order.isEmpty else { return }
+        guard let current = openThreadId, let i = order.firstIndex(of: current) else {
+            openThread(delta >= 0 ? order[0] : order[order.count - 1])
+            return
+        }
+        let next = i + delta
+        if next < 0 || next >= order.count { showNow() } else { openThread(order[next]) }
     }
 
     func closeJarhead() {
@@ -347,6 +386,7 @@ final class ConsoleSession: ObservableObject {
     func pick(day: String, from state: AppState) async {
         // The day takes the centre: whatever conversation was stepped into steps out.
         openAgentId = nil
+        openThreadId = nil
         if openJarheadSessionId != nil { closeJarhead() }
         ledgerDay = day
         // Clear the previous day before the read so the feed shows its loading

@@ -24,9 +24,9 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 🔒 **Wakes on a word, behind Touch ID.** Asleep, the app runs Apple's on-device recogniser for "jarhead" — nothing billed, nothing leaves the Mac. Then Touch ID, Apple Watch, your Mac password or a passphrase (PBKDF2). Three misses lock the gate for a minute.
 - ⏯️ **One transport: Go · Pause · Stop.** Pause and Stop both close the paid session, so the meter stops the moment you press. Pause holds the conversation; Go (or the wake word, no auth asked twice) resumes it in a new session with the transcript as continuity.
 - 🧠 **The brain is a setting.** `codex` (your ChatGPT login, a resident `codex app-server` thread), `claude-code` (headless Agent SDK), `anthropic-api`, `openai-compatible` (OpenAI, OpenRouter, Ollama, LM Studio, vLLM…), `openai-responses`, or `auto`. Same tools, same policy, same constitution.
-- 🖱️ **Uses the Mac.** 67 tools in nine families — computer (screen, mouse, keyboard) · desktop (apps, windows, controls) · browser · agents · workers · shell, progress and memory · system (files, web, AppleScript, clipboard) · self-edit · drawing. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.
+- 🖱️ **Uses the Mac.** 67 tools in nine families — computer (screen, mouse, keyboard) · desktop (apps, windows, controls) · browser · agents · threads · shell, progress and memory · system (files, web, AppleScript, clipboard) · self-edit · drawing. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.
 - ⚡ **Reflexes under the model.** An on-device ear runs beside the voice; unambiguous commands (scroll, page, keys, tabs, "open Safari", "click Save", "search the wiki for design", dictation) go straight through the policy-gated hands in milliseconds. The model is told afterwards.
-- 🙌 **Two hands at once.** "Tell Ben on Slack I'm late and put on Focus on Spotify" splits: a background worker drives Spotify by Apple events without touching the pointer, the screen lane types into Slack. Two workers max; one spoken line when work splits, one when a worker finishes.
+- 🧵 **Threads: several things at once, each a full Jarhead.** "Tell Ben on Slack I'm late and put on Focus on Spotify" splits into named threads — Spotify on a background lane by Apple events, Slack on the screen lane — each with its own brain, conversation, budget and blob (up to three beside the main one). Ask "what is Spotify doing" or say "stop the Slack one" and the engine's table answers with no model call and without ending what you were saying; every thread gets the same prompt, memory, screenshots and confirmation handshake as the main one.
 - ✋ **Your hands win.** A key, click or scroll of yours holds Jarhead's hands for 1.5 s; a focus change mid-type cancels the type and says how many characters landed; a worker is never refocused behind you.
 - 🛡️ **Gated by policy, not by absence.** One table decides run / confirm / refuse per call, with a spoken reason. A confirmation is your own spoken yes, for that action, once. A grant remembers a yes for this conversation, this app, this action class — never for send, pay, delete, post or purchase.
 - 🗂️ **Knows your agents.** The Console lists every Claude Code, Codex and other coding-agent session on the Mac with its own mark. Step into one, watch it grow live, answer its Allow / Deny, talk to it.
@@ -179,10 +179,10 @@ A brain said `show_rect` with a label. The blob became the pen and drew it.
 ### The icon
 
 <p align="center">
-  <img src="docs/media/icon-sizes.png" width="480" alt="The Dock icon at 16, 32, 64, 128 and 256 with the small ones blown up: a round dithered orb">
+  <img src="docs/media/icon-sizes.png" width="480" alt="The Dock icon at 16, 32, 64, 128 and 256 with the small ones blown up: a round dithered orb wearing the blob's ^ ^">
 </p>
 
-A true circle, five bands, the same Bayer matrix as the island. `pnpm build:icon` renders it; `pnpm build:banner` renders the banner at the top of this page from the same orb.
+A true circle, five bands, the same Bayer matrix as the island — wearing the blob's `^ ^`: flat paper chevrons boxed in flat ink, one cell pattern from 64 to 1024 (cell = size / 64), a hand bitmap at 32 and a dot pair at 16, the gleam above the eyes. `pnpm build:icon` renders it (`scripts/icon-render.ts`, pinned by `scripts/__tests__/icon.test.ts`); `pnpm build:banner` renders the banner at the top of this page from the same orb, with the same face.
 
 ## How it works
 
@@ -233,7 +233,7 @@ packages/hands/native  jarhead-hands: 29 ops, newline JSON, ScreenCaptureKit + C
 packages/agents     sessions on disk and running (Claude Code, Codex, other CLIs); claude-code continues one
 packages/brain      Delegator, ToolRunner, one Brain per kind, reflexes, self-edit, the MCP bridge for Codex
 packages/core       config, env, ledger, trash, policy, latency marks
-packages/engine     the Engine: sessions, transport, workers, sleep, problems, snapshots
+packages/engine     the Engine: sessions, transport, threads (table, scheduler, brain pool), sleep, problems, snapshots
 packages/daemon     jarheadd: the Engine over a unix socket
 packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, …; the in-place installer
 apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wake gate, permissions, crash guard
@@ -261,7 +261,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 | cold Codex thread, input tokens | 22.3k → **10.7k** (−52 %) with the private home and Jarhead's base prompt |
 | Live billing | **$0.05 / min, per second**, muted or not; a closed session costs nothing |
 | idle sleep | 10 min without an addressed turn (setting) |
-| workers | 2 max · 25 steps / 180 s default · 40 / 300 cap · linger 30 s |
+| threads | main + 3 live · 25 steps / 180 s default · 40 / 300 cap · linger 30 s |
 | the lease | hand-over after 3 s idle · a taker waits 1.5 s · a worker waits ≤ 8 s, three waits fail it |
 | your hands | a key, click or scroll of yours holds the helper `busy` for 1500 ms |
 | liveness | ping every 2 s · two unanswered → drop, reconnect, kick |
@@ -305,10 +305,10 @@ First launch opens Setup. Then say "jarhead", pass Touch ID, talk. Reopen Setup 
 the menu-bar icon › *Set Up…*.
 
 ```bash
-pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), workers, memory, problems
+pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), threads N (M live), memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
 pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model)
-pnpm jarhead cmd go|pause|stop|interrupt|mute|unmute|sleep [cause]|worker.stop <id>
+pnpm jarhead cmd go|pause|stop|interrupt|mute|unmute|sleep [cause]|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>   # worker.stop <id> is the older alias
 pnpm jarhead ledger [YYYY-MM-DD]    # a day, no daemon needed
 pnpm jarhead ledger search "<words>" [--limit N]
 pnpm jarhead ledger trash <day> [--shots|--both] · restore <day> · sweep

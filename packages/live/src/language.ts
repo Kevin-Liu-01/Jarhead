@@ -20,10 +20,19 @@ export function languageName(tag?: string): string {
 }
 
 /** The accent is one fragment of the sentence; "none" lets the voice keep its own rendering. Best effort on the model's side. */
-const ACCENT_CLAUSE: Readonly<Record<Accent, string>> = { american: "American accent, ", british: "British accent, ", none: "" };
+/**
+ * Kevin (2026-09-13): "start with a male british voice like jarvis from iron man" — the British
+ * clause carries the manner too: calm, dry, precise, a touch wry. The voice itself is `ballad`
+ * (GPT-Live-1's male voice with the British lean); this clause steers whichever voice is picked.
+ */
+const ACCENT_CLAUSE: Readonly<Record<Accent, string>> = {
+  american: "American accent, ",
+  british: "British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — ",
+  none: "",
+};
 
 /** The `# Language` section, exactly as DECISIONS pins it. */
-export function languageSection(user: string, language?: string, accent: Accent = "american"): string {
+export function languageSection(user: string, language?: string, accent: Accent = "british"): string {
   const lang = languageName(language);
   return `# Language\nSpeak ${lang}, ${ACCENT_CLAUSE[accent] ?? ""}whatever language you hear; if ${user} speaks another language, answer in ${lang} unless he asks you to switch.`;
 }

@@ -259,7 +259,7 @@ test("the standing orders: precedence stated, secrets on the never list, every n
   assert.match(specByName("self_apply")!.description, q);
 });
 
-test("the Codex addendum's cheat-sheet names real tools and their parameters only, and carries the one Workers line", () => {
+test("the Codex addendum's cheat-sheet names real tools and their parameters only, and carries the one Threads line, the observation sentence and the batching rule (the pass-4 rail hunk)", () => {
   const addendum = codexAddendum();
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   // A parameter may be spelled in the cheat-sheet too (scroll_direction, start_coordinate): those are the specs' own words.
@@ -267,12 +267,16 @@ test("the Codex addendum's cheat-sheet names real tools and their parameters onl
   const tokens = [...new Set(addendum.match(/\b[a-z]+_[a-z_]+\b/g) ?? [])].filter((t) => t !== "needs_confirmation");
   assert.ok(tokens.length > 40, tokens.join(","));
   for (const t of tokens) assert.ok(names.has(t) || params.has(t), `${t} is in the addendum but is neither a tool nor a parameter`);
-  for (const t of ["worker_start", "worker_wait", "worker_read", "worker_stop"]) assert.ok(tokens.includes(t), `${t} is in the cheat-sheet (MCP schemas are not inlined for Codex)`);
-  // Exactly the line DECISIONS names (the named rail hunk), after the agents line.
-  const line = addendum.split("\n").find((l) => l.startsWith("Workers: "));
-  assert.equal(line, 'Workers: worker_start {name, task, lane?, budget?} (a second hand; background = Apple events/browser/files/shell/web only, screen = waits for the pointer); worker_wait {name|"all", timeout?}; worker_read {name}; worker_stop {name}.');
-  assert.ok(addendum.indexOf("Agents and self:") < addendum.indexOf("Workers: "));
-  assert.equal(addendum.split("\n").filter((l) => l.startsWith("Workers: ")).length, 1, "one line, not a section");
+  for (const t of ["thread_start", "thread_wait", "thread_read", "thread_stop"]) assert.ok(tokens.includes(t), `${t} is in the cheat-sheet (MCP schemas are not inlined for Codex)`);
+  // Exactly the line DECISIONS §14 names (the named rail hunk), after the agents line; one thread per app, in the same turn, never thread_wait.
+  const line = addendum.split("\n").find((l) => l.startsWith("Threads: "));
+  assert.equal(line, 'Threads: thread_start {name, task, lane?, budget?} — one thread per independent app (background = Apple events/browser/files/shell/web only, screen = waits for the pointer), started in the same turn as your own first action; do not thread_wait: end your turn and Jarhead speaks their finish lines; thread_read {name}; thread_stop {name}. On a thread, speak_progress speaks once, with your name.');
+  assert.ok(addendum.indexOf("Agents and self:") < addendum.indexOf("Threads: "));
+  assert.equal(addendum.split("\n").filter((l) => l.startsWith("Threads: ")).length, 1, "one line, not a section");
+  assert.equal(addendum.split("\n").filter((l) => l.startsWith("Workers: ")).length, 0, "the Workers line is gone");
+  // The observation sentence and the batching rule, one line each, after the Threads line.
+  assert.match(addendum, /\nEvery acting tool answers with what is now in front, focused and under the pointer, read 150 ms after it landed: that line is your verification; screenshot only when it says something you did not expect\.\n/);
+  assert.match(addendum, /\nLook-only tools may be awaited together in one exec \(await Promise\.all\(\[\.\.\.\]\)\); acting tools run in order and stop at the first needs_confirmation/);
 });
 
 test("the voice instructions mirror the orders: a yes comes from Kevin, refusals are relayed with the alternative, secrets are never, rails need his naming, and the capabilities name real tools only", () => {

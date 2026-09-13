@@ -84,7 +84,7 @@ export class ClaudeCodeRunner implements SessionRunner {
     }
     const handle = this.open(sdk, { cwd: s.cwd, resume: s.id, name: this.opts.nameOf?.(s) ?? basename(s.cwd) }, sink, opts);
     handle.send(text);
-    return { kind: "run", handle, detail: "resumed headlessly" };
+    return { kind: "run", mode: "resume", handle, detail: "resumed headlessly" };
   }
 
   async start(cwd: string, prompt: string, sink: RunSink, opts: ContinueOptions = {}): Promise<RunHandle> {

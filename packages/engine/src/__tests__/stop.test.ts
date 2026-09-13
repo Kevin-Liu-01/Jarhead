@@ -19,7 +19,7 @@ type StopRow = Extract<LedgerRow, { type: "stop" }>;
 
 test("interrupt: output audio is dropped for the gate window, the running delegation is cancelled with the brain's cancel called, the hands' pending request is failed, the voice is told, a toast says so — and the session stays open", async () => {
   const w = world();
-  const { engine, live, hands, events, audio, brain, clock } = w;
+  const { engine, live, hands, handsBg, events, audio, brain, clock } = w;
   try {
     await engine.start();
     await engine.ready();
@@ -33,15 +33,16 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     assert.equal(audio.length, 1);
     assert.equal(engine.currentPhase, "speaking");
 
-    // A delegation runs; the brain holds it; a typing's gate probe is in flight in the hands (held here).
+    // A delegation runs; the brain holds it; a typing's gate probe is in flight in the hands (held here) — on the
+    // READING helper, where the main toolset's looks go (SplitHands): the type behind it never reaches the acting one.
     delegate(w, "find the save button", "item_1");
     await settle();
     assert.equal(brain.tasks.length, 1);
     assert.equal(engine.snapshot().delegations[0]?.status, "running");
-    hands.hold = "frontmost";
+    handsBg.hold = "frontmost";
     const typing = engine.toolset.run("type", { text: "hello" }).catch(() => ({ kind: "error" as const, message: "threw" }));
     await settle();
-    assert.ok(hands.named("frontmost").length > 0, "the gate probe is waiting on the helper");
+    assert.ok(handsBg.named("frontmost").length > 0, "the gate probe is waiting on the reading helper");
 
     // Interrupt.
     events.length = 0;
@@ -73,7 +74,7 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     assert.equal(outcome.kind, "error");
     assert.match((outcome as { message: string }).message, /cancelled|stop/);
     assert.equal(hands.named("type").length, 0, "nothing was typed after the stop");
-    hands.release(); // the helper's late answer arrives for an id nobody waits on
+    handsBg.release(); // the helper's late answer arrives for an id nobody waits on
 
     // Frames that arrive after the interrupt are dropped; the output transcript no longer counts as speaking.
     audio.length = 0;
@@ -100,6 +101,7 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     assert.equal(engine.currentPhase, "listening");
   } finally {
     w.hands.release();
+    w.handsBg.release();
     await engine.stop();
   }
 });
@@ -134,7 +136,7 @@ test("interrupt with nothing running is harmless: a flush, a toast, the voice to
 
 test("a spoken \"stop\" is an interrupt: the delegation is cancelled, the brain's cancel called, the pending hands request failed so nothing lands after it, a toast, one instruction, the gate set by the very words that asked for it — and the session stays", async () => {
   const w = world();
-  const { engine, live, hands, events, audio, brain, clock } = w;
+  const { engine, live, hands, handsBg, events, audio, brain, clock } = w;
   try {
     await engine.start();
     await engine.ready();
@@ -144,10 +146,10 @@ test("a spoken \"stop\" is an interrupt: the delegation is cancelled, the brain'
     delegate(w, "jarhead type my address", "item_1");
     await settle();
     assert.equal(brain.tasks.length, 1);
-    hands.hold = "frontmost";
+    handsBg.hold = "frontmost";
     const typing = engine.toolset.run("type", { text: "hello again" }).catch(() => ({ kind: "error" as const, message: "threw" }));
     await settle();
-    assert.ok(hands.named("frontmost").length > 0, "the gate probe is waiting on the helper");
+    assert.ok(handsBg.named("frontmost").length > 0, "the gate probe is waiting on the reading helper");
 
     events.length = 0;
     live.instructions.length = 0;
@@ -165,7 +167,7 @@ test("a spoken \"stop\" is an interrupt: the delegation is cancelled, the brain'
     assert.equal(rows<StopRow>(w, "stop")[0]?.how, "said");
     const outcome = await typing;
     assert.equal(outcome.kind, "error", "the typing that was waiting on the helper came back as an error");
-    hands.release();
+    handsBg.release();
     await settle();
     assert.equal(hands.named("type").length, 0, "nothing was typed after the spoken stop");
 
@@ -180,6 +182,7 @@ test("a spoken \"stop\" is an interrupt: the delegation is cancelled, the brain'
     clock.t += 10;
   } finally {
     w.hands.release();
+    w.handsBg.release();
     await engine.stop();
   }
 });

@@ -206,6 +206,59 @@ import SwiftUI
 //                            ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_LEVELS=nan ORB_LEVELS_AT=1.6 ORB_LEVELS_FOR=0.5 ORB_SHOT_DIR=… ORB_EXIT_AFTER=5
 //                              (half a second of NaN levels while peeking, then normal levels; the island
 //                              is hovered at 2.7 s and shot at 3.4 s — it must look like the plain notch run)
+//   ORB_FLEET="Name:lane:status[@x,y][:app]; …"   the fleet (BlobFleet): fake spawned threads on snapshot.threads at
+//                          ORB_FLEET_AT s (default 1.2; 1.6 in notch mode) — name (≤ 16), lane voice|screen|background,
+//                          status ("working" = acting; else the wire word), an acting point @x,y (Thread.at) and an app
+//                          (Thread.app: parked by its front window; no lookup under ORB_NO_WINDOWS). One satellite each,
+//                          flown to its point, else at a rank slot beside the main blob. Every fleet line is stamped.
+//                          Once every satellite is parked (≥ 0.8 s after the last fleet command) the `fleet check:` lines
+//                          print each landing, the pairwise centre distances (≥ 92 pt) and the distance to its target
+//                          (≤ 3 body radii), and with ORB_SHOT_DIR shoot fleet-<ORB_FLEET_SHOT>.png (default "three";
+//                          "avoid" / "reduce" name the other scenarios' shots). The check shot is taken in the plain
+//                          scenario or when ORB_FLEET_SHOT names it — never by a notch, status, drag, click, hover,
+//                          trace, late-thread or budget run (each has its own shots), so none overwrites fleet-three.png
+//   ORB_FLEET_FLY="Name@x,y[@t]; …"   a tagged orb.fly {thread} on state.overlayCommands at t s (default
+//                          ORB_FLEET_AT + 0.4 + 0.4·i); a ring marks each target. The fleet routes it to that satellite;
+//                          0.1 s and 2.3 s after each the `fleet pending:` line counts the flies kept for threads not yet
+//                          seen (a name not in ORB_FLEET: 1 then 0 — dropped after 2 s; one whose ORB_FLEET_LATE record
+//                          arrives inside 2 s is taken at the spawn: "takes the fly kept for it", then its flight)
+//   ORB_FLEET_TRACE="Name@x,y;x,y;…[@closed][@t]"   a tagged orb.trace {thread} at t s (default ORB_FLEET_AT + 0.6):
+//                          that satellite flies beside the first point; the shape is stamped on the overlay as ONE
+//                          untagged `.stroke` (closed: the first point again at the end — n + 1 points); the main blob
+//                          must not move (its flight phase and centre are printed before and 1 s after)
+//   ORB_FLEET_HOVER="Name@t"   the pointer entering that satellite's cell at t s (through the tracking area's own
+//                          handler — the harness cannot move the real pointer) and leaving 0.3 s later: prints the name
+//                          tag (OrbPill) on entry, that it is still up 0.6 s after leaving and gone 1.5 s after (tagShow
+//                          1.2 s), and the cell's tracking-area count; shoots fleet-hover.png with the tag up
+//   ORB_FLEET_LATE="t:Name:lane:status; …"   a thread whose record arrives at t s: prints the counts 0.3 s and 1.5 s
+//                          after (a fourth live thread with three satellites showing — or one whose panel is still
+//                          fading under a finished thread — is a notch dot only until a panel is free; `made` stays 3)
+//   ORB_FLEET_STATUS="Name=status@t; …"   flip that thread's status at t s (done / failed / stopped set doneAt;
+//                          waiting-kevin sets a question): prints the face and pill 0.5 s in and the counts (satellites,
+//                          leaving, panel pool) at 0.5 / 1.5 / 2.2 s; shoots fleet-waiting / fleet-done / fleet-failed.png
+//   ORB_FLEET_DRAG="Name->dock@t" | "Name->x,y@t"   a synthetic drag of that satellite from its centre into the notch's
+//                          catch zone (NotchGeometry.catchZoneCG; needs ORB_NOTCH=1) or to a point, over 600 ms, through
+//                          its own pointer path; prints the release and the send counts; shoots fleet-drag-stop.png
+//   ORB_FLEET_CLICK="Name@t"   a posted click on that satellite (SatellitePanel.sendEvent → openThread(id) + openConsole())
+//                          after printing its right-click menu's items
+//   ORB_FLEET_BUDGET_LOG=1   the fleet's per-second frame-cost mean / p95 / max and the rung
+//   ORB_FLEET_BUDGET_FORCE_MS=9   add that many ms to every fleet frame's measured cost from ORB_FLEET_AT + 1 s for
+//                          ORB_FLEET_BUDGET_FOR s (default 4): the ladder steps, then recovers when the load ends; the
+//                          `+N s after the load` lines carry the rung, the mean and the fleet's counts (held ≥ 5 s the
+//                          ladder reaches rung 4: the third satellite stays, a fourth live thread is a dot only, and one
+//                          gets in only once fewer than two remain)
+//   ORB_NOTCH_STRIP_PROBE=t   notch mode, with ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting and no fleet: at t s render
+//                          the working strip alone at forced park / work levels and print the hairline's and the
+//                          counter's brightness at park ½ and at work ½ as fractions of the full strip's — both must
+//                          read 0.50 (work · (1 − park), the strip's alpha before the fleet; only the 0.24 s transitions
+//                          differ, which no settled shot can see)
+//   ORB_SELFTEST=1         run the pure checks and exit (0 pass, 1 fail): FleetBudget on a synthetic 24 fps clock (a
+//                          step exactly at the 30th heavy frame and once per window, a window straddling the load's end
+//                          does not step, recovery to rung 0 between 1.5 and 2.0 s of the load ending, `note` true only
+//                          on a change) and BlobBody.landing(for:avoiding:) (an empty list is the plain choice; the
+//                          chosen spot occupied → the next side ≥ 92 pt away, "occupied →" in the note; every side
+//                          taken → the plain choice again, "(every side taken)")
+//   At exit with a fleet: `fleet sends:` counts every thread.stop / sleep / set-settings the run sent, and the counts.
 
 @main
 struct OrbPreviewMain {
@@ -248,6 +301,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     /// Every publish on state.liveStrokes (the blob's and mark mode's), for the trace's publish rate.
     var strokePublishes = 0
     var strokeSubscription: AnyCancellable?
+    var overlaySubscription: AnyCancellable?
 
     // ORB_FACE_LOG: the drawn face, printed as it changes.
     var faceLog = false
@@ -278,6 +332,26 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var levelsOverrideIndex = 0
     var levelsOverrideActive = false
     var lastLevelsLog = 0.0
+
+    // The fleet (ORB_FLEET): the fake thread records, where each thread's hands act, the
+    // owed shot, and every command the run sent, by kind.
+    var fleet: BlobFleet!
+    var fleetOn = false
+    var fleetAt = 1.2
+    var fleetThreads: [WorkThread] = []
+    /// Thread id → the point its hands act at (a tagged fly, or the record's `at`).
+    var fleetTargets: [String: CGPoint] = [:]
+    var fleetRings: [CGPoint] = []
+    var fleetShotName = "three"
+    var fleetShotOwed = false
+    var fleetLastCommandAt = 0.0
+    /// The last fleet command the script has scheduled (s after launch): the check waits for it too.
+    var fleetCommandsUntil = 0.0
+    var fleetChecked = false
+    var fleetSends = (stop: 0, sleep: 0, settings: 0, other: 0)
+    /// Untagged `.stroke`s seen on state.overlayCommands (a tagged trace is re-stamped as exactly one), and the last one's point count.
+    var strokesSeen = 0
+    var lastStrokePoints = 0
 
     var shotDir: String?
     var shotPrefix = "preview-blob-"
@@ -318,9 +392,15 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var peeledAt = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let env = ProcessInfo.processInfo.environment
+        if env["ORB_SELFTEST"] == "1" {
+            let ok = Self.runSelfTest()
+            print(ok ? "selftest: PASS" : "selftest: FAIL")
+            fflush(stdout)
+            exit(ok ? 0 : 1)
+        }
         // The dither tiles first, so a shot a few seconds in never catches the fade fallback.
         Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
-        let env = ProcessInfo.processInfo.environment
         let x = Double(env["ORB_X"] ?? "") ?? 200
         let y = Double(env["ORB_Y"] ?? "") ?? 200
         notchMode = env["ORB_NOTCH"] == "1"
@@ -361,8 +441,23 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             if let data = try? JSONSerialization.data(withJSONObject: cmd.json), let s = String(data: data, encoding: .utf8) {
                 print(self.stamp, "send:", s)
             }
+            // The fleet's safety count: a satellite's drop is one thread.stop, never a sleep, never a settings write.
+            switch cmd.json["type"] as? String {
+            case "thread.stop", "worker.stop": self.fleetSends.stop += 1
+            case "sleep": self.fleetSends.sleep += 1
+            case "set-settings": self.fleetSends.settings += 1
+            default: self.fleetSends.other += 1
+            }
         }
         state.openConsoleHandler = { print("openConsole()") }
+        // The fleet's trace proof: a tagged orb.trace becomes exactly one untagged `.stroke` here.
+        overlaySubscription = state.overlayCommands
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] cmd in
+                guard let self, case .stroke(let points, _, _, _) = cmd else { return }
+                self.strokesSeen += 1
+                self.lastStrokePoints = points.count
+            }
         state.connected = true
         state.daemonDetail = "preview"
         // The gate's actions print instead of authenticating.
@@ -451,6 +546,20 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         orb.previewTimeline = env["ORB_TIMELINE"] == "1"
         faceLog = env["ORB_FACE_LOG"] == "1"
         lastFaceAt = CACurrentMediaTime()
+        // The fleet, as the app builds it: its lines are stamped and printed here; a
+        // satellite's click prints what the app would do (open that thread in the Console).
+        fleet = BlobFleet(state: state, orb: orb)
+        fleet.log = { [weak self] line in
+            guard let self else { return }
+            print(self.stamp, line)
+            fflush(stdout)
+        }
+        fleet.onOpenThread = { [weak self] id in
+            print(self?.stamp ?? "", "openThread(\(id))")
+            print("openConsole()")
+            fflush(stdout)
+        }
+        if let spec = env["ORB_FLEET"] { setUpFleet(spec: spec, env: env) }
         overlay = OverlayManager(state: state)
         overlay.start()
         orb.show()
@@ -961,6 +1070,15 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         // only moves back to the dock. Prints the flight, whether it is tucked and where
         // the body is at the flip, 0.1 s after (the tuck scheduled, a Stop's shiver) and
         // 1.2 s after (the way up under way, or tucked in).
+        // ORB_NOTCH_STRIP_PROBE=t: the working strip's alphas at forced levels, measured off a bitmap.
+        if let at = Double(env["ORB_NOTCH_STRIP_PROBE"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
+                guard let self else { return }
+                print(self.stamp, self.orb.previewNotchStripProbe ?? "notch strip probe: no dock (set ORB_NOTCH=1)")
+                fflush(stdout)
+            }
+        }
+
         if let at = sleepAt {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
                 guard let self else { return }
@@ -1041,9 +1159,542 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         let exitAfter = Double(env["ORB_EXIT_AFTER"] ?? "") ?? 30
-        DispatchQueue.main.asyncAfter(deadline: .now() + exitAfter) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + exitAfter) { [weak self] in
+            if let self, self.fleetOn {
+                print(self.stamp, "fleet sends: thread.stop \(self.fleetSends.stop) sleep \(self.fleetSends.sleep) set-settings \(self.fleetSends.settings) other \(self.fleetSends.other);",
+                      "satellites \(self.fleet.previewSatelliteCount) leaving \(self.fleet.previewLeavingCount) pool \(self.fleet.previewPanelPoolCount) made \(self.fleet.previewPanelsMade) rung \(self.fleet.previewRung) link paused \(self.fleet.previewLinkPaused ? 1 : 0)")
+            }
             print("preview: exiting")
+            fflush(stdout)
             NSApp.terminate(nil)
+        }
+    }
+
+    // MARK: - ORB_SELFTEST: the pure checks
+
+    /// FleetBudget on a synthetic 24 fps clock and BlobBody.landing(for:avoiding:) on
+    /// this Mac's displays. No window, no link; prints one line per check.
+    static func runSelfTest() -> Bool {
+        var ok = true
+        func check(_ pass: Bool, _ what: String) {
+            print(pass ? "  ok  " : "  FAIL", what)
+            if !pass { ok = false }
+        }
+
+        // FleetBudget: the idle link's 24 fps, dt = 1/24.
+        var b = FleetBudget()
+        var t = 0.0
+        var changes = 0
+        /// Feed `n` frames of `ms`; the frame numbers at which the rung changed.
+        func feed(_ ms: Double, _ n: Int) -> [Int] {
+            var at: [Int] = []
+            for _ in 0..<n {
+                t += 1.0 / 24
+                let before = b.rung
+                let changed = b.note(ms: ms, now: t)
+                if changed { changes += 1; at.append(b.frames) }
+                if changed != (b.rung != before) { at.append(-1) }   // `note` true exactly on a change
+            }
+            return at
+        }
+        let c1 = feed(9, 29)
+        check(c1.isEmpty && b.rung == 0, "29 heavy frames (9 ms): rung 0 — the window has not filled")
+        let c2 = feed(9, 1)
+        check(c2 == [30] && b.rung == 1, "the 30th heavy frame: rung 1 (changed at frame \(c2))")
+        let c3 = feed(9, 30)
+        check(c3 == [60] && b.rung == 2, "one step per window: rung 2 at frame 60 (\(c3))")
+        let c4 = feed(9, 20)
+        let loadEnd = t
+        let c5 = feed(0.5, 10)
+        check(c4.isEmpty && c5.isEmpty && b.rung == 2, String(format: "a window straddling the load's end (20 × 9 + 10 × 0.5 = mean %.2f > 6) does not step: rung %d", (20 * 9 + 10 * 0.5) / 30, b.rung))
+        let rungAt1s: Int = {
+            while t - loadEnd < 1.0 { _ = feed(0.5, 1) }
+            return b.rung
+        }()
+        check(rungAt1s == 2, "1.0 s after the load: still rung \(rungAt1s) (recoverAfter 1.5)")
+        var recovery = -1.0
+        while t - loadEnd < 5 {
+            _ = feed(0.5, 1)
+            if b.rung == 0 { recovery = t - loadEnd; break }
+        }
+        check(recovery >= 1.5 && recovery <= 2.0, String(format: "recovery to rung 0 %.3f s after the load ended (want 1.5 … 2.0: 10 frames at 24 fps + 1.5 s)", recovery))
+        check(changes == 3, "`note` returned true \(changes) times = the three rung changes")
+        // The line: the p95 and the max over the samples since the last line.
+        var l = FleetBudget()
+        for i in 1...20 { _ = l.note(ms: Double(i), now: Double(i) / 24) }
+        let line = l.line()
+        check(line.contains("mean 10.50 ms") && line.contains("p95 20.00 ms") && line.contains("max 20.00 ms") && line.contains("over 20 frames"), "line(): \(line)")
+
+        // BlobBody.landing(for:avoiding:) — a satellite-sized body, the target mid-display.
+        let body = BlobBody(size: BlobMetrics.satellitePanelSize, center: CGPoint(x: 400, y: 600))
+        let work = ScreenArea.all().first?.work ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let target = CGPoint(x: work.midX, y: work.midY)
+        let plain = body.landing(for: target)
+        let plainNote = body.lastLandingNote
+        let empty = body.landing(for: target, avoiding: [])
+        check(plain == empty && !body.lastLandingNote.contains("occupied"), String(format: "an empty `avoiding` is the plain choice: CG %.0f,%.0f (%@)", plain.x, plain.y, plainNote))
+        let r = body.radius
+        let onSpot = CGRect(x: plain.x - r, y: plain.y - r, width: 2 * r, height: 2 * r)
+        let dodged = body.landing(for: target, avoiding: [onSpot])
+        let apart = hypot(dodged.x - plain.x, dodged.y - plain.y)
+        check(dodged != plain && apart >= 92 && body.lastLandingNote.contains("occupied →"), String(format: "the chosen spot occupied → CG %.0f,%.0f, %.0f pt from it (≥ 92), note '%@'", dodged.x, dodged.y, apart, body.lastLandingNote))
+        let d = 1 / 2.0.squareRoot()
+        let reach = r + BlobBody.flyClearance
+        let ring = [(-d, -d), (0, -1), (d, -d), (-1, 0), (1, 0), (-d, d), (0, 1), (d, d)].map { dir in
+            CGRect(x: target.x + CGFloat(reach * dir.0) - r, y: target.y + CGFloat(reach * dir.1) - r, width: 2 * r, height: 2 * r)
+        }
+        let fallback = body.landing(for: target, avoiding: ring)
+        check(fallback == plain && body.lastLandingNote.contains("every side taken"), String(format: "every side taken → the plain choice CG %.0f,%.0f, note '%@'", fallback.x, fallback.y, body.lastLandingNote))
+        return ok
+    }
+
+    // MARK: - The fleet (ORB_FLEET)
+
+    /// "working" is acting; anything else is the wire's word.
+    static func fleetStatus(_ word: String) -> ThreadStatus {
+        let w = word.lowercased()
+        if w == "working" || w == "acting" { return .acting }
+        return ThreadStatus(rawValue: w) ?? .acting
+    }
+
+    /// The fake records, the tagged flies, the status flips, the drag, the click, the budget load.
+    private func setUpFleet(spec: String, env: [String: String]) {
+        fleetOn = true
+        fleetAt = Double(env["ORB_FLEET_AT"] ?? "") ?? (notchMode ? 1.6 : 1.2)
+        fleetShotName = env["ORB_FLEET_SHOT"] ?? "three"
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        for entry in spec.split(separator: ";") {
+            let raw = entry.trimmingCharacters(in: .whitespaces)
+            guard !raw.isEmpty else { continue }
+            let atParts = raw.split(separator: "@", maxSplits: 1).map(String.init)
+            let fields = atParts[0].split(separator: ":", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard let name = fields.first, !name.isEmpty else { continue }
+            let id = "t_" + name.lowercased()
+            let lane = fields.count > 1 ? (ThreadLane(rawValue: fields[1]) ?? .screen) : .screen
+            let status = fields.count > 2 ? Self.fleetStatus(fields[2]) : .acting
+            let app = fields.count > 3 && !fields[3].isEmpty ? fields[3] : nil
+            var at: Point2?
+            if atParts.count > 1 {
+                let p = atParts[1].split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                if p.count == 2 {
+                    at = Point2(x: p[0], y: p[1])
+                    fleetTargets[id] = CGPoint(x: p[0], y: p[1])
+                    addFleetRing(CGPoint(x: p[0], y: p[1]))
+                }
+            }
+            fleetThreads.append(WorkThread(id: id, name: name, lane: lane, status: status, parentId: "main", parentDelegationId: "d1", liveId: "live_1",
+                                           task: "preview: \(name)", detail: nil, apps: app.map { [$0] } ?? [], app: app, at: at,
+                                           startedAt: nowMs - 3000, updatedAt: nowMs, doneAt: nil, turns: 1, steps: 3, waits: 0,
+                                           budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil, currentDelegationId: "d_\(name.lowercased())",
+                                           lastScreenshotPath: nil, canSay: true, canStop: true))
+        }
+        guard !fleetThreads.isEmpty else { print("ORB_FLEET: nothing parsed from \(spec); want Name:lane:status[@x,y][:app]; …"); return }
+        // The check shot: the plain scenario's (fleet-three.png), or one ORB_FLEET_SHOT
+        // names. A status, drag, click, hover, trace, late-thread, budget or notch run
+        // has its own shots and must never land its frame (the main blob tucked, a
+        // satellite mid-fade, a tag up) in fleet-three.png.
+        let ownScenario = notchMode || ["ORB_FLEET_STATUS", "ORB_FLEET_DRAG", "ORB_FLEET_CLICK", "ORB_FLEET_HOVER", "ORB_FLEET_TRACE", "ORB_FLEET_LATE", "ORB_FLEET_BUDGET_FORCE_MS"].contains { env[$0] != nil }
+        fleetShotOwed = shotDir != nil && (env["ORB_FLEET_SHOT"] != nil || !ownScenario)
+        fleetCommandsUntil = max(fleetCommandsUntil, fleetAt)
+        DispatchQueue.main.asyncAfter(deadline: .now() + fleetAt) { [weak self] in
+            guard let self else { return }
+            print(self.stamp, "fleet: snapshot.threads <-", self.fleetThreads.map { "\($0.name):\($0.lane.rawValue):\($0.status.rawValue)\($0.at.map { "@\(Int($0.x)),\(Int($0.y))" } ?? "")\($0.app.map { ":\($0)" } ?? "")" }.joined(separator: " "))
+            fflush(stdout)
+            self.state.snapshot.threads = self.fleetThreads
+            self.fleetLastCommandAt = CACurrentMediaTime()
+        }
+
+        // ORB_FLEET_LATE="t:Name:lane:status; …": a thread that starts later (proves the panel pool's reuse).
+        if let late = env["ORB_FLEET_LATE"] {
+            for entry in late.split(separator: ";") {
+                let fields = entry.split(separator: ":").map { String($0).trimmingCharacters(in: .whitespaces) }
+                guard fields.count >= 2, let t = Double(fields[0]) else { print("ORB_FLEET_LATE: could not parse \(entry); want t:Name:lane:status"); continue }
+                let name = fields[1]
+                let lane = fields.count > 2 ? (ThreadLane(rawValue: fields[2]) ?? .screen) : .screen
+                let status = fields.count > 3 ? Self.fleetStatus(fields[3]) : .acting
+                fleetCommandsUntil = max(fleetCommandsUntil, t)
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self else { return }
+                    let ms = Date().timeIntervalSince1970 * 1000
+                    let record = WorkThread(id: "t_" + name.lowercased(), name: name, lane: lane, status: status, parentId: "main", parentDelegationId: "d1", liveId: "live_1",
+                                            task: "preview: \(name)", detail: nil, apps: [], app: nil, at: nil, startedAt: ms, updatedAt: ms, doneAt: nil, turns: 1, steps: 0, waits: 0,
+                                            budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil, currentDelegationId: nil, lastScreenshotPath: nil, canSay: true, canStop: true)
+                    var threads = self.state.snapshot.threads ?? []
+                    threads.append(record)
+                    self.fleetThreads.append(record)
+                    print(self.stamp, "fleet: late thread \(name) (\(status.rawValue)) joins; \(self.fleetCounts)")
+                    fflush(stdout)
+                    self.state.snapshot.threads = threads
+                    self.fleetLastCommandAt = CACurrentMediaTime()
+                    for delay in [0.3, 1.5] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self else { return }
+                            let s = self.fleet.previewSatellite(named: name)
+                            print(self.stamp, "fleet: late +\(delay) s \(name) \(s == nil ? "is a dot only" : "has a satellite") \(self.fleetCounts)")
+                            fflush(stdout)
+                        }
+                    }
+                }
+            }
+        }
+
+        if let flies = env["ORB_FLEET_FLY"] {
+            for (i, entry) in flies.split(separator: ";").enumerated() {
+                let parts = entry.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+                guard parts.count >= 2 else { print("ORB_FLEET_FLY: could not parse \(entry); want Name@x,y[@t]"); continue }
+                let name = parts[0]
+                let p = parts[1].split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                guard p.count == 2 else { continue }
+                let t = parts.count > 2 ? (Double(parts[2]) ?? fleetAt + 0.4 + 0.4 * Double(i)) : fleetAt + 0.4 + 0.4 * Double(i)
+                let target = CGPoint(x: p[0], y: p[1])
+                let id = "t_" + name.lowercased()
+                fleetTargets[id] = target
+                addFleetRing(target)
+                fleetCommandsUntil = max(fleetCommandsUntil, t)
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self else { return }
+                    print(self.stamp, String(format: "orb.fly {thread %@} -> CG %.0f,%.0f", id, target.x, target.y))
+                    fflush(stdout)
+                    self.state.overlayCommands.send(.orbFly(x: target.x, y: target.y, dwellMs: 2000, reason: "preview", thread: id))
+                    self.fleetLastCommandAt = CACurrentMediaTime()
+                    for delay in [0.1, 2.3] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self else { return }
+                            print(self.stamp, "fleet pending: \(self.fleet.previewPendingFlies) (+\(delay) s after the fly for \(name))")
+                            fflush(stdout)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ORB_FLEET_TRACE="Name@x,y;x,y;…[@closed][@t]": a tagged trace. The satellite flies
+        // beside the first point; the shape is one untagged `.stroke`; the main blob stays.
+        if let spec = env["ORB_FLEET_TRACE"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            let pts = parts.count > 1 ? parts[1].split(separator: ";").compactMap { pair -> CGPoint? in
+                let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                return xy.count == 2 ? CGPoint(x: xy[0], y: xy[1]) : nil
+            } : []
+            if parts.count >= 2, pts.count >= 2 {
+                let name = parts[0]
+                let id = "t_" + name.lowercased()
+                var closed = false
+                var t = fleetAt + 0.6
+                for extra in parts.dropFirst(2) {
+                    if extra.lowercased() == "closed" { closed = true } else if let v = Double(extra) { t = v }
+                }
+                fleetTargets[id] = pts[0]
+                addFleetRing(pts[0])
+                fleetCommandsUntil = max(fleetCommandsUntil, t)
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self else { return }
+                    let mainBefore = self.orb.previewCenterCG
+                    let strokesBefore = self.strokesSeen
+                    print(self.stamp, String(format: "orb.trace {thread %@} -> %d points%@ from CG %.0f,%.0f; main blob %@ at CG %.0f,%.0f", id, pts.count, closed ? " (closed)" : "",
+                                             pts[0].x, pts[0].y, self.orb.previewFlightPhase, mainBefore.x, mainBefore.y))
+                    fflush(stdout)
+                    self.state.overlayCommands.send(.orbTrace(points: pts.map { Point2(x: $0.x, y: $0.y) }, closed: closed, label: "Deploy", ttlMs: 4000, tone: .accent, reason: "preview", thread: id))
+                    self.fleetLastCommandAt = CACurrentMediaTime()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                        guard let self else { return }
+                        let want = closed ? pts.count + 1 : pts.count
+                        let n = self.strokesSeen - strokesBefore
+                        print(self.stamp, "fleet trace: strokes stamped \(n) (want 1: \(n == 1 ? "OK" : "FAIL")), last stroke \(self.lastStrokePoints) points (want \(want): \(self.lastStrokePoints == want ? "OK" : "FAIL"))")
+                        fflush(stdout)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        guard let self else { return }
+                        let c = self.orb.previewCenterCG
+                        let still = hypot(c.x - mainBefore.x, c.y - mainBefore.y) < 1
+                        print(self.stamp, String(format: "fleet trace: +1.0 s main blob %@ at CG %.0f,%.0f (unmoved: %@)", self.orb.previewFlightPhase, c.x, c.y, still ? "OK" : "FAIL"))
+                        fflush(stdout)
+                    }
+                }
+            } else {
+                print("ORB_FLEET_TRACE: could not parse \(spec); want Name@x,y;x,y;…[@closed][@t]")
+            }
+        }
+
+        // ORB_FLEET_HOVER="Name@t": the name tag on hover, through the cell's own handler.
+        if let spec = env["ORB_FLEET_HOVER"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            let name = parts[0]
+            let t = parts.count > 1 ? (Double(parts[1]) ?? 2.5) : 2.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                guard let s = self.fleet.previewSatellite(named: name) else { print(self.stamp, "fleet hover: no satellite named \(name)"); fflush(stdout); return }
+                s.previewHover(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self, let s = self.fleet.previewSatellite(named: name) else { return }
+                    print(self.stamp, "fleet hover: \(name) entered; tag '\(s.previewHoverPillText ?? "none")' shown '\(s.pillText ?? "none")' tracking areas \(s.previewTrackingAreaCount) (want '\(name)', 1: \(s.pillText == name && s.previewTrackingAreaCount == 1 ? "OK" : "FAIL"))")
+                    fflush(stdout)
+                    if let dir = self.shotDir {
+                        self.shoot("\(dir)/\(self.shotPrefix)fleet-hover.png", note: "\(name) hovered: tag '\(s.pillText ?? "none")'", extra: self.fleetRegion(focus: name))
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self, let s = self.fleet.previewSatellite(named: name) else { return }
+                    s.previewHover(false)
+                    print(self.stamp, "fleet hover: \(name) left")
+                    fflush(stdout)
+                    for (delay, wantUp) in [(0.6, true), (1.5, false)] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, let s = self.fleet.previewSatellite(named: name) else { return }
+                            let up = s.pillText != nil
+                            print(self.stamp, "fleet hover: +\(delay) s after leaving tag \(up ? "'\(s.pillText!)'" : "gone") (want \(wantUp ? "up" : "gone"): \(up == wantUp ? "OK" : "FAIL"))")
+                            fflush(stdout)
+                        }
+                    }
+                }
+            }
+        }
+
+        if let flips = env["ORB_FLEET_STATUS"] {
+            for entry in flips.split(separator: ";") {
+                let parts = entry.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+                guard parts.count == 2, let t = Double(parts[1]) else { print("ORB_FLEET_STATUS: could not parse \(entry); want Name=status@t"); continue }
+                let assign = parts[0].split(separator: "=").map { String($0).trimmingCharacters(in: .whitespaces) }
+                guard assign.count == 2 else { continue }
+                let name = assign[0], status = Self.fleetStatus(assign[1])
+                let id = "t_" + name.lowercased()
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self, var threads = self.state.snapshot.threads, let i = threads.firstIndex(where: { $0.id == id }) else { return }
+                    threads[i].status = status
+                    threads[i].updatedAt = Date().timeIntervalSince1970 * 1000
+                    if !status.isLive { threads[i].doneAt = threads[i].updatedAt }
+                    if status == .waitingKevin { threads[i].question = "send it to Ben with the Q3 numbers attached?" }
+                    print(self.stamp, "fleet: \(name) status -> \(status.rawValue)")
+                    fflush(stdout)
+                    self.state.snapshot.threads = threads
+                    self.fleetLastCommandAt = CACurrentMediaTime()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        guard let self else { return }
+                        let s = self.fleet.previewSatellite(named: name)
+                        let face = s.map { "\($0.sim.face.left) \($0.sim.face.right)" } ?? "gone"
+                        print(self.stamp, "fleet: \(name) +0.5 s face [\(face)] pill \(s?.pillText ?? "none") \(self.fleetCounts)")
+                        fflush(stdout)
+                        if let dir = self.shotDir {
+                            let what: String
+                            switch status {
+                            case .waitingScreen: what = "waiting"
+                            case .waitingKevin: what = "asks"
+                            case .done: what = "done"
+                            case .failed: what = "failed"
+                            default: what = status.rawValue
+                            }
+                            self.shoot("\(dir)/\(self.shotPrefix)fleet-\(what).png", note: "\(name) \(status.rawValue) +0.5 s, face [\(face)], pill \(s?.pillText ?? "none")", extra: self.fleetRegion(focus: name))
+                        }
+                    }
+                    for delay in [1.5, 2.2] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self else { return }
+                            let s = self.fleet.previewSatellite(named: name)
+                            let where_ = s.map { "still here (face [\($0.sim.face.left) \($0.sim.face.right)], panel visible \($0.panel.isVisible ? 1 : 0), alpha \(String(format: "%.2f", $0.panel.alphaValue)))" } ?? "gone from the fleet"
+                            print(self.stamp, "fleet: \(name) +\(delay) s \(where_) \(self.fleetCounts)")
+                            fflush(stdout)
+                        }
+                    }
+                }
+            }
+        }
+
+        if let spec = env["ORB_FLEET_DRAG"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            let t = parts.count > 1 ? (Double(parts[1]) ?? 3) : 3
+            let ends = parts[0].components(separatedBy: "->").map { $0.trimmingCharacters(in: .whitespaces) }
+            if ends.count == 2 {
+                let name = ends[0]
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self else { return }
+                    var to: CGPoint?
+                    if ends[1].lowercased() == "dock" {
+                        if let g = NotchGeometry.current() {
+                            let z = NotchGeometry.catchZoneCG(g)
+                            to = CGPoint(x: z.midX, y: z.minY + z.height * 0.6)
+                            print(self.stamp, String(format: "fleet drag: catch zone CG %.0f,%.0f %.0f×%.0f", z.minX, z.minY, z.width, z.height))
+                        } else {
+                            print(self.stamp, "fleet drag: no notch on any display (set ORB_NOTCH=1)")
+                        }
+                    } else {
+                        let p = ends[1].split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                        if p.count == 2 { to = CGPoint(x: p[0], y: p[1]) }
+                    }
+                    guard let to else { fflush(stdout); return }
+                    let from = self.fleet.previewSatellite(named: name)?.body.center
+                    print(self.stamp, String(format: "fleet drag: %@ from CG %@ -> %.0f,%.0f over 600 ms", name, from.map { "\(Int($0.x)),\(Int($0.y))" } ?? "?", to.x, to.y))
+                    fflush(stdout)
+                    let ok = self.fleet.previewDrag(name: name, to: to, ms: 600) { [weak self] in
+                        guard let self else { return }
+                        print(self.stamp, "fleet drag: released; sends so far thread.stop \(self.fleetSends.stop) sleep \(self.fleetSends.sleep) set-settings \(self.fleetSends.settings)")
+                        fflush(stdout)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                            guard let self else { return }
+                            let s = self.fleet.previewSatellite(named: name)
+                            print(self.stamp, "fleet drag: +0.3 s \(name) \(s == nil ? "leaving / gone" : "here at CG \(Int(s!.body.center.x)),\(Int(s!.body.center.y))") \(self.fleetCounts)")
+                            fflush(stdout)
+                            if let dir = self.shotDir {
+                                var region = self.fleetRegion(focus: nil) ?? self.orb.previewFrameCG
+                                if let np = self.orb.previewNotchPanelCG { region = region.union(CGRect(x: np.minX - 40, y: 0, width: np.width + 80, height: np.maxY + 30)) }
+                                self.shoot("\(dir)/\(self.shotPrefix)fleet-drag-stop.png", note: "\(name) dropped, +0.3 s, thread.stop sent \(self.fleetSends.stop)×", region: region, inProcess: true)
+                            }
+                        }
+                    }
+                    if !ok { print(self.stamp, "fleet drag: no satellite named \(name)"); fflush(stdout) }
+                }
+            } else {
+                print("ORB_FLEET_DRAG: could not parse \(spec); want Name->dock@t or Name->x,y@t")
+            }
+        }
+
+        if let spec = env["ORB_FLEET_CLICK"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            let name = parts[0]
+            let t = parts.count > 1 ? (Double(parts[1]) ?? 2.5) : 2.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                if let s = self.fleet.previewSatellite(named: name) {
+                    print(self.stamp, "fleet click: \(name) menu items \(s.previewMenuTitles)")
+                    _ = self.fleet.previewClick(name: name)
+                } else {
+                    print(self.stamp, "fleet click: no satellite named \(name)")
+                }
+                fflush(stdout)
+            }
+        }
+
+        if let ms = Double(env["ORB_FLEET_BUDGET_FORCE_MS"] ?? "") {
+            let forSeconds = Double(env["ORB_FLEET_BUDGET_FOR"] ?? "") ?? 4
+            DispatchQueue.main.asyncAfter(deadline: .now() + fleetAt + 1.0) { [weak self] in
+                guard let self else { return }
+                self.fleet.forcedMs = ms
+                print(self.stamp, String(format: "fleet budget: forcing +%.1f ms per frame for %.1f s (rung %d)", ms, forSeconds, self.fleet.previewRung))
+                fflush(stdout)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + fleetAt + 1.0 + forSeconds) { [weak self] in
+                guard let self else { return }
+                self.fleet.forcedMs = 0
+                print(self.stamp, "fleet budget: load ends (rung \(self.fleet.previewRung))")
+                fflush(stdout)
+                for delay in [1.0, 2.0, 2.5, 3.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self else { return }
+                        print(self.stamp, String(format: "fleet budget: +%.1f s after the load: rung %d mean %.2f ms; %@", delay, self.fleet.previewRung, self.fleet.previewBudgetMean, self.fleetCounts))
+                        fflush(stdout)
+                    }
+                }
+            }
+        }
+
+        // A Stop or a sleep with a fleet: the satellites must be gone within 300 ms.
+        for (label, at) in [("stop", Double(env["ORB_STOP_AT"] ?? "")), ("sleep", sleepAt)] {
+            guard let at else { continue }
+            for delay in [0.3, 0.6] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + at + delay) { [weak self] in
+                    guard let self else { return }
+                    let visible = self.fleet.previewPanelFramesCG.count
+                    print(self.stamp, String(format: "fleet after %@ +%.1f s: %@, panels showing %d", label, delay, self.fleetCounts, visible))
+                    fflush(stdout)
+                }
+            }
+        }
+
+        // Notch mode: the peek with the dots, the island's third row, the strip with the main blob out.
+        if notchMode, shotDir != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.fleetNotchShot("peek") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) { [weak self] in self?.fleetNotchShot("island") }
+            let flyAt = Double(env["ORB_FLY_AT"] ?? "") ?? 4.6
+            if flyAt < 50 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + flyAt + 1.4) { [weak self] in self?.fleetNotchShot("strip") }
+            }
+        }
+    }
+
+    private var fleetCounts: String {
+        "satellites \(fleet.previewSatelliteCount) leaving \(fleet.previewLeavingCount) pool \(fleet.previewPanelPoolCount) made \(fleet.previewPanelsMade) dots \(fleet.threadDots.count)"
+    }
+
+    /// A ring where a satellite's target is, so the shots show it parked beside the point and not on it.
+    private func addFleetRing(_ target: CGPoint) {
+        guard !fleetRings.contains(target) else { return }
+        fleetRings.append(target)
+        let mainMaxY = NSScreen.screens.first?.frame.maxY ?? 0
+        let ring = NSWindow(contentRect: NSRect(x: target.x - 14, y: mainMaxY - target.y - 14, width: 28, height: 28),
+                            styleMask: [.borderless], backing: .buffered, defer: false)
+        ring.level = .floating
+        ring.isOpaque = false
+        ring.backgroundColor = .clear
+        ring.ignoresMouseEvents = true
+        ring.hasShadow = false
+        ring.isReleasedWhenClosed = false
+        ring.contentView = TargetRingView(frame: NSRect(x: 0, y: 0, width: 28, height: 28))
+        ring.orderFrontRegardless()
+        targetWindows.append(ring)
+    }
+
+    /// The satellites' panels (or the named one's), the main panel and the targets, for framing a fleet shot.
+    private func fleetRegion(focus name: String?) -> CGRect? {
+        var r: CGRect?
+        func include(_ x: CGRect) { r = r.map { $0.union(x) } ?? x }
+        if let name, let s = fleet.previewSatellite(named: name) {
+            include(CGSpace.rect(fromAppKit: s.panel.frame))
+        } else {
+            for f in fleet.previewPanelFramesCG { include(f) }
+            for t in fleetRings { include(CGRect(x: t.x - 40, y: t.y - 40, width: 80, height: 80)) }
+        }
+        if !orb.previewIsTucked { include(orb.previewFrameCG) }
+        return r
+    }
+
+    /// The notch shots with a fleet: the notch panel (the peek's dots, the island's line, the strip) and the satellites.
+    private func fleetNotchShot(_ what: String) {
+        guard let dir = shotDir, let panel = orb.previewNotchPanelCG else { return }
+        var region = CGRect(x: panel.minX - 40, y: 0, width: panel.width + 80, height: panel.maxY + 30)
+        if let fr = fleetRegion(focus: nil) { region = region.union(fr.insetBy(dx: -20, dy: -20)) }
+        shoot("\(dir)/\(shotPrefix)fleet-notch-\(what).png",
+              note: "notch \(orb.previewNotchMode), island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), fleet dots \(fleet.threadDots.count), notch view dots [\(orb.previewNotchThreadDots)], tucked \(orb.previewIsTucked ? 1 : 0), face [\(orb.previewFace)]",
+              region: region, inProcess: true)
+    }
+
+    /// Once every satellite is parked (≥ 0.8 s after the last fleet command): each landing,
+    /// the pairwise centre distances (≥ 92 pt), the distance to its target (≤ 3 body radii),
+    /// the main blob's distance — and the owed shot.
+    private func watchFleet(now: Double) {
+        // Not before every scheduled fleet command has gone out (a trace's target is known
+        // at setup; the check must not judge it before the trace is sent) and 0.8 s after the last.
+        guard !fleetChecked, fleetLastCommandAt > 0, now - fleetLastCommandAt > 0.8, now - launchedAt > fleetCommandsUntil + 0.8 else { return }
+        let wanted = min(BlobFleet.maxSatellites, fleetThreads.filter { $0.status.isLive }.count)
+        guard fleet.previewSatelliteCount >= wanted, fleet.previewAllStill else { return }
+        fleetChecked = true
+        let sats = fleet.previewSatellites
+        var lines: [String] = []
+        var minPair = Double.infinity, maxTarget = 0.0, maxRadii = 0.0, minMain = Double.infinity
+        let mainC = orb.previewCenterCG
+        for (i, a) in sats.enumerated() {
+            let c = a.body.center
+            var line = String(format: "%@ at CG %.0f,%.0f face [%@ %@] %@", a.thread.name, c.x, c.y, String(a.sim.face.left), String(a.sim.face.right), a.previewFlightPhase)
+            if let t = fleetTargets[a.id] {
+                let d = hypot(c.x - t.x, c.y - t.y)
+                maxTarget = max(maxTarget, d)
+                maxRadii = max(maxRadii, d / a.body.radius)
+                line += String(format: " target %.0f,%.0f dist %.0f (%.1f radii; %@)", t.x, t.y, d, d / a.body.radius, a.body.lastLandingNote)
+            } else {
+                line += " (rank slot)"
+            }
+            lines.append(line)
+            for b in sats[(i + 1)...] { minPair = min(minPair, hypot(c.x - b.body.center.x, c.y - b.body.center.y)) }
+            if !orb.previewIsTucked { minMain = min(minMain, hypot(c.x - mainC.x, c.y - mainC.y)) }
+        }
+        print(stamp, "fleet check:", lines.joined(separator: " | "))
+        let pairOK = sats.count < 2 || minPair >= 92
+        let targetOK = maxRadii <= 3
+        print(stamp, String(format: "fleet check: pairwise min %@ pt (≥ 92: %@), target max %.0f pt = %.1f radii (≤ 3: %@), main-satellite min %@ pt, %@",
+                            minPair.isFinite ? String(format: "%.0f", minPair) : "n/a", pairOK ? "OK" : "FAIL", maxTarget, maxRadii, targetOK ? "OK" : "FAIL",
+                            minMain.isFinite ? String(format: "%.0f", minMain) : "n/a", fleetCounts))
+        fflush(stdout)
+        if fleetShotOwed, let dir = shotDir {
+            fleetShotOwed = false
+            shoot("\(dir)/\(shotPrefix)fleet-\(fleetShotName).png", note: "fleet \(fleetShotName): \(sats.map { "\($0.thread.name) [\($0.sim.face.left) \($0.sim.face.right)]" }.joined(separator: ", "))", extra: fleetRegion(focus: nil))
         }
     }
 
@@ -1412,6 +2063,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         wasMoving = moving
         if !stickPhase.isEmpty { watchStick(moving: moving || orb.previewIsDragging, now: now) }
         if !tracePoints.isEmpty { watchTrace(phase: phase, now: now) }
+        if fleetOn { watchFleet(now: now) }
 
         guard let dir = shotDir else { return }
         if !traceShotsOwed.isEmpty, traceShot(phase: phase, now: now, dir: dir) { return }
@@ -1684,7 +2336,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         }
         // Flight targets (rings) and the wake, under the blob, as on screen.
         let acting = OrbPalette.acting
-        for t in flyTargets {
+        for t in flyTargets + fleetRings {
             let c = CGPoint(x: t.x - f.minX, y: (mainMaxY - t.y) - regionAK.minY)
             cg.setStrokeColor(acting.cgColor(alpha: 0.9))
             cg.setLineWidth(2)
@@ -1693,6 +2345,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             cg.fillEllipse(in: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
         }
         orb.previewRenderTrail(in: cg, offset: regionAK.origin)
+        // The satellites, under the main blob (their panels are ordered just below its).
+        if fleetOn { fleet.previewRender(in: cg, offset: regionAK.origin) }
         if !orb.previewIsTucked || !notchMode {
             let pf = orb.previewPanelFrame
             cg.saveGState()

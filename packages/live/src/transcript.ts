@@ -93,6 +93,39 @@ export class Transcript {
   }
 
   /**
+   * A line Kevin typed in the Console, on the record like a spoken one: final at once,
+   * never merged with a fragment (GAP_MS is for the voice's fragments), `source: "typed"`,
+   * and `startMs = endMs = nowMs` on the session timeline. Any open utterance is closed
+   * first — emitted `final`, exactly as `push` does — so the typed line lands after it and
+   * `since()` / `last("kevin")` read it in order: the request window, the yes check and the
+   * reflexes then see typed words the way they see speech. Emitted once, as `final` (an item
+   * born final never "starts"), so the ledger's `heard` row is written exactly once. A blank
+   * line (a stray Return) is nothing said: no item, no emission, `undefined` back — the class
+   * is safe on its own, whether or not the caller trimmed first.
+   */
+  pushTyped(text: string, nowMs: number, speaker: Speaker = "kevin"): TranscriptItem | undefined {
+    const clean = text.trim().replace(/\s+/g, " ");
+    if (!clean) return undefined;
+    this.finalizeOpen();
+    const item: TranscriptItem = {
+      id: `t_${++this.seq}`,
+      speaker,
+      text: clean,
+      startMs: nowMs,
+      endMs: nowMs,
+      at: this.now(),
+      final: true,
+      source: "typed",
+    };
+    this.items.push(item);
+    if (this.items.length > this.maxItems) {
+      for (const gone of this.items.splice(0, this.items.length - this.maxItems)) this.touchedAt.delete(gone.id);
+    }
+    this.emit(item, "final");
+    return item;
+  }
+
+  /**
    * Close utterances that have not grown for GAP_MS at the given session time — or,
    * when `wallNow` is given, for ORPHAN_MS of wall clock (the session clock may have
    * stopped: an error with no `closed` behind it).

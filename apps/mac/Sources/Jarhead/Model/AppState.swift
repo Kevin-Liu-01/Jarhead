@@ -92,10 +92,43 @@ public final class AppState: ObservableObject {
     /// main thread); past the cap the oldest go, `complete` turns false, and "Load earlier"
     /// brings them back on request (`prepend` is Kevin asking, so it is never trimmed and
     /// raises the cap by what it added — see `prependedCount`).
-    public static let maxTranscriptMessages = 400
+    public nonisolated static let maxTranscriptMessages = 400
+    /// The agents whose conversations were opened, oldest first; `evictTranscripts` keeps the
+    /// newest `threadStoreLRU` of them and whatever a pane still shows.
+    var transcriptRecency: [String] = []
     /// Mark mode (Kevin circles something on screen). Installed by the app.
     public var beginMarkModeHandler: () -> Void = {}
     public func beginMarkMode() { beginMarkModeHandler() }
+
+    // MARK: threads
+
+    /// Every thread the engine has told us about — live, and finished within
+    /// `threadLingerMs` — by id, O(1) (`thread.event` deltas patch one; `snapshot.threads`
+    /// replaces what it lists). `threadOrder` is the ids as they arrived, so a row keeps its
+    /// place while its status turns; `AppState.railOrder` is the rail's own sort.
+    @Published public var threads: [String: WorkThread] = [:]
+    @Published public var threadOrder: [String] = []
+    /// The conversations the Console has opened (`thread.open`), keyed by thread id
+    /// (Model/ThreadStore.swift: the seq-indexed pages, steps patched into their cards).
+    @Published public var threadStores: [String: ThreadStore] = [:]
+    /// A snapshot carried `threads` at least once: the daemon speaks threads. False is an
+    /// older daemon — the Console shows no Threads section and sends no thread.* command.
+    @Published public var threadsKnown = false
+    /// The newest event seq applied per thread (a replay is dropped). On the main actor.
+    var threadLastSeq: [String: Int] = [:]
+    /// Ids a snapshot has listed at least once: only these can be "gone" from a later one (a
+    /// thread known from its `started` event alone may simply postdate the snapshot in hand).
+    var threadsSeenInSnapshot: Set<String> = []
+    /// Ids we settled `failed · gone from the engine` ourselves: the next snapshot that lists one wins outright.
+    var threadsGone: Set<String> = []
+    var threadPruneTask: Task<Void, Never>?
+    /// The threads whose conversation was opened, oldest first (the LRU for `evictThreadStores`).
+    var threadStoreRecency: [String] = []
+    /// Ids the Console is looking at right now: a finished thread on screen is never pruned under Kevin.
+    public var heldThreadIds: Set<String> = []
+    /// Opens a thread's Console pane (a satellite blob's click). Installed by the app (AppDelegate:
+    /// `state.openThreadHandler = { id in console.openThread(id) }`, beside `openConsoleHandler`).
+    public var openThreadHandler: (String) -> Void = { _ in }
 
     /// Called by the daemon client for every `agent.transcript` event.
     ///
@@ -131,6 +164,14 @@ public final class AppState: ObservableObject {
                     // Above the fold (trimmed earlier): not the newest row, whatever changed in it.
                     continue
                 } else {
+                    // A pending echo (ours or the engine's) with the words of one already pending is
+                    // the same send twice; the real user turn that lands drops the echo it confirms.
+                    let words = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if m.pending == true {
+                        if AppState.hasPendingEcho(existing.messages, words: words) { continue }
+                    } else if m.role == .user {
+                        AppState.dropPendingEcho(&existing.messages, index: &index, base: base, words: words)
+                    }
                     index[m.id] = base + existing.messages.count
                     existing.messages.append(m)
                 }
@@ -172,6 +213,74 @@ public final class AppState: ObservableObject {
             transcripts[agentId] = existing
         default:
             replaceTranscript(t)
+        }
+    }
+
+    /// A pending echo with these words sits among the newest rows.
+    static func hasPendingEcho(_ messages: [AgentMessage], words: String) -> Bool {
+        messages.suffix(pendingEchoWindow).contains { $0.pending == true && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == words }
+    }
+
+    /// Drops the pending echoes with these words from the newest rows. Removing from the middle
+    /// shifts what follows, so the index is renumbered from the first drop — a short tail: an
+    /// echo is never older than the few rows since Kevin pressed Send.
+    static func dropPendingEcho(_ messages: inout [AgentMessage], index: inout [String: Int], base: Int, words: String) {
+        let from = max(0, messages.count - pendingEchoWindow)
+        var first: Int?
+        var i = from
+        while i < messages.count {
+            let m = messages[i]
+            if m.pending == true, m.text.trimmingCharacters(in: .whitespacesAndNewlines) == words {
+                index[m.id] = nil
+                messages.remove(at: i)
+                if first == nil { first = i }
+            } else {
+                i += 1
+            }
+        }
+        guard let first else { return }
+        for j in first..<messages.count { index[messages[j].id] = base + j }
+    }
+
+    /// A message Kevin just sent into an agent's conversation, shown at once as a pending row
+    /// (0.6 opacity, `clock.fill`) before the tool's own file confirms it (EngineClient.send
+    /// calls this for every `agent.send`). Dropped when the real user turn with the same words
+    /// lands; a second echo with the same words while one is pending is skipped. Nothing here
+    /// sends — the command goes its own way. No conversation held (the pane is not open): nothing to show.
+    public func echoPendingSend(agentId: String, text: String, at: Double) {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, var existing = transcripts.removeValue(forKey: agentId) else { return }
+        defer { transcripts[agentId] = existing }
+        if AppState.hasPendingEcho(existing.messages, words: words) { return }
+        var index = transcriptIndex.removeValue(forKey: agentId) ?? [:]
+        let base = transcriptBase[agentId] ?? 0
+        let m = AgentMessage(id: "pending:\(UUID().uuidString)", role: .user, text: text, at: at, tool: nil, thinking: nil, pending: true)
+        index[m.id] = base + existing.messages.count
+        existing.messages.append(m)
+        transcriptIndex[agentId] = index
+    }
+
+    /// How many of the newest rows a pending echo is looked for in (≤ 4 pending per agent, all recent).
+    public static let pendingEchoWindow = 8
+    /// After this long a queued echo reads "not picked up yet" (the pane's timer; nothing here).
+    public static let pendingEchoStaleMs: Double = 20_000
+
+    /// A pane opened this agent's conversation: newest in the LRU.
+    public func noteTranscriptOpened(_ agentId: String) {
+        transcriptRecency.removeAll { $0 == agentId }
+        transcriptRecency.append(agentId)
+    }
+
+    /// Drops the conversations no pane shows, past the newest `threadStoreLRU` opened. Entries
+    /// used to stay for every agent ever visited (bounded per agent at 400, unbounded across them).
+    public func evictTranscripts(keep: Set<String>) {
+        let recent = Set(transcriptRecency.suffix(AppState.threadStoreLRU))
+        for id in transcripts.keys where !keep.contains(id) && !recent.contains(id) {
+            transcripts[id] = nil
+            transcriptIndex[id] = nil
+            transcriptBase[id] = nil
+            trimmedIds[id] = nil
+            prependedCount[id] = nil
         }
     }
 
@@ -651,6 +760,27 @@ extension AppState {
     /// which closes the session and sleeps, and never the stop-pressed notification, which
     /// the blob shivers on: nothing of Jarhead's own stopped.
     public func workerStop(_ workerId: String) { send(.workerStop(workerId: workerId)) }
+}
+
+extension ThreadStatus {
+    /// The status as Kevin reads it, everywhere a thread is drawn: the rail row, the pane's
+    /// header, the card's chip, the ledger's line. One vocabulary for every surface (the notch
+    /// and the satellite blobs read the same words); the two waits say what is being waited for.
+    public var words: String {
+        switch self {
+        case .idle: return "idle"
+        case .queued: return "queued"
+        case .starting: return "starting"
+        case .thinking: return "thinking"
+        case .acting: return "acting"
+        case .waitingScreen: return "waiting for the screen"
+        case .waitingKevin: return "waiting for Kevin"
+        case .paused: return "paused"
+        case .done: return "done"
+        case .failed: return "failed"
+        case .stopped: return "stopped"
+        }
+    }
 }
 
 extension WorkerStatus {

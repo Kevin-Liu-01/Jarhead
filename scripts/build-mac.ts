@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync,
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
 import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/cli/install";
+import { ICON_SOURCES, staleAgainst } from "./icon-render.ts";
 
 /**
  * Package the native macOS app: build/Jarhead.app.
@@ -54,8 +55,18 @@ function handsIsStale(bin: string): boolean {
 }
 
 const icns = join(OUT, "Jarhead.icns");
-if (!existsSync(icns)) run("pnpm", ["build:icon"]);
+if (iconIsStale(icns)) run("pnpm", ["build:icon"]);
 need(icns, "pnpm build:icon failed");
+
+/**
+ * The bundle freezes a copy of the icns too, so rebuild it whenever its renderer is newer.
+ * It used to be built only when MISSING: build/Jarhead.icns dated from before the Bayer
+ * and round-orb changes and the Dock showed that stale tile for days.
+ */
+function iconIsStale(file: string): boolean {
+  const mtime = (p: string): number | undefined => (existsSync(p) ? statSync(p).mtimeMs : undefined);
+  return staleAgainst(mtime(file), ICON_SOURCES.map((f) => mtime(join(REPO_ROOT, "scripts", f))));
+}
 
 need(join(RESOURCES_SRC, "Info.plist"), "apps/mac/Resources/Info.plist is part of the repo");
 need(join(RESOURCES_SRC, "entitlements.plist"), "apps/mac/Resources/entitlements.plist is part of the repo");

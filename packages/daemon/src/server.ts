@@ -13,6 +13,13 @@ import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJ
  * Any client may send commands and receive state; audio flows only to clients
  * that said `hello` with `audio: true`, and mic frames from any client are fed to
  * the engine. The daemon is what makes the Swift app a thin, replaceable face.
+ *
+ * Conversations are the one thing not broadcast: `agent.transcript` and
+ * `thread.transcript` pages go only to the clients that opened that agent or thread
+ * (`route`), because every `pnpm jarhead` call is a client too — 304 join/leave pairs in
+ * one day's log — and a page of sixty turns to each of them is bytes for nobody.
+ * Snapshots, toasts, overlay commands and `thread.event` stay broadcast: they are small
+ * and every surface (orb, notch, rail, CLI) reads them.
  */
 
 const log = logger("daemon");
@@ -58,12 +65,13 @@ export interface EngineLike {
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
   /**
-   * A worker's lane runner by worker id, for `tool.run { worker }` from a bridge started
-   * with `JARHEAD_WORKER`. Undefined for a worker the engine does not have — finished,
-   * stopped, never started — and the call is refused. Optional: an engine without workers
-   * refuses every worker call the same way, and never hands one to `runner`. A server
-   * that fronts ONE brain (CodexBrain's own tool socket outside the daemon process) must
-   * still answer here for that brain's worker id, or its every call is refused as unknown.
+   * A thread's lane runner by thread id (`t_…`, or a `w_…` worker id for one release),
+   * for `tool.run { worker }` from a bridge started with `JARHEAD_WORKER` — the wire field
+   * keeps its old name. Undefined for a thread the engine does not have — finished,
+   * stopped, never started — and the call is refused. Optional: an engine without threads
+   * refuses every such call the same way, and never hands one to `runner`. A server that
+   * fronts ONE brain (CodexBrain's own tool socket outside the daemon process) must still
+   * answer here for that brain's id, or its every call is refused as unknown.
    */
   runnerFor?(worker: string): EngineLike["runner"] | undefined;
 }
@@ -74,6 +82,36 @@ interface Client {
   readonly socket: Socket;
   readonly parser: FrameParser;
   audio: boolean;
+  /**
+   * The conversations this client is showing — "agent:<id>" | "thread:<id>" — kept from
+   * the open/close commands it sent; `route` reads it. A key stays while ANY of the
+   * client's panes has it open (`panes` counts them), so a second pane on the same
+   * thread closing does not blind the first — the engine keeps the same per-viewer set.
+   */
+  readonly viewers: Set<string>;
+  readonly panes: Map<string, Set<string>>;
+}
+
+/**
+ * "agent:<id>" | "thread:<id>" — the key a client's `viewers` holds and a page is routed by — or
+ * undefined when the id is not a non-empty string. Both sides derive it here, so a page whose
+ * engine event carries no id (`thread:${undefined}` would spell a real key) matches nobody, not
+ * whoever opened a thread literally named "undefined".
+ */
+function conversationKey(kind: "agent" | "thread", id: unknown): string | undefined {
+  return typeof id === "string" && id !== "" ? `${kind}:${id}` : undefined;
+}
+
+/** A page's own conversation id, read defensively: the engine's types promise it, a fake or an older engine may not. */
+function pageId(page: unknown, field: "agentId" | "threadId"): unknown {
+  return typeof page === "object" && page !== null ? (page as Record<string, unknown>)[field] : undefined;
+}
+
+/** The routing key of a conversation open/close command, or undefined when it names no conversation. */
+function viewerKey(command: { readonly type: string; readonly agentId?: unknown; readonly threadId?: unknown }): string | undefined {
+  if (command.type === "agent.open" || command.type === "agent.close") return conversationKey("agent", command.agentId);
+  if (command.type === "thread.open" || command.type === "thread.close") return conversationKey("thread", command.threadId);
+  return undefined;
 }
 
 /** What the server tells its host about its clients: the app's bye, and every join and leave with the count after it. */
@@ -105,7 +143,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         case "speaker-flush":
           return this.broadcast({ type: "audio", control: "flush" });
         case "agent.transcript":
-          return this.broadcast({ type: "agent.transcript", transcript: e.transcript, mode: e.mode });
+          return this.route({ type: "agent.transcript", transcript: e.transcript, mode: e.mode }, conversationKey("agent", pageId(e.transcript, "agentId")));
+        case "thread.event":
+          // ≤ 200 B and every surface reads it: the satellites fly and the rail recounts from this, never from a snapshot.
+          return this.broadcast({ type: "thread.event", event: e.event });
+        case "thread.transcript":
+          return this.route({ type: "thread.transcript", transcript: e.transcript, mode: e.mode }, conversationKey("thread", pageId(e.transcript, "threadId")));
       }
     });
     engine.on("audio", (pcm) => {
@@ -142,7 +185,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, viewers: new Set(), panes: new Map() };
     this.clients.add(client);
     socket.setNoDelay(true);
     this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
@@ -161,7 +204,10 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     socket.on("error", (e) => log.debug(`client error: ${e.message}`));
     socket.on("close", () => {
       this.clients.delete(client);
-      // Its conversation viewers go with it: a Console killed with the window open leaves no tail running.
+      // Its conversation viewers go with it — here (no more pages routed its way) and in the
+      // engine (a Console killed with the window open leaves no tail running).
+      client.viewers.clear();
+      client.panes.clear();
       try {
         this.engine.dropViewers?.(client.id);
       } catch (e) {
@@ -192,10 +238,14 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         let command = msg.command;
         // A conversation viewer is this client's: its pane token (or "pane" when the surface
         // sent none) under the client id, so opens are per pane, a re-open after a reconnect
-        // never double-counts, and the socket closing drops them all (`dropViewers`).
-        if (command.type === "agent.open" || command.type === "agent.close") {
+        // never double-counts, and the socket closing drops them all (`dropViewers`). The
+        // same for a thread's pane. The viewer is registered here BEFORE the engine sees the
+        // open, so the `replace` page it answers with has somewhere to go.
+        if (command.type === "agent.open" || command.type === "agent.close" || command.type === "thread.open" || command.type === "thread.close") {
           const pane = typeof command.viewer === "string" && command.viewer ? command.viewer : "pane";
           command = { ...command, viewer: `${client.id}/${pane}` };
+          const key = viewerKey(command);
+          if (key) this.setViewing(client, key, pane, command.type === "agent.open" || command.type === "thread.open");
         }
         void this.engine.command(command).catch((e: unknown) => this.engine.problem(`command failed: ${(e as Error).message}`));
         return;
@@ -330,6 +380,42 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private broadcast(message: DaemonMessage): void {
     const frame = encodeJson(message);
     for (const c of this.clients) if (c.socket.writable) c.socket.write(frame);
+  }
+
+  /**
+   * A conversation page to the clients showing that conversation and nobody else: encoded
+   * once, written to each client whose `viewers` holds `key`. A page nobody opened goes
+   * nowhere (the engine emits `replace` after an open, so that is a closed-while-reading
+   * race, not a loss); a page with no key — no id on it — goes nowhere either, and says so
+   * at debug, never throws: the daemon outlives a malformed emit.
+   */
+  private route(message: DaemonMessage, key: string | undefined): void {
+    if (key === undefined) {
+      log.debug(`${message.type} names no conversation; not routed`);
+      return;
+    }
+    let frame: Buffer | undefined;
+    for (const c of this.clients) {
+      if (!c.viewers.has(key) || !c.socket.writable) continue;
+      frame ??= encodeJson(message);
+      c.socket.write(frame);
+    }
+  }
+
+  /** One pane of this client opened (or closed) a conversation; the routing key stays while any of its panes has it. */
+  private setViewing(client: Client, key: string, pane: string, open: boolean): void {
+    let panes = client.panes.get(key);
+    if (open) {
+      if (!panes) client.panes.set(key, (panes = new Set()));
+      panes.add(pane);
+      client.viewers.add(key);
+      return;
+    }
+    if (!panes) return;
+    panes.delete(pane);
+    if (panes.size > 0) return;
+    client.panes.delete(key);
+    client.viewers.delete(key);
   }
 
   async close(): Promise<void> {

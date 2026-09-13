@@ -1,5 +1,5 @@
 import { logger, newId } from "@jarhead/core";
-import { addressesJarhead, endsTerminally, normalizeUtterance, parseReflex, type FiredReflexes, type Reflex, type ReflexOutcome } from "@jarhead/brain";
+import { addressesJarhead, endsTerminally, normalizeUtterance, parseReflex, type FiredReflexes, type Reflex, type ReflexOutcome, FILLER_HEAD } from "@jarhead/brain";
 
 /**
  * The ear: Kevin's words as the app's on-device recogniser hears them, ~100–200 ms
@@ -64,7 +64,8 @@ export interface ReflexLedgerRow {
   readonly phrase: string;
   /** The command as understood ("scroll down", "click save"). */
   readonly action: string;
-  readonly source: "ear" | "live";
+  /** `typed`: a line from the Console's composer ran as a reflex (`typed()`), no recogniser involved. */
+  readonly source: "ear" | "live" | "typed";
   /** ms since epoch: the app heard the partial; the grammar matched; the tool was issued; the tool answered. */
   readonly earAt: number;
   readonly matchedAt: number;
@@ -94,11 +95,39 @@ export interface EarOptions {
   readonly now?: () => number;
   /** The reflex layer is on: awake, not paused, Settings.reflexes true. */
   readonly enabled: () => boolean;
-  readonly match: (utterance: string) => Reflex | undefined;
-  /** Run a matched reflex through the gated hands; `ok: false` with a `dropped` reason means the policy wanted a question. */
-  readonly run: (reflex: Reflex, phrase: string) => Promise<ReflexOutcome & { readonly dropped?: string }>;
+  /**
+   * The grammar. `recentNames` asks for the names of threads that just ended beside the live
+   * ones: the name after a stop word must still parse once the other source stopped that thread.
+   */
+  readonly match: (utterance: string, opts?: { readonly recentNames?: boolean }) => Reflex | undefined;
+  /**
+   * Run a matched reflex through the gated hands; `ok: false` with a `dropped` reason means the
+   * policy wanted a question. `via` says whose words: the recogniser's (`ear`) or a line typed in
+   * the Console (`typed`, whose answer the typed instruction carries — the engine speaks it once).
+   */
+  readonly run: (reflex: Reflex, phrase: string, via?: "ear" | "typed") => Promise<ReflexOutcome & { readonly dropped?: string }>;
   /** Kevin said "stop" (only forwarded while something is running or speaking; the engine decides). */
   readonly onStop: () => void;
+  /**
+   * Live spawned threads right now (the table's count). With two or more, a bare stop
+   * word gates the SPEECH at once (`onGateSpeech`) and the WORK cut (`onStop`) waits
+   * `stopNameWaitMs` for a name — "stop … the slack one" then fires the `thread_stop`
+   * reflex alone. With one or none the stop is the old one: `onStop` on the partial,
+   * nothing waited.
+   */
+  readonly liveThreads?: (() => number) | undefined;
+  /**
+   * Live's fragment path stopped a thread by name a moment ago (the engine's word): a stop
+   * word heard now is the recogniser's rendering of the SAME utterance, not a second command.
+   * It opens the name window whatever the live count, and when no name follows it is consumed
+   * rather than cutting everything Kevin did not name. The ear's own named stop is never an
+   * echo here — a "stop" after it is Kevin's next word.
+   */
+  readonly recentNamedStop?: (() => boolean) | undefined;
+  /** The speech gate alone (the engine's `gateSpeech`), fired the moment a stop word lands with ≥ 2 threads live. */
+  readonly onGateSpeech?: (() => void) | undefined;
+  /** How long the work cut waits for a name after a stop word with ≥ 2 threads live (default STOP_NAME_WAIT_MS). */
+  readonly stopNameWaitMs?: number | undefined;
   /** Kevin dismissed Jarhead ("go to sleep", "goodnight jarhead"): the phrase, normalised. Absent, dismissals are ordinary words. */
   readonly onSleep?: ((phrase: string) => void) | undefined;
   /**
@@ -137,15 +166,23 @@ interface Segment {
   /** The candidate text a stability timer is waiting on. */
   waitingFor?: string | undefined;
   timer?: NodeJS.Timeout | undefined;
+  /**
+   * A stop word heard with ≥ 2 threads live: the work cut waits for a name; `wordsAtStop` is what
+   * the timer consumes when none comes; `deadline` is when it decides. `carried`: the recogniser
+   * rolled its segment between the stop word and the name, so this segment's words are judged
+   * as the name alone ("the slack one" → "stop the slack one").
+   */
+  pendingStop?: { readonly wordsAtStop: number; readonly timer: NodeJS.Timeout; readonly deadline: number; readonly carried: boolean } | undefined;
 }
 
 const STOP_WORDS = /^(?:stop|stop it|stop that|cancel|cancel that|never ?mind|hold on|abort|that's enough|quiet|shush|shut up)$/;
+/** With two or more spawned threads live, the WORK cut after a stop word waits this long for a name (the Delegator's fragment path keeps the same figure). */
+export const STOP_NAME_WAIT_MS = 350;
 /**
  * Words the recogniser hears at the start of a command that are not part of it.
  * Not "right": "right click save" is a command of its own (not in the grammar), and
  * stripping the word would turn it into a left click.
  */
-const FILLER_HEAD = /^(?:(?:um|uh|erm|so|like|okay|ok|alright|hey|yeah|yes)[,\s]+)+/i;
 
 /** Dictation commands, each a whole-word sequence inside the spoken text. */
 const DICTATION_COMMANDS: ReadonlyArray<readonly [RegExp, "stop" | "newline" | "paragraph" | "delete"]> = [
@@ -178,11 +215,25 @@ export class EarReflexes {
     const now = this.now();
     let seg = this.segments.get(segment);
     if (!seg) {
-      // A new segment: whatever an older one was still waiting on is stale.
-      for (const old of this.segments.values()) this.clearTimer(old);
+      // A new segment: whatever an older one was still waiting on is stale — except a stop still waiting for a
+      // name, which is carried over: the recogniser rolls its request every ~50 s, and a roll between "stop" and
+      // "the slack one" must not turn a named stop into a cut of everything. Its timer still decides on time.
+      let carried: Segment["pendingStop"];
+      for (const old of this.segments.values()) {
+        this.clearTimer(old);
+        if (old.pendingStop) {
+          clearTimeout(old.pendingStop.timer);
+          carried = old.pendingStop;
+          old.pendingStop = undefined;
+        }
+      }
       this.segments.clear();
       seg = { id: segment, words: [], consumed: 0, lastAt: now };
       this.segments.set(segment, seg);
+      if (carried) {
+        log.info(`ear: segment #${segment} opens with a stop still waiting for a name; its words are judged as the name`);
+        this.schedulePendingStop(seg, 0, carried.deadline, true);
+      }
       // One line per segment (the app rolls one every ~50 s): the proof, in the daemon's
       // log, that the app's ear reaches the engine at all — a partial is otherwise debug-level.
       log.info(`ear: segment #${segment} open (${isFinal ? "final" : "partial"} "${text.slice(0, 60)}", ${now - at} ms after the app heard it${this.opts.enabled() ? "" : "; reflexes off"})`);
@@ -216,8 +267,21 @@ export class EarReflexes {
 
     const cleaned = candidate.replace(FILLER_HEAD, "");
     const phrase = normalizeUtterance(cleaned);
+    // A stop is waiting for a name (≥ 2 threads live): the words since it may be "the slack one".
+    if (seg.pendingStop) {
+      this.judgePendingStop(seg, cleaned, phrase, words.length, at, isFinal);
+      return;
+    }
     if (STOP_WORDS.test(phrase)) {
       this.clearTimer(seg);
+      const live = this.opts.liveThreads?.() ?? 0;
+      // Live's fragment path stopped a thread by name a moment ago: this is the recogniser's word for the same
+      // utterance. The name window opens whatever the count and, with no name, closes quiet (see the expiry).
+      const echo = this.opts.recentNamedStop?.() === true;
+      if (live >= 2 || echo) {
+        this.armPendingStop(seg, phrase, words.length, echo ? "Live's words just stopped a thread by name; these may be the same words" : `${live} threads live`);
+        return;
+      }
       seg.consumed = words.length;
       log.info(`ear: "${phrase}" → stop`);
       this.opts.onStop();
@@ -227,20 +291,21 @@ export class EarReflexes {
     if (this.opts.onSleep && parseReflex(cleaned)?.kind === "sleep") {
       if (this.sleepCue(seg, candidate, phrase, words.length, isFinal)) return;
     }
+    const reflex = this.opts.match(cleaned);
     // Holding still (the voice is speaking — these may be its own words back through the
-    // microphone; a task is running; the mic is muted): consumed, never judged later.
+    // microphone; a task is running; the mic is muted): consumed, never judged later. A meta
+    // kind passes the hold — a thread's status, a stop by name, the clock act on Jarhead, not
+    // on the screen under a task's hands, and "what is Spotify doing" is asked mid-task.
     const held = this.opts.suppressed?.();
-    if (held) {
+    if (held && !reflex?.meta) {
       this.clearTimer(seg);
       seg.consumed = words.length;
       // A command the grammar would have taken is worth a line at info: a hold that never
       // lifts (a stuck "speaking" signal) is otherwise invisible in production.
-      const wouldHave = this.opts.match(cleaned);
-      if (wouldHave) log.info(`ear: "${phrase}" matched ${wouldHave.label} but held (${held}); consumed`);
+      if (reflex) log.info(`ear: "${phrase}" matched ${reflex.label} but held (${held}); consumed`);
       else log.debug(`ear: "${phrase}" held (${held})`);
       return;
     }
-    const reflex = this.opts.match(cleaned);
     if (!reflex) {
       this.clearTimer(seg);
       // A final that is not a command is left behind; a partial may still grow into one.
@@ -266,10 +331,100 @@ export class EarReflexes {
       seg!.waitingFor = undefined;
       // Still the same words? Then the pause was the end of the command.
       if (seg!.words.slice(seg!.consumed).join(" ") !== candidate) return;
-      if (!this.opts.enabled() || this.opts.dictation.active() || this.opts.suppressed?.()) return;
+      if (!this.opts.enabled() || this.opts.dictation.active() || (this.opts.suppressed?.() && !reflex.meta)) return;
       this.fire(seg!, reflex, phrase, wordCount, at, matchedAt, "stable");
     }, window);
     seg.timer.unref?.();
+  }
+
+  /**
+   * A stop word with two or more spawned threads live (or echoing Live's named stop): the
+   * speech ends now, the work in `stopNameWaitMs` unless a live thread's name follows. The
+   * stop word is NOT consumed yet — the name must be judged with it ("stop the slack one" is
+   * one grammar row) — and is consumed by whichever way the wait ends.
+   */
+  private armPendingStop(seg: Segment, phrase: string, wordsAtStop: number, why: string): void {
+    const wait = this.opts.stopNameWaitMs ?? STOP_NAME_WAIT_MS;
+    log.info(`ear: "${phrase}" → stop (${why}): speech gated now, the work cut waits ${wait} ms for a name`);
+    this.opts.onGateSpeech?.();
+    this.schedulePendingStop(seg, wordsAtStop, this.now() + wait, false);
+  }
+
+  /** The name window's timer on `seg`, deciding at `deadline` (re-armed on the new segment when the recogniser rolled). */
+  private schedulePendingStop(seg: Segment, wordsAtStop: number, deadline: number, carried: boolean): void {
+    const timer = setTimeout(() => {
+      if (seg.pendingStop?.timer !== timer) return;
+      seg.pendingStop = undefined;
+      seg.consumed = Math.max(seg.consumed, wordsAtStop);
+      // Live's fragment path served a named stop meanwhile (or just before): the stop word was its echo.
+      if (this.opts.recentNamedStop?.() === true) {
+        log.info("ear: no thread named after the stop, but Live's words stopped one by name a moment ago: the same utterance; nothing else is cut");
+        return;
+      }
+      log.info("ear: no thread named after the stop; stopping everything");
+      this.opts.onStop();
+    }, Math.max(0, deadline - this.now()));
+    timer.unref?.();
+    seg.pendingStop = { wordsAtStop, timer, deadline, carried };
+  }
+
+  /**
+   * The words since the stop word: "stop the slack one" ends Slack alone and the wait — fired
+   * like any reflex (`thread_stop`, a meta kind the engine answers from the table), so the
+   * reflex is remembered and Live's delegation for the same words is reconciled as already
+   * answered, never said twice. The name may be one that just ended (the other source got
+   * there first: the engine then answers with silence). Anything else leaves the timer to decide.
+   */
+  private judgePendingStop(seg: Segment, cleaned: string, phrase: string, wordCount: number, at: number, isFinal: boolean): void {
+    const p = seg.pendingStop;
+    if (!p) return;
+    const reflex = this.opts.match(p.carried ? `stop ${cleaned}` : cleaned, { recentNames: true });
+    if (reflex?.kind !== "thread_stop") return;
+    clearTimeout(p.timer);
+    seg.pendingStop = undefined;
+    log.info(`ear: "${p.carried ? `stop ${phrase}` : phrase}" → stop ${String(reflex.input["name"] ?? "")} only`);
+    this.fire(seg, reflex, p.carried ? `stop ${phrase}` : phrase, wordCount, at, this.now(), isFinal ? "final" : "terminal", true);
+  }
+
+  /**
+   * A line Kevin typed in the Console: a final, addressed utterance with no stability
+   * wait, run through the same gated hands and remembered in `fired` so Live's delegation
+   * for the same words is finished as "already did it". Held as the spoken path is held
+   * (a task running, the voice speaking) — a meta kind passes. Resolves with the outcome
+   * when a reflex ran, undefined when the words are no reflex or were held: the voice
+   * takes them then.
+   */
+  async typed(text: string, at: number): Promise<(ReflexOutcome & { readonly dropped?: string }) | undefined> {
+    // Dictating: Kevin's words are text for the focused field, never commands — a typed line meanwhile is the voice's.
+    if (!this.opts.enabled() || this.opts.dictation.active()) return undefined;
+    const cleaned = text.replace(/\s+/g, " ").trim().replace(FILLER_HEAD, "");
+    if (!cleaned) return undefined;
+    const reflex = this.opts.match(cleaned);
+    if (!reflex) return undefined;
+    const held = this.opts.suppressed?.();
+    if (held && !reflex.meta) {
+      log.info(`typed: "${cleaned.slice(0, 60)}" matched ${reflex.label} but held (${held}); the voice takes it`);
+      return undefined;
+    }
+    const phrase = normalizeUtterance(cleaned);
+    const id = newId("rfx");
+    const matchedAt = this.now();
+    log.info(`typed: "${phrase}" → ${reflex.label}`);
+    try {
+      const outcome = await this.opts.run(reflex, phrase, "typed");
+      const doneAt = this.now();
+      const did = outcome.did !== undefined ? { did: outcome.did } : {};
+      const dispatchedAt = outcome.dispatchedAt ?? matchedAt;
+      // Remembered like an ear reflex: the delegation Live raises for the typed instruction reconciles as done.
+      if (outcome.ok) this.opts.fired.record({ id, phrase, reflex: outcome.reflex ?? reflex, source: "ear", earAt: at, matchedAt, dispatchedAt, doneAt, ok: true, ...did });
+      this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "typed", earAt: at, matchedAt, dispatchedAt, doneAt, ok: outcome.ok, ...(outcome.dropped ? { dropped: outcome.dropped } : {}), fired: "final", ...did });
+      return outcome;
+    } catch (e) {
+      const doneAt = this.now();
+      log.warn(`typed reflex ${reflex.label} threw: ${(e as Error).message}`);
+      this.opts.ledger?.({ at: doneAt, type: "reflex", id, phrase, action: reflex.label, source: "typed", earAt: at, matchedAt, dispatchedAt: matchedAt, doneAt, ok: false, dropped: (e as Error).message, fired: "final" });
+      return undefined;
+    }
   }
 
   /**
@@ -314,20 +469,24 @@ export class EarReflexes {
   /** Take the segment's words as heard and leave them all behind. */
   private consume(seg: Segment, words: string[], now: number): void {
     this.clearTimer(seg);
+    this.clearPendingStop(seg);
     seg.words = words;
     seg.consumed = words.length;
     seg.lastAt = now;
   }
 
-  private fire(seg: Segment, reflex: Reflex, phrase: string, wordCount: number, earAt: number, matchedAt: number, how: ReflexLedgerRow["fired"]): void {
+  private fire(seg: Segment, reflex: Reflex, phrase: string, wordCount: number, earAt: number, matchedAt: number, how: ReflexLedgerRow["fired"], gated = false): void {
     seg.consumed = Math.max(seg.consumed, wordCount);
     const id = newId("rfx");
     const dispatchedAt = this.now();
     log.info(`ear: "${phrase}" → ${reflex.label} (${how}, ${dispatchedAt - earAt} ms after the app heard it)`);
     if (reflex.kind === "dictate_start") this.opts.dictation.start();
     if (reflex.kind === "dictate_stop") this.opts.dictation.stop("said");
+    // "stop the slack one" whole: Kevin said stop — whatever the voice was saying hushes now (unless the name window
+    // already gated it on the stop word); the thread is the meta hook's.
+    if (reflex.kind === "thread_stop" && !gated) this.opts.onGateSpeech?.();
     void this.opts
-      .run(reflex, phrase)
+      .run(reflex, phrase, "ear")
       .then((outcome) => {
         const doneAt = this.now();
         const did = outcome.did !== undefined ? { did: outcome.did } : {};
@@ -417,6 +576,12 @@ export class EarReflexes {
     seg.waitingFor = undefined;
   }
 
+  /** A stop waiting for a name is over (a cut got there first, the segment is gone): its timer must not cut again. */
+  private clearPendingStop(seg: Segment): void {
+    if (seg.pendingStop) clearTimeout(seg.pendingStop.timer);
+    seg.pendingStop = undefined;
+  }
+
   /**
    * Stop or pause: nothing heard so far may fire later — and nothing heard so far
    * may fire *again*. The segments stay, with every word consumed: the recogniser
@@ -427,13 +592,17 @@ export class EarReflexes {
   quiesce(): void {
     for (const seg of this.segments.values()) {
       this.clearTimer(seg);
+      this.clearPendingStop(seg);
       seg.consumed = seg.words.length;
     }
   }
 
   /** Asleep: the session is gone and the app's ear restarts with fresh segment numbers; nothing kept here applies. */
   forgetAll(): void {
-    for (const seg of this.segments.values()) this.clearTimer(seg);
+    for (const seg of this.segments.values()) {
+      this.clearTimer(seg);
+      this.clearPendingStop(seg);
+    }
     this.segments.clear();
     this.current = undefined;
   }

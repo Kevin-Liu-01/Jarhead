@@ -93,6 +93,13 @@ export interface TranscriptDelta {
 export interface SendResult {
   readonly accepted: boolean;
   readonly detail?: string;
+  /**
+   * How an accepted line travelled: `queue` filed it with the process that owns the session
+   * (Codex Desktop, a terminal), `resume` ran it on a driver of ours, `answer` decided a
+   * pending permission question. Typed so a surface can say "Sent · queued" without reading
+   * the detail's words.
+   */
+  readonly mode?: "queue" | "resume" | "answer";
 }
 
 export interface ReadOptions {

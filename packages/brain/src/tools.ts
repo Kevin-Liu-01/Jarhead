@@ -16,6 +16,14 @@ export interface ToolSpec {
   readonly parameters: { readonly type: "object"; readonly properties: Record<string, unknown>; readonly required?: readonly string[]; readonly additionalProperties?: false };
 }
 
+/**
+ * What every acting tool's result ends with (Settings.observe, default on): one `now:`
+ * line read 150 ms after the action landed — the front app and window, the focused
+ * element and its value, what is under the pointer. It is the verification; a
+ * screenshot is for when the line says something unexpected.
+ */
+export const OBSERVATION_CLAUSE = "The result ends with a `now:` line — the front app, the focused element and what is under the pointer, read 150 ms after it landed: that is your verification; take a screenshot only when it says something you did not expect.";
+
 const coordinate = { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "[x, y] in pixels of the most recent screenshot" };
 const modifiers = { type: "string", description: "Optional modifier keys held during the action, e.g. 'shift' or 'cmd+shift'" };
 
@@ -30,7 +38,7 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
     description: "Return a full-resolution crop of a region of the last screenshot, for reading small text. Region is [x0, y0, x1, y1] in screenshot pixels. Click coordinates still refer to the full screenshot.",
     parameters: { type: "object", properties: { region: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4 } }, required: ["region"] },
   },
-  left_click: { name: "left_click", description: "Left-click at a screenshot coordinate. Irreversible-looking controls (Send, Pay, Delete, Publish…) return needs_confirmation instead of clicking; then ask Kevin and stop.", parameters: { type: "object", properties: { coordinate, text: modifiers }, required: ["coordinate"] } },
+  left_click: { name: "left_click", description: `Left-click at a screenshot coordinate. Irreversible-looking controls (Send, Pay, Delete, Publish…) return needs_confirmation instead of clicking; then ask Kevin and stop. ${OBSERVATION_CLAUSE}`, parameters: { type: "object", properties: { coordinate, text: modifiers }, required: ["coordinate"] } },
   right_click: { name: "right_click", description: "Right-click at a screenshot coordinate.", parameters: { type: "object", properties: { coordinate, text: modifiers }, required: ["coordinate"] } },
   middle_click: { name: "middle_click", description: "Middle-click at a screenshot coordinate.", parameters: { type: "object", properties: { coordinate, text: modifiers }, required: ["coordinate"] } },
   double_click: { name: "double_click", description: "Double-click at a screenshot coordinate.", parameters: { type: "object", properties: { coordinate, text: modifiers }, required: ["coordinate"] } },
@@ -42,18 +50,18 @@ const COMPUTER_SPECS: Record<(typeof COMPUTER_MEMBERS)[number], ToolSpec> = {
   cursor_position: { name: "cursor_position", description: "Where the pointer is, in pixels of the last screenshot.", parameters: { type: "object", properties: {} } },
   scroll: {
     name: "scroll",
-    description: "Scroll at a coordinate. scroll_amount is in wheel clicks (about 60 px each).",
+    description: `Scroll at a coordinate. scroll_amount is in wheel clicks (about 60 px each). ${OBSERVATION_CLAUSE}`,
     parameters: { type: "object", properties: { coordinate, scroll_direction: { type: "string", enum: ["up", "down", "left", "right"] }, scroll_amount: { type: "number" }, text: modifiers }, required: ["scroll_direction", "scroll_amount"] },
   },
-  type: { name: "type", description: "Type text into the focused element. OK means the keystrokes were delivered to it; the result names neither the field nor the text, so when what landed where matters, one screenshot (not read_focused_text). Refused in password fields.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  key: { name: "key", description: "Press a key or chord: 'Return', 'Tab', 'Escape', 'cmd+s', 'cmd+shift+p', 'ctrl+c', 'Down'.", parameters: { type: "object", properties: { text: { type: "string" }, repeat: { type: "integer", minimum: 1, maximum: 100 } }, required: ["text"] } },
+  type: { name: "type", description: `Type text into the focused element. OK means the keystrokes were delivered to it, and the result names the field when accessibility knows it. ${OBSERVATION_CLAUSE} When the focused value in that line is not what you typed — or when no now: line follows and what landed matters — one screenshot (not read_focused_text). Refused in password fields.`, parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+  key: { name: "key", description: `Press a key or chord: 'Return', 'Tab', 'Escape', 'cmd+s', 'cmd+shift+p', 'ctrl+c', 'Down'. ${OBSERVATION_CLAUSE}`, parameters: { type: "object", properties: { text: { type: "string" }, repeat: { type: "integer", minimum: 1, maximum: 100 } }, required: ["text"] } },
   hold_key: { name: "hold_key", description: "Hold a key for a duration in seconds.", parameters: { type: "object", properties: { text: { type: "string" }, duration: { type: "number" } }, required: ["text", "duration"] } },
   wait: { name: "wait", description: "Wait for a number of seconds (for a page or app to settle).", parameters: { type: "object", properties: { duration: { type: "number" } }, required: ["duration"] } },
 };
 
 const DESKTOP_SPECS: Record<(typeof DESKTOP_TOOLS)[number], ToolSpec> = {
-  open_app: { name: "open_app", description: "Launch or bring an application to the front by name (e.g. 'Safari', 'Slack', 'Cursor').", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  focus_app: { name: "focus_app", description: "Bring a running app to the front by name. The result only echoes the name; frontmost_app confirms what is in front.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  open_app: { name: "open_app", description: `Launch or bring an application to the front by name (e.g. 'Safari', 'Slack', 'Cursor'). ${OBSERVATION_CLAUSE}`, parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  focus_app: { name: "focus_app", description: `Bring a running app to the front by name. The result only echoes the name; its now: line says what is actually in front (when no now: line follows, frontmost_app confirms). ${OBSERVATION_CLAUSE}`, parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   list_windows: { name: "list_windows", description: "List on-screen windows: app, title, position and size in global points. Cheap; use it to know what is open before taking screenshots.", parameters: { type: "object", properties: {} } },
   read_focused_text: { name: "read_focused_text", description: "Read the value and selected text of the focused element via accessibility (exact text, no OCR). Fails in Chromium browsers (Chrome, Arc, Edge…), whose web content is not the system's focused element: use browser_read or browser_find there. Not needed after a type that returned OK. Password fields are never read.", parameters: { type: "object", properties: {} } },
   element_at: { name: "element_at", description: "Describe the UI element at a screenshot coordinate via accessibility (role, title, value).", parameters: { type: "object", properties: { coordinate }, required: ["coordinate"] } },
@@ -79,37 +87,55 @@ export const AGENT_SPECS: readonly ToolSpec[] = [
 ];
 
 /**
- * A second pair of hands inside the same delegation (a Worker is not an Agent: agents
- * are Kevin's coding sessions). The descriptions carry the split rule the standing
- * orders do not: the brain keeps the part that needs the screen, splits only work
- * that is independent of it, and a background hand acts without the pointer or the
- * keyboard — Apple events, the browser tools, files, shell, web. The engine's pool
- * enforces the lanes; a brain without a pool gets "not available here".
+ * Threads: independent lines of work beside the main one (a Thread is not an Agent:
+ * agents are Kevin's coding sessions). Each has its own brain, conversation, budget and
+ * lane; Kevin hears its finish line and can talk to it by name. The descriptions carry
+ * the split rule the standing orders do not: one thread per independent app, started in
+ * the SAME turn as the brain's own first action; never `thread_wait` for them — end the
+ * turn and Jarhead speaks their lines. The engine's scheduler enforces the lanes and the
+ * caps; a brain without one gets "not available here". The `worker_*` names of the
+ * previous release are accepted by the scheduler as aliases (WORKER_TOOL_ALIASES) but are
+ * not in the spec list.
  */
-export const WORKER_SPECS: readonly ToolSpec[] = [
+export const THREAD_SPECS: readonly ToolSpec[] = [
   {
-    name: "worker_start",
+    name: "thread_start",
     description:
-      "Start a second hand on an independent part of the request while you carry on with the rest — Kevin asked for two things at once ('tell Ben on Slack I'm late and play Focus on Spotify'). Keep the part that needs the screen yourself; split off only work that does not depend on yours and does not touch the same app. lane 'background' (default) never touches the pointer, keyboard or front app: it acts through applescript (Apple events to Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, files, run_shell and the web, and reports when it needs the screen instead. lane 'screen' waits its turn for the pointer and keyboard. At most 2 at once. Returns at once; Jarhead tells Kevin the split in one line, so do not announce it. worker_wait collects the result; the worker's finish line is spoken for you, so never repeat it in your summary.",
+      "Start a thread: an independent line of work with its own brain, conversation and budget, named for Kevin to hear ('Spotify', 'Slack'). One thread per independent app, started in the SAME turn as your own first action — never a turn of its own — when Kevin asked for two things at once ('tell Ben on Slack I'm late and play Focus on Spotify'). Keep the part that needs the screen yourself; split off only work that does not depend on yours and does not touch the same app. lane 'background' (default) never touches the pointer, keyboard or front app: it acts through applescript (Apple events to Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, files, run_shell and the web, and reports when it needs the screen instead. lane 'screen' waits its turn for the pointer and keyboard. At most 3 alongside you. Returns at once, and may be issued alongside your first action in one exec: it never waits for it and is never held back by its question. Jarhead tells Kevin the split in one line, so do not announce it. Do not thread_wait: end your turn — Jarhead speaks each thread's finish line for you, so never repeat it. On a thread, speak_progress speaks once, with your name, sparingly.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "one word Kevin will hear, usually the app: 'Spotify', 'Slack' (≤ 16 characters, unique in this task)" },
+        name: { type: "string", description: "one word Kevin will hear, usually the app: 'Spotify', 'Slack' (≤ 16 characters, unique among live threads)" },
         task: { type: "string", description: "what to do, in full sentences, with the names and text it needs; it cannot see your screen or your context" },
         lane: { type: "string", enum: ["background", "screen"], description: "background (default): Apple events, browser, files, shell, web only; screen: waits for the pointer and keyboard" },
-        budget: { type: "object", properties: { steps: { type: "integer", minimum: 1, maximum: 40, description: "tool calls before it gives up (default 25)" }, seconds: { type: "integer", minimum: 10, maximum: 300, description: "wall clock before it is cut (default 180)" } } },
+        budget: { type: "object", properties: { steps: { type: "integer", minimum: 1, maximum: 40, description: "tool calls per turn before it gives up (default 25)" }, seconds: { type: "integer", minimum: 10, maximum: 300, description: "wall clock per turn before it is cut (default 180)" } } },
       },
       required: ["name", "task"],
     },
   },
   {
-    name: "worker_wait",
-    description: "Wait until a worker (by name, or 'all') has finished, failed or been stopped, or the timeout passes (seconds, default 120, at most 240). Returns each worker's status and last line, and says what Kevin was already told so you do not repeat it. Call it once your own part is done, before the summary.",
-    parameters: { type: "object", properties: { name: { type: "string", description: "the worker's name, or 'all'" }, timeout: { type: "integer", minimum: 1, maximum: 240 } }, required: ["name"] },
+    name: "thread_wait",
+    description: "Wait until a thread (by name, or 'all') has finished, failed or been stopped, or the timeout passes (seconds, default 120, at most 240). Rarely right: Jarhead speaks each thread's finish line and Kevin can talk to it by name, so end your turn instead and let them run. Use it only when your own answer depends on a thread's result. Returns each thread's status and last line, and says what Kevin was already told so you do not repeat it.",
+    parameters: { type: "object", properties: { name: { type: "string", description: "the thread's name, or 'all'" }, timeout: { type: "integer", minimum: 1, maximum: 240 } }, required: ["name"] },
   },
-  { name: "worker_read", description: "A worker's status right now (starting, working, waiting for the screen, awaiting Kevin's yes, done, failed, stopped), its steps so far and its last line, without waiting.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  { name: "worker_stop", description: "Stop a worker by name: its current step ends, nothing more runs, and Kevin hears one line that it stopped. Use it when its part is no longer wanted or you are taking it over yourself.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "thread_read", description: "A thread's status right now (queued, starting, thinking, acting, waiting for the screen, waiting on Kevin's yes, paused, done, failed, stopped), its steps so far and its last line, without waiting.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+  { name: "thread_stop", description: "Stop a thread by name: its current step ends, nothing more runs, and Kevin hears one line that it stopped. Use it when its part is no longer wanted or you are taking it over yourself.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
 ];
+
+/** The previous release's names → the thread tools; the scheduler answers both for one release, the spec list carries only the new. */
+export const WORKER_TOOL_ALIASES: Readonly<Record<string, string>> = { worker_start: "thread_start", worker_wait: "thread_wait", worker_read: "thread_read", worker_stop: "thread_stop" };
+
+/** Every name the scheduler answers: the four thread tools and their worker_* aliases. */
+export const THREAD_TOOL_NAMES: ReadonlySet<string> = new Set([...THREAD_SPECS.map((s) => s.name), ...Object.keys(WORKER_TOOL_ALIASES)]);
+
+/** `worker_start` → `thread_start`; a thread tool's own name unchanged; undefined for anything else. */
+export function threadToolName(name: string): string | undefined {
+  if (THREAD_SPECS.some((s) => s.name === name)) return name;
+  return WORKER_TOOL_ALIASES[name];
+}
+
+/** @deprecated the specs are THREAD_SPECS; kept one release so an import compiles (the names inside are thread_*). */
+export const WORKER_SPECS: readonly ToolSpec[] = THREAD_SPECS;
 
 export const MISC_SPECS: readonly ToolSpec[] = [
   {
@@ -275,8 +301,8 @@ export const BROWSER_SPECS: readonly ToolSpec[] = [
 
 export const COMPUTER_TOOL_SPECS: readonly ToolSpec[] = COMPUTER_MEMBERS.map((m) => COMPUTER_SPECS[m]);
 export const DESKTOP_TOOL_SPECS: readonly ToolSpec[] = DESKTOP_TOOLS.map((t) => DESKTOP_SPECS[t]);
-/** 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6 = 67 (pinned in brain.test.ts and mcp-bridge.test.ts). */
-export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...WORKER_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS];
+/** 17 + 8 + 6 + 5 + 4 (threads) + 4 + 11 + 6 + 6 = 67 (pinned in brain.test.ts, mcp-bridge.test.ts and tools.test.ts). */
+export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...THREAD_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS];
 
 export function specByName(name: string): ToolSpec | undefined {
   return ALL_TOOL_SPECS.find((t) => t.name === name);

@@ -260,11 +260,35 @@ extension CGRect { var isFiniteRect: Bool { origin.isFinitePoint && size.width.i
 @inline(__always) func finite01(_ x: Double) -> Double { x.isFinite ? min(1, max(0, x)) : 0 }
 @inline(__always) func finite01(_ x: CGFloat) -> CGFloat { x.isFinite ? min(1, max(0, x)) : 0 }
 
+/// The field's shape: the main blob's 27×15 (10 pt SF Mono cells, eyes at 1.7×) or a
+/// satellite's 19×11 with eyes at 1.45× — a smaller creature set in the same type, so
+/// its glyphs stay as crisp as the main blob's where a layer scale would soften them.
+/// One sim is one grid for its life; the metrics (`BlobMetrics`) size the field and
+/// the panel from it.
+struct BlobGrid: Equatable, Sendable {
+    let cols: Int
+    let rows: Int
+    /// The eyes' font size over the field's cell font (10 pt).
+    let eyeScale: Double
+
+    var cellCount: Int { cols * rows }
+    var eyeSizePt: Double { 10.0 * eyeScale }
+
+    static let main = BlobGrid(cols: 27, rows: 15, eyeScale: 1.7)
+    /// A satellite: body ≈ 88 pt across in a 120 pt panel (BlobMetrics.satellitePanelSize).
+    static let satellite = BlobGrid(cols: 19, rows: 11, eyeScale: 1.45)
+}
+
 @MainActor
 final class BlobSim {
-    nonisolated static let cols = 27
-    nonisolated static let rows = 15
-    nonisolated static let cellCount = cols * rows
+    /// The main blob's grid as statics: the notch, the trail and the harness read the
+    /// main field's shape through these. A sim's own shape is `grid`.
+    nonisolated static let cols = BlobGrid.main.cols
+    nonisolated static let rows = BlobGrid.main.rows
+    nonisolated static let cellCount = BlobGrid.main.cellCount
+
+    /// This sim's field: the main 27×15 or a satellite's 19×11. Fixed for its life.
+    let grid: BlobGrid
 
     /// Cell aspect (height / width); set by the view from its real metrics.
     var aspect: Double = 1.75
@@ -402,13 +426,13 @@ final class BlobSim {
     static let rippleLength = 0.36
     static let breathPeriod = 4.0
 
-    /// Ramp index per cell, row-major; 0 is blank.
-    private(set) var cells = [UInt8](repeating: 0, count: BlobSim.cellCount)
+    /// Ramp index per cell, row-major; 0 is blank. Sized by `grid` in `init`.
+    private(set) var cells: [UInt8]
     /// Halo coverage per cell (0…255): the silhouette plus a soft margin. The view
     /// upscales it into the glow behind the glyphs.
-    private(set) var halo = [UInt8](repeating: 0, count: BlobSim.cellCount)
+    private(set) var halo: [UInt8]
     /// Per-cell flags: bit 0 set = the wet patch (drawn from the dense ramp, a step brighter).
-    private(set) var flags = [UInt8](repeating: 0, count: BlobSim.cellCount)
+    private(set) var flags: [UInt8]
     nonisolated static let wetFlag: UInt8 = 1
 
     // MARK: motion (the jelly)
@@ -516,7 +540,7 @@ final class BlobSim {
     /// notch draws its face from this, so the face is one face wherever the blob is.
     private(set) var face = Face("-")
     private(set) var faceLookX = 0.0, faceLookY = 0.0
-    private(set) var faceSize = BlobSim.eyeSizePt
+    private(set) var faceSize: Double
     /// Cells under the eyes: the view draws no body glyph there.
     private(set) var eyeFootprint: [Int] = []
     /// Where the eyes look (−1…1), eased so they never snap.
@@ -572,9 +596,10 @@ final class BlobSim {
     /// eye glyph's half-advance at `eyeSizePt`.
     static let eyeRadiusPt = 8.6
     /// The eyes' font size: 1.7× the field's cell font, bold — big enough to read as a
-    /// face from across the room, small enough to leave body around them.
-    static let eyeScale = 1.7
-    nonisolated static let eyeSizePt = 10.0 * 1.7
+    /// face from across the room, small enough to leave body around them. The main
+    /// grid's, as statics (the notch draws its face at this size); a sim's own is `grid.eyeSizePt`.
+    static let eyeScale = BlobGrid.main.eyeScale
+    nonisolated static let eyeSizePt = BlobGrid.main.eyeSizePt
     /// Under this openness the eye is a `-`: the blink, the squint, a body pressed flat.
     static let shutOpenness = 0.3
     /// Row height in points, from the view's metrics: the eyes are sized in points.
@@ -624,7 +649,14 @@ final class BlobSim {
     static let damping = 15.0
     private var springsMoving = false
 
-    init() {}
+    /// A sim on the main grid, or a satellite's on the small one (`BlobGrid.satellite`).
+    init(grid: BlobGrid = .main) {
+        self.grid = grid
+        cells = [UInt8](repeating: 0, count: grid.cellCount)
+        halo = [UInt8](repeating: 0, count: grid.cellCount)
+        flags = [UInt8](repeating: 0, count: grid.cellCount)
+        faceSize = grid.eyeSizePt
+    }
 
     // MARK: inputs
 
@@ -991,7 +1023,7 @@ final class BlobSim {
         let g = (reducedMotion ? 0.3 : 1.0) * (1 - 0.5 * cursorK)
         sloshX.v -= jx * sloshX.gain * g
         sloshY.v -= jy * sloshY.gain * g
-        let jr = min(jLen, jCap) / (Double(Self.rows) * 0.38)   // radii/s
+        let jr = min(jLen, jCap) / (Double(grid.rows) * 0.38)   // radii/s
         mode2.v += jr * mode2.gain * g
         mode3.v += jr * mode3.gain * g * (mode3.x >= 0 ? -1 : 1)
         if wasDragging, !dragging {
@@ -1315,7 +1347,7 @@ final class BlobSim {
     }
 
     private func render() {
-        let cols = Self.cols, rows = Self.rows
+        let cols = grid.cols, rows = grid.rows
         let sq = cur.squash == 0 ? 1 : cur.squash
         // The contacts as drawn: the springs' state, plus the parked dome's breath — a
         // render-time swell of the patch's press, never spring motion, so it rides the
@@ -1735,7 +1767,7 @@ final class BlobSim {
         let drawn = Face(left: lidded(pair.left, openL), right: lidded(pair.right, openR))
         // Past open the eye grows a little: surprise. Muted's `_ _` is drawn a step smaller.
         let mutedFace = shown == .muted
-        let size = Self.eyeSizePt * (1 + 0.25 * max(0, min(openL, openR, 1.3) - 1)) * (mutedFace ? 0.8 : 1)
+        let size = grid.eyeSizePt * (1 + 0.25 * max(0, min(openL, openR, 1.3) - 1)) * (mutedFace ? 0.8 : 1)
         face = drawn
         faceSize = size
         eyeLift = lift
@@ -1819,12 +1851,12 @@ final class BlobSim {
             let halfC = (box.width / 2 + 1.5) / cellW + 0.35
             let halfR = (box.height / 2 + 1.5) / rowHeightPt + 0.35
             guard ccol.isFinite, crow.isFinite, halfC.isFinite, halfR.isFinite else { continue }
-            let c0 = max(0, Int((ccol - halfC).rounded())), c1 = min(Self.cols - 1, Int((ccol + halfC).rounded()))
-            let r0 = max(0, Int((crow - halfR).rounded())), r1 = min(Self.rows - 1, Int((crow + halfR).rounded()))
+            let c0 = max(0, Int((ccol - halfC).rounded())), c1 = min(grid.cols - 1, Int((ccol + halfC).rounded()))
+            let r0 = max(0, Int((crow - halfR).rounded())), r1 = min(grid.rows - 1, Int((crow + halfR).rounded()))
             guard c0 <= c1, r0 <= r1 else { continue }
             for r in r0...r1 {
                 for c in c0...c1 where abs(Double(c) - ccol) < halfC && abs(Double(r) - crow) < halfR {
-                    eyeFootprint.append(r * Self.cols + c)
+                    eyeFootprint.append(r * grid.cols + c)
                 }
             }
         }
@@ -1834,8 +1866,8 @@ final class BlobSim {
     private func onBody(_ col: Double, row: Double) -> Bool {
         guard col.isFinite, row.isFinite else { return false }
         let r = Int(row.rounded()), ci = Int(col.rounded())
-        guard r >= 0, r < Self.rows, ci >= 1, ci < Self.cols - 1 else { return false }
-        let base = r * Self.cols
+        guard r >= 0, r < grid.rows, ci >= 1, ci < grid.cols - 1 else { return false }
+        let base = r * grid.cols
         for d in -1...1 where cells[base + ci + d] == 0 { return false }
         return true
     }
@@ -1848,17 +1880,17 @@ final class BlobSim {
         // `Int(nan)` traps: a NaN row is no place for an eye (ORB_LEVELS=nan reproduced this).
         guard col.isFinite, row.isFinite, toward.isFinite else { return nil }
         let r = Int(row.rounded())
-        guard r >= 0, r < Self.rows else { return nil }
+        guard r >= 0, r < grid.rows else { return nil }
         let reach = strict ? 2 : 1
         var c = col
         for _ in 0..<9 {
             let ci = Int(c.rounded())
-            if ci >= reach, ci < Self.cols - reach {
-                let base = r * Self.cols
+            if ci >= reach, ci < grid.cols - reach {
+                let base = r * grid.cols
                 var ok = true
                 for d in -reach...reach where cells[base + ci + d] == 0 { ok = false; break }
-                if ok, strict, r + 1 < Self.rows {
-                    for d in -1...1 where cells[base + Self.cols + ci + d] == 0 { ok = false; break }
+                if ok, strict, r + 1 < grid.rows {
+                    for d in -1...1 where cells[base + grid.cols + ci + d] == 0 { ok = false; break }
                 }
                 if ok { return c }
             }
@@ -1881,7 +1913,7 @@ final class BlobSim {
     func cursorTipTarget(direction dir: CGVector, squash: Double) -> CGVector {
         let e = reducedMotion ? Self.cursorStretch * 0.4 : Self.cursorStretch
         let (sx, sy) = Self.penAxis(dirX: dir.dx, dirY: dir.dy, hand: cursorHand)
-        let base = Double(Self.rows) * 0.38
+        let base = Double(grid.rows) * 0.38
         let bodyBase = base / (1 + (Self.stretchShrink + 0.4 * sy * sy) * e) * (1 - Self.cursorShrink)
         let toward = bodyBase * (Self.tailStretch + Self.leadCompress) / 2 * e
         let reach = bodyBase * (1 + Self.tailStretch * e)
@@ -1923,11 +1955,17 @@ enum BlobMetrics {
     }()
     static let cellWidth: CGFloat = (advance * 0.97 * 20).rounded() / 20
     static let rowHeight: CGFloat = 10.5
-    static var fieldSize: CGSize {
-        CGSize(width: cellWidth * CGFloat(BlobSim.cols), height: rowHeight * CGFloat(BlobSim.rows))
+    /// The main field's size; a grid's own is `fieldSize(_:)`.
+    static var fieldSize: CGSize { fieldSize(.main) }
+    static func fieldSize(_ grid: BlobGrid) -> CGSize {
+        CGSize(width: cellWidth * CGFloat(grid.cols), height: rowHeight * CGFloat(grid.rows))
     }
     /// The collapsed orb panel: the field plus a hair of margin for the glow.
     static let panelSize = NSSize(width: 164, height: 164)
+    /// A satellite's panel: its 19×11 field (≈ 111×116) plus the same hair. The body's
+    /// collision radius is 0.36 of it — 43 pt — where the main blob's is 59.
+    static let satellitePanelSize = NSSize(width: 120, height: 120)
+    static func panelSize(_ grid: BlobGrid) -> NSSize { grid == .main ? panelSize : satellitePanelSize }
     /// Baseline offset from a cell's vertical centre so the em box is centred in the row.
     static let baselineShift: CGFloat = (font.ascender + font.descender) / 2
 }
@@ -2063,10 +2101,22 @@ final class BlobGlyphs {
 
 /// Draws the field and runs the orb's one display link. `tick` is the physics hook:
 /// called every display frame with dt, it returns true while the body still moves.
+/// A `driven` view (a satellite's) makes no link of its own: the fleet's one link
+/// calls `frame(now:)` on every satellite, and a poke reaches it through `onPoke`.
 @MainActor
 final class BlobFieldView: NSView {
-    let sim = BlobSim()
+    let sim: BlobSim
     var tick: ((Double) -> Bool)?
+    /// No display link of its own: whoever drives it calls `frame(now:)`.
+    let driven: Bool
+    /// A driven view's poke (something changed, frames are wanted) reaches its driver here.
+    var onPoke: (() -> Void)?
+    /// The fleet's budget ladder: a ceiling on the field's frame rate (rung 1: 12 fps)
+    /// and the halo refined only every other rendered frame (rung 2: the CGImage is the
+    /// expensive allocation). Nil / false is the full rate the main blob always runs.
+    var maxFPS: Double?
+    var haloEveryOther = false
+    private var renderCount = 0
 
     private var link: CADisplayLink?
     private var lastTick = 0.0
@@ -2074,22 +2124,24 @@ final class BlobFieldView: NSView {
     private var lastSimStep = 0.0
     private var idleSince = -1.0
     private var linkRate = 0.0
+    /// What the physics hook answered on the last frame: the link rate follows it.
+    private var lastPhysicsWants = false
 
     /// The glow layer behind this view (owned by the controller's blob cell); fed a
     /// fresh halo image every rendered frame. Nil in a bare view: glyphs only.
     weak var halo: BlobHaloView?
 
-    /// The halo is refined from the sim's 27×15 mask to this many pixels per cell
-    /// (bilinear, then a box blur half a cell wide); the render server scales it the
-    /// rest of the way on the GPU. CG resampling it here cost a millisecond a frame,
-    /// and CG left to itself drew the raw mask as row-sized stair-steps.
+    /// The halo is refined from the sim's mask (27×15, or a satellite's 19×11) to this
+    /// many pixels per cell (bilinear, then a box blur half a cell wide); the render
+    /// server scales it the rest of the way on the GPU. CG resampling it here cost a
+    /// millisecond a frame, and CG left to itself drew the raw mask as row-sized stair-steps.
     private static let haloScale = 4
-    private static let haloW = BlobSim.cols * haloScale
-    private static let haloH = BlobSim.rows * haloScale
-    private var haloFine = [Float](repeating: 0, count: BlobFieldView.haloW * BlobFieldView.haloH)
-    private var haloTmp = [Float](repeating: 0, count: BlobFieldView.haloW * BlobFieldView.haloH)
+    private let haloW: Int
+    private let haloH: Int
+    private var haloFine: [Float]
+    private var haloTmp: [Float]
     /// Scratch RGBA for the halo image, rebuilt per frame.
-    private var haloPixels = [UInt8](repeating: 0, count: BlobFieldView.haloW * BlobFieldView.haloH * 4)
+    private var haloPixels: [UInt8]
 
     /// Set while the panel is ordered out: no ticks at all.
     var paused = false {
@@ -2112,7 +2164,16 @@ final class BlobFieldView: NSView {
 
     override var isFlipped: Bool { true }
 
-    override init(frame: NSRect) {
+    /// The main field (`.main`, its own link) or a satellite's (`.satellite`, driven).
+    init(frame: NSRect, grid: BlobGrid = .main, driven: Bool = false) {
+        sim = BlobSim(grid: grid)
+        self.driven = driven
+        haloW = grid.cols * Self.haloScale
+        haloH = grid.rows * Self.haloScale
+        haloFine = [Float](repeating: 0, count: haloW * haloH)
+        haloTmp = [Float](repeating: 0, count: haloW * haloH)
+        haloPixels = [UInt8](repeating: 0, count: haloW * haloH * 4)
+        skip = [Bool](repeating: false, count: grid.cellCount)
         super.init(frame: frame)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
@@ -2127,7 +2188,7 @@ final class BlobFieldView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         syncAppearance()
-        guard window != nil, link == nil else { return }
+        guard window != nil, link == nil, !driven else { return }
         let l = displayLink(target: self, selector: #selector(onFrame(_:)))
         l.add(to: .main, forMode: .common)
         link = l
@@ -2150,6 +2211,7 @@ final class BlobFieldView: NSView {
     /// Something changed (phase, levels, contacts, physics): make sure frames are flowing.
     func poke() {
         idleSince = -1
+        if driven { if !paused { onPoke?() }; return }
         guard !paused, let link else { return }
         if link.isPaused { lastTick = 0; link.isPaused = false }
     }
@@ -2162,23 +2224,37 @@ final class BlobFieldView: NSView {
         displayIfNeeded()
     }
 
-    @objc private func onFrame(_ link: CADisplayLink) {
-        let now = CACurrentMediaTime()
+    /// One frame, from whoever owns the link — this view's own (`onFrame`) or the
+    /// fleet's for a driven satellite: the physics hook every frame, then the field
+    /// re-rendered on its own clock (10–24 fps like v1; the body can move every display
+    /// frame in between so a throw is smooth). Returns true while frames are still
+    /// wanted: the body moves, or the field is not static.
+    @discardableResult
+    func frame(now: Double) -> Bool {
         if lastTick == 0 { lastTick = now; lastSimStep = now; lastRender = 0 }
         let dt = now - lastTick
         lastTick = now
 
         let physicsWants = tick?(dt) ?? false
+        lastPhysicsWants = physicsWants
 
-        // The field re-renders on its own clock (10–24 fps like v1); the body can
-        // move every display frame in between so a throw is smooth.
-        if stepsSim, now - lastRender >= 1 / sim.desiredFPS - 0.002 {
+        var fps = sim.desiredFPS
+        if let cap = maxFPS { fps = min(fps, cap) }
+        if stepsSim, now - lastRender >= 1 / fps - 0.002 {
             sim.step(now - lastSimStep)
             lastSimStep = now
             lastRender = now
-            updateHalo()
+            renderCount += 1
+            if !haloEveryOther || renderCount % 2 == 0 { updateHalo() }
             needsDisplay = true
         }
+        return physicsWants || !sim.isStatic
+    }
+
+    @objc private func onFrame(_ link: CADisplayLink) {
+        let now = CACurrentMediaTime()
+        let wants = frame(now: now)
+        let physicsWants = lastPhysicsWants
 
         // Ask the display for the rate we will actually use: 60 while the body moves
         // (the panel is re-placed every frame; 120 would double the window-server
@@ -2192,7 +2268,6 @@ final class BlobFieldView: NSView {
                 : CAFrameRateRange(minimum: 10, maximum: 30, preferred: Float(wantRate))
         }
 
-        let wants = physicsWants || !sim.isStatic
         if wants {
             idleSince = -1
         } else if idleSince < 0 {
@@ -2207,7 +2282,8 @@ final class BlobFieldView: NSView {
         guard let cg = NSGraphicsContext.current?.cgContext else { return }
         let size = bounds.size
         let color = sim.displayColor
-        let field = BlobMetrics.fieldSize
+        let grid = sim.grid
+        let field = BlobMetrics.fieldSize(grid)
         let origin = CGPoint(x: (size.width - field.width) / 2, y: (size.height - field.height) / 2)
 
         // The halo lives on its own layer beneath this view (see updateHalo); this
@@ -2228,9 +2304,9 @@ final class BlobFieldView: NSView {
         var wetPositions = [[CGPoint]](repeating: [], count: fontCount)
         var anyWet = false
         var i = 0
-        for row in 0..<BlobSim.rows {
+        for row in 0..<grid.rows {
             let baseline = origin.y + (CGFloat(row) + 0.5) * rh + shift
-            for col in 0..<BlobSim.cols {
+            for col in 0..<grid.cols {
                 let cell = i
                 let idx = Int(sim.cells[i]); i += 1
                 guard idx > 0, !skip[cell] else { continue }
@@ -2297,8 +2373,8 @@ final class BlobFieldView: NSView {
         cg.restoreGState()
     }
 
-    /// Cells the body must not draw this frame (under the eyes); reused across frames.
-    private var skip = [Bool](repeating: false, count: BlobSim.cellCount)
+    /// Cells the body must not draw this frame (under the eyes); reused across frames. Sized by the grid in `init`.
+    private var skip: [Bool]
 
     /// One eye: its ASCII glyph from the bold eye font at `size`, on the baseline every
     /// eye glyph shares (the `o`'s centre on the eye's point), first a hair larger in
@@ -2344,8 +2420,8 @@ final class BlobFieldView: NSView {
     /// visible blur; the drawn halo is the ramp's five banded steps. Row 0 is the top, as
     /// CALayer.contents expects.
     private func refineHalo() {
-        let cols = BlobSim.cols, rows = BlobSim.rows
-        let s = Self.haloScale, w = Self.haloW, h = Self.haloH
+        let cols = sim.grid.cols, rows = sim.grid.rows
+        let s = Self.haloScale, w = haloW, h = haloH
         let halo = sim.halo
         let inv = 1 / Float(s)
         haloTmp.withUnsafeMutableBufferPointer { out in
@@ -2401,7 +2477,7 @@ final class BlobFieldView: NSView {
     /// The refined halo as one premultiplied RGBA image: the glow colour composited
     /// over the dark backing, both with the mask as coverage.
     private func haloImage(glow: RGB, glowAlpha: Double, backingAlpha: Double) -> CGImage? {
-        let w = Self.haloW, h = Self.haloH
+        let w = haloW, h = haloH
         let ground = OrbPalette.ground
         let backingAlpha = Float(min(max(backingAlpha, 0), 1))
         let gr = Float(glow.r), gg = Float(glow.g), gb = Float(glow.b), ga = Float(glowAlpha)
@@ -2435,7 +2511,11 @@ final class BlobFieldView: NSView {
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
+    /// A satellite names itself and its thread's status here; the main blob is Jarhead.
+    var accessibilityNameOverride: (() -> String)?
+
     override func accessibilityLabel() -> String? {
+        if let name = accessibilityNameOverride?() { return name }
         if sim.phase == .asleep, sim.gate != .off { return "Jarhead, asleep, wake word \(sim.gate)" }
         return "Jarhead, \(sim.phase.rawValue)"
     }
@@ -2447,6 +2527,8 @@ final class BlobFieldView: NSView {
 @MainActor
 final class BlobHaloView: NSView {
     let imageLayer = CALayer()
+    /// The field this glow sits under (its size centres the image layer).
+    var grid: BlobGrid = .main
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -2467,7 +2549,7 @@ final class BlobHaloView: NSView {
 
     override func layout() {
         super.layout()
-        let field = BlobMetrics.fieldSize
+        let field = BlobMetrics.fieldSize(grid)
         imageLayer.frame = CGRect(x: (bounds.width - field.width) / 2, y: (bounds.height - field.height) / 2, width: field.width, height: field.height)
     }
 

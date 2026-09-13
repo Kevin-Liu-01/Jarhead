@@ -343,3 +343,289 @@ test("delegator: a `refuse` reason records the delegation and finishes it as can
   assert.deepEqual(live.sent.filter((s) => s.type === "commentary").map((s) => s.content), ["scrolled down."]);
   d.dispose();
 });
+
+// ---------------------------------------------------------------- pass 4: fillers, tails, media, window, time, thread verbs
+
+import { classifyAction, classifyAppleScript } from "@jarhead/core";
+import { FILLER_HEAD, TAIL_KINDS, normalizeUtterance, parseReflexTail } from "../reflex.ts";
+
+/**
+ * Kevin's real utterances (heard rows, 09-10..12) start with fillers and end with the
+ * command: 0 of 119 requests parsed whole, 1 last clause did, 2 after stripping fillers.
+ * The filler strip and the tail are the enabling change; every new row is one the
+ * policy runs without a question and none is a destructive verb.
+ */
+
+test("fillers and transcriber tags at the head are stripped before the grammar; a bare yes / okay stays whole", () => {
+  const TABLE: ReadonlyArray<readonly [string, string, Record<string, unknown>]> = [
+    ["um, okay, scroll down", "scroll", { scroll_direction: "down", scroll_amount: 5 }],
+    ["[chuckle] yeah press enter", "key", { text: "Return" }],
+    ["oh awesome. open safari", "open_app", { name: "Safari" }],
+    ["jarhead, um, scroll down", "scroll", { scroll_direction: "down", scroll_amount: 5 }],
+    ["yeah so like go to github.com", "go_to", { url: "https://github.com/" }],
+    ["so type hello there", "type", { text: "hello there" }],
+    ["(laughs) okay so, hey jarhead, page down", "page", { text: "Page_Down" }],
+    ["alright then, um, take a screenshot", "screenshot", { quick: true }],
+    ["well, actually, zoom in", "zoom", { text: "cmd+=" }],
+  ];
+  for (const [said, kind, input] of TABLE) {
+    const r = parseReflex(said);
+    assert.ok(r, `${JSON.stringify(said)} should be a reflex`);
+    assert.equal(r.kind, kind, said);
+    assert.deepEqual(r.input, input, said);
+  }
+  assert.equal(normalizeUtterance("um, okay, scroll down"), "scroll down");
+  assert.equal(normalizeUtterance("yes"), "yes", "a bare yes is left for the yes gate");
+  assert.equal(normalizeUtterance("okay"), "okay");
+  // A lone filler with its punctuation is the utterance, not a head: as at 2633faf.
+  assert.equal(normalizeUtterance("okay."), "okay");
+  assert.equal(normalizeUtterance("yes."), "yes");
+  assert.equal(normalizeUtterance("great."), "great");
+  assert.equal(normalizeUtterance("um"), "um");
+  assert.equal(normalizeUtterance("right click save"), "right click save", "'right' is not a filler: right click is a command of its own");
+  assert.equal(parseReflex("yes"), undefined);
+  assert.equal(parseReflex("um"), undefined);
+  // THE DECISION the shared list makes for the ear's stop test (ear.ts reads STOP_WORDS through
+  // normalizeUtterance): these lead-ins now cut, where at 2633faf only the ear's own list did
+  // (um/uh/erm/so/like/okay/ok/alright/hey/yeah/yes). Pinned so a wider list is a choice, not a drift.
+  for (const [said, phrase] of [
+    ["oh stop", "stop"],
+    ["well, hold on", "hold on"],
+    ["actually, cancel", "cancel"],
+    ["great. stop", "stop"],
+    ["anyway stop", "stop"],
+    ["hmm stop", "stop"],
+    ["cool stop", "stop"],
+    ["nice, cancel", "cancel"],
+    ["yep. stop", "stop"],
+    ["basically stop", "stop"],
+    ["so stop", "stop"],
+    ["yeah stop", "stop"],
+  ] as const) assert.equal(normalizeUtterance(said), phrase, said);
+  assert.ok(FILLER_HEAD instanceof RegExp && FILLER_HEAD.test("oh stop") && !FILLER_HEAD.test("stop"), "the list is exported for the ear and the miner: one list, not three");
+  assert.equal("okay.".replace(FILLER_HEAD, ""), "okay.", "a lone filler is not stripped by the list itself either");
+});
+
+test("tail matching: the last clause runs on its own only for TAIL_KINDS; the head is left to the brain; a whole command or a non-tail kind is not a tail", () => {
+  // Kevin's own example: the fillers peel and the whole is the command — no tail needed (the prefire path takes it).
+  assert.equal(parseReflex("yeah okay. jarhead, scroll down")?.kind, "scroll");
+  assert.equal(parseReflexTail("yeah okay. jarhead, scroll down"), undefined, "whole, not a tail");
+  const scroll = parseReflexTail("read me the headline. jarhead, scroll down");
+  assert.ok(scroll);
+  assert.equal(scroll.reflex.kind, "scroll");
+  assert.equal(scroll.head, "read me the headline.");
+  assert.equal(scroll.tail, "jarhead, scroll down");
+  const page = parseReflexTail("read me the headline, then page down");
+  assert.equal(page?.reflex.kind, "page");
+  assert.equal(page?.head, "read me the headline");
+  const shot = parseReflexTail("okay that looks right jarhead take a screenshot");
+  assert.equal(shot?.reflex.kind, "screenshot");
+  assert.equal(shot?.head, "okay that looks right");
+  const app = parseReflexTail("i need to check something. open slack");
+  assert.equal(app?.reflex.kind, "open_app");
+  assert.deepEqual(app?.reflex.input, { name: "Slack" });
+  assert.equal(parseReflexTail("yeah okay. jarhead, type hello"), undefined, "type is not a tail kind: words to type are judged whole");
+  assert.equal(parseReflexTail("that one is wrong. click save"), undefined, "click is not a tail kind");
+  assert.equal(parseReflexTail("scroll down to the footer and click save"), undefined, "no clause boundary, no tail");
+  assert.equal(parseReflexTail("scroll down"), undefined, "a whole command is not a tail");
+  assert.equal(parseReflexTail("um, okay, scroll down"), undefined, "fillers make it whole, not a tail");
+  assert.equal(parseReflexTail("it is 5 o'clock. go to sleep"), undefined, "a dismissal is never a tail");
+  assert.equal(parseReflexTail(""), undefined);
+  for (const k of ["type", "click", "double_click", "key", "edit", "search", "close_window", "dictate_start", "dictate_stop", "sleep"]) assert.ok(!TAIL_KINDS.has(k as never), `${k} never runs as a tail`);
+  const names = ["Slack", "Spotify"];
+  const status = parseReflexTail("let me think about it. what is spotify doing", { threadNames: names });
+  assert.equal(status?.reflex.kind, "thread_status");
+  assert.deepEqual(status?.reflex.input, { name: "Spotify" });
+  const stop = parseReflexTail("no wait, stop the slack one", { threadNames: names });
+  assert.equal(stop, undefined, "no clause boundary before 'stop the slack one': whole-utterance rules (the stop rule is the Delegator's)");
+  // At 2633faf the OPEN row read "go to github.com. jarhead scroll down" as ONE site and navigated to
+  // `https://github.com.jarheadscrolldown/` (spaces collapsed into the host). An address never has a
+  // space in it: the whole does not parse, and the tail is the reflex.
+  assert.equal(parseReflex("go to github.com. jarhead scroll down"), undefined, "never a navigation to a garbage host");
+  assert.equal(parseReflex("go to github.com jarhead scroll down"), undefined);
+  const afterGoTo = parseReflexTail("go to github.com. jarhead scroll down");
+  assert.equal(afterGoTo?.reflex.kind, "scroll");
+  assert.equal(afterGoTo?.head, "go to github.com.");
+  assert.equal(parseReflexTail("go to github.com jarhead scroll down")?.reflex.kind, "scroll", "the wake word inside marks the tail when no sentence ends");
+  // The addresses the row does take, unchanged.
+  assert.deepEqual(parseReflex("go to github.com")!.input, { url: "https://github.com/" });
+  assert.deepEqual(parseReflex("go to github.com/kevin")!.input, { url: "https://github.com/kevin" });
+  assert.deepEqual(parseReflex("go to hacker news")!.input, { url: "https://news.ycombinator.com/" }, "a two-word SITE still resolves by name (never through urlOf)");
+  assert.deepEqual(parseReflex("go to localhost 3000")!.input, { url: "http://localhost:3000/" });
+  assert.deepEqual(parseReflex("go to localhost port 8080")!.input, { url: "http://localhost:8080/" });
+});
+
+/** workers.ts's FOCUS_APPLESCRIPT (a copy; the engine package is not this test's to import): a script that drives the screen rather than an app's dictionary. */
+const FOCUS_APPLESCRIPT = /\b(keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b/i;
+
+test("media rows: play / pause / next / previous / volume / mute by Apple event to the music app, only when the policy says run and never a screen script", () => {
+  const TABLE: ReadonlyArray<readonly [string, RegExp, string, boolean]> = [
+    ["play", /^if application "Spotify" is running then tell application "Spotify" to play$/, "playing.", true],
+    ["resume the music", /to play$/, "playing.", true],
+    ["pause the music", /^if application "Spotify" is running then tell application "Spotify" to pause$/, "paused.", true],
+    ["pause", /to pause$/, "paused.", true],
+    ["pause spotify", /"Spotify" to pause$/, "paused.", true],
+    ["next track", /to next track$/, "next track.", false],
+    ["skip this song", /to next track$/, "next track.", false],
+    ["skip the track", /to next track$/, "next track.", false],
+    ["skip ahead", /to next track$/, "next track.", false],
+    ["previous track", /to previous track$/, "previous track.", false],
+    ["turn the volume up", /to set sound volume to \(sound volume \+ 10\)$/, "louder.", false],
+    ["volume down", /to set sound volume to \(sound volume - 10\)$/, "quieter.", false],
+    ["a bit louder", /\+ 10\)$/, "louder.", false],
+    ["make it quieter", /- 10\)$/, "quieter.", false],
+    ["lower the volume", /- 10\)$/, "quieter.", false],
+    ["unpause the music", /to play$/, "playing.", true],
+    ["mute the music", /^set volume output muted true$/, "muted.", true],
+    ["unmute the sound", /^set volume output muted false$/, "unmuted.", true],
+    ["play on apple music", /^if application "Music" is running then tell application "Music" to play$/, "playing.", true],
+  ];
+  for (const [said, script, spoken, idempotent] of TABLE) {
+    const r = parseReflex(said);
+    assert.ok(r, `${JSON.stringify(said)} should be a media reflex`);
+    assert.equal(r.kind, "media", said);
+    assert.equal(r.tool, "applescript", said);
+    assert.match(String(r.input["script"]), script, said);
+    assert.equal(r.said, spoken, said);
+    assert.equal(r.idempotent, idempotent, `${said}: idempotent`);
+    assert.equal(r.prefire, false, `${said}: waits for the word`);
+    assert.equal(classifyAppleScript({ script: String(r.input["script"]) }).verdict, "run", `${said}: the policy runs it without a question`);
+    assert.ok(!FOCUS_APPLESCRIPT.test(String(r.input["script"])), `${said}: background-safe, no keystroke or click`);
+  }
+  for (const s of ["play with fire", "next", "previous", "stop the music", "turn it up", "mute", "play the video", "pause for a second", "skip the intro"]) assert.notEqual(parseReflex(s)?.kind, "media", `${s}: not a media row`);
+  assert.equal(parseReflex("play with fire"), undefined);
+  // One-word rows fire from the ear with no wake word: room talk. Only "play" and "pause" (DECISIONS' two) stay bare.
+  for (const s of ["skip", "resume", "unpause", "louder", "quieter", "softer", "skip.", "louder!"]) assert.equal(parseReflex(s), undefined, `${s}: a bare word is room talk, not a media row`);
+  assert.equal(parseReflex("play")!.kind, "media");
+  assert.equal(parseReflex("pause")!.kind, "media");
+});
+
+test("window rows: minimise, hide and full screen are shortcuts with an inverse; the clock row answers without a tool", () => {
+  assert.deepEqual([parseReflex("minimize this window")!.kind, parseReflex("minimize this window")!.input], ["window", { text: "cmd+m" }]);
+  assert.deepEqual(parseReflex("minimise the window")!.input, { text: "cmd+m" });
+  assert.deepEqual(parseReflex("hide this window")!.input, { text: "cmd+h" });
+  const full = parseReflex("full screen")!;
+  assert.deepEqual([full.kind, full.tool, full.input, full.said, full.idempotent], ["window", "key", { text: "ctrl+cmd+f" }, "full screen.", false]);
+  assert.equal(parseReflex("exit full screen")!.said, "left full screen.");
+  assert.equal(parseReflex("make it full screen")!.kind, "window");
+  for (const s of ["minimize", "hide", "full screen mode please open it", "close the window and the tab"]) assert.notEqual(parseReflex(s)?.kind, "window", s);
+  assert.equal(parseReflex("close this window")!.kind, "close_window", "the close row is unchanged");
+
+  const at = new Date(2026, 8, 13, 16, 52).getTime();
+  const time = parseReflex("what time is it", { now: () => at })!;
+  assert.deepEqual([time.kind, time.tool, time.meta, time.idempotent, time.prefire], ["say", "say", true, true, false]);
+  assert.equal(time.said, "it's 4:52 pm.");
+  assert.equal(time.input["text"], time.said);
+  assert.equal(parseReflex("Jarhead, what's the time?", { now: () => at })!.said, "it's 4:52 pm.");
+  assert.equal(parseReflex("what's the date", { now: () => at })!.said, "it's Sunday, September 13.");
+  assert.equal(parseReflex("what day is it today", { now: () => at })!.kind, "say");
+  assert.match(parseReflex("what time is it")!.said, /^it's \d{1,2}:\d{2} [ap]m\.$/, "without a clock, the real one");
+  for (const s of ["what time is the meeting", "what is the time zone", "time"]) assert.equal(parseReflex(s), undefined, s);
+});
+
+test("thread verbs: status / list / stop / pause / resume against the LIVE names the caller gives, meta and idempotent, never without the names; 'stop' alone stays the interrupt's", () => {
+  const ctx = { threadNames: ["Slack", "Spotify"] };
+  const TABLE: ReadonlyArray<readonly [string, string, Record<string, unknown>]> = [
+    ["what is spotify doing", "thread_status", { name: "Spotify" }],
+    ["what's slack up to", "thread_status", { name: "Slack" }],
+    ["how is the spotify one going", "thread_status", { name: "Spotify" }],
+    ["how's slack doing", "thread_status", { name: "Slack" }],
+    ["is slack done", "thread_status", { name: "Slack" }],
+    ["is the spotify thread still working", "thread_status", { name: "Spotify" }],
+    ["where's spotify", "thread_status", { name: "Spotify" }],
+    ["what is spotify working on right now", "thread_status", { name: "Spotify" }],
+    ["stop the slack one", "thread_stop", { name: "Slack" }],
+    ["stop slack", "thread_stop", { name: "Slack" }],
+    ["cancel spotify", "thread_stop", { name: "Spotify" }],
+    ["kill the slack thread", "thread_stop", { name: "Slack" }],
+    ["pause spotify", "thread_pause", { name: "Spotify" }],
+    ["hold the slack one", "thread_pause", { name: "Slack" }],
+    ["resume spotify", "thread_resume", { name: "Spotify" }],
+    ["carry on slack", "thread_resume", { name: "Slack" }],
+    ["continue with the spotify one", "thread_resume", { name: "Spotify" }],
+    ["what's running", "thread_list", {}],
+    ["what are you doing", "thread_list", {}],
+    ["how many things are running", "thread_list", {}],
+    ["status", "thread_list", {}],
+  ];
+  for (const [said, kind, input] of TABLE) {
+    for (const wrapped of [said, `Jarhead, ${said} please.`, `um, ${said}`]) {
+      const r = parseReflex(wrapped, ctx);
+      assert.ok(r, `${JSON.stringify(wrapped)} should be a thread verb`);
+      assert.equal(r.kind, kind, wrapped);
+      assert.equal(r.tool, kind, wrapped);
+      assert.deepEqual(r.input, input, wrapped);
+      assert.equal(r.meta, true, wrapped);
+      assert.equal(r.prefire, false, wrapped);
+      assert.equal(r.idempotent, true, wrapped);
+      assert.equal(r.said, "", `${wrapped}: spoken from the result`);
+    }
+  }
+  assert.equal(parseReflex("stop the slack one", ctx)!.label, "stop Slack", "the name as the table spells it");
+  // Without the names nothing parses as a thread verb: the names come from the table, never a list.
+  for (const [said] of TABLE) {
+    const bare = parseReflex(said);
+    assert.ok(!bare || !String(bare.kind).startsWith("thread_"), `${said}: no names, no thread verb (got ${bare?.kind})`);
+  }
+  assert.equal(parseReflex("stop slack"), undefined);
+  assert.equal(parseReflex("stop the mail one", ctx), undefined, "Mail is not live");
+  assert.equal(parseReflex("what's running", { threadNames: [] }), undefined, "no live thread and no wake word: room talk");
+  assert.equal(parseReflex("jarhead what's running", { threadNames: [] })?.kind, "thread_list", "named: answered (nothing running)");
+  // Negatives pinned by the design.
+  for (const s of ["stop", "stop it", "cancel", "open slack", "slack me later", "what is spotify", "spotify", "tell slack to hurry", "is slack a good app"]) {
+    const r = parseReflex(s, ctx);
+    assert.ok(!r || !String(r.kind).startsWith("thread_"), `${s}: not a thread verb (got ${JSON.stringify(r)})`);
+  }
+  assert.equal(parseReflex("stop", ctx), undefined, "'stop' alone is the interrupt's, unchanged");
+  assert.equal(parseReflex("open slack", ctx)!.kind, "open_app");
+  assert.equal(parseReflex("what is the time", ctx)!.kind, "say");
+  // A live name wins over the music row; without the thread the music row takes it.
+  assert.equal(parseReflex("pause spotify", ctx)!.kind, "thread_pause");
+  assert.equal(parseReflex("pause spotify")!.kind, "media");
+  // Case-insensitive, punctuation and a two-word name.
+  assert.deepEqual(parseReflex("Stop The SLACK One!", ctx)!.input, { name: "Slack" });
+  assert.deepEqual(parseReflex("what is the mail app doing", { threadNames: ["Mail app"] })!.input, { name: "Mail app" });
+});
+
+test("every new row passes the policy with verdict run and names nothing irreversible; the ReflexRunner answers say and meta rows without the hands, and reads the names from its option", async () => {
+  const ctx = { threadNames: ["Slack", "Spotify"], now: () => 0 };
+  const rows = ["um, okay, scroll down", "play", "pause the music", "next track", "mute the music", "minimize this window", "full screen", "what time is it", "what is spotify doing", "stop the slack one", "pause spotify", "resume slack", "what's running"].map((s) => parseReflex(s, ctx)!);
+  for (const r of rows) {
+    assert.ok(r, "parses");
+    if (r.tool === "key") assert.equal(classifyAction({ kind: "key", app: "Finder", text: String(r.input["text"]) }).verdict, "run", r.label);
+    if (r.tool === "applescript") assert.equal(classifyAppleScript({ script: String(r.input["script"]) }).verdict, "run", r.label);
+    assert.equal(classifyAction({ kind: "left_click", app: "Finder", target: r.label }).verdict, "run", `${r.label}: the label is not an irreversible word`);
+    assert.ok(!/\b(send|delete|remove|pay|buy|publish|submit|erase|transfer|sign out|log out|shutdown|restart)\b/i.test(`${r.label} ${r.said} ${JSON.stringify(r.input)}`), `${r.label}: no destructive verb`);
+  }
+
+  const hands = new FakeHands();
+  const { runner } = makeRunner({}, hands);
+  const ran: string[] = [];
+  const origRun = runner.run.bind(runner);
+  runner.run = async (name, input) => {
+    ran.push(name);
+    return origRun(name, input);
+  };
+  let names: readonly string[] = ["Slack", "Spotify"];
+  const answered: string[] = [];
+  const reflexes = new ReflexRunner({ runner, frontmostApp: async () => "Finder", threadNames: () => names, now: () => new Date(2026, 8, 13, 9, 5).getTime(), meta: (reflex) => (answered.push(reflex.label), { kind: "text", text: `${String(reflex.input["name"] ?? "")}: on step 4, 9 seconds in.` }) });
+  const status = reflexes.match("what is spotify doing")!;
+  assert.equal(status.kind, "thread_status", "the runner supplies the live names");
+  const out = await reflexes.run(status);
+  assert.deepEqual([out.ok, out.result], [true, { kind: "text", text: "Spotify: on step 4, 9 seconds in." }]);
+  assert.deepEqual(answered, ["status of Spotify"]);
+  assert.deepEqual(ran, [], "no tool ran for a meta row");
+  const time = await reflexes.run(reflexes.match("what time is it")!);
+  assert.deepEqual(time.result, { kind: "text", text: "it's 9:05 am." });
+  assert.deepEqual(ran, [], "the clock row runs no tool either");
+  names = [];
+  assert.equal(reflexes.match("what is spotify doing"), undefined, "Spotify ended: its name is gone from the grammar");
+  assert.equal(reflexes.matchTail("let me see. what is slack doing"), undefined);
+  names = ["Slack"];
+  assert.equal(reflexes.matchTail("let me see. what is slack doing")?.reflex.kind, "thread_status");
+  // Without the engine's meta hook the pseudo tool is refused by the runner and the brain takes it.
+  const plain = new ReflexRunner({ runner, frontmostApp: async () => "Finder", threadNames: () => ["Slack"] });
+  const refused = await plain.run(plain.match("stop the slack one")!);
+  assert.equal(refused.ok, false);
+  assert.match((refused.result as { message: string }).message, /unknown tool thread_stop/);
+});

@@ -337,7 +337,9 @@ Files: read_file {path, offset?, limit?}; list_dir {path, depth?}; search_files 
 Shell and web: run_shell {command, cwd?, background?, timeout?} is a login shell and slow (seconds); applescript {script} runs osascript, often seconds — never for the front app (frontmost_app) or a browser page (the browser tools); web_search {query}; web_fetch {url}; open_url {url}.
 Voice and drawing: speak_progress {text} says one sentence now; show_circle {x, y, radius, label?}, show_arrow {from, to}, show_rect {rect: [x, y, w, h]}, show_text {x, y, text}, show_stroke {points}, show_clear {} draw fading shapes on his screen.
 Agents and self: agents_list {}, agent_send {agent, text}, agent_read {agent}, agent_wait {agent, timeout?}, agent_start {tool, cwd, prompt}; self_edit {task}, self_review {id}, self_apply {id}, self_discard {id}, self_status {}.
-Workers: worker_start {name, task, lane?, budget?} (a second hand; background = Apple events/browser/files/shell/web only, screen = waits for the pointer); worker_wait {name|"all", timeout?}; worker_read {name}; worker_stop {name}.`;
+Threads: thread_start {name, task, lane?, budget?} — one thread per independent app (background = Apple events/browser/files/shell/web only, screen = waits for the pointer), started in the same turn as your own first action; do not thread_wait: end your turn and Jarhead speaks their finish lines; thread_read {name}; thread_stop {name}. On a thread, speak_progress speaks once, with your name.
+Every acting tool answers with what is now in front, focused and under the pointer, read 150 ms after it landed: that line is your verification; screenshot only when it says something you did not expect.
+Look-only tools may be awaited together in one exec (await Promise.all([...])); acting tools run in order and stop at the first needs_confirmation — the ones queued behind it answer "not run: … is waiting for Kevin's answer" and must not be retried.`;
 }
 
 // ------------------------------------------------------------ carried history

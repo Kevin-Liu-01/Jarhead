@@ -572,13 +572,15 @@ final class BlobBody {
     /// any hop comes first, so the spot is ranked against the approach the body will
     /// actually make from where it lands on the far display — ranked from the origin
     /// display, the chosen side could lie right along the real flight line and the
-    /// overshoot swept the target. Returns the spot.
+    /// overshoot swept the target. `avoiding` is where the other blobs sit (the fleet
+    /// passes the main body and the other satellites); an empty list is the main
+    /// blob's path, unchanged. Returns the spot.
     @discardableResult
-    func flyBeside(_ target: CGPoint, spring: GoalSpring) -> CGPoint {
+    func flyBeside(_ target: CGPoint, spring: GoalSpring, avoiding: [CGRect] = []) -> CGPoint {
         dragging = false
         refreshScreens()
         hop(toward: target)
-        let spot = landing(for: target)
+        let spot = landing(for: target, avoiding: avoiding)
         aim(at: spot, spring: spring)
         return spot
     }
@@ -670,13 +672,24 @@ final class BlobBody {
     /// body is already on, then upward. A spot off the work area (near the display's
     /// edges) is skipped for the next. If none fits, up-left is clamped onto the work
     /// area and the target may be grazed.
-    func landing(for target: CGPoint) -> CGPoint {
+    ///
+    /// `avoiding`: the other blobs' body rects. A spot whose body (radius + `avoidPad`)
+    /// would overlap one is skipped for the next direction, so two satellites flown to
+    /// one point land on two sides of it; only when every direction is taken or off the
+    /// work area does the chooser fall back to the plain ranking. Empty (the main blob),
+    /// the choice is exactly what it was before the fleet.
+    func landing(for target: CGPoint, avoiding occupied: [CGRect] = []) -> CGPoint {
         refreshScreens()
         guard let s = ScreenArea.containing(target, in: areas) else { return target }
         let stop = radius * CGFloat(Self.stopFraction) + 2
         let room = s.work.insetBy(dx: min(stop, s.work.width / 2), dy: min(stop, s.work.height / 2))
         let reach = Double(radius + Self.flyClearance)
-        if isBeside(target), room.contains(center) { return center }
+        let pad = radius + Self.avoidPad
+        func free(_ p: CGPoint) -> Bool {
+            let mine = CGRect(x: p.x - pad, y: p.y - pad, width: 2 * pad, height: 2 * pad)
+            return !occupied.contains { $0.intersects(mine) }
+        }
+        if isBeside(target), room.contains(center), free(center) { lastLandingNote = "already beside"; return center }
         // Unit direction of travel; already on top of the target: up-left, plainly.
         var ux = Double(target.x - center.x), uy = Double(target.y - center.y)
         let len = (ux * ux + uy * uy).squareRoot()
@@ -684,6 +697,7 @@ final class BlobBody {
         let d = 1 / 2.0.squareRoot()
         // Unit offsets from the target, upper ones first so ties fall upward.
         let directions: [(Double, Double)] = [(-d, -d), (0, -1), (d, -d), (-1, 0), (1, 0), (-d, d), (0, 1), (d, d)]
+        let names = ["up-left", "up", "up-right", "left", "right", "down-left", "down", "down-right"]
         let ranked = directions.enumerated().sorted { a, b in
             // |cos| between the offset and the flight; up-left is squared off to the
             // front while its own |cos| ≤ 0.4 (sin ≥ 0.92: 28 pt of air on the pass).
@@ -694,12 +708,28 @@ final class BlobBody {
             // coming from, so it never crosses over the target to park.
             return a.element.0 * -ux + a.element.1 * -uy > b.element.0 * -ux + b.element.1 * -uy
         }
-        for (_, dir) in ranked {
+        var taken: [String] = []
+        for (i, dir) in ranked {
             let p = CGPoint(x: target.x + CGFloat(reach * dir.0), y: target.y + CGFloat(reach * dir.1))
-            if room.contains(p) { return p }
+            guard room.contains(p) else { continue }
+            if !free(p) { taken.append(names[i]); continue }
+            lastLandingNote = taken.isEmpty ? names[i] : "\(taken.joined(separator: ", ")) occupied → \(names[i])"
+            return p
         }
+        // Every free direction is off the work area: the plain ranking, as before the fleet.
+        for (i, dir) in ranked {
+            let p = CGPoint(x: target.x + CGFloat(reach * dir.0), y: target.y + CGFloat(reach * dir.1))
+            if room.contains(p) { lastLandingNote = "\(names[i]) (every side taken)"; return p }
+        }
+        lastLandingNote = "clamped up-left"
         return room.clamped(CGPoint(x: target.x - CGFloat(reach * d), y: target.y - CGFloat(reach * d)))
     }
+
+    /// Air kept between a landing body and another blob's body (pt), over the radius.
+    static let avoidPad: CGFloat = 6
+    /// Which direction the last `landing(for:avoiding:)` chose and what it stepped
+    /// round ("up-left occupied → up"), for the preview harness.
+    private(set) var lastLandingNote = ""
 
     /// Parked (still) beside the target: about radius + clearance away — from 90% of
     /// it (26 pt of air still) to 160% (close enough to read as "at the work") — and

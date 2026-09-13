@@ -345,6 +345,12 @@ final class EngineClient: @unchecked Sendable {
                 // Kevin's word: a daemon that comes back asleep after this is not resumed.
                 self.stopSentAt = Date()
                 self.resumeCandidate = false
+            case .agentSend(let agentId, let text):
+                // The pending echo: the row shows the moment Send is pressed, 0 round trips; the
+                // engine's own echo (the same words, `pending: true`) folds into it and the real
+                // user turn from the tool's file drops it (AppState.applyTranscript).
+                let at = Date().timeIntervalSince1970 * 1000
+                self.onMain { $0.echoPendingSend(agentId: agentId, text: text, at: at) }
             case .daemonRestart where !self.isConnected:
                 // The `daemon` row's remedy with nothing to send it to: DaemonProcess spawns (or
                 // kills and respawns) one now. Queued, the command would restart the daemon that
@@ -576,6 +582,8 @@ final class EngineClient: @unchecked Sendable {
             if let pid = obj["pid"] as? Int, pid > 0, pid <= Int(Int32.max) { daemonPid = Int32(pid) }
             onMain { st in
                 if let dir, !dir.isEmpty { st.stateDir = URL(fileURLWithPath: dir) }
+                // A daemon process numbers its thread events from 1: the replay guard restarts with it.
+                st.noteDaemonHello()
             }
         case "pong":
             if let id = obj["id"] as? String { pendingPings.removeAll { $0 == id } }
@@ -604,6 +612,16 @@ final class EngineClient: @unchecked Sendable {
             guard let sub = obj["transcript"], let t: AgentTranscript = decode(sub) else { return }
             let mode = obj["mode"] as? String ?? "replace"
             onMain { $0.applyTranscript(t, mode: mode) }
+        case "thread.event":
+            // One ≤ 200 B delta on one thread (broadcast, coalesced 50 ms per thread by the engine):
+            // never a snapshot. `started` carries the record; the rest patch what AppState holds.
+            guard let sub = obj["event"], let e: ThreadEvent = decode(sub) else { return }
+            onMain { $0.applyThreadEvent(e) }
+        case "thread.transcript":
+            // A thread's conversation page or delta, to this pane's viewer only (Model/ThreadStore.swift).
+            guard let sub = obj["transcript"], let t: ThreadTranscript = decode(sub) else { return }
+            let mode = obj["mode"] as? String ?? "replace"
+            onMain { $0.applyThreadTranscript(t, mode: mode) }
         case "ledger.rows":
             // The whole message: `rows`, and `truncated` when a chain read hit its cap.
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj) }
@@ -703,7 +721,12 @@ final class EngineClient: @unchecked Sendable {
             self.lastSnapshotPublish = .now()
             guard let s = self.pendingSnapshot else { return }
             self.pendingSnapshot = nil
-            self.onMain { $0.snapshot = s }
+            // The snapshot's thread summaries merge into AppState.threads beside the events
+            // (a daemon without `threads` sends nil and touches nothing there).
+            self.onMain { st in
+                st.snapshot = s
+                st.applySnapshotThreads(s.threads)
+            }
         }
     }
 

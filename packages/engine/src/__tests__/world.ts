@@ -12,7 +12,7 @@ import type { Exec } from "@jarhead/cli/install";
 import type { IngestOptions, IngestResult, RememberResult, Rendered } from "@jarhead/memory";
 import { Engine, type EngineOptions } from "../engine.ts";
 import type { MemoryServiceLike } from "../memory-bridge.ts";
-import type { WorkerBrainFactory } from "../workers.ts";
+import type { ThreadBrainFactory } from "../threads/index.ts";
 
 /**
  * A stand-in world for engine tests: a fake Live session per wake (records the
@@ -22,8 +22,8 @@ import type { WorkerBrainFactory } from "../workers.ts";
  * record the ops (a held op can be released later; Kevin's own key or click makes
  * an acting op answer `busy`, as the helper does), a main brain that attaches the
  * runner and holds its task until the abort signal or the test resolves it, a
- * worker-brain factory whose brains a test scripts, and a clock the test moves by
- * hand.
+ * thread-brain factory (`makeThreadBrain`) whose brains a test scripts — one per
+ * spawned thread, the spares included — and a clock the test moves by hand.
  */
 
 export class FakeLive extends EventEmitter {
@@ -124,6 +124,14 @@ export class FakeLive extends EventEmitter {
  * KEVIN_QUIET_MS answers `busy` (nothing posted) unless the op says `ownDriver`;
  * `user_idle` reports the same clock. `focus_app` / `open_app` change `frontApp`.
  */
+/** The one screen both helpers look at: the front app, the focused field, the front window's labels. */
+interface FakeScreen {
+  frontApp: string;
+  secure: boolean;
+  focusedRole: string;
+  labels: string[];
+}
+
 export class RecordingHands implements NativeHands {
   ready = true;
   ops: { op: string; params: Record<string, unknown>; at: number }[] = [];
@@ -131,12 +139,43 @@ export class RecordingHands implements NativeHands {
   posted: { op: string; params: Record<string, unknown>; at: number }[] = [];
   hold: string | undefined;
   private release_: (() => void) | undefined;
-  frontApp = "Notes";
-  secure = false;
+  /**
+   * What the helper sees. Two helpers share ONE screen (`shareScreenWith`, as the real ones share the
+   * Mac): a front app set on the acting helper is what a read routed to the reading helper answers
+   * (SplitHands sends the gate's `frontmost`, `find_element`, `focused_text` there), and an `open_app`
+   * on either fronts the app for both.
+   */
+  private screen: FakeScreen = { frontApp: "Notes", secure: false, focusedRole: "AXTextField", labels: ["Save", "Cancel", "Send", "Add Folder"] };
+  get frontApp(): string {
+    return this.screen.frontApp;
+  }
+  set frontApp(app: string) {
+    this.screen.frontApp = app;
+  }
+  get secure(): boolean {
+    return this.screen.secure;
+  }
+  set secure(v: boolean) {
+    this.screen.secure = v;
+  }
   /** What focused_text says the focus is (a text field by default; "AXGroup" for a terminal or a canvas). */
-  focusedRole = "AXTextField";
+  get focusedRole(): string {
+    return this.screen.focusedRole;
+  }
+  set focusedRole(role: string) {
+    this.screen.focusedRole = role;
+  }
   /** What find_element answers: the labels on the "front window". */
-  labels: string[] = ["Save", "Cancel", "Send", "Add Folder"];
+  get labels(): string[] {
+    return this.screen.labels;
+  }
+  set labels(labels: string[]) {
+    this.screen.labels = labels;
+  }
+  /** Look at the same screen as `other` (the world links the acting and the reading helper). */
+  shareScreenWith(other: RecordingHands): void {
+    this.screen = other.screen;
+  }
   now: () => number = Date.now;
   /** When Kevin last pressed a key, clicked or scrolled (never Jarhead's own posts); undefined = never. */
   kevinAt: number | undefined;
@@ -476,10 +515,10 @@ export interface BrainState {
   tasks: BrainTask[];
 }
 
-/** One worker's fake brain: what it was asked, what it was told, how often it was cancelled and stopped. */
-export interface FakeWorkerBrain {
+/** One thread's fake brain: what it was asked, what it was told, how often it was cancelled and stopped. */
+export interface FakeThreadBrain {
   readonly id: string;
-  /** The worker's name, read from its first task (`<parentLiveId>/<name>`). */
+  /** The thread's name, read from the brief in its first task's dialogue ("Jarhead (to its thread Spotify): …"). */
   name: string;
   readonly runner: ToolRunner;
   tasks: BrainTask[];
@@ -491,24 +530,41 @@ export interface FakeWorkerBrain {
   resolve: ((r: BrainResult) => void) | undefined;
 }
 
-/** What a scripted worker turn sees. Return a result to finish the turn; return undefined to hold it for `brain.resolve`. */
-export interface WorkerJob {
-  readonly brain: FakeWorkerBrain;
+/** @deprecated the same record, under the workers pass's name. */
+export type FakeWorkerBrain = FakeThreadBrain;
+
+/** What a scripted thread turn sees. Return a result to finish the turn; return undefined to hold it for `brain.resolve`. */
+export interface ThreadJob {
+  readonly brain: FakeThreadBrain;
   readonly task: BrainTask;
   readonly sink: BrainSink;
-  /** The worker's own lane runner: `runner.run("type", …)` goes through its lane's rules. */
+  /** The thread's own lane runner: `runner.run("type", …)` goes through its lane's rules. */
   readonly runner: ToolRunner;
 }
 
-export interface WorkerWorld {
-  /** Every worker brain the engine built, in order (the spare included). */
-  brains: FakeWorkerBrain[];
-  /** What a worker does when its turn starts; absent, the turn holds until the test resolves it. */
-  script: ((job: WorkerJob) => Promise<BrainResult | undefined>) | undefined;
-  /** What a worker brain's `start()` answers (default: ready at once); a test makes the spare's boot hang or fail. Set before the wake that warms the spare. */
-  startResult: ((brain: FakeWorkerBrain) => Promise<{ ready: boolean; detail: string }>) | undefined;
-  /** The brain of the worker named `name` (the first task tells a brain its name). */
-  byName(name: string): FakeWorkerBrain | undefined;
+/** @deprecated the same, under the workers pass's name. */
+export type WorkerJob = ThreadJob;
+
+export interface ThreadWorld {
+  /** Every thread brain the engine built, in order (the spares included). */
+  brains: FakeThreadBrain[];
+  /** What a thread does when a turn starts; absent, the turn holds until the test resolves it. Called for every turn (a follow-up, a confirmation, a continuation). */
+  script: ((job: ThreadJob) => Promise<BrainResult | undefined>) | undefined;
+  /** What a thread brain's `start()` answers (default: ready at once); a test makes a spare's boot hang or fail. Set before the wake that warms the spares. */
+  startResult: ((brain: FakeThreadBrain) => Promise<{ ready: boolean; detail: string }>) | undefined;
+  /** The brain of the thread named `name` (the first task tells a brain its name). */
+  byName(name: string): FakeThreadBrain | undefined;
+}
+
+/** @deprecated the same, under the workers pass's name. */
+export type WorkerWorld = ThreadWorld;
+
+/** The thread's name from the brief a task carries (`threadBrief` opens with it); the old `<liveId>/<name>` shape is read too. */
+export function threadNameOf(task: BrainTask): string | undefined {
+  const m = /^Jarhead \(to its (?:thread|worker) ([^)]+)\)/.exec(task.dialogue);
+  if (m?.[1]) return m[1];
+  const tail = task.delegationId.split("/").pop();
+  return tail && !/^dlg_/.test(tail) ? tail : undefined;
 }
 
 export interface World {
@@ -525,7 +581,9 @@ export interface World {
   overlays: OverlayCommand[];
   audio: Buffer[];
   brain: BrainState;
-  workers: WorkerWorld;
+  /** The spawned threads' fake brains (`threads` and `workers` are the same object; `workers` is the old name). */
+  threads: ThreadWorld;
+  workers: ThreadWorld;
   /** The memory module's stand-in the engine was built over (undefined when a test injected its own seams). */
   memory: FakeMemoryService | undefined;
   clock: { t: number };
@@ -580,25 +638,26 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
     },
     stop: async () => undefined,
   };
-  // Worker brains: one fake per worker, scripted by the test.
-  const workers: WorkerWorld = {
+  // Thread brains: one fake per spawned thread, scripted by the test. The engine's option is still
+  // named `makeWorkerBrain` (engine.ts); `makeThreadBrain` is the seam every new test reads.
+  const threads: ThreadWorld = {
     brains: [],
     script: undefined,
     startResult: undefined,
-    byName: (name) => workers.brains.find((b) => b.name === name),
+    byName: (name) => threads.brains.find((b) => b.name === name),
   };
-  const makeWorkerBrain: WorkerBrainFactory = (spec) => {
-    const fb: FakeWorkerBrain = { id: spec.workerId, name: "", runner: spec.runner, tasks: [], sink: undefined, started: 0, cancels: 0, stops: 0, resolve: undefined };
-    workers.brains.push(fb);
+  const makeThreadBrain: ThreadBrainFactory = (spec) => {
+    const fb: FakeThreadBrain = { id: spec.threadId, name: "", runner: spec.runner, tasks: [], sink: undefined, started: 0, cancels: 0, stops: 0, resolve: undefined };
+    threads.brains.push(fb);
     return {
-      kind: "fake-worker",
+      kind: "fake-thread",
       start: async () => {
         fb.started++;
-        return workers.startResult ? workers.startResult(fb) : { ready: true, detail: "fake worker" };
+        return threads.startResult ? threads.startResult(fb) : { ready: true, detail: "fake thread" };
       },
       handle: (task, sink) =>
         new Promise<BrainResult>((resolve) => {
-          fb.name = task.delegationId.split("/").pop() ?? fb.name;
+          fb.name = threadNameOf(task) ?? fb.name;
           fb.tasks.push(task);
           fb.sink = sink;
           fb.runner.attach(sink, task);
@@ -612,7 +671,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
           };
           fb.resolve = done;
           task.signal.addEventListener("abort", () => done({ status: "cancelled" }), { once: true });
-          const script = workers.script;
+          const script = threads.script;
           if (script) {
             void script({ brain: fb, task, sink, runner: fb.runner })
               .then((r) => {
@@ -644,6 +703,8 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   };
   const hands = new RecordingHands();
   const handsBg = where.oneHands ? hands : new RecordingHands();
+  // One Mac, one screen: what the acting helper fronts is what the reading helper reads.
+  if (handsBg !== hands) handsBg.shareScreenWith(hands);
   const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
   handsBg.now = () => clock.t;
@@ -652,7 +713,9 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   const fakeMemory = extra.memory ? undefined : new FakeMemoryService(() => clock.t);
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
-  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // `observeSettleMs: 0`: the observer's 150 ms settle before it reads the screen after an acting tool is real time
+  // (an app's reaction), pointless against a fake helper that answers at once; the `now:` line itself still lands.
+  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeWorkerBrain: makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];
@@ -661,7 +724,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   engine.on("event", (e) => events.push(e));
   engine.on("overlay", (c) => overlays.push(c));
   engine.on("audio", (pcm) => audio.push(pcm));
-  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, workers, memory: fakeMemory, clock, dir };
+  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, threads, workers: threads, memory: fakeMemory, clock, dir };
 }
 
 export const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));

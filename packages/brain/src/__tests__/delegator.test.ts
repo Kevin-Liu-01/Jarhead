@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Transcript, type LiveSession } from "@jarhead/live";
 import { ConfirmationState } from "@jarhead/hands";
-import { Delegator, type DelegationTimingsExtra, type DelegatorWorkers, type WorkerFloor } from "../delegator.ts";
+import { Delegator, NAMED_STOP_FRAGMENT_ECHO_MS, STOP_NAME_WAIT_MS, type DelegationTimingsExtra, type DelegatorThreads, type DelegatorWorkers, type WorkerFloor } from "../delegator.ts";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "../brain.ts";
 import { parseReflex } from "../reflex.ts";
 
@@ -289,11 +289,16 @@ test("workers: the split line is spoken once and counts as the voiced tool; work
   assert.equal(d.draining, undefined);
   assert.equal(phases.at(-1), "idle");
   assert.equal(spoken().length, 3, "nothing more was said at the finish");
-  // A line for a delegation that is neither running nor draining goes nowhere.
+  // A thread's line for a parent that finished DONE is still owed to Kevin (DECISIONS §7): it lands on the kept
+  // record and reaches Live on the append id that record had — never dropped. A step for it still goes nowhere
+  // (a thread's steps are on its own record).
   d.workerSay(parent.id, "Spotify", "late");
   d.workerStep(parent.id, "Spotify", { kind: "note", text: "late" });
-  assert.equal(spoken().length, 3);
-  assert.equal(d.all()[0]!.steps.filter((s) => s.text === "late").length, 0);
+  await tick();
+  assert.deepEqual(spoken().slice(3), ["late"], "spoken once, after the slot closed");
+  assert.equal(live.sent.filter((s) => s.type === "commentary").at(-1)?.payload.id, "item_1", "on the parent's own Live id");
+  assert.equal(d.all()[0]!.steps.filter((s) => s.kind === "commentary" && s.text === "late").length, 1, "on the parent's record");
+  assert.equal(d.all()[0]!.steps.filter((s) => s.kind === "note" && s.text === "late").length, 0, "a step for a closed parent goes nowhere");
   d.dispose();
 });
 
@@ -881,3 +886,479 @@ class ReflexRunnerLike {
     return r?.kind === "sleep" ? undefined : r;
   }
 }
+
+// ---------------------------------------------------------------- threads (pass 4)
+// The Delegator's view of the threads: a thread verb is answered from the table before the supersede, words
+// addressed to a live thread by name are a follow-up on ITS brain, a stop word with two threads live waits
+// STOP_NAME_WAIT_MS for a name, the records are indexed (O(1) per step past 200 pushes).
+
+class FakeThreads implements DelegatorThreads {
+  names: string[] = ["Spotify", "Slack"];
+  stopped: string[] = [];
+  paused: string[] = [];
+  followUps: { id: string; request: string; items: number; marks: number }[] = [];
+  /** The overflow rule's hooks (Settings.threadOverflow = "spawn"): what was spawned, and which apps a live thread claims. */
+  spawned: { parent: string; name: string; task: string }[] = [];
+  claimed: string[] = [];
+  mode: "supersede" | "spawn" = "supersede";
+  liveNames(): readonly string[] {
+    return this.names;
+  }
+  /** The ones stopped here still answer to their name for a while (the table's linger). */
+  recentNames(): readonly string[] {
+    return this.stopped;
+  }
+  overflow(): "supersede" | "spawn" {
+    return this.mode;
+  }
+  appClaimed(app: string): boolean {
+    return this.claimed.some((a) => a.toLowerCase() === app.toLowerCase());
+  }
+  spawn(parent: string, name: string, task: string): boolean {
+    this.spawned.push({ parent, name, task });
+    this.names.push(name);
+    return true;
+  }
+  byNameLive(name: string): { readonly id: string; readonly name: string } | undefined {
+    const n = this.names.find((x) => x.toLowerCase() === name.toLowerCase());
+    return n ? { id: `t_${n.toLowerCase()}`, name: n } : undefined;
+  }
+  statusLine(name?: string): string {
+    return name ? `${name} is working — 3 seconds in` : `Two threads: ${this.names.join(" working, ")} working`;
+  }
+  async followUp(id: string, request: string, o: { readonly items?: readonly unknown[] | undefined; readonly marks?: readonly unknown[] | undefined }): Promise<boolean> {
+    this.followUps.push({ id, request, items: o.items?.length ?? 0, marks: o.marks?.length ?? 0 });
+    return true;
+  }
+  async stopNamed(name: string): Promise<boolean> {
+    if (!this.byNameLive(name)) return false;
+    this.stopped.push(name);
+    this.names = this.names.filter((n) => n.toLowerCase() !== name.toLowerCase());
+    return true;
+  }
+  floorThread(): { readonly id: string; readonly name: string } | undefined {
+    return undefined;
+  }
+  async pauseNamed(name: string): Promise<boolean> {
+    this.paused.push(name);
+    return this.byNameLive(name) !== undefined;
+  }
+}
+
+/** A brain that holds every task until the abort signal (the running turn the verbs must not touch). */
+function holdingBrain(seen: BrainTask[]): Brain & { cancels: number } {
+  const b = {
+    kind: "fake",
+    cancels: 0,
+    start: async () => ({ ready: true, detail: "" }),
+    handle: (task: BrainTask) =>
+      new Promise<BrainResult>((resolve) => {
+        seen.push(task);
+        task.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+      }),
+    cancel: async () => {
+      b.cancels++;
+    },
+    stop: async () => undefined,
+  };
+  return b;
+}
+
+test("threads (b′): 'what is spotify doing' while a brain turn runs is an aside answered from the table — one spoken line, brain.handle not called again, the running slot untouched; 'stop the slack one' stops Slack only and never cancels the turn; 'pause spotify' pauses; a status question about a name that is not live goes to the brain as today", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const threads = new FakeThreads();
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, now: () => ++clock, commentaryCoalesceMs: 0 });
+  const spoken = (): string[] => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
+  transcript.push({ speaker: "kevin", delta: "tell ben on slack and play focus on spotify", startMs: 0, endMs: 1500 });
+  live.nowMs = 1500;
+  live.emit("delegation", "item_1", "client", 1500);
+  await tick();
+  assert.equal(seen.length, 1);
+  const running = d.active!.id;
+
+  transcript.push({ speaker: "kevin", delta: "what is spotify doing", startMs: 5000, endMs: 5900 });
+  live.nowMs = 5900;
+  live.emit("delegation", "item_2", "client", 5900);
+  await tick();
+  assert.equal(seen.length, 1, "no generation");
+  assert.equal(brain.cancels, 0, "the running turn was not superseded");
+  assert.equal(d.active?.id, running);
+  const aside = d.all().find((x) => x.liveId === "item_2")!;
+  assert.equal(aside.status, "done");
+  assert.equal(aside.summary, "Spotify is working — 3 seconds in");
+  assert.ok((aside.timings as DelegationTimingsExtra).reflex, "answered without a model: marked as a reflex");
+  assert.deepEqual(spoken(), ["Spotify is working — 3 seconds in"]);
+
+  transcript.push({ speaker: "kevin", delta: "stop the slack one", startMs: 8000, endMs: 8900 });
+  live.nowMs = 8900;
+  live.emit("delegation", "item_3", "client", 8900);
+  await tick();
+  assert.deepEqual(threads.stopped, ["Slack"]);
+  assert.equal(brain.cancels, 0);
+  assert.equal(d.active?.id, running);
+  assert.equal(d.all().find((x) => x.liveId === "item_3")!.status, "done");
+  assert.deepEqual(spoken(), ["Spotify is working — 3 seconds in"], "the scheduler speaks '<Name> stopped.' itself: nothing here");
+
+  transcript.push({ speaker: "kevin", delta: "jarhead pause spotify", startMs: 11000, endMs: 11900 });
+  live.nowMs = 11900;
+  live.emit("delegation", "item_4", "client", 11900);
+  await tick();
+  assert.deepEqual(threads.paused, ["Spotify"]);
+  assert.equal(spoken().at(-1), "Spotify paused.");
+  assert.equal(brain.cancels, 0);
+
+  // Not a live name: not a verb — the brain gets the words (and supersedes the running turn, as any request does).
+  transcript.push({ speaker: "kevin", delta: "what is mail doing", startMs: 14000, endMs: 14900 });
+  live.nowMs = 14900;
+  live.emit("delegation", "item_5", "client", 14900);
+  await tick();
+  assert.equal(seen.length, 2, "the brain took it");
+  assert.equal(brain.cancels, 1);
+  assert.equal(seen[1]!.request, "what is mail doing");
+  d.dispose();
+});
+
+test("threads (b″): 'spotify, skip this song' is a follow-up on Spotify's brain with Kevin's words and his circled marks — the main turn is not superseded; 'tell slack to send it' too; a request that merely mentions an app ('open slack', 'slack me later') is the brain's", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const threads = new FakeThreads();
+  let clock = 100_000;
+  const marks = { pending: () => [{ id: "m1", rect: { x: 1, y: 2, w: 3, h: 4 }, at: 99_000, consumed: false, screenshotPath: "shots/m1.png" }], consume: () => undefined, release: () => undefined, stateDir: "/tmp" };
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, marks, now: () => ++clock, commentaryCoalesceMs: 0 });
+  transcript.push({ speaker: "kevin", delta: "tell ben on slack and play focus on spotify", startMs: 0, endMs: 1500 });
+  live.nowMs = 1500;
+  live.emit("delegation", "item_1", "client", 1500);
+  await tick();
+  assert.equal(seen.length, 1);
+
+  transcript.push({ speaker: "kevin", delta: "spotify, skip this song", startMs: 5000, endMs: 5900 });
+  live.nowMs = 5900;
+  live.emit("delegation", "item_2", "client", 5900);
+  await tick();
+  assert.deepEqual(threads.followUps, [{ id: "t_spotify", request: "skip this song", items: 1, marks: 1 }]);
+  assert.equal(brain.cancels, 0);
+  assert.equal(seen.length, 1);
+  assert.equal(d.all().find((x) => x.liveId === "item_2")!.summary, "passed to Spotify");
+
+  transcript.push({ speaker: "kevin", delta: "tell slack to send it now", startMs: 8000, endMs: 8900 });
+  live.nowMs = 8900;
+  live.emit("delegation", "item_3", "client", 8900);
+  await tick();
+  assert.equal(threads.followUps.length, 2);
+  assert.equal(threads.followUps[1]!.id, "t_slack");
+  assert.equal(threads.followUps[1]!.request, "send it");
+  assert.equal(brain.cancels, 0);
+
+  // Mentions, not addresses: the brain's, as before (a supersede).
+  for (const [i, words] of ["open slack", "slack me later"].entries()) {
+    transcript.push({ speaker: "kevin", delta: words, startMs: 11000 + i * 3000, endMs: 11900 + i * 3000 });
+    live.nowMs = 11900 + i * 3000;
+    live.emit("delegation", `item_m${i}`, "client", live.nowMs);
+    await tick();
+  }
+  assert.equal(threads.followUps.length, 2, "no follow-up for a mention");
+  assert.equal(seen.length, 3, "the brain took both");
+  d.dispose();
+});
+
+test("threads: a stop word with ≥ 2 threads live gates the speech at once and cuts the work only after STOP_NAME_WAIT_MS unless a name follows — 'stop … the slack one' stops Slack alone and cancels no turn; with one thread the cut is on the fragment, as before", async () => {
+  assert.equal(STOP_NAME_WAIT_MS, 350);
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const threads = new FakeThreads();
+  let clock = 100_000;
+  const stops: string[] = [];
+  let gates = 0;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, now: () => ++clock, commentaryCoalesceMs: 0, onStop: (r) => void stops.push(r), onGateSpeech: () => void gates++, stopNameWaitMs: 60 });
+  transcript.push({ speaker: "kevin", delta: "tell ben on slack and play focus on spotify", startMs: 0, endMs: 1500 });
+  live.nowMs = 1500;
+  live.emit("delegation", "item_1", "client", 1500);
+  await tick();
+  assert.equal(seen.length, 1);
+
+  // Two threads live: the fragment "stop" gates the speech, cuts nothing; "the slack one" names the thread.
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.equal(gates, 1, "speech gated on the stop word");
+  assert.deepEqual(stops, [], "the work waits for a name");
+  live.emit("inputTranscript", " the slack one");
+  await tick(0);
+  assert.deepEqual(threads.stopped, ["Slack"]);
+  await tick(100);
+  assert.deepEqual(stops, [], "the timer was cancelled by the name: nothing cut");
+  assert.equal(brain.cancels, 0);
+  assert.equal(d.active?.liveId, "item_1");
+
+  // One thread live now: a bare stop is today's cut, on the fragment.
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.deepEqual(stops, ["Kevin said stop"]);
+  assert.equal(gates, 1, "no separate gate: the engine's interrupt gates and cuts at once");
+
+  // Two again, no name: the cut lands when the window closes.
+  threads.names = ["Spotify", "Mail"];
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.equal(gates, 2);
+  assert.equal(stops.length, 1);
+  await tick(90);
+  assert.equal(stops.length, 2, "cut after the window");
+  d.dispose();
+});
+
+test("threads: a cut while the name window is open ends the window — cancel() (a pressed Stop, the ear's own cut, a pause) clears the timer and onStop is not fired a second time when it would have run out", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const threads = new FakeThreads();
+  let clock = 100_000;
+  const stops: string[] = [];
+  let gates = 0;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, now: () => ++clock, commentaryCoalesceMs: 0, onStop: (r) => void stops.push(r), onGateSpeech: () => void gates++, stopNameWaitMs: 60 });
+  transcript.push({ speaker: "kevin", delta: "tell ben on slack and play focus on spotify", startMs: 0, endMs: 1500 });
+  live.nowMs = 1500;
+  live.emit("delegation", "item_1", "client", 1500);
+  await tick();
+  // The stop word with two threads live: the window opens.
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.equal(gates, 1);
+  assert.deepEqual(stops, []);
+  // A cut lands first (the engine's cutEverything reaches cancel(); the ear's timer or Kevin's Stop button asked for it).
+  await d.cancel("Kevin pressed stop", { quiet: true });
+  assert.equal(d.active?.id, undefined);
+  assert.equal(d.all().find((x) => x.liveId === "item_1")!.status, "cancelled");
+  await tick(120);
+  assert.deepEqual(stops, [], "the window's timer was cleared by the cut: no second cut, no second stop row");
+  // Kevin's next words are a new request, untouched by any late timer.
+  transcript.push({ speaker: "kevin", delta: "open mail", startMs: 5000, endMs: 5900 });
+  live.nowMs = 5900;
+  live.emit("delegation", "item_2", "client", 5900);
+  await tick();
+  assert.equal(seen.length, 2);
+  await tick(120);
+  assert.equal(d.active?.liveId, "item_2", "still running: nothing cut it");
+  assert.deepEqual(stops, []);
+  d.dispose();
+});
+
+test("threads: Live's fragments echoing the ear's named stop cut nothing — a stop word within NAMED_STOP_FRAGMENT_ECHO_MS of the ear's 'stop the slack one' (noteNamedStop via ear) opens the name window with one thread live, 'the slack one' parses through the recent names, and an empty window closes quiet; the fragment path's own named stop is no echo, and after the window a bare stop is a stop again", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const threads = new FakeThreads();
+  let clock = 100_000;
+  const stops: string[] = [];
+  let gates = 0;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, now: () => clock, commentaryCoalesceMs: 0, onStop: (r) => void stops.push(r), onGateSpeech: () => void gates++, stopNameWaitMs: 60 });
+  transcript.push({ speaker: "kevin", delta: "tell ben on slack and play focus on spotify", startMs: 0, endMs: 1500 });
+  live.nowMs = 1500;
+  live.emit("delegation", "item_1", "client", 1500);
+  await tick();
+  assert.equal(seen.length, 1);
+
+  // The ear stopped Slack on its partial (the engine's stopNamed tells the delegator); one thread is live now.
+  threads.names = ["Spotify"];
+  threads.stopped = ["Slack"];
+  d.noteNamedStop("Slack", "ear");
+  assert.equal(d.namedStopEcho("ear"), true);
+  clock += 300;
+  // Live's transcription of the same words arrives as fragments: " stop" — with one thread live, the OLD rule would cut everything.
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.equal(gates, 1, "the speech is gated (Kevin did say stop)");
+  assert.equal(stops.length, 0, "the work is not cut: the name window opened on the echo");
+  clock += 100;
+  live.emit("inputTranscript", " the slack one");
+  await tick(0);
+  assert.deepEqual(threads.stopped, ["Slack"], "Slack was already stopped: the scheduler answers false, nothing else is stopped");
+  await tick(100);
+  assert.equal(stops.length, 0, "the name closed the window; no late cut");
+  assert.equal(brain.cancels, 0);
+  assert.equal(d.active?.liveId, "item_1", "the main turn carries on");
+
+  // The echo again, this time with NO name following: the window runs out quiet.
+  clock += 200;
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.equal(gates, 2);
+  await tick(100);
+  assert.equal(stops.length, 0, "an empty window after the ear's named stop is Live's echo: nothing cut");
+  assert.equal(d.active?.liveId, "item_1");
+
+  // Past the echo window, a bare stop with one thread live is today's cut, on the fragment.
+  clock += NAMED_STOP_FRAGMENT_ECHO_MS;
+  assert.equal(d.namedStopEcho("ear"), false);
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.deepEqual(stops, ["Kevin said stop"]);
+
+  // The fragment path's OWN named stop is never an echo: a bare stop after it cuts at once.
+  const d2 = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: Object.assign(new FakeThreads(), { names: ["Spotify", "Slack"] }), now: () => clock, commentaryCoalesceMs: 0, onStop: (r) => void stops.push(r), onGateSpeech: () => void gates++, stopNameWaitMs: 60 });
+  d.dispose();
+  transcript.push({ speaker: "kevin", delta: "and check my mail", startMs: 9000, endMs: 9900 });
+  live.nowMs = 9900;
+  live.emit("delegation", "item_2", "client", 9900);
+  await tick();
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  live.emit("inputTranscript", " the slack one");
+  await tick(0);
+  assert.equal(d2.namedStopEcho("live"), true);
+  assert.equal(d2.namedStopEcho("ear"), false, "its own word is not the ear's echo");
+  clock += 100;
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.deepEqual(stops, ["Kevin said stop", "Kevin said stop"], "one thread live, no echo: cut on the fragment");
+  d2.dispose();
+});
+
+/** A brain that holds every task and hands its sink out, so the test can land steps (an acting one stamps firstActionAt). */
+function steppingBrain(seen: BrainTask[], sinks: BrainSink[]): Brain & { cancels: number } {
+  const b = {
+    kind: "fake",
+    cancels: 0,
+    start: async () => ({ ready: true, detail: "" }),
+    handle: (task: BrainTask, sink: BrainSink) =>
+      new Promise<BrainResult>((resolve) => {
+        seen.push(task);
+        sinks.push(sink);
+        task.signal.addEventListener("abort", () => resolve({ status: "cancelled" }), { once: true });
+      }),
+    cancel: async () => {
+      b.cancels++;
+    },
+    stop: async () => undefined,
+  };
+  return b;
+}
+
+test("threads (overflow, Settings.threadOverflow = 'spawn'): a request naming an app the running turn has not touched becomes a thread of its own ONLY once that turn has acted (firstActionAt), never on a correction ('no, in chrome'), never for an app a live thread claims or a live thread's own name, and the running turn is never superseded by a spawn; the default 'supersede' is today's path", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const sinks: BrainSink[] = [];
+  const brain = steppingBrain(seen, sinks);
+  const threads = new FakeThreads();
+  threads.names = [];
+  threads.mode = "spawn";
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads, now: () => ++clock, commentaryCoalesceMs: 0 });
+  const say = (text: string, startMs: number, id: string): void => {
+    transcript.push({ speaker: "kevin", delta: text, startMs, endMs: startMs + 900 });
+    live.nowMs = startMs + 900;
+    live.emit("delegation", id, "client", live.nowMs);
+  };
+  say("tell ben on slack that i'm late", 0, "item_1");
+  await tick();
+  assert.equal(seen.length, 1);
+  // Nothing acted yet: a request for another app supersedes, as today (a correction of the request is likelier than a split).
+  say("play focus on spotify", 3000, "item_2");
+  await tick();
+  assert.equal(brain.cancels, 1, "superseded: the turn had not acted");
+  assert.equal(seen.length, 2);
+  assert.equal(threads.spawned.length, 0);
+  const running = d.active!;
+  assert.equal(running.liveId, "item_2");
+  // The running turn acts (an acting tool, ok): firstActionAt is stamped on it.
+  sinks[1]!.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [3, 4] }, ok: true, ms: 7 } });
+  assert.ok((d.active!.timings as DelegationTimingsExtra).firstActionAt !== undefined);
+  // Now a request naming an untouched app is a thread of its own: the running turn goes on.
+  say("open mail and check the inbox", 6000, "item_3");
+  await tick();
+  assert.deepEqual(threads.spawned, [{ parent: running.id, name: "Mail", task: "open mail and check the inbox" }]);
+  assert.equal(brain.cancels, 1, "not superseded");
+  assert.equal(seen.length, 2, "no generation on the main brain");
+  assert.equal(d.active?.id, running.id);
+  const aside = d.all().find((x) => x.liveId === "item_3")!;
+  assert.equal(aside.status, "done");
+  assert.equal(aside.summary, "Mail alongside");
+  assert.ok(aside.steps.some((s) => s.kind === "note" && /overflow: the request names Mail/.test(s.text ?? "")));
+  // A correction that names another app is the running task's, not a thread: it supersedes as any request does.
+  say("no, in chrome", 9000, "item_4");
+  await tick();
+  assert.equal(threads.spawned.length, 1, "a correction never spawns");
+  assert.equal(brain.cancels, 2);
+  assert.equal(seen.length, 3);
+  sinks[2]!.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [3, 4] }, ok: true, ms: 7 } });
+  // An app a live thread already claims, or a live thread's own name, is that thread's business: no second thread for it.
+  threads.claimed = ["Discord"];
+  say("check discord for me", 12000, "item_5");
+  await tick();
+  assert.equal(threads.spawned.length, 1, "claimed app: no spawn");
+  assert.equal(brain.cancels, 3, "superseded as today");
+  sinks[3]!.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [3, 4] }, ok: true, ms: 7 } });
+  say("open mail again", 15000, "item_6");
+  await tick();
+  assert.equal(threads.spawned.length, 1, "Mail is a live thread's name: no second Mail");
+  assert.equal(brain.cancels, 4);
+  // The default: supersede, whatever the request names.
+  threads.mode = "supersede";
+  sinks[4]!.step({ kind: "tool", tool: { name: "left_click", input: { coordinate: [3, 4] }, ok: true, ms: 7 } });
+  say("open notes", 18000, "item_7");
+  await tick();
+  assert.equal(threads.spawned.length, 1, "supersede: today's path");
+  assert.equal(brain.cancels, 5);
+  d.dispose();
+});
+
+test("threads: the records are indexed — 300 delegations keep the last 200, and a step on the newest still lands on it in O(1); `settled` fires once per record with its status", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  let sinkRef: BrainSink | undefined;
+  let hold: ((r: BrainResult) => void) | undefined;
+  const brain: Brain = {
+    kind: "fake",
+    start: async () => ({ ready: true, detail: "" }),
+    handle: (_task, sink) =>
+      new Promise<BrainResult>((resolve) => {
+        sinkRef = sink;
+        hold = resolve;
+      }),
+    cancel: async () => undefined,
+    stop: async () => undefined,
+  };
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), now: () => ++clock, commentaryCoalesceMs: 0 });
+  const settled: string[] = [];
+  const steps: string[] = [];
+  d.on("settled", (id, status) => settled.push(`${id}:${status}`));
+  d.on("step", (id, step) => steps.push(`${id}:${step.kind}`));
+  for (let i = 0; i < 300; i++) {
+    transcript.push({ speaker: "kevin", delta: `request ${i}`, startMs: i * 3000, endMs: i * 3000 + 900 });
+    live.nowMs = i * 3000 + 900;
+    live.emit("delegation", `item_${i}`, "client", live.nowMs);
+    await tick(0);
+    hold!({ status: "done", summary: `done ${i}` });
+    await tick(0);
+  }
+  assert.equal(d.all().length, 200, "capped at 200");
+  assert.equal(d.all()[0]!.request, "request 100");
+  assert.equal(d.all()[199]!.request, "request 299");
+  assert.equal(settled.length, 300, "one settled per record");
+  assert.ok(settled.every((s) => s.endsWith(":done")));
+  // A step on the newest lands on it (the index, not a walk).
+  transcript.push({ speaker: "kevin", delta: "request 300", startMs: 900_000, endMs: 900_900 });
+  live.nowMs = 900_900;
+  live.emit("delegation", "item_300", "client", live.nowMs);
+  await tick(0);
+  const id = d.all().at(-1)!.id;
+  sinkRef!.step({ kind: "tool", tool: { name: "frontmost_app", input: {}, ok: true, ms: 3 } });
+  assert.equal(d.all().at(-1)!.steps.length, 1);
+  assert.equal(d.all().at(-1)!.id, id);
+  assert.equal(steps.at(-1), `${id}:tool`);
+  hold!({ status: "done", summary: "done." });
+  await tick(0);
+  assert.equal(settled.at(-1), `${id}:done`);
+  d.dispose();
+});

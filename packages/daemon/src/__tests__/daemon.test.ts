@@ -98,6 +98,11 @@ class FakeEngine extends EventEmitter implements EngineLike {
   }
   ear(): void {}
   problem(): void {}
+  /** Client ids whose sockets closed, as the engine hears them (`dropViewers`). */
+  dropped: string[] = [];
+  dropViewers(clientId: string): void {
+    this.dropped.push(clientId);
+  }
 }
 
 test("server and client round-trip control, audio, and ledger over a unix socket", async () => {
@@ -486,6 +491,252 @@ test("commands on the wire: worker.stop and sleep with a cause pass isEngineComm
   assert.deepEqual(engine.commands, sent, "each command arrives intact, cause and phrase included");
   assert.deepEqual(got.filter((m) => m.type === "error"), [{ type: "error", message: "malformed command" }]);
   app.close();
+  await server.close();
+});
+
+// ----------------------------------------------------------------- conversations: viewers, not broadcast
+
+/** A connected client with every frame it receives, by type. */
+async function viewer(path: string, pid: number): Promise<{ client: DaemonClient; got: DaemonMessage[]; of: (type: string) => DaemonMessage[] }> {
+  const client = new DaemonClient(path);
+  const got: DaemonMessage[] = [];
+  client.on("message", (m) => got.push(m));
+  await client.connect({ pid });
+  return { client, got, of: (type) => got.filter((m) => m.type === type) };
+}
+
+const threadPage = (threadId: string, seq: number) => ({ threadId, entries: [{ kind: "system", seq, at: 1, symbol: "circle", text: "started" }], total: seq, complete: false, live: true, cursor: { startSeq: seq, endSeq: seq } });
+
+test("thread.transcript reaches only the viewers of that thread; a second client's thread gets only its own; thread.event, snapshot and toast still reach everyone", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const a = await viewer(path, 1); // the Console: Slack's pane
+  const b = await viewer(path, 2); // a second Console window on Slack
+  const c = await viewer(path, 3); // a pane on Spotify
+  const cli = await viewer(path, 4); // `pnpm jarhead status`: joins, never opens anything
+  a.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  b.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p2" } });
+  c.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_spotify", viewer: "p3" } });
+  await until(() => engine.commands.length === 3, "three opens at the engine");
+
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 1), mode: "replace" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_spotify", 1), mode: "replace" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 2), mode: "append" });
+  engine.emit("event", { type: "thread.event", event: { seq: 7, at: 1, threadId: "t_slack", kind: "step", steps: 3, tool: "click_element", ok: true } });
+  engine.emit("event", { type: "snapshot", snapshot: { phase: "acting" } });
+  engine.emit("event", { type: "toast", text: "Slack asks: send it to Ben?", tone: "info" });
+  // Four sockets are four read queues: a toast seen at one says nothing about another's pages yet.
+  for (const v of [a, b, c, cli]) await until(() => v.of("toast").length === 1, "the toast at every client");
+
+  const pages = (v: { of: (t: string) => DaemonMessage[] }) => v.of("thread.transcript").map((m) => { const t = m as Extract<DaemonMessage, { type: "thread.transcript" }>; return `${(t.transcript as { threadId: string }).threadId}/${t.mode}`; });
+  assert.deepEqual(pages(a), ["t_slack/replace", "t_slack/append"], "Slack's pages, in order, to the first viewer");
+  assert.deepEqual(pages(b), ["t_slack/replace", "t_slack/append"], "and to the second viewer of the same thread");
+  assert.deepEqual(pages(c), ["t_spotify/replace"], "Spotify's viewer sees Spotify only");
+  assert.deepEqual(pages(cli), [], "a client that opened nothing receives no conversation page");
+  for (const v of [a, b, c, cli]) {
+    assert.equal(v.of("thread.event").length, 1, "thread.event is broadcast: Spotify's viewer and the CLI hear Slack's step too");
+    assert.equal(v.of("snapshot").length, 2, "the hello snapshot and the emitted one");
+    assert.equal(v.of("toast").length, 1);
+  }
+  const ev = a.of("thread.event")[0] as Extract<DaemonMessage, { type: "thread.event" }>;
+  assert.deepEqual(ev.event, { seq: 7, at: 1, threadId: "t_slack", kind: "step", steps: 3, tool: "click_element", ok: true }, "the event rides the wire unchanged");
+  assert.ok(encodeJson({ type: "thread.event", event: ev.event }).length <= 200, "a step event frame fits the 200 B budget");
+
+  for (const v of [a, b, c, cli]) v.client.close();
+  await server.close();
+});
+
+test("agent.transcript goes to that agent's viewers only — the CLI's join/leave clients receive none — and the same client may view an agent and a thread at once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const console_ = await viewer(path, 1);
+  const cli = await viewer(path, 2);
+  console_.client.sendJson({ type: "command", command: { type: "agent.open", agentId: "sessions:codex:abc", viewer: "pane-1" } });
+  console_.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "main" } });
+  await until(() => engine.commands.length === 2, "the two opens");
+  engine.emit("event", { type: "agent.transcript", transcript: { agentId: "sessions:codex:abc", messages: [], total: 0, complete: true, live: true }, mode: "replace" });
+  engine.emit("event", { type: "agent.transcript", transcript: { agentId: "sessions:codex:other", messages: [], total: 0, complete: true, live: true }, mode: "replace" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("main", 1), mode: "replace" });
+  engine.emit("event", { type: "toast", text: "done", tone: "info" });
+  for (const v of [console_, cli]) await until(() => v.of("toast").length === 1, "the toast at both clients");
+  assert.deepEqual(console_.of("agent.transcript").map((m) => ((m as Extract<DaemonMessage, { type: "agent.transcript" }>).transcript as { agentId: string }).agentId), ["sessions:codex:abc"], "only the opened agent's page");
+  assert.equal(console_.of("thread.transcript").length, 1, "and main's page — one client, two conversations");
+  assert.equal(cli.of("agent.transcript").length, 0, "no agent page at the CLI");
+  assert.equal(cli.of("thread.transcript").length, 0, "no thread page at the CLI");
+  console_.client.close();
+  cli.client.close();
+  await server.close();
+});
+
+test("thread.open/close viewers are rewritten to <clientId>/<pane> (or /pane when the surface sent none) exactly as agent.open/close; a close ends the routing; a second pane on the same thread keeps it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p2" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_spotify" } });
+  app.client.sendJson({ type: "command", command: { type: "agent.open", agentId: "sessions:codex:abc" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.close", threadId: "t_slack", viewer: "p1" } });
+  await until(() => engine.commands.length === 5, "five commands");
+  assert.deepEqual(engine.commands, [
+    { type: "thread.open", threadId: "t_slack", viewer: "c1/p1" },
+    { type: "thread.open", threadId: "t_slack", viewer: "c1/p2" },
+    { type: "thread.open", threadId: "t_spotify", viewer: "c1/pane" },
+    { type: "agent.open", agentId: "sessions:codex:abc", viewer: "c1/pane" },
+    { type: "thread.close", threadId: "t_slack", viewer: "c1/p1" },
+  ], "the engine sees the viewer under this client's id, thread and agent alike");
+
+  // p2 still shows Slack: its pages keep coming after p1 closed.
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 3), mode: "append" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_spotify", 3), mode: "append" });
+  await until(() => app.of("thread.transcript").length === 2, "both pages (one pane each still open)");
+  app.client.sendJson({ type: "command", command: { type: "thread.close", threadId: "t_slack", viewer: "p2" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.close", threadId: "t_spotify" } });
+  await until(() => engine.commands.length === 7, "the last two closes");
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 4), mode: "append" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_spotify", 4), mode: "append" });
+  engine.emit("event", { type: "agent.transcript", transcript: { agentId: "sessions:codex:abc", messages: [], total: 1, complete: false, live: true }, mode: "append" });
+  await until(() => app.of("agent.transcript").length === 1, "the agent page still arrives (its pane is open)");
+  assert.equal(app.of("thread.transcript").length, 2, "no thread page after the last pane closed");
+  // A close for a pane that never opened is harmless (the engine refuses it in its own way).
+  app.client.sendJson({ type: "command", command: { type: "thread.close", threadId: "t_never", viewer: "zz" } });
+  await until(() => engine.commands.length === 8, "the stray close");
+  assert.equal(server.clientCount, 1);
+  app.client.close();
+  await server.close();
+});
+
+test("a client that closed its socket is dropped: engine.dropViewers(clientId) is called once and no page is routed its way; the other viewer keeps receiving", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const a = await viewer(path, 1);
+  const b = await viewer(path, 2);
+  a.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  b.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  await until(() => engine.commands.length === 2, "two opens");
+  b.client.close();
+  await until(() => server.clientCount === 1, "the second client gone");
+  assert.deepEqual(engine.dropped, ["c2"], "the engine is told whose viewers left, once");
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 2), mode: "append" });
+  await until(() => a.of("thread.transcript").length === 1, "the page at the surviving viewer");
+  assert.equal(b.of("thread.transcript").length, 0, "nothing reached the closed client");
+  a.client.close();
+  await until(() => server.clientCount === 0, "everyone gone");
+  assert.deepEqual(engine.dropped, ["c2", "c1"]);
+  await server.close();
+});
+
+test("a re-open from the same pane never double-counts: opened twice, closed once, the thread's pages stop (the panes are a Set, as the engine's per-viewer set is)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  // The Console re-sends thread.open for the same pane on a reconnect and when its window comes back (ConversationPane's idiom).
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p1" } });
+  await until(() => engine.commands.length === 2, "both opens forwarded (the engine dedupes its own set)");
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 1), mode: "replace" });
+  await until(() => app.of("thread.transcript").length === 1, "one page for two opens of one pane");
+  app.client.sendJson({ type: "command", command: { type: "thread.close", threadId: "t_slack", viewer: "p1" } });
+  await until(() => engine.commands.length === 3, "the one close");
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 2), mode: "append" });
+  engine.emit("event", { type: "toast", text: "after the close", tone: "info" });
+  await until(() => app.of("toast").length === 1, "the toast after the close");
+  assert.equal(app.of("thread.transcript").length, 1, "one close ended the routing: the second open was the same pane, not a second viewer");
+  app.client.close();
+  await server.close();
+});
+
+test("tool.run with a thread id (t_…) goes to engine.runnerFor exactly as a worker id does: the wire field keeps its name, the value is the thread; an unknown thread id is refused the same way", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const slack = "t_mp0z3k9pk3q9zx"; // newId("t"): a base36 time and six random chars
+  engine.addWorker(slack);
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const bridge = await viewer(path, 1);
+  const results = () => bridge.of("tool.result") as Extract<DaemonMessage, { type: "tool.result" }>[];
+  bridge.client.sendJson({ type: "tool.run", id: "t1", name: "click_element", input: { label: "Send" }, worker: slack });
+  bridge.client.sendJson({ type: "tool.run", id: "t2", name: "frontmost_app", input: {}, worker: "t_mp0z3k9pgone00" });
+  bridge.client.sendJson({ type: "tool.run", id: "t3", name: "frontmost_app", input: {} });
+  await until(() => results().length === 3, "three tool results");
+  const byId = new Map(results().map((r) => [r.id, r.result]));
+  assert.deepEqual(byId.get("t1"), { kind: "text", text: `${slack} ran click_element` }, "the thread's own lane ran it");
+  assert.match((byId.get("t2") as { message: string }).message, /^refused: no worker t_mp0z3k9pgone00 is running in Jarhead; frontmost_app was not run/);
+  assert.equal(byId.get("t3")?.kind, "text");
+  assert.deepEqual(engine.workerCalls, [{ worker: slack, name: "click_element", input: { label: "Send" } }]);
+  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app"], "the main runner saw only the main brain's call");
+  bridge.client.close();
+  await server.close();
+});
+
+test("a conversation page that names no thread or agent is routed nowhere and does not throw; a client that opened a thread literally named \"undefined\" does not receive it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "undefined", viewer: "p1" } });
+  app.client.sendJson({ type: "command", command: { type: "thread.open", threadId: "t_slack", viewer: "p2" } });
+  app.client.sendJson({ type: "command", command: { type: "agent.open", agentId: "undefined", viewer: "p3" } });
+  await until(() => engine.commands.length === 3, "three opens");
+  // An engine (or a fake) emitting a page without its id: `thread:${undefined}` must not spell a key.
+  engine.emit("event", { type: "thread.transcript", transcript: { entries: [], total: 0, complete: true, live: true }, mode: "append" } as never);
+  engine.emit("event", { type: "agent.transcript", transcript: { messages: [], total: 0, complete: true, live: true }, mode: "append" } as never);
+  engine.emit("event", { type: "thread.transcript", transcript: { ...threadPage("t_slack", 1), threadId: "" }, mode: "append" });
+  engine.emit("event", { type: "thread.transcript", transcript: threadPage("t_slack", 1), mode: "replace" });
+  engine.emit("event", { type: "toast", text: "still serving", tone: "info" });
+  await until(() => app.of("toast").length === 1, "the toast after the id-less pages");
+  const pages = app.of("thread.transcript").map((m) => ((m as Extract<DaemonMessage, { type: "thread.transcript" }>).transcript as { threadId: string }).threadId);
+  assert.deepEqual(pages, ["t_slack"], "only the page that names an opened thread arrived");
+  assert.equal(app.of("agent.transcript").length, 0, "no agent page without an agent id");
+  assert.equal(server.clientCount, 1, "the server kept serving");
+  app.client.close();
+  await server.close();
+});
+
+test("commands on the wire: all eight thread.* commands pass isEngineCommand and reach the engine as sent (viewer rewritten on open/close); worker.stop stays; a thread tool name or an unknown thread.* verb is malformed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  const sent = [
+    { type: "thread.open", threadId: "t_slack", viewer: "p1" },
+    { type: "thread.close", threadId: "t_slack", viewer: "p1" },
+    { type: "thread.history", threadId: "t_slack", before: 120 },
+    { type: "thread.stop", threadId: "t_slack" },
+    { type: "thread.pause", threadId: "t_spotify" },
+    { type: "thread.resume", threadId: "t_spotify" },
+    { type: "thread.answer", threadId: "t_slack", yes: true },
+    { type: "thread.say", threadId: "t_spotify", text: "skip this song" },
+    { type: "worker.stop", workerId: "w_7f3a" },
+  ];
+  for (const command of sent) app.client.sendJson({ type: "command", command });
+  // thread_start is a brain tool; thread.nonsense is nobody's verb: neither is dispatched.
+  app.client.sendJson({ type: "command", command: { type: "thread_start", name: "Slack" } as never });
+  app.client.sendJson({ type: "command", command: { type: "thread.nonsense", threadId: "t_slack" } as never });
+  await until(() => app.of("error").length === 2, "two malformed-command errors");
+  assert.deepEqual(engine.commands, sent.map((c) => (c.type === "thread.open" || c.type === "thread.close" ? { ...c, viewer: "c1/p1" } : c)), "each of the eight arrives intact; open/close carry this client's viewer");
+  assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }, { type: "error", message: "malformed command" }]);
+  app.client.close();
   await server.close();
 });
 
