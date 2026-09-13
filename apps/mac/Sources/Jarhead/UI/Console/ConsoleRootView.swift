@@ -132,7 +132,13 @@ struct ConsoleRootView: View {
         // Which pane holds the centre; a change happens behind the curtain (Motion.curtain): the
         // arriving pane renders plainly and a sheet of ground-coloured Bayer cells over it goes rank
         // by rank, so stepping into a conversation or back to Now never cuts and never masks.
-        let paneKey = openAgent.map { "agent:\($0.id)" } ?? openChain.map { "jarhead:\($0.id)" } ?? openThread.map { "thread:\($0.id)" } ?? "now"
+        // Spelled out, not a `??` chain of interpolating closures: three of those in one
+        // expression is what CI's Swift could not type-check in reasonable time.
+        let paneKey: String
+        if let agent = openAgent { paneKey = "agent:\(agent.id)" }
+        else if let chain = openChain { paneKey = "jarhead:\(chain.id)" }
+        else if let thread = openThread { paneKey = "thread:\(thread.id)" }
+        else { paneKey = "now" }
         return Derived(snap: snap, openAgent: openAgent, orphaned: orphaned, liveId: liveId, past: past, openChain: openChain, chainGone: chainGone,
                        threads: threads, railThreads: railThreads, openThread: openThread, threadGone: threadGone, paneKey: paneKey)
     }
