@@ -87,7 +87,26 @@ struct ConsoleRootView: View {
         })
     }
 
-    var body: some View {
+    /// Everything `body` derives from the state before it lays out — computed once per body,
+    /// in one place, so the layout below is plain lookups. Kept out of the view expression on
+    /// purpose: CI's Swift gave up type-checking a body that carried these lets, five panes and
+    /// twenty modifiers as one expression ("unable to type-check … in reasonable time").
+    private struct Derived {
+        let snap: Snapshot
+        let openAgent: AgentInfo?
+        let orphaned: Bool
+        let liveId: String?
+        let past: [JarheadChain]
+        let openChain: JarheadChain?
+        let chainGone: Bool
+        let threads: [WorkThread]
+        let railThreads: [WorkThread]
+        let openThread: WorkThread?
+        let threadGone: Bool
+        let paneKey: String
+    }
+
+    private var derived: Derived {
         let snap = state.snapshot
         // The session Kevin stepped into, while it is still on the rail.
         let openAgent = session.openAgentId.flatMap { id in snap.agents.first { $0.id == id } }
@@ -114,7 +133,21 @@ struct ConsoleRootView: View {
         // arriving pane renders plainly and a sheet of ground-coloured Bayer cells over it goes rank
         // by rank, so stepping into a conversation or back to Now never cuts and never masks.
         let paneKey = openAgent.map { "agent:\($0.id)" } ?? openChain.map { "jarhead:\($0.id)" } ?? openThread.map { "thread:\($0.id)" } ?? "now"
-        VStack(spacing: 0) {
+        return Derived(snap: snap, openAgent: openAgent, orphaned: orphaned, liveId: liveId, past: past, openChain: openChain, chainGone: chainGone,
+                       threads: threads, railThreads: railThreads, openThread: openThread, threadGone: threadGone, paneKey: paneKey)
+    }
+
+    var body: some View {
+        let d = derived
+        // Three type-erased layers (columns, then two chrome layers) keep each expression small for the compiler.
+        return chromeB(AnyView(chromeA(AnyView(columns(d)))), d)
+    }
+
+    /// The header and the three columns.
+    private func columns(_ d: Derived) -> some View {
+        let snap = d.snap, past = d.past, railThreads = d.railThreads, openAgent = d.openAgent, openChain = d.openChain
+        let openThread = d.openThread, threads = d.threads, paneKey = d.paneKey
+        return VStack(spacing: 0) {
             ConsoleHeader(phase: snap.phase, connected: state.connected, daemonDetail: state.daemonDetail)
                 .equatable()
             HStack(spacing: 0) {
@@ -151,6 +184,11 @@ struct ConsoleRootView: View {
                     .frame(width: ConsoleLayout.rightRailWidth)
             }
         }
+    }
+
+    /// Environment, ground, toasts, the ⌘F shortcut, the lightbox.
+    private func chromeA(_ content: AnyView) -> some View {
+        content
         // The Jarhead-section actions need AppState, which leaf views never see:
         // they are filled in here and handed down with the controller's others.
         .environment(\.consoleActions, jarheadActions)
@@ -183,6 +221,12 @@ struct ConsoleRootView: View {
             LightboxView(item: item) { session.lightbox = nil }
         }
         .ignoresSafeArea(.container, edges: .top)
+    }
+
+    /// The watchers: panes that lost their subject, LRU eviction, the Jarhead list, notifications.
+    private func chromeB(_ content: AnyView, _ d: Derived) -> some View {
+        let orphaned = d.orphaned, chainGone = d.chainGone, threadGone = d.threadGone, liveId = d.liveId, snap = d.snap
+        return content
         .onChange(of: orphaned) {
             if orphaned { session.openAgentId = nil }
         }
