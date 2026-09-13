@@ -32,8 +32,9 @@ struct ConsoleRootView: View {
         let past = chains.filter { chain in liveId.map { !chain.contains($0) } ?? true }
         let openChain = session.openJarheadSessionId.flatMap { id in chains.first { $0.id == id } }
         let chainGone = session.openJarheadSessionId != nil && openChain == nil && !state.jarheadSessions.isEmpty
-        // Which pane holds the centre; a change is a crossfade (Motion.swap) between the
-        // two, so stepping into a conversation or back to Now never cuts.
+        // Which pane holds the centre; a change happens behind the curtain (Motion.curtain): the
+        // arriving pane renders plainly and a sheet of ground-coloured Bayer cells over it goes rank
+        // by rank, so stepping into a conversation or back to Now never cuts and never masks.
         let paneKey = openAgent.map { "agent:\($0.id)" } ?? openChain.map { "jarhead:\($0.id)" } ?? "now"
         VStack(spacing: 0) {
             ConsoleHeader(phase: snap.phase, connected: state.connected, daemonDetail: state.daemonDetail)
@@ -44,8 +45,12 @@ struct ConsoleRootView: View {
                     .equatable()
                     .frame(width: ConsoleLayout.agentsRailWidth)
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
-                // A ZStack, so the pane leaving and the pane arriving overlap for the
-                // crossfade instead of standing side by side in the HStack.
+                // A ZStack: the pane and, over it, the curtain. The panes swap at once
+                // (`.identity`: the leaving one is gone the frame the arriving one lands, both
+                // under the curtain at progress 0), and the curtain — a clear placeholder keyed
+                // to the pane — is re-inserted by the key change, arriving as a full sheet of
+                // ground-coloured cells that goes rank by rank (Motion.curtain). Nothing is
+                // masked: a mask on a pane of text cost 0.3–0.5 s a frame (AGENTS.md).
                 ZStack {
                     if let agent = openAgent {
                         // Only that agent's transcript reaches the pane; its id is the pane's
@@ -53,7 +58,7 @@ struct ConsoleRootView: View {
                         ConversationPane(agent: agent, transcript: state.transcripts[agent.id])
                             .equatable()
                             .id(agent.id)
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     } else if let chain = openChain {
                         // A past Jarhead conversation, read-only, from the ledger.
                         JarheadConversationPane(chain: chain, entries: session.jarheadEntries, log: session.jarheadLog,
@@ -61,19 +66,25 @@ struct ConsoleRootView: View {
                                                 scrollTarget: session.jarheadScrollTarget)
                             .equatable()
                             .id(chain.id)
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     } else {
                         StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
                                    hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                                    ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
                                    clearedAt: state.nowClearedAt, workers: snap.allWorkers)
                             .equatable()
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     }
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .id(paneKey)
+                        .transition(Motion.curtain(ConsoleTheme.ground))
                 }
                 .frame(minWidth: ConsoleLayout.streamMinWidth, maxWidth: .infinity)
                 .clipped()
-                .animation(Motion.gentle, value: paneKey)
+                // The pane change's transaction is the wipe's own animation (Motion.wipeAnimation):
+                // the curtain's transition carries the same, so the two agree to the frame.
+                .animation(Motion.wipeAnimation, value: paneKey)
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
                 RightRail(snapshot: snap, ledgerDays: session.ledgerDays, ledgerDay: session.ledgerDay,
                           ledgerLoading: session.ledgerLoading, ledgerStats: session.ledgerStats, tab: session.tab,
@@ -85,7 +96,8 @@ struct ConsoleRootView: View {
         // The Jarhead-section actions need AppState, which leaf views never see:
         // they are filled in here and handed down with the controller's others.
         .environment(\.consoleActions, jarheadActions)
-        .background(ConsoleTheme.ground.ignoresSafeArea())
+        // The quiet dithered field (ConsoleGround): the regions draw no grounds of their own.
+        .background(ConsoleGround().ignoresSafeArea())
         .overlay(alignment: .top) {
             // Centred under the header rule, over the stream; never over a rail's controls.
             // The cleanup's toast ("Moved to Trash · Undo") sits under the engine's toasts.
@@ -217,6 +229,8 @@ struct ConsoleRootView: View {
         if let id = info["rename"] as? String { withAnimation(Motion.snappy) { session.renamingChainId = id } }
         if let id = info["trash"] as? String, let chain = chains.first(where: { $0.id == id }) { state.performCleanup(.trash([chain])) }
         if info["clearNow"] as? Bool == true { state.performCleanup(.clearNow(at: ConsoleFormat.nowMs)) }
+        // The `loading` scenario: every read left in flight, so the loading states are on screen.
+        if info["pinLoading"] as? Bool == true { session.pinLoadingForPreview() }
         // A search hit, the way SearchHitRow opens one: the first of the current hits, or one named outright.
         if info["hitFirst"] as? Bool == true {
             if let hit = session.searchHits?.first { jarheadActions.openJarheadHit(hit) } else { print("probe: hit-first → no hits yet") }
@@ -277,8 +291,8 @@ struct CleanupToastView: View {
     }
 }
 
-/// 44pt: the wordmark, a phase dot with one word, and the connection dot. The word and
-/// the dot crossfade as the phase turns.
+/// 44pt: the mark and the wordmark, a phase dot with one word, and the connection dot.
+/// The word and the dot crossfade as the phase turns.
 struct ConsoleHeader: View, Equatable {
     let phase: Phase
     let connected: Bool
@@ -292,7 +306,12 @@ struct ConsoleHeader: View, Equatable {
         let meta = ConsoleTheme.phase(phase)
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                Text("Jarhead").font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
+                HStack(spacing: 6) {
+                    // The dithered orb as the brand mark, beside the wordmark.
+                    JarheadMark(size: 14)
+                    Text("Jarhead").font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
+                }
+                .accessibilityElement(children: .combine)
                 HStack(spacing: 7) {
                     ConsoleDot(color: meta.color, live: ConsoleTheme.livePhases.contains(phase), size: 6)
                     Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)

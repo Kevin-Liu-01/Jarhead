@@ -1,9 +1,28 @@
 #!/usr/bin/env tsx
-import { deflateSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
+import {
+  ACCENT,
+  BAYER8,
+  INK,
+  LIFT,
+  LISTENING,
+  ORB,
+  PAPER,
+  Strip,
+  clamp01,
+  encodePng,
+  lerp3,
+  orbGeometry,
+  orbGlow,
+  orbInside,
+  rampAt,
+  smoothstep,
+  type RGB,
+  type Stops,
+} from "./dither.ts";
 
 /**
  * Generate the Dock icon: build/Jarhead.icns, build/icon.png (a 1024 preview),
@@ -13,7 +32,8 @@ import { REPO_ROOT } from "@jarhead/core";
  *
  * Written as raw pixels rather than shipping a binary asset: an .icns needs
  * seven sizes, and a hand-drawn one would either be a blurry upscale or a file
- * nobody can regenerate. Deterministic and editable — change `P` / `ORB` and re-run.
+ * nobody can regenerate. Deterministic and editable — change `P` / `ORB` (in
+ * scripts/dither.ts) and re-run.
  *
  * The mark: a deep ink Apple squircle holding the orb — Kevin's reference gradient,
  * pale cyan at the upper left through the listening cyan and the accent blues to a
@@ -25,19 +45,10 @@ import { REPO_ROOT } from "@jarhead/core";
  * 32 px Dock and menu renders carry the same grain as the big one rather than
  * collapsing into a smooth ramp (2026-09-11: "make the icon and any gradients or
  * designs be dithered"). The notch island's gradient (apps/mac/.../UI/Dither.swift)
- * shares the tile, the palette and the band count. A paper hairline at 0.16 alpha
- * sits just inside the edge (the line law, whispered; none at 16).
+ * and the README banner (scripts/make-banner.ts) share the tile, the palette and the
+ * band count through scripts/dither.ts. A paper hairline at 0.16 alpha sits just inside
+ * the edge (the line law, whispered; none at 16).
  */
-
-
-type RGB = readonly [number, number, number];
-
-// Prototemplate canon.
-const INK: RGB = [7, 7, 7]; // #070707
-const ACCENT: RGB = [47, 92, 224]; // #2f5ce0
-const LIFT: RGB = [91, 130, 255]; // #5b82ff
-const PAPER: RGB = [255, 255, 255]; // #ffffff
-const LISTENING: RGB = [90, 215, 255]; // #5ad7ff — the one allowed phase whisper
 
 /** Everything a maintainer would tune, in one place. Distances are in bodyR units. */
 const P = {
@@ -72,23 +83,10 @@ const P = {
   noise: { size: 64, sigma: 1.5, seed: 7, initialFill: 0.1 }, // void-and-cluster tile
 };
 
-function lerp3(a: RGB, b: RGB, t: number): RGB {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-}
-
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
-
-/** Smooth 0→1 across `edge`, so nothing in the icon has a hard aliased boundary. */
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = clamp01((x - edge0) / (edge1 - edge0));
-  return t * t * (3 - 2 * t);
-}
-
 const DEEP: RGB = lerp3(INK, ACCENT, P.deepMix);
 const LIFT_W: RGB = lerp3(LIFT, LISTENING, P.liftWhisper);
-const STOPS: ReadonlyArray<readonly [number, RGB]> = [
+/** The squircle field's tone ramp; at 4 levels it lands exactly on the five canon tones. */
+const STOPS: Stops = [
   [0, INK],
   [0.25, DEEP],
   [0.5, ACCENT],
@@ -96,20 +94,8 @@ const STOPS: ReadonlyArray<readonly [number, RGB]> = [
   [1, PAPER],
 ];
 
-/** Piecewise-linear tone ramp; at 4 levels it lands exactly on the five canon tones. */
 function ramp(u: number): RGB {
-  if (u <= 0) return INK;
-  for (let i = 1; i < STOPS.length; i++) {
-    const hi = STOPS[i];
-    const lo = STOPS[i - 1];
-    if (!hi || !lo) break;
-    const [u1, c1] = hi;
-    if (u <= u1) {
-      const [u0, c0] = lo;
-      return lerp3(c0, c1, (u - u0) / (u1 - u0));
-    }
-  }
-  return PAPER;
+  return rampAt(STOPS, u);
 }
 
 function mulberry32(seed: number): () => number {
@@ -126,7 +112,8 @@ function mulberry32(seed: number): () => number {
  * Ulichney's void-and-cluster: a tileable blue-noise threshold array in [0,1).
  * Deterministic (seeded), ~50ms for 64x64. Under a toroidal Gaussian the
  * "largest void" rule of phase 2 and the "tightest cluster of zeros" rule of
- * phase 3 pick the same pixel, so both phases share one loop.
+ * phase 3 pick the same pixel, so both phases share one loop. Kept for reference
+ * (`P.pattern = "blueNoise"`); the icon ships on the Bayer matrix.
  */
 function voidAndCluster(n: number, sigma: number, seed: number, fill: number): Float32Array {
   const N = n * n;
@@ -218,21 +205,6 @@ function getNoise(): Float32Array {
   return noiseTile;
 }
 
-/** The 8×8 Bayer matrix as thresholds in (0,1): (rank + 0.5) / 64, row-major — the same numbers as `Dither.bayer8`. */
-const BAYER8: Float32Array = Float32Array.from(
-  [
-    0, 32, 8, 40, 2, 34, 10, 42,
-    48, 16, 56, 24, 50, 18, 58, 26,
-    12, 44, 4, 36, 14, 46, 6, 38,
-    60, 28, 52, 20, 62, 30, 54, 22,
-    3, 35, 11, 43, 1, 33, 9, 41,
-    51, 19, 59, 27, 49, 17, 57, 25,
-    15, 47, 7, 39, 13, 45, 5, 37,
-    63, 31, 55, 23, 61, 29, 53, 21,
-  ],
-  (r) => (r + 0.5) / 64,
-);
-
 /** The active threshold tile and its side. */
 function getTile(): { tile: Float32Array; size: number } {
   return P.pattern === "bayer8" ? { tile: BAYER8, size: 8 } : { tile: getNoise(), size: P.noise.size };
@@ -269,58 +241,6 @@ function squircleInset(dx: number, dy: number, bodyR: number, n: number): number
   return rb - dist;
 }
 
-// The orb's own gradient, Kevin's reference: light cyan at the upper left through
-// the accent blues to a deep blue at the lower right (no violet — his call),
-// dithered into visible bands, with a glassy highlight.
-const ORB_STOPS: ReadonlyArray<readonly [number, RGB]> = [
-  [0, [160, 240, 255]],        // pale cyan (listening, lit)
-  [0.24, LISTENING],           // #5ad7ff
-  [0.5, LIFT],                 // #5b82ff
-  [0.74, ACCENT],              // #2f5ce0
-  [1, [24, 58, 168]],          // deep accent — blue all the way, no violet
-];
-
-function orbRamp(u: number): RGB {
-  if (u <= 0) return ORB_STOPS[0]?.[1] ?? INK;
-  for (let i = 1; i < ORB_STOPS.length; i++) {
-    const hi = ORB_STOPS[i];
-    const lo = ORB_STOPS[i - 1];
-    if (!hi || !lo) break;
-    if (u <= hi[0]) return lerp3(lo[1], hi[1], (u - lo[0]) / (hi[0] - lo[0]));
-  }
-  return ORB_STOPS[ORB_STOPS.length - 1]?.[1] ?? PAPER;
-}
-
-const ORB = {
-  r: 0.62,            // orb radius in bodyR units — fills most of the squircle, like the reference
-  x: 0.0,
-  y: 0.0,
-  // Kevin (2026-09-12): "make the logo more of a perfect circle" — no harmonics: the Dock orb is a true circle.
-  harmonics: [] as ReadonlyArray<readonly [number, number, number]>,
-  // Dither band count: five at every size — the same as UI/Dither.swift — so each band
-  // step is a wide zone the Bayer pattern has to carry (seven read as a plain ramp).
-  bands: (_size: number) => 5,
-  highlight: { x: -0.36, y: -0.4, sigma: 0.3, amp: 0.9 }, // glassy top-left spot (orb units)
-  rimDarken: 0.42,    // sphere shading toward the lower-right edge
-  glowAmp: 0.5, glowLen: 0.28, glowPow: 1.3, // dithered glow spilling onto the ink
-  glowLevels: 3,      // the glow's steps, every size (16 below 128 px used to read smooth)
-};
-
-/** Signed distance to the orb boundary (+ outside), and the diagonal gradient parameter. */
-function orbGeometry(u: number, v: number): { sd: number; diag: number; d: number; R: number; nx: number; ny: number } {
-  const bx = u - ORB.x;
-  const by = v - ORB.y;
-  const d = Math.hypot(bx, by);
-  const th = Math.atan2(by, bx);
-  let R = 1;
-  for (const [f, a, ph] of ORB.harmonics) R += a * Math.sin(f * th + ph);
-  R *= ORB.r;
-  const nx = bx / ORB.r;
-  const ny = by / ORB.r;
-  const diag = clamp01(0.5 + (nx + ny) / 2.6);
-  return { sd: d - R, diag, d, R, nx, ny };
-}
-
 export function renderRgba(size: number): Buffer {
   const px = Buffer.alloc(size * size * 4);
   const c = (size - 1) / 2;
@@ -353,23 +273,9 @@ export function renderRgba(size: number): Buffer {
       const t = tile[(cy % nz) * nz + (cx % nz)] ?? 0.5;
       const g = orbGeometry(sx, sy);
 
-      let col: RGB;
-      if (g.sd <= 0) {
-        // Inside: the gradient, quantised into dithered bands; then sphere shading and a highlight.
-        const q = Math.min(bands, Math.floor(g.diag * bands + t)) / bands;
-        col = orbRamp(q);
-        const rim = smoothstep(0.55, 1.0, g.d / g.R) * clamp01(0.5 + (g.nx + g.ny) / 2) * ORB.rimDarken;
-        col = lerp3(col, [8, 26, 96], quantiseDither(rim, 6, t));
-        const hx = g.nx - ORB.highlight.x;
-        const hy = g.ny - ORB.highlight.y;
-        const hl = ORB.highlight.amp * Math.exp(-(hx * hx + hy * hy) / (2 * ORB.highlight.sigma * ORB.highlight.sigma));
-        col = lerp3(col, PAPER, quantiseDither(hl, 8, t));
-      } else {
-        // Outside: ink, with a dithered glow in the orb's local colour.
-        const glow = ORB.glowAmp * Math.exp(-((g.sd / ORB.glowLen) ** ORB.glowPow));
-        const q = quantiseDither(glow, ORB.glowLevels, t);
-        col = lerp3(INK, orbRamp(g.diag), q);
-      }
+      // Inside: the gradient, quantised into dithered bands; then sphere shading and a
+      // highlight. Outside: ink, with a dithered glow in the orb's local colour.
+      let col: RGB = g.sd <= 0 ? orbInside(g, bands, t) : orbGlow(g, INK, t);
 
       if (drawRing) {
         const ring = clamp01(ringW / 2 + 0.5 - Math.abs(inset - ringInsetPx));
@@ -384,83 +290,10 @@ export function renderRgba(size: number): Buffer {
   return px;
 }
 
-/** Quantise `v` (0..1) to `levels` steps with the tile's threshold `t`, returning the stepped 0..1 value. */
-function quantiseDither(v: number, levels: number, t: number): number {
-  return Math.min(levels, Math.floor(clamp01(v) * levels + t)) / levels;
-}
-
-function crc32(buf: Buffer): number {
-  let c = ~0;
-  for (const byte of buf) {
-    c ^= byte;
-    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
-  }
-  return ~c >>> 0;
-}
-
-function chunk(type: string, data: Buffer): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([len, body, crc]);
-}
-
-/** Minimal PNG encoder: 8-bit RGBA, filter type 0 on every scanline. Square when `height` is omitted. */
-export function encodePng(width: number, rgba: Buffer, height = width): Buffer {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // colour type: RGBA
-  const stride = width * 4 + 1;
-  const raw = Buffer.alloc(height * stride);
-  for (let y = 0; y < height; y++) {
-    raw[y * stride] = 0;
-    rgba.copy(raw, y * stride + 1, y * width * 4, (y + 1) * width * 4);
-  }
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 9 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-/** A canvas to paste renders on: the Console's raised ground, opaque. */
-class Strip {
-  readonly px: Buffer;
-  constructor(readonly width: number, readonly height: number, ground: RGB = [0x10, 0x10, 0x10]) {
-    this.px = Buffer.alloc(width * height * 4);
-    for (let i = 0; i < width * height; i++) {
-      this.px[i * 4] = ground[0];
-      this.px[i * 4 + 1] = ground[1];
-      this.px[i * 4 + 2] = ground[2];
-      this.px[i * 4 + 3] = 255;
-    }
-  }
-  /** Source-over `rgba` (size×size) at (x, y), each source pixel `zoom`× (nearest: the dither stays crisp). */
-  paste(rgba: Buffer, size: number, x0: number, y0: number, zoom = 1): void {
-    for (let sy = 0; sy < size; sy++) {
-      for (let sx = 0; sx < size; sx++) {
-        const s = (sy * size + sx) * 4;
-        const a = (rgba[s + 3] ?? 0) / 255;
-        if (a <= 0) continue;
-        for (let zy = 0; zy < zoom; zy++) {
-          for (let zx = 0; zx < zoom; zx++) {
-            const x = x0 + sx * zoom + zx;
-            const y = y0 + sy * zoom + zy;
-            if (x < 0 || y < 0 || x >= this.width || y >= this.height) continue;
-            const d = (y * this.width + x) * 4;
-            for (let c = 0; c < 3; c++) this.px[d + c] = Math.round((rgba[s + c] ?? 0) * a + (this.px[d + c] ?? 0) * (1 - a));
-            this.px[d + 3] = 255;
-          }
-        }
-      }
-    }
-  }
-}
+// `field` and `ramp` describe the older squircle-field mark (the tone-space blob over
+// the five canon tones); they are kept so the mark can be brought back by hand.
+void field;
+void ramp;
 
 const SIZES = [16, 32, 64, 128, 256, 512, 1024] as const;
 

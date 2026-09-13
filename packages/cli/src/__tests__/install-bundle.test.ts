@@ -4,13 +4,15 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, type InstallIO, type ParityReport, type TargetProbe } from "../install/bundle.ts";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, snapshotNameOk, type InstallIO, type ParityReport, type TargetProbe } from "../install/bundle.ts";
 
 /**
  * The install step's pure parts, and — on a Mac — openrsync itself between two temp
  * trees: the destination directory keeps its inode, a changed file is renamed in
  * (new inode), an equal-size-equal-mtime file is still replaced (-c), the stale file
- * goes, nothing temporary is left. /Applications is never touched here.
+ * goes, nothing temporary is left. /Applications is never touched here. The itemized
+ * output is asserted as a SET: this Mac's openrsync and GitHub's macos-15 runner spell
+ * the deletions differently (see parseItemized).
  */
 
 test("planInstall: absent → create; a directory Kevin owns → update with its inode; a symlink, a file, another uid or no write bit → refuse", () => {
@@ -42,19 +44,37 @@ test("rsyncArgs is one pinned argv: -rlptD -c --delay-updates --delete-after --i
   assert.deepEqual(args, ["-rlptD", "-c", "--delay-updates", "--delete-after", "--itemize-changes", "/r/build/stage/Jarhead.app/", "/Applications/Jarhead.app/"]);
   for (const bad of ["-a", "-E", "--inplace", "--extended-attributes", "-rlptDE", "-aE"]) assert.ok(!args.includes(bad), bad);
   assert.equal(RSYNC, "/usr/bin/rsync");
-  assert.deepEqual(snapshotArgs("/Applications/Jarhead.app", "/r/build/previous/Jarhead.app"), ["-rlptD", "-c", "--delete", "/Applications/Jarhead.app/", "/r/build/previous/Jarhead.app/"]);
+  assert.deepEqual(snapshotArgs("/Applications/Jarhead.app", "/r/build/previous/Jarhead.app.previous"), ["-rlptD", "-c", "--delete", "/Applications/Jarhead.app/", "/r/build/previous/Jarhead.app.previous/"]);
   assert.deepEqual([...CODESIGN_VERIFY_ARGS], ["--verify", "--strict", "--deep", "--verbose=1"]);
+  // The snapshot's name: LaunchServices registers any *.app directory as a bundle (build/previous/Jarhead.app was a second Jarhead in `lsregister -dump`).
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.previous"), true);
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app"), false);
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.APP/"), false, "any case, trailing slash trimmed");
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.previous"), true);
 });
 
-test("parseItemized reads openrsync's --itemize-changes as observed on this Mac: created, updated, deleted; dirs ignored; ._ entries flagged", () => {
-  const out = ["cL+++++++ Contents/link -> MacOS/b", ">fc...... Contents/MacOS/Jarhead", ">f+++++++ Contents/Resources/x", "cd+++++++ Contents/", "*deleting Contents/Resources/stale.txt", "*deleting Contents/Resources/", ".d..t.... ./", ""].join("\n");
-  const s = parseItemized(out);
+test("parseItemized is version-agnostic: this Mac's openrsync (directory with a trailing slash) and the macos-15 runner's (no slash, every deletion twice) give the same deleted SET, each path once; dirs made ignored; ._ entries flagged", () => {
+  // This Mac's openrsync: the emptied directory itemized as `Contents/Resources/`.
+  const mac = ["cL+++++++ Contents/link -> MacOS/b", ">fc...... Contents/MacOS/Jarhead", ">f+++++++ Contents/Resources/x", "cd+++++++ Contents/", "*deleting Contents/Resources/stale.txt", "*deleting Contents/Resources/", ".d..t.... ./", ""].join("\n");
+  const s = parseItemized(mac);
   assert.deepEqual(s.created, ["Contents/link", "Contents/Resources/x"]);
   assert.deepEqual(s.updated, ["Contents/MacOS/Jarhead"]);
-  assert.deepEqual(s.deleted, ["Contents/Resources/stale.txt"]);
+  assert.deepEqual(s.deleted, ["Contents/Resources/stale.txt", "Contents/Resources"], "files and the emptied directory, no trailing slash");
   assert.deepEqual(s.appleDouble, []);
-  const leaked = parseItemized(">f+++++++ Contents/._Info.plist\n>fc...... Contents/Resources/._Jarhead.icns\n");
-  assert.deepEqual(leaked.appleDouble, ["Contents/._Info.plist", "Contents/Resources/._Jarhead.icns"]);
+  // GitHub's macos-15 runner, as observed in CI: `Contents/Resources` without the slash, and each entry printed twice (one line per --delete-after pass).
+  const runner = ["*deleting Contents/Resources/stale.txt", "*deleting Contents/Resources", "*deleting Contents/Resources/stale.txt", "*deleting Contents/Resources", ""].join("\n");
+  const r = parseItemized(runner);
+  assert.deepEqual(r.deleted, ["Contents/Resources/stale.txt", "Contents/Resources"], "each path once");
+  assert.deepEqual(new Set(r.deleted), new Set(s.deleted), "the same set from either build");
+  assert.ok(r.deleted.includes("Contents/Resources/stale.txt"));
+  for (const p of r.deleted) assert.ok(p === "Contents/Resources" || p.startsWith("Contents/Resources/"), `${p} is outside the stale subtree`);
+  // Doubled lines in the other columns are one entry too; a bare `./` deletion is nothing.
+  const doubled = parseItemized(">fc...... Contents/MacOS/Jarhead\n>fc...... Contents/MacOS/Jarhead\n>f+++++++ Contents/new\n>f+++++++ Contents/new\n*deleting ./\n");
+  assert.deepEqual(doubled.updated, ["Contents/MacOS/Jarhead"]);
+  assert.deepEqual(doubled.created, ["Contents/new"]);
+  assert.deepEqual(doubled.deleted, []);
+  const leaked = parseItemized(">f+++++++ Contents/._Info.plist\n>fc...... Contents/Resources/._Jarhead.icns\n*deleting Contents/._old\n");
+  assert.deepEqual(leaked.appleDouble, ["Contents/._Info.plist", "Contents/Resources/._Jarhead.icns", "Contents/._old"]);
   assert.deepEqual(parseItemized(""), { created: [], updated: [], deleted: [], appleDouble: [] });
 });
 
@@ -70,6 +90,8 @@ test("installLine says kept (same inode) or REPLACED, and counts what rsync did"
   assert.equal(installLine({ plan: { kind: "update", inode: 103261417 }, inodeAfter: 103261417, rsync }), "install    /Applications/Jarhead.app kept (inode 103261417) · 4 files replaced, 0 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
   assert.match(installLine({ plan: { kind: "update", inode: 1 }, inodeAfter: 2, rsync }), /REPLACED \(inode 1 → 2\) — report this/);
   assert.match(installLine({ plan: { kind: "create" }, inodeAfter: 5, rsync: undefined }), /created \(inode 5\) · copied whole/);
+  // The counts are of unique entries: a summary built from the runner's doubled lines must not count twice.
+  assert.match(installLine({ plan: { kind: "update", inode: 1 }, inodeAfter: 1, rsync: { created: ["n", "n"], updated: ["a", "a"], deleted: ["e", "e", "Contents/Resources"], appleDouble: [] } }), /1 file replaced, 1 added, 2 removed/);
 });
 
 test("probeTarget: lstat, so a symlink is seen as one; a directory reports uid, inode and the write bit", { skip: process.platform === "win32" }, () => {
@@ -124,7 +146,11 @@ test("openrsync in place: the destination directory keeps its inode, changed fil
     const s = parseItemized(out);
     assert.deepEqual([...s.updated].sort(), ["Contents/MacOS/a", "Contents/MacOS/c"], "-c replaced c despite equal size and mtime");
     assert.deepEqual(s.created, ["Contents/link"]);
-    assert.deepEqual(s.deleted, ["Contents/Resources/stale.txt"]);
+    // The deletions as a SET: this Mac's openrsync says `Contents/Resources/`, the runner's `Contents/Resources` twice — what matters is that stale.txt went and nothing outside its subtree did.
+    const deleted = new Set(s.deleted);
+    assert.ok(deleted.has("Contents/Resources/stale.txt"), JSON.stringify(s.deleted));
+    assert.equal(deleted.size, s.deleted.length, `each path once: ${JSON.stringify(s.deleted)}`);
+    for (const p of deleted) assert.ok(p === "Contents/Resources" || p.startsWith("Contents/Resources/"), `${p} is outside the stale subtree`);
     assert.deepEqual(s.appleDouble, [], "no -E, no ._ entries");
     assert.equal(statSync(dst).ino, dirInode, "the bundle directory is the same inode — the Dock's bookmark stays valid");
     assert.notEqual(statSync(join(dst, "Contents", "MacOS", "c")).ino, cInode, "a changed file is a new inode renamed in, so a running process keeps its mapped one");
@@ -146,13 +172,15 @@ test("openrsync in place: the destination directory keeps its inode, changed fil
 
 // ---- performInstall: step 5 of build:mac over scripted seams — the order and every fail path.
 
-const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app", link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
+const LEGACY = "/r/build/previous/Jarhead.app";
+const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app.previous", retire: [LEGACY], link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
+const ABSENT: TargetProbe = { exists: false, isSymlink: false, isDirectory: false };
 const DIR: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true };
 const OK_REQ = 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n';
 const ITEMIZED = ">fc...... Contents/MacOS/Jarhead\n>fc...... Contents/MacOS/jarhead-hands\n>f+++++++ Contents/Resources/new\n*deleting Contents/Resources/stale\n";
 
 /** Records every seam call as one line so the whole order can be asserted at once. */
-function scripted(o: { probes?: TargetProbe[]; snapshotCode?: number; rsyncCode?: number; rsyncOut?: string; cpCode?: number; verifyCode?: number; requirement?: string; parity?: ParityReport } = {}): { io: InstallIO; trace: string[]; warnings: string[] } {
+function scripted(o: { probes?: TargetProbe[]; legacy?: boolean; snapshotCode?: number; rsyncCode?: number; rsyncOut?: string; cpCode?: number; verifyCode?: number; requirement?: string; parity?: ParityReport } = {}): { io: InstallIO; trace: string[]; warnings: string[] } {
   const trace: string[] = [];
   const warnings: string[] = [];
   const probes = [...(o.probes ?? [DIR, DIR])];
@@ -168,6 +196,8 @@ function scripted(o: { probes?: TargetProbe[]; snapshotCode?: number; rsyncCode?
     },
     probe: (path) => {
       trace.push(`probe ${path}`);
+      // The old .app-named snapshot: present only when the case says so; the installed bundle's probes are the scripted list.
+      if (path === LEGACY) return o.legacy ? { ...DIR, inode: 42 } : ABSENT;
       return probes.shift() ?? DIR;
     },
     mkdirp: (path) => void trace.push(`mkdirp ${path}`),
@@ -187,6 +217,7 @@ test("performInstall, update: plan → mkdir previous → snapshot → rsync in 
   const r = performInstall(SPEC, io);
   assert.deepEqual(trace, [
     "probe /Applications/Jarhead.app",
+    `probe ${LEGACY}`,
     "mkdirp /r/build/previous",
     `exec ${RSYNC} ${snapshotArgs(SPEC.installed, SPEC.previous).join(" ")}`,
     `exec ${RSYNC} ${rsyncArgs(SPEC.stage, SPEC.installed).join(" ")}`,
@@ -202,17 +233,41 @@ test("performInstall, update: plan → mkdir previous → snapshot → rsync in 
   if (r.ok) {
     assert.deepEqual(r.plan, { kind: "update", inode: 103261417 });
     assert.equal(r.rollback, rollbackLine(SPEC.previous, SPEC.installed));
-    assert.equal(r.rollback, `rollback:  ${RSYNC} -rlptD -c --delete-after /r/build/previous/Jarhead.app/ /Applications/Jarhead.app/`);
+    assert.equal(r.rollback, `rollback:  ${RSYNC} -rlptD -c --delete-after /r/build/previous/Jarhead.app.previous/ /Applications/Jarhead.app/`);
     assert.equal(r.line, "install    /Applications/Jarhead.app kept (inode 103261417) · 2 files replaced, 1 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
+    assert.deepEqual(r.retired, [], "no old snapshot to retire");
   }
   assert.deepEqual(warnings, []);
+});
+
+test("performInstall retires the old .app-named snapshot (build/previous/Jarhead.app) before the new one is taken — LaunchServices registered it as a second Jarhead — and refuses a snapshot path that itself ends in .app before anything runs", () => {
+  const { io, trace } = scripted({ legacy: true });
+  const r = performInstall(SPEC, io);
+  assert.deepEqual(trace.slice(0, 4), ["probe /Applications/Jarhead.app", `probe ${LEGACY}`, `rmTree ${LEGACY}`, "mkdirp /r/build/previous"], "gone before the snapshot, so step 6 sees a stale record at a path that is gone");
+  assert.ok(r.ok);
+  if (r.ok) assert.deepEqual(r.retired, [LEGACY]);
+  assert.ok(!trace.some((t) => /\.Trash|\/Applications\/Jarhead\.app$/.test(t) && t.startsWith("rmTree")), "only the build's own artifact is removed");
+  // Nothing under `retire` that is absent is touched; a spec without `retire` probes nothing extra.
+  const none = scripted();
+  const { retire: _retire, ...noRetire } = SPEC;
+  performInstall(noRetire, none.io);
+  assert.ok(!none.trace.some((t) => t === `probe ${LEGACY}` || t === `rmTree ${LEGACY}`), JSON.stringify(none.trace));
+  // The guard: a `previous` named .app would recreate the bug on the next build.
+  const bad = scripted({ legacy: true });
+  const refused = performInstall({ ...SPEC, previous: LEGACY }, bad.io);
+  assert.ok(!refused.ok);
+  if (!refused.ok) {
+    assert.equal(refused.what, `refusing to install: the snapshot path ${LEGACY} ends in .app`);
+    assert.match(refused.lines[0] ?? "", /second Jarhead; name the snapshot Jarhead\.app\.previous/);
+  }
+  assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the retire, the snapshot or any write");
 });
 
 test("performInstall, first install: cp -R of the stage into the parent directory, no snapshot, no inode check, the line says created", () => {
   const created: TargetProbe = { ...DIR, inode: 555 };
   const { io, trace, warnings } = scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }, created] });
   const r = performInstall(SPEC, io);
-  assert.deepEqual(trace.slice(0, 3), ["probe /Applications/Jarhead.app", "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
+  assert.deepEqual(trace.slice(0, 4), ["probe /Applications/Jarhead.app", `probe ${LEGACY}`, "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
   assert.ok(!trace.some((t) => t.startsWith(`exec ${RSYNC}`)), "nothing to snapshot or sync into");
   assert.ok(trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"));
   assert.ok(r.ok);
@@ -264,7 +319,7 @@ test("performInstall fail paths keep the stage and name the rollback when a snap
       assert.match(r.what, what, name);
       assert.deepEqual(r.lines, lines, name);
     }
-    assert.ok(!trace.some((t) => t.startsWith("rmTree") || t.startsWith("relink")), `${name}: the stage is kept and the link untouched`);
+    assert.ok(!trace.some((t) => t.startsWith("rmTree /r/build/stage") || t.startsWith("relink")), `${name}: the stage is kept and the link untouched`);
     assert.ok(trace.some((t) => t.includes("--delete-after ")), `${name}: the install rsync ran`);
   }
   // A verify that fails AFTER rsync never re-probes or compares.
@@ -274,7 +329,7 @@ test("performInstall fail paths keep the stage and name the rollback when a snap
     return s;
   })();
   assert.ok(!trace.some((t) => t.startsWith("compare")));
-  assert.equal(trace.filter((t) => t.startsWith("probe")).length, 1);
+  assert.equal(trace.filter((t) => t.startsWith("probe /Applications")).length, 1);
 });
 
 test("performInstall: a failed snapshot is a warning, continues, and drops the rollback line from every later failure; a replaced directory inode is a warning and a REPLACED line, not a failure", () => {
@@ -294,11 +349,12 @@ test("performInstall: a failed snapshot is a warning, continues, and drops the r
   assert.ok(replaced.trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"), "the install stands; the warning is for Kevin");
 });
 
-test("openrsync snapshot: snapshotArgs into a missing build/previous/Jarhead.app creates it as an exact copy; a second snapshot over it drops what the bundle no longer has", { skip: process.platform !== "darwin" }, () => {
+test("openrsync snapshot: snapshotArgs into a missing build/previous/Jarhead.app.previous creates it as an exact copy; a second snapshot over it drops what the bundle no longer has", { skip: process.platform !== "darwin" }, () => {
   const root = mkdtempSync(join(tmpdir(), "jh-snapshot-"));
   try {
     const installed = join(root, "Applications", "Jarhead.app");
-    const previous = join(root, "build", "previous", "Jarhead.app");
+    const previous = join(root, "build", "previous", "Jarhead.app.previous");
+    assert.ok(snapshotNameOk(previous));
     mkdirSync(join(installed, "Contents", "MacOS"), { recursive: true });
     writeFileSync(join(installed, "Contents", "MacOS", "Jarhead"), "bin");
     writeFileSync(join(installed, "Contents", "Info.plist"), "plist");

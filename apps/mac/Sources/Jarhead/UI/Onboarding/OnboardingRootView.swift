@@ -55,7 +55,7 @@ struct OnboardingRootView: View {
                     .equatable()
             }
         }
-        .background(ConsoleTheme.ground)
+        .background(ConsoleGround())
         .frame(minWidth: 560, minHeight: 480)
         .task(id: PollKey(step: session.step, visible: session.visible)) {
             // TCC has no change notification: re-read (never a prompt) on every step
@@ -236,6 +236,19 @@ enum OnboardingMarkStyle {
 }
 
 /// A step's head: one word at 15, one short paragraph at 13 under it.
+/// The hero over the first and last steps: the icon's orb ramp (`Dither.orbStops`, diagonal,
+/// five bands in 2 pt cells) as an 88 pt band — the dithered material as the picture, no text
+/// on it — framed the way images are (`hairFrame`).
+struct OnboardingHero: View {
+    var body: some View {
+        DitheredGradient(stops: Dither.orbStops, direction: .diagonal, bands: Dither.bands, cellPoints: 2)
+            .frame(height: 88)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hairFrame, lineWidth: 1))
+            .accessibilityHidden(true)
+    }
+}
+
 struct OnboardingHead<Trailing: View>: View {
     let title: String
     let text: String

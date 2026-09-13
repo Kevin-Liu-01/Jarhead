@@ -81,14 +81,25 @@ export function rsyncArgs(stage: string, installed: string): string[] {
   return ["-rlptD", "-c", "--delay-updates", "--delete-after", "--itemize-changes", `${stage}/`, `${installed}/`];
 }
 
-/** The rollback snapshot of the installed bundle into build/previous/ before an update. */
+/**
+ * The rollback snapshot of the installed bundle into build/previous/ before an update.
+ * `previous` must not be named `*.app`: LaunchServices reads any directory with that
+ * suffix as a bundle, and a snapshot called build/previous/Jarhead.app was registered
+ * as a second Jarhead (`lsregister -dump` showed it). `snapshotNameOk` is the guard.
+ */
 export function snapshotArgs(installed: string, previous: string): string[] {
   return ["-rlptD", "-c", "--delete", `${installed}/`, `${previous}/`];
+}
+
+/** A snapshot directory LaunchServices will not take for a bundle: its name does not end in `.app`. */
+export function snapshotNameOk(previous: string): boolean {
+  return !/\.app$/i.test(previous.replace(/\/+$/, ""));
 }
 
 export interface RsyncSummary {
   readonly created: readonly string[];
   readonly updated: readonly string[];
+  /** Every path `--delete-after` removed, files and emptied directories alike, each once, no trailing slash. */
   readonly deleted: readonly string[];
   /** Any `._*` entry: xattr emulation leaked in; the build fails on it. */
   readonly appleDouble: readonly string[];
@@ -98,19 +109,26 @@ export interface RsyncSummary {
  * `--itemize-changes` lines: `>f+++++++ p` created, `>f.c…` (any other flag string)
  * updated, `cd+++++++ p/` a directory made (not counted), `*deleting p` removed,
  * `.d..t.... ./` a directory touched (ignored). Symlinks (`>L`, `cL`) count like files.
+ *
+ * The deletion lines differ by openrsync build, so the parser is version-agnostic: this
+ * Mac's prints the emptied directory as `Contents/Resources/` (trailing slash); GitHub's
+ * macos-15 runner prints it as `Contents/Resources` and lists every deletion twice (one
+ * line per --delete-after pass). Every list holds each path once, slashes trimmed, and
+ * directories are kept in `deleted` — the callers ask "is the stale subtree gone", never
+ * "how many files".
  */
 export function parseItemized(stdout: string): RsyncSummary {
-  const created: string[] = [];
-  const updated: string[] = [];
-  const deleted: string[] = [];
-  const appleDouble: string[] = [];
+  const created = new Set<string>();
+  const updated = new Set<string>();
+  const deleted = new Set<string>();
+  const appleDouble = new Set<string>();
   for (const raw of stdout.split("\n")) {
     const line = raw.trimEnd();
     if (!line) continue;
     const del = line.match(/^\*deleting\s+(.*)$/);
     if (del) {
-      // A directory removed after its files (`Contents/Resources/`) is not a file.
-      if (!(del[1] as string).endsWith("/")) note(del[1] as string, deleted);
+      const path = (del[1] as string).replace(/\/+$/, "");
+      if (path && path !== ".") note(path, deleted);
       continue;
     }
     const m = line.match(/^([<>ch.*])(\S+)\s+(.*)$/);
@@ -123,12 +141,12 @@ export function parseItemized(stdout: string): RsyncSummary {
     if (/^\S\++$/.test(flags)) note(path, created);
     else note(path, updated);
   }
-  return { created, updated, deleted, appleDouble };
+  return { created: [...created], updated: [...updated], deleted: [...deleted], appleDouble: [...appleDouble] };
 
-  function note(path: string, into: string[]): void {
-    into.push(path);
-    const base = path.replace(/\/+$/, "").split("/").pop() ?? "";
-    if (base.startsWith("._")) appleDouble.push(path);
+  function note(path: string, into: Set<string>): void {
+    into.add(path);
+    const base = path.split("/").pop() ?? "";
+    if (base.startsWith("._")) appleDouble.add(path);
   }
 }
 
@@ -213,8 +231,10 @@ export function installLine(i: { readonly plan: InstallPlan; readonly inodeAfter
           ? `${installed} kept (inode ${i.plan.inode})`
           : `${installed} REPLACED (inode ${i.plan.inode} → ${i.inodeAfter ?? "?"}) — report this`
         : `${installed} refused: ${i.plan.reason}`;
+  // Unique entries: a parser fed the runner's doubled deletion lines must not count twice.
+  const n = (xs: readonly string[]): number => new Set(xs).size;
   const files = i.rsync
-    ? `${i.rsync.updated.length} file${i.rsync.updated.length === 1 ? "" : "s"} replaced, ${i.rsync.created.length} added, ${i.rsync.deleted.length} removed`
+    ? `${n(i.rsync.updated)} file${n(i.rsync.updated) === 1 ? "" : "s"} replaced, ${n(i.rsync.created)} added, ${n(i.rsync.deleted)} removed`
     : i.plan.kind === "create"
       ? "copied whole"
       : "no files written";
@@ -230,8 +250,14 @@ export interface InstallSpec {
   /** The signed stage bundle (build/stage/Jarhead.app). */
   readonly stage: string;
   readonly installed: string;
-  /** Where the rollback snapshot goes (build/previous/Jarhead.app). */
+  /** Where the rollback snapshot goes (build/previous/Jarhead.app.previous — never a name ending in .app; see snapshotNameOk). */
   readonly previous: string;
+  /**
+   * Earlier snapshot directories to retire before the snapshot (build/previous/Jarhead.app):
+   * named `.app`, LaunchServices kept registering them as a second Jarhead. Build artifacts
+   * only — never a path under the Trash or /Applications.
+   */
+  readonly retire?: readonly string[];
   /** The checkout's symlink to the installed bundle (build/Jarhead.app). */
   readonly link: string;
   /** Removed once the installed copy verifies (build/stage); kept for inspection on a failure. */
@@ -260,22 +286,37 @@ export type InstallOutcome =
       readonly rsync: RsyncSummary | undefined;
       /** Present when a snapshot was taken and the caller should print it. */
       readonly rollback: string | undefined;
+      /** The `.app`-named snapshot directories that were removed (spec.retire, those that existed). */
+      readonly retired: readonly string[];
       readonly line: string;
     }
   | { readonly ok: false; readonly what: string; readonly lines: readonly string[] };
 
 /**
  * Step 5 of `pnpm build:mac`, in order: plan (refuse a symlink / file / other uid /
- * no write bit before anything is written) → first install `cp -R`, else snapshot to
- * `previous` then rsync in place (never --inplace; `._*` in the itemized output means
- * -E leaked and the build fails) → verify the INSTALLED copy: strict + deep, the
- * designated requirement's identifier, a sha256 parity walk against the stage, the
- * directory inode unchanged → remove the stage → relink. Any failure keeps the stage
- * and names the rollback when a snapshot exists.
+ * no write bit — or a snapshot path named `.app` — before anything is written) → retire
+ * the old `.app`-named snapshots → first install `cp -R`, else snapshot to `previous`
+ * then rsync in place (never --inplace; `._*` in the itemized output means -E leaked
+ * and the build fails) → verify the INSTALLED copy: strict + deep, the designated
+ * requirement's identifier, a sha256 parity walk against the stage, the directory
+ * inode unchanged → remove the stage → relink. Any failure keeps the stage and names
+ * the rollback when a snapshot exists.
  */
 export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome {
   const plan = planInstall(io.probe(spec.installed), spec.uid, spec.installed);
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
+  if (!snapshotNameOk(spec.previous)) {
+    return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} ends in .app`, lines: ["LaunchServices registers any *.app directory as a bundle — a second Jarhead; name the snapshot Jarhead.app.previous"] };
+  }
+  // Snapshots from before the rename: a full bundle named Jarhead.app under build/previous,
+  // which LaunchServices took for a second Jarhead on every scan. Gone before the new
+  // snapshot is taken, so the record for the path is stale (step 6 unregisters it).
+  const retired: string[] = [];
+  for (const path of spec.retire ?? []) {
+    if (!io.probe(path).exists) continue;
+    io.rmTree(path);
+    retired.push(path);
+  }
   const rollback = rollbackLine(spec.previous, spec.installed);
   let rollbackOk = false;
   const withRollback = (lines: string[]): string[] => (rollbackOk ? [...lines, rollback] : lines);
@@ -314,5 +355,5 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   if (spec.cleanup) io.rmTree(spec.cleanup);
   io.relink(spec.installed, spec.link);
   const line = installLine({ plan, inodeAfter: after.inode, rsync, installed: spec.installed, bundleId: spec.bundleId });
-  return { ok: true, plan, inodeAfter: after.inode, rsync, rollback: rollbackOk ? rollback : undefined, line };
+  return { ok: true, plan, inodeAfter: after.inode, rsync, rollback: rollbackOk ? rollback : undefined, retired, line };
 }

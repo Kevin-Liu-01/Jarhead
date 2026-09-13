@@ -71,6 +71,21 @@ test("launchservices: a record at a symlink that resolves to the installed bundl
   }
 });
 
+test("launchservices: the build's rollback snapshots are stale wherever LaunchServices met them — the old build/previous/Jarhead.app (a full bundle with Jarhead's id, registered as a second Jarhead) and any record at the new .previous name", () => {
+  const records = [
+    ...parseLsBundleDump(dump),
+    { path: "/Users/kevinliu/jarvis/build/previous/Jarhead.app", identifier: "com.kevinliu.jarhead", executable: "Contents/MacOS/Jarhead" },
+    { path: "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous", identifier: "com.kevinliu.jarhead", executable: "Contents/MacOS/Jarhead" },
+  ];
+  // Present on disk (the build has not retired it yet) or gone (it has): stale either way — Jarhead's id anywhere but /Applications.
+  for (const exists of [() => true, () => false]) {
+    const stale = staleJarheadRecords(records, { installed: INSTALLED, bundleId: "com.kevinliu.jarhead", staleRoots: ROOTS, exists, realpath: (p) => p });
+    assert.ok(stale.some((r) => r.path === "/Users/kevinliu/jarvis/build/previous/Jarhead.app"), `exists=${exists()}`);
+    assert.ok(stale.some((r) => r.path === "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous"), `exists=${exists()}`);
+    assert.ok(!stale.some((r) => r.path === INSTALLED));
+  }
+});
+
 test("launchservices: the summary clause names the installed record, what was unregistered and what still remains", () => {
   const records = parseLsBundleDump(dump);
   const stale = staleJarheadRecords(records, { installed: INSTALLED, bundleId: "com.kevinliu.jarhead", staleRoots: ROOTS, exists: () => true });

@@ -5,7 +5,29 @@ import SwiftUI
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
 //   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
-//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers
+//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers|loading|wipe|timing
+//     timing       = the pane switch at REAL speed (no PREVIEW_WIPE_SECONDS), traced: live data (with the
+//                    agents' transcripts and marks, so the conversation pane has rows), then four switches
+//                    — into the Jarhead chain, back to Now, into the blocked Claude session, back — the
+//                    right rail's tab to Settings and back, and a ledger day picked and left, each between a
+//                    `trace:<label>` and a `trace-stop`: the main thread's turns of 4 ms or more print as
+//                    `frame: …` (the switch's own turn and every turn in the 0.6 s after it, stamped
+//                    "+ms" from the switch; any turn over 50 ms; a few idle ones before), and the stop prints
+//                    `timing: <label> …`: the switch turn (the frame the switch is made in), the wipe's frames
+//                    (0.29 s) and their longest, then everything after the switch (count, longest, over 50 ms,
+//                    the busy sum). The curtain's budget: no wipe frame over 50 ms at 0.24 s. PREVIEW_SETTLE=12.
+//     loading      = the dither pass's loading states: live data, then at 0.3 s the ledger day
+//                    2026-09-10 is picked and at 0.6 s (the fake ledger has answered by then) the
+//                    read is pinned in flight again and a search ("vercel": no fake title carries
+//                    it, so the indicator shows, not title matches) is pinned in flight — the
+//                    stream's "Reading…" under 16×2 dither glyphs, the rail's "Reading" row (8×1),
+//                    the Jarhead section's "Searching…" (8×1). Its default action runs `check-dither`.
+//     wipe         = the dither curtain: live data, the Jarhead chain stepped into at 1.2 s and snapped
+//                    mid-wipe (<PREVIEW_OUT_DIR>/preview-console-wipe-mid.png: the arriving pane emerging
+//                    through the crosshatch from a sheet of ground-coloured cells — the leaving pane is
+//                    gone under it), `probe` at 4.0 s with the pane open and the curtain spent (the same
+//                    open/loaded/entries line `switch` prints there — the state survived the switch),
+//                    Now shown again at 4.2 s and snapped mid-wipe-back (-wipe-back.png), `probe` again.
 //     workers      = the split: the main brain handed Notes and Spotify to background hands and Slack
 //                    to a screen hand (Snapshot.workers) under one running delegation — the rail's
 //                    Workers section (glyph · name · status · Stop; elapsed · lane; the last line), the
@@ -57,7 +79,13 @@ import SwiftUI
 //   PREVIEW_BRAIN=<BrainKind raw>   swap the brain (openai-compatible shows the Server row)
 //   PREVIEW_GATE=off|awake          the gate switched off, or resting because the engine is awake
 //   PREVIEW_REDUCE_MOTION=1         pin Motion.reduced on (Motion.reducedOverride): plain fades, halved
-//                                   durations, no rise/slide — the Reduce Motion path for real
+//                                   durations, no rise/slide, still two-tone dither glyphs — the Reduce Motion path for real
+//   PREVIEW_SLOW_THUMBS=1           hold every screenshot thumbnail for a minute before it decodes
+//                                   (ConsoleThumbnails.holdForPreview), so the dithered skeletons are shot
+//   PREVIEW_WIPE_SECONDS=2          stretch Motion.wipe to that long (Motion.wipeSecondsOverride; the
+//                                   `wipe` scenario's default), so a `snap:` mid-wipe is a reproducible frame
+//   PREVIEW_NO_LEVELS=1             no fake 20 Hz audio levels (the meters hold still) — the `timing`
+//                                   scenario's control for what the meters' animation costs
 //   PREVIEW_ACTION=scroll-up,append drive the feed after it settles (use PREVIEW_SETTLE>=3)
 //     scroll-top,history   in a conversation: scroll to the top, then prepend an older page
 //                          (the feed must keep the row on screen where it was)
@@ -69,7 +97,15 @@ import SwiftUI
 //                          withAnimation, so the transitions run)
 //     geometry             print the stream's scroll geometry (minY, viewport, content, distance)
 //     shot:<name>          screenshot the window now → <PREVIEW_OUT_DIR>/<name>.png (a moment
-//                          mid-transition, where the script's own shot comes too late)
+//                          mid-transition, where the script's own shot comes too late); via
+//                          screencapture, so the frame lands 0.1–0.3 s after the scheduled instant
+//     snap:<name>          the same picture from the window's own pixels (CGWindowListCreateImage),
+//                          written in-process — the frame on screen at the scheduled instant
+//     snap-wipe:<name>     arm Motion.wipeMidHook: the next pane switch's DitherCurtain reports its first
+//                          frame at 0.4 or more of the ranks (the log says which) and the snap (as above)
+//                          follows 0.05 s later — the `wipe` scenario's mid pictures, pinned to the wipe's
+//                          own frames rather than a timer's; on a loaded machine that first frame can
+//                          already be far along, so read the progress in the snap line
 //     search:<query>       open the rail's search box with the query (hits from the fake ledger)
 //     trash-open / archived-open / hidden-open   unfold the rail's folded groups
 //     select:<id>+<id>     ⌘-pick chains (the strip shows from two); rename:<id> opens the inline field
@@ -79,6 +115,20 @@ import SwiftUI
 //                          scrolled to the row and lit); hit:<sessionId>:<atMs> names one outright
 //     probe                print the open conversation's state (open / loaded / entries / scroll
 //                          target / the entry it resolves to) so a landed hit is checked, not reasoned
+//     trace:<label> / trace-stop   trace the main thread between the two (MainThreadTrace): a pair of
+//                          run-loop observers — `.afterWaiting` first marks a turn's start, `.beforeWaiting`
+//                          last (after Core Animation's commit, where SwiftUI's layers draw) its end — so a
+//                          turn's cost is everything the main thread did between two sleeps. Turns of 4 ms
+//                          or more print as `frame: t=<s> cost=<ms>`; the stop prints `timing: <label> …`
+//     check-dither         print the dither arithmetic as `check: ok|FAIL` lines: bayer8Ranks a permutation
+//                          of 0…63; wipe tile k has k·cell² opaque px and tile k ∪ inverted k covers every px;
+//                          glyphLine differs frame to frame and the still frame is two-tone; the bar's cells
+//                          and the ground's 64 pt rounding; Tiles.hasWipe after prewarm
+//     probe-ground         CGWindowListCreateImage of the window: the distinct colours of a 32×32 px block
+//                          on bare ground at three places — the stream's top-left (want one: #070707), the
+//                          window's bottom-right (want two: the raised step #101010 and the whisper #161e35)
+//                          and the stream's bottom-middle, just above the composer (want two: #0a0a0a and
+//                          #101010, the field's first steps); run it on `empty` — the stream is bare there
 //     check-sleep          print the sleep / worker word checks (close reasons, tombstones, remedy decoding,
 //                          the stream from ledger rows end to end, the feed's redraw seams) as
 //                          `check: ok|FAIL …` lines; worker-stop:<workerId> sends one worker.stop the
@@ -115,8 +165,17 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     let launchedAt = Date()
     /// How many `append` actions have run (they alternate Kevin / Jarhead).
     var appended = 0
+    /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
+    lazy var trace = MainThreadTrace(launchedAt: launchedAt)
+    /// The conversation scenarios' pane, opened once the app is active (`openPendingAgentAfterActivation`).
+    var pendingAgentOpen: String?
+    var activationToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The dither tiles first, so a 2 s shot never catches the fade fallback `Motion.wipe` takes
+        // before `Dither.Tiles` has landed. (The app must do the same in AppDelegate — a seam
+        // outside UI/**; without it the tiles land lazily on the first wipe, which is a fade.)
+        Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
         let env = ProcessInfo.processInfo.environment
         let scenario = env["PREVIEW_SCENARIO"] ?? "live"
         let shot = env["PREVIEW_SHOT_PNG"] ?? "preview-orb-expanded.png"
@@ -124,10 +183,17 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // harness pins the appearance; the real window follows the system.
         let appearance = env["PREVIEW_APPEARANCE"] ?? (scenario == "light" ? "light" : "dark")
         NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+        // PREVIEW_WIPE_SECONDS=2: stretch Motion.wipe so a mid-wipe snap is a reproducible frame.
+        if let secs = Double(env["PREVIEW_WIPE_SECONDS"] ?? ""), secs > 0 { Motion.wipeSecondsOverride = secs }
         // PREVIEW_REDUCE_MOTION=1: the Reduce Motion path for real, whatever the Mac is set to.
         if env["PREVIEW_REDUCE_MOTION"] == "1" {
             Motion.reducedOverride = true
             print("reduce motion: pinned on")
+        }
+        // PREVIEW_SLOW_THUMBS=1: thumbnails never land during the shot, so the skeletons show.
+        if env["PREVIEW_SLOW_THUMBS"] == "1" {
+            ConsoleThumbnails.holdForPreview = true
+            print("thumbnails: held for preview")
         }
 
         state.stateDir = URL(fileURLWithPath: env["PREVIEW_STATE_DIR"] ?? FileManager.default.currentDirectoryPath)
@@ -187,7 +253,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.wakeGate = .lockedOut(until: Date().addingTimeInterval(47))
             state.wakeHeard = ""
             state.wakePassphraseSet = false
-        case "conversation", "conversation-codex":
+        case "conversation", "conversation-codex", "timing":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
@@ -263,8 +329,14 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "confirm":
             state.toast("Waiting for your confirmation", tone: .warn)
-        case "conversation": console.openAgent("sessions:claude:w1p2")
-        case "conversation-codex": console.openAgent("sessions:codex:1")
+        case "conversation", "conversation-codex":
+            // Not here: stepping into the pane in the same turn as `show()`, before the app's
+            // activation had settled, left the window INACTIVE in the shot (grey traffic lights —
+            // the pane's composer took first responder while the activation was still in flight,
+            // and the window never became key). Open it once the app is active, then make the
+            // window key again, so the shot needs no re-keying workaround.
+            pendingAgentOpen = scenario == "conversation" ? "sessions:claude:w1p2" : "sessions:codex:1"
+            openPendingAgentAfterActivation()
         case "jarhead", "jarhead-log", "cleanup-log":
             // The root view listens for this once it is on screen; a turn later is enough.
             // `cleanup-log` is the pinned chain's log: its renamed and pinned rows as terse lines.
@@ -275,6 +347,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                                                 userInfo: ["sessionId": sessionId, "view": view])
             }
         case "live", "light": state.toast("Delegation failed: Codex session refused input", tone: .error)
+        case "loading":
+            // The day is picked the way a click would; the fake ledger answers within a turn, so
+            // the `pin-loading` action (0.6 s) puts the read — and a search — back in flight.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.console?.pickLedgerDay("2026-09-10") }
         default: break
         }
 
@@ -287,6 +363,23 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         let defaultActions: String?
         switch scenario {
         case "switch": defaultActions = "open-jarhead@1.2,shot:preview-console-switch-mid@1.36,show-now@2.6,geometry@3.4,append@3.6,append@3.9,geometry@4.7"
+        // The mid pictures are pinned to the wipe itself (`snap-wipe:` arms Motion.wipeMidHook; the
+        // curtain fires it on its first frame at 0.4 of the ranks, the snap follows 0.05 s later) —
+        // a frame of the wipe, not whatever a timer finds. The wipe is stretched to 2 s
+        // (PREVIEW_WIPE_SECONDS, the script's default here) so the mid picture is a mid picture.
+        case "wipe": defaultActions = "snap-wipe:preview-console-wipe-mid@1.1,open-jarhead@1.2,probe@4.0,snap-wipe:preview-console-wipe-back@4.2,show-now@4.2,probe@6.6"
+        case "loading": defaultActions = "pin-loading@0.6,check-dither@0.5"
+        // Real speed, traced: the four pane switches, the rail's tab both ways, a ledger day in and out.
+        // A second between a switch and its stop: the 0.24 s wipe, then the settle (the Jarhead pane's
+        // entries landing, a conversation's tail opening) — the quiet turns after are the 20 Hz meters.
+        case "timing": defaultActions = "trace:open-jarhead@1.0,open-jarhead@1.2,trace-stop@2.2,"
+            + "trace:show-now@2.4,show-now@2.6,trace-stop@3.6,"
+            + "trace:open-agent@3.8,open-agent:sessions:claude:w1p2@4.0,trace-stop@5.0,"
+            + "trace:show-now-2@5.2,show-now@5.4,trace-stop@6.4,"
+            + "trace:tab-settings@6.6,tab:settings@6.8,trace-stop@7.6,"
+            + "trace:tab-now@7.8,tab:now@8.0,trace-stop@8.8,"
+            + "trace:pick-day@9.0,pick-day:2026-09-10@9.2,trace-stop@10.2,"
+            + "trace:show-now-3@10.4,show-now@10.6,trace-stop@11.4"
         case "cleanup": defaultActions = "trash-open@0.4,hidden-open@0.4"
         // A chain's id is its root session's (the paused one), not the resumed session's.
         case "cleanup-select": defaultActions = "trash-open@0.4,select:\(FakeData.chainPausedId)+\(FakeData.yesterdayId)@0.6"
@@ -313,9 +406,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Fake audio levels at 20 Hz so the meters move.
+        // Fake audio levels at 20 Hz so the meters move. PREVIEW_NO_LEVELS=1 leaves them silent
+        // (the `timing` scenario's control: the meters' animation is the live Console's idle load).
         var t = 0.0
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        if env["PREVIEW_NO_LEVELS"] == "1" { print("levels: off (PREVIEW_NO_LEVELS)") }
+        timer = env["PREVIEW_NO_LEVELS"] == "1" ? nil : Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             t += 0.05
             let inL = scenario == "empty" ? 0 : abs(sin(t * 3.1)) * 0.35
             let outL = (scenario == "live" || scenario == "light") ? abs(sin(t * 5.3)) * 0.9 : 0
@@ -328,8 +423,34 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The conversation scenarios' pane, opened once the app is active (a turn after `show()`'s
+    /// `NSApp.activate` has landed): at once if it already is, else on `didBecomeActive` — or
+    /// after a second regardless, since a harness launched behind the lock screen never
+    /// activates and the shot must still happen. Then the window is made key again.
+    private func openPendingAgentAfterActivation() {
+        if NSApp.isActive {
+            DispatchQueue.main.async { [weak self] in self?.openPendingAgent() }
+            return
+        }
+        activationToken = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.async { self?.openPendingAgent() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.openPendingAgent() }
+    }
+
+    private func openPendingAgent() {
+        guard let id = pendingAgentOpen else { return }
+        pendingAgentOpen = nil
+        if let token = activationToken { NotificationCenter.default.removeObserver(token); activationToken = nil }
+        console?.openAgent(id)
+        NSApp.windows.first(where: { $0.title == "Jarhead" })?.makeKeyAndOrderFront(nil)
+        print("opened \(id) after activation at \(String(format: "%.2f", Date().timeIntervalSince(launchedAt)))s (active=\(NSApp.isActive), key=\(NSApp.keyWindow?.title ?? "none"))")
+    }
+
     private func perform(_ action: String) {
         let stamp = String(format: "%.2f", Date().timeIntervalSince(launchedAt))
+        // A traced switch: the trace notes the moment, so the turn this action runs in is named.
+        if !action.hasPrefix("trace") { trace.mark() }
         switch action {
         case "scroll-up":
             guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
@@ -354,7 +475,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             }
             print("action: open-jarhead at \(stamp)s")
         case "show-now":
-            withAnimation(Motion.snappy) { console?.showNow() }
+            withAnimation(Motion.wipeAnimation) { console?.showNow() }
             print("action: show-now at \(stamp)s → openAgentId=\(console?.openAgentIdForPreview ?? "nil") openJarheadId=\(console?.openJarheadIdForPreview ?? "nil")")
         case "geometry":
             guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
@@ -368,7 +489,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         default:
             if action.hasPrefix("open-agent:") {
                 let id = String(action.dropFirst("open-agent:".count))
-                withAnimation(Motion.snappy) { console?.openAgent(id) }
+                withAnimation(Motion.wipeAnimation) { console?.openAgent(id) }
                 print("action: open-agent \(id) at \(stamp)s")
             } else if action.hasPrefix("tab:") {
                 let raw = String(action.dropFirst("tab:".count))
@@ -380,15 +501,43 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 let day = String(action.dropFirst("pick-day:".count))
                 withAnimation(Motion.snappy) { console?.pickLedgerDay(day) }
                 print("action: pick-day \(day) at \(stamp)s")
-            } else if action.hasPrefix("shot:") {
-                let name = String(action.dropFirst("shot:".count))
+            } else if action.hasPrefix("snap-wipe:") {
+                // Arm the wipe's own mid-frame report: the next arriving pane at half its ranks snaps.
+                let name = String(action.dropFirst("snap-wipe:".count))
                 let dir = ProcessInfo.processInfo.environment["PREVIEW_OUT_DIR"] ?? FileManager.default.currentDirectoryPath
                 let path = (dir as NSString).appendingPathComponent(name.hasSuffix(".png") ? name : name + ".png")
-                shoot(to: path, stamp: stamp)
+                // The screen lags the evaluation by a frame, so the snap follows the hook by a
+                // little (0.05 s; with the curtain a frame is cheap — the 0.25 s the masked wipe
+                // needed landed 0.4–0.8 s late behind the arriving pane's content-build frame and
+                // caught the last few cells). The stamp says which frame the hook saw.
+                Motion.armWipeMid { [weak self] progress in
+                    guard let self else { return }
+                    let hookAt = String(format: "%.2f", Date().timeIntervalSince(self.launchedAt))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self else { return }
+                        self.snap(to: path, stamp: String(format: "%.2f", Date().timeIntervalSince(self.launchedAt))
+                                  + String(format: " (the wipe's frame at %.2f, %@ s, + 0.05)", progress, hookAt))
+                    }
+                }
+                print("action: snap-wipe armed for \(name) at \(stamp)s")
+            } else if action.hasPrefix("shot:") || action.hasPrefix("snap:") {
+                let inProcess = action.hasPrefix("snap:")
+                let name = String(action.dropFirst((inProcess ? "snap:" : "shot:").count))
+                let dir = ProcessInfo.processInfo.environment["PREVIEW_OUT_DIR"] ?? FileManager.default.currentDirectoryPath
+                let path = (dir as NSString).appendingPathComponent(name.hasSuffix(".png") ? name : name + ".png")
+                if inProcess { snap(to: path, stamp: stamp) } else { shoot(to: path, stamp: stamp) }
+            } else if action.hasPrefix("trace:") {
+                trace.start(label: String(action.dropFirst("trace:".count)), stamp: stamp)
+            } else if action == "trace-stop" {
+                trace.stop(stamp: stamp)
             } else if keyAction(action) {
                 // printed by keyAction
             } else if action == "check-sleep" {
                 checkSleepAndWorkerWords(stamp: stamp)
+            } else if action == "check-dither" {
+                checkDither(stamp: stamp)
+            } else if action == "probe-ground" {
+                probeGround(stamp: stamp)
             } else if action.hasPrefix("worker-stop:") {
                 // The rail row's Stop, through AppState's helper: one `worker.stop`, never the transport.
                 let id = String(action.dropFirst("worker-stop:".count))
@@ -536,6 +685,113 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") at \(stamp)s")
     }
 
+    /// `check-dither`: the dither arithmetic, each named and compared (run.log: `check: ok` /
+    /// `check: FAIL`) — the package has no test target, so this is where the Bayer ranks, the
+    /// wipe tiles, the glyph lines, the bar's cell arithmetic and the ground's rounding are pinned.
+    private func checkDither(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        /// The alpha bytes of a premultiplied RGBA image, row-major.
+        func alphas(_ img: CGImage) -> [UInt8] {
+            guard let data = img.dataProvider?.data as Data? else { return [] }
+            let bpr = img.bytesPerRow
+            var out: [UInt8] = []
+            out.reserveCapacity(img.width * img.height)
+            for y in 0..<img.height {
+                for x in 0..<img.width { out.append(data[y * bpr + x * 4 + 3]) }
+            }
+            return out
+        }
+        expect("bayer8Ranks is a permutation of 0…63", String(Dither.bayer8Ranks.count == 64 && Set(Dither.bayer8Ranks) == Set(0..<64)), "true")
+        expect("bayer8 thresholds are (rank + 0.5) / 64", String(zip(Dither.bayer8, Dither.bayer8Ranks).allSatisfy { abs($0 - (Float($1) + 0.5) / 64) < 1e-6 }), "true")
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let cell = Dither.cellPixels(scale: scale, points: 2)
+        expect("Tiles.hasWipe after prewarm", String(Dither.Tiles.shared.hasWipe), "true")
+        for k in [0, 1, 32, 63, 64] {
+            guard let t = Dither.Tiles.shared.wipe(step: k, cell: cell, inverted: false),
+                  let ti = Dither.Tiles.shared.wipe(step: k, cell: cell, inverted: true) else {
+                expect("wipe tile \(k) exists", "nil", "tile")
+                continue
+            }
+            let a = alphas(t), ai = alphas(ti)
+            expect("wipe tile \(k) is 8·cell square", "\(t.width)×\(t.height)", "\(8 * cell)×\(8 * cell)")
+            expect("wipe tile \(k) opaque px", String(a.filter { $0 == 255 }.count), String(k * cell * cell))
+            expect("wipe tile \(k) is 0 or 255 everywhere", String(a.allSatisfy { $0 == 0 || $0 == 255 }), "true")
+            expect("wipe tile \(k) ∪ inverted \(k) covers every px", String(a.count == ai.count && zip(a, ai).allSatisfy { ($0 | $1) == 255 && !($0 == 255 && $1 == 255) }), "true")
+        }
+        let edgeCell = Dither.cellPixels(scale: scale, points: Dither.cellPoints)
+        if let e = Dither.Tiles.shared.edge(cell: edgeCell, rows: 4) {
+            expect("edge tile is 8×4 cells", "\(e.width)×\(e.height)", "\(8 * edgeCell)×\(4 * edgeCell)")
+            // Coverage falls left → right: the first cell column is denser than the last.
+            let a = alphas(e)
+            func column(_ i: Int) -> Int { (0..<e.height).reduce(0) { $0 + (a[$1 * e.width + i * edgeCell] == 255 ? 1 : 0) } }
+            expect("edge tile falls left → right", String(column(0) >= column(7) && column(0) > 0), "true")
+        } else {
+            expect("edge tile rows 4 exists", "nil", "tile")
+        }
+        expect("edge tile rows 2 exists", String(Dither.Tiles.shared.edge(cell: edgeCell, rows: 2) != nil), "true")
+        let lines = (0..<8).map { Dither.glyphLine(frame: $0, row: 0, cols: 8) }
+        expect("glyphLine is cols long", String(lines[0].count), "8")
+        expect("glyphLine differs between consecutive frames", String(zip(lines, lines.dropFirst()).allSatisfy { $0 != $1 } && lines[7] != lines[0]), "true")
+        expect("glyphLine draws from the ramp", String(lines.joined().allSatisfy { Dither.glyphRamp.contains($0) }), "true")
+        let still = Dither.glyphLine(frame: -1, row: 3, cols: 16)
+        expect("glyphLine still frame is two-tone", String(still.allSatisfy { $0 == "." || $0 == "#" } && still.contains(".") && still.contains("#")), "true")
+        expect("glyphLine still frame follows the ranks", still, String((0..<16).map { Dither.bayer8Ranks[3 * 8 + ($0 % 8)] < 32 ? "." : "#" }))
+        expect("DitheredBar.fillCells(0.5, 200, 1.5)", String(DitheredBar.fillCells(fraction: 0.5, width: 200, cell: 1.5)), "66")
+        expect("DitheredBar.fillCells clamps", "\(DitheredBar.fillCells(fraction: -1, width: 200, cell: 1.5)),\(DitheredBar.fillCells(fraction: 2, width: 200, cell: 1.5))", "0,133")
+        let widths: [CGFloat] = [CGFloat(DitheredBar.totalCells(width: 200, cell: 1.5)) * 1.5, CGFloat(DitheredBar.fillCells(fraction: 0.5, width: 200, cell: 1.5) - 8) * 1.5, 8 * 1.5]
+        expect("DitheredBar widths are multiples of 1.5", String(widths.allSatisfy { ($0 / 1.5).rounded() * 1.5 == $0 }), "true")
+        let r = DitheredGradient.rounded(CGSize(width: 1180, height: 760), step: 64)
+        expect("DitheredGradient.rounded(1180×760, 64)", "\(Int(r.width))×\(Int(r.height))", "1216×768")
+        expect("DitheredGradient.rounded(step 0) is exact", String(DitheredGradient.rounded(CGSize(width: 1180, height: 760), step: 0) == CGSize(width: 1180, height: 760)), "true")
+        let lut = Dither.lut(stops: Dither.groundStops, bands: Dither.groundBands)
+        expect("ground LUT", lut.map { String(format: "%02x%02x%02x", Int($0.x.rounded()), Int($0.y.rounded()), Int($0.z.rounded())) }.joined(separator: ","), "070707,070707,0a0a0a,101010,161e35")
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (dither) at \(stamp)s")
+    }
+
+    /// `probe-ground`: the window's own pixels (CGWindowListCreateImage): the distinct colours of a
+    /// 32×32 px block at three bare places on the ground — the stream's top-left (one colour: ink),
+    /// the window's bottom-right (two: the raised step and the whisper), the stream's bottom-middle
+    /// above the composer (two: the field's first steps). Positions are in points × the backing scale.
+    private func probeGround(stamp: String) {
+        guard let img = windowImage() else {
+            print("ground: no window image (Screen Recording grant?)")
+            return
+        }
+        let W = img.width, H = img.height
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W * 4, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let _ = { ctx.draw(img, in: CGRect(x: 0, y: 0, width: W, height: H)); return ctx.data }() else {
+            print("ground: could not read pixels")
+            return
+        }
+        let px = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        func block(_ x0: Int, _ y0: Int, _ label: String) {
+            var colours: [String: Int] = [:]
+            for y in y0..<min(H, y0 + 32) {
+                for x in x0..<min(W, x0 + 32) {
+                    let i = (y * W + x) * 4
+                    colours[String(format: "#%02x%02x%02x", px[i], px[i + 1], px[i + 2]), default: 0] += 1
+                }
+            }
+            let sorted = colours.sorted { $0.value > $1.value }.map { "\($0.key)×\($0.value)" }.joined(separator: " ")
+            print("ground: \(label) at (\(x0), \(y0)) px → \(colours.count) distinct: \(sorted)")
+        }
+        print("ground: window image \(W)×\(H) px at \(stamp)s (the shot's origin is the window's top-left)")
+        let s = Int((NSScreen.main?.backingScaleFactor ?? 2).rounded())
+        // The stream spans the agents rail's width to the right rail's; the header is 44 pt, the composer 48.
+        let streamLeft = Int(ConsoleLayout.agentsRailWidth + ConsoleHairline.sidebarEdge) * s
+        let streamRight = W - Int(ConsoleLayout.rightRailWidth + ConsoleHairline.sidebarEdge) * s
+        block(streamLeft + 40 * s, 60 * s, "stream top-left")
+        block(W - 40 * s - 32, H - 40 * s - 32, "window bottom-right")
+        block((streamLeft + streamRight) / 2 - 16, H - 48 * s - 8 * s - 32, "stream bottom-middle")
+    }
+
     /// `key:<char>` sends ⌘<char> to the window the way the keyboard would (⌘F must open the
     /// rail's search); `undo` runs the window's undo manager once (Edit › Undo's path: the
     /// last cleanup action's inverse must go out). Both print what happened.
@@ -587,6 +843,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         if action == "clear-now" { return ["clearNow": true] }
         if action == "hit-first" { return ["hitFirst": true] }
         if action == "probe" { return ["probe": true] }
+        if action == "pin-loading" { return ["pinLoading": true] }
         if action.hasPrefix("hit:") {
             // hit:<sessionId>:<atMs>
             let parts = action.dropFirst("hit:".count).split(separator: ":", maxSplits: 1).map(String.init)
@@ -594,6 +851,35 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             return ["hit": ["sessionId": parts[0], "at": at] as [String: Any]]
         }
         return nil
+    }
+
+    /// The window's own pixels right now (CGWindowListCreateImage, at the backing scale), for
+    /// `probe-ground` and `snap:`. Needs the Screen Recording grant of whatever launched us.
+    private func windowImage() -> CGImage? {
+        guard let win = console?.windowNumber else { return nil }
+        return CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(win), [.boundsIgnoreFraming, .bestResolution])
+    }
+
+    /// `snap:<name>`: the frame on screen at this instant, written in-process as a PNG. Unlike
+    /// `shoot` there is no process to spawn, so a mid-wipe picture is the scheduled frame, not
+    /// one 0.1–0.3 s later.
+    private func snap(to path: String, stamp: String) {
+        guard let img = windowImage() else { print("snap: no window image (Screen Recording grant?)"); return }
+        // The capture is the instant; the encode (~0.1 s for a 2360×1520 PNG) happens off main so
+        // it delays neither the wipe's frames nor the next scheduled action.
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) else {
+                print("snap: could not encode \(path)")
+                return
+            }
+            do {
+                try data.write(to: URL(fileURLWithPath: path))
+                print("snap: \(path) at \(stamp)s (\(img.width)×\(img.height) px)")
+            } catch {
+                print("snap failed: \(error)")
+            }
+            fflush(stdout)
+        }
     }
 
     /// A window-only screenshot of the Console right now (`screencapture -l`), for a
@@ -669,6 +955,107 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The main thread's turns, measured from the run loop itself (`trace:<label>` … `trace-stop`).
+/// Two observers on the main run loop: `.afterWaiting` at the lowest order marks the moment the
+/// thread wakes, `.beforeWaiting` at the highest marks the moment it goes back to sleep — after
+/// Core Animation's commit observer (order 2 000 000), which is where SwiftUI's layers draw their
+/// contents (the masked pane's rasterisation showed up there). Whatever the thread did between the
+/// two — the scheduled action, the SwiftUI update, the layer commit, any rasterisation — is one turn's
+/// cost; an iteration that polls without sleeping fires neither observer and merges into the turn
+/// before it, which is the stall as the eye sees it. Turns of `floor` ms or more print as `frame:`
+/// lines (the first `printCap` of them); the stop prints the summary. Everything runs on main.
+final class MainThreadTrace {
+    private let launchedAt: Date
+    private var observers: [CFRunLoopObserver] = []
+    private var turnStart: CFAbsoluteTime?
+    private var turns: [(at: Double, ms: Double)] = []
+    private var label = ""
+    private var startedAt: Date?
+    /// When the traced switch was made (`mark`), seconds since launch; nil before it.
+    private var markAt: Double?
+    private var printed = 0
+    /// Turns under this many ms are housekeeping (a 20 Hz level tick's meter update): not counted.
+    let floor = 4.0
+    /// Listed: every counted turn in the first `listWindow` s after the mark (the wipe is 0.24 s of
+    /// it), any turn over `heavy` ms whenever it lands, and the first `printCap` before the mark.
+    let listWindow = 0.6
+    let heavy = 50.0
+    let printCap = 6
+
+    init(launchedAt: Date) { self.launchedAt = launchedAt }
+
+    /// The switch itself (called by `perform` for every action that is not a trace action).
+    func mark() {
+        guard startedAt != nil, markAt == nil else { return }
+        markAt = Date().timeIntervalSince(launchedAt)
+    }
+
+    func start(label: String, stamp: String) {
+        if startedAt != nil { stop(stamp: stamp) }
+        self.label = label
+        turns = []
+        printed = 0
+        turnStart = nil
+        markAt = nil
+        startedAt = Date()
+        let after = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min) { [weak self] _, _ in
+            self?.turnStart = CFAbsoluteTimeGetCurrent()
+        }
+        let before = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { [weak self] _, _ in
+            self?.turnEnded()
+        }
+        for o in [after, before].compactMap({ $0 }) {
+            CFRunLoopAddObserver(CFRunLoopGetMain(), o, .commonModes)
+            observers.append(o)
+        }
+        print("trace: \(label) started at \(stamp)s")
+    }
+
+    private func turnEnded() {
+        guard let t0 = turnStart else { return }
+        turnStart = nil
+        let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        guard ms >= floor else { return }
+        let end = Date().timeIntervalSince(launchedAt)
+        let at = end - ms / 1000
+        turns.append((at, ms))
+        // Listed: the switch's own turn and the ones in the window after it (the wipe's frames),
+        // anything heavy whenever it lands, and a few of the idle turns before the mark.
+        let listed: Bool
+        if let m = markAt {
+            listed = (end >= m && at <= m + listWindow) || ms > heavy
+        } else if printed < printCap {
+            printed += 1
+            listed = true
+        } else {
+            listed = ms > heavy
+        }
+        if listed {
+            let tag = markAt.map { end >= $0 ? String(format: " +%.0f ms", (at - $0) * 1000) : " (before)" } ?? " (before)"
+            print(String(format: "frame: t=%.3fs cost=%.1f ms (%@%@)", at, ms, label, tag))
+        }
+    }
+
+    func stop(stamp: String) {
+        guard let started = startedAt else { print("timing: nothing traced (no trace:<label> before trace-stop)"); return }
+        for o in observers { CFRunLoopRemoveObserver(CFRunLoopGetMain(), o, .commonModes) }
+        observers = []
+        startedAt = nil
+        let window = Date().timeIntervalSince(started) * 1000
+        // The switch's turn: the first counted turn that ends after the mark (the action runs
+        // inside it, then SwiftUI's update and Core Animation's commit — the first frame).
+        let after = markAt.map { m in turns.filter { $0.at + $0.ms / 1000 >= m } } ?? turns
+        let wipe = markAt.map { m in after.filter { $0.at <= m + Motion.base + 0.05 } } ?? []
+        let longest = after.max { $0.ms < $1.ms }
+        let over = after.filter { $0.ms > heavy }.count
+        let busy = after.reduce(0) { $0 + $1.ms }
+        func f(_ t: (at: Double, ms: Double)?) -> String { t.map { String(format: "%.1f ms at t=%.3fs", $0.ms, $0.at) } ?? "none" }
+        print(String(format: "timing: %@ — switch turn %@; wipe frames (0.29 s): %d, longest %@; after the switch: %d turns ≥ %.0f ms in %.0f ms, longest %@, over %.0f ms: %d, busy %.0f ms; stopped at %@s",
+                     label, f(after.first), wipe.count, f(wipe.max { $0.ms < $1.ms }),
+                     after.count, floor, window, f(longest), heavy, over, busy, stamp))
+    }
+}
+
 struct FakeData {
     let shot: String
     let now = Date().timeIntervalSince1970 * 1000
@@ -739,7 +1126,9 @@ struct FakeData {
             msg("c6", .tool, "", a0 + 15_000, tool: call("Edit", "{\"file_path\": \"apps/api/src/auth.ts\", \"old_string\": \"if (!h || !verify(h)) throw new HttpError(403, \\\"forbidden\\\");\", \"new_string\": \"if (!h) throw new HttpError(401, \\\"unauthorized\\\");\\n  if (!verify(h)) throw new HttpError(403, \\\"forbidden\\\");\"}", "Edited apps/api/src/auth.ts (1 replacement)")),
             msg("c7", .assistant, "Edited. Running the auth suite to confirm.", a0 + 17_000),
             msg("c8", .tool, "", a0 + 18_000, tool: call("Bash", "pnpm test --filter auth", nil, .running)),
-        ], total: 61, complete: false, live: true)
+            // Still being thought while the suite runs: the live thinking row (the ASCII indicator on its icon column).
+            msg("c9", .assistant, "The suite takes about forty seconds. If the 401 case passes, the 403 case with a bad token still needs its own assertion.", a0 + 19_000, thinking: true),
+        ], total: 62, complete: false, live: true)
 
         // gt · api hotfix — a finished Codex thread, read from its rollout.
         let x0 = ago(75 * 60)
@@ -948,8 +1337,10 @@ struct FakeData {
                     remedy: ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string("brain.unavailable")], open: nil), since: ago(6 * 60)),
             Problem(kind: "voice.limit", text: "GPT-Live-1 refused a note: the session's input history is full (128 items).",
                     remedy: nil, since: ago(3 * 60)),
-            Problem(kind: "disk.low", text: "Disk space is low: 3.1 GB free. Screenshots keep 14 days; the sweep can run now.",
-                    remedy: ProblemRemedy(label: "Run sweep", command: ["type": .string("ledger.sweep")], open: nil), since: ago(90)),
+            // The engine's own words and remedy (packages/engine/src/engine.ts, `disk.low`): the figure
+            // and the volume, and "Reveal shots" opens the shots folder — the one thing that frees space.
+            Problem(kind: "disk.low", text: "Disk low: 412 MB free on /Users/kevinliu/.jarhead; screenshots are not being saved",
+                    remedy: ProblemRemedy(label: "Reveal shots", command: nil, open: "/Users/kevinliu/.jarhead/shots"), since: ago(90)),
         ]
     }
 

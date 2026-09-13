@@ -6,6 +6,7 @@ import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, type
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type Reconciliation, type Reflex, type ReflexOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
 import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
 import { WorkerAwareRunner, WorkerPool, type WorkerBrainFactory, type WorkerParent, type WorkerVoice } from "./workers.ts";
 import {
@@ -97,6 +98,14 @@ export interface EngineOptions {
   readonly closeDeadlineMs?: number;
   /** The disk preflight's statvfs (default `fs.statfsSync` on the state dir): free bytes are `bavail * bsize`. Tests fake a full disk. */
   readonly statfs?: (path: string) => { readonly bavail: number | bigint; readonly bsize: number | bigint };
+  /**
+   * The shell-outs the engine makes itself — the Dock audit's `defaults export`, Fix the
+   * Dock's `defaults import` and `killall Dock` (default: spawnSync, argv only). Tests
+   * script it; with one given, the audit runs off macOS too.
+   */
+  readonly exec?: Exec;
+  /** How long after start() the Dock is first read (DOCK_AUDIT_DELAY_MS); tests shorten it. */
+  readonly dockAuditDelayMs?: number;
 }
 
 /** What the engine knows about a problem beyond its line: its kind, its one remedy, when it was first seen. */
@@ -263,6 +272,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   private inputLevel = 0;
   private snapshotTimer: NodeJS.Timeout | undefined;
   private tickTimer: NodeJS.Timeout | undefined;
+  /** The startup Dock read, armed in start(); cleared by stop(). */
+  private dockAuditTimer: NodeJS.Timeout | undefined;
+  /** After a Fix the Dock: when tick() reads the Dock once more to prove the tile stayed gone. 0 = nothing pending. */
+  private dockRecheckAt = 0;
+  /**
+   * A Fix the Dock imported the clean document but `killall Dock` failed: cfprefsd holds
+   * the import while the Dock process still draws both tiles (and writes its own copy back
+   * on its next event), so a clean read is not the truth — the row stays, and the next
+   * press owes only the restart.
+   */
+  private dockRestartOwed = false;
+  private readonly exec: Exec;
   /** When tick() last logged process memory (the OOM watch; 0 = log on the first tick). */
   private memoryLoggedAt = 0;
   private readonly excludePids = new Set<number>();
@@ -275,6 +296,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   constructor(private readonly opts: EngineOptions = {}) {
     super();
     this.now = opts.now ?? Date.now;
+    this.exec = opts.exec ?? defaultExec;
     this.config = opts.config ?? readConfig();
     mkdirSync(this.config.stateDir, { recursive: true });
     this.ledger = new Ledger(this.config.stateDir);
@@ -507,6 +529,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.checkDisk();
     // Retention (K1): days past the windows move to the Trash — listed in the log first; 0 = never.
     this.runSweep("startup");
+    // The Dock, read once (the "one Jarhead" region below): 20 s in, when the app's own
+    // launch has finished moving tiles around. A read, never a restart — that is Kevin's press.
+    if (this.dockAuditable()) {
+      this.dockAuditTimer = setTimeout(() => {
+        this.dockAuditTimer = undefined;
+        this.checkDock("startup");
+      }, this.opts.dockAuditDelayMs ?? Engine.DOCK_AUDIT_DELAY_MS);
+      this.dockAuditTimer.unref?.();
+    }
     void this.probeHands();
     void this.agents.refresh().then((r) => {
       this.connectorHealth = r.health;
@@ -2869,6 +2900,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    if (this.dockAuditTimer) clearTimeout(this.dockAuditTimer);
+    this.dockAuditTimer = undefined;
     this.stopAxWarm();
     this.closeConversations();
     await this.fallAsleep("shutdown");
@@ -3176,8 +3209,10 @@ export class Engine extends EventEmitter<EngineEvents> {
    * let the row clear when it passes. The permission kinds ask again (the helper's two
    * prompt; the app owns the rest, so the engine reads fresh and closely); the brain
    * restarts and is probed; the voice reconnects when it should be awake; the helper is
-   * a new process; the disk is measured again. A limit is over by the time anyone
-   * presses it; a crash report and the daemon row are the surface's to dismiss.
+   * a new process; the disk is measured again; the Dock is repaired (the one retry that
+   * writes: `defaults import` + `killall Dock`, what `pnpm jarhead dock --fix` does) and
+   * read again. A limit is over by the time anyone presses it; a crash report and the
+   * daemon row are the surface's to dismiss.
    */
   async retryProblem(kind: ProblemKind): Promise<void> {
     log.info(`problem.retry ${kind}`);
@@ -3228,12 +3263,144 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.checkDisk();
         this.scheduleSnapshot();
         return;
+      case "dock":
+        this.fixDock();
+        return;
       case "daemon":
       case "crash":
       case "other":
         this.clearProblems(kind);
         return;
     }
+  }
+
+  // ------------------------------------------------------------ one Jarhead: the Dock
+  // "There should only be one Jarhead." The install keeps the bundle directory's inode so
+  // the pin's bookmark stays valid, but a Dock that had already grown a second tile keeps
+  // it until something removes it. The engine READS the Dock — `defaults export
+  // com.apple.dock -`, ~100 ms; never lsregister, which waits on lsd for up to two
+  // minutes — 20 s after start(), and when Jarhead is there twice (a recent tile next to
+  // the pin, or two pins) raises `dock`, "Two Jarhead tiles in the Dock", with Fix the Dock
+  // as its one remedy. The fix runs only on that press (`problem.retry {kind:"dock"}`):
+  // the Dock half of `pnpm jarhead dock --fix` — drop Jarhead's recent tiles, keep one
+  // pin stripped to the keys the Dock rebuilds its bookmark from, `defaults import`
+  // behind the mod-count race check, `killall Dock` — then a re-read clears the row, and
+  // tick() reads once more 10 s later to see the tile stayed gone. An import whose
+  // `killall Dock` failed is not fixed — the Dock still draws both tiles and cfprefsd's
+  // clean copy is not the truth — so the row stays ("— Dock not restarted"), no recheck
+  // is armed, and the next press runs only the restart. No pin → one tile at most and
+  // nothing the fix could do, so no row (pinning is Kevin's). Every shell-out is capped
+  // at DOCK_EXEC_TIMEOUT_MS (spawnSync on the event loop). Nothing here touches a file;
+  // the Trash is never read.
+
+  /** How long after start() the Dock is first read: the app's own launch is still moving tiles for a few seconds. */
+  static readonly DOCK_AUDIT_DELAY_MS = 20_000;
+  /** After a fix, tick() reads the Dock once more this much later: a relaunched Dock rewrites its domain. */
+  static readonly DOCK_RECHECK_MS = 10_000;
+  /** The one thing to press: the repair, then a re-read. */
+  static readonly DOCK_REMEDY: ProblemRemedy = { label: "Fix the Dock", command: { type: "problem.retry", kind: "dock" } };
+  /**
+   * Cap on each Dock shell-out (`defaults export` is ~100 ms; `defaults import`, `killall
+   * Dock`). They run spawnSync on the daemon's event loop — 20 s in and on a press only —
+   * so a hung cfprefsd stalls a voice session for at most this long, not defaultExec's 20 s.
+   * A timed-out export reads as `skipped`.
+   */
+  static readonly DOCK_EXEC_TIMEOUT_MS = 3_000;
+  private static readonly DOCK_OPTS = { bundleId: JARHEAD_BUNDLE_ID, installedUrl: INSTALLED_URL, timeoutMs: Engine.DOCK_EXEC_TIMEOUT_MS } as const;
+
+  /** The Dock exists on macOS; a scripted exec (tests) runs the audit anywhere. */
+  private dockAuditable(): boolean {
+    return this.opts.exec !== undefined || process.platform === "darwin";
+  }
+
+  /**
+   * The row an audit earns, or none: two or more Jarhead tiles with a pin among them
+   * ("Two Jarhead tiles in the Dock"; the count past two), else a pin whose URL is not
+   * the installed bundle's. A recent tile with no pin is one tile — nothing to fix.
+   */
+  static dockProblemText(a: DockAudit): string | undefined {
+    const tiles = a.pinned + a.recent;
+    if (a.pinned >= 1 && tiles >= 2) return tiles === 2 ? "Two Jarhead tiles in the Dock" : `${tiles} Jarhead tiles in the Dock`;
+    const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
+    if (rebuild && rebuild.urlWas !== INSTALLED_URL) return `The Dock's Jarhead pin points at ${rebuild.urlWas ?? "nothing"}`;
+    return undefined;
+  }
+
+  /** Read the Dock (one `defaults export`, no write) and set or clear the `dock` row from what it says. */
+  checkDock(reason: string): DockAudit | undefined {
+    const read = readDock(this.exec, Engine.DOCK_OPTS);
+    if ("skipped" in read) {
+      // No Dock to read (headless, or cfprefsd said no): not a problem of Kevin's to fix.
+      log.debug(`dock audit (${reason}) skipped: ${read.skipped}`);
+      return undefined;
+    }
+    const text = Engine.dockProblemText(read);
+    if (text) this.replaceProblem("dock", text, Engine.DOCK_REMEDY);
+    // A clean read while a restart is owed is cfprefsd's import, not what the Dock draws: the row stays.
+    else if (!this.dockRestartOwed) this.clearProblems("dock");
+    log.info(`dock audit (${reason}): ${describeDock(read)}${text ? ` — ${text}` : ""}${!text && this.dockRestartOwed ? " — Dock not restarted, row kept" : ""}`);
+    this.scheduleSnapshot();
+    return read;
+  }
+
+  /**
+   * Fix the Dock was pressed: the repair (the same rounds, import and `killall Dock` as
+   * `pnpm jarhead dock --fix`), then the re-read that clears the row when it is clean and
+   * keeps it — with the reason — when it is not; tick() reads once more DOCK_RECHECK_MS later.
+   * An import whose `killall Dock` failed keeps the row too ("— Dock not restarted"): the
+   * re-read is only cfprefsd's copy until the Dock relaunches, so no recheck is armed and
+   * the next press runs just the restart. A read that fails toasts why and leaves the row.
+   */
+  private fixDock(): void {
+    const opts = { ...Engine.DOCK_OPTS, log: (line: string) => log.info(line) };
+    const before = readDock(this.exec, opts);
+    if ("skipped" in before) {
+      // The row stands — the read that raised it worked — and a press has to be seen to do something.
+      log.warn(`fix the Dock: ${before.skipped}`);
+      this.toast(`Could not read the Dock: ${before.skipped}`, "warn");
+      return;
+    }
+    let did: string;
+    let written: boolean;
+    let restarted: boolean;
+    let after: DockAudit = before;
+    let skipped: string | undefined;
+    if (before.changes.length > 0) {
+      const r = repairDock(this.exec, before, opts);
+      did = describeDockChanges(before.changes);
+      written = r.imported;
+      restarted = r.restarted;
+      after = r.after ?? before;
+      skipped = r.skipped;
+    } else if (this.dockRestartOwed) {
+      // The last press imported the clean document; only the relaunch is owed.
+      did = "restarted";
+      written = true;
+      restarted = restartDock(this.exec, opts);
+    } else {
+      log.info(`fix the Dock: nothing to repair (${describeDock(before)})`);
+      this.clearProblems("dock");
+      this.scheduleSnapshot();
+      return;
+    }
+    log.info(`fix the Dock: ${describeDock(after)} (${did}${restarted ? ", Dock restarted" : written ? ", Dock NOT restarted" : ", nothing written"})${skipped ? ` — ${skipped}` : ""}`);
+    this.dockRestartOwed = written && !restarted;
+    if (this.dockRestartOwed) {
+      const stood = Engine.dockProblemText(before) ?? this.typedProblems().find((p) => p.kind === "dock")?.text.replace(/ — .*$/, "") ?? "Two Jarhead tiles in the Dock";
+      this.replaceProblem("dock", `${stood} — Dock not restarted`, Engine.DOCK_REMEDY);
+      this.toast("Dock written, not restarted — press Fix the Dock again", "warn");
+      this.scheduleSnapshot();
+      return;
+    }
+    const text = Engine.dockProblemText(after);
+    if (!text) {
+      this.clearProblems("dock");
+      this.toast(`Dock fixed: ${did}`, "info");
+    } else {
+      this.replaceProblem("dock", skipped ? `${text} — ${skipped}` : text, Engine.DOCK_REMEDY);
+    }
+    this.dockRecheckAt = this.now() + Engine.DOCK_RECHECK_MS;
+    this.scheduleSnapshot();
   }
 
   // --------------------------------------- liveness, preflight, auto-resume (K3)
@@ -3332,6 +3499,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
     }
     if (this.diskLow && now - this.diskCheckedAt >= Engine.DISK_RECHECK_MS) this.checkDisk();
+    if (this.dockRecheckAt && now >= this.dockRecheckAt) {
+      this.dockRecheckAt = 0;
+      this.checkDock("after the fix");
+    }
   }
 
   /**

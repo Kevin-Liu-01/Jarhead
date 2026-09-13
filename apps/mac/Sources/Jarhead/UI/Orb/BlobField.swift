@@ -2339,8 +2339,10 @@ final class BlobFieldView: NSView {
     }
 
     /// 27×15 cell coverage → haloW×haloH smooth coverage: bilinear between cell
-    /// centres, then a separable box blur half a cell wide to melt the creases. Row 0
-    /// is the top, as CALayer.contents expects.
+    /// centres, then a separable box blur half a cell wide to melt the creases. This is a
+    /// smoothing of the coverage MASK before `haloImage` quantises and dithers it — not a
+    /// visible blur; the drawn halo is the ramp's five banded steps. Row 0 is the top, as
+    /// CALayer.contents expects.
     private func refineHalo() {
         let cols = BlobSim.cols, rows = BlobSim.rows
         let s = Self.haloScale, w = Self.haloW, h = Self.haloH
@@ -2404,12 +2406,13 @@ final class BlobFieldView: NSView {
         let backingAlpha = Float(min(max(backingAlpha, 0), 1))
         let gr = Float(glow.r), gg = Float(glow.g), gb = Float(glow.b), ga = Float(glowAlpha)
         let br = Float(ground.r), bg = Float(ground.g), bb = Float(ground.b)
-        // Kevin's rule: every shaded surface is dithered. The halo's smooth falloff is
-        // quantised to a few steps with the shared blue-noise tile (UI/Dither.swift), the
-        // way the icon and the notch island are; the layer magnifies it with nearest
-        // sampling so the grain stays grain at the field's size instead of blurring back
-        // into a gradient.
-        let levels: Float = 6
+        // Kevin's rule: every shaded surface is dithered. The halo's smooth falloff (the
+        // refined mask above) is quantised to the ramp's five steps (`Dither.bands`) with
+        // the shared 8×8 Bayer tile (UI/Dither.swift), the way the icon and the notch island
+        // are — one cell is one halo pixel, a quarter of a 1.5 pt cell at the field; the
+        // layer magnifies it with nearest sampling so the pattern stays a pattern at the
+        // field's size instead of blurring back into a gradient.
+        let levels: Float = Float(Dither.bands)
         haloFine.withUnsafeBufferPointer { fine in
             haloPixels.withUnsafeMutableBufferPointer { px in
                 for i in 0..<(w * h) {

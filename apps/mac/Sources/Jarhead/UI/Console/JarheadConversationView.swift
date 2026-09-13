@@ -410,7 +410,7 @@ private struct JarheadLogView: View {
         ZStack {
             if lines.isEmpty {
                 ConsoleEmpty(loading ? "Reading…" : "Nothing recorded.") {
-                    if loading { ProgressView().controlSize(.small) }
+                    if loading { ConsoleGlyphs(cols: 16, rows: 2) }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.opacity)

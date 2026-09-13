@@ -277,8 +277,15 @@ struct OrbCapsuleView: View {
         }
         .background(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).fill(theme.ground))
         .overlay(RoundedRectangle(cornerRadius: OrbTheme.radius, style: .continuous).strokeBorder(theme.hair, lineWidth: 1))
-        // The one sanctioned shadow in chrome: the capsule floats over other apps.
-        .shadow(color: .black.opacity(theme.dark ? 0.45 : 0.18), radius: 14, y: 6)
+        // The one sanctioned shadow in chrome: the capsule floats over other apps. Dithered
+        // like every other shade — the capsule's rect grown 12 pt, its coverage in four
+        // levels of 1.5 pt cells (`DitheredShadow`), sitting 6 pt low — never a blur. Black
+        // at 0.65 in dark (0.45 vanished into a dark desktop), 0.18 on paper.
+        .background {
+            GeometryReader { g in
+                DitheredShadow(size: g.size, cornerRadius: OrbTheme.radius, color: .black.opacity(theme.dark ? 0.65 : 0.18))
+            }
+        }
         // The frame morphs open from the blob's side with a little life, and folds
         // back toward it as the content fades; a plain fade under Reduce Motion.
         .scaleEffect(revealed || Motion.reduced ? 1 : 0.88, anchor: model.blobOnRight ? .trailing : .leading)
@@ -391,26 +398,32 @@ struct OrbCapsuleView: View {
             }
             .animation(Motion.fade, value: working != nil)
             Spacer(minLength: 4)
-            // The meter. A session open: elapsed, and what it has billed at the list price
-            // ("2.3 min · $0.12"; the word "billed" lives in the tooltip — the header is
-            // ~255pt and label + elapsed + meter must share it). Paused: what the closed
-            // session billed over today's total, two short lines. Asleep: today's total
-            // when there is one, else the plain "no session".
+            // The meter. A session open: elapsed over what it has billed at the list price
+            // ("2.3 min · $0.12"; the word "billed" lives in the tooltip), two right-aligned
+            // lines mirroring the phase word over its working line — the header is ~250 pt,
+            // and side by side the meter and "Working · 0:12" truncated each other to "$…"
+            // and "0…". The column keeps its width (fixedSize, layoutPriority); the phase side
+            // takes the rest. Paused: what the closed session billed over today's total, two
+            // short lines. Asleep: today's total when there is one, else the plain "no session".
             let today = TransportFormat.today(model.snapshot.usageToday)
             if let s = model.snapshot.session {
                 let elapsed = OrbStyle.mmss(now.timeIntervalSince1970 - s.startedAt / 1000)
                 let billed = TransportFormat.billed(s.usageSeconds)
-                Text(elapsed)
-                    .font(.system(size: 12, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(theme.text2)
-                    .metered(elapsed)
-                    .help("Elapsed")
-                Text(billed)
-                    .font(.system(size: 11, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(theme.titanium)
-                    .lineLimit(1)
-                    .metered(billed)
-                    .help("Billed this session: " + billed + (today.map { " · " + $0 } ?? ""))
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(elapsed)
+                        .font(.system(size: 12, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(theme.text2)
+                        .metered(elapsed)
+                        .help("Elapsed")
+                    Text(billed)
+                        .font(.system(size: 11, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(theme.titanium)
+                        .metered(billed)
+                        .help("Billed this session: " + billed + (today.map { " · " + $0 } ?? ""))
+                }
+                .lineLimit(1)
+                .fixedSize()
+                .layoutPriority(1)
             } else if model.paused, let p = model.snapshot.pause {
                 VStack(alignment: .trailing, spacing: 1) {
                     let billed = TransportFormat.billed(p.usageSeconds)

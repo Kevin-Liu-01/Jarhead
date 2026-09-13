@@ -19,6 +19,10 @@ import { parsePlistXml, serializePlistXml } from "./plist.ts";
  *            keep one pin stripped to the keys the Dock rebuilds its bookmark from →
  *            `defaults import` behind a mod-count race check → `killall Dock` only when
  *            something was written — `pnpm jarhead dock --fix`, JARHEAD_INSTALL_HYGIENE=fix
+ *
+ * The Dock half stands alone as `readDock` (one export) and `repairDock` (the rounds,
+ * the import, `killall Dock`): the engine's startup audit and its Fix the Dock remedy
+ * call those two and never lsregister, which waits on lsd for up to two minutes.
  */
 
 export type HygieneMode = "audit" | "install" | "fix";
@@ -107,7 +111,7 @@ export function runHygiene(opts: HygieneOptions): HygieneReport {
   const exec = opts.exec ?? defaultExec;
   const installed = opts.installed ?? INSTALLED_APP;
   const bundleId = opts.bundleId ?? JARHEAD_BUNDLE_ID;
-  const installedUrl = installed === INSTALLED_APP ? INSTALLED_URL : `file://${installed}/`;
+  const installedUrl = installedUrlOf(installed);
   const log = opts.log ?? ((): void => undefined);
   const mutateLs = opts.mode !== "audit";
   const mutateDock = opts.mode === "fix";
@@ -153,61 +157,16 @@ export function runHygiene(opts: HygieneOptions): HygieneReport {
     ls = { refreshed, records: first.records, stale, unregistered, remaining };
   }
 
-  // ---- Dock
-  const exportDock = (): DockAudit | { skipped: string } => {
-    const r = exec("defaults", ["export", DOCK_DOMAIN, "-"]);
-    if (r.code !== 0) return { skipped: `defaults export failed (${r.code})` };
-    try {
-      const doc = parsePlistXml(r.stdout);
-      if (doc.kind !== "dict" || !doc.entries.some(([k]) => k === "persistent-apps")) return { skipped: "no persistent-apps in the Dock domain" };
-      return auditDock(doc, { bundleId, installedUrl });
-    } catch (e) {
-      return { skipped: `Dock plist unreadable: ${(e as Error).message}` };
-    }
-  };
+  // ---- Dock (readDock / repairDock below: the engine's Fix-the-Dock runs the same two, without lsregister)
+  const dockOpts = { bundleId, installedUrl, log, ...(opts.maxDockRounds !== undefined ? { maxRounds: opts.maxDockRounds } : {}) };
   let dock: HygieneReport["dock"];
-  const before = exportDock();
+  const before = readDock(exec, dockOpts);
   if ("skipped" in before) {
     dock = { before: undefined, after: undefined, imported: false, restarted: false, rounds: 0, skipped: before.skipped };
   } else if (!mutateDock || before.changes.length === 0) {
     dock = { before, after: before, imported: false, restarted: false, rounds: 0 };
   } else {
-    const maxRounds = opts.maxDockRounds ?? 3;
-    let current = before;
-    let imported = false;
-    let restarted = false;
-    let rounds = 0;
-    let skipped: string | undefined;
-    for (;;) {
-      rounds++;
-      // The Dock rewrites its domain on its own events (a launch adds a recent tile):
-      // re-export and only import over a document whose mod-count we audited.
-      const again = exportDock();
-      if ("skipped" in again) {
-        skipped = again.skipped;
-        break;
-      }
-      if (again.modCount === current.modCount) {
-        const r = exec("defaults", ["import", DOCK_DOMAIN, "-"], { input: serializePlistXml(current.doc) });
-        if (r.code !== 0) {
-          skipped = `defaults import failed (${r.code}): ${r.stderr.trim()}`;
-          break;
-        }
-        imported = true;
-        const k = exec("killall", ["Dock"]);
-        restarted = k.code === 0;
-        if (!restarted) log(`[one-jarhead] killall Dock failed (${k.code}): ${k.stderr.trim()}`);
-        break;
-      }
-      current = again;
-      if (current.changes.length === 0) break;
-      if (rounds >= maxRounds) {
-        skipped = "the Dock kept changing; rerun pnpm jarhead dock --fix";
-        break;
-      }
-    }
-    const after = imported ? exportDock() : current;
-    dock = { before, after: "skipped" in after ? undefined : after, imported, restarted, rounds, ...(skipped ? { skipped } : {}) };
+    dock = repairDock(exec, before, dockOpts);
   }
 
   const partial = { mode: opts.mode, launchServices: ls, dock, line: "" };
@@ -215,6 +174,103 @@ export function runHygiene(opts: HygieneOptions): HygieneReport {
   const report: HygieneReport = { ...partial, line };
   log(line);
   return report;
+}
+
+/** The `_CFURLString` the Dock writes for a bundle path. */
+export function installedUrlOf(installed: string): string {
+  return installed === INSTALLED_APP ? INSTALLED_URL : `file://${installed}/`;
+}
+
+export interface DockOnlyOptions {
+  readonly bundleId?: string;
+  readonly installedUrl?: string;
+  readonly log?: (line: string) => void;
+  /** Export/compare rounds before giving up on a Dock that keeps rewriting itself (3). */
+  readonly maxRounds?: number;
+  /**
+   * Cap for each `defaults` / `killall` call. Unset, defaultExec's 20 s (the CLI, at a
+   * terminal); the engine passes DOCK_EXEC_TIMEOUT_MS so a hung cfprefsd cannot hold the
+   * daemon's event loop — a timed-out export reads as `skipped`.
+   */
+  readonly timeoutMs?: number;
+}
+
+/** The exec options a Dock call carries: the cap when one was given, nothing otherwise (so the CLI's argv trace is unchanged). */
+const timeoutOf = (opts: DockOnlyOptions): { readonly timeoutMs?: number } => (opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {});
+
+/**
+ * READ the Dock: `defaults export com.apple.dock -` (through cfprefsd) → the audit.
+ * One command, ~100 ms, no lsregister (which waits on lsd for up to two minutes), no
+ * write. The engine runs this 20 s after start and after every Fix-the-Dock.
+ */
+export function readDock(exec: Exec, opts: DockOnlyOptions = {}): DockAudit | { skipped: string } {
+  const bundleId = opts.bundleId ?? JARHEAD_BUNDLE_ID;
+  const installedUrl = opts.installedUrl ?? INSTALLED_URL;
+  const r = exec("defaults", ["export", DOCK_DOMAIN, "-"], timeoutOf(opts));
+  if (r.code !== 0) return { skipped: `defaults export failed (${r.code})` };
+  try {
+    const doc = parsePlistXml(r.stdout);
+    if (doc.kind !== "dict" || !doc.entries.some(([k]) => k === "persistent-apps")) return { skipped: "no persistent-apps in the Dock domain" };
+    return auditDock(doc, { bundleId, installedUrl });
+  } catch (e) {
+    return { skipped: `Dock plist unreadable: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * `killall Dock`: the Dock relaunches from cfprefsd's document — the import. True when
+ * it went; a failure is logged with its reason. The one step that shows on screen, so
+ * only `repairDock` (after an import) and the engine's Fix-the-Dock press (when the
+ * last press imported but this failed) call it.
+ */
+export function restartDock(exec: Exec, opts: DockOnlyOptions = {}): boolean {
+  const k = exec("killall", ["Dock"], timeoutOf(opts));
+  if (k.code !== 0) (opts.log ?? ((): void => undefined))(`[one-jarhead] killall Dock failed (${k.code}): ${k.stderr.trim()}`);
+  return k.code === 0;
+}
+
+/**
+ * The Dock repair, given an audit with changes: re-export and compare `mod-count` (the
+ * Dock rewrites its domain on its own events — a launch adds a recent tile — so only a
+ * document whose mod-count we audited is imported), `defaults import com.apple.dock -`,
+ * `killall Dock` only when something was written, then one export for the report.
+ * Exactly what `pnpm jarhead dock --fix` does; the engine's `problem.retry {kind:"dock"}`
+ * runs it when Kevin presses Fix the Dock — never on its own.
+ */
+export function repairDock(exec: Exec, before: DockAudit, opts: DockOnlyOptions = {}): HygieneReport["dock"] {
+  const maxRounds = opts.maxRounds ?? 3;
+  const again = (): DockAudit | { skipped: string } => readDock(exec, opts);
+  let current = before;
+  let imported = false;
+  let restarted = false;
+  let rounds = 0;
+  let skipped: string | undefined;
+  for (;;) {
+    rounds++;
+    const fresh = again();
+    if ("skipped" in fresh) {
+      skipped = fresh.skipped;
+      break;
+    }
+    if (fresh.modCount === current.modCount) {
+      const r = exec("defaults", ["import", DOCK_DOMAIN, "-"], { input: serializePlistXml(current.doc), ...timeoutOf(opts) });
+      if (r.code !== 0) {
+        skipped = `defaults import failed (${r.code}): ${r.stderr.trim()}`;
+        break;
+      }
+      imported = true;
+      restarted = restartDock(exec, opts);
+      break;
+    }
+    current = fresh;
+    if (current.changes.length === 0) break;
+    if (rounds >= maxRounds) {
+      skipped = "the Dock kept changing; rerun pnpm jarhead dock --fix";
+      break;
+    }
+  }
+  const after = imported ? again() : current;
+  return { before, after: "skipped" in after ? undefined : after, imported, restarted, rounds, ...(skipped ? { skipped } : {}) };
 }
 
 /** The `one jarhead` line under `install`: what LaunchServices holds and what the Dock shows. */

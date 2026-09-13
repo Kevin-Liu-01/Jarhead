@@ -1,7 +1,7 @@
 {
   "name": "jarhead",
   "version": "2.0.0",
-  "description": "Voice-first Mac assistant that uses the computer for you: GPT-Live-1 voice, vendor-neutral brains (Codex, Claude Code, any API), native hands, a blob that shows its work.",
+  "description": "Voice-first Mac assistant that uses the computer for you. GPT-Live-1 full-duplex voice behind an on-device wake word and Touch ID; vendor-neutral brains (Codex, Claude Code, any API); native Swift hands, two at once; a Console into every coding-agent session; a dithered ASCII blob in the notch. Rewrites itself in a worktree, with your yes.",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -22,6 +22,8 @@
     "jarhead": "tsx packages/cli/src/main.ts",
     "build:hands": "tsx scripts/build-hands.ts",
     "build:icon": "tsx scripts/make-icon.ts",
+    "build:banner": "tsx scripts/make-banner.ts",
+    "build:media": "pnpm build:icon && pnpm build:banner",
     "jarheadd": "tsx packages/daemon/src/main.ts",
     "build:mac": "tsx scripts/build-mac.ts"
   },

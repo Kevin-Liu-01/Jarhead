@@ -449,12 +449,13 @@ export interface Snapshot {
   readonly workers?: readonly Worker[];
 }
 
+/** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
 export type ProblemKind =
   | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
-  | "brain.unavailable" | "brain.probe" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "daemon" | "crash" | "other";
+  | "brain.unavailable" | "brain.probe" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other";
 
 export interface ProblemRemedy {
-  /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon". */
+  /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock". */
   readonly label: string;
   /** What the button does: an EngineCommand the surface sends, or a URL/path the surface opens. */
   readonly command?: EngineCommand;

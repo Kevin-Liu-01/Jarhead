@@ -35,7 +35,9 @@ import SwiftUI
 //   ORB_SHOT_DIR=/dir      take screenshots there, named <ORB_SHOT_PREFIX, default
 //                          preview-blob-><what>.png: squish-N whenever the blob is pressed
 //                          (≥ ORB_SHOT_PRESS, default 0.3; up to 4, 0.5 s apart), phase-<name>
-//                          1.2 s into each phase, rest when it settles, expanded with ORB_EXPAND,
+//                          1.2 s into each phase (the collapsed blob's halo — not taken on an
+//                          ORB_EXPAND or ORB_OVERLAY run, which would overwrite them with the
+//                          capsule), rest when it settles, expanded with ORB_EXPAND,
 //                          gate-<name> with ORB_GATE
 //   ORB_GATE=list          wake gate states to cycle while asleep (comma list of listening,
 //                          heard, authenticating, granted, denied, locked; default: all of
@@ -283,6 +285,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var squishShots = 0
     var lastShotAt = 0.0
     var phaseShotTaken = false
+    /// Phase shots are for the collapsed blob's halo; a run that expands the capsule (ORB_EXPAND)
+    /// or fires the overlay (ORB_OVERLAY) would overwrite them with the wrong picture, so it takes none.
+    var phaseShots = true
     var restShotTaken = false
     var wasMoving = false
     var lastLog = 0.0
@@ -313,6 +318,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var peeledAt = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The dither tiles first, so a shot a few seconds in never catches the fade fallback.
+        Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
         let env = ProcessInfo.processInfo.environment
         let x = Double(env["ORB_X"] ?? "") ?? 200
         let y = Double(env["ORB_Y"] ?? "") ?? 200
@@ -332,6 +339,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         shotDir = env["ORB_SHOT_DIR"]
         shotPrefix = env["ORB_SHOT_PREFIX"] ?? "preview-blob-"
         shotPress = Double(env["ORB_SHOT_PRESS"] ?? "") ?? 0.3
+        phaseShots = env["ORB_EXPAND"] != "1" && env["ORB_OVERLAY"] != "1"
+        if shotDir != nil, !phaseShots { print("phase shots off (ORB_EXPAND / ORB_OVERLAY run): run the phases command on its own for preview-blob-phase-*.png") }
         if let spec = env["ORB_LEVELS"] {
             levelsOverride = spec.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             levelsOverrideAt = Double(env["ORB_LEVELS_AT"] ?? "") ?? 0
@@ -1421,7 +1430,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                 gateShotTaken = true
                 shoot("\(dir)/\(shotPrefix)gate-\(currentGateName)\(orb.previewIsExpanded ? "-expanded" : "").png", note: currentGateName)
             }
-        } else if !moving, !phaseShotTaken, Date().timeIntervalSince(phaseStart) > 1.2 {
+        } else if phaseShots, !moving, !phaseShotTaken, Date().timeIntervalSince(phaseStart) > 1.2 {
             phaseShotTaken = true
             shoot("\(dir)/\(shotPrefix)phase-\(state.snapshot.phase.rawValue).png", note: state.snapshot.phase.rawValue)
         }

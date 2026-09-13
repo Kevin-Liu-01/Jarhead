@@ -98,6 +98,12 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             .environment(\.consoleTransport, transport)
         let hosting = NSHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]
+        // The window's minimum is `minSize` above (the columns' sum); the hosting view must not
+        // also derive one. With the default options AppKit asks it for its min / intrinsic / max
+        // size whenever its constraints are re-validated — a full SwiftUI layout pass of every
+        // rail and row, 20–50 ms on a live Console, several times over a pane switch (traced:
+        // `NSHostingView.minSize → ViewGraph.sizeThatFits` under `invalidateSizeConstraintsIfNecessary`).
+        hosting.sizingOptions = []
         window.contentView = hosting
         return window
     }

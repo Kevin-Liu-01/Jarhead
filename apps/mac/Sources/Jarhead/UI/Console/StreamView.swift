@@ -48,8 +48,9 @@ struct StreamPane: View, Equatable {
 
     var body: some View {
         // The feed's identity is the day on screen: a ledger day arriving or the way back
-        // to live crossfades one feed into the next (Motion.swap) under the banner, which
-        // itself fades and rises in; the composer stays put with whatever was typed.
+        // to live switches one feed for the next behind the curtain (Motion.curtain) under
+        // the banner, which itself fades and rises in; the composer stays put with whatever
+        // was typed. (A masked wipe of the feed cost the main thread 0.6 s a switch — measured.)
         let feedKey = ledgerDay ?? "live"
         VStack(spacing: 0) {
             if let day = ledgerDay {
@@ -60,10 +61,14 @@ struct StreamPane: View, Equatable {
                 // A past day's workers are its `worker` rows (system lines); only the live feed has the list.
                 StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear, workers: ledgerDay == nil ? workers : [])
                     .id(feedKey)
-                    .transition(Motion.swap)
+                    .transition(.identity)
+                Color.clear
+                    .allowsHitTesting(false)
+                    .id(feedKey)
+                    .transition(Motion.curtain(ConsoleTheme.ground))
             }
             .clipped()
-            .animation(Motion.gentle, value: feedKey)
+            .animation(Motion.wipeAnimation, value: feedKey)
             ComposerBar(phase: phase, stopHot: delegationRunning)
         }
         .animation(Motion.gentle, value: ledgerDay == nil)
@@ -141,6 +146,8 @@ struct ConsoleScrollGeometry: Equatable {
 /// which a LazyVStack's `scrollTo` cannot promise while rows are unmaterialised.
 final class ConsoleScrollProbeView: NSView {
     var onChange: ((ConsoleScrollGeometry) -> Void)?
+    /// The probe just found (or re-found) its scroll view; its first report follows.
+    var onHook: (() -> Void)?
     private var tokens: [NSObjectProtocol] = []
     private weak var hooked: NSScrollView?
 
@@ -170,6 +177,7 @@ final class ConsoleScrollProbeView: NSView {
             doc.postsFrameChangedNotifications = true
             tokens.append(center.addObserver(forName: NSView.frameDidChangeNotification, object: doc, queue: .main) { [weak self] _ in self?.report() })
         }
+        onHook?()
         report()
     }
 
@@ -235,6 +243,7 @@ struct ConsoleScrollProbe: NSViewRepresentable {
     func makeNSView(context: Context) -> ConsoleScrollProbeView {
         let view = ConsoleScrollProbeView()
         view.onChange = { [tracker] in tracker.track($0) }
+        view.onHook = { [tracker] in tracker.probeHooked() }
         tracker.probe = view
         return view
     }
@@ -259,6 +268,9 @@ final class ConsoleFeedTracker: ObservableObject {
     /// still the document *before* the change, which a prepend needs.
     private(set) var lastGeometry: ConsoleScrollGeometry?
     private var lastMinY: CGFloat = 0
+    /// The probe (re)attached and has not reported since: its first report is a fresh
+    /// baseline, not a scroll (see `track`).
+    private var rehooked = false
     weak var probe: ConsoleScrollProbeView?
     /// SwiftUI's own scroll-to-bottom, for the moment before the probe is hooked.
     var fallback: (Bool) -> Void = { _ in }
@@ -277,6 +289,15 @@ final class ConsoleFeedTracker: ObservableObject {
     func track(_ geo: ConsoleScrollGeometry) {
         defer { lastMinY = geo.minY; lastGeometry = geo }
         let distance = geo.distanceFromBottom
+        if rehooked {
+            // The probe's first report after attaching (a pane arriving under a wipe attaches
+            // its AppKit views a turn after `onAppear`, so the jump there took SwiftUI's own
+            // scrollTo, which lands the content's bottom padding short of the end). Not a
+            // scroll by anyone: a stuck feed is pinned exactly, an unstuck one left alone.
+            rehooked = false
+            if stuck, distance > 0.5 { jump(animated: false) }
+            return
+        }
         if geo.minY < lastMinY - 0.5 {
             guard distance > 0.5 else { return }
             stuck = false
@@ -289,6 +310,9 @@ final class ConsoleFeedTracker: ObservableObject {
             jump(animated: false)
         }
     }
+
+    /// The probe found its scroll view: the next report is a baseline (`track`).
+    func probeHooked() { rehooked = true }
 
     /// Back to live, or a new day: follow the end again.
     func reset() {
@@ -458,7 +482,7 @@ struct StreamFeed: View {
     private var emptyView: some View {
         ConsoleEmpty(emptyState.text) {
             if emptyState.loading {
-                ProgressView().controlSize(.small)
+                ConsoleGlyphs(cols: 16, rows: 2)
             } else if emptyState.go {
                 Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
@@ -553,7 +577,7 @@ private struct StreamingCaret: View {
             .opacity(on ? 1 : 0.15)
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.5).repeatForever()) { on = false }
+                withAnimation(.easeInOut(duration: Motion.caret).repeatForever()) { on = false }
             }
     }
 }
@@ -629,7 +653,8 @@ struct DelegationCard: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(d.steps.enumerated()), id: \.element.id) { index, step in
                         StepRow(step: step, delegatedAt: d.timings.delegatedAt,
-                                waiting: d.status == .awaitingConfirmation && index == d.steps.count - 1)
+                                waiting: d.status == .awaitingConfirmation && index == d.steps.count - 1,
+                                live: d.status == .running && index == d.steps.count - 1)
                             .rowAppear(animated: settled)
                     }
                 }
@@ -806,6 +831,9 @@ struct StepRow: View {
     let step: DelegationStep
     let delegatedAt: Double
     let waiting: Bool
+    /// The delegation is running and this is its last step: a thinking step is being thought
+    /// right now, so its icon column shows the ASCII indicator instead of the ellipsis.
+    var live = false
 
     @Environment(\.consoleActions) private var actions
     @EnvironmentObject private var session: ConsoleSession
@@ -813,7 +841,7 @@ struct StepRow: View {
     var body: some View {
         switch step.kind {
         case .thinking:
-            row("ellipsis", ConsoleTheme.titanium) {
+            row("ellipsis", ConsoleTheme.titanium, live: live) {
                 Text(step.text ?? "").font(ConsoleTheme.sans(12)).italic().foregroundStyle(ConsoleTheme.fg3)
             }
         case .commentary:
@@ -858,9 +886,17 @@ struct StepRow: View {
         }
     }
 
-    private func row<C: View>(_ symbol: String, _ tint: Color, top: Bool = false, @ViewBuilder content: () -> C) -> some View {
+    private func row<C: View>(_ symbol: String, _ tint: Color, top: Bool = false, live: Bool = false, @ViewBuilder content: () -> C) -> some View {
         HStack(alignment: top ? .top : .firstTextBaseline, spacing: iconGap) {
-            ConsoleIcon(name: symbol, tint: tint)
+            // A ZStack, so the indicator and the symbol crossfade when the thought settles.
+            ZStack {
+                if live {
+                    ConsoleGlyphs(cols: 3, rows: 1, color: tint).frame(width: 20, height: 20).transition(.opacity)
+                } else {
+                    ConsoleIcon(name: symbol, tint: tint).transition(.opacity)
+                }
+            }
+            .animation(Motion.fade, value: live)
             if let name = step.worker, name != "Jarhead" { WorkerTag(name: name) }
             content()
                 .lineSpacing(2)
@@ -957,10 +993,15 @@ struct ConsoleBitmap: @unchecked Sendable {
 actor ConsoleThumbnails {
     static let shared = ConsoleThumbnails()
 
+    /// Set only by the preview harness (PREVIEW_SLOW_THUMBS=1): every thumbnail waits a minute
+    /// before decoding, so the dithered skeletons stay on screen to shoot.
+    nonisolated(unsafe) static var holdForPreview = false
+
     private var cache: [String: ConsoleBitmap] = [:]
     private var inflight: [String: Task<ConsoleBitmap?, Never>] = [:]
 
     func thumbnail(for url: URL, maxPixel: Int) async -> CGImage? {
+        if Self.holdForPreview { try? await Task.sleep(nanoseconds: 60_000_000_000) }
         let key = "\(maxPixel)|\(url.path)"
         if let hit = cache[key] { return hit.cg }
         let task: Task<ConsoleBitmap?, Never>
@@ -1012,20 +1053,27 @@ struct ScreenshotThumb: View {
     @State private var image: CGImage?
     @State private var failed = false
     @State private var hovering = false
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        Group {
+        // The skeleton (a dithered ground → raised ramp under the photo glyph) and the decoded
+        // image are siblings in one ZStack, so the picture wipes in over the crosshatch.
+        ZStack {
             if let image = image {
                 Image(image, scale: 2, label: Text("Screenshot")).resizable().aspectRatio(contentMode: .fit)
+                    .transition(Motion.wipe)
             } else {
                 ZStack {
-                    Rectangle().fill(ConsoleTheme.raised)
+                    DitheredGradient(stops: scheme == .dark ? Dither.skeletonStopsDark : Dither.skeletonStopsLight,
+                                     direction: .horizontal, bands: 2, cellPoints: 2)
                     Image(systemName: failed ? "photo.badge.exclamationmark.fill" : "photo.fill")
                         .font(.system(size: 14, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
                 }
                 .aspectRatio(16 / 10, contentMode: .fit)
+                .transition(Motion.wipe)
             }
         }
+        .animation(Motion.animation(Motion.easeOut, Motion.base), value: image == nil)
         .frame(width: width)
         .overlay(Rectangle().stroke(hovering && image != nil ? ConsoleTheme.fg : ConsoleTheme.hairFrame, lineWidth: 1))
         .animation(ConsoleMotion.hover, value: hovering)
@@ -1060,7 +1108,7 @@ struct LightboxView: View {
                 } else if failed {
                     ConsoleEmpty("Screenshot not found.")
                 } else {
-                    ProgressView().controlSize(.small)
+                    ConsoleGlyphs(cols: 16, rows: 2)
                 }
             }
             .frame(maxWidth: 1400, maxHeight: 820)

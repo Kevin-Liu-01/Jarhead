@@ -7,7 +7,8 @@
 #   ORB_EXPAND=1 ORB_OVERLAY=1 Scripts/orb-preview.sh
 #   ORB_PHASES=listening,speaking ORB_PHASE_SECONDS=4 Scripts/orb-preview.sh
 #   ORB_FLING=-2400,900 ORB_SHOT_DIR=Resources Scripts/orb-preview.sh   # throw it at the edges, screenshot the squish
-#   ORB_EXPAND=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=4 Scripts/orb-preview.sh   # Resources/preview-blob-expanded.png
+#   ORB_EXPAND=1 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=4 Scripts/orb-preview.sh   # Resources/preview-blob-expanded.png (no phase shots on this run)
+#   ORB_PHASES=listening,thinking,acting ORB_PHASE_SECONDS=2.5 ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=9 Scripts/orb-preview.sh   # the halo at five levels → preview-blob-phase-{listening,thinking,acting}.png
 #   ORB_GATE=authenticating,locked ORB_SHOT_DIR=Resources ORB_EXIT_AFTER=6 Scripts/orb-preview.sh   # the wake gate on the blob + pill
 #   ORB_GATE=authenticating ORB_EXPAND=1 ORB_KEY_TEST=1 ORB_NO_DISMISS=1 ORB_EXIT_AFTER=5 Scripts/orb-preview.sh   # capsule gate row, Cancel, field, key handshake
 #   ORB_X=200 ORB_Y=620 ORB_PHASES=speaking ORB_PHASE_SECONDS=60 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY="1000,300" ORB_SHOT_DIR=Resources ORB_SHOT_INPROCESS=1 ORB_EXIT_AFTER=8 Scripts/orb-preview.sh

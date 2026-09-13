@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfig, type JarheadConfig } from "@jarhead/core";
 import { Engine } from "../engine.ts";
+import { noShell } from "./world.ts";
 
 /**
  * How `auto` picks a brain, with a stand-in Codex CLI and a HOME without a
@@ -77,7 +78,7 @@ function world(brain: JarheadConfig["brain"], signedIn: boolean, opts: { brokenC
 
 test("auto resolves to codex when the CLI is found and signed in, and says so in setup.brainResolved", async () => {
   const w = world("auto", true);
-  const engine = new Engine({ config: w.config, connectors: [] });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell });
   try {
     await engine.start();
     await engine.ready();
@@ -97,7 +98,7 @@ test("auto resolves to codex when the CLI is found and signed in, and says so in
 
 test("auto skips a Codex that is installed but not signed in without a problem line, and lands on openai-responses", async () => {
   const w = world("auto", false);
-  const engine = new Engine({ config: w.config, connectors: [] });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell });
   try {
     await engine.start();
     await engine.ready();
@@ -115,7 +116,7 @@ test("auto skips a Codex that is installed but not signed in without a problem l
 test("auto says which configured backend broke when it lands on openai-responses, instead of claiming nothing was configured", async () => {
   // Signed in, binary present, but the binary will not run: configured, and a problem — not "not configured".
   const w = world("auto", true, { brokenCodex: true });
-  const engine = new Engine({ config: w.config, connectors: [] });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell });
   try {
     await engine.start();
     await engine.ready();
@@ -132,7 +133,7 @@ test("auto says which configured backend broke when it lands on openai-responses
 
 test("an explicit codex that cannot start records a problem and walks on down the auto order", async () => {
   const w = world("codex", false);
-  const engine = new Engine({ config: w.config, connectors: [] });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell });
   try {
     await engine.start();
     await engine.ready();
@@ -150,7 +151,7 @@ test("an explicit codex that cannot start records a problem and walks on down th
 test("a test-injected brain is used as-is and does not claim a resolved kind", async () => {
   const w = world("auto", true);
   const brain = { kind: "fake", start: async () => ({ ready: true, detail: "fake" }), handle: async () => ({ status: "done" as const }), cancel: async () => undefined, stop: async () => undefined };
-  const engine = new Engine({ config: w.config, connectors: [], brain });
+  const engine = new Engine({ config: w.config, connectors: [], brain, exec: noShell });
   try {
     await engine.start();
     await engine.ready();

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { INSTALLED_URL } from "../install/dock.ts";
 import { LSREGISTER } from "../install/launchservices.ts";
-import { LSREGISTER_TIMEOUT_MS, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
+import { LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
 import { dictGet, dictSet, int, parsePlistXml, serializePlistXml, stringAt } from "../install/plist.ts";
 
 /**
@@ -219,6 +219,77 @@ test("hygiene: a record whose path is a symlink to the installed bundle is the i
   const raw = fake({ exports: [TWO], dumps: [DUMP + linkRecord] });
   runHygiene({ ...base, mode: "install", exec: raw.exec, realpath: (p) => p });
   assert.ok(raw.calls.some((c) => c.args[0] === "-u" && c.args[1] === LINK));
+});
+
+test("readDock / repairDock — the engine's Fix the Dock: a read is one `defaults export` and never lsregister; the repair is export (mod-count), import of the audited document, killall Dock, export — the same Dock half as `dock --fix`", () => {
+  const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
+  const { exec, calls } = fake({ exports: [TWO, TWO, CLEANED] });
+  const before = readDock(exec);
+  assert.deepEqual(argv(calls), [["defaults", "export", "com.apple.dock"]]);
+  assert.ok(!("skipped" in before));
+  if ("skipped" in before) return;
+  assert.equal(before.pinned, 1);
+  assert.equal(before.recent, 1);
+  assert.deepEqual(
+    before.changes.map((c) => c.kind),
+    ["remove-recent", "rebuild-pin"],
+  );
+  const r = repairDock(exec, before);
+  assert.deepEqual(argv(calls), [
+    ["defaults", "export", "com.apple.dock"],
+    ["defaults", "export", "com.apple.dock"],
+    ["defaults", "import", "com.apple.dock"],
+    ["killall", "Dock"],
+    ["defaults", "export", "com.apple.dock"],
+  ]);
+  assert.ok(!calls.some((c) => c.cmd === LSREGISTER), "never lsregister from the engine: lsd can hold a call for two minutes");
+  const imported = calls.find((c) => c.args[0] === "import");
+  assert.deepEqual(imported?.args, ["import", "com.apple.dock", "-"]);
+  const doc = parsePlistXml(imported?.input ?? "");
+  const recent = dictGet(doc, "recent-apps");
+  assert.equal(recent?.kind === "array" ? recent.items.length : -1, 1, "Jarhead's recent tile dropped, TextEdit kept");
+  assert.equal(r.imported, true);
+  assert.equal(r.restarted, true);
+  assert.equal(r.rounds, 1);
+  assert.equal(r.after?.changes.length, 0, "the re-read is clean");
+  assert.equal(r.skipped, undefined);
+  // A read that fails carries its reason and nothing is written; a race that never settles is skipped without an import.
+  const failed = fake({ exports: [], exportCode: 1 });
+  assert.deepEqual(readDock(failed.exec), { skipped: "defaults export failed (1)" });
+  const moved = serializePlistXml(dictSet(parsePlistXml(TWO), "mod-count", int("1428")));
+  const racing = fake({ exports: [TWO, moved, moved] });
+  const b2 = readDock(racing.exec);
+  if ("skipped" in b2) return assert.fail("read");
+  const r2 = repairDock(racing.exec, b2, { maxRounds: 1 });
+  assert.equal(r2.imported, false);
+  assert.ok(!racing.calls.some((c) => c.args[0] === "import" || c.cmd === "killall"));
+  assert.match(r2.skipped ?? "", /kept changing/);
+  // A failed import restarts nothing and says why.
+  const badImport = fake({ exports: [TWO, TWO], importCode: 1 });
+  const b3 = readDock(badImport.exec);
+  if ("skipped" in b3) return assert.fail("read");
+  const r3 = repairDock(badImport.exec, b3);
+  assert.equal(r3.imported, false);
+  assert.ok(!badImport.calls.some((c) => c.cmd === "killall"));
+  assert.match(r3.skipped ?? "", /import failed \(1\)/);
+  assert.equal(installedUrlOf(INSTALLED), INSTALLED_URL);
+  assert.equal(installedUrlOf("/Users/kevinliu/jarvis/build/stage/Jarhead.app"), "file:///Users/kevinliu/jarvis/build/stage/Jarhead.app/");
+  // The calls above carried no cap (the CLI at a terminal keeps defaultExec's 20 s); with `timeoutMs` given, every Dock call — export, import, killall — carries it (the engine's 3 s).
+  assert.ok(calls.every((c) => c.timeoutMs === undefined), "no timeoutMs unless asked: the CLI's argv trace is unchanged");
+  const capped = fake({ exports: [TWO, TWO, CLEANED] });
+  const b4 = readDock(capped.exec, { timeoutMs: 3000 });
+  if ("skipped" in b4) return assert.fail("read");
+  repairDock(capped.exec, b4, { timeoutMs: 3000 });
+  assert.equal(capped.calls.length, 5);
+  assert.ok(capped.calls.every((c) => c.timeoutMs === 3000), JSON.stringify(capped.calls.map((c) => [c.cmd, c.args[0], c.timeoutMs])));
+  // restartDock alone: `killall Dock`, true when it went, false (and logged) when not; nothing else runs.
+  const lines: string[] = [];
+  const dead = fake({ exports: [], killallCode: 1 });
+  assert.equal(restartDock(dead.exec, { log: (l) => lines.push(l), timeoutMs: 3000 }), false);
+  assert.deepEqual(argv(dead.calls), [["killall", "Dock"]]);
+  assert.equal(dead.calls[0]?.timeoutMs, 3000);
+  assert.match(lines[0] ?? "", /^\[one-jarhead\] killall Dock failed \(1\)/);
+  assert.equal(restartDock(fake({ exports: [] }).exec), true);
 });
 
 test("hygiene: `defaults import <file> -` then `export` round-trips the document with its <data> blobs (a temp FILE domain, never the Dock's)", { skip: process.platform !== "darwin" }, () => {

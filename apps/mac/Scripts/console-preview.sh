@@ -4,7 +4,32 @@
 # scenario: live | confirm | empty | settings | wake-locked | ledger | light |
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
-#           search | search-hit | problems | cleared | workers (default live)
+#           search | search-hit | problems | cleared | workers | loading | wipe | timing (default live)
+#   `loading` is the dither pass's loading states: a ledger day picked and its read pinned in
+#   flight, a search pinned in flight — the stream's "Reading…" (16×2 glyphs), the rail's
+#   "Reading" row and the Jarhead section's "Searching…" (8×1); its default action prints the
+#   `check:` pins for the dither arithmetic (Bayer ranks, wipe tiles, glyph lines, bar cells).
+#   `wipe` is the dither curtain: the Jarhead chain stepped into at 1.2 s and snapped mid-wipe
+#   (<dir>/preview-console-wipe-mid.png: the arriving pane emerging through the crosshatch
+#   from a sheet of ground-coloured cells, the leaving pane gone under it), Now shown again at
+#   4.2 s and snapped mid-wipe-back, then `probe` (the state under the curtain must have
+#   survived). The mid pictures are pinned to the wipe itself (`snap-wipe:` arms
+#   Motion.wipeMidHook; the curtain reports its first frame at 0.4 of the ranks and the window's
+#   own pixels are snapped, in-process, 0.05 s later) with the wipe stretched to 2 s for this
+#   scenario (PREVIEW_WIPE_SECONDS, nil in the app): a `shot:` goes through screencapture and
+#   lands 0.1–0.3 s late. PREVIEW_SETTLE=8 for it (the actions run to 6.6 s plus the launch's offset).
+#   `timing` is the pane switch at REAL speed, traced from the run loop: eight switches (the Jarhead
+#   chain in and out, the blocked Claude session in and out, the rail's tab to Settings and back, a
+#   ledger day in and out), each between `trace:<label>` and `trace-stop`; run.log carries a
+#   `frame: t=… cost=…` line per main-thread turn of 4 ms or more around the switch (stamped "+ms"
+#   from it; any turn over 50 ms wherever it lands) and a `timing: <label> …` summary per switch:
+#   the switch turn (the frame the switch is made in), the wipe's frames and their longest, then
+#   everything after (count, longest, over 50 ms, the busy sum). The budget: no wipe frame over
+#   50 ms. PREVIEW_NO_LEVELS=1 is its control (the meters still). PREVIEW_SETTLE=12 for it.
+#   PREVIEW_SLOW_THUMBS=1 holds every screenshot thumbnail for a minute before it decodes, so
+#   the dithered skeletons are what a shot shows (`conversation` → preview-console-skeleton.png).
+#   PREVIEW_ACTION=probe-ground@1.5 prints the distinct colours of three blocks of the window's
+#   ground (top-left: ink only; bottom-right: the whisper; bottom-middle: the raised step).
 #   `workers` is the split: three hands under one running delegation (Snapshot.workers) — the
 #   Now tab's Workers section (status glyph, name, Stop, elapsed · lane, the last line), the
 #   delegation card's chips and the [Name] tag on a worker's steps; `ledger` and `jarhead-log`
@@ -66,6 +91,11 @@ export PREVIEW_OUT_DIR="${PREVIEW_OUT_DIR:-$(cd "$(dirname "${OUT:-Resources/x.p
 if [[ -n "${PREVIEW_APPEARANCE:-}" ]]; then export PREVIEW_APPEARANCE; fi
 if [[ -n "${PREVIEW_ACTION:-}" ]]; then export PREVIEW_ACTION; fi
 if [[ "$SCENARIO" == "switch" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; fi
+if [[ "$SCENARIO" == "wipe" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-8}"; export PREVIEW_WIPE_SECONDS="${PREVIEW_WIPE_SECONDS:-2}"; fi
+if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; fi
+if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
+if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi
+if [[ -n "${PREVIEW_REDUCE_MOTION:-}" ]]; then export PREVIEW_REDUCE_MOTION; fi
 if [[ -z "$OUT" ]]; then
   exec "$BUILD/console-preview"
 fi

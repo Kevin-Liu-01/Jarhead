@@ -96,7 +96,11 @@ public final class OrbPanelController {
     public let state: AppState
 
     static let collapsedSize = BlobMetrics.panelSize
-    static let expandedSize = NSSize(width: 452, height: 240)
+    /// 452×240 held the capsule with 10 pt outside it, 4 to the blob and 12 above and below.
+    /// Its dithered shadow (`DitheredShadow`: spread 12, 6 pt low) needs 18 pt under the
+    /// capsule and 12 beside it, so the panel is 8 wider and 12 taller; the capsule keeps its
+    /// size and its 4 pt to the blob and sits 18 pt from the outer edge, the top and the bottom.
+    static let expandedSize = NSSize(width: 460, height: 252)
 
     private let panel: OrbPanel
     private let container = NSView()
@@ -2063,9 +2067,9 @@ public final class OrbPanelController {
             let e = Self.expandedSize
             let blobX = characterOnRight ? e.width - c.width : 0
             blobCell.frame = NSRect(x: blobX, y: blobY, width: c.width, height: c.height)
-            let capW = e.width - c.width - 14
-            let capX = characterOnRight ? 10 : c.width + 4
-            capsuleHost.frame = NSRect(x: capX, y: 12, width: capW, height: e.height - 24)
+            let capW = e.width - c.width - 22
+            let capX = characterOnRight ? 18 : c.width + 4
+            capsuleHost.frame = NSRect(x: capX, y: 18, width: capW, height: e.height - 36)
         } else {
             blobCell.frame = NSRect(origin: .zero, size: c)
         }

@@ -522,6 +522,13 @@ public struct ProblemRemedy: Codable, Equatable {
 }
 
 public struct Problem: Codable, Equatable, Identifiable {
+    /// Mirror of `ProblemKind`, kept a String on purpose: a kind this app does not know
+    /// (a newer daemon) decodes as itself and the Console shows it with the default glyph.
+    /// Today: permission.accessibility, permission.screenRecording, permission.microphone,
+    /// permission.fullDiskAccess, permission.other, brain.unavailable, brain.probe,
+    /// voice.limit, voice.connection, voice.key, hands.helper, disk.low, dock, daemon,
+    /// crash, other. `dock` is Jarhead twice in the Dock; its remedy is "Fix the Dock"
+    /// (`problem.retry {kind:"dock"}`).
     public var kind: String
     public var text: String
     public var remedy: ProblemRemedy?

@@ -7,6 +7,7 @@ import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
 import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { EngineEvent, OverlayCommand } from "@jarhead/protocol";
+import type { Exec } from "@jarhead/cli/install";
 import { Engine, type EngineOptions } from "../engine.ts";
 import type { WorkerBrainFactory } from "../workers.ts";
 
@@ -279,6 +280,9 @@ export interface World {
  * `where.oneHands` gives both helpers the same RecordingHands (a test that patches
  * `hands.request` and does not care which helper answered).
  */
+/** No shell: the engine's own shell-outs (the Dock read) answer "not found" unless a test scripts `exec`, so no test ever reads Kevin's Dock. Every `new Engine` in a test passes it. */
+export const noShell: Exec = () => ({ code: 127, stdout: "", stderr: "no shell in tests" });
+
 export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?: string; readonly firstSessionId?: string; readonly noHands?: boolean; readonly oneHands?: boolean } = {}): World {
   const dir = where.dir ?? mkdtempSync(join(tmpdir(), "jh-engine-"));
   const config: JarheadConfig = {
@@ -386,7 +390,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   handsBg.now = () => clock.t;
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
-  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, ...extra });
+  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, exec: noShell, ...extra });
   const events: EngineEvent[] = [];
   const overlays: OverlayCommand[] = [];
   const audio: Buffer[] = [];

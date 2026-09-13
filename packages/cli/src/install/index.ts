@@ -9,7 +9,7 @@ export { DOCK_DOMAIN, JARHEAD_BUNDLE_ID, INSTALLED_APP, INSTALLED_URL, DEFAULT_F
 export type { DockTile, DockChange, DockAudit, DockList, DockOptions } from "./dock.ts";
 export { LSREGISTER, parseLsBundleDump, staleJarheadRecords, jarheadRecords, describeLaunchServices, defaultRealpath } from "./launchservices.ts";
 export type { LsRecord, StaleRule } from "./launchservices.ts";
-export { probeTarget, planInstall, RSYNC, rsyncArgs, snapshotArgs, parseItemized, compareTrees, parityOk, CODESIGN, CODESIGN_VERIFY_ARGS, CODESIGN_REQUIREMENT_ARGS, requirementHasIdentifier, installLine, rollbackLine, performInstall } from "./bundle.ts";
+export { probeTarget, planInstall, RSYNC, rsyncArgs, snapshotArgs, snapshotNameOk, parseItemized, compareTrees, parityOk, CODESIGN, CODESIGN_VERIFY_ARGS, CODESIGN_REQUIREMENT_ARGS, requirementHasIdentifier, installLine, rollbackLine, performInstall } from "./bundle.ts";
 export type { TargetProbe, InstallPlan, RsyncSummary, ParityReport, InstallSpec, InstallIO, InstallOutcome } from "./bundle.ts";
-export { runHygiene, hygieneLine, defaultExec, defaultStaleRoots, lsregisterRefreshArgs, LSREGISTER_TIMEOUT_MS } from "./hygiene.ts";
-export type { Exec, ExecResult, HygieneMode, HygieneOptions, HygieneReport } from "./hygiene.ts";
+export { runHygiene, hygieneLine, readDock, repairDock, restartDock, installedUrlOf, defaultExec, defaultStaleRoots, lsregisterRefreshArgs, LSREGISTER_TIMEOUT_MS } from "./hygiene.ts";
+export type { Exec, ExecResult, HygieneMode, HygieneOptions, HygieneReport, DockOnlyOptions } from "./hygiene.ts";

@@ -427,16 +427,19 @@ private struct AmpBolt: Shape {
     }
 }
 
-/// Jarhead's own mark on the icon column: the orb — a solid accent disc carrying the
-/// blob's highlight — at 14pt like the tool marks, so Jarhead's conversations sit
-/// beside the agents' as siblings. Not a ring (the working status glyph is one) and
-/// not an SF Symbol the stream uses for a row kind.
+/// Jarhead's own mark on the icon column and in the Console's header: the orb — the
+/// icon's dithered ramp (`Dither.orbStops`, diagonal, five bands, 1 pt cells: ≈ 14 cells
+/// across, the 64 px icon's grain) in a disc carrying the blob's highlight — at 14pt like
+/// the tool marks, so Jarhead's conversations sit beside the agents' as siblings. Not a
+/// ring (the working status glyph is one) and not an SF Symbol the stream uses for a row
+/// kind. One 28×28 px image in `Dither.Cache`, shared by every mark.
 struct JarheadMark: View {
     var size: CGFloat = 14
 
     var body: some View {
         ZStack {
-            Circle().fill(ConsoleTheme.accent)
+            DitheredGradient(stops: Dither.orbStops, direction: .diagonal, bands: Dither.bands, cellPoints: 1)
+                .clipShape(Circle())
             // The highlight the blob wears: a faint paper disc, up and to the left.
             Circle().fill(Color.white.opacity(0.34))
                 .frame(width: size * 0.42, height: size * 0.42)

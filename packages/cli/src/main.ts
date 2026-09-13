@@ -5,7 +5,7 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient } from "@jarhead/daemon";
-import type { Delegation, Effort, EngineEvent, PermissionInfo, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
+import type { Delegation, Effort, EngineEvent, PermissionInfo, Problem, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
 import { render, runChecks, summarizePermissions } from "./doctor.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
@@ -32,7 +32,9 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead cmd worker.stop <id>   stop one worker (its id from \`jarhead status\`); the others and the session carry on
   pnpm jarhead dock [--fix] [--json]  one Jarhead: the Dock tiles and LaunchServices records for /Applications/Jarhead.app, read-only.
                                       --fix removes Jarhead's recent tiles, rebuilds the pin, unregisters stale bundle paths (the Trash's contents are not touched)
-                                      and restarts the Dock only when it changed something
+                                      and restarts the Dock only when it changed something. The daemon reads the Dock itself 20 s after it starts
+                                      (never lsregister); two tiles are the \`dock\` problem on \`jarhead status\` and in the Console, whose Fix the Dock
+                                      button runs the same Dock repair
   pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
   pnpm jarhead bench --brain          the five representative commands on the REAL brain (Codex here) with a stand-in Live and canned hands:
                                       delegation → first thinking / first tool / first action / done, model steps, tool calls, rollovers,
@@ -367,7 +369,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; workers?: Worker[]; problems: string[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; workers?: Worker[]; problems: string[]; problemsTyped?: Problem[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
   console.log(`\n  phase      ${s.phase}`);
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
@@ -385,7 +387,13 @@ async function status(): Promise<void> {
   // The Trash: whole day files Jarhead moved out of the way; emptying it is Kevin's, in Finder.
   if (s.trash) console.log(`  trash      ${s.trash.days === 0 ? "empty" : `${s.trash.days} ${s.trash.days === 1 ? "day" : "days"} · ${human(s.trash.bytes)}`} · ${s.trash.path}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
-  if (s.problems.length) console.log(`  problems\n    - ${s.problems.join("\n    - ")}`);
+  // Each line with its kind and the one thing to press for it (the Console's button; `dock` → Fix the Dock = `pnpm jarhead dock --fix`).
+  const typed = s.problemsTyped ?? [];
+  const problemLine = (text: string): string => {
+    const p = typed.find((t) => t.text === text);
+    return `    - ${text}${p ? ` (${p.kind}${p.remedy ? ` · ${p.remedy.label}` : ""})` : ""}`;
+  };
+  if (s.problems.length) console.log(`  problems\n${s.problems.map(problemLine).join("\n")}`);
   console.log("");
 }
 

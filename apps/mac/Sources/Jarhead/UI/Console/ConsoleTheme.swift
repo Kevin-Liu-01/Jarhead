@@ -302,15 +302,17 @@ enum ConsoleTheme {
         case "voice.key": return "key.fill"
         case "hands.helper": return "hand.tap.fill"
         case "disk.low": return "externaldrive.fill.badge.exclamationmark"
+        case "dock": return "dock.rectangle"
         case "daemon": return "gearshape.2.fill"
         case "crash": return "bolt.trianglebadge.exclamationmark.fill"
         default: return "exclamationmark.triangle.fill"
         }
     }
 
-    /// A permission missing is a warning (the hands work less); everything else is an error.
+    /// A permission missing is a warning (the hands work less), and so is Jarhead twice in the
+    /// Dock (`dock`: cosmetic, one press fixes it); everything else is an error.
     static func problemTint(_ kind: String) -> Color {
-        kind.hasPrefix("permission.") ? speaking : error
+        kind.hasPrefix("permission.") || kind == "dock" ? speaking : error
     }
 
     // MARK: retention (Settings) — the menus' options and their words
@@ -564,10 +566,7 @@ enum ConsoleMotion {
     /// A Core Animation curve (`Motion.easeOut` / `easeIn` / `easeInOut`) as a SwiftUI
     /// animation of `duration`, honouring Reduce Motion the way `Motion.seconds` does.
     static func animation(_ curve: CAMediaTimingFunction, _ duration: Double) -> Animation {
-        var c1 = [Float](repeating: 0, count: 2), c2 = [Float](repeating: 0, count: 2)
-        curve.getControlPoint(at: 1, values: &c1)
-        curve.getControlPoint(at: 2, values: &c2)
-        return .timingCurve(Double(c1[0]), Double(c1[1]), Double(c2[0]), Double(c2[1]), duration: Motion.seconds(duration))
+        Motion.animation(curve, duration)
     }
 
     /// Leaving, gaining speed: `Motion.easeIn` over `Motion.base`.
@@ -683,7 +682,7 @@ struct ConsoleDot: View {
         guard pulsing else { return }
         DispatchQueue.main.async {
             guard pulsing else { return }
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { pulse = true }
+            withAnimation(.easeOut(duration: Motion.pulse).repeatForever(autoreverses: false)) { pulse = true }
         }
     }
 }
@@ -997,6 +996,46 @@ struct ConsoleEmpty<Action: View>: View {
 extension ConsoleEmpty where Action == EmptyView {
     init(_ text: String) {
         self.init(text) { EmptyView() }
+    }
+}
+
+/// The Console's ground: the flat token under a quiet dithered field — ink, a step to raised
+/// ink past the middle, the accent as a whisper in the lower-right corner (`Dither.groundStops`;
+/// paper → raised paper → paper into the accent in the aqua appearance). Four bands in 2 pt
+/// cells, rendered at scale 1 and magnified by nearest, at sizes rounded up to 64 pt and pinned
+/// bottom-trailing, so a live resize re-renders only across a 64 pt boundary and the whisper
+/// stays in the window's corner. Text reads on every cell (the brightest is #161e35 / #f2f5fd).
+/// The header, rails and stream draw no grounds of their own, so they sit on it; the window's
+/// own `backgroundColor` stays the flat token for the resize seam.
+struct ConsoleGround: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        ZStack {
+            ConsoleTheme.ground
+            DitheredGradient(stops: scheme == .dark ? Dither.groundStops : Dither.paperStops, direction: .diagonal,
+                             bands: Dither.groundBands, cellPoints: 2, placeholder: ConsoleTheme.ground,
+                             sizeStep: 64, renderScale: 1, anchor: .bottomTrailing)
+        }
+    }
+}
+
+/// The Console's loading indicator: `DitherGlyphs` in the Console's mono 11 and `fg3` — the
+/// ASCII ramp stepping through the Bayer ranks at 8 fps, still two-tone under Reduce Motion.
+/// 8×1 beside a word ("Reading…", "Searching…"), 16×2 under an empty state's line.
+struct ConsoleGlyphs: View {
+    var cols = 8
+    var rows = 1
+    var color: Color = ConsoleTheme.fg3
+
+    init(cols: Int = 8, rows: Int = 1, color: Color = ConsoleTheme.fg3) {
+        self.cols = cols
+        self.rows = rows
+        self.color = color
+    }
+
+    var body: some View {
+        DitherGlyphs(cols: cols, rows: rows, font: ConsoleTheme.mono(11, .medium), color: color)
     }
 }
 

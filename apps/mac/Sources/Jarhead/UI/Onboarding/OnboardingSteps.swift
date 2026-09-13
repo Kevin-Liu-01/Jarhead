@@ -16,6 +16,7 @@ struct OnboardingWelcomeStep: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            OnboardingHero()
             OnboardingHead("Welcome",
                            "Jarhead is a voice assistant for this Mac. Asleep it costs nothing and nothing leaves the machine. Wake it and prove it's you, and it can talk, think and use the computer.")
             OnboardingStatusLine(color: connected ? ConsoleTheme.acting : ConsoleTheme.muted,
@@ -462,6 +463,7 @@ struct OnboardingDoneStep: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            OnboardingHero()
             OnboardingHead("Done", "Here is where things stand. Finish closes this window; anything amber can be fixed later from the status menu.")
             VStack(spacing: 0) {
                 row("waveform.circle.fill", "Voice", report.voice)

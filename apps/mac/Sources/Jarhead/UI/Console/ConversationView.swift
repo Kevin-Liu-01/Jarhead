@@ -236,7 +236,10 @@ private struct ConversationFeed: View {
                                     loadEarlier(before: first, remaining: max(0, t.total - t.messages.count))
                                 }
                                 ForEach(messages) { message in
-                                    ConversationRow(message: message, tool: tool)
+                                    // The last message of a live transcript is the one being written:
+                                    // a thinking row there shows the ASCII indicator.
+                                    ConversationRow(message: message, tool: tool,
+                                                    live: (transcript?.live ?? false) && message.id == messages.last?.id)
                                         .rowAppear(animated: settled && !loadingEarlier)
                                 }
                                 Color.clear.frame(height: 1).id(Self.bottomId)
@@ -321,7 +324,7 @@ private struct ConversationFeed: View {
             ZStack {
                 if loadingEarlier {
                     HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
+                        ConsoleGlyphs(cols: 8, rows: 1)
                         Text("Loading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
                     }
                     .frame(height: 24)
@@ -378,7 +381,7 @@ private struct ConversationFeed: View {
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                 }
             } else {
-                ConsoleEmpty("Opening…") { ProgressView().controlSize(.small) }
+                ConsoleEmpty("Opening…") { ConsoleGlyphs(cols: 16, rows: 2) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -390,10 +393,12 @@ private struct ConversationFeed: View {
 struct ConversationRow: View, Equatable {
     let message: AgentMessage
     let tool: AgentTool
+    /// The transcript is live and this is its last message (still being thought or written).
+    var live = false
 
     var body: some View {
         if message.thinking == true {
-            ThinkingRow(message: message)
+            ThinkingRow(message: message, live: live)
         } else {
             switch message.role {
             case .user:
@@ -577,15 +582,25 @@ private struct ToolCallCard: View {
     }
 }
 
-/// Reasoning, folded under one titanium word; the thought unfolds in italics.
+/// Reasoning, folded under one titanium word; the thought unfolds in italics. While it is
+/// being thought (`live`) the icon column shows the ASCII indicator — three glyphs stepping
+/// the Bayer ranks — instead of the ellipsis; the two crossfade when it settles.
 private struct ThinkingRow: View {
     let message: AgentMessage
+    var live = false
 
     @State private var expanded = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            ConsoleIcon(name: "ellipsis", tint: ConsoleTheme.titanium)
+            ZStack {
+                if live {
+                    ConsoleGlyphs(cols: 3, rows: 1, color: ConsoleTheme.titanium).frame(width: 20, height: 20).transition(.opacity)
+                } else {
+                    ConsoleIcon(name: "ellipsis", tint: ConsoleTheme.titanium).transition(.opacity)
+                }
+            }
+            .animation(Motion.fade, value: live)
             VStack(alignment: .leading, spacing: 4) {
                 Button {
                     withAnimation(Motion.gentle) { expanded.toggle() }

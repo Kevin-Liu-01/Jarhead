@@ -9,6 +9,7 @@
   "dependencies": {
     "@jarhead/agents": "workspace:*",
     "@jarhead/brain": "workspace:*",
+    "@jarhead/cli": "workspace:*",
     "@jarhead/core": "workspace:*",
     "@jarhead/hands": "workspace:*",
     "@jarhead/live": "workspace:*",

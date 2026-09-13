@@ -185,7 +185,7 @@ final class NotchDock {
 
     init(sim: BlobSim, geometry: NotchGeometry) {
         self.geometry = geometry
-        // The gradient's blue-noise tile, on the render queue before the first island asks.
+        // The island's first gradient, on the render queue before the first island asks.
         NotchInk.prewarm()
         let frame = geometry.panelFrame
         panel = NotchPanel(contentRect: frame, styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView], backing: .buffered, defer: false)

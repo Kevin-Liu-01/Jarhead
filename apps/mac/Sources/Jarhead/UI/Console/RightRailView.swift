@@ -42,7 +42,9 @@ struct RightRail: View, Equatable {
             ConsoleHairline()
             CrashNoticeRow()
             ScrollView(.vertical) {
-                // The three panels crossfade in place (Motion.swap) as the tab's thumb glides.
+                // The three panels switch behind the curtain (Motion.curtain) as the tab's thumb
+                // glides: the panel swaps at once and the ground-coloured cells over it go rank
+                // by rank. (A masked wipe here cost the main thread 0.5 s a switch — measured.)
                 ZStack(alignment: .top) {
                     switch tab {
                     case .now:
@@ -51,17 +53,21 @@ struct RightRail: View, Equatable {
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
                                  brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped,
                                  workers: snapshot.allWorkers)
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     case .settings:
                         SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash)
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     case .ledger:
                         LedgerPanel(days: ledgerDays, picked: ledgerDay, loading: ledgerLoading, stats: ledgerStats)
-                            .transition(Motion.swap)
+                            .transition(.identity)
                     }
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .id(tab)
+                        .transition(Motion.curtain(ConsoleTheme.ground))
                 }
                 .frame(maxWidth: .infinity)
-                .animation(Motion.gentle, value: tab)
+                .animation(Motion.wipeAnimation, value: tab)
                 .thinScrollers()
             }
         }
@@ -252,7 +258,7 @@ private struct Reading: View {
     let text: String
     var body: some View {
         HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
+            ConsoleGlyphs(cols: 8, rows: 1)
             Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
         }
         .frame(height: 24)
@@ -795,6 +801,7 @@ private struct MarkThumb: View {
     let mark: ScreenMark
 
     @Environment(\.consoleActions) private var actions
+    @Environment(\.colorScheme) private var scheme
     @EnvironmentObject private var session: ConsoleSession
 
     /// Three across with 6pt gaps is 252pt: inside the section's 272 even while
@@ -814,8 +821,10 @@ private struct MarkThumb: View {
                     session.lightbox = ConsoleLightboxItem(url: url, caption: "Circled · \(caption)")
                 }, width: Self.width)
             } else {
+                // No screenshot yet: the dithered skeleton (ground → raised) under the scope and the size.
                 ZStack {
-                    Rectangle().fill(ConsoleTheme.raised)
+                    DitheredGradient(stops: scheme == .dark ? Dither.skeletonStopsDark : Dither.skeletonStopsLight,
+                                     direction: .horizontal, bands: 2, cellPoints: 2)
                     VStack(spacing: 3) {
                         Image(systemName: "scope").font(.system(size: 12, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
                         Text("\(Int(mark.rect.w.rounded()))×\(Int(mark.rect.h.rounded()))")
@@ -834,17 +843,13 @@ private struct MarkThumb: View {
     }
 }
 
-/// A 3pt meter: track one ground step, fill in the second text step.
+/// The meter: the banded, cell-aligned `DitheredBar` — track one ground step, fill in the
+/// second text step, the fill's leading edge falling through the Bayer thresholds over one
+/// period. 6 pt (`DitheredBar.height`: four rows of 1.5 pt cells; 3 pt is rows 2).
 struct ConsoleBar: View {
     let fraction: Double
     var body: some View {
-        GeometryReader { g in
-            ZStack(alignment: .leading) {
-                Rectangle().fill(ConsoleTheme.active)
-                Rectangle().fill(ConsoleTheme.fg2).frame(width: max(0, min(1, fraction)) * g.size.width)
-            }
-        }
-        .frame(height: 3)
+        DitheredBar(fraction: fraction, fill: ConsoleTheme.fg2, track: ConsoleTheme.active)
     }
 }
 
@@ -864,8 +869,8 @@ struct AudioMeters: View {
     private func meter(_ symbol: String, _ label: String, _ value: Double, _ tint: Color) -> some View {
         HStack(spacing: iconGap) {
             ConsoleIcon(name: symbol, tint: tint).help(label).accessibilityLabel(label)
-            // One 20 Hz tick to the next; still under reduce motion.
-            ConsoleBar(fraction: value).animation(reduceMotion ? nil : .linear(duration: 0.06), value: value)
+            // One 20 Hz tick to the next (the fill steps per cell); still under reduce motion.
+            ConsoleBar(fraction: value).animation(reduceMotion ? nil : .linear(duration: Motion.meter), value: value)
             Text(String(format: "%.2f", value)).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                 .frame(width: 32, alignment: .trailing)
         }

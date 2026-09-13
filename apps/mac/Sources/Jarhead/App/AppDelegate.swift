@@ -49,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         appLog("launch: Jarhead \(AppDelegate.appVersion) pid \(ProcessInfo.processInfo.processIdentifier)")
         installDockIcon()
+        // The dither tiles (wipes, meter edges) for this display's scale, off the main thread, before the first surface asks.
+        Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
 
         orb = OrbPanelController(state: state)
         overlay = OverlayManager(state: state)

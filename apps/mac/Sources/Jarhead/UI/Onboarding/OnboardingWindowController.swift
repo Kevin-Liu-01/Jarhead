@@ -104,6 +104,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             .environmentObject(session)
         let hosting = NSHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]
+        // The window's minimum is `minSize` above; the hosting view must not derive one too (the
+        // default options make AppKit ask it for min / intrinsic / max size on every constraint
+        // re-validation — a full SwiftUI layout pass of the step; see ConsoleWindowController).
+        hosting.sizingOptions = []
         window.contentView = hosting
         return window
     }

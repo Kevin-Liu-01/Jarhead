@@ -46,7 +46,40 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
 
     private func stamp() -> String { String(format: "%.2f", Date().timeIntervalSince(launchedAt)) }
 
+    /// The step's scroll view (the tallest NSScrollView in the wizard's window) scrolled to its
+    /// top, the way the harness's Console sibling pins a feed; a no-op when already there.
+    private func pinScrollToTop() {
+        guard let number = onboarding?.windowNumber, let window = NSApp.window(withWindowNumber: number),
+              let scroll = Self.tallestScrollView(in: window.contentView) else {
+            print("scroll: no step scroll view to pin at \(stamp())s")
+            return
+        }
+        let clip = scroll.contentView
+        let was = clip.bounds.origin.y
+        if abs(was) > 0.5 {
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: 0))
+            scroll.reflectScrolledClipView(clip)
+        }
+        print(String(format: "scroll: pinned to top at %@s (was y=%.1f)", stamp(), was))
+        fflush(stdout) // the script kills the process right after its shot; a buffered line would be lost
+    }
+
+    private static func tallestScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
+        var found: [NSScrollView] = []
+        func walk(_ v: NSView) {
+            if let s = v as? NSScrollView { found.append(s) }
+            v.subviews.forEach(walk)
+        }
+        walk(view)
+        return found.max { $0.frame.height < $1.frame.height }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The dither tiles first, so a shot never catches the fade fallback `Motion.wipe` takes
+        // before `Dither.Tiles` has landed. (The app must do the same in AppDelegate — a seam
+        // outside UI/**; without it the tiles land lazily on the first wipe, which is a fade.)
+        Dither.prewarm(scale: NSScreen.main?.backingScaleFactor ?? 2)
         let env = ProcessInfo.processInfo.environment
         let stepName = env["PREVIEW_STEP"] ?? "welcome"
         let scenario = env["PREVIEW_SCENARIO"] ?? "ready"
@@ -108,6 +141,12 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
             let parts = size.lowercased().split(separator: "x").compactMap { Double($0) }
             if parts.count == 2 { controller.resize(to: CGSize(width: parts[0], height: parts[1])) }
         }
+        // The step's ScrollView pinned to its top once the step has laid out and its slide has
+        // settled (Motion.gentle is done by 0.9 s), so a shot at PREVIEW_SETTLE (1.5 s) is the top
+        // of the list every time: the first responder a key window picks (a row's button below
+        // the fold) or a resize could otherwise leave the Permissions list scrolled a little.
+        // Prints the offset it found, so the log says whether anything had moved it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in pinScrollToTop() }
 
         // PREVIEW_GO=brain@1.0: a step change the way Continue or the rail would make it.
         if let spec = env["PREVIEW_GO"] {

@@ -10,6 +10,7 @@ import type { Brain, BrainTask } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import type { OverlayCommand } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
+import { noShell } from "./world.ts";
 
 /**
  * The marks lifecycle: mark.add records a ScreenMark at once (asleep or awake),
@@ -108,7 +109,7 @@ function world(): World {
     return origAppend(id, content);
   };
   const clock = { t: 1_757_500_000_000 };
-  const engine = new Engine({ config, connectors: [], brain, makeLive: () => live as unknown as LiveSession, now: () => clock.t });
+  const engine = new Engine({ config, connectors: [], brain, makeLive: () => live as unknown as LiveSession, now: () => clock.t, exec: noShell });
   const overlays: OverlayCommand[] = [];
   engine.on("overlay", (c) => {
     overlays.push(c);
@@ -386,7 +387,7 @@ test("marks: the stroke snaps to the LARGEST frame mostly inside it — a circle
   };
   const brain: Brain = { kind: "fake", start: async () => ({ ready: true, detail: "fake" }), handle: async () => ({ status: "done", summary: "done." }), cancel: async () => undefined, stop: async () => undefined };
   const hands = new SnapHands();
-  const engine = new Engine({ config, connectors: [], brain, hands, makeLive: () => new FakeLive() as unknown as LiveSession });
+  const engine = new Engine({ config, connectors: [], brain, hands, makeLive: () => new FakeLive() as unknown as LiveSession, exec: noShell });
   const overlays: OverlayCommand[] = [];
   engine.on("overlay", (c) => overlays.push(c));
   const near = (a: number, b: number, tol = 1): boolean => Math.abs(a - b) <= tol;

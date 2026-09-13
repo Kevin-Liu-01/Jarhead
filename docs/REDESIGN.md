@@ -82,7 +82,7 @@ what earns a `problem()` line and which explicit kinds fall back to Responses is
 §6c's rule. Each `session.delegation.created` becomes one
 turn for whichever brain runs: the transcript window since the last delegation,
 the current screen context, and the running task ledger. Every backend drives
-the same 32 tools through `ToolRunner` — the hands (below), the agent
+the same 67 tools through `ToolRunner` — the hands (below), the agent
 connectors, web search, shell — and streams progress back as `thinking.append`
 and results as `commentary.append`.
 
@@ -279,13 +279,13 @@ unknown kind as `sessions`.
 
 Kevin: "why isnt it connecting to our codex? i have one locally. be vendor
 agnostic, dont just enforce claude code". The brain is a setting, not a vendor.
-`Settings.brain` is one of six `BrainKind`s; every one drives the same 32 tools
+`Settings.brain` is one of six `BrainKind`s; every one drives the same 67 tools
 through `ToolRunner`, so policy, ledger, screenshots and the confirmation
 handshake are identical whichever model is thinking.
 
 | kind | what runs | needs |
 |---|---|---|
-| `codex` | `codex exec --json --ephemeral` from the CLI bundled in ChatGPT.app (Codex Desktop) or on PATH, with Jarhead's tools mounted as the `jarhead` MCP server (`packages/brain/src/mcp-bridge.ts`) | Codex signed in — the ChatGPT login in `~/.codex/auth.json`; no key |
+| `codex` | a resident `codex app-server` thread (one warm process, `codex exec` only as the fallback) from the CLI bundled in ChatGPT.app (Codex Desktop) or on PATH, with Jarhead's tools mounted as the `jarhead` MCP server (`packages/brain/src/mcp-bridge.ts`) | Codex signed in — the ChatGPT login in `~/.codex/auth.json`; no key |
 | `claude-code` | headless Claude Code through the Agent SDK, tools as an in-process MCP server | the `claude` login (or a valid `ANTHROPIC_API_KEY`) |
 | `anthropic-api` | the Messages API tool loop | `ANTHROPIC_API_KEY` |
 | `openai-compatible` | Chat Completions with function tools at `brainBaseUrl` (OpenAI, OpenRouter, Ollama, LM Studio, vLLM…) | the URL and a model; `JARHEAD_BRAIN_API_KEY` where the server wants one |
@@ -501,9 +501,17 @@ is the row's icon; the colour is the status dot's ring and the conversation head
   left of the phase word is the transport: a 22 pt circle, play while asleep or
   paused, pause while awake, ellipsis while connecting; Stop and Mute sit right.
 - **Every shaded surface is dithered.** One renderer, `UI/Dither.swift`
-  (`Dither.gradientImage`, `DitheredGradient`), shares its void-and-cluster tile
-  and `orbStops` palette with `scripts/make-icon.ts`, whose icon now shows its
-  grain at every size (6–7 bands, 1 px cells under 128 px). Flat fills stay flat.
+  (`Dither.gradientImage` / `coverageImage`, `Dither.Cache`, `Dither.Tiles`;
+  `DitheredGradient`, `DitherWipe`, `DitherCurtain` (the pane switch: ground-coloured tiles over a plainly rendered pane, never a mask), `DitheredBar`, `DitherGlyphs`, `DitheredShadow`),
+  the classic 8×8 Bayer matrix in 2 pt cells on grounds, heroes, skeletons and
+  wipes, 1.5 pt on bars, the island and the halo; five bands on colour, four on the
+  Console ground (`groundStops`, the accent as a whisper in the lower-right corner).
+  The Console and Onboarding grounds, the onboarding heroes, the Jarhead mark, the
+  meters, the thumbnail skeletons, the capsule's floor and every loading state are
+  this material; view switches dissolve through it (`Motion.wipe`); the thinking
+  indicator steps its ranks as ASCII at 8 fps. The icon and the README banner share
+  the palette, the matrix and the orb through `scripts/dither.ts` (`pnpm build:media`).
+  Flat fills stay flat.
 - **The blob stays where it worked** in both homes; the notch dock is only for the
   awake↔asleep transitions. Into the notch it goes by approach + slip: a
   critically damped approach (`Motion.approach`) to a staging point 16 pt under
@@ -550,7 +558,7 @@ code. but make its system prompt super strong and robust too".
 
 The brain's tool table (`packages/brain/src/tools.ts`, one table for every
 `BrainKind`) now covers the whole Mac, and what used to be "not a tool" is
-"a tool with a gate". Fifty-five tools in seven families: the computer toolset
+"a tool with a gate". Sixty-seven tools in eight families (the workers are the eighth): the computer toolset
 (17), desktop (6), agents (5), misc (`run_shell`, `speak_progress`, `remember`,
 `recall`), **system** (`read_file`, `write_file`, `edit_file`, `list_dir`,
 `search_files`, `web_fetch`, `web_search`, `applescript`, `open_url`,
@@ -1774,7 +1782,8 @@ lines are untouched):
    uid's directory (never `sudo` from a script), or no write bit — before anything
    is written; the signed stage stays in `build/stage/` for inspection.
 2. First install (nothing there): `cp -R` of the stage. Otherwise a rollback
-   snapshot to gitignored `build/previous/Jarhead.app`, then `/usr/bin/rsync -rlptD
+   snapshot to gitignored `build/previous/Jarhead.app.previous` (not `.app`: see
+   "Learned since" below), then `/usr/bin/rsync -rlptD
    -c --delay-updates --delete-after --itemize-changes build/stage/Jarhead.app/
    /Applications/Jarhead.app/`. `-rlptD` is `-a` without owner/group; `-c` compares
    by checksum (two files of equal size in the same second were skipped by the quick
@@ -1792,7 +1801,7 @@ lines are untouched):
    sha256 walk proves the installed tree is exactly the signed stage (rsync's exit
    code on a permission error is not trusted), and the directory inode after equals
    the one before. Any failure prints the rollback line
-   (`rsync -rlptD -c --delete-after build/previous/Jarhead.app/ /Applications/Jarhead.app/`)
+   (`rsync -rlptD -c --delete-after build/previous/Jarhead.app.previous/ /Applications/Jarhead.app/`)
    and exits 1. `build/Jarhead.app` stays a symlink to the installed bundle.
 4. One Jarhead: `lsregister -f /Applications/Jarhead.app`, then the Bundle table
    (`lsregister -dump Bundle`: ~2 s on an idle Mac, 66–85 s at load average 300
@@ -1833,6 +1842,74 @@ gains read-only rows `install`, `launch services`, `dock`; `pnpm jarhead dock` p
 the same audit; `pnpm build:mac` prints an `install` line (`kept (inode …) · 4 files
 replaced …`) and a `one jarhead` line. The hunk touches the "app signing" rail by
 regex (it says `codesign`); the signing lines themselves are byte-identical.
+
+### Learned since (2026-09-12, later): CI, the snapshot, the self-healing Dock
+
+Three things the first cut got wrong, in the order they showed up.
+
+**The runner's openrsync speaks differently.** `install-bundle.test.ts`'s live
+openrsync case passed here and failed on GitHub's macos-15 runner: the parsed
+deletion list there was `['Contents/Resources/stale.txt', 'Contents/Resources',
+'Contents/Resources/stale.txt', 'Contents/Resources']` against an expected
+`['Contents/Resources/stale.txt']`. That build itemizes the emptied directory
+without a trailing slash (this Mac's says `Contents/Resources/`) and prints every
+deletion twice, one line per `--delete-after` pass. `parseItemized` no longer
+depends on either: every list holds each path once, slashes trimmed, and directories
+stay in `deleted`; the tests assert the SET — stale.txt went, nothing outside its
+subtree did — and `installLine` counts unique entries. The rule that came out:
+assert what a system tool's output *means*, never its exact shape across macOS builds.
+
+**The snapshot was the second Jarhead.** `lsregister -dump` on Kevin's Mac listed
+`build/previous/Jarhead.app` next to `/Applications/Jarhead.app` — a full bundle with
+Jarhead's id, and LaunchServices registers any `*.app` directory it meets, so the
+`-u` a build earlier bought nothing. The snapshot is `build/previous/Jarhead.app.previous`
+now: `snapshotNameOk` refuses a `previous` ending in `.app` before anything is
+written, `performInstall` retires the old name first (`InstallSpec.retire` — the
+build's own artifact, never the Trash), the record at the gone path is stale by the
+existing rule (Jarhead's id anywhere but /Applications) and is unregistered by step 6
+of the same build, and the rollback line names the new path. `pnpm build:mac` prints
+a `retired` line when it removed one.
+
+**A Dock that fixes itself, on Kevin's press.** The install keeps the inode, but a
+Dock that had already grown the second tile keeps it until something removes it.
+`ProblemKind` gained **`dock`** (`packages/protocol`; the Swift mirror keeps
+`Problem.kind` a String, so a kind this app does not know still decodes and the
+Console shows the default glyph). Twenty seconds after `start()` the engine reads the
+Dock — `readDock`, one `defaults export com.apple.dock -`, ~100 ms, never lsregister
+(lsd can hold a call for two minutes) — and a pin with a recent Jarhead tile beside it,
+or two pins, is the row **"Two Jarhead tiles in the Dock"** (the count past two) with
+**Fix the Dock** as its remedy, `problem.retry {kind:"dock"}`. That press runs
+`repairDock` — the Dock half of `pnpm jarhead dock --fix`, factored out of
+`runHygiene` so both paths are one code: re-export and compare `mod-count`, `defaults
+import`, `killall Dock` only when something was written — then a re-read clears the
+row (or keeps it with the reason, `— defaults import failed (1)`), a toast says what
+was done, and `tick()` reads once more ten seconds later (`DOCK_RECHECK_MS`) in case
+the relaunched Dock rewrote its domain with the tile back. Two things the review
+caught: an import whose `killall Dock` failed is *not* a fix — cfprefsd holds the clean
+document while the Dock process still draws both tiles and will write its copy back
+on its next event, so the re-read is not the truth. That case keeps the row as
+"Two Jarhead tiles in the Dock — Dock not restarted", toasts a warn ("Dock written,
+not restarted — press Fix the Dock again"), arms no recheck, keeps the row through a
+clean audit (`dockRestartOwed`), and the next press runs only `restartDock` — the
+`killall Dock` factored out of `repairDock` so both are one code. And a press whose
+read fails toasts "Could not read the Dock: …" instead of silently doing nothing.
+Every Dock shell-out is capped at `Engine.DOCK_EXEC_TIMEOUT_MS` (3 s; forwarded as
+`DockOnlyOptions.timeoutMs`) because they are spawnSync on the daemon's event loop —
+a hung cfprefsd could otherwise hold a voice session for defaultExec's 20 s; the CLI
+passes no cap and its argv trace is unchanged. The startup read never
+restarts the Dock; a recent tile with no pin is one tile and no row (nothing the fix
+could do — pinning stays Kevin's); nothing here touches a file. Seams:
+`EngineOptions.exec` and `dockAuditDelayMs`; `world.ts` exports `noShell` (answers
+127) and every `new Engine` in a test passes it, so no test reads the real Dock.
+Proved by `packages/engine/src/__tests__/dock.test.ts` over Kevin's sanitized Dock
+export (the delayed read-only audit; a clean and an unreadable Dock; the retry's
+exact argv and stdin; the row back at the recheck; a failed import; a failed
+`killall` and the owed restart; a failed read on a press; the 3 s cap on every call)
+and `install-hygiene.test.ts` (`readDock` / `repairDock` / `restartDock` alone, no
+lsregister, `timeoutMs` forwarded only when given). `pnpm
+jarhead status` prints each problem with its kind and remedy label. The Swift side:
+`Protocol.swift` compiles through `protocol-probe.sh`, and a capture carrying a `dock`
+problem and an unknown kind decodes.
 
 ## 15. Latency: the warm thread and the clean Codex home (2026-09-12)
 
@@ -2247,6 +2324,7 @@ the elapsed-seconds refreshes below write none. The map:
 | `voice.key` | no `OPENAI_API_KEY`; the key rejected; the model not listed for it; an exhausted quota (`insufficient_quota`, "check your plan and billing" — billing, not a limit: waiting fixes nothing, so it never auto-clears) | **Open Setup** → `jarhead://setup` |
 | `hands.helper` | not built, failed, exited | **Restart helper** → `problem.retry hands.helper` (a fresh helper process; its greeting clears the row) |
 | `disk.low` | the preflight below | **Reveal shots** → opens `<stateDir>/shots` |
+| `dock` | the engine's read-only Dock audit (`readDock`, one `defaults export`, 20 s after start and after each fix): a pin with a recent Jarhead tile beside it, or two pins — "Two Jarhead tiles in the Dock" (§14, Learned since) | **Fix the Dock** → `problem.retry dock` (`repairDock`: import behind the mod-count check, `killall Dock`; a re-read clears the row) |
 | `crash` | a report under `<stateDir>/crashes` younger than ten minutes (`reason:` line; one that says `survived:` is a note, not a crash) | **Details** → opens the file |
 | `daemon` | the **app**, not the engine: no daemon answering for 3 s | **Restart daemon** → `daemon.restart`, routed to `DaemonProcess` while nothing is connected |
 

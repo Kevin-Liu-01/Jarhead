@@ -128,10 +128,15 @@ run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
 // rsync renames each changed file over the old name (never --inplace: the running app
 // keeps its mapped, signed Mach-O), --delete-after drops what the stage no longer has,
 // and it is the INSTALLED copy that is verified. build/Jarhead.app stays a symlink to it.
-// The order (plan → snapshot → rsync → verify → parity → inode → unstage → relink) and
-// every fail path live in performInstall, pinned by install-bundle.test.ts with a
-// scripted exec; this file only supplies the real commands and filesystem.
-const PREVIOUS = join(OUT, "previous", "Jarhead.app");
+// The rollback snapshot is NOT named .app: LaunchServices registers any *.app directory
+// it meets as a bundle, and build/previous/Jarhead.app showed up in `lsregister -dump`
+// as a second Jarhead — so it is Jarhead.app.previous, and the old name is retired.
+// The order (plan → retire → snapshot → rsync → verify → parity → inode → unstage →
+// relink) and every fail path live in performInstall, pinned by install-bundle.test.ts
+// with a scripted exec; this file only supplies the real commands and filesystem.
+const PREVIOUS = join(OUT, "previous", "Jarhead.app.previous");
+/** The snapshot's old name (a full bundle LaunchServices kept registering); removed before the snapshot. */
+const LEGACY_PREVIOUS = join(OUT, "previous", "Jarhead.app");
 const io: InstallIO = {
   exec: (cmd, args) => {
     console.log(`[build-mac] ${cmd} ${args.join(" ")}`);
@@ -152,7 +157,7 @@ const io: InstallIO = {
   compare: compareTrees,
   warn: (line) => console.warn(`[build-mac] ${line}`),
 };
-const outcome = performInstall({ stage: APP, installed: INSTALLED, previous: PREVIOUS, link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
+const outcome = performInstall({ stage: APP, installed: INSTALLED, previous: PREVIOUS, retire: [LEGACY_PREVIOUS], link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
 if (!outcome.ok) {
   console.error(`[build-mac] ${outcome.what}`);
   for (const l of outcome.lines) console.error(`           ${l}`);
@@ -160,6 +165,7 @@ if (!outcome.ok) {
   process.exit(1);
 }
 const installNote = outcome.line;
+const retiredNote = outcome.retired.length ? `\n  retired    ${outcome.retired.join(", ")} (an .app-named snapshot LaunchServices took for a second Jarhead; the record is unregistered below)` : "";
 
 // 6. One Jarhead: refresh the LaunchServices record, unregister stale Jarhead bundle
 // paths (the database only — nothing in the Trash is touched), and READ the Dock. The
@@ -176,7 +182,7 @@ console.log(`
   daemon     ${manifest.node} ${manifest.tsx} ${manifest.daemon}
   signed     ${identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)"}
 
-  ${installNote}
+  ${installNote}${retiredNote}
   ${oneJarhead}
   link:      build/Jarhead.app → ${INSTALLED}${outcome.rollback ? `\n  ${outcome.rollback}` : ""}
   run:       open -a Jarhead

@@ -499,15 +499,17 @@ enum OverlayPainter {
     // MARK: - Teaching shapes
 
     /// A tone line the way every teaching shape draws one: a thin ink under-stroke so
-    /// it reads on paper-white windows, a soft blurred glow so it reads on ink, and the
-    /// line itself.
+    /// it reads on paper-white windows, a glow so it reads on ink, and the line itself.
+    /// The glow is two flat rings (the tone at 0.14 then 0.26, 8 and 4 pt wider than the
+    /// line) — banded, not blurred (canon: never a blur), and not dithered either: this
+    /// Canvas repaints at 30 fps while a shape draws on, and a dither here would be a
+    /// per-frame pixel pass on the main thread. The one banded-only shade in the app.
     private static func strokeTone(_ path: Path, tone: OverlayTone, width: CGFloat, glow: Bool = true, in ctx: GraphicsContext) {
         let c = color(tone)
         let style = StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
         if glow {
-            var g = ctx
-            g.addFilter(.blur(radius: 4))
-            g.stroke(path, with: .color(c.opacity(0.55)), style: StrokeStyle(lineWidth: width + 5, lineCap: .round, lineJoin: .round))
+            ctx.stroke(path, with: .color(c.opacity(0.14)), style: StrokeStyle(lineWidth: width + 8, lineCap: .round, lineJoin: .round))
+            ctx.stroke(path, with: .color(c.opacity(0.26)), style: StrokeStyle(lineWidth: width + 4, lineCap: .round, lineJoin: .round))
         }
         ctx.stroke(path, with: .color(ink.opacity(0.35)), style: StrokeStyle(lineWidth: width + 2.5, lineCap: .round, lineJoin: .round))
         ctx.stroke(path, with: .color(c), style: style)

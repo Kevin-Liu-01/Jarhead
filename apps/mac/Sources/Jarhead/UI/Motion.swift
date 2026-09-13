@@ -29,6 +29,17 @@ enum Motion {
     /// Ambient: a drift, a breath, a colour crossfade.
     static let drift = 0.60
 
+    // MARK: durations (indicators)
+
+    /// The live dot's ring: one pulse.
+    static let pulse = 1.6
+    /// The streaming caret's blink.
+    static let caret = 0.5
+    /// One 20 Hz meter sample to the next.
+    static let meter = 0.06
+    /// One frame of an ASCII indicator: 8 fps.
+    static let asciiFrame = 1.0 / 8
+
     // MARK: durations (the blob)
 
     /// The crouch before a flight: a squash toward the target, then the launch. None under Reduce Motion.
@@ -104,6 +115,16 @@ enum Motion {
     /// A plain fade at `base`.
     static var fade: Animation { .easeInOut(duration: reduced ? base / 2 : base) }
 
+    /// A Core Animation curve (`easeOut` / `easeIn` / `easeInOut`) as a SwiftUI animation of
+    /// `duration`, honouring Reduce Motion the way `seconds` does. The Console's
+    /// `ConsoleMotion.animation` is this.
+    static func animation(_ curve: CAMediaTimingFunction, _ duration: Double) -> Animation {
+        var c1 = [Float](repeating: 0, count: 2), c2 = [Float](repeating: 0, count: 2)
+        curve.getControlPoint(at: 1, values: &c1)
+        curve.getControlPoint(at: 2, values: &c2)
+        return .timingCurve(Double(c1[0]), Double(c1[1]), Double(c2[0]), Double(c2[1]), duration: seconds(duration))
+    }
+
     // MARK: springs (display-link driven, stiffness/damping)
 
     struct SpringSpec {
@@ -143,6 +164,47 @@ enum Motion {
         return .asymmetric(insertion: .opacity.combined(with: .offset(y: 4)), removal: .opacity)
     }
 
+    /// Two SMALL views changing places in one dissolve (a thumbnail landing over its skeleton, a
+    /// ground image over the last): the arriving one appears in Bayer rank order, the leaving one
+    /// vanishes in the complementary order, both eased out over `base` — at every instant the two
+    /// tile the surface exactly, so no ground shows through and nothing double-exposes. The
+    /// removal deliberately eases OUT, not in: a dissolve is one motion, and its two halves must
+    /// share one curve or the ground shows through between them. A plain fade under Reduce Motion
+    /// or before the tiles have landed (`Dither.Tiles.hasWipe`): the app prewarms them at launch
+    /// (AppDelegate) and a harness must before it shoots; failing both, asking here
+    /// (`Tiles.ensure`) starts the build, so only the first switch is a fade. This is a MASK
+    /// (`DitherWipe`): RenderBox rasterises the masked view through CoreGraphics every frame,
+    /// which is fine for a 200 pt picture and 0.3–0.5 s a frame for a pane of text — a pane, a
+    /// rail panel or a feed switches behind `curtain` instead.
+    @MainActor static var wipe: AnyTransition {
+        Dither.Tiles.shared.ensure(scale: NSScreen.main?.backingScaleFactor ?? 2)
+        if reduced || !Dither.Tiles.shared.hasWipe { return .opacity }
+        let a = wipeAnimation
+        return .asymmetric(insertion: .modifier(active: DitherWipe(progress: 0), identity: DitherWipe(progress: 1)).animation(a),
+                           removal: .modifier(active: DitherWipe(progress: 0, inverted: true), identity: DitherWipe(progress: 1, inverted: true)).animation(a))
+    }
+
+    /// A pane switch: the arriving pane renders plainly, and a sheet of `color`-coloured cells over
+    /// it (`DitherCurtain`, the inverted Bayer tile in the ground's colour) goes rank by rank over
+    /// `base` on the wipe's curve, so the pane emerges through the crosshatch from the ground; the
+    /// leaving pane simply goes, covered by the curtain at progress 0 (give the panes
+    /// `.transition(.identity)`). Apply this to a clear, non-hit-testable placeholder over the
+    /// panes with `.id(paneKey)`: the key change removes the spent curtain unseen (its identity is
+    /// no cells) and inserts the new one covering, in the transaction `wipeAnimation` makes. No
+    /// mask, no per-frame pixel work — a pane switch costs the main thread a frame's layout and
+    /// one tile image change a frame, where the mask cost 0.3–0.5 s for the first frame alone.
+    /// The view fades through the ground under Reduce Motion or before the tiles have landed.
+    @MainActor static func curtain(_ color: Color) -> AnyTransition {
+        Dither.Tiles.shared.ensure(scale: NSScreen.main?.backingScaleFactor ?? 2)
+        return .asymmetric(insertion: .modifier(active: DitherCurtain.Reveal(progress: 0, color: color),
+                                                identity: DitherCurtain.Reveal(progress: 1, color: color)).animation(wipeAnimation),
+                           removal: .identity)
+    }
+
+    /// The wipe's own curve and length (`easeOut` over `base`, or a harness's stretch): the animation
+    /// a pane switch is made in, so the curtain's transaction lasts exactly as long as the wipe.
+    static var wipeAnimation: Animation { animation(easeOut, wipeSecondsOverride ?? base) }
+
     // MARK: reduce motion
 
     /// The system's Reduce Motion setting, read live — or `reducedOverride` when a
@@ -151,6 +213,35 @@ enum Motion {
     static var reduced: Bool { reducedOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// Pinned by a preview harness only; nil in the app.
     static var reducedOverride: Bool?
+    /// The wipe's duration when a harness stretches it (the Console preview's PREVIEW_WIPE_SECONDS,
+    /// so a mid-wipe picture is a reproducible frame); nil in the app — `base`.
+    static var wipeSecondsOverride: Double?
+    /// Called once by a pane's `DitherCurtain` on the first frame its progress reaches 0.4 after
+    /// an evaluation below it, with that progress, then cleared — the Console harness's
+    /// `snap-wipe:` arms it (`armWipeMid`), so a mid-wipe picture is pinned to the wipe's own
+    /// frames rather than to whatever a timer finds. Nil in the app.
+    static var wipeMidHook: ((Double) -> Void)?
+    /// Set by `noteCurtain` once an evaluation below 0.4 (the active value, or a frame under way)
+    /// has been seen since the arm — an inserted view's first body carries the identity value
+    /// (progress 1) before the transition rewinds it, and a spent curtain is still evaluated at 1.
+    static var wipeMidStarted = false
+    static func armWipeMid(_ hook: @escaping (Double) -> Void) {
+        wipeMidStarted = false
+        wipeMidHook = hook
+    }
+
+    /// `DitherCurtain` reports every evaluation here (a nil hook returns at once — the app's case).
+    /// The active value (p = 0) or a frame under way (p < 0.4) arms; the first frame at 0.4 or
+    /// more fires the hook with its progress. A spent curtain's identity evaluation (p = 1) counts
+    /// for nothing; under load the first frame after the active value may already be far along.
+    static func noteCurtain(progress p: Double) {
+        guard wipeMidHook != nil else { return }
+        if p < 0.4 { wipeMidStarted = true; return }
+        guard p < 1, wipeMidStarted, let hook = wipeMidHook else { return }
+        wipeMidHook = nil
+        wipeMidStarted = false
+        hook(p)
+    }
 
     /// A duration honouring Reduce Motion.
     static func seconds(_ d: Double) -> Double { reduced ? d / 2 : d }

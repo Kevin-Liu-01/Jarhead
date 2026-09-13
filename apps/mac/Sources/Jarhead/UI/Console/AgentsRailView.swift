@@ -425,7 +425,7 @@ struct AgentsRail: View, Equatable {
 
         if session.searching && hits.isEmpty && titleOnly.isEmpty {
             HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
+                ConsoleGlyphs(cols: 8, rows: 1)
                 Text("Searching…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
             }
             .padding(.horizontal, railInset).frame(height: 28)
@@ -522,7 +522,9 @@ struct AgentsRail: View, Equatable {
         let open = session.openAgentId == agent.id
         return AgentRowView(agent: agent, now: now, open: open, hidden: hidden,
                             toggle: {
-                                withAnimation(Motion.snappy) {
+                                // The pane switch in the wipe's own animation (Motion.wipeAnimation): the
+                                // curtain over the arriving pane runs exactly that long.
+                                withAnimation(Motion.wipeAnimation) {
                                     if open { actions.showNow() } else { session.openAgent(agent.id) }
                                 }
                             },

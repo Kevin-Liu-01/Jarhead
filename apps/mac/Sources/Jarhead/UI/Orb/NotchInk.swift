@@ -14,8 +14,8 @@ import AppKit
 // Gradient: the app icon's orb ramp (`Dither.orbStops` — pale cyan through the
 // listening cyan and the accent blues to a deep blue), a diagonal ramp (light
 // upper-left → deep lower-right) quantised into `Dither.bands` and dithered with the
-// shared blue-noise tile at device-pixel resolution (UI/Dither.swift: the icon's tile,
-// the icon's palette), then blended into pure black toward the notch — longest under
+// shared 8×8 Bayer tile in 1.5 pt cells (UI/Dither.swift: the icon's tile, the icon's
+// palette), then blended into pure black toward the notch — longest under
 // the notch, a short rim at the outer corners — so the island reads as the orb's
 // colour pooling out of the black. Rendered once per (size, scale) into a CGImage and
 // cached (small LRU); the mode's intensity is the alpha it is drawn with, so a static

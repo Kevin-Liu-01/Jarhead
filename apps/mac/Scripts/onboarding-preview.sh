@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Throwaway preview of the onboarding window with fake data.
-#   Scripts/onboarding-preview.sh                 # every step → Resources/preview-onboarding-<step>.png (+ -light.png)
+#   Scripts/onboarding-preview.sh                 # every step → Resources/preview-onboarding-<step>.png (+ -light.png, -welcome-light.png)
 #   Scripts/onboarding-preview.sh brain           # one step, stays open (no screenshot)
 #   Scripts/onboarding-preview.sh brain out.png   # one step, screenshot, exit
 # step: welcome | voice | brain | permissions | wake | agents | done | all (default all)
@@ -17,7 +17,7 @@
 #   statuses) and every ask prints — nothing here touches TCC. See OnboardingPreviewMain.swift.
 #   `all` also shoots the Permissions step at 620x1500 (preview-onboarding-permissions-all.png)
 #   so every one of the sixteen rows is in a committed picture.
-# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Motion + UI/Onboarding +
+# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Motion + UI/Dither + UI/Onboarding +
 # Scripts/OnboardingPreviewMain.swift into its own output directory (never the
 # shared .build products), shows the window, screenshots it and exits.
 set -euo pipefail
@@ -28,7 +28,7 @@ BUILD=".build/onboarding-preview"
 mkdir -p "$BUILD"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
   -o "$BUILD/onboarding-preview" \
-  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift \
+  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift \
   Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift \
   Scripts/OnboardingPreviewMain.swift
 export PREVIEW_SCENARIO="${PREVIEW_SCENARIO:-ready}"
@@ -63,8 +63,10 @@ if [[ "$STEP" == "all" ]]; then
   PREVIEW_SWEEP=waiting shoot permissions "Resources/preview-onboarding-permissions-waiting.png"
   PREVIEW_SWEEP=settings shoot permissions "Resources/preview-onboarding-permissions-settings.png"
   PREVIEW_SIZE=620x1500 shoot permissions "Resources/preview-onboarding-permissions-all.png"
-  # The Brain step again in the aqua appearance: the light palette's one check.
+  # The Brain step again in the aqua appearance: the light palette's one check; the Welcome step
+  # too, for the paper ground and the hero over it.
   PREVIEW_APPEARANCE=light shoot brain "Resources/preview-onboarding-light.png"
+  PREVIEW_APPEARANCE=light shoot welcome "Resources/preview-onboarding-welcome-light.png"
   exit 0
 fi
 if [[ -z "$OUT" ]]; then

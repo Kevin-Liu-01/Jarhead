@@ -95,6 +95,9 @@ final class ConsoleSession: ObservableObject {
     @Published var searchFocusRequest = 0
     private var searchCache: [String: [LedgerHit]] = [:]
     private var searchTask: Task<Void, Never>?
+    /// The preview harness's `loading` scenario pinned every read in flight: `search` and `pick`
+    /// leave their loading state up instead of answering. Never set in the app.
+    private var holdForPreview = false
     /// After a search hit opened a conversation: the row's wall-clock ms to scroll to.
     @Published var jarheadScrollTarget: Double?
 
@@ -203,6 +206,7 @@ final class ConsoleSession: ObservableObject {
     func search(_ query: String, from state: AppState) {
         searchQuery = query
         searchTask?.cancel()
+        if holdForPreview { searchHits = nil; searchGap = nil; searching = true; return }
         let q = ConsoleSession.searchKey(query)
         guard q.count >= ConsoleSession.searchMinLength else {
             searchHits = nil
@@ -240,6 +244,24 @@ final class ConsoleSession: ObservableObject {
         }
     }
 
+    /// The preview harness's `loading` scenario: the picked day's read and a search left in
+    /// flight for good, so the stream's "Reading…", the rail's "Reading" row and the Jarhead
+    /// section's "Searching…" — the dither glyphs — are on screen to shoot. The query names
+    /// nothing a fake title contains, or the title matches would stand in for the indicator.
+    func pinLoadingForPreview() {
+        holdForPreview = true
+        ledgerEntries = []
+        ledgerStats = nil
+        ledgerLoading = true
+        searchTask?.cancel()
+        searchTask = nil
+        searchOpen = true
+        searchQuery = "vercel"
+        searchHits = nil
+        searchGap = nil
+        searching = true
+    }
+
     /// Trimmed and lower-cased: what the cache and the daemon see.
     static func searchKey(_ query: String) -> String {
         query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -260,8 +282,9 @@ final class ConsoleSession: ObservableObject {
             jarheadScrollTarget = at
             return
         }
-        // The rail's highlight glides to the row; the pane crossfades under the root's animation.
-        withAnimation(Motion.snappy) { openJarheadSessionId = chain.id }
+        // The rail's highlight glides to the row and the pane arrives behind the curtain — in the
+        // wipe's own animation (Motion.wipeAnimation), the curtain's length to the frame.
+        withAnimation(Motion.wipeAnimation) { openJarheadSessionId = chain.id }
         loadedChainId = nil
         jarheadScrollTarget = at
         jarheadEntries = []
@@ -298,6 +321,7 @@ final class ConsoleSession: ObservableObject {
         ledgerEntries = []
         ledgerStats = nil
         ledgerLoading = true
+        if holdForPreview { return }
         let rows = await state.ledgerRows(day: day)
         // The user may have moved on while we were reading: either showLive()
         // already reset the flag, or a newer pick owns it now.
