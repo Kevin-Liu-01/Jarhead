@@ -64,49 +64,187 @@ public final class AppState: ObservableObject {
     // MARK: conversations and marks
 
     /// Conversations the Console has opened (`agent.open`), keyed by agent id; the
-    /// daemon client replaces or appends as `agent.transcript` events arrive.
+    /// daemon client replaces, appends or prepends as `agent.transcript` events arrive.
     @Published public var transcripts: [String: AgentTranscript] = [:]
+    /// Message id → its absolute position in that agent's feed, so an append upserts in
+    /// O(1) however long a conversation runs (it used to rebuild the whole map per delta).
+    /// The array index is `position - transcriptBase[agentId]`: a front-trim moves the
+    /// base and forgets the trimmed ids instead of renumbering everything kept.
+    public private(set) var transcriptIndex: [String: [String: Int]] = [:]
+    private var transcriptBase: [String: Int] = [:]
+    /// The ids a front-trim dropped, per agent (the newest 8 192 — the connector's `offsetOf`
+    /// bound). The engine re-sends a message when it changes — a call gaining its output, or
+    /// `settle` marking every still-running call `interrupted` when the agent ends — and one
+    /// older than the held rows has no index entry: without this it landed as the newest row,
+    /// out of order. It belongs above the fold; a later prepend brings it back as it is now.
+    private var trimmedIds: [String: TrimmedIds] = [:]
+    /// How many rows `prepend` has added since the last whole page, per agent (unset when
+    /// none). Kevin asked for those, so the cap grows by as many: the model holds at most
+    /// `maxTranscriptMessages + prependedCount[agentId]` rows, an upsert of the newest tool call
+    /// no longer throws his page away, and as the conversation grows the window slides from the
+    /// front one row per new row (the feed stays contiguous — a trim anywhere else would leave
+    /// an invisible gap). A view that keeps its own ceiling must show at least that many rows,
+    /// or the loaded page sits above the fold and the next "Load earlier" re-sends the same
+    /// `before` id (a no-op). Not `@Published`: it only ever changes with `transcripts`, which is.
+    public private(set) var prependedCount: [String: Int] = [:]
+    /// The newest messages a pane keeps. A Console left open on a live session for hours
+    /// used to grow without bound and lay out every row on every delta (40–95 % CPU on the
+    /// main thread); past the cap the oldest go, `complete` turns false, and "Load earlier"
+    /// brings them back on request (`prepend` is Kevin asking, so it is never trimmed and
+    /// raises the cap by what it added — see `prependedCount`).
+    public static let maxTranscriptMessages = 400
     /// Mark mode (Kevin circles something on screen). Installed by the app.
     public var beginMarkModeHandler: () -> Void = {}
     public func beginMarkMode() { beginMarkModeHandler() }
 
     /// Called by the daemon client for every `agent.transcript` event.
     ///
-    /// `append` upserts by id: the engine re-sends a message when it changes (a tool
-    /// call gains its output and status, an assistant turn gains a later block).
-    /// `replace` is either the newest page (first open) or an older page from
-    /// `agent.history`, recognised by ending before what we already have — that one
-    /// is prepended, and `complete` comes from the page (the last page reaches the
-    /// first message and says so).
+    /// `replace` is a whole page (the first open, a re-open after the file was replaced).
+    /// `append` upserts by id: the engine re-sends a message when it changes (a tool call
+    /// gains its output and status, an assistant turn gains a later block); `live` is the
+    /// engine's word on whether it still follows the file. `prepend` is an older page from
+    /// `agent.history`: inserted in front of what is held, deduplicated by id (a message we
+    /// already hold keeps our copy — the older page's parser may have seen it torn), and
+    /// `complete` comes from the page (the last page reaches the first message and says
+    /// so). The old "an older page is a replace whose last message is older than our first"
+    /// guess is gone: `at` is not monotonic in these files, and a wrong guess replaced the
+    /// newest 60 with the oldest 60.
     public func applyTranscript(_ t: AgentTranscript, mode: String) {
-        if mode == "append", var existing = transcripts[t.agentId] {
-            var index: [String: Int] = [:]
-            for (i, m) in existing.messages.enumerated() { index[m.id] = i }
+        let agentId = t.agentId
+        switch mode {
+        case "append":
+            // Taken out of the dictionary while it is edited so the messages array stays
+            // uniquely referenced: an edit through a copy would duplicate 400 rows per delta.
+            guard var existing = transcripts.removeValue(forKey: agentId) else {
+                replaceTranscript(t)
+                return
+            }
+            // The side tables too: read out of the dictionary, an edit would clone the 400-entry
+            // index and the 8 192-id trimmed set on every delta (that alone was ~1 s per 20 000).
+            var index = transcriptIndex.removeValue(forKey: agentId) ?? [:]
+            var base = transcriptBase[agentId] ?? 0
+            var trimmed = trimmedIds.removeValue(forKey: agentId) ?? TrimmedIds()
             for m in t.messages {
-                if let i = index[m.id] {
-                    existing.messages[i] = m
+                if let position = index[m.id], position - base >= 0, position - base < existing.messages.count {
+                    existing.messages[position - base] = m
+                } else if trimmed.contains(m.id) {
+                    // Above the fold (trimmed earlier): not the newest row, whatever changed in it.
+                    continue
                 } else {
-                    index[m.id] = existing.messages.count
+                    index[m.id] = base + existing.messages.count
                     existing.messages.append(m)
                 }
             }
             existing.total = max(existing.total, t.total)
             existing.live = t.live
-            transcripts[t.agentId] = existing
-            return
+            existing.cursor = AppState.mergedCursor(existing.cursor, t.cursor)
+            base = AppState.trimFront(&existing, index: &index, trimmed: &trimmed,
+                                      cap: AppState.maxTranscriptMessages + (prependedCount[agentId] ?? 0), base: base)
+            transcriptIndex[agentId] = index
+            transcriptBase[agentId] = base
+            trimmedIds[agentId] = trimmed
+            transcripts[agentId] = existing
+        case "prepend":
+            guard var existing = transcripts.removeValue(forKey: agentId), !existing.messages.isEmpty else {
+                replaceTranscript(t)
+                return
+            }
+            var index = transcriptIndex.removeValue(forKey: agentId) ?? [:]
+            var base = transcriptBase[agentId] ?? 0
+            // Only what we do not hold, in the page's own order (oldest first), once each.
+            var fresh: [AgentMessage] = []
+            fresh.reserveCapacity(t.messages.count)
+            var seen = Set<String>()
+            for m in t.messages where index[m.id] == nil && !seen.contains(m.id) {
+                seen.insert(m.id)
+                fresh.append(m)
+            }
+            base -= fresh.count
+            for (i, m) in fresh.enumerated() { index[m.id] = base + i }
+            existing.messages.insert(contentsOf: fresh, at: 0)
+            existing.complete = t.complete
+            existing.total = max(existing.total, t.total)
+            existing.cursor = AppState.mergedCursor(existing.cursor, t.cursor)
+            // Kevin asked for the page: it is held whole, and the cap grows by it.
+            prependedCount[agentId] = (prependedCount[agentId] ?? 0) + fresh.count
+            transcriptIndex[agentId] = index
+            transcriptBase[agentId] = base
+            transcripts[agentId] = existing
+        default:
+            replaceTranscript(t)
         }
-        if let existing = transcripts[t.agentId], !existing.messages.isEmpty, let firstKnown = existing.messages.first,
-           let last = t.messages.last, last.id != firstKnown.id, last.at <= firstKnown.at {
-            // An older page: prepend what we did not have, keep the rest.
-            var merged = t
-            let known = Set(t.messages.map(\.id))
-            merged.messages.append(contentsOf: existing.messages.filter { !known.contains($0.id) })
-            merged.live = existing.live
-            merged.total = max(existing.total, t.total)
-            transcripts[t.agentId] = merged
-            return
+    }
+
+    /// The array index of a message in `transcripts[agentId].messages`, or nil.
+    public func messageIndex(agentId: String, id: String) -> Int? {
+        guard let position = transcriptIndex[agentId]?[id] else { return nil }
+        let i = position - (transcriptBase[agentId] ?? 0)
+        guard i >= 0, i < (transcripts[agentId]?.messages.count ?? 0) else { return nil }
+        return i
+    }
+
+    /// A whole page: the map is rebuilt once, the base returns to 0, the cap applies, and
+    /// what was trimmed or loaded before is forgotten with the rows it described.
+    private func replaceTranscript(_ t: AgentTranscript) {
+        var next = t
+        var index: [String: Int] = [:]
+        index.reserveCapacity(min(next.messages.count, AppState.maxTranscriptMessages))
+        for (i, m) in next.messages.enumerated() { index[m.id] = i }
+        var trimmed = TrimmedIds()
+        let base = AppState.trimFront(&next, index: &index, trimmed: &trimmed, cap: AppState.maxTranscriptMessages, base: 0)
+        transcriptIndex[t.agentId] = index
+        transcriptBase[t.agentId] = base
+        trimmedIds[t.agentId] = trimmed
+        prependedCount[t.agentId] = nil
+        transcripts[t.agentId] = next
+    }
+
+    /// Drops the oldest past `cap` (`maxTranscriptMessages`, plus what Kevin loaded); the base
+    /// moves by as many, their ids leave the map and enter `trimmed`, and `complete` turns
+    /// false (there is more before what is held). Always the front: the held rows stay one
+    /// contiguous span of the file.
+    private static func trimFront(_ t: inout AgentTranscript, index: inout [String: Int], trimmed: inout TrimmedIds, cap: Int, base: Int) -> Int {
+        let excess = t.messages.count - cap
+        guard excess > 0 else { return base }
+        for m in t.messages.prefix(excess) {
+            index[m.id] = nil
+            trimmed.insert(m.id)
         }
-        transcripts[t.agentId] = t
+        t.messages.removeFirst(excess)
+        t.complete = false
+        return base + excess
+    }
+
+    /// A bounded set of message ids with first-in-first-out eviction: the ring names the
+    /// order, the set answers `contains` in O(1). An id already held is not re-entered, so
+    /// the ring holds `capacity` distinct ids and the set never loses one still in a slot.
+    struct TrimmedIds {
+        static let capacity = 8_192
+        private var ring: [String] = []
+        private var next = 0
+        private var held = Set<String>()
+
+        init() {}
+        var count: Int { held.count }
+        func contains(_ id: String) -> Bool { held.contains(id) }
+        mutating func insert(_ id: String) {
+            guard !held.contains(id) else { return }
+            if ring.count < TrimmedIds.capacity {
+                ring.append(id)
+            } else {
+                held.remove(ring[next])
+                ring[next] = id
+            }
+            next = (next + 1) % TrimmedIds.capacity
+            held.insert(id)
+        }
+    }
+
+    /// The byte span the held messages came from: a prepend widens the start, an append the end.
+    private static func mergedCursor(_ a: AgentTranscript.TranscriptCursor?, _ b: AgentTranscript.TranscriptCursor?) -> AgentTranscript.TranscriptCursor? {
+        guard let a else { return b }
+        guard let b else { return a }
+        return AgentTranscript.TranscriptCursor(startOffset: min(a.startOffset, b.startOffset), endOffset: max(a.endOffset, b.endOffset))
     }
 
     /// Installed by the daemon client. UI code only ever calls `send`.
@@ -151,8 +289,15 @@ public final class AppState: ObservableObject {
     private var jarheadSessionsRefreshing = false
     private var jarheadSessionsAgain = false
 
+    /// A whole chain's rows in one request (`ledger.chain`; the daemon's Ledger.readChain
+    /// keeps the newest CHAIN_ROWS_MAX). nil is no answer — a daemon from before the message
+    /// — and the Console falls back to one `jarheadSessionRows` per member. Installed by the app.
+    public var jarheadChainRowsHandler: (String) async -> JarheadChainRows? = { _ in nil }
+
     /// One session's rows, its `session.started` row through its `session.closed` row.
     public func jarheadSessionRows(_ id: String) async -> [LedgerRow] { await jarheadSessionRowsHandler(id) }
+    /// Every row of the chain rooted at `rootId`, oldest first; nil when nothing answered.
+    public func jarheadChainRows(_ rootId: String) async -> JarheadChainRows? { await jarheadChainRowsHandler(rootId) }
 
     /// Re-reads the list. Overlapping calls fold into one more read after the one in
     /// flight, so a row that landed mid-read is never missed. `delayMs` lets the
@@ -186,11 +331,14 @@ public final class AppState: ObservableObject {
     /// is timed past the deadline with room for a busy event loop.
     public static let jarheadSessionsRefreshDelaysMs: [UInt64] = [400, 1800]
 
-    /// The daemon client's two requests, and the watch that refreshes the list when
-    /// the snapshot's session id changes or the phase becomes asleep / paused.
-    public func installJarheadSessions(list: @escaping () async -> [JarheadSessionSummary], rows: @escaping (String) async -> [LedgerRow]) {
+    /// The daemon client's requests (the list, one session's rows, and — when the client has
+    /// it — a whole chain in one read), and the watch that refreshes the list when the
+    /// snapshot's session id changes or the phase becomes asleep / paused.
+    public func installJarheadSessions(list: @escaping () async -> [JarheadSessionSummary], rows: @escaping (String) async -> [LedgerRow],
+                                       chain: ((String) async -> JarheadChainRows?)? = nil) {
         jarheadSessionsHandler = list
         jarheadSessionRowsHandler = rows
+        if let chain { jarheadChainRowsHandler = chain }
         // The sink's payload is the new snapshot; `self.snapshot` is still the old one
         // in here (`@Published` fires in willSet), so both sides are kept locally.
         var lastSessionId = snapshot.session?.id
@@ -222,6 +370,50 @@ public final class AppState: ObservableObject {
     public func revealCrash() {
         if let c = lastCrash { revealCrashHandler(c.fileURL) }
     }
+
+    // MARK: - Memory
+
+    // What Jarhead remembers about Kevin across sessions (@jarhead/memory). The snapshot
+    // carries only counts (`snapshot.memory`); the items' text is read on request through the
+    // daemon (`memory.list` / `memory.search`) and never a vector. Forget and Restore are
+    // states the engine keeps — nothing here deletes anything.
+
+    /// The Memory rail's rows as last listed or searched; [] until the first read.
+    @Published public var memoryItems: [MemoryItem] = []
+    /// Installed by the app (AppDelegate). `state` is live | forgotten | merged | archived | all.
+    /// nil is no answer (a daemon from before memory, or a disconnect); [] is an empty store.
+    public var memoryListHandler: (String, Int) async -> [MemoryItem]? = { _, _ in nil } {
+        didSet { memoryInstalled = true }
+    }
+    public var memorySearchHandler: (String, Int) async -> [MemoryItem]? = { _, _ in nil } {
+        didSet { memoryInstalled = true }
+    }
+    /// Whether anything installed the handlers: false is this build's gap, not the daemon's.
+    public private(set) var memoryInstalled = false
+    private var memoryRefreshTask: Task<Void, Never>?
+
+    public func memoryList(state: String = "live", limit: Int = 50) async -> [MemoryItem]? { await memoryListHandler(state, limit) }
+    public func memorySearch(_ query: String, limit: Int = 30) async -> [MemoryItem]? { await memorySearchHandler(query, limit) }
+
+    /// Re-reads one state's list into `memoryItems`. A newer call cancels an older one still
+    /// in flight; a no-answer keeps what is shown.
+    public func refreshMemory(state: String = "live", limit: Int = 50) {
+        memoryRefreshTask?.cancel()
+        memoryRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let items = await self.memoryList(state: state, limit: limit)
+            guard !Task.isCancelled, let items else { return }
+            if items != self.memoryItems { self.memoryItems = items }
+        }
+    }
+
+    // The verbs, as commands: the engine changes the state and the next snapshot's counts say so.
+    public func memoryForget(_ id: String) { send(.memoryForget(id: id)) }
+    public func memoryRestore(_ id: String) { send(.memoryRestore(id: id)) }
+    public func memoryEdit(_ id: String, text: String, kind: String? = nil) { send(.memoryEdit(id: id, text: text, kind: kind)) }
+    public func memoryAdd(_ text: String, kind: String? = nil) { send(.memoryAdd(text: text, kind: kind)) }
+    /// "Learn now": one extraction run over what closed since the last one (never a Codex turn).
+    public func memoryRun() { send(.memoryRun) }
 
     // MARK: - Cleanup
 
@@ -922,3 +1114,220 @@ public enum TransportFormat {
         "Paused · meter stopped · resumes with context · " + sleepsIn(pause.sleepsAt, now: now)
     }
 }
+
+// MARK: - Jarhead chains (one read)
+
+/// A whole chain's ledger rows (`ledger.chain` → `ledger.rows`), oldest first. `truncated`
+/// says the daemon kept only the newest CHAIN_ROWS_MAX rows.
+public struct JarheadChainRows {
+    public var rows: [LedgerRow]
+    public var truncated: Bool
+    public init(rows: [LedgerRow], truncated: Bool) {
+        self.rows = rows; self.truncated = truncated
+    }
+
+    /// An answer worth showing for a chain with `sessionCount` members. A daemon whose ledger
+    /// has no `readChain` — or one whose 60-day walk missed the root — answers `{rows: [],
+    /// truncated: false}`: non-nil, so a nil check alone would show an empty conversation.
+    /// Empty rows for a chain that has sessions are not an answer; the Console reads them one
+    /// session at a time instead. A chain with no members has nothing to read either way.
+    public func covers(sessionCount: Int) -> Bool { !rows.isEmpty || sessionCount == 0 }
+}
+
+// MARK: - Liveness, derived
+
+extension AgentTranscript {
+    /// Following, and something can still arrive: the engine tails the file (`live`), the
+    /// daemon is connected, and a process still owns the session. Derived at every read —
+    /// never a latch — so a daemon restart, a dropped socket or an `ended` status turns the
+    /// header dot off by itself. `live` alone used to be that latch: set on every append and
+    /// cleared only by an engine event that a restarted daemon never sent, so the dot pulsed
+    /// for hours over a conversation nothing was writing to.
+    public func isLive(agent: AgentInfo, connected: Bool) -> Bool {
+        guard live, connected else { return false }
+        switch agent.status {
+        case .working, .idle, .blocked: return true
+        case .done, .ended, .unknown, .offline: return false
+        }
+    }
+
+    /// The typing face (the pulsing dot, the last row's indicator): only while the
+    /// lease-bounded status says working, so it cannot outlive 30 s of silence
+    /// (packages/agents liveness.ts) or a daemon that is gone.
+    public func typing(agent: AgentInfo, connected: Bool) -> Bool {
+        isLive(agent: agent, connected: connected) && agent.status == .working
+    }
+}
+
+extension Snapshot {
+    /// Every utterance sealed. For the moment the daemon is gone (EngineClient republishes
+    /// the last snapshot with the `daemon` row): nothing is being typed by an engine that is
+    /// not there, so no caret may blink through the outage.
+    public func finalisingTranscript() -> Snapshot {
+        var s = self
+        for i in s.transcript.indices where !s.transcript[i].final { s.transcript[i].final = true }
+        return s
+    }
+}
+
+#if DEBUG
+// MARK: - Bench (debug builds; no XCTest target in apps/mac)
+
+/// The AppState acceptance numbers, runnable from any harness compiled with `-D DEBUG`
+/// (the console preview may call it; a scratch main with Model/*.swift is enough):
+/// 20 000 append deltas keep 400 messages in under 200 ms; prepend deduplicates and keeps
+/// order; `isLive` is false when disconnected or the agent ended; a daemon drop seals every
+/// utterance; SettingsPatch carries language / accent / memory. One line per check, "ok" or
+/// "FAIL" first; the timing line carries the measured milliseconds.
+@MainActor
+public enum AppStateBench {
+    public static func run() -> [String] {
+        var out: [String] = []
+        func check(_ ok: Bool, _ what: String) { out.append((ok ? "ok   " : "FAIL ") + what) }
+
+        // 1. 20 000 append deltas of one message each.
+        let state = AppState()
+        let agentId = "sessions:codex:bench"
+        let deltas = 20_000
+        func message(_ i: Int) -> AgentMessage {
+            AgentMessage(id: "m\(i)", role: i % 3 == 0 ? .assistant : .tool, text: "line \(i) of a long conversation", at: 1_700_000_000_000 + Double(i) * 1_000,
+                         tool: i % 3 == 0 ? nil : AgentToolCall(name: "Bash", input: "echo \(i)", output: "\(i)", status: .done), thinking: nil)
+        }
+        let page = AgentTranscript(agentId: agentId, messages: (0..<60).map(message), total: 60, complete: true, live: true,
+                                   cursor: .init(startOffset: 0, endOffset: 60_000))
+        let start = DispatchTime.now()
+        state.applyTranscript(page, mode: "replace")
+        for i in 60..<(60 + deltas) {
+            let delta = AgentTranscript(agentId: agentId, messages: [message(i)], total: i + 1, complete: false, live: true,
+                                        cursor: .init(startOffset: 0, endOffset: (i + 1) * 1_000))
+            state.applyTranscript(delta, mode: "append")
+        }
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+        let held = state.transcripts[agentId]
+        check(held?.messages.count == AppState.maxTranscriptMessages, "20 000 appends → \(held?.messages.count ?? -1) kept (cap \(AppState.maxTranscriptMessages))")
+        check(ms < 200, String(format: "total apply %.1f ms (< 200)", ms))
+        check(held?.messages.last?.id == "m\(60 + deltas - 1)", "newest message kept last")
+        check(held?.complete == false, "complete is false after a trim")
+        check(state.messageIndex(agentId: agentId, id: "m\(60 + deltas - 1)") == AppState.maxTranscriptMessages - 1, "index of the newest is the last slot")
+        check(state.messageIndex(agentId: agentId, id: "m0") == nil, "a trimmed id is not in the index")
+        check(state.transcriptIndex[agentId]?.count == AppState.maxTranscriptMessages, "index holds exactly the kept ids")
+        check(held?.cursor?.endOffset == (60 + deltas) * 1_000, "cursor end widened by the appends")
+
+        // 2. An append that re-sends a held message upserts in place.
+        var changed = message(60 + deltas - 1)
+        changed.text = "edited"
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: [changed], total: 0, complete: false, live: true), mode: "append")
+        check(state.transcripts[agentId]?.messages.count == AppState.maxTranscriptMessages && state.transcripts[agentId]?.messages.last?.text == "edited", "an upsert edits in place")
+
+        // 2b. An append that re-sends a TRIMMED message (the agent ended: `settle` flips its
+        // still-running call to interrupted, live:false) is skipped — not appended as the newest
+        // row. The id must sit inside the trimmed set's bound (the newest 8 192 trimmed): the
+        // last one trimmed does; m1 left the set long ago and would land as a new row by design.
+        let lastTrimmed = 60 + deltas - AppState.maxTranscriptMessages - 1
+        var settled = message(lastTrimmed)
+        settled.tool = AgentToolCall(name: "Bash", input: "echo \(lastTrimmed)", output: nil, status: .interrupted)
+        let newestBefore = state.transcripts[agentId]!.messages.last!.id
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: [settled], total: 0, complete: false, live: false), mode: "append")
+        check(state.transcripts[agentId]?.messages.count == AppState.maxTranscriptMessages, "a re-sent trimmed message is not appended (count \(state.transcripts[agentId]?.messages.count ?? -1))")
+        check(state.transcripts[agentId]?.messages.last?.id == newestBefore, "…and the newest row is still the newest")
+        check(state.messageIndex(agentId: agentId, id: "m\(lastTrimmed)") == nil, "…and it has no index entry")
+        check(state.transcripts[agentId]?.live == false, "…while live follows the delta (the agent ended)")
+        check(state.prependedCount[agentId] == nil, "nothing loaded yet: prependedCount is unset")
+
+        // 3. Prepend: an older page, deduplicated, in order, complete from the page. Its rows
+        // were trimmed in step 1: the page brings them back, and they count as loaded.
+        let firstHeld = state.transcripts[agentId]!.messages.first!.id
+        let older = (0..<5).map(message) + [state.transcripts[agentId]!.messages.first!] + [message(2)]
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: older, total: 0, complete: true, live: true,
+                                              cursor: .init(startOffset: 0, endOffset: 5_000)), mode: "prepend")
+        let after = state.transcripts[agentId]!
+        check(after.messages.prefix(5).map(\.id) == ["m0", "m1", "m2", "m3", "m4"], "prepend keeps the page's order")
+        check(after.messages.count == AppState.maxTranscriptMessages + 5, "prepend adds only what was not held (dedupe: \(after.messages.count))")
+        check(after.messages[5].id == firstHeld, "the held rows follow the prepended ones")
+        check(after.complete == true, "complete comes from the page")
+        check(after.live == false, "live is kept across a prepend (the page's live:true is not taken)")
+        check(state.messageIndex(agentId: agentId, id: "m0") == 0 && state.messageIndex(agentId: agentId, id: firstHeld) == 5, "index follows the moved base")
+        check(after.cursor?.startOffset == 0 && after.cursor?.endOffset == (60 + deltas) * 1_000, "cursor spans both pages")
+        check(state.prependedCount[agentId] == 5, "prependedCount is the page's fresh rows (\(state.prependedCount[agentId] ?? -1))")
+        check(after.messages.count <= AppState.maxTranscriptMessages + (state.prependedCount[agentId] ?? 0), "held ≤ cap + prependedCount: what a view ceiling must show")
+        check(after.messages.first?.id == "m0", "the loaded page's first id is the held first id (the next Load-earlier's `before`)")
+
+        // 3b. A brought-back row is a held row again: an append re-sending it upserts in place,
+        // and an upsert (the newest tool call gaining output, say) does not trim the loaded page.
+        var back = message(2)
+        back.text = "brought back, then edited"
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: [back], total: 0, complete: false, live: true), mode: "append")
+        check(state.transcripts[agentId]?.messages[2].text == "brought back, then edited" && state.transcripts[agentId]?.messages.count == AppState.maxTranscriptMessages + 5,
+              "a prepended row re-sent by an append upserts in place; the loaded page survives an upsert")
+
+        // 3c. The window slides: a new row past the raised cap trims ONE from the front (m0),
+        // the loaded count stands (the cap stays raised), the feed stays contiguous.
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: [message(60 + deltas)], total: 0, complete: false, live: true), mode: "append")
+        let slid = state.transcripts[agentId]!
+        check(slid.messages.count == AppState.maxTranscriptMessages + 5, "a new row past the raised cap keeps cap + loaded rows (\(slid.messages.count))")
+        check(slid.messages.first?.id == "m1" && state.messageIndex(agentId: agentId, id: "m0") == nil, "…the oldest loaded row went, the rest of the page stays (first \(slid.messages.first?.id ?? "-"))")
+        check(slid.messages.last?.id == "m\(60 + deltas)", "…the new row is last")
+        check(state.prependedCount[agentId] == 5 && slid.complete == false, "…prependedCount stands at 5, complete false (there is more before m1)")
+        // A burst of ten: ten from the front — the loaded rows, then the tail's oldest — never a gap.
+        state.applyTranscript(AgentTranscript(agentId: agentId, messages: (1...10).map { message(60 + deltas + $0) }, total: 0, complete: false, live: true), mode: "append")
+        let burst = state.transcripts[agentId]!
+        check(burst.messages.count == AppState.maxTranscriptMessages + 5 && burst.messages.first?.id == "m\(60 + deltas - AppState.maxTranscriptMessages + 6)",
+              "a burst of 10 slides the window by 10 (first \(burst.messages.first?.id ?? "-"))")
+        check(zip(burst.messages, burst.messages.dropFirst()).allSatisfy { Int($0.id.dropFirst())! + 1 == Int($1.id.dropFirst())! }, "…the held rows are one contiguous span")
+        check(burst.messages.count <= AppState.maxTranscriptMessages + (state.prependedCount[agentId] ?? 0), "…held ≤ cap + prependedCount still")
+
+        // 3d. A replace forgets what was trimmed and loaded: an id trimmed before the replace
+        // (m5, below) is a new row again when the fresh page did not carry it.
+        let fresh = AppState()
+        fresh.applyTranscript(page, mode: "replace")
+        fresh.applyTranscript(AgentTranscript(agentId: agentId, messages: (60..<(60 + AppState.maxTranscriptMessages)).map(message), total: 0, complete: false, live: true), mode: "append")
+        check(fresh.messageIndex(agentId: agentId, id: "m5") == nil, "…m5 trimmed by the 400 appends")
+        fresh.applyTranscript(AgentTranscript(agentId: agentId, messages: (100..<160).map(message), total: 160, complete: false, live: true), mode: "replace")
+        fresh.applyTranscript(AgentTranscript(agentId: agentId, messages: [message(5)], total: 0, complete: false, live: true), mode: "append")
+        check(fresh.transcripts[agentId]?.messages.count == 61 && fresh.transcripts[agentId]?.messages.last?.id == "m5" && fresh.prependedCount[agentId] == nil,
+              "a replace resets the trimmed set and the loaded count")
+
+        // 3e. The trimmed set is bounded: 20 000 trims hold the newest 8 192 ids.
+        var ring = AppState.TrimmedIds()
+        for i in 0..<20_000 { ring.insert("t\(i)") }
+        ring.insert("t19999")
+        check(ring.count == AppState.TrimmedIds.capacity && ring.contains("t19999") && ring.contains("t\(20_000 - AppState.TrimmedIds.capacity)") && !ring.contains("t\(20_000 - AppState.TrimmedIds.capacity - 1)"),
+              "trimmed ids: the newest \(AppState.TrimmedIds.capacity) of 20 000, once each")
+
+        // 3f. A chain answer with no rows for a chain that has members is not an answer.
+        check(!JarheadChainRows(rows: [], truncated: false).covers(sessionCount: 2), "empty chain rows for 2 sessions → fall back to per-session reads")
+        check(JarheadChainRows(rows: [], truncated: false).covers(sessionCount: 0), "empty chain rows for 0 sessions → nothing to read")
+        check(JarheadChainRows(rows: [LedgerRow(at: 0, type: "session.started")], truncated: true).covers(sessionCount: 2), "rows → shown (truncated kept)")
+
+        // 4. isLive / typing derive from connection and status (on a copy the engine follows).
+        var alive = after
+        alive.live = true
+        var agent = AgentInfo(id: agentId, kind: .sessions, tool: .codex, name: "bench", status: .working, detail: nil, cwd: nil, updatedAt: 0, messageCount: nil, hint: nil)
+        check(alive.isLive(agent: agent, connected: true) && alive.typing(agent: agent, connected: true), "working + connected + live → isLive and typing")
+        check(!alive.isLive(agent: agent, connected: false), "isLive false when disconnected")
+        agent.status = .ended
+        check(!alive.isLive(agent: agent, connected: true), "isLive false when the agent ended")
+        agent.status = .idle
+        check(alive.isLive(agent: agent, connected: true) && !alive.typing(agent: agent, connected: true), "idle → live, not typing")
+        agent.status = .working
+        check(!after.isLive(agent: agent, connected: true), "isLive false when the engine stopped following (live:false)")
+
+        // 5. A daemon drop seals every utterance.
+        var snap = Snapshot.empty
+        snap.transcript = [
+            TranscriptItem(id: "u1", speaker: .kevin, text: "hey", startMs: 0, endMs: 900, at: 0, final: true),
+            TranscriptItem(id: "u2", speaker: .jarhead, text: "still typ", startMs: 1_000, endMs: 1_800, at: 0, final: false),
+        ]
+        let sealed = snap.finalisingTranscript()
+        check(!sealed.transcript.contains { !$0.final } && sealed.transcript.count == 2, "no final == false item survives the daemon-problem republish")
+
+        // 6. SettingsPatch json carries the new keys (and omits them when unset).
+        let patch = SettingsPatch(language: "en", accent: "british", memory: false).json
+        check(patch["language"] as? String == "en" && patch["accent"] as? String == "british" && patch["memory"] as? Bool == false, "SettingsPatch json carries language / accent / memory")
+        check(SettingsPatch(voice: "marin").json["language"] == nil, "an unset field is omitted from the patch")
+
+        out.append(String(format: "timing: %d append deltas in %.1f ms → %d kept", deltas, ms, held?.messages.count ?? -1))
+        return out
+    }
+}
+#endif

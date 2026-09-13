@@ -25,6 +25,9 @@ struct StreamPane: View, Equatable {
     var clearedAt: Double? = nil
     /// The delegations' workers (Snapshot.workers): each card shows its own as chips under the timeline.
     var workers: [Worker] = []
+    /// The daemon client is connected (AppState.connected). While it is not, the snapshot on
+    /// screen is the last one republished and nothing in it is being typed.
+    var connected = true
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -32,7 +35,14 @@ struct StreamPane: View, Equatable {
     static func == (a: StreamPane, b: StreamPane) -> Bool {
         a.transcript == b.transcript && a.delegations == b.delegations && a.phase == b.phase && a.hasSession == b.hasSession
             && a.ledgerDay == b.ledgerDay && a.ledgerEntries == b.ledgerEntries && a.ledgerLoading == b.ledgerLoading
-            && a.clearedAt == b.clearedAt && a.workers == b.workers
+            && a.clearedAt == b.clearedAt && a.workers == b.workers && a.connected == b.connected
+    }
+
+    /// The caret may show at all: the live feed, a session open, the daemon connected. A ledger
+    /// day's rows are the record (all final); a republished snapshot during a daemon drop, or an
+    /// asleep engine's leftover non-final item, must not blink for the whole outage.
+    static func caretsOn(ledgerDay: String?, hasSession: Bool, connected: Bool) -> Bool {
+        ledgerDay == nil && hasSession && connected
     }
 
     private var entries: [StreamEntry] {
@@ -59,7 +69,8 @@ struct StreamPane: View, Equatable {
             }
             ZStack {
                 // A past day's workers are its `worker` rows (system lines); only the live feed has the list.
-                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear, workers: ledgerDay == nil ? workers : [])
+                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear, workers: ledgerDay == nil ? workers : [],
+                           caretsOn: Self.caretsOn(ledgerDay: ledgerDay, hasSession: hasSession, connected: connected))
                     .id(feedKey)
                     .transition(.identity)
                 Color.clear
@@ -195,7 +206,9 @@ final class ConsoleScrollProbeView: NSView {
     }
 
     private func report() {
-        guard window != nil, let geometry = geometry else { return }
+        guard window != nil else { return }
+        applyHold()
+        guard let geometry = geometry else { return }
         if ConsoleScrollProbeView.debug, let scroll = enclosingScrollView, let doc = scroll.documentView {
             FileHandle.standardError.write(Data("[scroll] minY=\(Int(geometry.minY)) viewport=\(Int(geometry.viewport)) content=\(Int(geometry.content)) distance=\(Int(geometry.distanceFromBottom)) docFlipped=\(doc.isFlipped) clipFlipped=\(scroll.contentView.isFlipped)\n".utf8))
         }
@@ -224,16 +237,53 @@ final class ConsoleScrollProbeView: NSView {
         return true
     }
 
-    /// After rows were added *above* the viewport (an older page loaded), shifts
-    /// the clip down by the growth so the row Kevin was reading stays put.
-    /// `previousContent` is the document height before the change.
+    /// After rows were added *above* the viewport (an older page loaded), keeps the row Kevin
+    /// was reading where it is: the clip follows the document's growth — not once, but on every
+    /// frame change for the next moment (`holdSeconds`), because a lazy stack lays the new rows
+    /// out at estimated heights first and at their real ones as they materialise (a one-shot
+    /// shift left the row ~240 pt adrift for a 40-row page). Kevin's own scroll during the hold
+    /// ends it; so does the moment passing. `previousContent` is the document height before the change.
     func keepOffset(previousContent: CGFloat) {
-        guard let scroll = enclosingScrollView, let doc = scroll.documentView else { return }
+        guard let scroll = enclosingScrollView, let doc = scroll.documentView, doc.isFlipped else { return }
+        hold = Hold(minY: scroll.contentView.bounds.origin.y, content: previousContent,
+                    until: Date().addingTimeInterval(Self.holdSeconds))
+        applyHold()
+    }
+
+    /// The anchor a prepend holds to: the clip's top and the document's height before it.
+    private struct Hold {
+        let minY: CGFloat
+        let content: CGFloat
+        let until: Date
+        /// Where the last shift left the clip. A top that moved UP since (toward older rows) is
+        /// Kevin scrolling on — his move ends the hold. A move down is the scroll view's own
+        /// compensation for rows re-laid out above (it happens under the meters' 20 Hz churn) and
+        /// is re-enforced: the anchor is the truth, whoever moved the clip.
+        var lastSet: CGFloat?
+    }
+
+    private var hold: Hold?
+    /// The shift below posts boundsDidChange synchronously → `report()` → here again, before
+    /// `lastSet` is written: that inner call must do nothing.
+    private var applyingHold = false
+    /// Long enough for a lazy stack's rows to take their real heights (they kept moving for
+    /// ~0.7 s under churn); short enough that the next thing Kevin does is his.
+    static let holdSeconds: TimeInterval = 0.8
+
+    /// One step of the hold: the clip's top at where it was plus the growth since, when it is not there.
+    private func applyHold() {
+        guard !applyingHold, var h = hold, let scroll = enclosingScrollView, let doc = scroll.documentView else { return }
         let clip = scroll.contentView
-        let delta = doc.frame.height - previousContent
-        guard delta > 0.5, doc.isFlipped else { return }
-        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + delta))
+        if Date() > h.until { hold = nil; return }
+        if let last = h.lastSet, clip.bounds.origin.y < last - 0.5 { hold = nil; return }
+        let wanted = h.minY + max(0, doc.frame.height - h.content)
+        guard abs(clip.bounds.origin.y - wanted) > 0.5 else { return }
+        applyingHold = true
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: wanted))
         scroll.reflectScrolledClipView(clip)
+        applyingHold = false
+        h.lastSet = clip.bounds.origin.y
+        hold = h
     }
 }
 
@@ -351,11 +401,23 @@ struct StreamFeed: View {
     /// The live delegations' workers; each card is handed its own (StreamEntry.workers(from:))
     /// and every other row none, so a worker's tick leaves those rows equal. [] for a past day.
     var workers: [Worker] = []
+    /// The streaming caret may show (StreamPane.caretsOn): only the live feed with a session
+    /// open and the daemon connected. Off for a ledger day and a past Jarhead conversation.
+    var caretsOn = false
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.consoleTransport) private var transport
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var tracker = ConsoleFeedTracker()
+
+    /// The one row that may carry the caret: the newest utterance (the item being spoken or
+    /// heard). An older non-final item — a cut answer whose settle never came — sits still.
+    static func caretId(_ entries: [StreamEntry]) -> String? {
+        for entry in entries.reversed() {
+            if case .utterance(let t) = entry { return t.id }
+        }
+        return nil
+    }
     /// True one turn after the feed has its first content: rows there from the start
     /// show at once (the pane they are in is arriving on its own), and so do the rows a
     /// read the feed opened waiting on (a Jarhead conversation, a ledger day: they open
@@ -381,9 +443,10 @@ struct StreamFeed: View {
                             // has dropped, so the content height jitters by tens of points after
                             // every append and the viewport slides under the reader. Two hundred
                             // materialised rows are cheap; a stable document is not optional.
+                            let caretId = caretsOn ? Self.caretId(entries) : nil
                             VStack(alignment: .leading, spacing: 0) {
                                 ForEach(entries) { entry in
-                                    StreamRow(entry: entry, workers: entry.workers(from: workers))
+                                    StreamRow(entry: entry, workers: entry.workers(from: workers), caret: entry.id == caretId)
                                         .rowAppear(animated: settled)
                                         // The found row's ground, on its own opacity: the layout never moves.
                                         .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active).opacity(highlightId == entry.id ? 1 : 0))
@@ -520,10 +583,13 @@ struct StreamRow: View, Equatable {
     /// This row's workers — a delegation card's own (StreamEntry.workers(from:)); [] for the
     /// rest, so a hand's status turning re-evaluates its card and nothing else in the feed.
     var workers: [Worker] = []
+    /// This row may carry the streaming caret (the feed's newest utterance, in a live feed with
+    /// a session open and the daemon connected); the item's `final` still decides whether it does.
+    var caret = false
 
     var body: some View {
         switch entry {
-        case .utterance(let t): UtteranceRow(item: t)
+        case .utterance(let t): UtteranceRow(item: t, caret: caret)
         case .delegation(let d): DelegationCard(delegation: d, workers: workers)
         case .system(let s): SystemRow(entry: s)
         }
@@ -543,6 +609,14 @@ private struct Stamp: View {
 
 struct UtteranceRow: View {
     let item: TranscriptItem
+    /// The caret gate the feed computed (StreamFeed.caretId + StreamPane.caretsOn): this is the
+    /// newest utterance of a live, connected session. Off, a non-final item sits still — the
+    /// engine finalises orphans within 15 s, the client republishes finalised items on a daemon
+    /// drop, and this gate covers the frame between.
+    var caret = false
+
+    /// Blinks while the item is still being written AND the gate is open.
+    static func showsCaret(final: Bool, gate: Bool) -> Bool { !final && gate }
 
     var body: some View {
         let kevin = item.speaker == .kevin
@@ -558,7 +632,7 @@ struct UtteranceRow: View {
                     .foregroundStyle(ConsoleTheme.fg)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                if !item.final { StreamingCaret(color: ConsoleTheme.fg) }
+                if Self.showsCaret(final: item.final, gate: caret) { StreamingCaret(color: ConsoleTheme.fg) }
             }
             .padding(.leading, iconGap)
             .frame(maxWidth: 640, alignment: .leading)

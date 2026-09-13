@@ -3,7 +3,9 @@ import SwiftUI
 
 /// Owns the Console window. Created once by AppDelegate; `show()` builds the
 /// window lazily, `close()` hides it (the window and its view tree survive so
-/// reopening is instant and scroll/tab state is kept).
+/// reopening is instant and scroll/tab state is kept). Because the tree survives,
+/// the session is told when the window is on screen (`windowVisible`): a hidden
+/// Console must hold no agent tails, and only the panes can send the closes.
 @MainActor
 public final class ConsoleWindowController: NSObject, NSWindowDelegate {
     public let state: AppState
@@ -21,13 +23,22 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         if !window.isVisible { window.center() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        setVisible(true)
     }
 
     public func close() {
+        setVisible(false)
         window?.orderOut(nil)
     }
 
     public var isVisible: Bool { window?.isVisible ?? false }
+
+    /// The daemon (re)connected (AppDelegate, on every hello): panes re-send their `agent.open`.
+    func reconnected() { session.reconnected() }
+
+    private func setVisible(_ on: Bool) {
+        if session.windowVisible != on { session.windowVisible = on }
+    }
 
     /// Window number for scripted screenshots (`screencapture -l`). nil until shown.
     var windowNumber: Int? { window.map(\.windowNumber) }
@@ -135,10 +146,17 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
+    /// The red button and ⌘W both hide (never close: the tree is kept) through `close()`,
+    /// so the session hears it either way.
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sender.orderOut(nil)
+        close()
         return false
     }
+
+    /// Minimised is hidden too: a Console in the Dock for an afternoon should not keep
+    /// every open conversation's tail running.
+    public func windowDidMiniaturize(_ notification: Notification) { setVisible(false) }
+    public func windowDidDeminiaturize(_ notification: Notification) { setVisible(true) }
 }
 
 /// Handles ⌘W / ⌘. / ⌘K / ⌘P itself so the Console works whatever the main menu holds.

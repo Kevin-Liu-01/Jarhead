@@ -37,7 +37,26 @@ final class ConsoleSession: ObservableObject {
     @Published var jarheadEntries: [StreamEntry] = []
     @Published var jarheadLog: [JarheadLogLine] = []
     @Published var jarheadLoading = false
+    /// The open chain's read hit the daemon's cap (Ledger.readChain keeps the newest rows): the
+    /// oldest of a very long conversation are not on screen.
+    @Published private(set) var jarheadTruncated = false
     @Published var jarheadView: JarheadView = .conversation
+
+    // MARK: durability (the window, the daemon)
+
+    /// The Console window is on screen (ConsoleWindowController: show, close, minimise). A
+    /// hidden Console holds no tails: the window only `orderOut`s and its view tree survives,
+    /// so a pane's onDisappear never fired while hidden and its tail ran for hours. Panes
+    /// send `agent.close` when this turns false and `agent.open` when it turns true.
+    @Published var windowVisible = false
+    /// Bumped on every daemon (re)connect (AppDelegate → ConsoleWindowController.reconnected).
+    /// A restarted engine starts with no open conversations and the pane's identity does not
+    /// change across the restart, so nothing re-sent `agent.open` and the header dot pulsed
+    /// over a feed nothing fed; a pane watching this re-opens within a second. Settable so
+    /// the preview harness can stage a reconnect without a daemon.
+    @Published var reconnectCount = 0
+
+    func reconnected() { reconnectCount += 1 }
 
     /// nil until the first load; then newest first.
     @Published var ledgerDays: [String]?
@@ -152,6 +171,7 @@ final class ConsoleSession: ObservableObject {
         jarheadEntries = []
         jarheadLog = []
         jarheadLoading = false
+        jarheadTruncated = false
     }
 
     /// Scroll the open conversation to the row at `at` (JarheadConversationPane.scrollTo).
@@ -270,10 +290,12 @@ final class ConsoleSession: ObservableObject {
     /// The rail is showing search results, not the sections.
     var isSearching: Bool { searchOpen && ConsoleSession.searchKey(searchQuery).count >= ConsoleSession.searchMinLength }
 
-    /// Steps into a past Jarhead conversation: the chain's sessions' rows, oldest
-    /// first, concatenated — a resume continues the paused one, so the chain reads as
-    /// one conversation. The view mode (Conversation | Log) is kept between chains.
-    /// `scrollTo` is a row's wall-clock ms (a search hit): the feed opens on it.
+    /// Steps into a past Jarhead conversation: the chain's rows, oldest first — a resume
+    /// continues the paused one, so the chain reads as one conversation. One `ledger.chain`
+    /// request reads the whole chain (15 s budget); a daemon from before that message
+    /// answers nothing and the rows come one session at a time as before (5 s each). The
+    /// view mode (Conversation | Log) is kept between chains. `scrollTo` is a row's
+    /// wall-clock ms (a search hit): the feed opens on it.
     func openJarhead(_ chain: JarheadChain, from state: AppState, scrollTo at: Double? = nil) async {
         if openJarheadSessionId == chain.id, loadedChainId == chain.id || jarheadLoading {
             // Its rows are on screen, or their read is in flight: only the scroll target moves
@@ -290,14 +312,25 @@ final class ConsoleSession: ObservableObject {
         jarheadEntries = []
         jarheadLog = []
         jarheadLoading = true
+        jarheadTruncated = false
         var rows: [LedgerRow] = []
-        for s in chain.sessions {
-            rows += await state.jarheadSessionRows(s.id)
+        var truncated = false
+        // nil is no answer (an older daemon, a disconnect); empty rows for a chain that has
+        // members is a daemon whose ledger has no readChain (`{rows: [], truncated: false}`)
+        // or a walk that missed the root — an empty conversation is not what Kevin opened.
+        if let answer = await state.jarheadChainRows(chain.id), answer.covers(sessionCount: chain.sessions.count) {
+            rows = answer.rows
+            truncated = answer.truncated
+        } else {
+            for s in chain.sessions {
+                rows += await state.jarheadSessionRows(s.id)
+            }
         }
         // Kevin may have moved on while we were reading.
         guard openJarheadSessionId == chain.id else { return }
         jarheadEntries = StreamBuilder.fromLedger(rows)
         jarheadLog = JarheadLog.lines(rows)
+        jarheadTruncated = truncated
         jarheadLoading = false
         loadedChainId = chain.id
     }

@@ -226,8 +226,100 @@ enum ConsoleTheme {
     /// Display order of connector groups in the left rail.
     static let kindOrder: [AgentKind] = [.sessions, .claudeCode]
 
-    static let voices = ["cedar", "marin", "alloy", "ash", "ballad", "beacon", "bossa", "cinder", "coral", "delta", "echo",
-                         "gleam", "meridian", "quartz", "ripple", "sage", "shimmer", "stone", "tempo", "verse", "vesper", "willow"]
+    // MARK: voice — the 22 GPT-Live-1 voices (protocol VOICES, mirrored by hand), the one language, the accents
+
+    /// One voice as the Audio menu lists it. A voice is a timbre, not a language: every label
+    /// ends "· English" because the engine's `# Language` section pins English whatever the voice.
+    /// No character notes ("warm", "bright"): none can be verified without a paid session.
+    struct VoiceOption: Hashable {
+        let id: String
+        let name: String
+    }
+
+    /// cedar and marin first (the defaults the engine has shipped), the rest alphabetical —
+    /// the order `voices` has always had, so a saved pick keeps its place in the menu.
+    static let voiceOptions: [VoiceOption] = [
+        VoiceOption(id: "cedar", name: "Cedar"), VoiceOption(id: "marin", name: "Marin"),
+        VoiceOption(id: "alloy", name: "Alloy"), VoiceOption(id: "ash", name: "Ash"), VoiceOption(id: "ballad", name: "Ballad"),
+        VoiceOption(id: "beacon", name: "Beacon"), VoiceOption(id: "bossa", name: "Bossa"), VoiceOption(id: "cinder", name: "Cinder"),
+        VoiceOption(id: "coral", name: "Coral"), VoiceOption(id: "delta", name: "Delta"), VoiceOption(id: "echo", name: "Echo"),
+        VoiceOption(id: "gleam", name: "Gleam"), VoiceOption(id: "meridian", name: "Meridian"), VoiceOption(id: "quartz", name: "Quartz"),
+        VoiceOption(id: "ripple", name: "Ripple"), VoiceOption(id: "sage", name: "Sage"), VoiceOption(id: "shimmer", name: "Shimmer"),
+        VoiceOption(id: "stone", name: "Stone"), VoiceOption(id: "tempo", name: "Tempo"), VoiceOption(id: "verse", name: "Verse"),
+        VoiceOption(id: "vesper", name: "Vesper"), VoiceOption(id: "willow", name: "Willow"),
+    ]
+    /// The ids alone, for every caller that only wants the list.
+    static let voices: [String] = voiceOptions.map(\.id)
+
+    /// The languages the voice can be asked for. One today; the Audio row is a read-only value
+    /// until a second appears (a menu with one option reads as broken).
+    static let languages: [String: String] = ["en": "English"]
+
+    /// "en" → "English"; an unknown tag falls back to English on purpose — the engine does too.
+    static func languageLabel(_ tag: String) -> String {
+        languages[tag.lowercased().split(separator: "-").first.map(String.init) ?? tag] ?? "English"
+    }
+
+    /// "Cedar · English" — the name when the id is known, the raw id when it is not (a
+    /// JARHEAD_VOICE outside the list still shows), always with the language it will speak.
+    static func voiceLabel(_ id: String) -> String {
+        let name = voiceOptions.first { $0.id == id }?.name ?? id
+        return "\(name) · \(languageLabel("en"))"
+    }
+
+    /// How the English sounds (protocol Accent): the Audio row's three segments. Best-effort on
+    /// the model's side; the language lock is the robust half.
+    struct AccentOption: Hashable {
+        let id: String
+        let label: String
+    }
+    static let accents: [AccentOption] = [AccentOption(id: "american", label: "American"), AccentOption(id: "british", label: "British"), AccentOption(id: "none", label: "None")]
+    static func accentLabel(_ id: String) -> String { accents.first { $0.id == id }?.label ?? id.capitalized }
+
+    // MARK: memory — what Jarhead remembers about Kevin (protocol MemoryItem / MemorySummary)
+
+    /// One solid symbol per kind on the icon column.
+    static func memorySymbol(_ kind: MemoryKind) -> String {
+        switch kind {
+        case .preference: return "hand.thumbsup.fill"
+        case .fact: return "lightbulb.fill"
+        case .episode: return "clock.fill"
+        case .procedure: return "list.bullet.rectangle.fill"
+        case .contact: return "person.crop.circle.fill"
+        case .place: return "mappin.circle.fill"
+        }
+    }
+
+    /// The state's word as the rail's segments and rows say it. Forget and Archive are
+    /// states, never deletions: the store keeps every item.
+    static func memoryStateLabel(_ s: MemoryState) -> String {
+        switch s {
+        case .live: return "Live"
+        case .forgotten: return "Forgotten"
+        case .merged: return "Merged"
+        case .archived: return "Archived"
+        }
+    }
+
+    /// The Settings row's "Matching" value: how items are compared. OpenAI embeddings (the voice
+    /// key; item text leaves the Mac for that) or keyword matching (nothing leaves).
+    static func memoryMatching(_ embeddings: String) -> String {
+        embeddings == "openai" ? "OpenAI · 512 dims" : "keyword · no key"
+    }
+
+    /// "142 live · 3 forgotten · 1 archived" — the counts in one mono line.
+    static func memoryCounts(_ m: MemorySummary) -> String {
+        "\(m.count) live · \(m.forgotten) forgotten · \(m.archived) archived"
+    }
+
+    /// The honest framing: the budget CAPS what memory costs a turn; the saving is Kevin never
+    /// re-explaining himself. The two figures are the protocol's BRAIN_MEMORY_TOKENS / VOICE_MEMORY_TOKENS.
+    static let memoryBudgetHint = "Capped at 250 brain · 120 voice tokens a turn. The saving is never re-explaining yourself."
+    /// Every Forget in the Console says the same thing; no control offers a deletion verb.
+    static let memoryForgetHint = "Forget hides it from Jarhead; Jarhead's own record keeps it (nothing is deleted)."
+    /// Settings › Audio: the promise, and when a pick is heard.
+    static let languageHint = "English at all times. A change is heard at the next wake."
+
     /// Every brain the contract knows, so whatever the daemon runs is a valid pick.
     static let brains: [BrainKind] = BrainKind.allCases
     static let efforts = ["low", "medium", "high", "xhigh", "max"]
@@ -972,6 +1064,74 @@ struct ConsoleMenuField<Value: Hashable>: View {
         .menuIndicator(.hidden)
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
+    }
+}
+
+/// One option of a segmented control: the active one filled with the text colour and lettered
+/// in the ground, the rest plain with a hover. The filled thumb is one view on the control's
+/// matched geometry id, so it glides between options (Motion.snappy). The rail's tabs, the
+/// Home row and `ConsoleSegments` all draw their options with this.
+struct ConsoleSegmentOption: View {
+    let title: String
+    let on: Bool
+    /// The control's namespace: the filled thumb glides between its options.
+    let thumb: Namespace.ID
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(ConsoleTheme.sans(12, .medium))
+                .foregroundStyle(on ? ConsoleTheme.ground : ConsoleTheme.fg2)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .background {
+                    if on {
+                        Rectangle().fill(ConsoleTheme.fg).matchedGeometryEffect(id: "thumb", in: thumb)
+                    } else if hovering {
+                        Rectangle().fill(ConsoleTheme.hover)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(ConsoleMotion.hover, value: hovering)
+        .animation(Motion.snappy, value: on)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// A segmented control over any few values (Settings › Accent, the Memory rail's
+/// Live | Forgotten | Archived): one hairline box, dividers between options, the thumb gliding
+/// to the pick. Two or three options; more belongs in a `ConsoleMenuField`.
+struct ConsoleSegments<Value: Hashable>: View {
+    let value: Value
+    let options: [Value]
+    let title: (Value) -> String
+    let pick: (Value) -> Void
+    var accessibilityLabel: String? = nil
+
+    @Namespace private var thumb
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.element) { index, option in
+                if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
+                ConsoleSegmentOption(title: title(option), on: option == value, thumb: thumb) {
+                    withAnimation(Motion.snappy) { pick(option) }
+                }
+            }
+        }
+        .frame(height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+        .animation(Motion.snappy, value: value)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel ?? title(value))
     }
 }
 

@@ -6,9 +6,12 @@ import { readConfig, type JarheadConfig } from "@jarhead/core";
 import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
 import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
-import type { EngineEvent, OverlayCommand } from "@jarhead/protocol";
+import type { AgentConnector, SendResult, TranscriptDelta, TranscriptOptions, TranscriptPage } from "@jarhead/agents";
+import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
 import type { Exec } from "@jarhead/cli/install";
+import type { IngestOptions, IngestResult, RememberResult, Rendered } from "@jarhead/memory";
 import { Engine, type EngineOptions } from "../engine.ts";
+import type { MemoryServiceLike } from "../memory-bridge.ts";
 import type { WorkerBrainFactory } from "../workers.ts";
 
 /**
@@ -211,6 +214,260 @@ export class RecordingHands implements NativeHands {
   }
 }
 
+/**
+ * A sessions connector with scripted pages: what `transcript()` answers per agent (the
+ * newest page, and the older page a `before` asks for), what `settle()` says the
+ * process left running, and every tail it was asked for. A test drives it: `emitDelta`
+ * appends turns, `endTail` ends a follow with a reason, `change` moves an agent's
+ * status through the registry's subscription, `gone` retires it.
+ */
+export class FakeConnector implements AgentConnector {
+  readonly kind = "sessions" as const;
+  agents: AgentInfo[] = [];
+  /** The newest page per agent (`transcript()` without `before`). */
+  pages = new Map<string, TranscriptPage>();
+  /** The older page per agent (`transcript({ before })`). */
+  history = new Map<string, TranscriptPage>();
+  /** What `settle()` answers: the calls left running, as interrupted. */
+  interrupted = new Map<string, AgentMessage[]>();
+  transcriptCalls: { agentId: string; opts: TranscriptOptions | undefined }[] = [];
+  watches: { agentId: string; onDelta: (d: TranscriptDelta) => void; onEnd: ((reason: string) => void) | undefined; stopped: boolean }[] = [];
+  /** Agents whose tail cannot start: `watch()` calls onEnd("gone") synchronously. */
+  failWatch = new Set<string>();
+  settles = 0;
+  private onChange: ((agent: AgentInfo) => void) | undefined;
+  private onGone: ((agentId: string) => void) | undefined;
+
+  async health(): Promise<ConnectorHealth> {
+    return { kind: "sessions", ok: true, detail: "fake" };
+  }
+  async list(): Promise<AgentInfo[]> {
+    return this.agents;
+  }
+  async send(): Promise<SendResult> {
+    return { accepted: false, detail: "fake" };
+  }
+  async read(): Promise<string> {
+    return "";
+  }
+  subscribe(onChange: (agent: AgentInfo) => void, onGone?: (agentId: string) => void): () => void {
+    this.onChange = onChange;
+    this.onGone = onGone;
+    return () => {
+      this.onChange = undefined;
+      this.onGone = undefined;
+    };
+  }
+  async transcript(agentId: string, opts?: TranscriptOptions): Promise<TranscriptPage> {
+    this.transcriptCalls.push({ agentId, opts });
+    const page = opts?.before !== undefined ? this.history.get(agentId) : this.pages.get(agentId);
+    if (!page) throw new Error(`no transcript for ${agentId}`);
+    return page;
+  }
+  watch(agentId: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void {
+    const w = { agentId, onDelta, onEnd, stopped: false };
+    this.watches.push(w);
+    if (this.failWatch.has(agentId)) {
+      w.stopped = true;
+      onEnd?.("gone");
+    }
+    return () => {
+      w.stopped = true;
+    };
+  }
+  async settle(agentId: string): Promise<TranscriptDelta | undefined> {
+    this.settles++;
+    const messages = this.interrupted.get(agentId);
+    return messages ? { messages, total: this.pages.get(agentId)?.total ?? messages.length } : undefined;
+  }
+
+  // ---- drivers
+  liveTails(agentId?: string): typeof this.watches {
+    return this.watches.filter((w) => !w.stopped && (agentId === undefined || w.agentId === agentId));
+  }
+  emitDelta(agentId: string, messages: AgentMessage[], total = messages.length): void {
+    for (const w of this.liveTails(agentId)) w.onDelta({ messages, total });
+  }
+  endTail(agentId: string, reason: "gone" | "replaced" | "truncated" | string): void {
+    for (const w of this.liveTails(agentId)) {
+      w.stopped = true;
+      w.onEnd?.(reason);
+    }
+  }
+  /** An agent's status moved (the poll's word), through the registry's subscription. */
+  change(agent: AgentInfo): void {
+    this.agents = [...this.agents.filter((a) => a.id !== agent.id), agent];
+    this.onChange?.(agent);
+  }
+  gone(agentId: string): void {
+    this.agents = this.agents.filter((a) => a.id !== agentId);
+    this.onGone?.(agentId);
+  }
+}
+
+/** One agent for the fake connector's listing. */
+export function fakeAgent(id: string, status: AgentInfo["status"], extra: Partial<AgentInfo> = {}): AgentInfo {
+  return { id, kind: "sessions", tool: "codex", name: id.split(":").pop() ?? id, status, updatedAt: 1, ...extra };
+}
+
+/** One message for a scripted page. */
+export function fakeMessage(id: string, role: AgentMessage["role"], text: string, tool?: AgentMessage["tool"]): AgentMessage {
+  return { id, role, text, at: 1, ...(tool ? { tool } : {}) };
+}
+
+/**
+ * The memory module as the engine's bridge sees it (`MemoryServiceLike` in
+ * memory-bridge.ts — the public surface of packages/memory's MemoryService), in memory
+ * and scripted: what the blocks say, whether retrieval hangs, how often a run defers; and
+ * every call recorded — `ingested` (with the rows it was handed, how many were Kevin's
+ * lines, and whether it was forced), `retrievals`, `primed`, `embeds` (a retrieval, a run
+ * or a remember each count as one embedding call, so "memory off → 0 embedding calls" is
+ * a number). `onRow` lands the audit rows in the world's ledger, as the real service's
+ * does through the bridge. No world test ever builds the real service: with the package
+ * linked it would embed and extract over Kevin's key.
+ */
+export class FakeMemoryService implements MemoryServiceLike {
+  items: MemoryItem[] = [];
+  ingested: string[] = [];
+  ingestCalls: { sessionId: string; rows: number; kevinLines: number; opts: IngestOptions }[] = [];
+  retrievals: string[] = [];
+  voiceRetrievals = 0;
+  primed: string[] = [];
+  embeds = 0;
+  consolidations = 0;
+  forgets: { ms: number | undefined; sessionId: string | undefined }[] = [];
+  /** What the brain block says; undefined = render from `items` (undefined text when empty). */
+  brainText: string | undefined;
+  /** What the voice block says; undefined = render from `items`. */
+  voiceText: string | undefined;
+  /** `retrieveForBrain` never answers (the race must bound it). */
+  hangRetrieve = false;
+  /** A run answers `deferred` this many times before it lands (the real service's DEFER_MAX_TRIES then lands by words). */
+  deferTries = 0;
+  ingestResult: Omit<IngestResult, "status"> = { extractor: "rules", added: 1, updated: 0, noop: 0, refused: 0, ms: 3 };
+  watermarks = new Map<string, number>();
+  onRow: ((row: LedgerRow) => void) | undefined;
+  readonly store = { watermark: (sessionId: string): { upToAt: number } | undefined => (this.watermarks.has(sessionId) ? { upToAt: this.watermarks.get(sessionId)! } : undefined) };
+  private readonly deferred = new Map<string, number>();
+  private seq = 0;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  private row(row: LedgerRow): void {
+    this.onRow?.(row);
+  }
+  private live(): MemoryItem[] {
+    return this.items.filter((i) => i.state === "live");
+  }
+  private static tokens(text: string): number {
+    return Math.ceil(text.length / 3.2);
+  }
+
+  async ingestSession(sessionId: string, rows: readonly LedgerRow[], opts: IngestOptions = {}): Promise<IngestResult> {
+    this.ingested.push(sessionId);
+    this.ingestCalls.push({ sessionId, rows: rows.length, kevinLines: rows.filter((r) => r.type === "heard").length, opts });
+    this.embeds++;
+    const tries = (this.deferred.get(sessionId) ?? 0) + 1;
+    if (tries <= this.deferTries) {
+      this.deferred.set(sessionId, tries);
+      return { ...this.ingestResult, status: "deferred", reason: "embedding-failed", tries };
+    }
+    this.deferred.delete(sessionId);
+    this.watermarks.set(sessionId, this.now());
+    const r = this.ingestResult;
+    this.row({ at: this.now(), type: "memory.run", sessionId, extractor: r.extractor ?? "rules", added: r.added, updated: r.updated, noop: r.noop, refused: r.refused, ms: r.ms });
+    return { ...r, status: "ran" };
+  }
+  async prime(text: string): Promise<void> {
+    this.primed.push(text);
+  }
+  async remember(text: string, kind: MemoryKind = "preference", origin: MemoryOrigin = "kevin"): Promise<RememberResult | undefined> {
+    this.embeds++;
+    // The refusal shapes the real store applies: a secret shape, a password, the redactor's mark.
+    if (/\[redacted secret\]|password|\b\d{3}-\d{2}-\d{4}\b/i.test(text) || text.trim().length < 3) return undefined;
+    const at = this.now();
+    const sentence = text
+      .trim()
+      .replace(/^i prefer\b/i, "Kevin prefers")
+      .replace(/^i like\b/i, "Kevin likes")
+      .replace(/^my\b/i, "Kevin's")
+      .replace(/[.!?]+$/, "");
+    const twin = this.live().find((i) => i.text === sentence);
+    if (twin) return { item: twin, op: "noop" };
+    const item: MemoryItem = { id: `m_${++this.seq}`, kind, text: sentence, subjects: [], confidence: 0.9, importance: 0.9, createdAt: at, lastSeenAt: at, seenCount: 1, sources: [{ at, type: origin === "kevin" ? "kevin" : "heard" }], state: "live", origin };
+    this.items.push(item);
+    this.row({ at, type: "memory.added", id: item.id, kind, origin });
+    return { item, op: "added" };
+  }
+  forgetRecent(ms: number = 600_000, sessionId?: string): number {
+    this.forgets.push({ ms, sessionId });
+    const since = this.now() - ms;
+    let n = 0;
+    this.items = this.items.map((i) => {
+      if (i.state !== "live" || !i.sources.some((s) => s.at >= since)) return i;
+      n++;
+      this.row({ at: this.now(), type: "memory.forgotten", id: i.id, by: "reflex" });
+      return { ...i, state: "forgotten" as const };
+    });
+    return n;
+  }
+  forget(id: string, by: "kevin" | "reflex" | "cli"): boolean {
+    const i = this.items.findIndex((x) => x.id === id && x.state === "live");
+    if (i < 0) return false;
+    this.items[i] = { ...this.items[i]!, state: "forgotten" };
+    this.row({ at: this.now(), type: "memory.forgotten", id, by });
+    return true;
+  }
+  restore(id: string): boolean {
+    const i = this.items.findIndex((x) => x.id === id && x.state !== "live");
+    if (i < 0) return false;
+    this.items[i] = { ...this.items[i]!, state: "live" };
+    this.row({ at: this.now(), type: "memory.restored", id });
+    return true;
+  }
+  edit(id: string, text: string, kind?: MemoryKind): boolean {
+    const i = this.items.findIndex((x) => x.id === id);
+    if (i < 0) return false;
+    this.items[i] = { ...this.items[i]!, text, ...(kind ? { kind } : {}) };
+    this.row({ at: this.now(), type: "memory.updated", id });
+    return true;
+  }
+  retrieveForBrain(query: string): Promise<Rendered> {
+    this.retrievals.push(query);
+    this.embeds++;
+    if (this.hangRetrieve) return new Promise(() => undefined);
+    const picked = this.live();
+    const text = this.brainText ?? (picked.length ? picked.map((i) => `- ${i.text}`).join("\n") : undefined);
+    return Promise.resolve({ ...(text ? { text } : {}), tokens: text ? FakeMemoryService.tokens(text) : 0, ids: picked.map((i) => i.id) });
+  }
+  retrieveForVoice(): Rendered {
+    this.voiceRetrievals++;
+    const picked = this.live();
+    const text = this.voiceText ?? (picked.length ? `# Kevin, in brief\n${picked.map((i) => `${i.text}.`).join(" ")}\nUse this quietly; never announce that you remember it.` : undefined);
+    return { ...(text ? { text } : {}), tokens: text ? FakeMemoryService.tokens(text) : 0, ids: picked.map((i) => i.id) };
+  }
+  list(state: MemoryState | "all" = "live", limit = 50): MemoryItem[] {
+    return this.items.filter((i) => state === "all" || i.state === state).slice(0, limit);
+  }
+  async search(query: string, limit = 30): Promise<MemoryItem[]> {
+    const q = query.toLowerCase();
+    return this.items.filter((i) => i.text.toLowerCase().includes(q)).slice(0, limit);
+  }
+  summary(): Omit<MemorySummary, "enabled" | "pending"> {
+    return {
+      count: this.live().length,
+      forgotten: this.items.filter((i) => i.state === "forgotten").length,
+      archived: this.items.filter((i) => i.state === "archived").length,
+      embeddings: "keyword",
+    };
+  }
+  async consolidateStep(): Promise<{ merged: number; archived: number; done: boolean }> {
+    this.consolidations++;
+    return { merged: 0, archived: 0, done: true };
+  }
+  flush(): void {}
+}
+
 export interface BrainState {
   cancels: number;
   /** ms the brain's cancel takes to settle. */
@@ -269,6 +526,8 @@ export interface World {
   audio: Buffer[];
   brain: BrainState;
   workers: WorkerWorld;
+  /** The memory module's stand-in the engine was built over (undefined when a test injected its own seams). */
+  memory: FakeMemoryService | undefined;
   clock: { t: number };
   dir: string;
 }
@@ -388,16 +647,21 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   const clock = { t: 1_757_500_000_000 };
   hands.now = () => clock.t;
   handsBg.now = () => clock.t;
+  // The memory module never loads by name in a test (no store on disk, no network from an extractor or an
+  // embedder): every world runs over a FakeMemoryService unless the test hands its own seams.
+  const fakeMemory = extra.memory ? undefined : new FakeMemoryService(() => clock.t);
   // Short ear windows (120 / 450 ms in production): 40 ms for the prefire kinds, 70 ms for the careful ones.
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
-  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, exec: noShell, ...extra });
+  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, makeWorkerBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
+  if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];
   const overlays: OverlayCommand[] = [];
   const audio: Buffer[] = [];
   engine.on("event", (e) => events.push(e));
   engine.on("overlay", (c) => overlays.push(c));
   engine.on("audio", (pcm) => audio.push(pcm));
-  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, workers, clock, dir };
+  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, workers, memory: fakeMemory, clock, dir };
 }
 
 export const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));

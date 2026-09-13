@@ -6,6 +6,12 @@ import { splitAgentId, type AgentConnector, type ReadOptions, type SendResult, t
  * All connectors behind one door. The brain's `agents_*` tools call this; the
  * Console lists what it returns. Health and lists are cached briefly because the
  * model tends to call `agents_list` several times per task.
+ *
+ * `known` is what the Console sees between refreshes. It is fed by the connectors'
+ * subscriptions and pruned by them too: a session that leaves a connector's listing
+ * (aged past its window, capped out, its file gone) used to keep its last status here
+ * until the next full refresh — a rail row reading `working` for a process that had
+ * been dead for an hour.
  */
 
 const log = logger("agents");
@@ -19,11 +25,18 @@ export class AgentRegistry {
   constructor(connectors: readonly AgentConnector[], private readonly cacheMs = 3000) {
     this.connectors = [...connectors];
     for (const c of this.connectors) {
-      c.subscribe?.((agent) => {
-        this.known.set(agent.id, agent);
-        this.cache = undefined;
-        this.broadcast();
-      });
+      c.subscribe?.(
+        (agent) => {
+          this.known.set(agent.id, agent);
+          this.cache = undefined;
+          this.broadcast();
+        },
+        (id) => {
+          if (!this.known.delete(id)) return;
+          this.cache = undefined;
+          this.broadcast();
+        },
+      );
     }
   }
 
@@ -110,6 +123,7 @@ export class AgentRegistry {
     return info;
   }
 
+  /** Resolves when the agent is idle, blocked, done or ended (nothing more will come on its own), or at the timeout. */
   async waitSettled(agentIdValue: string, timeoutMs: number): Promise<AgentInfo | undefined> {
     const c = this.connectorFor(agentIdValue);
     if (!c.waitSettled) return undefined;
@@ -134,6 +148,12 @@ export class AgentRegistry {
   watch(agentIdValue: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): (() => void) | undefined {
     const c = this.connectorFor(agentIdValue);
     return c.watch?.(agentIdValue, onDelta, onEnd);
+  }
+
+  /** The agent's process ended: its open conversation's running calls become `interrupted`. Undefined when nothing changed. */
+  async settle(agentIdValue: string): Promise<TranscriptDelta | undefined> {
+    const c = this.connectorFor(agentIdValue);
+    return c.settle?.(agentIdValue);
   }
 }
 

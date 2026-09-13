@@ -10,6 +10,7 @@ import type { ToolResult } from "@jarhead/hands";
 import { CARRY_MAX_CHARS, CARRY_RESULT_MAX_CHARS, CodexBrain, carriedResult, carriedResultLine, codexAddendum, codexBaseInstructions, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, isSimpleRequest, probeCodex, renderCarry, resultPlaceholder, socketAnswers } from "../codex.ts";
 import { PRIMER_TEXT, appServerArgs } from "../codex-app-server.ts";
 import { codexPromptTrimArgs, codexUserMcpServers, prepareCodexHome } from "../codex-config.ts";
+import { MEMORY_PROMPT_LABEL } from "../anthropic.ts";
 import { brainSystemPrompt } from "../brain.ts";
 import { runToolOverSocket } from "../mcp-bridge.ts";
 import { resultText } from "../runner.ts";
@@ -542,7 +543,7 @@ test("codex brain: circled regions ride a warm turn as localImage inputs; a full
   assert.equal((await brain.start()).ready, true);
   const png = join(dir, "mark_1.png");
   writeFileSync(png, "PNG");
-  const task = { ...makeTask("what is this"), attachments: [{ path: png, mediaType: "image/png" as const, note: "Kevin circled this region of his screen: 10,20 100×50 (global points)" }, { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "gone" }] };
+  const task = { ...makeTask("what is this"), memory: "- Kevin prefers short answers.", attachments: [{ path: png, mediaType: "image/png" as const, note: "Kevin circled this region of his screen: 10,20 100×50 (global points)" }, { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "gone" }] };
   assert.equal((await brain.handle(task, makeSink().sink)).status, "done");
   let log = appServerLog();
   const input = log.requests.find((r) => r.method === "turn/start")!.params!["input"] as Array<{ type: string; text?: string; path?: string }>;
@@ -550,6 +551,8 @@ test("codex brain: circled regions ride a warm turn as localImage inputs; a full
   assert.equal(input[1]!.path, png);
   assert.ok(input[0]!.text!.includes("Attached image 1: Kevin circled"));
   assert.ok(!input[0]!.text!.includes("Attached image 2"));
+  // The durable-memory part rides the warm turn's text (behaviourally, not by a source pin): the label, then the rendered items.
+  assert.ok(input[0]!.text!.includes(`${MEMORY_PROMPT_LABEL}\n- Kevin prefers short answers.`), "the labelled memory part is in the warm turn the app-server got");
 
   // The context stands past the rollover point: thread_2 was started right after that turn (in the
   // background, not at the next task), and the next task rides it with the exchange as text.

@@ -313,7 +313,7 @@ test("send(): nobody owns the thread → `codex exec resume` in the thread's cwd
     const seen: AgentInfo[] = [];
     const stop = c.subscribe((a) => seen.push(a));
     const listed = (await c.list()).find((a) => a.id === ID1);
-    assert.ok(listed && (listed.status === "done" || listed.status === "unknown"), `before: a finished thread, no process on it (${listed?.status})`);
+    assert.equal(listed?.status, "ended", "before: a finished thread, no process on it");
 
     const sent = await c.send(ID1, "the hero");
     assert.deepEqual(sent, { accepted: true, detail: "resumed headlessly" });
@@ -351,7 +351,8 @@ test("send(): nobody owns the thread → `codex exec resume` in the thread's cwd
     await c.closeAll();
     const closed = (await c.list()).find((a) => a.id === ID1);
     assert.ok(closed && closed.status !== "idle" && closed.status !== "working", `closed: the file is the only signal again (${closed?.status})`);
-    assert.match(closed?.detail ?? "", /^codex · 7 msgs · demo-site · last active /);
+    assert.equal(closed?.detail, "codex · 7 msgs · demo-site");
+    assert.equal(closed?.status, "ended", "our child exited: nobody owns the thread now, and a send() would resume it again");
   } finally {
     h.cleanup();
   }

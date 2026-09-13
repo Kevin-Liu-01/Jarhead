@@ -34,6 +34,8 @@ export interface BrainTask {
    * repeat the walk. Never read by a gate.
    */
   readonly notes?: readonly string[];
+  /** What Jarhead durably knows about Kevin (@jarhead/memory, rendered ≤ BRAIN_MEMORY_TOKENS), shown under its own label. Never read by a gate. */
+  readonly memory?: string;
 }
 
 /** An image handed to a brain with its task — a PNG on this Mac and what it shows. */

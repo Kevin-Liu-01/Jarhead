@@ -12,6 +12,14 @@ import type { Speaker, TranscriptItem } from "@jarhead/protocol";
 
 export const GAP_MS = 1400;
 
+/**
+ * Wall-clock finaliser: an utterance no fragment has touched for this long is over
+ * whatever the session clock says. `settle` judges on the session timeline (`nowMs`),
+ * which stops when a session errors without closing — the Console's caret then blinked
+ * on the last item for the whole outage. The engine's tick passes the wall clock too.
+ */
+export const ORPHAN_MS = 15_000;
+
 export interface FragmentEvent {
   readonly speaker: Speaker;
   readonly delta: string;
@@ -22,6 +30,8 @@ export interface FragmentEvent {
 export class Transcript {
   private items: TranscriptItem[] = [];
   private seq = 0;
+  /** Wall clock of the last fragment per open item (internal; the wire never sees it). */
+  private readonly touchedAt = new Map<string, number>();
   private readonly listeners = new Set<(item: TranscriptItem, kind: "start" | "update" | "final") => void>();
 
   constructor(
@@ -56,6 +66,7 @@ export class Transcript {
         endMs: Math.max(lastSame.endMs, frag.endMs),
       };
       this.items[this.items.indexOf(lastSame)] = merged;
+      this.touchedAt.set(merged.id, this.now());
       this.emit(merged, "update");
       return merged;
     }
@@ -73,21 +84,33 @@ export class Transcript {
       final: false,
     };
     this.items.push(item);
-    if (this.items.length > this.maxItems) this.items.splice(0, this.items.length - this.maxItems);
+    this.touchedAt.set(item.id, item.at);
+    if (this.items.length > this.maxItems) {
+      for (const gone of this.items.splice(0, this.items.length - this.maxItems)) this.touchedAt.delete(gone.id);
+    }
     this.emit(item, "start");
     return item;
   }
 
-  /** Close utterances that have not grown for GAP_MS at the given session time. */
-  settle(nowMs: number): TranscriptItem[] {
+  /**
+   * Close utterances that have not grown for GAP_MS at the given session time — or,
+   * when `wallNow` is given, for ORPHAN_MS of wall clock (the session clock may have
+   * stopped: an error with no `closed` behind it).
+   */
+  settle(nowMs: number, wallNow?: number): TranscriptItem[] {
     const closed: TranscriptItem[] = [];
     this.items = this.items.map((i) => {
-      if (i.final || nowMs - i.endMs < GAP_MS) return i;
+      if (i.final) return i;
+      const orphaned = wallNow !== undefined && wallNow - (this.touchedAt.get(i.id) ?? i.at) >= ORPHAN_MS;
+      if (nowMs - i.endMs < GAP_MS && !orphaned) return i;
       const f = { ...i, final: true };
       closed.push(f);
       return f;
     });
-    for (const f of closed) this.emit(f, "final");
+    for (const f of closed) {
+      this.touchedAt.delete(f.id);
+      this.emit(f, "final");
+    }
     return closed;
   }
 
@@ -106,7 +129,10 @@ export class Transcript {
       closed.push(f);
       return f;
     });
-    for (const f of closed) this.emit(f, "final");
+    for (const f of closed) {
+      this.touchedAt.delete(f.id);
+      this.emit(f, "final");
+    }
   }
 
   all(): readonly TranscriptItem[] {

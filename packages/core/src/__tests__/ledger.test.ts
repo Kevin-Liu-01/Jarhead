@@ -487,3 +487,117 @@ test("search: a hit says the state of its conversation (a rail that hides a tras
   assert.equal(ledger.search("plan", 0).length, 3);
   assert.equal(ledger.search("plan", 1).length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Long-horizon reads (pass 3): a whole conversation in one read, a bounded walk, and the
+// memory audit rows as the record's own (never a session's by position).
+
+import { CHAIN_ROWS_MAX, WALK_DAYS } from "../ledger.ts";
+
+test("readChain: every session of the chain, oldest first, each with its own rows, the chain's tombstones and grants once; a member id resolves to the root; an unknown id reads empty; the newest `max` rows survive a cut and truncated says so", () => {
+  const ledger = fresh();
+  const t = (m: number, s = 0) => local(11, 14, m, s);
+  ledger.append({ at: t(0), type: "session.started", sessionId: "A", voice: "cedar", language: "en", accent: "american" });
+  ledger.append(heard(t(1), "read me the plan"));
+  ledger.append(said(t(2), "the plan is…"));
+  ledger.append({ at: t(2, 30), type: "grant", chainId: "A", app: "Mail", actionClass: "send", until: t(59) });
+  ledger.append({ at: t(3), type: "pause", sessionId: "A", usageSeconds: 180 });
+  ledger.append({ at: t(3, 1), type: "session.closed", sessionId: "A", reason: "close_requested", usageSeconds: 180 });
+  ledger.append({ at: t(6), type: "resume", sessionId: "B", resumedFrom: "A", pausedMs: 179_000 });
+  ledger.append({ at: t(6, 1), type: "session.started", sessionId: "B", voice: "cedar", resumedFrom: "A" });
+  ledger.append(heard(t(7), "carry on"));
+  ledger.append({ at: t(8), type: "session.closed", sessionId: "B", reason: "connection_lost", usageSeconds: 60 });
+  // The reconnect's session: a third member, chained by resumedFrom like a pause's resume.
+  ledger.append({ at: t(8, 1), type: "session.started", sessionId: "C", voice: "cedar", resumedFrom: "B" });
+  ledger.append({ at: t(8, 1), type: "resume", sessionId: "C", resumedFrom: "B", pausedMs: 1000 });
+  ledger.append(heard(t(9), "and the weather"));
+  ledger.append({ at: t(10), type: "session.closed", sessionId: "C", reason: "idle", usageSeconds: 30 });
+  // Another conversation entirely, and a rename on ours from a later moment.
+  ledger.append({ at: t(20), type: "session.started", sessionId: "Z", voice: "cedar" });
+  ledger.append(heard(t(21), "unrelated"));
+  ledger.append({ at: t(22), type: "session.closed", sessionId: "Z", reason: "idle", usageSeconds: 5 });
+  ledger.append({ at: t(30), type: "conversation.renamed", chainId: "C", name: "the plan" });
+
+  const chain = ledger.readChain("A");
+  assert.equal(chain.truncated, false);
+  const types = chain.rows.map((r) => r.type);
+  // Each member as readSession gives it: file order, the chain's own rows where they sit (the grant
+  // inside A's span; the rename, written after A closed, after its span) — and only once for the chain.
+  assert.deepEqual(types, [
+    "session.started", "heard", "said", "grant", "pause", "session.closed", "conversation.renamed",
+    "resume", "session.started", "heard", "session.closed",
+    "session.started", "resume", "heard", "session.closed",
+  ]);
+  assert.equal(chain.rows.filter((r) => r.type === "grant").length, 1, "the chain's grant appears once, not once per member");
+  assert.equal(chain.rows.filter((r) => r.type === "conversation.renamed").length, 1);
+  assert.ok(!chain.rows.some((r) => r.type === "heard" && r.item.text === "unrelated"), "another chain's rows stay out");
+  assert.deepEqual(ledger.readChain("C").rows, chain.rows, "a member id resolves to the root");
+  assert.deepEqual(ledger.readChain("B").rows, chain.rows);
+  assert.deepEqual(ledger.readChain("nope"), { rows: [], truncated: false });
+  // The cap keeps the newest rows.
+  const cut = ledger.readChain("A", 4);
+  assert.equal(cut.truncated, true);
+  assert.deepEqual(cut.rows.map((r) => r.type), ["session.started", "resume", "heard", "session.closed"]);
+  assert.equal(CHAIN_ROWS_MAX, 20_000);
+});
+
+test("memory.* audit rows are the record's own: appended to today's file they never count as the open session's rows, and readChain leaves them out", () => {
+  const ledger = fresh();
+  const t = (m: number) => local(12, 9, m);
+  ledger.append({ at: t(0), type: "session.started", sessionId: "A", voice: "cedar" });
+  ledger.append(heard(t(1), "remember that I prefer dark mode"));
+  ledger.append({ at: t(1), type: "memory.added", id: "m_1", kind: "preference", origin: "kevin" });
+  ledger.append({ at: t(2), type: "session.closed", sessionId: "A", reason: "idle", usageSeconds: 10 });
+  ledger.append({ at: t(3), type: "memory.run", sessionId: "A", extractor: "rules", added: 1, updated: 0, noop: 2, refused: 0, ms: 12 });
+  ledger.append({ at: t(4), type: "memory.forgotten", id: "m_1", by: "kevin" });
+  ledger.append({ at: t(5), type: "memory.restored", id: "m_1" });
+  ledger.append({ at: t(6), type: "memory.updated", id: "m_1" });
+  ledger.append({ at: t(7), type: "session.started", sessionId: "B", voice: "cedar" });
+  ledger.append({ at: t(8), type: "memory.run", extractor: "responses", added: 0, updated: 0, noop: 0, refused: 0, ms: 3 });
+  assert.deepEqual(ledger.readSession("A").map((r) => r.type), ["session.started", "heard", "session.closed"]);
+  assert.deepEqual(ledger.readSession("B").map((r) => r.type), ["session.started"]);
+  assert.ok(!ledger.readChain("A").rows.some((r) => r.type.startsWith("memory.")));
+  assert.equal(ledger.read(t(0)).filter((r) => r.type.startsWith("memory.")).length, 6, "the day file keeps them");
+  assert.equal(ledger.search("dark mode").length, 1, "search sees the heard line; the audit rows carry no text to search");
+});
+
+test("the walk reads the last WALK_DAYS day files: a session older than the window leaves sessions() and the chain reads; its day file stays on disk and read(at) still opens it", () => {
+  const ledger = fresh();
+  const day0 = new Date(2026, 3, 1, 12, 0, 0).getTime();
+  const DAY = 24 * 3_600_000;
+  ledger.append({ at: day0, type: "session.started", sessionId: "old", voice: "cedar" });
+  ledger.append(heard(day0 + 60_000, "long ago"));
+  ledger.append({ at: day0 + 120_000, type: "session.closed", sessionId: "old", reason: "idle", usageSeconds: 5 });
+  for (let d = 1; d < WALK_DAYS; d++) ledger.append({ at: day0 + d * DAY, type: "problem", text: `day ${d}` });
+  assert.equal(ledger.days().length, WALK_DAYS);
+  assert.deepEqual(ledger.sessions().map((s) => s.id), ["old"], "inside the window: seen");
+  // One more day pushes the first file out of the window.
+  ledger.append({ at: day0 + WALK_DAYS * DAY, type: "session.started", sessionId: "new", voice: "cedar" });
+  ledger.append({ at: day0 + WALK_DAYS * DAY + 1000, type: "session.closed", sessionId: "new", reason: "idle", usageSeconds: 5 });
+  assert.equal(ledger.days().length, WALK_DAYS + 1);
+  assert.deepEqual(ledger.sessions().map((s) => s.id), ["new"], "the old session is outside the walk");
+  assert.deepEqual(ledger.readChain("old"), { rows: [], truncated: false });
+  assert.equal(ledger.read(day0).length, 3, "the file is still there and opens by date");
+  assert.equal(WALK_DAYS, 60);
+});
+
+test("a hide older than WALK_DAYS still hides: agent.hidden is Kevin's decision about the rail, gathered from every day file; the later row wins across the window's edge; sessions() stays bounded", () => {
+  const ledger = fresh();
+  const day0 = new Date(2026, 3, 1, 12, 0, 0).getTime();
+  const DAY = 24 * 3_600_000;
+  ledger.append({ at: day0, type: "session.started", sessionId: "old", voice: "cedar" });
+  ledger.append({ at: day0 + 1000, type: "agent.hidden", agentId: "sessions:codex:long-lived", hidden: true });
+  ledger.append({ at: day0 + 2000, type: "agent.hidden", agentId: "sessions:claude:shown-again", hidden: true });
+  ledger.append({ at: day0 + 3000, type: "agent.hidden", agentId: "sessions:claude:shown-again", hidden: false });
+  ledger.append({ at: day0 + 4000, type: "session.closed", sessionId: "old", reason: "idle", usageSeconds: 5 });
+  for (let d = 1; d <= WALK_DAYS; d++) ledger.append({ at: day0 + d * DAY, type: "problem", text: `day ${d}` });
+  assert.equal(ledger.days().length, WALK_DAYS + 1, "day 0 is outside the window");
+  assert.deepEqual(ledger.sessions().map((s) => s.id), [], "session attribution is bounded by the window");
+  assert.deepEqual(ledger.hiddenAgents(), ["sessions:codex:long-lived"], "the hide from day 0 holds; the agent shown again on day 0 stays shown");
+  // Inside the window Kevin shows the long-lived one again, then hides another: the later rows win.
+  ledger.append({ at: day0 + WALK_DAYS * DAY + 1000, type: "agent.hidden", agentId: "sessions:codex:long-lived", hidden: false });
+  ledger.append({ at: day0 + WALK_DAYS * DAY + 2000, type: "agent.hidden", agentId: "sessions:codex:new", hidden: true });
+  assert.deepEqual(ledger.hiddenAgents(), ["sessions:codex:new"]);
+  // The old file is read once for its hidden rows and not kept as rows: a second call costs a stat.
+  assert.deepEqual(ledger.hiddenAgents(), ["sessions:codex:new"]);
+});

@@ -467,9 +467,13 @@ Orb ◄── overlay commands (orb.fly / orb.home) ── spring flight, hover,
 
 - `AgentInfo.tool: AgentTool` ("claude" | "codex" | "cursor" | "gemini" | "opencode" | "amp" | "droid" | "hermes" | "pi" | "other") and `messageCount`.
 - `AgentMessage {id, role: user|assistant|tool|system, text, at, tool?: {name,input?,output?,status}, thinking?}`;
-  `AgentTranscript {agentId, messages, total, complete, live}`.
-- Commands `agent.open` / `agent.close` / `agent.history {before}`; event `agent.transcript {transcript, mode: replace|append}`
-  (the daemon forwards it as a JSON message of the same name).
+  `AgentTranscript {agentId, messages, total, complete, live, cursor?: {startOffset, endOffset}}`.
+  `AgentStatus` = idle | working | blocked | done | **ended** | unknown | offline and `AgentInfo.hint` (§17
+  "Status words" has the words); a tool call's `status` gains `interrupted` (no result when its session ended).
+- Commands `agent.open {agentId, viewer?}` / `agent.close {agentId, viewer?}` (a pane token, so an open is
+  idempotent per pane and the daemon drops a dead client's viewers) / `agent.history {before}`; event
+  `agent.transcript {transcript, mode: replace|append|prepend}` (prepend = an older page, inserted before
+  what the client holds; the daemon forwards it as a JSON message of the same name).
 - `ScreenMark {id, rect, path?, at, screenshotPath?, consumed}` in `Snapshot.marks`; commands `mark.add {rect, path?}` / `mark.clear`.
 - Overlay: `circle` / `arrow` / `rect` / `text` / `stroke` (with `tone: accent|ok|warn|mark`, `ttlMs`), `orb.fly {x,y,dwellMs?,reason?}`, `orb.home`.
 - Brain: `BrainTask.attachments?: [{path, mediaType, note}]`; tools `show_circle`, `show_arrow`, `show_rect`, `show_text`, `show_stroke`, `show_clear`.
@@ -2547,6 +2551,23 @@ wake word behind Touch ID; one policy table with a spoken yes once for the
 destructive verbs; the Console that steps into every coding-agent session. Every
 item above was built under those, and none of them moved.
 
+### Status words (added by the durability pass, 2026-09-12)
+
+The rows above that speak of a "working state you can see" and of sessions being
+*ended* rather than deleted now have one vocabulary behind them. An agent session
+is `working` only under a lease — a live owner process, a turn-bearing write within
+30 s, no closing marker — `idle` when the process lives and the lease lapsed,
+`blocked` on an open permission question, `done` when archived or when a run
+finished and closed, **`ended`** when no process owns it (however old: a session
+with no process is over, not "unknown for six hours"), `unknown` only when the
+process evidence itself was missing (a degraded `ps` / `lsof`), `offline` when a
+run handle closed. `AgentInfo.hint` (archived · blocked · running · quiet · ended ·
+unseen · resumed) says why; `detail` carries no relative time any more, so nothing
+churns a snapshot a second. A tool call left without a result when its session
+ended reads `interrupted` — the titanium word, no pulse. The same seven words are
+on `jarhead status`, in the brain's `agents_list` / `agent_wait` text, in
+`waitSettled` (ended settles) and in the Sessions rail's grouping.
+
 ## 18. Workers and Sleep (2026-09-12)
 
 Kevin, verbatim: "also support capabilities to do multiple things at the same
@@ -2561,12 +2582,15 @@ stay under 2 s and the brain's first action near 4 s.
 
 ### Workers, not agents
 
-*Agents* (`agents_*`, the Sessions rail) are Kevin's coding sessions. A **worker**
-is the brain's second pair of hands: `Worker { id, name, delegationId, task, lane,
-status, detail?, startedAt, doneAt?, steps }`, `WorkerLane = background | screen`,
-`WorkerStatus = starting | working | waiting-screen | awaiting-confirmation | done
-| failed | cancelled`, `WORKER_MAX` 2, `WORKER_LINGER_MS` 30 s in the snapshot after
-it finishes (`Snapshot.workers`; `Settings.workers` on by default). Tools, appended
+*Agents* (`agents_*`, the Sessions rail; their statuses are `AgentStatus` — idle ·
+working · blocked · done · ended · unknown · offline, §17 "Status words") are
+Kevin's coding sessions. A **worker** is the brain's second pair of hands: `Worker
+{ id, name, delegationId, task, lane, status, detail?, startedAt, doneAt?, steps
+}`, `WorkerLane = background | screen`, `WorkerStatus = starting | working |
+waiting-screen | awaiting-confirmation | done | failed | cancelled` (a worker's own
+words — a worker is never `ended`: its record closes as done, failed or
+cancelled), `WORKER_MAX` 2, `WORKER_LINGER_MS` 30 s in the snapshot after it
+finishes (`Snapshot.workers`; `Settings.workers` on by default). Tools, appended
 after `AGENT_SPECS` (`ALL_TOOL_SPECS.length` 67): `worker_start {name, task, lane?
 (default background), budget?: {steps 1..40, seconds 10..300}}`, `worker_wait {name
 | "all", timeout? 1..240 (120)}`, `worker_read {name}`, `worker_stop {name}`. Budgets
@@ -2759,3 +2783,193 @@ lines are byte-identical). Not touched: `policy.ts`, `core/index.ts`, `brain.ts`
 `brain/index.ts`, `runner.ts` (subclassed only), the `ConfirmationState` /
 `YES_PATTERN` / gate hunk of `toolset.ts`, `Wake/**`, `shell.ts`, `files.ts`,
 `SECRET_KEYS`, NotchPanel's working string.
+
+## 19. Memory: a durable, editable, budgeted record of Kevin; and English by default (2026-09-12)
+
+Kevin, verbatim: "also make sure long horizon durability is a lot better, make sure
+each thing is open and conversation threads dont break after a whiel … also build
+up a durable memory of the user using all the best most modern memory procedures
+and embedding methods to save on tokens and so on ad create a whole dedicated
+module for this so jarhead preferences save across sessions. also be able to have
+an english voice and use that on default". Three requests; this section is the
+memory one and the English one. Durability's status words are §17 above; its file
+and app work is in the agents package and the Console (`liveness.ts`, `readBackward`,
+per-viewer opens, the 400-message front-trim, the derived `isLive`).
+
+### What existed, and why a module
+
+Nothing about Kevin survived a daemon. `remember` / `recall` wrote to an in-process
+array no prompt ever read; each brain kept three request/answer pairs of text and
+emptied them at every `stop()`; Continuity carried twelve lines of the *same*
+conversation across a pause. Everything he ever said was on disk, append-only, in
+the ledger — unread. A memory in `packages/core` would have made every core file a
+rail (`selfedit.ts` CORE_ORDINARY), so it is its own package, **`@jarhead/memory`**
+(`packages/memory`, deps core + protocol, no new npm dependency), and its
+vocabulary is the protocol's: `MemoryKind` (preference · fact · episode · procedure
+· contact · place), `MemoryState` (live · forgotten · merged · archived — *nothing
+is ever deleted*), `MemoryOrigin` (extracted · kevin · tool), `MemoryItem`,
+`MemorySummary`, `BRAIN_MEMORY_TOKENS` 250, `VOICE_MEMORY_TOKENS` 120,
+`Snapshot.memory`, `Settings.memory` (default on), the `memory.*` commands and the
+id-only `memory.*` ledger rows.
+
+### The store
+
+`<stateDir>/memory/memory.jsonl` — one row per event (add · update with `prev.text`
+· touch · forget · restore · merge · archive · watermark · consolidated), never
+rewritten, never truncated; `embeddings.jsonl`, a cache keyed by `sha256(text)`
+(vectors never ride the wire); `index.json`, a rebuildable cache — rows first, then
+the index, so a crash between the two is fixed by replay and a corrupt index is
+never an error. Forget is a tombstone plus a ten-minute exclusion window so the
+next run cannot re-learn it; Restore flips it back; `LIVE_CAP` 2000 archives the
+lowest-scored episodes, still listed and restorable.
+
+### When it learns (never on the voice loop, never while a session is open)
+
+Extraction runs from the engine's quiet tick only when `!live && !connecting &&
+!pauseInfo`, only for a CLOSED conversation with ≥ `MIN_NEW_KEVIN_LINES` 4 new
+Kevin lines past its watermark, once per conversation — a second run over the same
+rows is all NOOP; on a 28-close day like 09-11 that is ≤ 5 runs, not 28. The
+extractor is one Responses call on Kevin's OpenAI key (strict `json_schema`,
+`store:false`, `max_output_tokens` 900, 20 s, one retry) — dollars, never the
+ChatGPT plan, never Codex (each Codex turn costs the plan and would pollute the
+resident thread's carry). Its model is `JARHEAD_MEMORY_MODEL`, else the module's
+`DEFAULT_MEMORY_MODEL` (a mini-class id); the doctor's free `GET /v1/models` checks
+that id against the key and names the key's best `*-mini` to pin — nothing records a
+pick on its own yet (DECISIONS' "record the pick in config" is an open seam);
+no key or a non-JSON reply → one warning and the `RulesExtractor` (regexes over
+Kevin's lines: "call me Kev" → fact, "from now on …" → procedure, "speak in
+English" → preference). An embedding failure DEFERS the run (≤ 3 tries) rather than
+mixing vector spaces; with no key the `KeywordEmbedder` is text-based at query
+time and items without a vector are scored by keyword similarity only.
+
+Merge: candidates → embed (one call per run) → the three nearest live items. With
+per-embedder thresholds `{update, band, dup}` — openai 0.90 / 0.75 / 0.93, keyword
+0.60 / 0.40 / 0.70 — at or above `update`: equal normalised texts → touch (seen
+count, last seen, confidence up); different texts → the decider (a reversal,
+"prefers light mode" over "prefers dark mode", is never a silent touch; in rules
+mode newest wins and `prev.text` is kept); in the band → the decider (ADD · UPDATE
+· NOOP, a contradiction makes the newer supersede and marks the older `merged`
+with `mergedInto`); below → ADD. Consolidation on a quiet tick: near-duplicates
+merge, low-importance once-seen episodes older than 90 d archive.
+
+### What it says, and where (two injection points, both outside the standing orders)
+
+`score = cosine × recency × importance × confidence × seen`, recency a half-life
+per kind (episode 30 d, fact 180 d, contact / place 365 d, preference / procedure
+none), a pinned lane (high-importance preferences and procedures, ≤ 40 % of the
+budget), then MMR λ 0.7 until the budget is spent; `estimateTokens = ceil(chars /
+3.2)`, the appender's convention.
+
+- **The brain**, per delegation: `BrainTask.memory?: string` — the ONE optional
+  field this pass added to the rail `brain.ts` (Kevin named the module; no prompt
+  text, no `SYSTEM_PROMPT_VERSION` bump) — rendered by `promptParts` in
+  `anthropic.ts`, the one render site every brain kind's user turn goes through
+  (Anthropic, Claude Code, Codex exec and warm turns, openai-compatible), as its
+  own part after `Recent conversation` and before the reflex notes: `What you know
+  about Kevin (durable memory; use it, do not repeat it back, do not say you
+  remembered):` then the items, ≤ 250 tokens as the renderer cut them. It is never
+  in `kevinDialogue`: the gates that ask "did Kevin name it?" must not read a
+  remembered line as his words today. The delegator asks
+  `DelegatorOptions.memory(query, signal)` with the request plus Kevin's recent
+  lines, inside the same `Promise.all` as the marks and the eyes' shot, cut at
+  `MEMORY_RECALL_MS` 250 with the signal aborted (a cold lookup is dropped, the
+  task carries no block); Kevin's final heard lines are embedded as they land, so
+  the query is a cache hit and the cut almost never engages — `jarhead bench` must
+  hold delegation → first action within ±50 ms. **Blind spot:** with the
+  `openai-responses` brain Live runs the backend itself, so this part never
+  reaches it; only the voice block does.
+- **The voice**, per session start: `# Kevin, in brief` … `Use this quietly; never
+  announce that you remember it.` (≤ 120 tokens, no `*`, no backtick), assembled
+  in the engine's `sessionConfig` between `# Language` and `# Continuity` — never
+  inside `buildLiveInstructions` (a rail with 25 words of headroom). An engine
+  test pins the order: `# Personality` in the base < `# Language` < `# Kevin, in
+  brief` < `# Continuity`.
+
+**Honest cost.** The budgets CAP what memory costs a prompt: ≤ 250 tokens per
+delegation on the brain (≈ 20k tokens a day at 81 delegations — the Codex plan's
+quota, or ≈ $0.06 on the Anthropic API), ≤ 120 per session start on the voice
+($0: Live bills per second; ~1 % of context). Nothing existing shrinks. The saving
+is Kevin never re-explaining a preference aloud (twenty seconds of Live ≈ $0.017
+plus the Codex turn it triggers) and never having a transcript dumped into a
+prompt. The extractor is ≤ 5 runs × (≤ 8k in + 0.9k out) a day on a mini-class
+model — cents; embeddings ≈ 10k tokens a day, fractions of a cent. If Kevin ever
+wants net-zero, the trims are Continuity 1200 → 800 chars and the dialogue window
+120 → 90 s; not taken in this pass.
+
+### Privacy
+
+Redact-then-drop: every candidate line passes the runner's public `redactor`
+(known secret values and every key shape) and a line that changed is DROPPED, not
+masked; then memory's own shapes — a Luhn-valid card, an SSN, "my password is …",
+a secret path or env name the policy knows — refuse the line or the candidate.
+Evidence must cite a Kevin line (Jarhead's guesses never become facts about him).
+Never a source: `grant` rows, `delegation.step` payloads, the confirmation
+question and its short answer, rows before a `now.cleared` (unless restored),
+trashed chains, rows inside a forget window. Ledger audit rows carry IDS ONLY —
+`memory.added {id, kind, origin}`, `memory.updated {id}`, `memory.forgotten {id,
+by}`, `memory.restored {id}`, `memory.run {…counts, ms}` — so a forgotten item's
+words live in one place, the store; no vector ever appears in a snapshot or a
+`memory.items` answer. Item text goes to OpenAI for embedding when a key is present
+(the vendor that already hears the whole conversation); with no key nothing leaves
+the Mac. `Settings.memory` off = no extraction, no injection, no embedding calls,
+no ledger rows; the store stays as it is.
+
+### Surfaces
+
+Spoken: "remember that I prefer dark mode" → one preference, origin `kevin`,
+toast *remembered*; "forget that" → every item sourced in the last ten minutes
+tombstoned, the exclusion written, toast *forgot 2 memories* — both in the
+engine's heard hook, no brain, no tool (`remember` / `recall` stay per-session
+notes and their description says so). Console: Settings › Memory (Remember
+toggle, matching mode, counts, *Learn now*, the hint "Forget hides it from
+Jarhead; Jarhead's own record keeps it (nothing is deleted)"), a `MemoryRailView`
+(search, Live | Forgotten | Archived, Edit / Forget / Restore — never "Delete"),
+and the Now rail's "Memory · used this turn" from `lastUsedIds` — the one lever
+against a misheard "fact" steering the voice. CLI: `jarhead memory [list]
+[--state …] [--limit N]` · `search "…"` · `forget <id>` · `restore <id>` · `add
+"…" [--kind k]` · `run`, over the daemon (`memory.list` / `memory.search` frames
+answered by `memory.items`; the verbs are EngineCommands whose toasts say what
+happened); a bad id (`m_…`) or an unknown state/kind is refused before a socket
+is opened. Doctor: a `memory` group — counts and the last learn from the running
+daemon (the store's row count without one), the matching mode, and the `extractor`
+row — the id the engine WILL run (`JARHEAD_MEMORY_MODEL`, else the module's default)
+checked against the keys row's one free `GET /v1/models` (not listed → a warning:
+every run falls to rules), the key's best `*-mini` named only as the thing to pin;
+rules without a key; no extractor row when memory is off; never a session, never
+the extractor.
+`jarhead status` prints a `memory` line (counts, last learn, tokens the last
+prompts spent against the caps) and the agents by status.
+
+### English by default (the Language section)
+
+`cedar` is a timbre, not a language; nothing in `SessionConfig` or the orders said
+English, and with the always-on gate a non-English utterance in the room could flip
+the reply. The fix is engine-assembled, not a rail: `packages/live/src/language.ts`
+exports `languageName(tag?)` and `languageSection(user, language?, accent?)` =
+`# Language` / `Speak English, American accent, whatever language you hear; if
+Kevin speaks another language, answer in English unless he asks you to switch.`
+("British accent" for british; the accent words drop for none), and
+`sessionConfig.instructions = [base, languageSection, memoryVoiceBlock,
+continuity].filter(Boolean).join("\n\n")`. `Settings.language` "en" and
+`Settings.accent` "american" default through the `DEFAULT_SETTINGS` spread (an old
+settings.json needs no migration); `VOICES` (22, `as const`, type-equal to
+`BuiltInVoice`) and `ACCENTS` live in protocol; `SessionInfo.voice` / `accent`
+reach the Console and `jarhead status`. A pick while awake toasts "heard at the
+next wake" (`session.update` cannot change a voice); `voice.reopen` — Kevin's press
+only — is `pause()` then `resume()` with the "reconnected" Continuity, refused
+while a delegation or a worker runs, while paused, asleep or connecting. The wake
+recognizer's locale (`Wake/**`) is a rail Kevin has not named and is untouched. If
+he later says "voice instructions", the section moves inside `buildLiveInstructions`
+at position 2 and Narration loses eight words.
+
+**Rails touched, by name:** `brain.ts` — `BrainTask.memory?: string`, one optional
+field, one doc line. Not touched: `instructions.ts` (Language is engine-assembled),
+`policy.ts`, `core/index.ts` (`ledger.ts` and `env.ts` are CORE_ORDINARY),
+`runner.ts`, `shell.ts`, the handshake hunk of `toolset.ts`, `brain/index.ts`,
+`Wake/**`, `SECRET_KEYS`, `build-mac.ts`, `selfedit.ts`, `Engine.stop()`.
+
+**Not built, on purpose:** an on-disk session index (warm scans are 2–52 ms), a
+twelve-hour "held conversation" (an open question for Kevin; the ten-minute pause
+decay stands), mid-conversation extraction (the spoken reflex covers the
+immediate case), memory tools for the brain (the engine hook does it without a
+rail), health facts (the prompt excludes them; an opt-in kind later).

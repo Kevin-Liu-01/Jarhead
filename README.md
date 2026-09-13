@@ -36,6 +36,8 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 🌙 **Sleeps when you say so.** "Go to sleep", "that's all for now", "power down", "good night" — it says exactly "night.", closes the session, tucks in. Ten idle minutes do the same. "Shut down my Mac" is a task, not a cue.
 - 🗣️ **Narrates intent, not keystrokes.** One clause per state change — "found the invoice", "typing the amount" — never per click, never a tool's name. Per-click lines stay on the Console's timeline.
 - 🧾 **Append-only ledger.** Every utterance, delegation, tool call, screenshot path, worker, grant, problem and sleep is a row in `~/.jarhead/ledger/<day>.jsonl`. The Console shows only what was recorded. Search it from the rail or `pnpm jarhead ledger search`.
+- 🧠 **Remembers you, quietly.** After a conversation closes, a small model reads it once and keeps one-sentence items about you — "Kevin prefers short answers", "how Kevin likes a PR checked" — in an append-only store under `~/.jarhead/memory`, matched by embeddings, scored by recency and use. Each task gets at most 250 tokens of it, each session at most 120, never read back to you. Forget hides an item; nothing is deleted. Off with one switch.
+- 🗣️ **English, whatever it hears.** The voice speaks English with an American accent by default, even when someone in the room speaks something else; British or no accent is a setting, heard at the next wake. Twenty-two voices, all labelled `<Name> · English`.
 - 🗑️ **Cleans up without deleting.** Conversations Move to Trash, Archive, Restore, Rename, Pin — never "Delete". A move is a tombstone row; whole days move into `~/.jarhead/trash` by rename and come back the same way. Retention is a setting whose default is forever.
 - 🚨 **Names its problems, remedy attached.** A permission not granted, a brain that did not answer, a Live buffer full, low disk, a wedged daemon — each is typed and carries its one-tap fix. The daemon answers a ping every 2 s; wedged is not mistaken for fine.
 - 💥 **Comes back from a crash.** A report with the backtrace, phase and last 40 log lines lands in `~/.jarhead/crashes/`, the app relaunches (at most three times in ten minutes), and the daemon lingers 90 s with the Codex thread warm.
@@ -303,13 +305,15 @@ First launch opens Setup. Then say "jarhead", pass Touch ID, talk. Reopen Setup 
 the menu-bar icon › *Set Up…*.
 
 ```bash
-pnpm jarhead status                 # phase, brain, hands, permissions 16/16, workers, problems
+pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), workers, memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
-pnpm jarhead doctor                 # the same checks as pnpm run doctor
+pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model)
 pnpm jarhead cmd go|pause|stop|interrupt|mute|unmute|sleep [cause]|worker.stop <id>
 pnpm jarhead ledger [YYYY-MM-DD]    # a day, no daemon needed
 pnpm jarhead ledger search "<words>" [--limit N]
 pnpm jarhead ledger trash <day> [--shots|--both] · restore <day> · sweep
+pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   # what it knows about you, one sentence each
+pnpm jarhead memory search "<words>" · forget <id> · restore <id> · add "<text>" [--kind k] · run   # forget hides; nothing is deleted
 pnpm jarhead agents                 # the sessions found on this Mac
 pnpm jarhead bench                  # the ear's 250 ms path; no API spend
 pnpm jarhead bench --brain [--runs N] [--effort low|medium|high|xhigh|max] [--json --out F]   # Codex on your plan; refuses API spend without --allow-api-spend
@@ -373,7 +377,8 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | `ANTHROPIC_API_KEY` | the `anthropic-api` brain |
 | `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain |
 | `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`, `JARHEAD_BRAIN_EFFORT` | defaults for what Setup also sets |
-| `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` |
+| `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` (English; the accent is a setting) |
+| `JARHEAD_MEMORY_MODEL` | the Responses model that reads closed conversations for memory; unset, the memory module's default mini-class id runs (`jarhead doctor` checks it against your key's list and names the best `*-mini` to pin) |
 | `JARHEAD_IDLE_SLEEP_MINUTES` | idle sleep (10) |
 | `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN`, `JARHEAD_CURSOR_AGENT_BIN` | the CLIs when they are not on PATH |
 | `JARHEAD_CODEX_SIMPLE_EFFORT`, `JARHEAD_CODEX_SERVICE_TIER`, `JARHEAD_CODEX_PRIME`, `JARHEAD_CODEX_BASE` | Codex tuning, all opt-in |
@@ -431,6 +436,7 @@ Working rules for anyone — or anything — editing this repo: [`AGENTS.md`](AG
 
 - **The voice** is GPT-Live-1 at **$0.05 per minute, billed per second** of open session, muted or not — $3 an hour of talking. Asleep costs nothing: the wake word runs on-device. Pause and Stop close the session; Mute does not. The meter is on the capsule, the island and the Console.
 - **The brain**: `codex` runs on your ChatGPT plan through Codex Desktop or `codex login` — no API dollars; `claude-code` on your Claude login; `anthropic-api`, `openai-compatible` and `openai-responses` bill their own APIs.
+- **Memory** is a cap, not a saving: at most 250 tokens ride each delegation (about 20k a day at 80 delegations, on the brain's plan) and at most 120 each session start (free — the voice bills per second). Reading a closed conversation costs a mini-class model call on your OpenAI key, at most a few times a day; embeddings are fractions of a cent. Nothing existing shrinks; what you save is explaining yourself again. With no key: rules and keywords, nothing leaves the Mac.
 - **The benchmarks** spend nothing by default: `pnpm jarhead bench` redirects the acting op to a harmless read, and `bench --brain` runs on Codex (your plan) and refuses when Codex is not signed in unless you pass `--allow-api-spend`.
 
 ## Docs

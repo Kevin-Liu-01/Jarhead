@@ -74,6 +74,13 @@ if (args[0] === "exec") {
       process.exit(130);
     });
     setInterval(() => undefined, 1000);
+  } else if (mode === "linger") {
+    // turn.completed, then the child never exits (a wedged shutdown): the run must read idle without it.
+    out({ type: "item.completed", item: { id: "item_2", type: "agent_message", text: "Done." } });
+    out({ type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 } });
+    persist(threadId, prompt, "Done.", resume);
+    process.on("SIGINT", () => process.exit(130));
+    setInterval(() => undefined, 1000);
   } else if (mode === "fail") {
     out({ type: "turn.failed", error: { message: "model says no" } });
     process.stderr.write("Error: turn failed: model says no\n");

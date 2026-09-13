@@ -1090,3 +1090,40 @@ test("sleep with a cause: the transport's Stop writes its stop row and then the 
     await engine.stop();
   }
 });
+
+test("an utterance still open 15 s of wall clock after a live error with no closed behind it is final (the caret stops); a younger one is not; detach still finalises everything", async () => {
+  const w = world();
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    live.emit("inputTranscript", " hello there", 1000, 1500);
+    assert.equal(engine.snapshot().transcript[0]?.final, false);
+    // The server errors; the session clock (live.nowMs) stops moving and no `closed` ever comes.
+    live.emit("error", new Error("response_input_buffer_full: Backend response input history is limited"), "item_9");
+    clock.t += 5000;
+    tick(engine);
+    assert.equal(engine.snapshot().transcript[0]?.final, false, "5 s is not an orphan yet");
+    clock.t += 10_000;
+    tick(engine);
+    assert.equal(engine.snapshot().transcript[0]?.final, true, "15 s of wall clock with no fragment: final");
+    assert.equal(rows<Row>(w, "heard").length, 1, "and on the ledger");
+    // A fresh utterance that keeps growing is never orphaned while fragments arrive.
+    live.emit("inputTranscript", " one more", 1600, 1900);
+    clock.t += 14_000;
+    live.emit("inputTranscript", " thing", 1900, 2100);
+    clock.t += 14_000;
+    tick(engine);
+    assert.equal(engine.snapshot().transcript[1]?.final, false, "touched 14 s ago: still open");
+    clock.t += 1000;
+    tick(engine);
+    assert.equal(engine.snapshot().transcript[1]?.final, true);
+    live.emit("inputTranscript", " last", 3000, 3300);
+    await engine.command({ type: "stop" });
+    assert.ok(engine.snapshot().transcript.every((i) => i.final), "a detach finalises whatever was open");
+  } finally {
+    await engine.stop();
+  }
+});

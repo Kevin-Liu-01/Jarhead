@@ -1,6 +1,8 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { codexTurnMark } from "./codex-transcript.ts";
+import type { TurnMark } from "./liveness.ts";
 import {
   DEFAULT_LIMIT,
   DEFAULT_MAX_AGE_DAYS,
@@ -276,6 +278,7 @@ export function parseCodexSession(path: string, head: readonly string[], tail: r
   let turns = 0;
   /** event_msg user_message + agent_message: the 0.145–0.147 echo of the same turns. */
   let events = 0;
+  let lastTurn: TurnMark | undefined;
 
   // token_count, reasoning and tool-call lines are the bulk of a rollout and carry
   // nothing a listing needs; a substring check spares them the JSON.parse.
@@ -285,6 +288,9 @@ export function parseCodexSession(path: string, head: readonly string[], tail: r
       startedAt = startedAt === undefined ? ts : Math.min(startedAt, ts);
       lastTimestamp = lastTimestamp === undefined ? ts : Math.max(lastTimestamp, ts);
     }
+    // The lease's clock: task_started/complete and real items, never token counts.
+    const turn = codexTurnMark(line);
+    if (turn !== undefined) lastTurn = { kind: turn, at: ts ?? lastTimestamp ?? file.mtimeMs };
     if (!INTERESTING.test(line)) return;
     const o = parseJsonLine(line);
     if (!o) return;
@@ -361,6 +367,7 @@ export function parseCodexSession(path: string, head: readonly string[], tail: r
     messageCount: file.whole ? seen : extrapolateCount(seen, file.bytesRead, file.size),
     messageCountExact: file.whole,
     archived: file.archived,
+    lastTurn,
   };
 }
 

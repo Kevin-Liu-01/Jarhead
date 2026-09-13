@@ -76,8 +76,11 @@ export type DaemonMessage =
   | { readonly type: "toast"; readonly text: string; readonly tone: "info" | "warn" | "error" }
   | { readonly type: "overlay"; readonly command: unknown }
   | { readonly type: "audio"; readonly control: "flush" }
-  | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[] }
+  /** Rows of a day, a session or a whole chain; `truncated` when a chain read kept only its newest CHAIN_ROWS_MAX rows. */
+  | { readonly type: "ledger.rows"; readonly id: string; readonly rows: unknown[]; readonly truncated?: boolean }
   | { readonly type: "ledger.days"; readonly id: string; readonly days: string[] }
+  /** Memory items (MemoryItem[]) for `memory.list` / `memory.search`; never a vector. */
+  | { readonly type: "memory.items"; readonly id: string; readonly items: unknown[] }
   /** Jarhead's own sessions (JarheadSessionSummary[]), newest first. */
   | { readonly type: "ledger.sessions"; readonly id: string; readonly sessions: unknown[] }
   /** Liveness: the daemon answers a client's ping at once; two missed pongs and the app respawns it. */
@@ -117,9 +120,14 @@ export type ClientMessage =
   | { readonly type: "ledger.sessions"; readonly id: string }
   /** The rows of one session (its started row through its closed row); answered with `ledger.rows`. */
   | { readonly type: "ledger.session"; readonly id: string; readonly sessionId: string }
+  /** A whole conversation in one read: every session of the chain `rootId` names (any member id will do), oldest first; answered with `ledger.rows` (+ `truncated`). */
+  | { readonly type: "ledger.chain"; readonly id: string; readonly rootId: string }
   | { readonly type: "ping"; readonly id: string }
   /** Search heard/said text and delegation requests across the live ledger (not the trash); `limit` default 50. */
   | { readonly type: "ledger.search"; readonly id: string; readonly query: string; readonly limit?: number }
+  /** The Memory rail: items by state (default live; "all"), `limit` default 50, at most 200; answered with `memory.items`. */
+  | { readonly type: "memory.list"; readonly id: string; readonly state?: string; readonly limit?: number }
+  | { readonly type: "memory.search"; readonly id: string; readonly query: string; readonly limit?: number }
   /**
    * Run one of Jarhead's tools through the engine's ToolRunner (policy, ledger,
    * screenshot archive, confirmation handshake included). Used by the MCP bridge

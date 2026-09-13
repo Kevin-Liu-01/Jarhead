@@ -54,8 +54,11 @@ struct ConsoleRootView: View {
                 ZStack {
                     if let agent = openAgent {
                         // Only that agent's transcript reaches the pane; its id is the pane's
-                        // identity, so switching sessions closes one tail and opens the next.
-                        ConversationPane(agent: agent, transcript: state.transcripts[agent.id])
+                        // identity, so switching sessions closes one tail and opens the next —
+                        // and gives the new pane its own viewer token (ConversationPane.viewer).
+                        // `loaded` is what "Load earlier" brought back: the feed's ceiling grows by it.
+                        ConversationPane(agent: agent, transcript: state.transcripts[agent.id], connected: state.connected,
+                                         loaded: state.prependedCount[agent.id] ?? 0)
                             .equatable()
                             .id(agent.id)
                             .transition(.identity)
@@ -71,7 +74,7 @@ struct ConsoleRootView: View {
                         StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
                                    hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                                    ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
-                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers)
+                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected)
                             .equatable()
                             .transition(.identity)
                     }
@@ -96,6 +99,8 @@ struct ConsoleRootView: View {
         // The Jarhead-section actions need AppState, which leaf views never see:
         // they are filled in here and handed down with the controller's others.
         .environment(\.consoleActions, jarheadActions)
+        // The Memory rail's reads (`memory.list` / `memory.search`), through AppState's handlers.
+        .environment(\.consoleMemory, memoryActions)
         // The quiet dithered field (ConsoleGround): the regions draw no grounds of their own.
         .background(ConsoleGround().ignoresSafeArea())
         .overlay(alignment: .top) {
@@ -174,6 +179,17 @@ struct ConsoleRootView: View {
         }
     }
 
+    /// The Memory rail's way to the store: AppState's handlers (EngineClient.memoryList /
+    /// memorySearch behind them, installed by the app), read at call time so a handler the
+    /// app installs after the window exists is still found. `installed` is AppState's own flag,
+    /// so a build that never wired them blames the app, not the daemon.
+    private var memoryActions: ConsoleMemoryActions {
+        let state = self.state
+        return ConsoleMemoryActions(list: { st, limit in await state.memoryList(state: st, limit: limit) },
+                                    search: { query, limit in await state.memorySearch(query, limit: limit) },
+                                    installed: state.memoryInstalled)
+    }
+
     private var jarheadActions: ConsoleActions {
         var a = actions
         let session = self.session, state = self.state
@@ -231,6 +247,10 @@ struct ConsoleRootView: View {
         if info["clearNow"] as? Bool == true { state.performCleanup(.clearNow(at: ConsoleFormat.nowMs)) }
         // The `loading` scenario: every read left in flight, so the loading states are on screen.
         if info["pinLoading"] as? Bool == true { session.pinLoadingForPreview() }
+        // The durability scenario: a daemon reconnect (the open pane must re-send its agent.open,
+        // as the same viewer), and the window hidden / shown (the tail closes and reopens).
+        if info["reconnect"] as? Bool == true { session.reconnectCount += 1 }
+        if let visible = info["windowVisible"] as? Bool { session.windowVisible = visible }
         // A search hit, the way SearchHitRow opens one: the first of the current hits, or one named outright.
         if info["hitFirst"] as? Bool == true {
             if let hit = session.searchHits?.first { jarheadActions.openJarheadHit(hit) } else { print("probe: hit-first → no hits yet") }

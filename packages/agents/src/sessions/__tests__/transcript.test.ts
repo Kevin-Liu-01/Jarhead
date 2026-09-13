@@ -107,7 +107,7 @@ test("Claude JSONL: turns, thinking, tool calls with their results, one message 
   assert.equal(page.endOffset, readFileSync(S1_PATH).length, "the file ends on a newline: parsed to the end");
 });
 
-test("Claude JSONL: text blocks of one message merge; a result for a call that is out of view is dropped; harness user lines are not turns", () => {
+test("Claude JSONL: text blocks of one message merge; a result for a call that is out of view is kept as an orphan (never a message); harness user lines are not turns", () => {
   const p = claude();
   const push = (text: string, offset: number): void => p.push({ text, offset });
   push(claudeLines.user("u1", "go", "2026-09-01T10:00:00.000Z"), 0);
@@ -133,6 +133,8 @@ test("Claude JSONL: text blocks of one message merge; a result for a call that i
   );
   assert.equal(all[2]?.tool?.status, "running", "no result seen");
   assert.equal(all[1]?.at, T("2026-09-01T10:00:01.000Z"), "a message's time is its first block's");
+  assert.deepEqual([...p.orphans.keys()], ["toolu_from_an_earlier_page"], "the out-of-view result waits as an orphan for the page that holds its call");
+  assert.deepEqual(p.resultFor("toolu_from_an_earlier_page"), { output: "old", error: false });
 
   // take(): only what moved since last time, in order.
   assert.deepEqual(p.take().map((m) => m.id), ["u1", "msg_X", "toolu_1", "L900"]);
@@ -211,7 +213,7 @@ test("paging: a tail slice that opens mid-message drops its suspect first messag
   }
 });
 
-test("paging: bounded — no page looks further back than maxBytes; a `before` beyond that is a plain Error, not a whole-file read; lines are reassembled across small read chunks", async () => {
+test("paging: bounded — no page reaches further back than maxBytes from ITS cursor, so Load earlier always moves; an id the tail cannot locate is a plain Error, not a whole-file read; lines are reassembled across small read chunks", async () => {
   const t = tmp("jarhead-transcript-cap-");
   try {
     const path = join(t.dir, `${S1}.jsonl`);
@@ -230,11 +232,18 @@ test("paging: bounded — no page looks further back than maxBytes; a `before` b
     assert.deepEqual(tail.messages, whole.messages.slice(-tail.messages.length), "identical to the whole read, though read 512 bytes at a time");
     assert.equal(tail.endOffset, size);
 
-    // Older pages within the window work; the window's first message has nothing before it in reach; beyond it is an Error naming the bound.
+    // Older pages are read backward from the cursor, so the page before message 5 reaches 64 KB further back than the tail did: those 5, and more before them.
     const inWindow = await readTranscriptPage(path, claude, { limit: 60, before: tail.messages[5]!.id }, limits);
-    assert.deepEqual(inWindow.messages, tail.messages.slice(0, 5));
+    assert.deepEqual(inWindow.messages.slice(-5), tail.messages.slice(0, 5));
+    assert.ok(inWindow.messages.length > 5, `the bound is per page, from its own cursor (${inWindow.messages.length})`);
     assert.equal(inWindow.complete, false);
-    await assert.rejects(readTranscriptPage(path, claude, { limit: 60, before: tail.messages[0]!.id }, limits), /nothing before \S+ within the last 64 KB of/);
+    const tailStart = whole.messages.length - tail.messages.length;
+    assert.deepEqual(inWindow.messages, whole.messages.slice(tailStart + 5 - inWindow.messages.length, tailStart + 5), "identical to the whole read");
+    // The tail's first message has something before it now — never "nothing before … within the last 64 KB".
+    const beyond = await readTranscriptPage(path, claude, { limit: 60, before: tail.messages[0]!.id }, limits);
+    assert.ok(beyond.messages.length >= 1, "Load earlier yields a message or the start of the file, every time");
+    assert.equal(beyond.messages.at(-1)?.id, whole.messages[tailStart - 1]?.id, "and it ends just before the tail page");
+    // An id outside the last 64 KB cannot be located from the end; a source that served it knows its byte instead (durability tests).
     await assert.rejects(readTranscriptPage(path, claude, { limit: 60, before: ids[0]! }, limits), /no message u0 in the last 64 KB of/);
     await assert.rejects(readTranscriptPage(path, claude, { limit: 60, before: "nope" }, limits), /no message nope in the last 64 KB of/, "an unknown id does not read the file whole");
 
@@ -243,6 +252,8 @@ test("paging: bounded — no page looks further back than maxBytes; a `before` b
     const page = await source.page({ limit: 60 });
     assert.equal(page.complete, false);
     assert.ok(page.total >= page.messages.length + 1, `total ${page.total} admits more than the ${page.messages.length} shown`);
+    assert.equal(page.cursor?.endOffset, size, "the page says which bytes it covers");
+    assert.ok(page.cursor && page.cursor.startOffset > 0 && page.cursor.startOffset < size);
     const older = await source.page({ limit: 60, before: page.messages[5]!.id });
     assert.ok(older.total >= page.total, "a later read never lowers the total");
 

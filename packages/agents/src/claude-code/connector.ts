@@ -221,13 +221,20 @@ export class ClaudeCodeConnector implements AgentConnector {
    * New turns as the file grows. A session that has no file yet is checked again every
    * second (every 5 s after the first few looks) until it does, then followed from its
    * first line — nothing of it was ever shown, whether the file appeared before this call
-   * or during the wait. `onEnd` hears when there is no such session.
+   * or during the wait. `onEnd` hears when there is no such session, or when its file
+   * is gone for 10 s, replaced, or truncated (the tail closed itself).
    */
   watch(id: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void {
     let stop: (() => void) | undefined;
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let looks = 0;
+    const end = (reason: string): void => {
+      if (closed) return;
+      closed = true;
+      log.info(`watch ${id}: ended (${reason})`);
+      onEnd?.(reason);
+    };
     const attempt = (): void => {
       looks += 1;
       this.sourceFor(id, looks % ClaudeCodeConnector.WALK_EVERY === 1)
@@ -236,17 +243,14 @@ export class ClaudeCodeConnector implements AgentConnector {
           if (source) {
             // A source that has served a page continues from it; one that has not (the
             // Console saw the "no file yet" page) is replayed from its first line.
-            stop = source.follow(onDelta, { fromStart: !source.served });
+            stop = source.follow(onDelta, { fromStart: !source.served, onEnd: end });
             return;
           }
           const base = this.opts.tailPollMs ?? 1_000;
           timer = setTimeout(attempt, looks < ClaudeCodeConnector.WAIT_BACKOFF_AFTER ? base : base * 5);
           timer.unref?.();
         })
-        .catch((e: unknown) => {
-          log.debug(`watch ${id}: ${(e as Error).message}`);
-          if (!closed) onEnd?.((e as Error).message);
-        });
+        .catch((e: unknown) => end((e as Error).message));
     };
     attempt();
     return () => {
@@ -254,6 +258,19 @@ export class ClaudeCodeConnector implements AgentConnector {
       if (timer) clearTimeout(timer);
       stop?.();
     };
+  }
+
+  /**
+   * The session's process is gone: whatever its open conversation still shows as a
+   * running tool call was cut off. The changed messages, for the pane that is open;
+   * undefined when no conversation was read for it or nothing was running.
+   */
+  async settle(id: string): Promise<TranscriptDelta | undefined> {
+    const { localId } = this.resolve(id);
+    const source = this.sources.get(localId);
+    if (!source) return undefined;
+    const messages = source.interruptOpenCalls();
+    return messages.length ? { messages, total: source.total } : undefined;
   }
 
   async closeAll(): Promise<void> {

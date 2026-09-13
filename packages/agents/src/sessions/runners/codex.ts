@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { LineSplitter, logger } from "@jarhead/core";
 import type { AgentStatus } from "@jarhead/protocol";
 import { cliVersion, findCli, notFoundText, readCodexAuth, type FindCliOptions, type FoundCli } from "../codex-bin.ts";
+import { FINISHING_MAX_MS } from "../liveness.ts";
 import { isRecord, parseJsonLine, str, truncate, type DiscoveredSession } from "../store.ts";
 import type { Continuation, ContinueMode, ContinueOutcome, DescribeContext, OwnershipSnapshot, RunEvent, RunHandle, RunSink, SessionRunner } from "./types.ts";
 
@@ -82,6 +83,8 @@ export interface CodexRunnerOptions {
   readonly queueTimeoutMs?: number;
   /** SIGINT → SIGKILL grace. Default 3 s. */
   readonly killGraceMs?: number;
+  /** After turn.completed, how long the child may keep flushing before the run reads idle anyway. Default 30 s. */
+  readonly finishingMaxMs?: number;
   readonly now?: () => number;
 }
 
@@ -183,6 +186,7 @@ export class CodexRunner implements SessionRunner {
       turnMs: this.opts.turnBudgetMs ?? 15 * 60_000,
       startMs: this.opts.startTimeoutMs ?? 30_000,
       killGraceMs: this.opts.killGraceMs ?? 3_000,
+      finishingMs: this.opts.finishingMaxMs ?? FINISHING_MAX_MS,
     };
   }
 
@@ -259,6 +263,7 @@ interface Budgets {
   readonly turnMs: number;
   readonly startMs: number;
   readonly killGraceMs: number;
+  readonly finishingMs: number;
 }
 
 interface CodexRunOptions {
@@ -440,11 +445,20 @@ export class CodexRun implements RunHandle {
       case "item.completed":
         this.handleItem(type, o["item"]);
         return;
-      case "turn.completed":
-        // The child is still flushing the rollout; it is idle once it has exited.
+      case "turn.completed": {
+        // The child is still flushing the rollout; it is idle once it has exited — or,
+        // should the exit never come (a child wedged on the way out), once the finishing
+        // grace is up: the turn is over either way, and a rail row must not say
+        // `working` for a turn that completed a minute ago.
         this.turnCompleted = true;
         this.setStatus("working", "finishing");
+        const finishing = setTimeout(() => {
+          if (this.child && this.turnCompleted && this.status === "working") this.setStatus("idle", "turn done; child still flushing");
+        }, this.opts.budget.finishingMs);
+        finishing.unref?.();
+        this.timers.push(finishing);
         return;
+      }
       case "turn.failed": {
         const err = o["error"];
         const message = (isRecord(err) ? str(err["message"]) : str(err)) ?? "turn failed";

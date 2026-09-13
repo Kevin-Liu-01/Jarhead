@@ -1,4 +1,5 @@
 import { userText } from "./claude-store.ts";
+import type { TurnMark } from "./liveness.ts";
 import { isRecord, parseJsonLine, str } from "./store.ts";
 import type { Line } from "./tail.ts";
 import { TranscriptParser, outputText, prettyInput } from "./transcript.ts";
@@ -16,9 +17,31 @@ import { TranscriptParser, outputText, prettyInput } from "./transcript.ts";
  *   isSidechain lines, summary/title/system/queue/attachment lines → nothing
  * A message is written one block per line, so its parts arrive over several pushes; the
  * parser merges by message.id and marks the message changed each time.
+ *
+ * Turn markers (liveness.ts): every user line Kevin or a tool wrote and every assistant
+ * line are turn-bearing; an assistant line with `stop_reason: "end_turn"` closes the
+ * turn (checked on a real 10 MB session: 167 tool_use, 5 end_turn, nothing else).
  */
+
+const SKIPPED_TOOL_RESULT = /"tool_use_id":"([^"]+)"/;
+
+/**
+ * Whether a raw line bears on the turn, and how — from substrings, no JSON.parse, so
+ * the store can run it over its tail slice and the parser over every line alike.
+ */
+export function claudeTurnMark(line: string): TurnMark["kind"] | undefined {
+  if (line.includes('"isSidechain":true')) return undefined;
+  if (line.includes('"type":"assistant"')) return line.includes('"stop_reason":"end_turn"') ? "closed" : "open";
+  if (line.includes('"type":"user"')) return line.includes('"isMeta":true') ? undefined : "open";
+  return undefined;
+}
+
 export class ClaudeTranscriptParser extends TranscriptParser {
   push(line: Line): void {
+    if (line.skippedBytes !== undefined) {
+      this.skipped(line, (head) => (head.includes('"tool_result"') ? SKIPPED_TOOL_RESULT.exec(head)?.[1] : undefined));
+      return;
+    }
     const text = line.text;
     // Cheap gate: only user and assistant lines carry conversation.
     if (!text.includes('"type":"user"') && !text.includes('"type":"assistant"')) return;
@@ -31,9 +54,11 @@ export class ClaudeTranscriptParser extends TranscriptParser {
     const message = o["message"];
     if (!isRecord(message)) return;
     if (type === "user") {
+      if (o["isMeta"] !== true) this.mark("open", at);
       this.user(o, message, at, line.offset);
       return;
     }
+    this.mark(str(message["stop_reason"]) === "end_turn" ? "closed" : "open", at);
     this.assistant(o, message, at, line.offset);
   }
 
@@ -51,14 +76,14 @@ export class ClaudeTranscriptParser extends TranscriptParser {
     if (o["isMeta"] === true) return;
     const text = userText(message);
     if (text === undefined) return;
-    this.add({ id: str(o["uuid"]) ?? `L${offset}`, role: "user", text, at });
+    this.add({ id: str(o["uuid"]) ?? `L${offset}`, role: "user", text, at, offset });
   }
 
   private assistant(o: Record<string, unknown>, message: Record<string, unknown>, at: number, offset: number): void {
     const messageId = str(message["id"]) ?? str(o["uuid"]) ?? `L${offset}`;
     const content = message["content"];
     if (typeof content === "string") {
-      this.mergeText({ id: messageId, role: "assistant", text: content, at });
+      this.mergeText({ id: messageId, role: "assistant", text: content, at, offset });
       return;
     }
     if (!Array.isArray(content)) return;
@@ -66,15 +91,15 @@ export class ClaudeTranscriptParser extends TranscriptParser {
       if (!isRecord(block)) continue;
       switch (block["type"]) {
         case "text":
-          if (typeof block["text"] === "string") this.mergeText({ id: messageId, role: "assistant", text: block["text"], at });
+          if (typeof block["text"] === "string") this.mergeText({ id: messageId, role: "assistant", text: block["text"], at, offset });
           break;
         case "thinking":
-          if (typeof block["thinking"] === "string") this.mergeText({ id: `${messageId}:thinking`, role: "assistant", text: block["thinking"], at, thinking: true });
+          if (typeof block["thinking"] === "string") this.mergeText({ id: `${messageId}:thinking`, role: "assistant", text: block["thinking"], at, thinking: true, offset });
           break;
         case "tool_use": {
           const id = str(block["id"]);
           const name = str(block["name"]) ?? "tool";
-          this.addCall({ id: id ?? `L${offset}`, role: "tool", at, tool: { name, input: prettyInput(block["input"]), output: undefined, status: "running" } }, id);
+          this.addCall({ id: id ?? `L${offset}`, role: "tool", at, tool: { name, input: prettyInput(block["input"]), output: undefined, status: "running" }, offset }, id);
           break;
         }
         default:

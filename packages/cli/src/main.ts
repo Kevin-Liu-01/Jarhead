@@ -4,9 +4,9 @@ import { Ledger, readConfig, setLogLevel } from "@jarhead/core";
 import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
-import { DaemonClient } from "@jarhead/daemon";
-import type { Delegation, Effort, EngineEvent, PermissionInfo, Problem, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
-import { render, runChecks, summarizePermissions } from "./doctor.ts";
+import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
+import type { AgentInfo, Delegation, Effort, EngineEvent, MemoryItem, MemoryKind, MemoryState, MemorySummary, PermissionInfo, Problem, SleepCause, TranscriptItem, Worker } from "@jarhead/protocol";
+import { MEMORY_ID, agentsByStatus, agoWords, memoryLine, render, runChecks, summarizePermissions } from "./doctor.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
 import { benchBrain } from "./bench-brain.ts";
@@ -25,7 +25,14 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead ledger restore <day>   move a day back from the Trash
   pnpm jarhead ledger sweep           run the retention sweep now (Settings ledgerRetentionDays / shotsRetentionDays, 0 = never; the daemon logs what it would move first)
   pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
-  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; workers: the second hands at work)
+  pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about Kevin: one sentence per item, over the daemon (50 by default, 200 at most)
+  pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words (embeddings when a key is present, keywords without)
+  pnpm jarhead memory forget <id>    hide an item from every prompt; it stays in Jarhead's own record under Forgotten. Nothing is deleted
+  pnpm jarhead memory restore <id>   bring a forgotten or archived item back into use
+  pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in Kevin's words (redacted and refused like anything extracted)
+  pnpm jarhead memory run            read the closed conversations not read yet, now (it runs on its own at a quiet moment; never while a voice session is open)
+  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; agents by status —
+                                      working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; workers: the second hands at work; memory: counts and the last learn)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|stop|interrupt|wake|resume|mute|unmute|agent.refresh>   send a command to the running daemon
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
@@ -54,12 +61,14 @@ flags
   --out FILE     (bench --brain) also write the JSON report to FILE
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
   --shots / --both   (ledger trash) move the day's screenshots instead of / as well as its ledger file
-  --limit N      (ledger search) how many hits (default 50, at most 200)
+  --limit N      (ledger search, memory list/search) how many hits (default 50 / 50 / 30, at most 200)
+  --state S      (memory list) live (default) | forgotten | archived | merged | all
+  --kind K       (memory add) preference | fact | episode | procedure | contact | place (the store classifies when absent)
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -221,7 +230,8 @@ async function agents(): Promise<void> {
   for (const h of health) console.log(`  ${h.ok ? "✔" : "✘"} ${h.kind.padEnd(12)} ${h.detail}`);
   console.log("");
   if (list.length === 0) console.log("  no agents right now\n");
-  for (const a of list) console.log(`  ${a.id.padEnd(28)} ${a.status.padEnd(8)} ${a.name}${a.cwd ? `  (${a.cwd})` : ""}${a.detail ? `  — ${a.detail}` : ""}`);
+  // `detail` carries no relative time any more; the hint says why a row reads as it does (archived, quiet, ended, unseen …).
+  for (const a of list) console.log(`  ${a.id.padEnd(28)} ${a.status.padEnd(8)} ${a.name}${a.cwd ? `  (${a.cwd})` : ""}${a.hint ? `  [${a.hint}]` : ""}${a.detail ? `  — ${a.detail}` : ""}`);
   console.log("");
 }
 
@@ -331,6 +341,110 @@ async function search(query: string, limit: number): Promise<void> {
   console.log(`\n  ${hits.length} hit${hits.length === 1 ? "" : "s"}${hits.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""}\n`);
 }
 
+/** Every MemoryKind / MemoryState, checked against the protocol's unions so a new one cannot go unlisted here. */
+const MEMORY_KINDS: readonly MemoryKind[] = Object.keys({ preference: 0, fact: 0, episode: 0, procedure: 0, contact: 0, place: 0 } satisfies Record<MemoryKind, 0>) as MemoryKind[];
+const MEMORY_STATES: readonly (MemoryState | "all")[] = Object.keys({ live: 0, forgotten: 0, merged: 0, archived: 0, all: 0 } satisfies Record<MemoryState | "all", 0>) as (MemoryState | "all")[];
+
+/**
+ * `jarhead memory …`: what Jarhead durably knows about Kevin, over the daemon (the
+ * daemon owns the store). list/search are read frames; forget, restore, add and run
+ * are EngineCommands whose toasts say what happened. Forget is a state Restore
+ * undoes; nothing here deletes anything. A bad id or an unknown state/kind is
+ * refused here, before any socket is touched.
+ */
+async function memoryCommand(rest: string[]): Promise<void> {
+  const [verb, ...args] = rest;
+  const limit = (dflt: number): number => Math.max(1, Math.min(200, Number(flagValue("limit") ?? dflt) || dflt));
+  switch (verb) {
+    case undefined:
+    case "list": {
+      const state = flagValue("state") ?? "live";
+      if (!MEMORY_STATES.includes(state as MemoryState | "all")) throw new Error(`usage: jarhead memory list [--state ${MEMORY_STATES.join("|")}] [--limit N]`);
+      await memoryList(state as MemoryState | "all", limit(50));
+      return;
+    }
+    case "search": {
+      const query = args.join(" ").trim();
+      if (!query) throw new Error('usage: jarhead memory search "<words>" [--limit N]');
+      await memorySearch(query, limit(30));
+      return;
+    }
+    case "forget":
+    case "restore": {
+      const id = args[0];
+      if (!id || !MEMORY_ID.test(id)) throw new Error(`usage: jarhead memory ${verb} <id>  (an id looks like m_…; \`jarhead memory list\` prints them${verb === "forget" ? "; forget hides the item, nothing is deleted" : ""})`);
+      await sendCommand({ type: `memory.${verb}`, id }, 800);
+      return;
+    }
+    case "add": {
+      const text = args.join(" ").trim();
+      if (!text) throw new Error('usage: jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]');
+      const kind = flagValue("kind");
+      if (kind !== undefined && !MEMORY_KINDS.includes(kind as MemoryKind)) throw new Error(`--kind must be one of ${MEMORY_KINDS.join(", ")} (got ${kind})`);
+      await sendCommand({ type: "memory.add", text, ...(kind ? { kind } : {}) }, 800);
+      return;
+    }
+    case "run":
+      // An extraction run may call the extractor once (20 s cap, one retry): stay long enough to hear its toast.
+      await sendCommand({ type: "memory.run" }, 3000);
+      return;
+    default:
+      throw new Error(`unknown memory verb: ${verb} — list | search | forget | restore | add | run`);
+  }
+}
+
+/** How long the CLI waits for `memory.items`; a daemon from before the memory module never answers, and this says so. */
+const MEMORY_ITEMS_WAIT_MS = 5000;
+
+/**
+ * One `memory.list` / `memory.search` round trip over the daemon wire (`memory.list
+ * {id, state?, limit?}` / `memory.search {id, query, limit?}` → `memory.items {id,
+ * items}`; the items are MemoryItem[] without vectors). An older daemon never
+ * answers: the wait says so rather than hanging.
+ */
+async function memoryItems(frame: { type: "memory.list"; state: MemoryState | "all"; limit: number } | { type: "memory.search"; query: string; limit: number }): Promise<MemoryItem[]> {
+  const client = await daemon();
+  const id = `cli_${process.pid}_${Date.now()}`;
+  try {
+    return await new Promise<MemoryItem[]>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`the daemon did not answer within ${MEMORY_ITEMS_WAIT_MS / 1000} s (a daemon from before the memory module has no memory frames)`)), MEMORY_ITEMS_WAIT_MS);
+      client.on("message", (m) => {
+        if (m.type !== "memory.items" || m.id !== id) return;
+        clearTimeout(timer);
+        resolve(m.items as MemoryItem[]);
+      });
+      const message: ClientMessage = { ...frame, id };
+      client.sendJson(message);
+    });
+  } finally {
+    client.close();
+  }
+}
+
+function printMemoryItems(items: readonly MemoryItem[], empty: string, tail: string): void {
+  if (items.length === 0) {
+    console.log(`\n  ${empty}\n`);
+    return;
+  }
+  console.log("");
+  for (const it of items) {
+    // The state is shown only when it is not the default (a forgotten item in an --state all listing).
+    const state = it.state === "live" ? "" : ` (${it.state})`;
+    console.log(`  ${it.id.padEnd(22)} ${it.kind.padEnd(10)} ${it.text.length > 110 ? `${it.text.slice(0, 109)}…` : it.text}${state}  · seen ${it.seenCount}× · ${agoWords(it.lastSeenAt)}`);
+  }
+  console.log(`\n  ${items.length} item${items.length === 1 ? "" : "s"}${tail}\n`);
+}
+
+async function memoryList(state: MemoryState | "all", limit: number): Promise<void> {
+  const items = await memoryItems({ type: "memory.list", state, limit });
+  printMemoryItems(items, state === "live" ? "nothing remembered yet — Jarhead learns after a conversation closes" : `nothing under ${state}`, `${items.length >= limit ? ` · limit ${limit} (--limit N for more)` : ""} · forget <id> hides one (nothing is deleted); restore <id> brings it back`);
+}
+
+async function memorySearch(query: string, limit: number): Promise<void> {
+  const items = await memoryItems({ type: "memory.search", query, limit });
+  printMemoryItems(items, `nothing close to "${query}"`, items.length >= limit ? ` · limit ${limit} (--limit N for more)` : "");
+}
+
 /** "129 MB", "640 KB". */
 function human(bytes: number): string {
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(bytes >= 10 * 1_048_576 ? 0 : 1)} MB`;
@@ -369,9 +483,10 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: unknown[]; workers?: Worker[]; problems: string[]; problemsTyped?: Problem[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; workers?: Worker[]; memory?: MemorySummary; problems: string[]; problemsTyped?: Problem[]; brainReady: boolean; handsReady: boolean; permissions?: { microphone: string; screenRecording: string; accessibility: string; all?: PermissionInfo[] }; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
   console.log(`\n  phase      ${s.phase}`);
-  console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed` : "none"}`);
+  // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
+  console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
   // The app's read of every grant (TCC keys them on Jarhead.app); without the app, the four the daemon's helper reads.
   const perms = s.permissions;
@@ -379,7 +494,10 @@ async function status(): Promise<void> {
   else if (perms) console.log(`  permissions  mic ${perms.microphone} · screen recording ${perms.screenRecording} · accessibility ${perms.accessibility} (an older daemon: no list)`);
   if (flags.has("--permissions") && perms?.all) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
-  console.log(`  agents     ${s.agents.length}${s.hiddenAgents?.length ? ` (${s.hiddenAgents.length} hidden)` : ""}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
+  // Agents by status: `ended` is a session with no live process (however old); `unknown` means the process evidence was missing, not "old".
+  const byStatus = agentsByStatus(s.agents);
+  console.log(`  agents     ${s.agents.length}${byStatus ? ` (${byStatus})` : ""}${s.hiddenAgents?.length ? ` (${s.hiddenAgents.length} hidden)` : ""}   delegations ${s.delegations.length}   utterances ${s.transcript.length}`);
+  console.log(`  memory     ${memoryLine(s.memory)}`);
   // Workers are the brain's second hands (not agents: those are Kevin's coding sessions); running ones and those finished within the linger window.
   const workers = s.workers ?? [];
   console.log(`  workers    ${workers.length}${workers.length ? ` (${workers.filter((w) => !["done", "failed", "cancelled"].includes(w.status)).length} running)` : ""}`);
@@ -443,6 +561,9 @@ try {
       break;
     case "ledger":
       await ledgerCommand(rest);
+      break;
+    case "memory":
+      await memoryCommand(rest);
       break;
     case "status":
       await status();

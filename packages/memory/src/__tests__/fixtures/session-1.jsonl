@@ -1,0 +1,26 @@
+{"at": 1789146000000, "type": "session.started", "sessionId": "A", "voice": "cedar"}
+{"at": 1789146001000, "type": "heard", "item": {"id": "h1000", "speaker": "kevin", "text": "hey jarhead", "startMs": 0, "endMs": 1000, "at": 1789146001000, "final": true}}
+{"at": 1789146002000, "type": "said", "item": {"id": "s2000", "speaker": "jarhead", "text": "Yes?", "startMs": 0, "endMs": 1000, "at": 1789146002000, "final": true}}
+{"at": 1789146003000, "type": "now.cleared", "sessionId": "A"}
+{"at": 1789146010000, "type": "heard", "item": {"id": "h10000", "speaker": "kevin", "text": "call me Kev", "startMs": 0, "endMs": 1000, "at": 1789146010000, "final": true}}
+{"at": 1789146011000, "type": "said", "item": {"id": "s11000", "speaker": "jarhead", "text": "Sure, Kev.", "startMs": 0, "endMs": 1000, "at": 1789146011000, "final": true}}
+{"at": 1789146020000, "type": "heard", "item": {"id": "h20000", "speaker": "kevin", "text": "I prefer short answers", "startMs": 0, "endMs": 1000, "at": 1789146020000, "final": true}}
+{"at": 1789146021000, "type": "said", "item": {"id": "s21000", "speaker": "jarhead", "text": "Noted.", "startMs": 0, "endMs": 1000, "at": 1789146021000, "final": true}}
+{"at": 1789146030000, "type": "heard", "item": {"id": "h30000", "speaker": "kevin", "text": "my dentist is Dr. Patel", "startMs": 0, "endMs": 1000, "at": 1789146030000, "final": true}}
+{"at": 1789146035000, "type": "heard", "item": {"id": "h35000", "speaker": "kevin", "text": "my card number is 4111 1111 1111 1111", "startMs": 0, "endMs": 1000, "at": 1789146035000, "final": true}}
+{"at": 1789146036000, "type": "heard", "item": {"id": "h36000", "speaker": "kevin", "text": "my password is hunter22", "startMs": 0, "endMs": 1000, "at": 1789146036000, "final": true}}
+{"at": 1789146037000, "type": "heard", "item": {"id": "h37000", "speaker": "kevin", "text": "the key is sk-proj-abcdefghijklmnopqrstuvwxyz0123456789", "startMs": 0, "endMs": 1000, "at": 1789146037000, "final": true}}
+{"at": 1789146040000, "type": "delegation.created", "delegation": {"id": "d1", "liveId": "live_d1", "createdAt": 1789146040000, "offsetMs": 0, "request": "open the diff for the auth branch and push it", "status": "running", "steps": [], "timings": {"delegatedAt": 1789146040000}}}
+{"at": 1789146041000, "type": "delegation.step", "delegationId": "d1", "step": {"id": "st1", "at": 1789146041000, "kind": "confirm", "text": "Push to main?"}}
+{"at": 1789146041500, "type": "said", "item": {"id": "s41500", "speaker": "jarhead", "text": "Should I push to main?", "startMs": 0, "endMs": 1000, "at": 1789146041500, "final": true}}
+{"at": 1789146043000, "type": "heard", "item": {"id": "h43000", "speaker": "kevin", "text": "yes go ahead", "startMs": 0, "endMs": 1000, "at": 1789146043000, "final": true}}
+{"at": 1789146044000, "type": "delegation.step", "delegationId": "d1", "step": {"id": "st2", "at": 1789146044000, "kind": "tool", "tool": {"name": "run_shell", "input": {"command": "git push"}, "output": "Everything up-to-date. TOKEN=ghp_secretsecretsecretsecretsecret12345", "ok": true, "ms": 120}}}
+{"at": 1789146050000, "type": "delegation.finished", "delegationId": "d1", "status": "done", "timings": {"delegatedAt": 1789146040000}, "summary": "Pushed the auth branch."}
+{"at": 1789146050500, "type": "grant", "chainId": "A", "app": "Terminal", "actionClass": "git push", "until": 1789149600000}
+{"at": 1789146060000, "type": "heard", "item": {"id": "h60000", "speaker": "kevin", "text": "from now on read the diff before saying a PR is fine", "startMs": 0, "endMs": 1000, "at": 1789146060000, "final": true}}
+{"at": 1789146061000, "type": "said", "item": {"id": "s61000", "speaker": "jarhead", "text": "Will do.", "startMs": 0, "endMs": 1000, "at": 1789146061000, "final": true}}
+{"at": 1789146070000, "type": "heard", "item": {"id": "h70000", "speaker": "kevin", "text": "remember that I like dark mode", "startMs": 0, "endMs": 1000, "at": 1789146070000, "final": true}}
+{"at": 1789146071000, "type": "heard", "item": {"id": "h71000", "speaker": "kevin", "text": "my SSN is 123-45-6789", "startMs": 0, "endMs": 1000, "at": 1789146071000, "final": true}}
+{"at": 1789146072000, "type": "heard", "item": {"id": "h72000", "speaker": "kevin", "text": "speak in english", "startMs": 0, "endMs": 1000, "at": 1789146072000, "final": true}}
+{"at": 1789146073000, "type": "said", "item": {"id": "s73000", "speaker": "jarhead", "text": "English it is.", "startMs": 0, "endMs": 1000, "at": 1789146073000, "final": true}}
+{"at": 1789146080000, "type": "session.closed", "sessionId": "A", "reason": "idle", "usageSeconds": 80}

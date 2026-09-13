@@ -5,7 +5,21 @@ import SwiftUI
 // shows the Console window. Not part of the package; compiled only by
 // Scripts/console-preview.sh.
 //   PREVIEW_SCENARIO=live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch
-//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers|loading|wipe|timing
+//                    |cleanup|cleanup-select|cleanup-rename|cleanup-undo|search|problems|cleared|workers|loading|wipe|timing|memory|threads
+//     memory       = the durable memory of Kevin: asleep, the Settings tab scrolled to its Memory section —
+//                    the Remember toggle, Matching, the counts with "learned … ago", Learn now, the budget
+//                    hint, and the rail under them (search, Live | Forgotten | Archived, ≤ 30 rows with
+//                    Edit / Forget / Restore behind ⋯ and the context menu, the Forget hint). The rows come
+//                    from FakeData.memoryItems through the same handlers the app installs. Its default action
+//                    runs `check-durability` (the pure words of this pass, run.log `check:` lines).
+//     threads      = long-horizon durability: the ended Codex thread (no process; its last tool call
+//                    `interrupted`, settled grey, never a pulse; no live dot — `isLive` is derived from
+//                    status + connection, never latched) stepped into with a 1 200-message transcript the
+//                    feed caps at 400 (LazyVStack; "Load earlier" offers the rest). Then a daemon reconnect
+//                    at 1.0 s (the pane must re-send ONE agent.open naming its viewer — the same token as
+//                    its first), the window hidden at 1.4 s (agent.close, same viewer) and shown at 1.8 s
+//                    (agent.open again): run.log's `send:` lines are the check. PREVIEW_CONNECTED=0 on `live`
+//                    is the caret gate's control: a non-final item sits still while disconnected.
 //     timing       = the pane switch at REAL speed (no PREVIEW_WIPE_SECONDS), traced: live data (with the
 //                    agents' transcripts and marks, so the conversation pane has rows), then four switches
 //                    — into the Jarhead chain, back to Now, into the blocked Claude session, back — the
@@ -86,9 +100,19 @@ import SwiftUI
 //                                   `wipe` scenario's default), so a `snap:` mid-wipe is a reproducible frame
 //   PREVIEW_NO_LEVELS=1             no fake 20 Hz audio levels (the meters hold still) — the `timing`
 //                                   scenario's control for what the meters' animation costs
+//   PREVIEW_CONNECTED=0             the daemon client disconnected (AppState.connected): the header's dot
+//                                   grey, no streaming caret, no live dot on a conversation
 //   PREVIEW_ACTION=scroll-up,append drive the feed after it settles (use PREVIEW_SETTLE>=3)
-//     scroll-top,history   in a conversation: scroll to the top, then prepend an older page
+//     scroll-top,history   in a conversation: scroll to the top, then prepend an older page of 4
 //                          (the feed must keep the row on screen where it was)
+//     load-earlier:<n>     "Load earlier" the way agent.history answers: n older rows, mode `prepend`,
+//                          before the first row shown; the action line says held/shown/loaded before →
+//                          after (shown must grow by n — the model's cap and the pane's ceiling both
+//                          move by what Kevin loaded) and `complete`; pair with `geometry` either side
+//     memory-forget:<id> / memory-restore:<id> / memory-edit:<id>=<text> / memory-segment:<state>
+//                          the Memory rail's verbs through the row's own closures (Settings tab): the
+//                          `send:` line is the command (memory.forget / .restore / .edit with no kind),
+//                          the `memory-rail:` line what the list holds after (the row leaves at once)
 //     drop-open,restore-agents   take the open session off the rail, then put the rail
 //                          back: the stream must stay (one agent.close in the log, no
 //                          second agent.open — the root forgets an orphaned id)
@@ -133,6 +157,15 @@ import SwiftUI
 //                          the stream from ledger rows end to end, the feed's redraw seams) as
 //                          `check: ok|FAIL …` lines; worker-stop:<workerId> sends one worker.stop the
 //                          way the rail row's Stop does (the `send:` line must not be a transport stop)
+//     check-durability     print this pass's pure words as `check: ok|FAIL` lines: isLive / typing from
+//                          status + connection (never the tail flag alone), the caret gate, the feed's 400
+//                          cap, the rail's live-first order and hint word, the voice labels and accents,
+//                          Switch now's rule, the memory rail's formatting, and that every memory symbol exists
+//     reconnect            the daemon came back (ConsoleSession.reconnectCount += 1): the open pane must re-send
+//                          agent.open as the same viewer; hide-window / show-window flip windowVisible (the
+//                          tail closes and reopens — one agent.close, one agent.open, the same viewer)
+//     rail-scroll:<pt>     scroll the right rail down by that many points (the Settings tab is taller than
+//                          the window; the Memory section sits under Session)
 //     key:<char>           send ⌘<char> to the window (key:f must open the search); undo runs the
 //                          window's undo manager once (the last cleanup's inverse must be sent);
 //                          undo-toast presses the toast's Undo (AppState.undoCleanup(id:)); redo
@@ -197,11 +230,19 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         state.stateDir = URL(fileURLWithPath: env["PREVIEW_STATE_DIR"] ?? FileManager.default.currentDirectoryPath)
-        state.connected = true
-        state.daemonDetail = "engine · pid 48213"
+        // PREVIEW_CONNECTED=0: the daemon client is down — the caret gate's and the live dot's control.
+        state.connected = env["PREVIEW_CONNECTED"] != "0"
+        state.daemonDetail = state.connected ? "engine · pid 48213" : "reconnecting"
         state.sendHandler = { cmd in print("send:", cmd.json) }
+        // The memory rail's verbs, driven by `memory-forget:` / `memory-edit:` / `memory-restore:`
+        // through the row's own closures; the rail reports what it holds after (`memory-rail:` lines).
+        MemoryRailList.previewReport = { line in print("memory-rail: \(line)") }
         let fake = FakeData(shot: shot)
         self.fake = fake
+        // The memory store, as `memory.list` / `memory.search` would answer (the rail reads through
+        // the same AppState handlers the app installs from EngineClient).
+        state.memoryListHandler = { st, limit in fake.memoryList(state: st, limit: limit) }
+        state.memorySearchHandler = { query, limit in fake.memorySearch(query, limit: limit) }
         state.ledgerDaysHandler = { ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"] }
         state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : [] }
         // Jarhead's own sessions, as `ledger.sessions` / `ledger.session` would answer:
@@ -258,6 +299,19 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
             state.transcripts = fake.transcripts()
+        case "memory":
+            // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
+            state.snapshot = fake.asleep()
+            state.snapshot.memory = fake.memorySummary()
+        case "threads":
+            // The ended Codex thread, with its long transcript (1 200 messages, the last call interrupted).
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.transcripts = fake.transcripts()
+            // Through the model, the way the engine's `replace` page lands: AppState trims to its 400
+            // and says `complete: false`, so "Load earlier" offers the rest and a `load-earlier:` action
+            // prepends into the same cap the app has (the view's own ceiling is the pure check).
+            state.applyTranscript(fake.longTranscript(agentId: FakeData.endedId, count: 1_200), mode: "replace")
         case "workers":
             // The split. The parent delegation stays running while its hands work (the notch and
             // the phase read from it as ever); the workers ride on the snapshot beside it.
@@ -325,8 +379,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked": console.selectTab(.settings)
+        case "settings", "wake-locked", "memory": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
+        case "threads":
+            pendingAgentOpen = FakeData.endedId
+            openPendingAgentAfterActivation()
         case "confirm":
             state.toast("Waiting for your confirmation", tone: .warn)
         case "conversation", "conversation-codex":
@@ -393,6 +450,17 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // The pure words behind the sleep and worker rows, checked into run.log (the package has no
         // test target), then Spotify's Stop the way the rail's button sends it (`send: worker.stop`).
         case "workers": defaultActions = "check-sleep@0.3,worker-stop:w_sp0t1fy@0.5"
+        // The pure words of the durability / memory / voice pass, the rail scrolled to Memory, then the
+        // verbs through the rail's own rows: Forget a live row (`send: memory.forget`, the row leaves at
+        // once), Edit one (`send: memory.edit` with no kind), Forgotten's Restore (`send: memory.restore`),
+        // back to Live for the shot. The `memory-rail:` lines say what the list held after each.
+        case "memory": defaultActions = "check-durability@0.3,rail-scroll:540@0.6,memory-forget:m_dark@1.0,"
+            + "memory-edit:m_kev=Kevin goes by Kev; never Kevin.@1.3,memory-segment:forgotten@1.6,memory-restore:m_light@2.0,memory-segment:live@2.3"
+        // The re-open on reconnect, the close on hide, the open on show: three `send:` lines, one viewer.
+        // Then "Load earlier" on the lazy feed: 60 older rows prepended above the 400 while the bottom is
+        // pinned — `geometry` before and after (distance stays 0, the content grows), the action line
+        // says held/shown/loaded (shown must grow by the page, or it sat above the fold unseen).
+        case "threads": defaultActions = "check-durability@0.3,reconnect@1.0,hide-window@1.4,show-window@1.8,geometry@2.2,load-earlier:60@2.4,geometry@3.0"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -536,6 +604,26 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkSleepAndWorkerWords(stamp: stamp)
             } else if action == "check-dither" {
                 checkDither(stamp: stamp)
+            } else if action == "check-durability" {
+                checkDurabilityWords(stamp: stamp)
+            } else if action == "reconnect" {
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["reconnect": true])
+                print("action: reconnect at \(stamp)s (the pane must re-send agent.open as its viewer)")
+            } else if action == "hide-window" || action == "show-window" {
+                let visible = action == "show-window"
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["windowVisible": visible])
+                print("action: \(action) at \(stamp)s (\(visible ? "agent.open" : "agent.close") as the same viewer)")
+            } else if action.hasPrefix("rail-scroll:") {
+                let points = Double(action.dropFirst("rail-scroll:".count)) ?? 0
+                guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
+                      let scroll = Self.railScrollView(in: window.contentView) else {
+                    print("action: rail-scroll at \(stamp)s → no rail scroll view")
+                    return
+                }
+                let clip = scroll.contentView
+                clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: max(0, clip.bounds.origin.y + points)))
+                scroll.reflectScrolledClipView(clip)
+                print(String(format: "action: rail-scroll %.0f at %@s → minY=%.1f content=%.1f", points, stamp, clip.bounds.minY, scroll.documentView?.frame.height ?? 0))
             } else if action == "probe-ground" {
                 probeGround(stamp: stamp)
             } else if action.hasPrefix("worker-stop:") {
@@ -543,6 +631,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 let id = String(action.dropFirst("worker-stop:".count))
                 state.workerStop(id)
                 print("action: worker-stop \(id) at \(stamp)s (the line above must be worker.stop, not stop)")
+            } else if action.hasPrefix("load-earlier:") || action == "history" {
+                loadEarlier(action, stamp: stamp)
+            } else if let info = memoryAction(action) {
+                // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
+                // `send:` line is the command, the `memory-rail:` line what the list holds after.
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
+                print("action: \(action) at \(stamp)s")
             } else if let info = cleanupAction(action) {
                 // The rail's cleanup state (ConsoleSession.previewNotification; the root view applies it).
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
@@ -551,6 +646,59 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 performFeed(action)
             }
         }
+    }
+
+    /// `memory-forget:<id>` / `memory-restore:<id>` / `memory-edit:<id>=<text>` / `memory-segment:<state>`
+    /// as the rail's preview notification (MemoryRailList.preview runs the row's own verb closures).
+    private func memoryAction(_ action: String) -> [String: Any]? {
+        if action.hasPrefix("memory-segment:") { return ["memorySegment": String(action.dropFirst("memory-segment:".count))] }
+        for verb in ["forget", "restore", "edit"] where action.hasPrefix("memory-\(verb):") {
+            let rest = String(action.dropFirst("memory-\(verb):".count))
+            var info: [String: Any] = ["memoryVerb": verb]
+            if verb == "edit", let eq = rest.firstIndex(of: "=") {
+                info["memoryId"] = String(rest[..<eq])
+                info["memoryText"] = String(rest[rest.index(after: eq)...])
+            } else {
+                info["memoryId"] = rest
+            }
+            return info
+        }
+        return nil
+    }
+
+    /// `load-earlier:<n>` (`history` = 4): an older page for the open conversation the way
+    /// `agent.history` answers — mode `prepend`, n rows before the first the feed shows. The model
+    /// holds the page whole and raises its cap by it (AppState.prependedCount); the pane's ceiling
+    /// follows (ConversationPane.shown(loaded:)), so `shown` must grow by n — held to a flat 400 the
+    /// page sat above the fold, unseen. `geometry` before and after says the bottom stayed pinned.
+    private func loadEarlier(_ action: String, stamp: String) {
+        let n = action == "history" ? 4 : max(1, Int(action.dropFirst("load-earlier:".count)) ?? 60)
+        guard let agentId = console?.openAgentIdForPreview, let current = state.transcripts[agentId] else {
+            print("action: load-earlier at \(stamp)s → no open conversation")
+            return
+        }
+        let loadedBefore = state.prependedCount[agentId] ?? 0
+        let shownBefore = ConversationPane.shown(current.messages, loaded: loadedBefore)
+        guard let first = shownBefore.first else {
+            print("action: load-earlier at \(stamp)s → nothing shown yet")
+            return
+        }
+        var older: [AgentMessage] = []
+        for i in stride(from: n, through: 1, by: -1) {
+            older.append(AgentMessage(id: "\(agentId)-older-\(loadedBefore + i)", role: i % 2 == 0 ? .assistant : .user,
+                                      text: "Earlier message \(loadedBefore + i) of this session, loaded on request.",
+                                      at: first.at - Double(i) * 60_000, tool: nil, thinking: nil))
+        }
+        // `complete: false`: more remains before this page (the fixture never reaches the first row).
+        let page = AgentTranscript(agentId: agentId, messages: older, total: current.total, complete: false, live: current.live)
+        state.applyTranscript(page, mode: "prepend")
+        let after = state.transcripts[agentId]
+        let loadedAfter = state.prependedCount[agentId] ?? 0
+        let shownAfter = ConversationPane.shown(after?.messages ?? [], loaded: loadedAfter)
+        print("action: load-earlier \(n) at \(stamp)s → held \(current.messages.count)→\(after?.messages.count ?? -1)"
+              + " shown \(shownBefore.count)→\(shownAfter.count) loaded \(loadedBefore)→\(loadedAfter)"
+              + " first \(first.id)→\(shownAfter.first?.id ?? "nil") last \(shownAfter.last?.id ?? "nil") complete \(after?.complete ?? false)"
+              + (shownAfter.count == shownBefore.count + n ? "" : " (FAIL: the page is above the fold)"))
     }
 
     /// `check-sleep`: the pure words behind the sleep and worker rows, each named and compared
@@ -907,26 +1055,6 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             let clip = scroll.contentView
             clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: 0))
             scroll.reflectScrolledClipView(clip)
-        case "history":
-            // An older page for the open conversation, the way `agent.history` answers:
-            // a `replace` whose newest message is older than what is on screen, which
-            // AppState.applyTranscript merges in front. The feed should hold its place.
-            let openId: String? = console?.openAgentIdForPreview
-            guard let agentId = openId, let current = state.transcripts[agentId], let first = current.messages.first else { return }
-            var older: [AgentMessage] = []
-            for i in 1...4 {
-                let role: AgentRole = i % 2 == 0 ? .assistant : .user
-                let minutesBefore = Double(5 - i) * 60_000
-                older.append(AgentMessage(id: "\(agentId)-older-\(i)", role: role,
-                                          text: "Earlier message \(i) of this session, loaded on request.",
-                                          at: first.at - minutesBefore, tool: nil, thinking: nil))
-            }
-            // `complete: false`: AppState.applyTranscript only merges an older page in
-            // front while the page says more remains; a `complete: true` page replaces
-            // the transcript outright (see the report — the last page of history is
-            // always complete, so that branch needs the Model's attention).
-            let page = AgentTranscript(agentId: agentId, messages: older, total: current.total, complete: false, live: current.live)
-            state.applyTranscript(page, mode: "replace")
         case "drop-open":
             // The open session leaves the rail (its file went away, the connector
             // dropped it): the pane must close and the root forget the id.
@@ -940,6 +1068,186 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         default:
             break
         }
+    }
+
+    /// `check-durability`: the pure words behind this pass, each named and compared (run.log:
+    /// `check: ok` / `check: FAIL`) — the package has no test target, so this is where they are
+    /// pinned. The live dot and the typing face derive from status + connection (a stale tail
+    /// flag alone lights nothing); the caret gate; the feed's 400 cap keeps the newest; the rail
+    /// orders live sessions first and speaks the hint word only when it adds to the glyph; the
+    /// voice labels, accents and Switch now's rule; the memory rail's lines; every symbol exists.
+    private func checkDurabilityWords(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func agent(_ status: AgentStatus, hint: String? = nil, at: Double = 0) -> AgentInfo {
+            AgentInfo(id: "a", kind: .sessions, tool: .codex, name: "a", status: status, detail: nil, cwd: "/Users/kevinliu/gt/apps/api", updatedAt: at, messageCount: 42, hint: hint)
+        }
+        let tail = AgentTranscript(agentId: "a", messages: [], total: 0, complete: true, live: true)
+        let closed = AgentTranscript(agentId: "a", messages: [], total: 0, complete: true, live: false)
+        func live(_ t: AgentTranscript?, _ s: AgentStatus, _ connected: Bool) -> String {
+            "\(ConversationPane.isLive(transcript: t, agent: agent(s), connected: connected) ? 1 : 0)\(ConversationPane.typing(transcript: t, agent: agent(s), connected: connected) ? 1 : 0)"
+        }
+        // isLive / typing: [live, typing] per case.
+        expect("isLive: tail + connected + working → live, typing", live(tail, .working, true), "11")
+        expect("isLive: tail + connected + idle → live, not typing", live(tail, .idle, true), "10")
+        expect("isLive: tail + connected + blocked → live, not typing", live(tail, .blocked, true), "10")
+        expect("isLive: tail + connected + ended → neither (the flag is stale)", live(tail, .ended, true), "00")
+        expect("isLive: tail + connected + done → neither", live(tail, .done, true), "00")
+        expect("isLive: tail + connected + unknown → neither", live(tail, .unknown, true), "00")
+        expect("isLive: tail + DISCONNECTED + working → neither", live(tail, .working, false), "00")
+        expect("isLive: no tail + working → neither", live(closed, .working, true), "00")
+        expect("isLive: no transcript → neither", live(nil, .working, true), "00")
+        // The caret gate.
+        expect("caretsOn: live feed, session, connected", String(StreamPane.caretsOn(ledgerDay: nil, hasSession: true, connected: true)), "true")
+        expect("caretsOn: a ledger day never", String(StreamPane.caretsOn(ledgerDay: "2026-09-10", hasSession: true, connected: true)), "false")
+        expect("caretsOn: no session never", String(StreamPane.caretsOn(ledgerDay: nil, hasSession: false, connected: true)), "false")
+        expect("caretsOn: disconnected never", String(StreamPane.caretsOn(ledgerDay: nil, hasSession: true, connected: false)), "false")
+        expect("showsCaret: non-final behind a closed gate sits still", String(UtteranceRow.showsCaret(final: false, gate: false)), "false")
+        expect("showsCaret: non-final behind an open gate blinks", String(UtteranceRow.showsCaret(final: false, gate: true)), "true")
+        expect("showsCaret: a final item never", String(UtteranceRow.showsCaret(final: true, gate: true)), "false")
+        let fake = self.fake ?? FakeData(shot: "preview.png")
+        let entries = StreamBuilder.fromSnapshot(transcript: fake.live().transcript, delegations: fake.live().delegations, clearedAt: nil)
+        expect("caretId: the newest utterance, not a card", StreamFeed.caretId(entries) ?? "nil", "u8")
+        expect("caretId: nothing without utterances", StreamFeed.caretId([StreamEntry.delegation(fake.doneDelegation())]) ?? "nil", "nil")
+        // The feed's cap keeps the newest 400.
+        let long = fake.longTranscript(agentId: FakeData.endedId, count: 1_200)
+        let shown = ConversationPane.shown(long.messages)
+        expect("feed cap: 1200 → 400", String(shown.count), "400")
+        expect("feed cap: keeps the newest (the last id)", shown.last?.id ?? "nil", long.messages.last?.id ?? "?")
+        expect("feed cap: drops the oldest (the first id moves)", shown.first?.id ?? "nil", long.messages[long.messages.count - 400].id)
+        expect("feed cap: under the cap is untouched", String(ConversationPane.shown(fake.transcripts()["sessions:codex:1"]!.messages).count), "10")
+        // "Load earlier" raised the model's cap by the page (AppState.prependedCount): the view's follows.
+        expect("feed cap: grows by what Kevin loaded (400 + 60)", String(ConversationPane.shown(long.messages, loaded: 60).count), "460")
+        expect("feed cap: the loaded rows are the oldest shown", ConversationPane.shown(long.messages, loaded: 60).first?.id ?? "nil", long.messages[long.messages.count - 460].id)
+        expect("feed cap: a negative loaded count is a flat 400", String(ConversationPane.shown(long.messages, loaded: -5).count), "400")
+        expect("long transcript ends interrupted", long.messages.last?.tool?.status.rawValue ?? "nil", "interrupted")
+        // The rail: live sessions first, then the rest, each by when they last wrote; the hint word.
+        let rows = [agent(.ended, hint: "ended", at: 900), agent(.idle, hint: "quiet", at: 100), agent(.working, hint: "running", at: 500), agent(.done, hint: "archived", at: 950), agent(.blocked, hint: "blocked", at: 300)]
+        expect("rail order: live (working, blocked, idle by time) then over (done, ended by time)", AgentsRail.ordered(rows).map { "\($0.status.rawValue)@\(Int($0.updatedAt))" }.joined(separator: ","), "working@500,blocked@300,idle@100,done@950,ended@900")
+        expect("hint word: ended on ended says nothing", ConsoleFormat.hintWord(agent(.ended, hint: "ended")) ?? "nil", "nil")
+        expect("hint word: running on working says nothing", ConsoleFormat.hintWord(agent(.working, hint: "running")) ?? "nil", "nil")
+        expect("hint word: quiet on idle says nothing (the dot does)", ConsoleFormat.hintWord(agent(.idle, hint: "quiet")) ?? "nil", "nil")
+        expect("hint word: unseen on unknown", ConsoleFormat.hintWord(agent(.unknown, hint: "unseen")) ?? "nil", "unseen")
+        expect("hint word: archived on done", ConsoleFormat.hintWord(agent(.done, hint: "archived")) ?? "nil", "archived")
+        expect("hint word: resumed on a run", ConsoleFormat.hintWord(agent(.working, hint: "resumed")) ?? "nil", "resumed")
+        expect("hint word: none from an older daemon", ConsoleFormat.hintWord(agent(.idle)) ?? "nil", "nil")
+        let nowMs = 10 * 60_000.0
+        expect("agent meta: project · msgs · age (client-side) · hint", ConsoleFormat.agentMeta(agent(.unknown, hint: "unseen", at: nowMs - 2 * 60_000), now: nowMs), "api · 42 msgs · 2m · unseen")
+        expect("agent meta: no hint word on ended", ConsoleFormat.agentMeta(agent(.ended, hint: "ended", at: nowMs - 3 * 3_600_000), now: nowMs), "api · 42 msgs · 3h")
+        // Voice: the labels, the roster, the accents, the one language.
+        expect("voices: 22", String(ConsoleTheme.voices.count), "22")
+        expect("voices: cedar and marin first", ConsoleTheme.voices.prefix(2).joined(separator: ","), "cedar,marin")
+        expect("voices: no repeats", String(Set(ConsoleTheme.voices).count), "22")
+        expect("voiceLabel(cedar)", ConsoleTheme.voiceLabel("cedar"), "Cedar · English")
+        expect("voiceLabel(unknown id) keeps the id", ConsoleTheme.voiceLabel("zephyr-x"), "zephyr-x · English")
+        expect("languageLabel(en)", ConsoleTheme.languageLabel("en"), "English")
+        expect("languageLabel(en-GB) is English", ConsoleTheme.languageLabel("en-GB"), "English")
+        expect("languageLabel(xx) falls back to English", ConsoleTheme.languageLabel("xx"), "English")
+        expect("accents: american, british, none", ConsoleTheme.accents.map { "\($0.id)=\($0.label)" }.joined(separator: ","), "american=American,british=British,none=None")
+        expect("accentLabel(unknown) is the word capitalised", ConsoleTheme.accentLabel("scottish"), "Scottish")
+        expect("the language hint", ConsoleTheme.languageHint, "English at all times. A change is heard at the next wake.")
+        // Switch now: awake and the pick differs from what the session said it opened on; never paused,
+        // connecting or asleep — and never when the session did not say (that daemon has no voice.reopen).
+        var settings = fake.settings
+        settings.accent = "american"
+        var session = fake.session()
+        session.voice = "cedar"; session.accent = "american"
+        expect("needsSwitch: same voice and accent → no", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .listening)), "false")
+        settings.voice = "marin"
+        expect("needsSwitch: a new voice while awake → yes", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .listening)), "true")
+        settings.voice = "cedar"; settings.accent = "british"
+        expect("needsSwitch: a new accent while awake → yes", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .speaking)), "true")
+        expect("needsSwitch: paused → no", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .paused)), "false")
+        expect("needsSwitch: connecting → no", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .connecting)), "false")
+        expect("needsSwitch: asleep (no session) → no", String(SettingsPanel.needsSwitch(settings: settings, session: nil, phase: .asleep)), "false")
+        session.voice = nil; session.accent = nil
+        expect("needsSwitch: an older daemon that did not say → no (it has no voice.reopen either)", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .listening)), "false")
+        session.voice = "cedar"
+        expect("needsSwitch: voice said, accent not → the settings accent is assumed (no)", String(SettingsPanel.needsSwitch(settings: settings, session: session, phase: .listening)), "false")
+        // Memory: the rail's words.
+        let items = fake.memoryItems()
+        let pref = items.first { $0.id == "m_dark" }!
+        expect("memory meta: seen · age · by Kevin", MemoryFormat.meta(pref, now: fake.now), "seen 3× · 2d · by Kevin")
+        let extracted = items.first { $0.id == "m_kev" }!
+        expect("memory meta: extracted says nothing of its origin", MemoryFormat.meta(extracted, now: fake.now), "seen 5× · 12h")
+        expect("memory tooltip: kind, scores, the sources", MemoryFormat.tooltip(pref).components(separatedBy: "\n").first ?? "", "preference · importance 0.9 · confidence 0.9")
+        expect("memory empty: live", MemoryFormat.emptyLine(state: .live, query: ""), "Nothing remembered yet.")
+        expect("memory empty: forgotten", MemoryFormat.emptyLine(state: .forgotten, query: ""), "Nothing forgotten.")
+        expect("memory empty: a query", MemoryFormat.emptyLine(state: .live, query: " dentist "), "No memory matches “dentist”.")
+        expect("memory rows: only the segment's state, newest seen first, capped", MemoryFormat.rows(items, state: .live, query: "", cap: 3).map(\.id).joined(separator: ","), "m_kev,m_short,m_dark")
+        expect("memory rows (list branch): a query filters text and subjects", MemoryFormat.rows(items, state: .live, query: "dentist", cap: 30).map(\.id).joined(separator: ","), "m_dentist")
+        expect("memory rows (list branch): subjects match whatever the case", MemoryFormat.rows(items, state: .live, query: "Brevity", cap: 30).map(\.id).joined(separator: ","), "m_short")
+        expect("memory rows: forgotten lists the tombstoned", MemoryFormat.rows(items, state: .forgotten, query: "", cap: 30).map(\.id).joined(separator: ","), "m_light")
+        // The search branch keeps the daemon's ranking: a semantic hit lacks the words and still lists, first.
+        let office = items.first { $0.id == "m_office" }!, light = items.first { $0.id == "m_light" }!
+        expect("memory hits: the daemon's order kept, not re-sorted by recency", MemoryFormat.hits([office, extracted], state: .live, cap: 30).map(\.id).joined(separator: ","), "m_office,m_kev")
+        expect("memory hits: only the segment's state", MemoryFormat.hits([office, light, extracted], state: .live, cap: 30).map(\.id).joined(separator: ","), "m_office,m_kev")
+        expect("memory hits: capped from the top", MemoryFormat.hits([office, extracted, pref], state: .live, cap: 2).map(\.id).joined(separator: ","), "m_office,m_kev")
+        let theme = fake.memorySearch("theme", limit: 60) ?? []
+        expect("memory search → rail: a hit without the query's words survives", MemoryFormat.hits(theme, state: .live, cap: 30).map(\.id).joined(separator: ","), "m_dark")
+        expect("memory search → rail: that hit's text lacks the query", theme.first.map { $0.text.lowercased().contains("theme") || $0.subjects.contains { $0.contains("theme") } ? "carries it" : "lacks it" } ?? "nil", "lacks it")
+        // "work": the office (a meaning, no words in common; seen 6 d ago) ranks above gt (a substring
+        // hit in its subjects; seen 4 d ago) — a recency re-sort would flip them, a grep would drop the first.
+        let work = fake.memorySearch("work", limit: 60) ?? []
+        expect("memory search → rail: ranking first, then substring hits, none re-sorted", MemoryFormat.hits(work, state: .live, cap: 30).map(\.id).joined(separator: ","), "m_office,m_gt")
+        expect("memory used: the ids in the brain's order, unknown skipped", MemoryFormat.used(["m_short", "m_nope", "m_kev"], in: items).map(\.id).joined(separator: ","), "m_short,m_kev")
+        expect("memory list handler: live, capped", String(fake.memoryList(state: "live", limit: 2)?.count ?? -1), "2")
+        expect("memory list handler: all", String(fake.memoryList(state: "all", limit: 50)?.count ?? -1), String(items.count))
+        expect("memory search handler: live only", fake.memorySearch("mode", limit: 30)?.map(\.id).joined(separator: ",") ?? "nil", "m_dark")
+        // Now › Memory · used this turn: hidden when memory is off, whatever ids the summary still names.
+        var off = fake.memorySummary(); off.enabled = false
+        expect("used this turn: memory on lists the ids", NowPanel.usedIds(fake.memorySummary()).joined(separator: ","), "m_short,m_kev,m_diff")
+        expect("used this turn: memory off hides them", NowPanel.usedIds(off).joined(separator: ","), "")
+        expect("used this turn: no summary, nothing", NowPanel.usedIds(nil).joined(separator: ","), "")
+        let summary = fake.memorySummary()
+        expect("memory counts", ConsoleTheme.memoryCounts(summary), "7 live · 1 forgotten · 1 archived")
+        expect("memory matching: openai", ConsoleTheme.memoryMatching("openai"), "OpenAI · 512 dims")
+        expect("memory matching: keyword", ConsoleTheme.memoryMatching("keyword"), "keyword · no key")
+        expect("learned line: ago", SettingsPanel.learnedLine(summary, now: fake.now), "learned 12m ago")
+        var fresh = summary; fresh.lastRunAt = nil; fresh.pending = 0
+        expect("learned line: not yet", SettingsPanel.learnedLine(fresh, now: fake.now), "not learned yet")
+        expect("hidden counts line", SettingsPanel.hiddenCountsLine(summary), "1 forgotten · 1 archived")
+        fresh.pending = 2
+        expect("pending line", SettingsPanel.pendingLine(fresh), "2 waiting")
+        expect("last run line", summary.lastRun.map(SettingsPanel.lastRunLine) ?? "nil", "responses · +3 · ~1 · 4 same · 1 refused · 1.8 s")
+        expect("memory state words", [MemoryState.live, .forgotten, .merged, .archived].map(ConsoleTheme.memoryStateLabel).joined(separator: ","), "Live,Forgotten,Merged,Archived")
+        // Never the verb: the hint says "nothing is deleted" on purpose; no control offers "Delete".
+        expect("no Console string offers the verb Delete", [ConsoleTheme.memoryForgetHint, ConsoleTheme.memoryBudgetHint, ConsoleTheme.languageHint].contains { $0.contains("Delete") } ? "offers it" : "never", "never")
+        expect("the forget hint says nothing is deleted", ConsoleTheme.memoryForgetHint.contains("nothing is deleted") ? "says so" : "silent", "says so")
+        expect("the forget hint", ConsoleTheme.memoryForgetHint, "Forget hides it from Jarhead; Jarhead's own record keeps it (nothing is deleted).")
+        // Every symbol this pass draws exists on this macOS.
+        let symbols = MemoryKind.allCases.map(ConsoleTheme.memorySymbol) + ["stop.circle.fill", "magnifyingglass", "ellipsis"]
+        let missing = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        expect("SF symbols exist", missing.isEmpty ? "all \(symbols.count)" : "missing \(missing.joined(separator: ","))", "all \(symbols.count)")
+        expect("memory kinds have distinct symbols", String(Set(MemoryKind.allCases.map(ConsoleTheme.memorySymbol)).count), String(MemoryKind.allCases.count))
+        // The status table: ended settles grey with the stop symbol, never live.
+        let ended = ConsoleTheme.status(.ended)
+        expect("status(.ended): stop symbol, not live", "\(ended.symbol ?? "dot") \(ended.live)", "stop.circle.fill false")
+        // The wire: opens and closes name the viewer.
+        let open = EngineCommand.agentOpenAs(agentId: "sessions:codex:1", viewer: "pane-1").json
+        expect("agent.open names its viewer", "\(open["type"] as? String ?? "") \(open["viewer"] as? String ?? "")", "agent.open pane-1")
+        expect("voice.reopen on the wire", EngineCommand.voiceReopen.json["type"] as? String ?? "", "voice.reopen")
+        expect("memory.forget on the wire", "\(EngineCommand.memoryForget(id: "m_1").json["type"] as? String ?? "") \(EngineCommand.memoryForget(id: "m_1").json["id"] as? String ?? "")", "memory.forget m_1")
+        let edit = EngineCommand.memoryEdit(id: "m_1", text: "Kevin prefers tea", kind: nil).json
+        expect("memory.edit without a kind sends none", edit["kind"] == nil ? "no kind" : "kind", "no kind")
+        expect("settings patch carries memory/accent/language", SettingsPatch(language: "en", accent: "british", memory: false).json.keys.sorted().joined(separator: ","), "accent,language,memory")
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (durability) at \(stamp)s")
+    }
+
+    /// The right rail's scroll view: the one whose width is the rail's.
+    private static func railScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view = view else { return nil }
+        var found: [NSScrollView] = []
+        func walk(_ v: NSView) {
+            if let s = v as? NSScrollView { found.append(s) }
+            v.subviews.forEach(walk)
+        }
+        walk(view)
+        return found.first { abs($0.frame.width - ConsoleLayout.rightRailWidth) < 2 }
     }
 
     /// The stream's scroll view: the widest one in the window (the rails are narrower).
@@ -1072,21 +1380,32 @@ struct FakeData {
                     secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false))
     }
 
+    /// The ended Codex thread the `threads` scenario steps into: no process owns it, its last
+    /// tool call never answered (`interrupted`), and its tail flag is stale — the way a pane
+    /// finds a transcript after a daemon restart.
+    static let endedId = "sessions:codex:w2p1"
+
     /// The rail's sessions. `tool` is what the connector says; the two Claude ids
     /// without a tool prefix (`sessions:cc:*`) rely on it, the rest would resolve
     /// from their ids alone. Details read the way the sessions connector writes
-    /// them — "tool · msgs · dir · hint" — so the Console's parsing gets exercised.
-    /// The two sessions the conversation scenarios step into live in ~/gt, which
-    /// exists on this Mac, so their Reveal shows.
+    /// them — "tool · msgs · dir · hint", never a relative time (the rail computes
+    /// the age from `updatedAt`; a time in the detail churned a snapshot a second) —
+    /// so the Console's parsing gets exercised. `hint` is the connector's one word
+    /// on why the status is what it is. The two sessions the conversation scenarios
+    /// step into live in ~/gt, which exists on this Mac, so their Reveal shows.
     func agents() -> [AgentInfo] {
         [
-            AgentInfo(id: "sessions:cc:1", kind: .sessions, tool: .claude, name: "jarvis · console", status: .working, detail: "claude · 128 msgs · mac · editing UI/Console", cwd: "/Users/kevinliu/jarvis/apps/mac", updatedAt: ago(120), messageCount: 128),
-            AgentInfo(id: "sessions:cc:2", kind: .sessions, tool: .claude, name: "kevin-wiki", status: .idle, detail: "claude · 42 msgs · kevin-wiki · waiting for input", cwd: "/Users/kevinliu/Documents/GitHub/kevin-wiki", updatedAt: ago(31 * 60), messageCount: 42),
-            AgentInfo(id: "sessions:codex:1", kind: .sessions, name: "gt · api hotfix", status: .done, detail: "codex · 57 msgs · gt · opened PR #412", cwd: "/Users/kevinliu/gt", updatedAt: ago(48 * 60), messageCount: 57),
+            AgentInfo(id: "sessions:cc:1", kind: .sessions, tool: .claude, name: "jarvis · console", status: .working, detail: "claude · 128 msgs · mac · editing UI/Console", cwd: "/Users/kevinliu/jarvis/apps/mac", updatedAt: ago(120), messageCount: 128, hint: "running"),
+            AgentInfo(id: "sessions:cc:2", kind: .sessions, tool: .claude, name: "kevin-wiki", status: .idle, detail: "claude · 42 msgs · kevin-wiki · waiting for input", cwd: "/Users/kevinliu/Documents/GitHub/kevin-wiki", updatedAt: ago(31 * 60), messageCount: 42, hint: "quiet"),
+            AgentInfo(id: "sessions:codex:1", kind: .sessions, name: "gt · api hotfix", status: .done, detail: "codex · 57 msgs · gt · opened PR #412", cwd: "/Users/kevinliu/gt", updatedAt: ago(48 * 60), messageCount: 57, hint: "archived"),
             AgentInfo(id: "claude-code:jarhead", kind: .claudeCode, name: "brain", status: .working, detail: "Delegation 5knl2 in flight", cwd: "/Users/kevinliu", updatedAt: ago(3)),
-            AgentInfo(id: "sessions:claude:w1p2", kind: .sessions, name: "gt · api auth", status: .blocked, detail: "claude · 61 msgs · gt · needs Kevin's yes or no: Bash — pnpm test --filter auth", cwd: "/Users/kevinliu/gt", updatedAt: ago(6 * 60), messageCount: 61),
+            AgentInfo(id: "sessions:claude:w1p2", kind: .sessions, name: "gt · api auth", status: .blocked, detail: "claude · 61 msgs · gt · needs Kevin's yes or no: Bash — pnpm test --filter auth", cwd: "/Users/kevinliu/gt", updatedAt: ago(6 * 60), messageCount: 61, hint: "blocked"),
             AgentInfo(id: "sessions:claude:w1p1", kind: .sessions, name: "gt · api tests", status: .done, detail: "claude · 33 msgs · api · pnpm test — 84 passed", cwd: "/Users/kevinliu/gt/apps/api", updatedAt: ago(7 * 60), messageCount: 33),
-            AgentInfo(id: "sessions:codex:w2p1", kind: .sessions, name: "gt · sdk", status: .unknown, detail: "codex · ~12 msgs · sdk · no output for 40 min", cwd: "/Users/kevinliu/gt/packages/sdk", updatedAt: ago(40 * 60), messageCount: 12),
+            // Over: its `codex exec` was killed mid-tool 40 minutes ago; the lease made it `ended`
+            // at the next poll and the engine flipped the open call to `interrupted`.
+            AgentInfo(id: Self.endedId, kind: .sessions, name: "gt · sdk", status: .ended, detail: "codex · ~1.2k msgs · sdk", cwd: "/Users/kevinliu/gt/packages/sdk", updatedAt: ago(40 * 60), messageCount: 1_200, hint: "ended"),
+            // Degraded evidence (ps/lsof timed out): unknown, not ended — the glyph is the question mark.
+            AgentInfo(id: "sessions:codex:w2p2", kind: .sessions, name: "gt · web perf", status: .unknown, detail: "codex · 9 msgs · web", cwd: "/Users/kevinliu/gt/apps/web", updatedAt: ago(55 * 60), messageCount: 9, hint: "unseen"),
             AgentInfo(id: "sessions:codex:thread-9", kind: .sessions, name: "Landing refresh", status: .offline, detail: "codex · 210 msgs · web · archived", cwd: "/Users/kevinliu/gt/apps/web", updatedAt: ago(2 * 3600), messageCount: 210),
             AgentInfo(id: "sessions:cursor:a7f1", kind: .sessions, tool: .cursor, name: "gt · web polish", status: .idle, detail: "cursor · 18 msgs · web · waiting for input", cwd: "/Users/kevinliu/gt/apps/web", updatedAt: ago(52 * 60), messageCount: 18),
             AgentInfo(id: "sessions:gemini:c02e", kind: .sessions, tool: .gemini, name: "docs sweep", status: .done, detail: "gemini · 9 msgs · docs · done", cwd: "/Users/kevinliu/gt/docs", updatedAt: ago(3 * 3600), messageCount: 9),
@@ -1145,7 +1464,121 @@ struct FakeData {
             msg("x10", .assistant, "Anytime.", x0 + 122_000),
         ], total: 57, complete: false, live: false)
 
-        return [claude.agentId: claude, codex.agentId: codex]
+        // gt · sdk — the ended thread's tail as the engine last sent it: the `live: true` is STALE
+        // (the daemon that set it is gone), which is exactly why the pane derives the dot from
+        // status + connection and never from this flag alone.
+        let e0 = ago(41 * 60)
+        let ended = AgentTranscript(agentId: Self.endedId, messages: [
+            msg("e1", .user, "Bump the sdk's peer range for React 19 and run its tests.", e0),
+            msg("e2", .assistant, "The peer range and the test matrix both name React 18; the change is two files and a rerun.", e0 + 3_000, thinking: true),
+            msg("e3", .tool, "", e0 + 5_000, tool: call("apply_patch", "*** Update File: packages/sdk/package.json\n@@\n-    \"react\": \"^18\"\n+    \"react\": \"^18 || ^19\"", "Success. Updated the following files:\nM packages/sdk/package.json")),
+            msg("e4", .assistant, "Peer range widened. Running the sdk suite.", e0 + 8_000),
+            msg("e5", .tool, "", e0 + 9_000, tool: call("shell", "pnpm test --filter sdk", nil, .interrupted)),
+        ], total: 1_200, complete: false, live: true)
+
+        return [claude.agentId: claude, codex.agentId: codex, ended.agentId: ended]
+    }
+
+    /// A long conversation for the feed's cap: `count` messages a minute apart — user and
+    /// assistant turns, a folded thought every fifth, a finished tool call every seventh — and,
+    /// last, the ended thread's interrupted call. `live: true` is stale on purpose (see `transcripts`).
+    func longTranscript(agentId: String, count: Int) -> AgentTranscript {
+        let t0 = ago(Double(count + 40) * 60)
+        var messages: [AgentMessage] = []
+        messages.reserveCapacity(count)
+        for i in 0..<(count - 1) {
+            let at = t0 + Double(i) * 60_000
+            let id = "long-\(i)"
+            if i % 7 == 6 {
+                messages.append(AgentMessage(id: id, role: .tool, text: "", at: at,
+                                             tool: AgentToolCall(name: i % 2 == 0 ? "shell" : "apply_patch", input: "pnpm test --filter sdk -- --grep case-\(i)", output: "Tests  \(12 + i % 5) passed", status: .done), thinking: nil))
+            } else if i % 5 == 4 {
+                messages.append(AgentMessage(id: id, role: .assistant, text: "Case \(i): the fixture's locale list needs the new entry before the snapshot is regenerated.", at: at, tool: nil, thinking: true))
+            } else if i % 2 == 0 {
+                messages.append(AgentMessage(id: id, role: .user, text: "Next: case \(i) of the sdk matrix — same treatment.", at: at, tool: nil, thinking: nil))
+            } else {
+                messages.append(AgentMessage(id: id, role: .assistant, text: "Case \(i) done: the peer range holds and the snapshot matches. Moving on.", at: at, tool: nil, thinking: nil))
+            }
+        }
+        messages.append(AgentMessage(id: "long-last", role: .tool, text: "", at: t0 + Double(count - 1) * 60_000,
+                                     tool: AgentToolCall(name: "shell", input: "pnpm test --filter sdk", output: nil, status: .interrupted), thinking: nil))
+        return AgentTranscript(agentId: agentId, messages: messages, total: count, complete: false, live: true)
+    }
+
+    // MARK: memory (Snapshot.memory; `memory.list` / `memory.search`)
+
+    /// What the Console's counts and the Now rail read (Snapshot.memory): seven live items, one
+    /// forgotten, one archived; OpenAI matching; a run twelve minutes ago and one conversation
+    /// waiting for a quiet moment; the three lines the last delegation was given.
+    func memorySummary() -> MemorySummary {
+        MemorySummary(enabled: true, count: 7, forgotten: 1, archived: 1, embeddings: "openai", pending: 1, lastRunAt: ago(12 * 60),
+                      lastRun: MemorySummary.LastRun(extractor: "responses", added: 3, updated: 1, noop: 4, refused: 1, ms: 1_800),
+                      budgetUsed: MemorySummary.BudgetUsed(brain: 180, voice: 96),
+                      lastUsedIds: ["m_short", "m_kev", "m_diff"])
+    }
+
+    /// The store, every state: what `memory.list all` would answer. Texts are the extractor's
+    /// third-person sentences; one Kevin asked for outright (origin kevin), one superseded by its
+    /// reversal (forgotten), one episode that decayed (archived).
+    func memoryItems() -> [MemoryItem] {
+        func item(_ id: String, _ kind: MemoryKind, _ text: String, subjects: [String], importance: Double, confidence: Double,
+                  seen: Int, lastSeen: Double, state: MemoryState = .live, origin: String = "extracted", sources: [(Double, String)]) -> MemoryItem {
+            MemoryItem(id: id, kind: kind, text: text, subjects: subjects, confidence: confidence, importance: importance,
+                       createdAt: sources.first?.0 ?? lastSeen, lastSeenAt: lastSeen, seenCount: seen,
+                       sources: sources.map { MemorySource(sessionId: FakeData.chainPausedId, at: $0.0, type: $0.1) },
+                       state: state, mergedInto: nil, supersedes: nil, origin: origin)
+        }
+        let h = 3_600.0, d = 24 * h
+        return [
+            item("m_kev", .fact, "Kevin goes by Kev.", subjects: ["name"], importance: 1.0, confidence: 0.95, seen: 5, lastSeen: ago(12 * h),
+                 sources: [(ago(6 * d), "heard"), (ago(12 * h), "heard")]),
+            item("m_short", .preference, "Kevin prefers short answers; one sentence when one will do.", subjects: ["answers", "brevity"], importance: 0.9, confidence: 0.9, seen: 4, lastSeen: ago(26 * h),
+                 sources: [(ago(5 * d), "heard"), (ago(26 * h), "heard")]),
+            item("m_dark", .preference, "Kevin prefers dark mode.", subjects: ["appearance"], importance: 0.9, confidence: 0.9, seen: 3, lastSeen: ago(2 * d), origin: "kevin",
+                 sources: [(ago(3 * d), "kevin"), (ago(2 * d), "heard")]),
+            item("m_diff", .procedure, "How Kevin likes it done: read the diff before saying a PR is fine.", subjects: ["review", "pr"], importance: 0.8, confidence: 0.85, seen: 2, lastSeen: ago(3 * d),
+                 sources: [(ago(3 * d), "heard")]),
+            item("m_gt", .fact, "Kevin's main project is gt, the General Translation monorepo.", subjects: ["gt", "work"], importance: 0.7, confidence: 0.9, seen: 6, lastSeen: ago(4 * d),
+                 sources: [(ago(9 * d), "request"), (ago(4 * d), "heard")]),
+            item("m_dentist", .contact, "Kevin's dentist is Dr. Alvarez, on 3rd Street.", subjects: ["dentist", "alvarez"], importance: 0.5, confidence: 0.8, seen: 1, lastSeen: ago(5 * d), origin: "kevin",
+                 sources: [(ago(5 * d), "kevin")]),
+            item("m_office", .place, "Kevin's office is the desk by the window; the notch Mac lives there.", subjects: ["office", "desk"], importance: 0.4, confidence: 0.7, seen: 1, lastSeen: ago(6 * d),
+                 sources: [(ago(6 * d), "heard")]),
+            // Reversed by m_dark two days later: the newer superseded it, so it is out of the prompts.
+            item("m_light", .preference, "Kevin prefers light mode.", subjects: ["appearance"], importance: 0.9, confidence: 0.7, seen: 1, lastSeen: ago(3 * d), state: .forgotten,
+                 sources: [(ago(3 * d), "heard")]),
+            // A dated thing worth little a week later: decayed out of the prompts, still restorable.
+            item("m_ep", .episode, "On Sep 8 Kevin shipped the api hotfix (PR #412) with Codex.", subjects: ["gt", "hotfix"], importance: 0.3, confidence: 0.9, seen: 1, lastSeen: ago(4 * d), state: .archived,
+                 sources: [(ago(4 * d), "summary")]),
+        ]
+    }
+
+    /// `memory.list {state, limit}`: that state's items ("all" for every state), newest seen first, capped.
+    func memoryList(state: String, limit: Int) -> [MemoryItem]? {
+        let all = memoryItems().sorted { $0.lastSeenAt > $1.lastSeenAt }
+        let picked = state == "all" ? all : all.filter { $0.state.rawValue == state }
+        return Array(picked.prefix(max(1, min(limit, 200))))
+    }
+
+    /// `memory.search {query, limit}`: scored like the daemon's (cosine + substring, best first) —
+    /// so a hit need not carry the words. The stand-in for the embedding: a few meanings the
+    /// fixture "knows" ("theme" → dark mode, "terse" → short answers, "teeth" → the dentist, "work" →
+    /// the office), ranked above the substring hits; live items only, in score order (not recency).
+    static let semanticHits: [String: [String]] = ["theme": ["m_dark"], "terse": ["m_short"], "brief": ["m_short"], "teeth": ["m_dentist"], "work": ["m_office"]]
+
+    func memorySearch(_ query: String, limit: Int) -> [MemoryItem]? {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return [] }
+        let live = memoryItems().filter { $0.state == .live }
+        var ranked: [MemoryItem] = []
+        for id in Self.semanticHits[q] ?? [] {
+            if let hit = live.first(where: { $0.id == id }) { ranked.append(hit) }
+        }
+        for item in live.sorted(by: { $0.lastSeenAt > $1.lastSeenAt })
+        where !ranked.contains(where: { $0.id == item.id }) && (item.text.lowercased().contains(q) || item.subjects.contains { $0.lowercased().contains(q) }) {
+            ranked.append(item)
+        }
+        return Array(ranked.prefix(max(1, min(limit, 200))))
     }
 
     func connectors() -> [ConnectorHealth] {
@@ -1286,6 +1719,8 @@ struct FakeData {
                          problems: ["Accessibility permission denied — hands can click but cannot read the UI tree."], brainReady: true, handsReady: false, setup: setup)
         // What the trash holds, for the Trash head's folder and Settings › Retention.
         s.trash = trash
+        // What Jarhead remembers, and the three lines the last delegation was given (the Now rail).
+        s.memory = memorySummary()
         return s
     }
 

@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { logger } from "@jarhead/core";
-import type { AgentInfo, AgentStatus, ConnectorHealth } from "@jarhead/protocol";
+import type { AgentHint, AgentInfo, AgentStatus, ConnectorHealth } from "@jarhead/protocol";
 import { defaultCanUseTool } from "../claude-code/connector.ts";
 import type { ClaudeSession, PermissionDecision, SdkLike } from "../claude-code/session.ts";
 import { agentId, splitAgentId, type AgentConnector, type ReadOptions, type SendResult, type StartOptions, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "../types.ts";
@@ -12,6 +12,7 @@ import { ClaudeStore, defaultClaudeProjectsRoot } from "./claude-store.ts";
 import { CodexStore, defaultCodexRoot } from "./codex-store.ts";
 import { ClaudeTranscriptParser } from "./claude-transcript.ts";
 import { CodexTranscriptParser } from "./codex-transcript.ts";
+import { ACTIVE_WINDOW_MS, DEFAULT_LEASES, POLL_ACTIVE_MS, POLL_QUIET_MS, POLL_STUCK_MS, deriveStatus, type Evidence, type Leases } from "./liveness.ts";
 import { TranscriptSource } from "./transcript.ts";
 import { detectOthers } from "./others.ts";
 import { listAgentProcesses, type AgentProcess, type ExecFn, type ProcessSnapshot } from "./processes.ts";
@@ -45,6 +46,13 @@ const log = logger("agents.sessions");
  * files Codex holds open say who owns what, and a snapshot that could not be taken in
  * full refuses rather than guesses, for Codex as for Claude Code (`codex queue` files a
  * message whether or not anyone will run it, so it cannot stand in for the answer).
+ *
+ * Status is derived, never latched (liveness.ts): `working` is a 30 s lease renewed by
+ * turn-bearing writes, a session whose process is gone is `ended` at the next poll, and
+ * `detail` carries no clock — the "last active 12m ago" text used to change once a
+ * minute per session and push a snapshot to the app for each. The poll itself runs at
+ * 5 s while anything is active and 20 s when nothing is, and a list() that never
+ * settles is abandoned after 60 s rather than freezing every status.
  */
 
 export interface SessionsConnectorOptions {
@@ -63,15 +71,15 @@ export interface SessionsConnectorOptions {
   /** Full override of process discovery (tests); such a snapshot is never degraded. */
   readonly processes?: () => Promise<AgentProcess[]>;
   readonly now?: () => number;
-  /** subscribe() poll interval. Default 5 s. */
+  /** subscribe() poll interval while a session is active (default 5 s), when nothing is (default 20 s; 4× pollMs when only that is given), and how long one list() may hang before it is abandoned (default 60 s). */
   readonly pollMs?: number;
+  readonly pollQuietMs?: number;
+  readonly pollStuckMs?: number;
   /** waitSettled() mtime poll interval and quiet window. Defaults 1 s / 5 s. */
   readonly settlePollMs?: number;
   readonly settleQuietMs?: number;
-  /** A live session whose file changed this recently is "working". Default 90 s. */
-  readonly workingWindowMs?: number;
-  /** A session with no process is "done" until this old, then "unknown". Default 6 h. */
-  readonly doneWindowMs?: number;
+  /** The status leases (liveness.ts): working 30 s, finishing 30 s, run stall 5 min. */
+  readonly leases?: Partial<Leases>;
   /** How long a ps/lsof snapshot is reused across list()/health() calls. Default 5 s. */
   readonly processCacheMs?: number;
   /** How long a resumed session waits for Kevin's yes/no before the tool is denied. Default 5 min. */
@@ -90,19 +98,16 @@ export interface SessionsConnectorOptions {
   readonly applicationsDir?: string;
   /** System bin dirs CLI discovery searches last (default homebrew, /usr/local/bin); tests pass []. */
   readonly cliSystemDirs?: readonly string[];
-  /** Codex: wall clock per headless turn (default 15 min), time to report a new thread's id (30 s), `codex queue` cap (15 s), SIGINT→SIGKILL grace (3 s). */
+  /** Codex: wall clock per headless turn (default 15 min), time to report a new thread's id (30 s), `codex queue` cap (15 s), SIGINT→SIGKILL grace (3 s), how long a completed turn's child may keep flushing before the run reads idle (30 s). */
   readonly codexTurnBudgetMs?: number;
   readonly codexStartTimeoutMs?: number;
   readonly codexQueueTimeoutMs?: number;
   readonly codexKillGraceMs?: number;
-  /** watch(): stat interval when fs.watch cannot be used (default 1 s) and the burst window (default 50 ms). */
+  readonly codexFinishingMaxMs?: number;
+  /** watch(): stat interval when fs.watch cannot be used (default 1 s), the burst window (default 50 ms), and how long a followed file may be missing before the tail ends (default 10 s). */
   readonly tailPollMs?: number;
   readonly tailCoalesceMs?: number;
-}
-
-export interface StatusWindows {
-  readonly workingWindowMs: number;
-  readonly doneWindowMs: number;
+  readonly tailGoneAfterMs?: number;
 }
 
 /** lstart has one-second resolution; allow that much slack when matching a process to a file. */
@@ -162,16 +167,15 @@ function processFromOwner(o: SessionOwner): AgentProcess {
   };
 }
 
-/** Pure status rule shared by list() and tests. */
-export function statusFor(s: DiscoveredSession, procs: readonly AgentProcess[], now: number, w: StatusWindows, owners: readonly SessionOwner[] = []): { status: AgentStatus; hint: string; live: AgentProcess[] } {
-  if (s.archived) return { status: "done", hint: "archived", live: [] };
+/**
+ * Status of a discovered session (no run of ours on it): the evidence — owners, the
+ * snapshot's health, the file's last turn-bearing write — handed to `deriveStatus`.
+ * Shared by list() and tests.
+ */
+export function statusFor(s: DiscoveredSession, procs: readonly AgentProcess[], now: number, leases: Leases = DEFAULT_LEASES, owners: readonly SessionOwner[] = [], degraded?: string): { status: AgentStatus; hint: AgentHint; live: AgentProcess[] } {
   const live = liveProcessesFor(s, procs, owners);
-  if (live.length > 0) {
-    const working = now - s.mtimeMs <= w.workingWindowMs;
-    return { status: working ? "working" : "idle", hint: working ? "running" : "running, quiet", live };
-  }
-  const since = ago(s.lastActivityAt, now);
-  return { status: now - s.lastActivityAt <= w.doneWindowMs ? "done" : "unknown", hint: `last active ${since}`, live };
+  const evidence: Evidence = { archived: s.archived, owners: live.length, degraded, mtimeMs: s.mtimeMs, lastTurn: s.lastTurn, run: undefined, ask: false };
+  return { ...deriveStatus(evidence, now, leases), live };
 }
 
 export function sessionName(s: DiscoveredSession): string {
@@ -189,10 +193,15 @@ export function formatMessageCount(count: number, exact: boolean): string {
   return `~${count} msgs`;
 }
 
-export function sessionDetail(s: DiscoveredSession, hint: string): string {
+/**
+ * "codex · 2.3k msgs · gt-cloud", plus what a run of ours is doing when there is one.
+ * Never a relative time: the rail formats that from `updatedAt` itself, so a detail
+ * only changes when the session does (the `hint` word says why the status is what it is).
+ */
+export function sessionDetail(s: DiscoveredSession, extra?: string): string {
   const msgs = formatMessageCount(s.messageCount, s.messageCountExact);
   const dir = s.cwd ? basename(s.cwd) : undefined;
-  return [s.tool, msgs, dir, hint].filter((x): x is string => Boolean(x)).join(" · ");
+  return [s.tool, msgs, dir, extra].filter((x): x is string => Boolean(x)).join(" · ");
 }
 
 /** "sessions:claude:<id>" → { tool, localId }; undefined for anything else. */
@@ -270,8 +279,10 @@ export class SessionsConnector implements AgentConnector {
   private readonly home: string;
   private readonly registryDir: string;
   private readonly now: () => number;
-  private readonly windows: StatusWindows;
+  private readonly leases: Leases;
   private readonly pollMs: number;
+  private readonly pollQuietMs: number;
+  private readonly pollStuckMs: number;
   private readonly settlePollMs: number;
   private readonly settleQuietMs: number;
   private readonly processCacheMs: number;
@@ -311,8 +322,10 @@ export class SessionsConnector implements AgentConnector {
     };
     this.claude = new ClaudeStore({ ...storeOpts, root: opts.claudeRoot ?? defaultClaudeProjectsRoot(this.home) });
     this.codex = new CodexStore({ ...storeOpts, root: opts.codexRoot ?? defaultCodexRoot(this.home) });
-    this.windows = { workingWindowMs: opts.workingWindowMs ?? 90_000, doneWindowMs: opts.doneWindowMs ?? 6 * 3_600_000 };
-    this.pollMs = opts.pollMs ?? 5_000;
+    this.leases = { ...DEFAULT_LEASES, ...opts.leases };
+    this.pollMs = opts.pollMs ?? POLL_ACTIVE_MS;
+    this.pollQuietMs = opts.pollQuietMs ?? (opts.pollMs !== undefined ? opts.pollMs * 4 : POLL_QUIET_MS);
+    this.pollStuckMs = opts.pollStuckMs ?? POLL_STUCK_MS;
     this.settlePollMs = opts.settlePollMs ?? 1_000;
     this.settleQuietMs = opts.settleQuietMs ?? 5_000;
     this.processCacheMs = opts.processCacheMs ?? 5_000;
@@ -339,6 +352,7 @@ export class SessionsConnector implements AgentConnector {
         ...(opts.codexStartTimeoutMs !== undefined ? { startTimeoutMs: opts.codexStartTimeoutMs } : {}),
         ...(opts.codexQueueTimeoutMs !== undefined ? { queueTimeoutMs: opts.codexQueueTimeoutMs } : {}),
         ...(opts.codexKillGraceMs !== undefined ? { killGraceMs: opts.codexKillGraceMs } : {}),
+        ...(opts.codexFinishingMaxMs !== undefined ? { finishingMaxMs: opts.codexFinishingMaxMs } : {}),
       }),
     };
   }
@@ -393,19 +407,31 @@ export class SessionsConnector implements AgentConnector {
   private info(s: DiscoveredSession, snap: Snapshot): AgentInfo {
     const id = agentId(this.kind, `${s.tool}:${s.id}`);
     const run = this.runs.get(runKey(s.tool, s.id));
+    const now = this.now();
     if (run && run.status !== "offline") {
       // An open question is "blocked" whatever the driver says: its own flag clears when
       // the first of several parallel asks is answered, while the next is still waiting.
       const ask = s.tool === "claude" ? this.headAsk(s.id) : undefined;
-      const hint = ask
+      const extra = ask
         ? `needs Kevin's yes or no: ${ask.toolName}${ask.summary ? ` — ${ask.summary}` : ""}`
         : run.statusDetail
           ? `resumed: ${run.statusDetail}`
           : "resumed by Jarhead";
-      return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status: ask ? "blocked" : run.status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt), messageCount: s.messageCount };
+      const { status, hint } = deriveStatus(this.runEvidence(s, run, snap.degraded), now, this.leases);
+      return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s, extra), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: Math.max(s.lastActivityAt, run.lastActivityAt), messageCount: s.messageCount, hint };
     }
-    const { status, hint } = statusFor(s, snap.processes, this.now(), this.windows, snap.owners);
-    return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s, hint), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt, messageCount: s.messageCount };
+    const { status, hint } = statusFor(s, snap.processes, now, this.leases, snap.owners, snap.degraded);
+    return { id, kind: this.kind, tool: s.tool, name: sessionName(s), status, detail: sessionDetail(s), ...(s.cwd ? { cwd: s.cwd } : {}), updatedAt: s.lastActivityAt, messageCount: s.messageCount, hint };
+  }
+
+  /**
+   * Evidence for a session this process drives: the run's own status and last event, and
+   * whether a question is open for Kevin. One place, so the rail (`info`) and `waitSettled`
+   * read the same rule — a run whose stream went silent past `runStallMs` is `unknown` to both.
+   */
+  private runEvidence(s: DiscoveredSession, run: RunHandle, degraded: string | undefined): Evidence {
+    const ask = s.tool === "claude" ? this.headAsk(s.id) !== undefined : false;
+    return { archived: s.archived, owners: 1, degraded, mtimeMs: s.mtimeMs, lastTurn: s.lastTurn, run: { status: run.status, detail: run.statusDetail, since: run.lastActivityAt }, ask };
   }
 
   /**
@@ -523,6 +549,7 @@ export class SessionsConnector implements AgentConnector {
         storeCount: () => this.lastListed.get(agentId(this.kind, `${s.tool}:${s.id}`))?.session.messageCount ?? s.messageCount,
         ...(this.opts.tailPollMs !== undefined ? { pollMs: this.opts.tailPollMs } : {}),
         ...(this.opts.tailCoalesceMs !== undefined ? { coalesceMs: this.opts.tailCoalesceMs } : {}),
+        ...(this.opts.tailGoneAfterMs !== undefined ? { goneAfterMs: this.opts.tailGoneAfterMs } : {}),
       });
       this.sources.set(key, source);
     }
@@ -545,13 +572,48 @@ export class SessionsConnector implements AgentConnector {
    * function is called. Deltas carry messages created or changed: a tool call appears
    * first as running and again, same id, with its output. A thread started here whose
    * file is not on disk yet is looked for again every second, then followed from its
-   * first line. `onEnd` hears when there is no such session (any more).
+   * first line. `onEnd` hears when there is no such session (any more), or when the
+   * tail stopped: the file was replaced, truncated, or gone for 10 s. Gone is looked
+   * into once first — Codex archives a thread by moving its rollout, and a moved file
+   * is followed on from the same byte with no gap and no signal.
    */
   watch(id: string, onDelta: (delta: TranscriptDelta) => void, onEnd?: (reason: string) => void): () => void {
     let stop: (() => void) | undefined;
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let looks = 0;
+    let moved = false;
+    const end = (reason: string): void => {
+      if (closed) return;
+      closed = true;
+      log.info(`watch ${id}: ended (${reason})`);
+      onEnd?.(reason);
+    };
+    const follow = (source: TranscriptSource, fromStart: boolean): void => {
+      stop = source.follow(onDelta, {
+        fromStart,
+        onEnd: (reason) => {
+          if (closed) return;
+          if (reason !== "gone" || moved) {
+            end(reason);
+            return;
+          }
+          moved = true;
+          this.sourceFor(id)
+            .then(({ source: next, replaced }) => {
+              if (closed) return;
+              if (!replaced || next.path === source.path) {
+                end("gone");
+                return;
+              }
+              log.info(`watch ${id}: file moved to ${basename(next.path)}; following on`);
+              next.continueFrom(source);
+              follow(next, false);
+            })
+            .catch(() => end("gone"));
+        },
+      });
+    };
     const attempt = (): void => {
       looks += 1;
       this.sourceFor(id)
@@ -566,12 +628,9 @@ export class SessionsConnector implements AgentConnector {
           }
           // A file that took the place of the placeholder was never shown: replay it from
           // its first line (unless a page of it was served meanwhile, e.g. by a reload).
-          stop = source.follow(onDelta, { fromStart: replaced && !source.served });
+          follow(source, replaced && !source.served);
         })
-        .catch((e: unknown) => {
-          log.debug(`watch ${id}: ${(e as Error).message}`);
-          if (!closed) onEnd?.((e as Error).message);
-        });
+        .catch((e: unknown) => end((e as Error).message));
     };
     attempt();
     return () => {
@@ -579,6 +638,20 @@ export class SessionsConnector implements AgentConnector {
       if (timer) clearTimeout(timer);
       stop?.();
     };
+  }
+
+  /**
+   * The session's process is gone: whatever its open conversation still shows as a
+   * running tool call was cut off. The changed messages, for the pane that is open;
+   * undefined when no conversation is open for it or nothing was running.
+   */
+  async settle(id: string): Promise<TranscriptDelta | undefined> {
+    const parsed = parseSessionsAgentId(id);
+    if (!parsed) throw new TypeError(`not a sessions agent id: ${id}`);
+    const source = this.sources.get(runKey(parsed.tool, parsed.localId));
+    if (!source) return undefined;
+    const messages = source.interruptOpenCalls();
+    return messages.length ? { messages, total: source.total } : undefined;
   }
 
   async send(id: string, text: string): Promise<SendResult> {
@@ -741,6 +814,7 @@ export class SessionsConnector implements AgentConnector {
       messageCount: prompt.trim() ? 1 : 0,
       messageCountExact: true,
       archived: false,
+      lastTurn: prompt.trim() ? { kind: "open", at: now } : undefined,
     };
   }
 
@@ -839,29 +913,46 @@ export class SessionsConnector implements AgentConnector {
     const key = runKey(s.tool, s.id);
     const run = this.runs.get(key);
     if (run && run.status !== "offline") {
-      // Busy means the run is working and no question is open; an open question is
-      // settled ("blocked") even while the driver itself still says "working".
-      const busy = (): boolean => run.status === "working" && (s.tool !== "claude" || this.headAsk(s.id) === undefined);
+      // Busy means the run reads `working` by the rail's own rule (liveness.ts): an open
+      // question is settled ("blocked") even while the driver still says "working", and a
+      // run whose stream went silent past `runStallMs` (or a "finishing" child past its
+      // grace) is `unknown` — agent_wait must not sit out the whole turn budget on a child
+      // that stopped talking while the rail already shows it stalled.
+      const busy = (): boolean => deriveStatus(this.runEvidence(s, run, undefined), this.now(), this.leases).status === "working";
       if (busy()) {
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(done, timeoutMs);
-          const check = (): void => {
-            if (!busy()) done();
-          };
-          const { runChanges, askChanges } = this;
-          function done(): void {
+          const { runChanges, askChanges, leases } = this;
+          let recheck: ReturnType<typeof setTimeout> | undefined;
+          const timer = setTimeout(() => done(), timeoutMs);
+          const done = (): void => {
             clearTimeout(timer);
+            if (recheck) clearTimeout(recheck);
             runChanges.off(key, check);
             askChanges.off(s.id, check);
             resolve();
-          }
+          };
+          const check = (): void => {
+            if (!busy()) {
+              done();
+              return;
+            }
+            // The stall bounds are clocks, not events: look again when the nearest one runs out.
+            const bound = run.statusDetail === "finishing" ? leases.finishingMaxMs : leases.runStallMs;
+            if (recheck) clearTimeout(recheck);
+            recheck = setTimeout(check, Math.max(1, bound - (this.now() - run.lastActivityAt) + 1));
+            recheck.unref?.();
+          };
           runChanges.on(key, check);
           askChanges.on(s.id, check);
+          check();
         });
       }
       return this.info(s, await this.snapshot());
     }
-    // No driver of our own: the file is the only signal. Quiet for a while means settled.
+    // No driver of our own: the file is the only signal. A session nobody owns is settled
+    // already — no process can write it — and so is one that is quiet for a while.
+    const first = this.info(s, await this.snapshot());
+    if (first.status === "ended" || first.status === "done") return first;
     const deadline = this.now() + timeoutMs;
     let lastMtime = await mtimeOf(s.path);
     let lastChange = this.now();
@@ -887,33 +978,75 @@ export class SessionsConnector implements AgentConnector {
     return info;
   }
 
-  subscribe(onChange: (agent: AgentInfo) => void): () => void {
+  /**
+   * Whether anything listed could change on its own soon: a run of ours, or a session
+   * written within the last five minutes. Otherwise ps and lsof every 20 s is plenty —
+   * the worst case for a dead process to read `ended` stays inside the 30 s lease.
+   */
+  private active(): boolean {
+    if (this.runs.size > 0) return true;
+    const now = this.now();
+    for (const { session, info } of this.lastListed.values()) {
+      if (info.status === "working" || now - session.lastActivityAt <= ACTIVE_WINDOW_MS) return true;
+    }
+    return false;
+  }
+
+  subscribe(onChange: (agent: AgentInfo) => void, onGone?: (agentId: string) => void): () => void {
     this.listeners.add(onChange);
     let previous = new Map<string, AgentInfo>(this.lastListed.size ? [...this.lastListed.entries()].map(([k, v]) => [k, v.info]) : []);
-    let busy = false;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    /** Bumped for every tick and on unsubscribe; a tick whose number is stale keeps its results to itself. */
+    let generation = 0;
+    let busySince: number | undefined;
+    const arm = (delay: number): void => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void tick(), delay);
+      timer.unref?.();
+    };
+    const schedule = (): void => arm(this.active() ? this.pollMs : this.pollQuietMs);
     const tick = async (): Promise<void> => {
-      if (busy) return;
-      busy = true;
+      if (busySince !== undefined) {
+        const stuckFor = this.now() - busySince;
+        if (stuckFor < this.pollStuckMs) {
+          arm(this.pollStuckMs - stuckFor);
+          return;
+        }
+        // One list() that never settles must not freeze every status; the late result is dropped.
+        log.info(`poll stuck for ${Math.round(stuckFor / 1000)} s; abandoning it`);
+      }
+      const gen = ++generation;
+      busySince = this.now();
+      // The watchdog: a tick that never returns cannot schedule its successor, so its successor is scheduled now.
+      arm(this.pollStuckMs);
       try {
         this.snapshotCache = undefined;
         const current = await this.list();
+        if (gen !== generation) return;
         const next = new Map<string, AgentInfo>();
         for (const info of current) {
           next.set(info.id, info);
           const prev = previous.get(info.id);
-          if (!prev || prev.status !== info.status || prev.updatedAt !== info.updatedAt || prev.detail !== info.detail || prev.name !== info.name) onChange(info);
+          if (!prev || prev.status !== info.status || prev.hint !== info.hint || prev.updatedAt !== info.updatedAt || prev.detail !== info.detail || prev.name !== info.name || prev.messageCount !== info.messageCount) onChange(info);
         }
+        for (const id of previous.keys()) if (!next.has(id)) onGone?.(id);
         previous = next;
       } catch (e) {
-        log.debug(`poll failed: ${(e as Error).message}`);
+        if (gen === generation) log.info(`poll failed: ${(e as Error).message}`);
       } finally {
-        busy = false;
+        if (gen === generation) {
+          busySince = undefined;
+          schedule();
+        }
       }
     };
-    const timer = setInterval(() => void tick(), this.pollMs);
-    timer.unref?.();
+    schedule();
     return () => {
-      clearInterval(timer);
+      stopped = true;
+      generation += 1;
+      if (timer) clearTimeout(timer);
       this.listeners.delete(onChange);
     };
   }
@@ -941,7 +1074,7 @@ export class SessionsConnector implements AgentConnector {
       this.lastListed.set(info.id, { session: s, info });
       this.notifyAll(info);
     } catch (e) {
-      log.debug(`notify ${id}: ${(e as Error).message}`);
+      log.info(`notify ${id}: ${(e as Error).message}`);
     }
   }
 

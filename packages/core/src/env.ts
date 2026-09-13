@@ -25,7 +25,7 @@ const sources = new Map<string, KeySource>();
  */
 const OWNED_KEYS: ReadonlySet<string> = new Set([
   "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JARHEAD_BRAIN_API_KEY", "JARHEAD_BRAIN_BASE_URL",
-  "JARHEAD_BRAIN", "JARHEAD_BRAIN_MODEL", "JARHEAD_VOICE", "JARHEAD_LIVE_MODEL",
+  "JARHEAD_BRAIN", "JARHEAD_BRAIN_MODEL", "JARHEAD_VOICE", "JARHEAD_LIVE_MODEL", "JARHEAD_MEMORY_MODEL",
 ]);
 
 /** Minimal dotenv: KEY=VALUE lines, no interpolation. */
@@ -160,6 +160,12 @@ export interface JarheadConfig {
   /** Codex CLI override; otherwise PATH, then the copy bundled in ChatGPT.app / Codex.app. */
   readonly codexBin: string | undefined;
   readonly handsBin: string;
+  /**
+   * The Responses model the memory extractor calls (Kevin's OpenAI key; dollars, never
+   * the ChatGPT plan). Undefined = the memory package's default, a mini-class id the
+   * doctor picks once from a free `GET /v1/models`. Memory never uses Codex.
+   */
+  readonly memoryModel: string | undefined;
 }
 
 const BRAINS: readonly BrainKind[] = BRAIN_KINDS;
@@ -189,5 +195,6 @@ export function readConfig(): JarheadConfig {
     logLevel: level === "debug" || level === "warn" || level === "error" ? level : "info",
     claudeBin: env["JARHEAD_CLAUDE_BIN"] || undefined,
     handsBin: env["JARHEAD_HANDS_BIN"] || join(REPO_ROOT, "build", "jarhead-hands"),
+    memoryModel: env["JARHEAD_MEMORY_MODEL"] || undefined,
   };
 }

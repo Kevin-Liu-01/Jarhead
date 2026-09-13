@@ -17,6 +17,10 @@ import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJ
 
 const log = logger("daemon");
 
+/** `memory.list` / `memory.search`: the default and the ceiling on one answer (a MemoryItem is ~400 B; the frame rides the same socket as the snapshots). */
+export const MEMORY_LIST_DEFAULT = 50;
+export const MEMORY_LIST_MAX = 200;
+
 /** What the server needs from the engine; the real Engine satisfies it. */
 export interface EngineLike {
   on(event: "event", listener: (e: EngineEvent) => void): unknown;
@@ -43,7 +47,13 @@ export interface EngineLike {
     readSession(sessionId: string): unknown[];
     /** Full-text hits over the live day files (`ledger.search`); optional — an older fake answers none. */
     search?(query: string, limit?: number): unknown[];
+    /** A whole chain's rows in one read (`ledger.chain`); optional — an older fake answers none. */
+    readChain?(rootId: string): { readonly rows: unknown[]; readonly truncated: boolean };
   };
+  /** The memory module's reads (`memory.list` / `memory.search`); optional — an engine without one answers empty lists. */
+  readonly memory?: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
+  /** A client's socket closed: its conversation viewers leave (no leaked tails). Optional: older fakes lack it. */
+  dropViewers?(clientId: string): void;
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
@@ -59,6 +69,8 @@ export interface EngineLike {
 }
 
 interface Client {
+  /** Per connection ("c7"): the prefix on every conversation viewer this client opens, so its tails close with its socket. */
+  readonly id: string;
   readonly socket: Socket;
   readonly parser: FrameParser;
   audio: boolean;
@@ -74,6 +86,7 @@ export interface DaemonServerEvents {
 export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private server: Server | undefined;
   private readonly clients = new Set<Client>();
+  private clientSeq = 0;
 
   constructor(
     private readonly engine: EngineLike,
@@ -129,7 +142,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { socket, parser: new FrameParser(), audio: false };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false };
     this.clients.add(client);
     socket.setNoDelay(true);
     this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
@@ -148,6 +161,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     socket.on("error", (e) => log.debug(`client error: ${e.message}`));
     socket.on("close", () => {
       this.clients.delete(client);
+      // Its conversation viewers go with it: a Console killed with the window open leaves no tail running.
+      try {
+        this.engine.dropViewers?.(client.id);
+      } catch (e) {
+        log.debug(`dropViewers(${client.id}): ${(e as Error).message}`);
+      }
       log.info(`client left (${this.clients.size} remaining)`);
       this.emit("leave", this.clients.size);
     });
@@ -168,10 +187,19 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         client.audio = msg.audio === true;
         if (Number.isInteger(msg.pid)) this.engine.registerOwnPid(msg.pid);
         return;
-      case "command":
+      case "command": {
         if (!isEngineCommand(msg.command)) return this.send(client, { type: "error", message: "malformed command" });
-        void this.engine.command(msg.command).catch((e: unknown) => this.engine.problem(`command failed: ${(e as Error).message}`));
+        let command = msg.command;
+        // A conversation viewer is this client's: its pane token (or "pane" when the surface
+        // sent none) under the client id, so opens are per pane, a re-open after a reconnect
+        // never double-counts, and the socket closing drops them all (`dropViewers`).
+        if (command.type === "agent.open" || command.type === "agent.close") {
+          const pane = typeof command.viewer === "string" && command.viewer ? command.viewer : "pane";
+          command = { ...command, viewer: `${client.id}/${pane}` };
+        }
+        void this.engine.command(command).catch((e: unknown) => this.engine.problem(`command failed: ${(e as Error).message}`));
         return;
+      }
       case "mic-level":
         this.engine.reportInputLevel(Number(msg.level) || 0);
         return;
@@ -199,6 +227,32 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "ledger.session":
         this.send(client, { type: "ledger.rows", id: msg.id, rows: typeof msg.sessionId === "string" ? this.engine.ledger.readSession(msg.sessionId) : [] });
         return;
+      case "ledger.chain": {
+        // One read for a whole conversation (the Console used to read a chain one session per round
+        // trip); bounded by the ledger at CHAIN_ROWS_MAX, and the answer says when it was cut.
+        const r = typeof msg.rootId === "string" && this.engine.ledger.readChain ? this.engine.ledger.readChain(msg.rootId) : { rows: [], truncated: false };
+        this.send(client, { type: "ledger.rows", id: String(msg.id ?? ""), rows: r.rows, ...(r.truncated ? { truncated: true } : {}) });
+        return;
+      }
+      case "memory.list": {
+        const items = this.engine.memory ? this.engine.memory.list(typeof msg.state === "string" ? msg.state : undefined, memoryLimit(msg.limit)) : [];
+        this.send(client, { type: "memory.items", id: String(msg.id ?? ""), items: items.slice(0, MEMORY_LIST_MAX) });
+        return;
+      }
+      case "memory.search": {
+        // Async (an embedding may be asked for): the answer lands under the request id when it comes; a failure is an empty list, never a dropped client.
+        const id = String(msg.id ?? "");
+        const query = typeof msg.query === "string" ? msg.query : "";
+        const limit = memoryLimit(msg.limit);
+        const search = this.engine.memory ? this.engine.memory.search(query, limit) : Promise.resolve([] as unknown[]);
+        void search
+          .then((items) => this.send(client, { type: "memory.items", id, items: items.slice(0, MEMORY_LIST_MAX) }))
+          .catch((e: unknown) => {
+            log.warn(`memory.search failed: ${(e as Error).message}`);
+            this.send(client, { type: "memory.items", id, items: [] });
+          });
+        return;
+      }
       case "ledger.search": {
         // The Console's search box (K1): heard/said text and delegation requests/summaries over the
         // LIVE day files, newest first, bounded by the ledger (50 by default, 200 at most). Synchronous
@@ -288,6 +342,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       // gone already
     }
   }
+}
+
+/** A `memory.*` limit as asked, clamped: not a positive number → the default, never a cap of 1; over the ceiling → the ceiling. */
+function memoryLimit(raw: unknown): number {
+  const asked = Math.floor(Number(raw));
+  return Math.min(MEMORY_LIST_MAX, asked > 0 ? asked : MEMORY_LIST_DEFAULT);
 }
 
 // ----------------------------------------------------------------- lifeline

@@ -40,7 +40,7 @@ const SCRATCH_SLUG = "-Users-kevinliu-scratch-demo";
 
 const T = (iso: string): number => Date.parse(iso);
 const NOW = T("2026-09-02T12:00:00.000Z");
-const WINDOWS = { workingWindowMs: 90_000, doneWindowMs: 6 * 3_600_000 };
+const LEASES = { workingLeaseMs: 30_000, finishingMaxMs: 30_000, runStallMs: 300_000 };
 
 interface Home {
   readonly home: string;
@@ -160,6 +160,8 @@ const owner = (over: Partial<SessionOwner>): SessionOwner => ({
   entrypoint: "claude-desktop",
   ...over,
 });
+
+const pick = (r: { status: string; hint: string }): [string, string] => [r.status, r.hint];
 
 async function until(check: () => boolean, ms = 2_000, what = "condition"): Promise<void> {
   const deadline = Date.now() + ms;
@@ -713,33 +715,40 @@ test("liveProcessesFor: registry first, argv second, cwd + start-time heuristic 
   }
 });
 
-test("statusFor: archived, live/working, live/idle, process too new, done, unknown; names and details", () => {
+test("statusFor: archived; working under the 30 s lease from the last turn-bearing write, idle past it or after a closing marker; ended with no process at any age; unknown only when the snapshot is degraded; names and details", () => {
   const h = makeHome();
   try {
     const s = parseClaudeSession(S1, h.paths.s1, SLUG, lines(h.paths.s1), [], { whole: true, bytesRead: 1, size: 1, mtimeMs: T("2026-09-01T10:01:00.000Z") });
     const last = s.lastActivityAt;
-    assert.equal(statusFor({ ...s, archived: true }, [proc({})], last, WINDOWS).status, "done");
-    assert.equal(statusFor({ ...s, archived: true }, [], last, WINDOWS).hint, "archived");
+    assert.deepEqual(s.lastTurn, { kind: "open", at: last }, "the fixture ends on a tool_result line: a turn is open");
+    assert.equal(statusFor({ ...s, archived: true }, [proc({})], last, LEASES).status, "done");
+    assert.equal(statusFor({ ...s, archived: true }, [], last, LEASES).hint, "archived");
 
     const own = proc({ startedAt: T("2026-09-01T09:00:00.000Z") });
-    assert.equal(statusFor(s, [own], last + 30_000, WINDOWS).status, "working", "file changed 30 s ago with its process alive");
-    assert.equal(statusFor(s, [own], last + 10 * 60_000, WINDOWS).status, "idle", "alive but quiet for 10 min");
-    assert.equal(statusFor(s, [own], last + 10 * 60_000, WINDOWS).hint, "running, quiet");
-    assert.equal(statusFor(s, [proc({ startedAt: last + 60_000 })], last + 90_000, WINDOWS).status, "done");
-    assert.equal(statusFor(s, [], last + 10 * 60_000, WINDOWS, [owner({ pid: 4242 })]).status, "idle", "registry-owned: alive even with no classified process");
-    assert.equal(statusFor(s, [], last + 30_000, WINDOWS, [owner({ pid: 4242 })]).status, "working");
+    assert.deepEqual(pick(statusFor(s, [own], last + 10_000, LEASES)), ["working", "running"], "a turn-bearing write 10 s ago with its process alive");
+    assert.equal(statusFor(s, [own], last + 30_000, LEASES).status, "working", "at the edge of the lease");
+    assert.deepEqual(pick(statusFor(s, [own], last + 31_000, LEASES)), ["idle", "quiet"], "past the lease: alive, quiet");
+    assert.equal(statusFor(s, [own], last + 10 * 60_000, LEASES).status, "idle", "alive but quiet for 10 min");
+    assert.equal(statusFor({ ...s, lastTurn: { kind: "closed", at: last } }, [own], last + 1_000, LEASES).status, "idle", "a closing marker (end_turn / task_complete) ends the lease at once");
+    assert.equal(statusFor({ ...s, mtimeMs: last + 20_000, lastTurn: { kind: "open", at: last - 60_000 } }, [own], last + 25_000, LEASES).status, "idle", "token counts move the mtime, never the lease");
+    assert.equal(statusFor({ ...s, lastTurn: undefined }, [own], last + 10_000, LEASES).status, "working", "a file with no markers falls back to its mtime");
+    assert.equal(statusFor({ ...s, lastTurn: undefined }, [own], last + 31_000, LEASES).status, "idle");
+    assert.equal(statusFor(s, [proc({ startedAt: last + 60_000 })], last + 90_000, LEASES).status, "ended", "a process started after the last write is not its owner: nobody is");
+    assert.equal(statusFor(s, [], last + 10 * 60_000, LEASES, [owner({ pid: 4242 })]).status, "idle", "registry-owned: alive even with no classified process");
+    assert.equal(statusFor(s, [], last + 30_000, LEASES, [owner({ pid: 4242 })]).status, "working");
 
-    const done = statusFor(s, [], last + 3_600_000, WINDOWS);
-    assert.equal(done.status, "done");
-    assert.equal(done.hint, "last active 1h ago");
-    const unknown = statusFor(s, [], last + 3 * 86_400_000, WINDOWS);
-    assert.equal(unknown.status, "unknown");
-    assert.equal(unknown.hint, "last active 3d ago");
+    const ended = statusFor(s, [], last + 3_600_000, LEASES);
+    assert.deepEqual(pick(ended), ["ended", "ended"], "no process, an hour old: ended (not done)");
+    assert.equal(statusFor(s, [], last + 3 * 86_400_000, LEASES).status, "ended", "no process, three days old: still ended, never unknown for age");
+    assert.equal(statusFor(s, [], last + 10_000, LEASES).status, "ended", "no process, ten seconds old: ended too");
+    assert.deepEqual(pick(statusFor(s, [], last + 3_600_000, LEASES, [], "ps failed: timed out")), ["unknown", "unseen"], "degraded evidence is unknown, not a verdict");
+    assert.equal(statusFor(s, [own], last + 10_000, LEASES, [], "lsof failed").status, "working", "an owner found despite a degraded snapshot still counts");
 
     assert.equal(sessionName(s), "Fix login redirect to dashboard");
     assert.equal(sessionName({ ...s, title: undefined }), "fix the login redirect");
     assert.equal(sessionName({ ...s, title: undefined, firstPrompt: undefined }), "claude · demo-app");
-    assert.equal(sessionDetail(s, "last active 3d ago"), "claude · 3 msgs · demo-app · last active 3d ago");
+    assert.equal(sessionDetail(s), "claude · 3 msgs · demo-app", "no relative time: the rail formats that from updatedAt");
+    assert.equal(sessionDetail(s, "resumed: thinking"), "claude · 3 msgs · demo-app · resumed: thinking");
     assert.equal(formatMessageCount(1, true), "1 msg");
     assert.equal(formatMessageCount(23654, false), "~24k msgs");
     assert.equal(formatMessageCount(2345, false), "~2.3k msgs");
@@ -800,19 +809,23 @@ test("list(): ids unique, no sub-agent or automation rows, names, details, statu
     assert.equal(new Set(list.map((a) => a.id)).size, list.length);
     const [scratch, claude, codex, archived] = list as [AgentInfo, AgentInfo, AgentInfo, AgentInfo];
     assert.equal(scratch.name, "Sessions sidebar port");
-    assert.equal(scratch.status, "done", "no process owns it");
+    assert.equal(scratch.status, "ended", "no process owns it");
+    assert.equal(scratch.hint, "ended");
     assert.equal(claude.kind, "sessions");
     assert.equal(claude.name, "Fix login redirect to dashboard");
     assert.equal(claude.cwd, "/Users/kevinliu/demo-app");
-    assert.equal(claude.status, "working", "its registered process is alive and the file changed 30 s ago");
-    assert.equal(claude.detail, "claude · 3 msgs · demo-app · running");
+    assert.equal(claude.status, "working", "its registered process is alive and its last tool_result line is 30 s old");
+    assert.equal(claude.detail, "claude · 3 msgs · demo-app");
+    assert.equal(claude.hint, "running");
     assert.equal(claude.updatedAt, T("2026-09-01T10:01:00.000Z"));
     assert.equal(codex.name, "Hero font swap", "Codex Desktop's thread name from session_index.jsonl");
-    assert.equal(codex.status, "idle", "the app-server holds its rollout open: alive, quiet for 56 min");
-    assert.equal(codex.detail, "codex · 3 msgs · demo-site · running, quiet");
+    assert.equal(codex.status, "idle", "the app-server holds its rollout open: alive, and its last turn closed (task_complete) 56 min ago");
+    assert.equal(codex.detail, "codex · 3 msgs · demo-site");
+    assert.equal(codex.hint, "quiet");
     assert.equal(archived.name, "Rename package");
     assert.equal(archived.status, "done");
-    assert.equal(archived.detail, "codex · 2 msgs · old-thing · archived");
+    assert.equal(archived.detail, "codex · 2 msgs · old-thing");
+    assert.equal(archived.hint, "archived");
 
     const health = await c.health();
     assert.equal(health.ok, true);
@@ -825,8 +838,9 @@ test("list(): ids unique, no sub-agent or automation rows, names, details, statu
 
     const noHolder = connector(h, { procs: [desktop], now: () => T("2026-09-01T10:01:30.000Z") });
     const alone = (await noHolder.list()).find((a) => a.id === `sessions:codex:${C1}`);
-    assert.equal(alone?.status, "done", "with no process holding the rollout the thread is finished");
-    assert.equal(alone?.detail, "codex · 3 msgs · demo-site · last active 57m ago");
+    assert.equal(alone?.status, "ended", "with no process holding the rollout the thread is over");
+    assert.equal(alone?.detail, "codex · 3 msgs · demo-site");
+    assert.equal(alone?.hint, "ended");
     assert.deepEqual(await detectOthers(h.home), ["gemini"]);
 
     const empty = new SessionsConnector({ home: join(h.home, "nothing-here"), ...pinned(h.home), processes: async () => [] });
@@ -1161,17 +1175,24 @@ test("permissions: parallel tool calls each reach Kevin in turn, and the session
   }
 });
 
-test("waitSettled(): without a driver, waits for the file to go quiet", async () => {
+test("waitSettled(): without a driver, an owned session waits for its file to go quiet; a session nobody owns is settled at once, as ended", async () => {
   const h = makeHome();
   try {
-    const c = connector(h, { now: Date.now });
     const id = `sessions:claude:${S1}`;
+    // pid 4242 is registered to S1 and alive: the file is the only signal, and quiet means settled.
+    const owned = connector(h, { now: Date.now, procs: [proc({ pid: 4242, cwd: "/Users/kevinliu/demo-app", startedAt: T("2026-09-01T09:00:00.000Z"), interactive: false })] });
     const t0 = Date.now();
-    const info = await c.waitSettled(id, 5_000);
+    const info = await owned.waitSettled(id, 5_000);
     const took = Date.now() - t0;
     assert.ok(took >= 35 && took < 1_500, `quiet window ~40 ms, took ${took}`);
     assert.equal(info.id, id);
-    assert.equal(info.status, "unknown", "the fixture's mtime is 2026-09-01, long before the real now");
+    assert.equal(info.status, "idle", "alive; its last turn was written in 2026, long before the real now");
+
+    const c = connector(h, { now: Date.now });
+    const t1 = Date.now();
+    const ended = await c.waitSettled(id, 5_000);
+    assert.ok(Date.now() - t1 < 30, `nothing can write a file nobody owns: settled without the quiet wait (${Date.now() - t1} ms)`);
+    assert.equal(ended.status, "ended");
   } finally {
     h.cleanup();
   }
@@ -1195,7 +1216,8 @@ test("subscribe(): polling emits changed sessions only", async () => {
     const ids = new Set(seen.map((a) => a.id));
     assert.ok(ids.has(`sessions:claude:${S1}`), "the appended session was emitted");
     assert.equal(seen.find((a) => a.id === `sessions:claude:${S1}`)?.updatedAt, T("2026-09-01T10:03:00.000Z"));
-    // Codex sessions' hints moved from "just now"-ish only if their ago() text changed; they may or may not emit, but never the archived one's status.
+    // Nothing else changed, so nothing else was emitted: no relative-time churn in `detail` any more.
+    assert.deepEqual([...ids], [`sessions:claude:${S1}`], "only the appended session");
     assert.ok(seen.every((a) => a.status !== "offline"));
   } finally {
     h.cleanup();

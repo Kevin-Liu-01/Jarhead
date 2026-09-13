@@ -29,13 +29,22 @@ struct OnboardingWelcomeStep: View, Equatable {
 
 // MARK: - Voice
 
-/// The OpenAI key that runs GPT-Live-1. Save sends it once to the engine, which
-/// writes ~/.jarhead/env and probes; the result comes back in `setup.openaiKey`.
+/// The OpenAI key that runs GPT-Live-1, then the voice and how its English sounds. Save
+/// sends the key once to the engine, which writes ~/.jarhead/env and probes; the result
+/// comes back in `setup.openaiKey`. A voice or accent pick is a settings patch and nothing
+/// more: `session.update` cannot change a voice, so the change is heard at the next wake —
+/// browsing the 22 voices never opens a paid session from here.
 struct OnboardingVoiceStep: View, Equatable {
     let setup: SetupStatus
+    /// What the engine has (Settings.voice, Settings.accentKind), so a pick made in the
+    /// Console's Settings shows here too.
+    let voice: String
+    let accent: String
     let actions: OnboardingActions
 
-    static func == (a: OnboardingVoiceStep, b: OnboardingVoiceStep) -> Bool { a.setup == b.setup }
+    static func == (a: OnboardingVoiceStep, b: OnboardingVoiceStep) -> Bool {
+        a.setup == b.setup && a.voice == b.voice && a.accent == b.accent
+    }
 
     @State private var key = ""
     @State private var pending = false
@@ -45,10 +54,24 @@ struct OnboardingVoiceStep: View, Equatable {
     private var draft: String { key.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSave: Bool { !draft.isEmpty }
 
+    private var voiceOptions: [String] { OnboardingVoiceStep.voiceOptions(for: voice) }
+    private var accentOptions: [String] { OnboardingVoiceStep.accentOptions(for: accent) }
+
+    /// The known voices, plus a saved id outside the list (JARHEAD_VOICE) so the field never
+    /// shows nothing; `ConsoleTheme.voiceLabel` falls back to the raw id for it.
+    static func voiceOptions(for voice: String) -> [String] {
+        ConsoleTheme.voices.contains(voice) ? ConsoleTheme.voices : ConsoleTheme.voices + [voice]
+    }
+    /// The protocol's accents, plus a saved one outside them (a newer daemon) so the pick shows.
+    static func accentOptions(for accent: String) -> [String] {
+        let ids = ConsoleTheme.accents.map(\.id)
+        return ids.contains(accent) ? ids : ids + [accent]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             OnboardingHead("Voice",
-                           "GPT-Live-1 does the listening and talking. It needs an OpenAI key; you pay only while Jarhead is awake.")
+                           "GPT-Live-1 does the listening and talking, in English. It needs an OpenAI key; you pay only while Jarhead is awake.")
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingFormRow("OpenAI key") {
                     HStack(spacing: 8) {
@@ -78,6 +101,23 @@ struct OnboardingVoiceStep: View, Equatable {
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, height: 22, small: true))
                         .help("platform.openai.com/api-keys")
+                    }
+                }
+                // The same rows as Settings › Audio: "<Name> · English" (no invented character
+                // notes — none can be verified without a paid session), the accent segments, and
+                // the promise. Language shows nowhere as a menu: English is the only one offered.
+                OnboardingFormRow("Voice") {
+                    ConsoleMenuField(value: voice, options: voiceOptions, title: ConsoleTheme.voiceLabel,
+                                     pick: { actions.send(.setSettings(SettingsPatch(voice: $0))) })
+                        .frame(height: onboardingRowHeight)
+                        .accessibilityLabel("Voice: \(ConsoleTheme.voiceLabel(voice))")
+                }
+                OnboardingFormRow("Accent") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        OnboardingSegments(value: accent, options: accentOptions, title: ConsoleTheme.accentLabel,
+                                           pick: { actions.send(.setSettings(SettingsPatch(accent: $0))) })
+                            .accessibilityLabel("Accent: \(ConsoleTheme.accentLabel(accent))")
+                        OnboardingNote("Always English; a change is heard at the next wake.")
                     }
                 }
             }

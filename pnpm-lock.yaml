@@ -38,6 +38,9 @@ importers:
       '@jarhead/live':
         specifier: workspace:*
         version: link:packages/live
+      '@jarhead/memory':
+        specifier: workspace:*
+        version: link:packages/memory
       '@jarhead/protocol':
         specifier: workspace:*
         version: link:packages/protocol
@@ -120,6 +123,9 @@ importers:
       '@jarhead/live':
         specifier: workspace:*
         version: link:../live
+      '@jarhead/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@jarhead/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -162,6 +168,9 @@ importers:
       '@jarhead/live':
         specifier: workspace:*
         version: link:../live
+      '@jarhead/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@jarhead/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -176,6 +185,15 @@ importers:
         version: link:../protocol
 
   packages/live:
+    dependencies:
+      '@jarhead/core':
+        specifier: workspace:*
+        version: link:../core
+      '@jarhead/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
+  packages/memory:
     dependencies:
       '@jarhead/core':
         specifier: workspace:*

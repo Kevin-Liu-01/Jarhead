@@ -34,6 +34,20 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
   the agent sessions on this Mac (Claude Code, Codex, other CLIs on disk or
   running); `claude-code` continues one. Do not add a connector for a specific
   product; the herdr and T3 Code ones were retired for that reason.
+- **Agent statuses are lease-bounded, and `ended` is a word.** `AgentStatus` =
+  `working` (a live owner process, a turn-bearing write within 30 s, no closing
+  marker) · `idle` (a live owner otherwise) · `blocked` (an open permission
+  question) · `done` (archived, or a run that finished and closed) · `ended` (no
+  live process, however old — a session with no process is over) · `unknown`
+  (the process evidence itself was missing: a degraded `ps`/`lsof`; never "old")
+  · `offline` (a run handle closed). `AgentInfo.hint` says why a row reads as it
+  does; `detail` carries no relative time (clients format it from `updatedAt`, so
+  nothing churns a snapshot a second). Everywhere six statuses are known, seven
+  are: `waitSettled` (ended settles), the brain's `agents_list` / `agent_wait`
+  text, `jarhead status` (`agents N (3 working · 8 ended)`, an
+  `AGENT_STATUSES satisfies Record<AgentStatus, 0>` pin), the Sessions rail. A
+  tool call with no result when its session ended reads `interrupted`, no pulse.
+  `send()` to an `ended` Codex session still resumes it.
 - **Retire, do not delete.** Superseded code moves under git history (before `1ff11e2`)
   (`shell-electron-v2`, `connectors-v2`, `vendor-docs`, v1 `packages/`); nothing
   there is built, typechecked or tested.
@@ -77,6 +91,10 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
   security-critical file: hunk regexes are dodged by editing the lines around
   them. Bump `SYSTEM_PROMPT_VERSION` when the standing orders change;
   `brain.test.ts` pins the prompt's order, budget (1100 words, v3.2) and tool names.
+  The memory pass touched one rail by one optional field — `BrainTask.memory?:
+  string` in `brain.ts`, no prompt text, no version bump — because Kevin asked for
+  the memory module by name; `# Language` lives in the engine-assembled
+  `packages/live/src/language.ts`, not in `instructions.ts`, so no other rail moved.
 - **Secrets never enter a child, and never leave a result.** `scrubbedEnv` /
   `codexEnv` strip `SECRET_KEYS` from every process the brain spawns (shell,
   AppleScript, Codex, Claude Code); `loginShellCommand` unsets them again inside
@@ -96,6 +114,7 @@ pnpm build:mac                # builds, signs, installs /Applications/Jarhead.ap
 pnpm jarhead dock [--fix]     # one Jarhead: Dock tiles + LaunchServices records for /Applications/Jarhead.app, read-only; --fix drops recent tiles, rebuilds the pin, unregisters stale bundle paths, restarts the Dock only on a change
 pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps it quiet
 pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep [cause]|mute|unmute|stop|pause|resume|agent.refresh|worker.stop <id>
+pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] | search "…" | forget <id> | restore <id> | add "…" [--kind k] | run   # over the daemon; forget is a state, nothing is deleted
 pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path; exit 1 when p95 to dispatch > 250 ms with the real helper
 pnpm jarhead bench --brain [--runs N] [--effort low] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
@@ -567,6 +586,51 @@ to his microphone and bills per second.
   `queueCommentary`. `worker_*` and `self_*` are denied to workers (depth 1). Live
   stays open while a worker runs; the idle guard is `!delegator.active &&
   workers.running() === 0`.
+- **Memory is a module, and a cap, not a saving.** `@jarhead/memory`
+  (`packages/memory`, its own package so no core file becomes a rail) keeps an
+  append-only `<stateDir>/memory/memory.jsonl` of one-sentence items about Kevin
+  ("Kevin prefers …", kinds preference · fact · episode · procedure · contact ·
+  place), extracted from CLOSED conversations only — the quiet tick, `!live &&
+  !connecting && !pauseInfo`, ≥ 4 new Kevin lines since the watermark, one run
+  per closed conversation — by a mini-class Responses model on Kevin's OpenAI key
+  (dollars, never the ChatGPT plan; never Codex), or by regex rules with no key.
+  Items are matched by embedding (text-embedding-3-small, 512 dims, cached by
+  sha) or keywords, ADD/UPDATE/NOOP with a contradiction superseding the older
+  item, scored by recency half-life · importance · confidence · use, picked by
+  MMR. Forget / Restore / Archive are STATES (Console verbs never say "Delete");
+  `memory.*` ledger rows carry ids only; a line the redactor changed, a Luhn card,
+  an SSN or "my password is …" never reaches the extractor or the store; grants,
+  confirmation exchanges, `now.cleared` windows and trashed chains are never a
+  source; no vector ever enters a snapshot. Two injection points, both outside
+  the standing orders (which have 16 words of headroom): the brain gets
+  `BrainTask.memory` — the ONE field this pass added to the rail `brain.ts`
+  (Kevin asked for the memory module directly) — rendered by `promptParts`
+  (`anthropic.ts`, the one render site every brain kind uses) as `What you know
+  about Kevin (durable memory; use it, do not repeat it back, do not say you
+  remembered):` after `Recent conversation`, ≤ `BRAIN_MEMORY_TOKENS` 250, never
+  in `kevinDialogue` (the gates must not read a remembered line as his words
+  today); the voice gets `# Kevin, in brief` (≤ `VOICE_MEMORY_TOKENS` 120) in the
+  engine's `sessionConfig` between `# Language` and `# Continuity`. The
+  delegator asks `DelegatorOptions.memory(query, signal)` with the request plus
+  Kevin's recent lines, in the same `Promise.all` as the marks and the eyes, cut at
+  `MEMORY_RECALL_MS` 250 (a cold lookup is aborted, the task carries no block; the
+  query embedding is cached as Kevin's final lines land, so it is usually a hit).
+  **Blind spot:** with the `openai-responses` brain Live runs the backend itself
+  (`responses.ts`), so the per-delegation block never reaches it — only the voice
+  block applies. **Honest cost:** the budgets CAP what memory costs — ≤ 250
+  tokens per delegation on the brain (≈ 20k a day at 81 delegations, on the
+  Codex plan), ≤ 120 per session start on the voice ($0: Live bills per second) —
+  nothing existing shrinks; the saving is Kevin never re-explaining himself and
+  never having a transcript dumped into a prompt. Surfaces: `Settings.memory`
+  (default on), Console Settings › Memory and the Memory rail, the Now rail's
+  "used this turn" (`lastUsedIds`), `jarhead memory list|search|forget|restore|
+  add|run`, `jarhead doctor`'s `memory` group (counts from the daemon; the
+  `extractor` row names the id the engine WILL run — `JARHEAD_MEMORY_MODEL`, else
+  the module's `DEFAULT_MEMORY_MODEL` — checked against the keys row's one free
+  `GET /v1/models`, the key's best `*-mini` named only as the thing to pin; nothing
+  records a pick on its own; never a session), the spoken "remember that …" /
+  "forget that" reflexes in the engine
+  hook (no brain, no tool: `remember`/`recall` stay per-session notes).
 - **The desk.** The engine's root `ConfirmationState` stays; every toolset — the
   main lane too — gets `desk.lane(id, name)`. A question posts to the root when the
   floor is free, otherwise it queues ("Queued behind <Floor>'s question … stop and

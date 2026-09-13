@@ -1,4 +1,5 @@
 import { open, stat } from "node:fs/promises";
+import type { TurnMark } from "./liveness.ts";
 
 /**
  * Shared shapes and file helpers for the session stores.
@@ -47,6 +48,12 @@ export interface DiscoveredSession {
   readonly messageCountExact: boolean;
   /** Codex: the file sits in archived_sessions. */
   readonly archived: boolean;
+  /**
+   * The last turn-bearing line in the slices read (liveness.ts): what the `working`
+   * lease runs from, so token counts and other housekeeping the tools write into idle
+   * files never make them look busy. Undefined when the slices held no such line.
+   */
+  readonly lastTurn: TurnMark | undefined;
 }
 
 export interface StoreOptions {
@@ -148,7 +155,11 @@ export function stripTags(text: string): string {
   return text.replace(/<[^>\n]{1,60}>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** "3d ago", "12m ago", "just now". */
+/**
+ * "3d ago", "12m ago", "just now". For text read aloud once (`read()`); never for an
+ * `AgentInfo.detail` — a detail that changes with the clock made every listed session
+ * "change" once a minute and pushed a full snapshot to the app for each.
+ */
 export function ago(thenMs: number, nowMs: number): string {
   const s = Math.max(0, Math.round((nowMs - thenMs) / 1000));
   if (s < 45) return "just now";

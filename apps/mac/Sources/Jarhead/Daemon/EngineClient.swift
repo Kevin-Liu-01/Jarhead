@@ -34,6 +34,9 @@ final class EngineClient: @unchecked Sendable {
     // Ledger requests: id → resolver. Resolved with nil on timeout/disconnect.
     private var pendingLedger: [String: (Any?) -> Void] = [:]
     private static let ledgerTimeout: TimeInterval = 5
+    /// A whole chain in one answer is up to 20 000 rows (Ledger.readChain's cap) read across
+    /// as many as 60 day files; a day's 5 s would cut a long conversation short.
+    static let chainTimeout: TimeInterval = 15
 
     private let appVersion: String = {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "2.0.0"
@@ -251,11 +254,14 @@ final class EngineClient: @unchecked Sendable {
 
     /// On `net`. The last snapshot, republished with one typed problem on top: `daemon`, with
     /// "Restart daemon" as its remedy. `problems` (the plain list older surfaces read) gets
-    /// the same line. The daemon's next snapshot replaces the whole thing, row included.
+    /// the same line. Every utterance is sealed first: nothing is being typed by a daemon
+    /// that is gone, and a `final: false` item would keep its caret blinking for the whole
+    /// outage (the last snapshot is all this client has; the engine's settle never runs).
+    /// The daemon's next snapshot replaces the whole thing, row included.
     private func publishDaemonProblem() {
         let sinceMs = (disconnectedAt ?? Date()).timeIntervalSince1970 * 1000
         onMain { st in
-            var s = st.snapshot
+            var s = st.snapshot.finalisingTranscript()
             let text = EngineClient.daemonProblemText
             s.problems = s.problems.filter { $0 != text } + [text]
             var typed = (s.problemsTyped ?? []).filter { $0.kind != "daemon" }
@@ -430,8 +436,13 @@ final class EngineClient: @unchecked Sendable {
 
     func ledgerRows(day: String) async -> [LedgerRow] {
         let any = await request(["type": "ledger.read", "date": day])
-        guard let rows = any as? [Any] else { return [] }
-        return EngineClient.decodeRows(rows)
+        return EngineClient.decodeRows(EngineClient.rows(in: any))
+    }
+
+    /// A `ledger.rows` answer resolves with the whole message (so `truncated` travels with the
+    /// rows); the rows are its `rows`, or none.
+    private static func rows(in any: Any?) -> [Any] {
+        ((any as? [String: Any])?["rows"] as? [Any]) ?? []
     }
 
     /// Jarhead's own Live sessions across the ledger, newest first (`ledger.sessions`).
@@ -451,8 +462,47 @@ final class EngineClient: @unchecked Sendable {
     /// One session's rows, its started row through its closed row (`ledger.session`; answered with `ledger.rows`).
     func jarheadSessionRows(_ id: String) async -> [LedgerRow] {
         let any = await request(["type": "ledger.session", "sessionId": id])
-        guard let rows = any as? [Any] else { return [] }
-        return EngineClient.decodeRows(rows)
+        return EngineClient.decodeRows(EngineClient.rows(in: any))
+    }
+
+    /// A whole chain's rows, oldest first, in one request (`ledger.chain` → `ledger.rows` with
+    /// `truncated`), in place of one 5 s read per member session. nil when nothing answered
+    /// inside `chainTimeout` — a daemon from before the message ignores it — and ConsoleSession
+    /// falls back to the per-session reads.
+    func jarheadChainRows(_ rootId: String) async -> JarheadChainRows? {
+        let any = await request(["type": "ledger.chain", "rootId": rootId], timeout: EngineClient.chainTimeout)
+        guard let obj = any as? [String: Any], let rows = obj["rows"] as? [Any] else { return nil }
+        return JarheadChainRows(rows: EngineClient.decodeRows(rows), truncated: (obj["truncated"] as? Bool) ?? false)
+    }
+
+    // MARK: - memory
+
+    /// What Jarhead remembers, one state at a time (`memory.list` → `memory.items`; `state` is
+    /// live | forgotten | merged | archived | all, `limit` ≤ 200 at the daemon). nil when nothing
+    /// answered — a daemon from before memory — so the rail says so instead of "nothing remembered".
+    /// Items carry text and counts, never a vector (the store keeps those by sha).
+    func memoryList(state: String = "live", limit: Int = 50) async -> [MemoryItem]? {
+        let any = await request(["type": "memory.list", "state": state, "limit": limit])
+        guard let list = any as? [Any] else { return nil }
+        return EngineClient.decodeMemoryItems(list)
+    }
+
+    /// Items matching `query` (`memory.search` → `memory.items`), best first; nil when nothing answered.
+    func memorySearch(query: String, limit: Int = 30) async -> [MemoryItem]? {
+        let any = await request(["type": "memory.search", "query": query, "limit": limit])
+        guard let list = any as? [Any] else { return nil }
+        return EngineClient.decodeMemoryItems(list)
+    }
+
+    static func decodeMemoryItems(_ list: [Any]) -> [MemoryItem] {
+        // One at a time, like the rows: an odd item must not hide the list.
+        var out: [MemoryItem] = []
+        out.reserveCapacity(list.count)
+        for entry in list {
+            guard JSONSerialization.isValidJSONObject(entry), let data = try? JSONSerialization.data(withJSONObject: entry) else { continue }
+            if let item = try? jarheadJSONDecoder.decode(MemoryItem.self, from: data) { out.append(item) }
+        }
+        return out
     }
 
     // MARK: - search
@@ -466,7 +516,9 @@ final class EngineClient: @unchecked Sendable {
         return list.compactMap { ($0 as? [String: Any]).flatMap(LedgerHit.init(json:)) }
     }
 
-    private func request(_ message: [String: Any]) async -> Any? {
+    /// One request → one answer by id, or nil after `timeout` (the daemon ignores a message
+    /// type it does not know, so an older daemon shows up as a timeout) or on a disconnect.
+    private func request(_ message: [String: Any], timeout: TimeInterval = EngineClient.ledgerTimeout) async -> Any? {
         await withCheckedContinuation { (cont: CheckedContinuation<Any?, Never>) in
             net.async {
                 let id = UUID().uuidString
@@ -478,7 +530,7 @@ final class EngineClient: @unchecked Sendable {
                 var msg = message
                 msg["id"] = id
                 self.rawSend(json: msg)
-                self.net.asyncAfter(deadline: .now() + EngineClient.ledgerTimeout) { [weak self] in
+                self.net.asyncAfter(deadline: .now() + timeout) { [weak self] in
                     if let resolve = self?.pendingLedger.removeValue(forKey: id) { resolve(nil) }
                 }
             }
@@ -553,7 +605,10 @@ final class EngineClient: @unchecked Sendable {
             let mode = obj["mode"] as? String ?? "replace"
             onMain { $0.applyTranscript(t, mode: mode) }
         case "ledger.rows":
-            if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["rows"]) }
+            // The whole message: `rows`, and `truncated` when a chain read hit its cap.
+            if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj) }
+        case "memory.items":
+            if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["items"]) }
         case "ledger.days":
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["days"]) }
         case "ledger.sessions":

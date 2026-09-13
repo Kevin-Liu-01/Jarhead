@@ -4,7 +4,25 @@
 # scenario: live | confirm | empty | settings | wake-locked | ledger | light |
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
-#           search | search-hit | problems | cleared | workers | loading | wipe | timing (default live)
+#           search | search-hit | problems | cleared | workers | loading | wipe | timing |
+#           memory | threads (default live)
+#   `memory` is the durable memory of Kevin: the Settings tab scrolled to its Memory section — the
+#   Remember toggle, Matching, the counts ("7 live", "1 forgotten · 1 archived", "1 waiting"), "learned 12m ago"
+#   beside Learn now, the budget hint,
+#   and the rail under them (search, Live | Forgotten | Archived, the rows with Edit / Forget / Restore
+#   behind ⋯ and the context menu, the Forget hint — never a deletion verb). Its default actions print
+#   the pass's `check:` lines (check-durability) into .build/console-preview/run.log, then drive the
+#   rail's verbs through its own rows (Forget m_dark, Edit m_kev, Forgotten's Restore m_light, back to
+#   Live): run.log must carry `send: memory.forget` / `memory.edit` (no kind) / `memory.restore` and a
+#   `memory-rail:` line per verb saying the row left at once. PREVIEW_SETTLE=3 for it.
+#   `threads` is long-horizon durability: the ended Codex thread stepped into — no live dot (isLive is
+#   derived from status + connection, never the stale tail flag), its last tool call `interrupted`
+#   (settled grey, no pulse), a 1 200-message transcript the model trims to 400 — then a daemon reconnect
+#   at 1.0 s, the window hidden at 1.4 s and shown at 1.8 s: run.log must carry agent.open, agent.close,
+#   agent.open naming ONE viewer; then "Load earlier" (60 rows, mode prepend) at 2.4 s between two
+#   `geometry` lines: the bottom stays pinned (distance 0) and `shown 400→460`. PREVIEW_SETTLE=3.4 for
+#   it. PREVIEW_CONNECTED=0 on `live` is the caret gate's control (the streaming caret must not blink
+#   while disconnected).
 #   `loading` is the dither pass's loading states: a ledger day picked and its read pinned in
 #   flight, a search pinned in flight — the stream's "Reading…" (16×2 glyphs), the rail's
 #   "Reading" row and the Jarhead section's "Searching…" (8×1); its default action prints the
@@ -93,6 +111,11 @@ if [[ -n "${PREVIEW_ACTION:-}" ]]; then export PREVIEW_ACTION; fi
 if [[ "$SCENARIO" == "switch" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; fi
 if [[ "$SCENARIO" == "wipe" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-8}"; export PREVIEW_WIPE_SECONDS="${PREVIEW_WIPE_SECONDS:-2}"; fi
 if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; fi
+if [[ "$SCENARIO" == "threads" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
+# The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
+# its default actions run to 2.3 s (the verbs), so the shot waits for them.
+if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi
 if [[ -n "${PREVIEW_REDUCE_MOTION:-}" ]]; then export PREVIEW_REDUCE_MOTION; fi

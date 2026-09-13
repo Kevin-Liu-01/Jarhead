@@ -2,17 +2,20 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
-import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, type SessionConfig } from "@jarhead/live";
+import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, YES_PATTERN, fakeHandsSpawn, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
-import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, type AgentConnector, type TranscriptPage } from "@jarhead/agents";
+import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type Reconciliation, type Reflex, type ReflexOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
 import { EarReflexes, type ReflexLedgerRow } from "./ear.ts";
+import { MemoryBridge, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { WorkerAwareRunner, WorkerPool, type WorkerBrainFactory, type WorkerParent, type WorkerVoice } from "./workers.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
+  type Accent,
   type AgentInfo,
+  type AgentStatus,
   type AudioLevels,
   type ConnectorHealth,
   type Delegation,
@@ -106,6 +109,31 @@ export interface EngineOptions {
   readonly exec?: Exec;
   /** How long after start() the Dock is first read (DOCK_AUDIT_DELAY_MS); tests shorten it. */
   readonly dockAuditDelayMs?: number;
+  /** The memory module's seams: a whole fake service (tests), or the embedder / extractor / fetch the real one is built over. */
+  readonly memory?: MemoryBridgeSeams;
+}
+
+/** Where a page's messages sit in the session file (`TranscriptPage.cursor`); "Load earlier" reads backward from `startOffset`. */
+type PageCursor = NonNullable<TranscriptPage["cursor"]>;
+
+/**
+ * A conversation some surface has stepped into. `viewers` are pane tokens (the daemon
+ * prefixes each with its client id, so a dead client's panes can be dropped; an open
+ * without a token gets an anonymous one and counts as before). The tail lives while any
+ * viewer remains. `cursor` is where the earliest page served began, for "Load earlier"
+ * by byte offset, and `firstId` the first message of that page: only a request for what
+ * lies before THAT message may use the offset (the connector gives `beforeOffset`
+ * precedence, so an id the pane kept after trimming would otherwise skip the span
+ * between); `status` is the agent's last known status, so a turn to `ended` settles the
+ * running calls once.
+ */
+interface OpenConversation {
+  readonly viewers: Set<string>;
+  unwatch: (() => void) | undefined;
+  total: number;
+  cursor?: PageCursor;
+  firstId: string | undefined;
+  status?: AgentStatus;
 }
 
 /** What the engine knows about a problem beyond its line: its kind, its one remedy, when it was first seen. */
@@ -180,8 +208,15 @@ export class Engine extends EventEmitter<EngineEvents> {
   private readonly markCaptures = new Map<string, Promise<void>>();
   /** When each consumed mark was handed over (the contract has no field for it); it ages out from here, not from when it was drawn. */
   private readonly markConsumedAt = new Map<string, number>();
-  /** Conversations a surface has stepped into, by agent id: how many viewers, and the live tail kept while any remain. */
-  private readonly openConversations = new Map<string, { viewers: number; unwatch: (() => void) | undefined }>();
+  /** Conversations a surface has stepped into, by agent id: the viewers (pane tokens), and the live tail kept while any remain. */
+  private readonly openConversations = new Map<string, OpenConversation>();
+  /** Opens that named no viewer get one of these; a close without a viewer takes one back (the old counting behaviour). */
+  private anonViewers = 0;
+  /** What Jarhead durably knows about Kevin (memory-bridge.ts): never on the voice loop; the daemon reads `list` / `search` through it. */
+  readonly memory: MemoryBridge;
+  /** The voice and accent the open session was started with (a pick while awake is heard at the next wake). */
+  private sessionVoice: string | undefined;
+  private sessionAccent: Accent | undefined;
   private permissionPollAt = 0;
   private permissionFastUntil = 0;
   private permissionPolling = false;
@@ -222,6 +257,15 @@ export class Engine extends EventEmitter<EngineEvents> {
   private lostSession: LostSession | undefined;
   /** The ledger resume happens at most once per process — and never after Kevin pressed Stop in this one. */
   private ledgerResumeUsed = false;
+  /**
+   * The conversation the server cut (expired, connection lost) and the reconnect has not
+   * yet carried on: set at the `closed` event, taken by the connect that reopens it (the
+   * 500 ms timer's, or Kevin's Go inside the window), held again when that connect fails
+   * (the network still down), let go by Stop, a new conversation, or the pause's decay.
+   * While set the conversation is held, as a pause holds one: memory does not read it.
+   */
+  private heldReconnect: PauseInfo | undefined;
+  private reconnectTimer: NodeJS.Timeout | undefined;
   private permissions: Permissions = { microphone: "unknown", screenRecording: "unknown", accessibility: "unknown" };
   private agentsList: AgentInfo[] = [];
   private connectorHealth: ConnectorHealth[] = [];
@@ -338,6 +382,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.agents = new AgentRegistry(connectors);
     this.agents.onChange((list) => {
       this.agentsList = list;
+      // An open conversation whose process is gone: its running calls read `interrupted`, once.
+      this.settleEndedConversations(list);
       this.scheduleSnapshot();
     });
     const runnerBase: Omit<RunnerOptions, "toolset"> = {
@@ -370,6 +416,20 @@ export class Engine extends EventEmitter<EngineEvents> {
       onChange: () => this.scheduleSnapshot(),
     });
     this.runner = new WorkerAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.workers, lease: this.lease, desk: this.desk });
+    // Durable memory (K: "jarhead preferences save across sessions"): built over the runner's
+    // redactor (nothing reaches an extractor or the store unredacted), Kevin's OpenAI key when
+    // there is one, and Settings.memory read live. Extraction runs from tick() only when quiet.
+    this.memory = new MemoryBridge({
+      stateDir: this.config.stateDir,
+      ledger: this.ledger,
+      now: this.now,
+      redact: (s) => this.runner.redactor.redact(s),
+      apiKey: () => this.config.openaiApiKey,
+      model: () => this.config.memoryModel,
+      enabled: () => this.settings.memory !== false,
+      onChange: () => this.scheduleSnapshot(),
+      ...(opts.memory ?? {}),
+    });
     // Reflexes run through the same runner as every brain call; the click pre-check asks which app is up.
     this.reflexRunner = new ReflexRunner({ runner: this.runner, frontmostApp: () => this.frontmostAppName(), browserInFront: async () => BROWSER_APPS.test(this.frontApp || (await this.frontmostAppName())), now: this.now });
     this.firedReflexes = new FiredReflexes(this.now, Engine.RECONCILE_WINDOW_MS);
@@ -425,6 +485,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
         this.emit("utterance", item);
+        // Kevin's final line: the spoken memory reflexes ("remember that …", "forget that") answer with a toast; every other line is pre-embedded for the delegation that may follow.
+        if (item.speaker === "kevin") {
+          void this.memory.onHeard(item, this.live?.session?.id).then((toast) => {
+            if (toast) this.toast(toast, "info");
+          });
+        }
       }
       this.scheduleSnapshot();
     });
@@ -507,6 +573,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     // A different brain (or model / server) takes effect now, not at the next launch.
     if (this.brainStarted && (before.brain !== this.settings.brain || before.brainModel !== this.settings.brainModel || before.brainBaseUrl !== this.settings.brainBaseUrl || before.effort !== this.settings.effort)) {
       void this.restartBrain(`settings changed to ${this.settings.brain} ${this.settings.brainModel}`);
+    }
+    // A voice, accent or language is fixed at session.start (session.update carries only the
+    // delegation), so a pick while awake is silent until the next session — say so, and where
+    // the button is that reopens now (voice.reopen, Kevin-pressed only: never a paid start on a menu browse).
+    if ((this.live || this.connecting) && (before.voice !== this.settings.voice || before.accent !== this.settings.accent || before.language !== this.settings.language)) {
+      this.toast("voice change heard at the next wake · Switch now in Settings to hear it", "info");
     }
     try {
       writeFileSync(this.settingsPath(), JSON.stringify(this.settings, null, 2));
@@ -1225,7 +1297,14 @@ export class Engine extends EventEmitter<EngineEvents> {
   // a session is open (docs/REDESIGN.md §13), so every state but `awake` and
   // `connecting` has NO session; the watchdog in tick() enforces it.
 
-  /** The one place a session's config is built; `continuity` is the "# Continuity" section a resume appends. */
+  /**
+   * The one place a session's config is built. The instructions, in this order: the
+   * standing orders (instructions.ts, a rail with its own word budget), `# Language`
+   * (English by default, the accent as one fragment — assembled here so the rail and its
+   * budget stay untouched), `# Kevin, in brief` (≤ VOICE_MEMORY_TOKENS of durable
+   * memory, when on and non-empty), and `continuity` (the "# Continuity" section a
+   * resume or a reconnect appends). An engine test pins the order.
+   */
   private sessionConfig(continuity?: string): SessionConfig {
     const brain = this.brain;
     const delegation =
@@ -1233,9 +1312,11 @@ export class Engine extends EventEmitter<EngineEvents> {
         ? responsesDelegationConfig({ model: this.settings.brain === "openai-responses" ? this.settings.brainModel : undefined, effort: "low" })
         : ({ type: "client" } as const);
     const base = buildLiveInstructions({ alwaysOn: true });
+    const language = languageSection("Kevin", this.settings.language, this.settings.accent);
+    const about = this.memory.voiceBlock();
     return {
       model: this.config.liveModel,
-      instructions: continuity ? `${base}\n\n${continuity}` : base,
+      instructions: [base, language, about, continuity].filter((s): s is string => Boolean(s)).join("\n\n"),
       audio: { format: { type: "audio/pcm", rate: 24000 }, output: { voice: this.settings.voice } },
       delegation,
     };
@@ -1280,11 +1361,13 @@ export class Engine extends EventEmitter<EngineEvents> {
   /**
    * Open a session. `resume` carries the pause it continues: the config gets the
    * continuity section, the started row says `resumedFrom`, and a `resume` row
-   * follows. A stop or sleep that lands while the socket opens sets `wantAwake`
-   * false; the session is then closed the moment it exists (it billed for the
-   * handshake, nothing more) and the transport stays asleep.
+   * follows — for a pause Kevin chose, a restart that cut the conversation, or a
+   * reconnect after the server dropped it (`how`; the toast says "back" for the last).
+   * A stop or sleep that lands while the socket opens sets `wantAwake` false; the
+   * session is then closed the moment it exists (it billed for the handshake, nothing
+   * more) and the transport stays asleep.
    */
-  private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string }): Promise<void> {
+  private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string; readonly how?: "paused" | "restarted" | "reconnected" }): Promise<void> {
     log.info(`wake requested (${reason})`);
     this.wantAwake = true;
     if (this.live || this.connecting) return;
@@ -1308,10 +1391,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     // A fresh process whose predecessor was cut mid-conversation: the first Go inside the
     // window resumes that conversation from the ledger (the K3 region; a real pause's resume
-    // arrives with its continuity already). Then the disk: a session may open with no room
-    // for shots, but the row says so before the first screenshot is skipped.
-    resume ??= this.resumeFromLedger(reason);
+    // arrives with its continuity already), and a conversation the server cut is carried on by
+    // whichever connect comes first — the reconnect timer's or Kevin's Go (heldReconnect). Then
+    // the disk: a session may open with no room for shots, but the row says so before the
+    // first screenshot is skipped.
+    resume ??= this.resumeFromLedger(reason) ?? this.takeHeldReconnect(reason);
     this.checkDisk();
+    // What this session speaks with is fixed now; a later pick is heard at the next one.
+    this.sessionVoice = this.settings.voice;
+    this.sessionAccent = this.settings.accent;
     const config = this.sessionConfig(resume?.continuity);
     let live: LiveSession | undefined;
     try {
@@ -1325,7 +1413,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.lastAddressedAt = at;
       this.usageSeconds = 0;
       this.contextRatio = undefined;
-      this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
+      this.ledger.append({ at, type: "session.started", sessionId: res.id, voice: this.settings.voice, language: this.settings.language, accent: this.settings.accent, ...(resume ? { resumedFrom: resume.pause.sessionId } : {}) });
       // Grants live with the conversation: a resume continues the chain it left, a new session starts one.
       this.confirmations.beginConversation(resume ? (this.ledger.chainRootOf(resume.pause.sessionId) ?? resume.pause.sessionId) : res.id);
       this.usageBase = { ...this.usageBase, sessions: this.usageBase.sessions + 1 };
@@ -1340,7 +1428,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (resume) {
         this.ledger.append({ at, type: "resume", sessionId: res.id, resumedFrom: resume.pause.sessionId, pausedMs: at - resume.pause.at });
         this.pauseInfo = undefined;
-        this.toast("resumed", "info");
+        this.toast(resume.how === "reconnected" ? "back" : "resumed", "info");
       }
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
@@ -1361,6 +1449,12 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.endVoiceReconnect();
         this.voiceProblem(`could not start a Live session: ${(e as Error).message}`, Engine.GO_REMEDY);
         this.setPhase("error");
+        // The conversation the server cut is not lost with the failed start: Kevin's Go (or Retry)
+        // carries it on with the same continuity — the network being down is the common case here.
+        if (resume?.how === "reconnected" && !this.heldReconnect) {
+          this.heldReconnect = resume.pause;
+          log.info(`the reconnect failed; the conversation (${resume.pause.sessionId}) is held for the next Go until ${new Date(resume.pause.sleepsAt).toISOString()}`);
+        }
       }
     } finally {
       this.connecting = false;
@@ -1557,6 +1651,9 @@ export class Engine extends EventEmitter<EngineEvents> {
         floorLane: () => this.workers.floorLane(),
         inExchange: () => this.now() - this.lastAddressedAt < Engine.EXCHANGE_WINDOW_MS,
       },
+      // What Jarhead knows about Kevin, ≤ BRAIN_MEMORY_TOKENS per delegation, raced at 250 ms
+      // (B4 wires `DelegatorOptions.memory` and `BrainTask.memory`; spread so it typechecks before that lands).
+      ...this.memoryForDelegator(),
     });
     delegator.on("change", () => this.scheduleSnapshot());
     delegator.on("phase", () => this.recomputePhase());
@@ -1612,6 +1709,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (!current()) return;
       log.warn(`live error${cid ? ` (${cid})` : ""}: ${e.message}`);
       if (!/context_injection_incomplete/.test(e.message)) this.voiceProblem(`voice: ${e.message}`);
+      // An error with no `closed` behind it stops the session clock; the wall clock (ORPHAN_MS, here and on every tick) finalises what was left open.
+      this.transcript.settle(live.nowMs, this.now());
     });
     live.on("closed", (reason, usage) => {
       // The record and the meter, whichever session this was. A socket that never
@@ -1619,6 +1718,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.foldUsage(live, usage);
       const id = live.session?.id;
       if (id) this.ledger.append({ at: this.now(), type: "session.closed", sessionId: id, reason, usageSeconds: usage });
+      // Its rows are complete: memory reads them at the next quiet tick (never while a session is up).
+      if (id) this.memory.sessionClosed(id);
       if (!current()) {
         log.debug(`session ${id ?? "(never started)"} closed (${reason}, ${usage}s) after it was detached`);
         this.scheduleSnapshot();
@@ -1635,10 +1736,23 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.wantAwake && !this.pauseInfo && (reason === "expired" || reason === "connection_lost")) {
         this.toast(reason === "expired" ? "session expired; reconnecting" : "connection lost; reconnecting", "warn");
         this.noteVoiceReconnect(reason === "expired" ? "session expired" : "connection lost");
+        // The new session carries the conversation: the dead one's id as `resumedFrom`
+        // (one chain in the Console, the grants stay), its last lines under `# Continuity`
+        // (the "reconnected" wording), and a `resume` row. Usage is the closed event's
+        // figure — detachLive has already zeroed the field. Sessions expire by design, so
+        // without this the voice forgot the conversation mid-flow every hour.
+        // Held like a pause until a connect carries it on (the timer's below, or Kevin's Go inside the
+        // window): the continuity is built when that connect runs, so the gap it names is the real one;
+        // it decays as a pause would, and memory does not read the conversation while it is held.
+        const at = this.now();
+        this.heldReconnect = { at, sessionId: id, usageSeconds: usage, sleepsAt: at + Math.max(Engine.PAUSE_MIN_MS, this.settings.idleSleepMinutes * 60_000) };
         // Re-checked when it fires: a stop or a pause in the meantime wins over the reconnect.
-        setTimeout(() => {
-          if (this.wantAwake && !this.pauseInfo) void this.connect(`reconnect after ${reason}`);
-        }, 500).unref?.();
+        this.cancelReconnectTimer();
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = undefined;
+          if (this.wantAwake && !this.pauseInfo && this.heldReconnect) void this.connect(`reconnect after ${reason}`);
+        }, 500);
+        this.reconnectTimer.unref?.();
       } else {
         this.setPhase("asleep");
       }
@@ -1686,6 +1800,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       const sessionId = live?.session?.id;
       this.wantAwake = false;
       this.pauseInfo = undefined;
+      // The held conversation is let go — a pause's, and the one a pending reconnect was to carry on.
+      this.dropHeldReconnect();
       // Only when there is something to put to sleep: asleep already, there is nothing to record.
       const farewell = o.farewell === true && live !== undefined && !wasConnecting && live.currentState === "started" && !this.outputGated;
       if (live || wasPaused || wasConnecting) this.ledger.append({ at: t0, type: "sleep", cause, ...(o.phrase ? { phrase: o.phrase } : {}), ...(sessionId ? { sessionId } : {}), ...(farewell ? { farewell: true } : {}) });
@@ -1880,9 +1996,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     const workersRunning = this.workers.running() > 0;
     this.wantAwake = false;
     // Kevin's Stop wins over a restart's resume: the conversation the previous process was
-    // cut from is not picked up by the next Go once he has said stop in this one.
+    // cut from is not picked up by the next Go once he has said stop in this one — nor the
+    // one the server cut and the reconnect still held.
     this.ledgerResumeUsed = true;
     this.lostSession = undefined;
+    this.dropHeldReconnect();
     const { running, dropped, jobs, cancel } = this.cutEverything("Kevin pressed stop", "stop");
     this.endVoiceReconnect();
     // The stop row is written whenever there was something to stop — a pending reconnect
@@ -1994,13 +2112,22 @@ export class Engine extends EventEmitter<EngineEvents> {
   // ------------------------------------------------------- conversations
   // Implemented in packages/agents-backed methods below; the UI sends agent.open
   // when Kevin hops into a session, receives `agent.transcript` events while it
-  // is open, and agent.close when he leaves.
+  // is open, and agent.close when he leaves. Long-horizon rules (Kevin: "threads
+  // don't break after a while"): opens are per VIEWER (a pane token the daemon
+  // prefixes with its client id), so a re-open after a reconnect never double-counts
+  // and a client that dies takes its tails with it (`dropViewers`); a tail that ends
+  // says so — `gone` → live:false plus the calls it left running as `interrupted`,
+  // `replaced` / `truncated` → the page is read again and the tail re-attached; an
+  // agent whose process is gone (status `ended`) has its running calls settled; older
+  // pages arrive as `prepend`, read by byte offset (never from the file's end again);
+  // and a clean shutdown tells every open pane live:false before the tails close.
 
-  private async openAgent(agentId: string): Promise<void> {
-    // Count the viewer first so a close() that races the page read is not lost.
+  private async openAgent(agentId: string, viewer?: string): Promise<void> {
+    // Register the viewer first so a close() that races the page read is not lost.
+    const key = viewer ?? `anon:${++this.anonViewers}`;
     const open = this.openConversations.get(agentId);
-    if (open) open.viewers += 1;
-    else this.openConversations.set(agentId, { viewers: 1, unwatch: undefined });
+    if (open) open.viewers.add(key);
+    else this.openConversations.set(agentId, { viewers: new Set([key]), unwatch: undefined, total: 0, firstId: undefined, ...this.statusEntry(agentId) });
     let page: TranscriptPage;
     try {
       page = await this.agents.transcript(agentId, { limit: DEFAULT_PAGE });
@@ -2011,59 +2138,190 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     const entry = this.openConversations.get(agentId);
     if (!entry) return; // closed while the page was read
-    // One tail per conversation however many surfaces show it; its deltas cannot arrive before the page below is emitted.
-    if (!entry.unwatch) {
-      let ended = false;
-      try {
-        const stop = this.agents.watch(
-          agentId,
-          (delta) => {
-            if (!this.openConversations.has(agentId)) return;
-            this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: delta.messages, total: delta.total, complete: false, live: true }, mode: "append" });
-          },
-          (reason) => {
-            // The tail could not start (the session is gone, its file unreadable): the
-            // conversation stays open but is no longer live, and the surfaces hear so.
-            ended = true;
-            const current = this.openConversations.get(agentId);
-            if (!current) return;
-            current.unwatch?.(); // lets the connector drop its timers; a no-op once the tail has ended
-            current.unwatch = undefined;
-            log.warn(`agent.open ${agentId}: live tail ended (${reason})`);
-            this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: [], total: page.total, complete: false, live: false }, mode: "append" });
-          },
-        );
-        // `ended` may already be set when the connector gave up synchronously.
-        if (ended) stop?.();
-        else entry.unwatch = stop;
-      } catch (e) {
-        log.warn(`agent.open ${agentId}: no live tail (${(e as Error).message})`);
-      }
-    }
+    entry.total = page.total;
+    if (page.cursor) entry.cursor = page.cursor;
+    entry.firstId = page.messages[0]?.id;
+    // One tail per conversation however many viewers show it; its deltas cannot arrive before the page below is emitted.
+    if (!entry.unwatch) this.attachTail(agentId, entry);
     this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry.unwatch !== undefined }, mode: "replace" });
   }
 
-  private async closeAgent(agentId: string): Promise<void> {
+  /** The agent's last known status, for the entry (a status already `ended` at open settles nothing: the page reads it as is). */
+  private statusEntry(agentId: string): { status?: AgentStatus } {
+    const status = this.agentsList.find((a) => a.id === agentId)?.status;
+    return status ? { status } : {};
+  }
+
+  /** Follow the file: deltas go out as `append`; the end of the tail is handled by `onTailEnd`. */
+  private attachTail(agentId: string, entry: OpenConversation): void {
+    let ended = false;
+    try {
+      const stop = this.agents.watch(
+        agentId,
+        (delta) => {
+          const current = this.openConversations.get(agentId);
+          if (!current) return;
+          current.total = delta.total;
+          this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: delta.messages, total: delta.total, complete: false, live: true }, mode: "append" });
+        },
+        (reason) => {
+          ended = true;
+          this.onTailEnd(agentId, reason);
+        },
+      );
+      // `ended` may already be set when the connector gave up synchronously.
+      if (ended) stop?.();
+      else entry.unwatch = stop;
+    } catch (e) {
+      log.warn(`agent.open ${agentId}: no live tail (${(e as Error).message})`);
+    }
+  }
+
+  /**
+   * The tail stopped on its own. `replaced` / `truncated` (the tool rewrote the file):
+   * the conversation is read again from the file as it is now and followed on, the
+   * viewers untouched. Anything else — `gone` (the file disappeared for 10 s and no
+   * archived copy took over), or a tail that could not start — means nothing more will
+   * arrive: the panes hear live:false, and whatever calls were still running read
+   * `interrupted` in the same delta, so no card pulses for a process that is gone.
+   */
+  private onTailEnd(agentId: string, reason: string): void {
+    const current = this.openConversations.get(agentId);
+    if (!current) return;
+    current.unwatch?.(); // lets the connector drop its timers; a no-op once the tail has ended
+    current.unwatch = undefined;
+    if (reason === "replaced" || reason === "truncated") {
+      log.info(`agent ${agentId}: file ${reason}; reading it again`);
+      void this.reopenAgent(agentId, reason);
+      return;
+    }
+    log.warn(`agent ${agentId}: live tail ended (${reason})`);
+    void this.settleAgent(agentId).then((delta) => {
+      const still = this.openConversations.get(agentId);
+      if (!still) return;
+      this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: delta?.messages ?? [], total: delta?.total ?? still.total, complete: false, live: false }, mode: "append" });
+    });
+  }
+
+  /** Read the newest page again and follow on (the file was replaced or truncated under the tail); the viewers stay. */
+  private async reopenAgent(agentId: string, reason: string): Promise<void> {
+    if (!this.openConversations.has(agentId)) return;
+    let page: TranscriptPage;
+    try {
+      page = await this.agents.transcript(agentId, { limit: DEFAULT_PAGE });
+    } catch (e) {
+      log.warn(`agent ${agentId}: could not read it again after ${reason} (${(e as Error).message})`);
+      const gone = this.openConversations.get(agentId);
+      if (gone) this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: [], total: gone.total, complete: false, live: false }, mode: "append" });
+      return;
+    }
+    const entry = this.openConversations.get(agentId);
+    if (!entry) return; // closed meanwhile
+    entry.total = page.total;
+    if (page.cursor) entry.cursor = page.cursor;
+    entry.firstId = page.messages[0]?.id;
+    if (!entry.unwatch) this.attachTail(agentId, entry);
+    this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry.unwatch !== undefined }, mode: "replace" });
+  }
+
+  /** The connector's word on the calls a session left running when its process ended (`interrupted`), or undefined when it keeps none. */
+  private async settleAgent(agentId: string): Promise<TranscriptDelta | undefined> {
+    const parts = splitAgentId(agentId);
+    const connector = parts ? this.agents.connector(parts.kind) : undefined;
+    if (!connector?.settle) return undefined;
+    try {
+      return await connector.settle(agentId);
+    } catch (e) {
+      log.debug(`agent ${agentId}: settle failed (${(e as Error).message})`);
+      return undefined;
+    }
+  }
+
+  /** The agents' statuses moved: an open conversation that turned `ended` has its running calls flipped to `interrupted`, once per ending. */
+  private settleEndedConversations(list: readonly AgentInfo[]): void {
+    for (const [agentId, entry] of this.openConversations) {
+      const status = list.find((a) => a.id === agentId)?.status;
+      if (!status) continue;
+      const before = entry.status;
+      entry.status = status;
+      if (status !== "ended" || before === "ended") continue;
+      void this.settleAgent(agentId).then((delta) => {
+        const still = this.openConversations.get(agentId);
+        if (!still || !delta || delta.messages.length === 0) return;
+        still.total = delta.total;
+        this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: delta.messages, total: delta.total, complete: false, live: still.unwatch !== undefined }, mode: "append" });
+      });
+    }
+  }
+
+  private async closeAgent(agentId: string, viewer?: string): Promise<void> {
     const open = this.openConversations.get(agentId);
     if (!open) return;
-    open.viewers -= 1;
-    if (open.viewers > 0) return;
+    if (viewer !== undefined) open.viewers.delete(viewer);
+    else {
+      // The old counting behaviour: a close without a token takes one anonymous viewer back.
+      const anon = [...open.viewers].find((v) => v.startsWith("anon:"));
+      if (anon) open.viewers.delete(anon);
+    }
+    if (open.viewers.size > 0) return;
     this.openConversations.delete(agentId);
     open.unwatch?.();
   }
 
+  /**
+   * A daemon client went away (its socket closed): every viewer it registered leaves,
+   * and a conversation nobody else shows stops being tailed. Without this a Console that
+   * crashed or was force-quit left its tails running until the daemon restarted.
+   */
+  dropViewers(clientId: string): void {
+    const prefix = `${clientId}/`;
+    let closed = 0;
+    for (const [agentId, open] of [...this.openConversations]) {
+      for (const v of [...open.viewers]) if (v.startsWith(prefix)) open.viewers.delete(v);
+      if (open.viewers.size > 0) continue;
+      this.openConversations.delete(agentId);
+      open.unwatch?.();
+      closed++;
+    }
+    if (closed) log.info(`client ${clientId} left: ${closed} conversation tail(s) closed`);
+  }
+
+  /**
+   * Older turns, as a `prepend` page: the connector resolves `before` (a message id the
+   * app still has) and, when the conversation is open and `before` is the first message
+   * of what the engine has served, is told the byte offset that page began at, so a
+   * "Load earlier" reads backward from there instead of re-reading from the file's end.
+   * Any other `before` — the oldest message a pane kept after its 400-message trim, one
+   * that arrived as an append — goes alone: the connector gives the offset precedence,
+   * and reading from the page start would skip everything between. The page's
+   * `complete` says whether the first message is in it.
+   */
   private async agentHistory(agentId: string, before: string): Promise<void> {
+    const entry = this.openConversations.get(agentId);
+    const atStart = entry?.cursor !== undefined && entry.firstId !== undefined && before === entry.firstId;
+    const opts: TranscriptOptions = { limit: DEFAULT_PAGE, before, ...(atStart && entry?.cursor ? { beforeOffset: entry.cursor.startOffset } : {}) };
     try {
-      const page = await this.agents.transcript(agentId, { limit: DEFAULT_PAGE, before });
-      this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: this.openConversations.has(agentId) }, mode: "replace" });
+      const page = await this.agents.transcript(agentId, opts);
+      if (entry && page.cursor) {
+        // The served range grows backward only when the page reached below it; a gap fill leaves the start where it was.
+        const start = entry.cursor?.startOffset;
+        if (start === undefined || page.cursor.startOffset <= start) {
+          entry.cursor = { startOffset: page.cursor.startOffset, endOffset: entry.cursor?.endOffset ?? page.cursor.endOffset };
+          if (page.messages.length > 0) entry.firstId = page.messages[0]?.id;
+        }
+      }
+      this.emit("event", { type: "agent.transcript", transcript: { agentId, ...page, live: entry?.unwatch !== undefined }, mode: "prepend" });
     } catch (e) {
       this.toast(`no older turns for ${agentId}: ${(e as Error).message}`, "warn");
     }
   }
 
-  /** Stop every live tail; the surfaces are going away with the engine. */
+  /** Stop every live tail; the surfaces are going away with the engine — and hear so first, so no pane keeps a "live" it will never see end. */
   private closeConversations(): void {
-    for (const open of this.openConversations.values()) open.unwatch?.();
+    for (const [agentId, open] of this.openConversations) {
+      this.emit("event", { type: "agent.transcript", transcript: { agentId, messages: [], total: open.total, complete: false, live: false }, mode: "append" });
+      open.unwatch?.();
+    }
     this.openConversations.clear();
   }
 
@@ -2258,7 +2516,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the Console resumes first. Unresumed, the pause decays to sleep at `sleepsAt`
    * (idleSleepMinutes, at least a minute).
    */
-  async pause(): Promise<void> {
+  async pause(o: { readonly quiet?: boolean } = {}): Promise<void> {
     if (this.sleeping) {
       // A dismissal already in flight wins: its farewell ends now and the sleep finishes (the
       // session closes, the spare goes). A pause over it would flip the phase to paused for a
@@ -2289,7 +2547,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.detachLive(live);
     this.closeWithDeadline(live, "pause");
     this.setPhase("paused");
-    this.toast("paused · meter stopped", "info");
+    if (!o.quiet) this.toast("paused · meter stopped", "info");
     await this.bounded(cancel);
     log.info(`paused in ${this.now() - t0}ms: session ${sessionId} closed at ${usageSeconds}s; ${running ? `cancelled ${running.id}` : "nothing was running"}; ${dropped} hands request(s) dropped; sleeps at +${Math.round((this.pauseInfo?.sleepsAt ?? t0) - t0) / 60_000} min unless resumed`);
   }
@@ -2310,13 +2568,42 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
+   * Kevin pressed Switch now after picking a voice or accent: the session is paused
+   * (closed, the conversation held) and reopened at once with the new voice and the
+   * "reconnected" continuity — strictly the two existing verbs, so one session at a
+   * time and both rows on the ledger. Refused while a task or a worker runs (a pause
+   * would cancel them: "busy — heard at the next wake"), and while paused, asleep or
+   * connecting (nothing to reopen: the pick is heard at the next wake anyway). Only
+   * ever on Kevin's press — browsing 22 voices must never churn paid starts.
+   */
+  async reopenVoice(): Promise<void> {
+    if (this.delegator?.active !== undefined || this.workers.running() > 0) {
+      this.toast("busy — heard at the next wake", "info");
+      return;
+    }
+    if (!this.live?.session || this.connecting || this.pauseInfo || this.sleeping) {
+      this.toast("heard at the next wake", "info");
+      return;
+    }
+    const was = `${this.sessionVoice ?? "?"} / ${this.sessionAccent ?? "?"}`;
+    await this.pause({ quiet: true });
+    const pause = this.pauseInfo;
+    if (!pause) return; // a sleep raced the pause: nothing is held, nothing to reopen
+    log.info(`voice change: reopening the session (${was} → ${this.settings.voice} / ${this.settings.accent})`);
+    await this.connect("voice change", { pause, continuity: this.continuityFor(pause, "reconnected"), how: "reconnected" });
+  }
+
+  /**
    * The "# Continuity" section a resumed session starts with: the last lines of the
    * conversation and the last task. `how` says what the gap was: a pause Kevin chose
-   * (the default: carry on silently), or a restart of the engine that cut the
+   * (the default: carry on silently); a restart of the engine that cut the
    * conversation — then the lines come from the LEDGER (this process never heard them)
-   * and the voice says one word, "back", so Kevin knows it is the same conversation.
+   * and the voice says one word, "back", so Kevin knows it is the same conversation; or
+   * a reconnect after the server dropped the session (expired, connection lost, a voice
+   * switch) — the same conversation picked up where it was cut, silently unless Kevin
+   * was mid-request.
    */
-  private continuityFor(pause: PauseInfo, how: "paused" | "restarted" = "paused"): string {
+  private continuityFor(pause: PauseInfo, how: "paused" | "restarted" | "reconnected" = "paused"): string {
     const gapMs = this.now() - pause.at;
     const minutes = Math.round(gapMs / 60_000);
     const when = minutes < 1 ? "less than a minute ago" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
@@ -2340,6 +2627,17 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     const last = this.lastDelegations[this.lastDelegations.length - 1];
     const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : recalled?.task;
+    if (how === "reconnected") {
+      const seconds = Math.max(1, Math.round(gapMs / 1000));
+      const gap = seconds < 90 ? `${seconds} ${seconds === 1 ? "second" : "seconds"}` : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+      return [
+        "# Continuity",
+        `The voice connection dropped ${gap} ago and just came back. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
+        lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
+        ...(task ? [task] : []),
+        "Carry on as before; do not recap or apologise. Say nothing now unless Kevin was mid-request — then answer it.",
+      ].join("\n");
+    }
     if (how === "restarted") {
       const seconds = Math.max(1, Math.round(gapMs / 1000));
       return [
@@ -2846,11 +3144,22 @@ export class Engine extends EventEmitter<EngineEvents> {
         return;
       }
       case "agent.open":
-        return this.openAgent(cmd.agentId);
+        return this.openAgent(cmd.agentId, cmd.viewer);
       case "agent.close":
-        return this.closeAgent(cmd.agentId);
+        return this.closeAgent(cmd.agentId, cmd.viewer);
       case "agent.history":
         return this.agentHistory(cmd.agentId, cmd.before);
+      case "voice.reopen":
+        return this.reopenVoice();
+      case "memory.forget":
+      case "memory.restore":
+      case "memory.edit":
+      case "memory.add":
+      case "memory.run": {
+        // Forget is a state, never a deletion; a run starts only when no session is up (the same rule as the tick's).
+        this.toast(await this.memory.command(cmd, this.quiet), "info");
+        return this.scheduleSnapshot();
+      }
       case "mark.add":
         return this.addMark(cmd.rect, cmd.path);
       case "mark.clear":
@@ -2965,7 +3274,16 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.toast("paused too long · asleep", "info");
       void this.fallAsleep("pause-decayed");
     }
-    if (this.live) this.transcript.settle(this.live.nowMs);
+    // Whatever state the session is in: the session clock closes utterances after GAP_MS, the wall clock after ORPHAN_MS (an errored session's clock stops).
+    if (this.live) this.transcript.settle(this.live.nowMs, now);
+    // A conversation a failed reconnect held decays as a pause would: the next Go starts afresh.
+    if (this.heldReconnect && !this.live && !this.connecting && now >= this.heldReconnect.sleepsAt) {
+      log.info(`the conversation cut ${Math.round((now - this.heldReconnect.at) / 60_000)} min ago was never reconnected; let go`);
+      this.dropHeldReconnect();
+    }
+    // Memory reads closed conversations only when nothing is up — no session, none opening, no pause
+    // held, no reconnect pending (a pause closes the session too; the run waits for the resume or the decay).
+    this.memory.drain(this.quiet);
     void this.pollPermissions();
     this.emit("event", { type: "levels", levels: this.levels() });
   }
@@ -3659,6 +3977,50 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
+   * The resume a connect gets for a conversation the server cut (`heldReconnect`): the
+   * "reconnected" continuity, built now so the gap it names is the real one. Taken by
+   * the reconnect timer's connect or by Kevin's Go inside the window; a connect that then
+   * fails holds it again (connect's catch). Decayed, trashed or archived → nothing.
+   */
+  private takeHeldReconnect(reason: string): { readonly pause: PauseInfo; readonly continuity: string; readonly how: "reconnected" } | undefined {
+    const held = this.heldReconnect;
+    if (!held) return undefined;
+    this.heldReconnect = undefined;
+    const state = this.ledger.conversation(held.sessionId)?.state;
+    if (state === "trashed" || state === "archived") {
+      log.info(`${reason}: the conversation the server cut (${held.sessionId}) is ${state}; not carried on`);
+      return undefined;
+    }
+    if (this.now() >= held.sleepsAt) {
+      log.info(`${reason}: the conversation the server cut (${held.sessionId}) was held past its decay; a fresh one`);
+      return undefined;
+    }
+    return { pause: held, continuity: this.continuityFor(held, "reconnected"), how: "reconnected" };
+  }
+
+  /** The held conversation is let go (Stop, a new conversation, sleep, the decay), the pending reconnect with it. */
+  private dropHeldReconnect(): void {
+    this.heldReconnect = undefined;
+    this.cancelReconnectTimer();
+  }
+
+  private cancelReconnectTimer(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+  }
+
+  /**
+   * Nothing is up, opening, held or about to reopen: the one moment memory may read closed
+   * conversations (the tick and `memory.run` agree on it). A pause holds the conversation
+   * and so does a reconnect the server forced — the 500 ms window included — so no
+   * extraction ever runs against a conversation that is about to continue.
+   */
+  private get quiet(): boolean {
+    return !this.live && !this.connecting && !this.pauseInfo && !this.heldReconnect;
+  }
+
+  /**
    * What a session said, from its ledger rows: the heard / said items in order (the
    * continuity's lines when this process never heard them) and the last finished task
    * with a summary. Bounded to the rows of that one session.
@@ -3698,6 +4060,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         ? {
             session: {
               id: live.session.id,
+              ...(this.sessionVoice !== undefined ? { voice: this.sessionVoice } : {}),
+              ...(this.sessionAccent !== undefined ? { accent: this.sessionAccent } : {}),
               startedAt: this.sessionStartedAt,
               expiresAt: live.session.expires_at * 1000,
               usageSeconds: this.usageSeconds,
@@ -3727,7 +4091,19 @@ export class Engine extends EventEmitter<EngineEvents> {
       hiddenAgents: this.hiddenAgents,
       // Running workers and those finished within WORKER_LINGER_MS, for the Console's rail.
       workers: this.workers.list(),
+      // What Jarhead remembers: counts, mode, the last run, what the last turn used — never a vector.
+      memory: this.memory.summary(),
     };
+  }
+
+  /**
+   * The delegator's memory hook: the brain's block for a task (≤ BRAIN_MEMORY_TOKENS),
+   * raced at 250 ms in the bridge. Spread into `new Delegator({...})` so the engine
+   * typechecks before B4 adds `DelegatorOptions.memory` (an unknown key in a spread
+   * is not an excess property); the delegator takes it up once the option exists.
+   */
+  private memoryForDelegator(): { readonly memory: (query: string, signal: AbortSignal) => Promise<string | undefined> } {
+    return { memory: (query, signal) => this.memory.brainBlock(query, signal) };
   }
 
   private lastDelegations: readonly Delegation[] = [];
@@ -3758,6 +4134,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (open) ids.push(open);
     if (this.pauseInfo) ids.push(this.pauseInfo.sessionId);
     if (this.lostSession) ids.push(this.lostSession.sessionId);
+    if (this.heldReconnect) ids.push(this.heldReconnect.sessionId);
     return ids;
   }
 
@@ -3823,8 +4200,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     const closing = this.live || this.connecting || this.pauseInfo ? this.pressStop("new conversation") : undefined;
     // The session a crashed process left for the next Go is let go too. pressStop does this when it
     // runs; asleep inside the auto-resume window nothing else would, and the next Go would resume it.
+    // Likewise the conversation a failed reconnect held.
     this.lostSession = undefined;
     this.ledgerResumeUsed = true;
+    this.dropHeldReconnect();
     this.confirmations.endConversation();
     // pressStop detached the session synchronously (its words moved to the held record); the record is dropped now.
     this.heldTranscript = [];

@@ -14,6 +14,14 @@ import { AsyncQueue } from "./queue.ts";
 
 const log = logger("agents.claude");
 
+/**
+ * A turn that is `working` with no SDK message for this long has stalled — the CLI is
+ * stuck in API retries or hung — and reads `unknown` rather than `working` for ever.
+ * The SDK has no per-turn timeout of its own; a resumed session whose stream died kept
+ * its `working` face indefinitely before this.
+ */
+export const TURN_STALL_MS = 300_000;
+
 /** The slice of the SDK this class uses; matches @anthropic-ai/claude-agent-sdk 0.3.x. */
 export interface SdkLike {
   query(params: { prompt: AsyncIterable<SdkUserMessage>; options?: Record<string, unknown> }): SdkQuery;
@@ -71,6 +79,8 @@ export interface ClaudeSessionOptions {
   readonly resume?: string;
   /** False keeps the session out of ~/.claude/projects (the brain and probes are not Kevin's transcripts). */
   readonly persistSession?: boolean;
+  /** Working with no SDK message for this long reads `unknown`. Default `TURN_STALL_MS`. */
+  readonly turnStallMs?: number;
 }
 
 export interface ToolUseEvent {
@@ -108,9 +118,23 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
   readonly startedAt = Date.now();
   lastActivityAt = Date.now();
   costUsd = 0;
+  private stallTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly opts: ClaudeSessionOptions) {
     super();
+  }
+
+  /** Arm the stall clock while working; every SDK message re-arms it, any other status clears it. */
+  private watchStall(): void {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = undefined;
+    if (this.status !== "working") return;
+    const ms = this.opts.turnStallMs ?? TURN_STALL_MS;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = undefined;
+      if (this.status === "working") this.setStatus("unknown", `no output for ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : ms >= 1_000 ? `${Math.round(ms / 1_000)} s` : `${ms} ms`}`);
+    }, ms);
+    this.stallTimer.unref?.();
   }
 
   get name(): string {
@@ -123,9 +147,13 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
 
   private setStatus(status: AgentStatus, detail?: string): void {
     this.lastActivityAt = Date.now();
-    if (this.status === status && this.statusDetail === detail) return;
+    if (this.status === status && this.statusDetail === detail) {
+      this.watchStall();
+      return;
+    }
     this.status = status;
     this.statusDetail = detail;
+    this.watchStall();
     this.emit("status", status, detail);
   }
 
@@ -183,6 +211,7 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
 
   private handle(msg: SdkMessage): void {
     this.lastActivityAt = Date.now();
+    this.watchStall();
     if (msg.type === "system" && msg.subtype === "init") {
       this.sessionId = msg.session_id;
       this.model = msg.model;
@@ -279,6 +308,8 @@ export class ClaudeSession extends EventEmitter<SessionEvents> {
       if (this.consuming) await Promise.race([this.consuming, new Promise((r) => setTimeout(r, 1500))]);
     }
     this.setStatus("offline", "closed");
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = undefined;
   }
 }
 

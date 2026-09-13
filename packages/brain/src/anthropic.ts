@@ -116,12 +116,23 @@ export function historyPrompt(task: BrainTask, userName = "Kevin"): string {
   return promptParts(task, userName, attachmentsRecap(task.attachments)).join("\n\n");
 }
 
+/**
+ * The label over the durable-memory part of the user turn. Its wording does the
+ * framing work: the items are Kevin's standing preferences and facts, to be used
+ * in silence — never read back to him, never announced as remembered. The rendered
+ * items come from @jarhead/memory already cut to BRAIN_MEMORY_TOKENS; this file
+ * adds the label and nothing else.
+ */
+export const MEMORY_PROMPT_LABEL = "What you know about Kevin (durable memory; use it, do not repeat it back, do not say you remembered):";
+
 function promptParts(task: BrainTask, userName: string, regions: string): string[] {
   return [
     task.confirmation ? `${userName} just said YES to the pending confirmation. Do that action now, then report.` : "",
     `${userName} said: "${task.request}"`,
     regions,
     task.dialogue ? `Recent conversation:\n${task.dialogue}` : "",
+    // After the conversation, before the reflex notes: context about Kevin, not about this request.
+    task.memory ? `${MEMORY_PROMPT_LABEL}\n${task.memory}` : "",
     task.notes?.length ? `Already done or found by Jarhead for this request (do not repeat it):\n${task.notes.map((n) => `- ${n}`).join("\n")}` : "",
   ].filter(Boolean);
 }

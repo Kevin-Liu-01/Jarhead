@@ -48,6 +48,23 @@ import { ALL_TOOL_SPECS } from "./tools.ts";
 
 const log = logger("delegator");
 
+/**
+ * How long a task waits on the durable-memory lookup, at most. It rides the marks
+ * and eyes race (the eyes' quick shot is ~50–250 ms), so a cached query embedding
+ * costs nothing visible and a cold one is cut here rather than moving the first
+ * action; `jarhead bench` holds delegation → first action within ±50 ms of before.
+ */
+export const MEMORY_RECALL_MS = 250;
+
+/** Kevin's own lines since `sinceMs`, one per line, oldest first: what the gates read and what memory is asked with. */
+function kevinLines(transcript: Transcript, sinceMs: number): string {
+  return transcript
+    .since(sinceMs, "kevin")
+    .map((i) => i.text.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 export interface DelegatorOptions {
   readonly live: LiveSession;
   readonly transcript: Transcript;
@@ -66,6 +83,15 @@ export interface DelegatorOptions {
    * this delegation's timeline.
    */
   readonly eyes?: ((sink: BrainSink) => Promise<BrainAttachment | undefined>) | undefined;
+  /**
+   * Durable memory of Kevin (the engine's MemoryBridge over @jarhead/memory): given
+   * the request plus Kevin's recent lines as the query, answers the rendered block
+   * (≤ BRAIN_MEMORY_TOKENS, its own label added by promptParts) or undefined when
+   * the store has nothing worth the tokens. It races the marks and the eyes and
+   * is cut at MEMORY_RECALL_MS: the first action never waits on a lookup. Absent =
+   * no memory in the task.
+   */
+  readonly memory?: ((query: string, signal: AbortSignal) => Promise<string | undefined>) | undefined;
   /** The reflex table and its runner; absent = every task goes to the brain. */
   readonly reflexes?: ReflexSource | undefined;
   /**
@@ -775,14 +801,16 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     }
 
     // A circle still being captured is waited for (it is what "this" means); the
-    // eyes take their quick shot meanwhile. A delegation that supersedes this one
-    // meanwhile takes the marks instead.
-    const [{ attachments: circled, ids: markIds }, screen] = await Promise.all([this.takeMarks(), this.look(id, sink)]);
+    // eyes take their quick shot meanwhile, and so does the memory lookup — its
+    // query is Kevin's words as they stand now, its bound MEMORY_RECALL_MS. A
+    // delegation that supersedes this one meanwhile takes the marks instead.
+    const windowMs = this.opts.dialogueWindowMs ?? 120_000;
+    const recall = this.recallMemory(request, kevinLines(transcript, (live.nowMs || offsetMs) - windowMs - 1), abort.signal);
+    const [{ attachments: circled, ids: markIds }, screen, memory] = await Promise.all([this.takeMarks(), this.look(id, sink), recall]);
     if (this.running?.delegation.id !== id) return;
     const attachments: BrainAttachment[] = [...(screen ? [screen] : []), ...circled];
-    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}${circled.length ? ` [${circled.length} circled region(s)]` : ""}${screen ? " [screen]" : ""}`);
+    log.info(`delegation ${id} (${target}): "${request.slice(0, 80)}"${confirmation ? " [confirmation]" : ""}${circled.length ? ` [${circled.length} circled region(s)]` : ""}${screen ? " [screen]" : ""}${memory ? " [memory]" : ""}`);
 
-    const windowMs = this.opts.dialogueWindowMs ?? 120_000;
     const uptoMs = live.nowMs || offsetMs;
     const reflexNotes = this.reflexNotes.get(id);
     this.reflexNotes.delete(id);
@@ -791,16 +819,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       request,
       dialogue: transcript.render(windowMs, uptoMs),
       // Kevin's side only, for the gates: the rendered dialogue above carries Jarhead's lines too.
-      kevinDialogue: transcript
-        .since(uptoMs - windowMs - 1, "kevin")
-        .map((i) => i.text.trim())
-        .filter(Boolean)
-        .join("\n"),
+      kevinDialogue: kevinLines(transcript, uptoMs - windowMs - 1),
       confirmation,
       offsetMs,
       signal: abort.signal,
       ...(attachments.length ? { attachments } : {}),
       ...(reflexNotes ? { notes: reflexNotes } : {}),
+      // Never inside kevinDialogue: the gates must not read a remembered line as his words today.
+      ...(memory ? { memory } : {}),
     };
 
     let result: BrainResult;
@@ -961,6 +987,48 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   }
 
   /** The eyes' quick shot, in this delegation's timeline; never throws, never blocks a task without eyes. */
+  /**
+   * The durable-memory block for this task, or undefined: no memory wired, an
+   * empty answer, an error, or the MEMORY_RECALL_MS bound hit (the lookup is
+   * aborted through its signal so an in-flight embedding call is dropped, not
+   * awaited). The rendered text is passed through as is — its budget was cut by
+   * the renderer; nothing here re-renders it.
+   */
+  private async recallMemory(request: string, kevinRecent: string, signal: AbortSignal): Promise<string | undefined> {
+    const recall = this.opts.memory;
+    if (!recall) return undefined;
+    const query = kevinRecent ? `${request}\n${kevinRecent}` : request;
+    const cut = new AbortController();
+    const onAbort = (): void => cut.abort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    let timer: NodeJS.Timeout | undefined;
+    const t0 = this.now();
+    try {
+      const bound = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          cut.abort();
+          resolve(undefined);
+        }, MEMORY_RECALL_MS);
+      });
+      const text = await Promise.race([
+        // Started inside the chain: a hook that throws synchronously is swallowed like
+        // one that rejects — the task goes to the brain without a block either way.
+        Promise.resolve()
+          .then(() => recall(query, cut.signal))
+          .catch((e: unknown) => {
+            log.warn(`memory lookup failed: ${(e as Error).message}`);
+            return undefined;
+          }),
+        bound,
+      ]);
+      if (text === undefined && cut.signal.aborted && !signal.aborted) log.info(`memory lookup cut at ${MEMORY_RECALL_MS} ms (${this.now() - t0} ms)`);
+      return text || undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   private async look(id: string, sink: BrainSink): Promise<BrainAttachment | undefined> {
     if (!this.opts.eyes) return undefined;
     const t0 = this.now();

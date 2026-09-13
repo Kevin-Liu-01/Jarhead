@@ -1,6 +1,8 @@
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { claudeTurnMark } from "./claude-transcript.ts";
+import type { TurnMark } from "./liveness.ts";
 import {
   DEFAULT_LIMIT,
   DEFAULT_MAX_AGE_DAYS,
@@ -209,6 +211,7 @@ export function parseClaudeSession(sessionId: string, path: string, slug: string
   let messages = 0;
   /** `message.id` of the previous assistant line; the lines of one message are consecutive. */
   let lastAssistantId: string | undefined;
+  let lastTurn: TurnMark | undefined;
 
   // Most bytes are tool results and tool calls, which only need counting. Cheap
   // substring checks decide whether a line is worth a JSON.parse at all.
@@ -218,6 +221,9 @@ export function parseClaudeSession(sessionId: string, path: string, slug: string
       startedAt = startedAt === undefined ? ts : Math.min(startedAt, ts);
       lastTimestamp = lastTimestamp === undefined ? ts : Math.max(lastTimestamp, ts);
     }
+    // The lease's clock: the last line that was conversation, and whether it closed the turn.
+    const turn = claudeTurnMark(line);
+    if (turn !== undefined) lastTurn = { kind: turn, at: ts ?? lastTimestamp ?? file.mtimeMs };
     if (cwd === undefined) cwd = CWD_RE.exec(line)?.[1];
     if (line.includes('"type":"assistant"')) {
       if (line.includes('"isSidechain":true')) return;
@@ -284,6 +290,7 @@ export function parseClaudeSession(sessionId: string, path: string, slug: string
     messageCount: file.whole ? messages : extrapolateCount(messages, file.bytesRead, file.size),
     messageCountExact: file.whole,
     archived: false,
+    lastTurn,
   };
 }
 

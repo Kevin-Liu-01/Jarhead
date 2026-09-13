@@ -52,10 +52,11 @@ struct RightRail: View, Equatable {
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
                                  brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped,
-                                 workers: snapshot.allWorkers)
+                                 workers: snapshot.allWorkers, memory: snapshot.memory)
                             .transition(.identity)
                     case .settings:
-                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash)
+                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash,
+                                      sessionInfo: snapshot.session, memory: snapshot.memory)
                             .transition(.identity)
                     case .ledger:
                         LedgerPanel(days: ledgerDays, picked: ledgerDay, loading: ledgerLoading, stats: ledgerStats)
@@ -130,7 +131,7 @@ private struct RailTabs: View {
         HStack(spacing: 0) {
             ForEach(Array(ConsoleSession.Tab.allCases.enumerated()), id: \.element.id) { index, tab in
                 if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
-                SegOption(title: tab.rawValue, on: tab == selected, thumb: thumb) { select(tab) }
+                ConsoleSegmentOption(title: tab.rawValue, on: tab == selected, thumb: thumb) { select(tab) }
             }
         }
         .frame(height: 28)
@@ -141,39 +142,6 @@ private struct RailTabs: View {
         .animation(Motion.snappy, value: selected)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Panel")
-    }
-}
-
-private struct SegOption: View {
-    let title: String
-    let on: Bool
-    /// The segmented control's namespace: the filled thumb glides between its options.
-    let thumb: Namespace.ID
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(ConsoleTheme.sans(12, .medium))
-                .foregroundStyle(on ? ConsoleTheme.ground : ConsoleTheme.fg2)
-                .frame(maxWidth: .infinity)
-                .frame(height: 28)
-                .background {
-                    if on {
-                        Rectangle().fill(ConsoleTheme.fg).matchedGeometryEffect(id: "thumb", in: thumb)
-                    } else if hovering {
-                        Rectangle().fill(ConsoleTheme.hover)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-        .animation(Motion.snappy, value: on)
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
@@ -285,6 +253,8 @@ struct NowPanel: View {
     var problemsTyped: [Problem]? = nil
     /// The delegation's workers (Snapshot.workers): running, and finished within the last half minute.
     var workers: [Worker] = []
+    /// What Jarhead remembers (Snapshot.memory); `lastUsedIds` is what the last delegation was given.
+    var memory: MemorySummary? = nil
 
     @Environment(\.consoleActions) private var actions
 
@@ -292,6 +262,16 @@ struct NowPanel: View {
     private var typed: [Problem]? {
         guard let list = problemsTyped, !list.isEmpty || problems.isEmpty else { return nil }
         return list
+    }
+
+    /// The ids the last delegation's memory block carried, while memory is on; [] hides the section.
+    private var usedIds: [String] { NowPanel.usedIds(memory) }
+
+    /// Memory off hides the section even when a summary still names ids (the store stays, the
+    /// switch says nothing is used — so the rail must not claim something was); no summary, nothing.
+    static func usedIds(_ memory: MemorySummary?) -> [String] {
+        guard let memory, memory.enabled else { return [] }
+        return memory.lastUsedIds ?? []
     }
 
     /// Which of the three meter blocks is up; a change crossfades them (Motion.swap).
@@ -448,6 +428,19 @@ struct NowPanel: View {
                 .transition(Motion.appear)
             }
 
+            // What the last delegation was given from Jarhead's memory of Kevin — the rows, not
+            // the counts — so a misheard "fact" steering the voice is seen the turn it happens.
+            // The section arrives with the first turn that used memory and leaves with a fresh session.
+            if !usedIds.isEmpty {
+                RailSection("Memory", count: usedIds.count, trailing: {
+                    Text("used this turn").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                        .help("The memory lines the brain was given for the last request")
+                }) {
+                    MemoryUsedList(ids: usedIds)
+                }
+                .transition(Motion.appear)
+            }
+
             RailSection("Ready") {
                 VStack(spacing: 0) {
                     readyRow("brain.fill", "Brain", brainReady, brain.rawValue)
@@ -513,8 +506,9 @@ struct NowPanel: View {
             .animation(Motion.gentle, value: problems)
             .animation(Motion.gentle, value: typed?.map(\.id) ?? [])
         }
-        // The Workers section arriving or leaving reflows the panel under it.
+        // The Workers and Memory sections arriving or leaving reflow the panel under them.
         .animation(Motion.gentle, value: workers.isEmpty)
+        .animation(Motion.gentle, value: usedIds.isEmpty)
     }
 
     /// The remedy button: its command when the engine gave one the Console can send, its
@@ -927,6 +921,11 @@ struct SettingsPanel: View {
     let gate: WakeGateInputs
     /// What the trash holds (Snapshot.trash); nil from a daemon that has none.
     var trash: TrashInfo? = nil
+    /// The open session, with the voice and accent it opened on (Snapshot.session): a pick
+    /// that differs is heard at the next wake — or now, with Switch now.
+    var sessionInfo: SessionInfo? = nil
+    /// What Jarhead remembers (Snapshot.memory); nil from a daemon that has no memory.
+    var memory: MemorySummary? = nil
 
     @Environment(\.consoleActions) private var actions
     @State private var mics: [MicDevice] = []
@@ -969,6 +968,21 @@ struct SettingsPanel: View {
     private var voiceOptions: [String] {
         ConsoleTheme.voices + (ConsoleTheme.voices.contains(settings.voice) ? [] : [settings.voice])
     }
+
+    /// A voice or accent picked while a session is open is not what that session speaks
+    /// (`session.update` cannot change a voice): offer Switch now — pause, then resume on the
+    /// new pick, Kevin's press only, never on the pick itself (browsing voices must not churn
+    /// paid starts). Shown while awake and the pick differs from what the session opened on.
+    /// Never while paused or connecting: the engine refuses both, and there is nothing to
+    /// switch. Never when the session did not say its voice: a daemon from before
+    /// SessionInfo.voice predates `voice.reopen` too, so the button would press nothing.
+    static func needsSwitch(settings: Settings, session: SessionInfo?, phase: Phase) -> Bool {
+        guard let session, AppState.inSessionPhases.contains(phase) else { return false }
+        guard let voice = session.voice else { return false }
+        return voice != settings.voice || (session.accent ?? settings.accentKind) != settings.accentKind
+    }
+
+    private var needsSwitch: Bool { Self.needsSwitch(settings: settings, session: sessionInfo, phase: phase) }
 
     private var effortOptions: [String] {
         ConsoleTheme.efforts + (ConsoleTheme.efforts.contains(settings.effort) ? [] : [settings.effort])
@@ -1021,10 +1035,41 @@ struct SettingsPanel: View {
             // Section heads name the group, not the first row, so no word appears twice.
             RailSection("Audio") {
                 VStack(spacing: 2) {
+                    // A voice is a timbre; every label says the language it will speak.
                     formRow("Voice") {
-                        ConsoleMenuField(value: settings.voice, options: voiceOptions, title: { $0 },
+                        ConsoleMenuField(value: settings.voice, options: voiceOptions, title: ConsoleTheme.voiceLabel,
                                          pick: { patch(SettingsPatch(voice: $0)) })
+                            .accessibilityLabel("Voice: \(ConsoleTheme.voiceLabel(settings.voice))")
                     }
+                    // One language today: a value, not a menu with one row. The menu appears
+                    // when a second language exists (ConsoleTheme.languages).
+                    formRow("Language") {
+                        Text(ConsoleTheme.languageLabel(settings.languageTag))
+                            .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
+                            .frame(height: 26)
+                            .help("Jarhead speaks English whatever language it hears")
+                            .accessibilityLabel("Language: \(ConsoleTheme.languageLabel(settings.languageTag))")
+                    }
+                    formRow("Accent") {
+                        ConsoleSegments(value: settings.accentKind, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
+                                        pick: { patch(SettingsPatch(accent: $0)) },
+                                        accessibilityLabel: "Accent: \(ConsoleTheme.accentLabel(settings.accentKind))")
+                            .help("How the English sounds; best-effort on the voice's side")
+                    }
+                    // The promise, and when a pick lands. Switch now closes the session and
+                    // reopens it on the new voice (one paid start); it rises in only while a
+                    // pick is waiting and a session is open.
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        hint(ConsoleTheme.languageHint)
+                        if needsSwitch {
+                            Button("Switch now") { actions.send(.voiceReopen) }
+                                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                                .layoutPriority(1)
+                                .help("Pause, then resume on the new voice now (refused while work runs)")
+                                .transition(Motion.appear)
+                        }
+                    }
+                    .animation(Motion.gentle, value: needsSwitch)
                     formRow("Mic") {
                         ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
                                          pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) })
@@ -1120,11 +1165,60 @@ struct SettingsPanel: View {
                     // Where the orb lives: floating free (it stays where it last worked), or in
                     // the MacBook notch (it drops out for the work and flies back up).
                     formRow("Home") {
-                        HomeSegments(notch: settings.livesInNotch) { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) }
+                        ConsoleSegments(value: settings.livesInNotch, options: [false, true], title: { $0 ? "Notch" : "Free" },
+                                        pick: { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) },
+                                        accessibilityLabel: "Orb home: \(settings.livesInNotch ? "Notch" : "Free")")
                             .help(settings.livesInNotch ? "The orb lives and sleeps in the notch" : "The orb floats free and stays where it last worked")
                     }
                     hint(settings.livesInNotch ? "Lives in the notch; floats free when the main display has none." : "Floats free; stays where it last worked.")
                 }
+            }
+            // Memory: a durable record of Kevin, learned after a conversation ends (never while
+            // a paid session is open; never through Codex) and given back quietly per turn. The
+            // rows under the counts are the record itself — Edit, Forget, Restore; Forget hides,
+            // nothing deletes. The counts roll; "learned 12 min ago" ticks.
+            RailSection("Memory", count: (memory?.count ?? 0) > 0 ? memory?.count : nil, trailing: {
+                // "learned 12m ago" ticks beside Learn now; the tooltip has the last run's figures.
+                if let memory {
+                    TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                        Text(SettingsPanel.learnedLine(memory, now: ctx.date.timeIntervalSince1970 * 1000))
+                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                            .lineLimit(1)
+                            .contentTransition(ConsoleMotion.numeric)
+                    }
+                    .help(memory.lastRun.map { SettingsPanel.lastRunLine($0) } ?? "No run yet")
+                }
+                Button("Learn now") { actions.send(.memoryRun) }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .disabled(!settings.memoryOn || memory == nil)
+                    .help(settings.memoryOn ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
+            }) {
+                VStack(spacing: 2) {
+                    formRow("Remember") {
+                        Toggle("", isOn: Binding(get: { settings.memoryOn }, set: { patch(SettingsPatch(memory: $0)) }))
+                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
+                            .tint(ConsoleTheme.accent)
+                            .help("Learn durable things about Kevin from each conversation and use them quietly next time")
+                            .accessibilityLabel("Remember across sessions")
+                    }
+                    if !settings.memoryOn {
+                        hint("Off: nothing is learned or used. What was remembered stays.").transition(Motion.appear)
+                    }
+                    formRow("Matching") {
+                        Text(memory.map { ConsoleTheme.memoryMatching($0.embeddings) } ?? "—")
+                            .font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
+                            .frame(height: 26)
+                            .contentTransition(.opacity)
+                            .animation(Motion.fade, value: memory?.embeddings)
+                            .help(memory?.embeddings == "openai" ? "Item text goes to OpenAI for matching (the voice key); nothing else leaves"
+                                  : "Keyword matching: nothing leaves the Mac. Add the OpenAI key for closer matches.")
+                    }
+                    formRow("Known") { memoryCounts }
+                    hint(ConsoleTheme.memoryBudgetHint)
+                    MemoryRailList(summary: memory, enabled: settings.memoryOn)
+                        .padding(.top, 6)
+                }
+                .animation(Motion.gentle, value: settings.memoryOn)
             }
             // Retention is a mover, not a deleter: older days MOVE to the trash by the sweep
             // and come back with Restore; the trash is emptied in Finder, by Kevin, never here.
@@ -1364,6 +1458,58 @@ struct SettingsPanel: View {
         .animation(Motion.gentle, value: detail)
     }
 
+    // MARK: memory
+
+    /// The counts, the digits rolling: "142 live" on the value line, "3 forgotten · 1 archived"
+    /// under it, and "2 waiting" when conversations wait for a quiet moment (the extractor runs
+    /// only while no paid session is open). Three short mono lines: the value column is 182 pt,
+    /// and the one-line spelling (ConsoleTheme.memoryCounts, the tooltip's) does not fit it.
+    private var memoryCounts: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(memory.map { "\($0.count) live" } ?? "—")
+                .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1)
+                .frame(height: 26, alignment: .leading)
+                .contentTransition(ConsoleMotion.numeric)
+                .animation(Motion.snappy, value: memory?.count)
+            if let memory {
+                Text(SettingsPanel.hiddenCountsLine(memory))
+                    .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                    .lineLimit(1)
+                    .contentTransition(ConsoleMotion.numeric)
+                    .animation(Motion.snappy, value: SettingsPanel.hiddenCountsLine(memory))
+                if memory.pending > 0 {
+                    Text(SettingsPanel.pendingLine(memory))
+                        .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                        .lineLimit(1)
+                        .contentTransition(ConsoleMotion.numeric)
+                        .help("Conversations that ended and have not been read yet; the run starts at a quiet moment")
+                        .transition(Motion.appear)
+                }
+            }
+        }
+        .padding(.bottom, 4)
+        .help(memory.map { ConsoleTheme.memoryCounts($0) } ?? "No memory yet")
+        .animation(Motion.gentle, value: (memory?.pending ?? 0) > 0)
+    }
+
+    /// "learned 12m ago" (the head, beside Learn now) · "not learned yet".
+    static func learnedLine(_ m: MemorySummary, now: Double) -> String {
+        guard let at = m.lastRunAt else { return "not learned yet" }
+        return "learned \(ConsoleFormat.relative(at, now: now)) ago"
+    }
+
+    /// "3 forgotten · 1 archived" — the items out of the prompts, restorable.
+    static func hiddenCountsLine(_ m: MemorySummary) -> String { "\(m.forgotten) forgotten · \(m.archived) archived" }
+
+    /// "2 waiting" — conversations queued for extraction.
+    static func pendingLine(_ m: MemorySummary) -> String { "\(m.pending) waiting" }
+
+    /// The last run as one mono tooltip: "responses · +3 · ~1 · 4 same · 1 refused · 1.8 s".
+    static func lastRunLine(_ r: MemorySummary.LastRun) -> String {
+        "\(r.extractor) · +\(r.added) · ~\(r.updated) · \(r.noop) same · \(r.refused) refused · \(ConsoleFormat.ms(r.ms))"
+    }
+
     // MARK: wake
 
     /// Comma-separated → lowercase, trimmed, single-spaced, no empties, no repeats.
@@ -1408,29 +1554,6 @@ struct SettingsPanel: View {
             .padding(.leading, keyWidth + 10)
             .padding(.bottom, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Settings › Home: Free / Notch — the rail tabs' segmented control, two options; the
-/// thumb glides between them.
-private struct HomeSegments: View {
-    let notch: Bool
-    let pick: (Bool) -> Void
-
-    @Namespace private var thumb
-
-    var body: some View {
-        HStack(spacing: 0) {
-            SegOption(title: "Free", on: !notch, thumb: thumb) { withAnimation(Motion.snappy) { pick(false) } }
-            Rectangle().fill(ConsoleTheme.hair).frame(width: 1)
-            SegOption(title: "Notch", on: notch, thumb: thumb) { withAnimation(Motion.snappy) { pick(true) } }
-        }
-        .frame(height: 28)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-        .animation(Motion.snappy, value: notch)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Orb home: \(notch ? "Notch" : "Free")")
     }
 }
 

@@ -125,11 +125,30 @@ struct AgentsRail: View, Equatable {
         let tools = ConsoleBrand.order + shown.map(\.resolvedTool).filter { !ConsoleBrand.order.contains($0) }
         for tool in tools where !seen.contains(tool) {
             seen.insert(tool)
-            let list = shown.filter { $0.resolvedTool == tool }.sorted { $0.updatedAt > $1.updatedAt }
+            let list = AgentsRail.ordered(shown.filter { $0.resolvedTool == tool })
             if list.isEmpty { continue }
             out.append(Group(tool: tool, agents: list))
         }
         return out
+    }
+
+    /// A tool group's order: the sessions a process still owns (working, blocked, idle) above
+    /// the ones that are over (done, ended, unknown, offline), each by when they last wrote.
+    /// `ended` is most rows most of the time — a session with no process is over however old —
+    /// so the live ones stay at the top where the eye lands, and an ended row never sits
+    /// between two live ones because it wrote a minute later.
+    static func ordered(_ agents: [AgentInfo]) -> [AgentInfo] {
+        agents.sorted { a, b in
+            let ra = rank(a.status), rb = rank(b.status)
+            return ra != rb ? ra < rb : a.updatedAt > b.updatedAt
+        }
+    }
+
+    private static func rank(_ s: AgentStatus) -> Int {
+        switch s {
+        case .working, .blocked, .idle: return 0
+        case .done, .ended, .unknown, .offline: return 1
+        }
     }
 
     private var pinnedChains: [JarheadChain] { jarhead.filter { $0.isActive && $0.pinned } }
@@ -1309,14 +1328,30 @@ struct AgentRowView: View {
 }
 
 extension ConsoleFormat {
-    /// The rail's meta line: `project · 42 msgs · 2m`. The project is the working
-    /// directory's last component; a count of one reads "1 msg".
+    /// The rail's meta line: `project · 42 msgs · 2m · quiet`. The project is the working
+    /// directory's last component; a count of one reads "1 msg"; the age is computed here from
+    /// `updatedAt` inside the rail's 15 s TimelineView (the connector's `detail` carries no
+    /// relative time any more — it churned a snapshot a second); the hint is the connector's one
+    /// word on why the status is what it is, skipped when it only repeats the status glyph.
     static func agentMeta(_ agent: AgentInfo, now: Double) -> String {
         var parts: [String] = []
         if let project = projectName(agent.cwd) { parts.append(project) }
         if let n = agent.messageCount { parts.append(messageCount(n)) }
         parts.append(relative(agent.updatedAt, now: now))
+        if let hint = hintWord(agent) { parts.append(hint) }
         return parts.joined(separator: " · ")
+    }
+
+    /// The hint when it adds to the glyph: "resumed" on a run, "archived" on a done one, "unseen"
+    /// when the process evidence was degraded; nil when it is the glyph's own word — ended on
+    /// ended, blocked on blocked, running on working, quiet on idle (the plain dot already says
+    /// so, and a fourth part pushes the age off the rail).
+    static func hintWord(_ agent: AgentInfo) -> String? {
+        guard let hint = agent.hint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hint.isEmpty else { return nil }
+        if hint == agent.status.rawValue { return nil }
+        if hint == "running", agent.status == .working { return nil }
+        if hint == "quiet", agent.status == .idle { return nil }
+        return hint
     }
 
     /// A Jarhead conversation's meta line: `12:34 · 2.3 min · 8 msgs` — how long it ran

@@ -126,7 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The rail's search: full text over the live ledger through the daemon (titles only without it).
         state.ledgerSearchHandler = { [weak self] query, limit in await self?.client.ledgerSearch(query: query, limit: limit) }
         state.installJarheadSessions(list: { [weak self] in await self?.client.jarheadSessions() ?? [] },
-                                     rows: { [weak self] id in await self?.client.jarheadSessionRows(id) ?? [] })
+                                     rows: { [weak self] id in await self?.client.jarheadSessionRows(id) ?? [] },
+                                     chain: { [weak self] rootId in await self?.client.jarheadChainRows(rootId) })
+        // Memory: the rail's list and search read the store through the daemon (never the snapshot).
+        state.memoryListHandler = { [weak self] memoryState, limit in await self?.client.memoryList(state: memoryState, limit: limit) }
+        state.memorySearchHandler = { [weak self] query, limit in await self?.client.memorySearch(query: query, limit: limit) }
         state.openConsoleHandler = { [weak self] in self?.console.show() }
 
         // A (re)started daemon knows nothing about us: re-send what it must know.
@@ -135,6 +139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.micGrant != .unknown { self.client.sendPermission(which: "microphone", state: self.micGrant) }
             // The list, once it has been read (placeholders would tell the daemon "unknown").
             if self.permissions.hasRead { self.client.sendPermissions(all: self.permissions.list) }
+            // Its open conversations too: a fresh engine follows nothing until a pane asks again.
+            // The first connect counts as well, on purpose: a pane Kevin opened while the daemon
+            // was still spawning queued its `agent.open` in EngineClient's outbox, which drops a
+            // command older than 5 s — a slow cold start would leave that pane unfollowed. A
+            // second open for the same viewer is idempotent at the engine.
+            self.console.reconnected()
         }
 
         // The daemon: start or attach, then connect.

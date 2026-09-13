@@ -128,6 +128,10 @@ final class EarListener: @unchecked Sendable {
     /// Below this RMS nothing counts as speech whatever the noise floor says.
     static let minimumHotRMS: Double = 0.004
 
+    /// en-US on purpose: the wake phrases (Protocol.swift WakeSettings.standard) and EarGrammar
+    /// are English, and so is the on-device model this ear needs. `Settings.language` is the
+    /// voice's language (what GPT-Live-1 speaks), not this recogniser's; derive nothing from
+    /// it here until a second language is actually offered. Wake/** keeps its own en-US.
     private let locale = Locale(identifier: "en-US")
     private let queue = DispatchQueue(label: "jarhead.ear", qos: .userInteractive)
     private let recognizer: SFSpeechRecognizer?

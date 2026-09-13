@@ -83,7 +83,7 @@ struct OnboardingRootView: View {
         case .welcome:
             OnboardingWelcomeStep(connected: model.connected, daemonDetail: model.daemonDetail).equatable()
         case .voice:
-            OnboardingVoiceStep(setup: model.setup, actions: actions).equatable()
+            OnboardingVoiceStep(setup: model.setup, voice: model.voice, accent: model.accent, actions: actions).equatable()
         case .brain:
             OnboardingBrainStep(setup: model.setup, brain: model.brain, brainModel: model.brainModel, brainBaseUrl: model.brainBaseUrl, actions: actions).equatable()
         case .permissions:

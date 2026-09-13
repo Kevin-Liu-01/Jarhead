@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, DEFAULT_WAKE, PERMISSION_KINDS, type BrainKind, type PermissionInfo, type Problem, type WakeSettings } from "@jarhead/protocol";
+import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type MemorySummary, type PermissionInfo, type Problem, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
+import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
 import { defaultConnectors } from "@jarhead/agents";
 import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
@@ -54,9 +55,11 @@ interface DaemonRead {
   readonly problems: readonly Problem[];
   /** Milliseconds from connect to the snapshot: a slow answer is itself a finding. */
   readonly ms: number;
+  /** `snapshot.memory` — the durable memory's counts and last run; absent from a daemon before the module. */
+  readonly memory: MemorySummary | undefined;
 }
 
-/** A running daemon's first snapshot (`permissions.all`, the problems); undefined when none answers within 1.5 s. */
+/** A running daemon's first snapshot (`permissions.all`, the problems, the memory summary); undefined when none answers within 1.5 s. */
 async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
   if (!existsSync(socketPath)) return undefined;
   const client = new DaemonClient(socketPath);
@@ -65,9 +68,9 @@ async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
     const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
-        const snap = m.snapshot as { permissions?: { all?: readonly PermissionInfo[] }; problems?: readonly string[]; problemsTyped?: readonly Problem[] };
+        const snap = m.snapshot as { permissions?: { all?: readonly PermissionInfo[] }; problems?: readonly string[]; problemsTyped?: readonly Problem[]; memory?: MemorySummary };
         const problems = snap.problemsTyped ?? (snap.problems ?? []).map((text): Problem => ({ kind: "other", text, since: 0 }));
-        resolve({ permissions: snap.permissions?.all, problems, ms: Date.now() - t0 });
+        resolve({ permissions: snap.permissions?.all, problems, ms: Date.now() - t0, memory: snap.memory });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -122,14 +125,15 @@ async function json(url: string, headers: Record<string, string>): Promise<{ sta
   return { status: r.status, body };
 }
 
-/** The brain settings the engine actually uses: ~/.jarhead/settings.json overrides the env defaults. */
-function readSavedSettings(stateDir: string): { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string } {
+/** The brain and memory settings the engine actually uses: ~/.jarhead/settings.json overrides the env defaults (memory defaults to on through DEFAULT_SETTINGS). */
+function readSavedSettings(stateDir: string): { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean } {
   try {
-    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string };
+    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean };
     return {
       ...(saved.brain ? { brain: saved.brain } : {}),
       ...(typeof saved.brainModel === "string" ? { brainModel: saved.brainModel } : {}),
       ...(saved.brainBaseUrl ? { brainBaseUrl: saved.brainBaseUrl } : {}),
+      ...(typeof saved.memory === "boolean" ? { memory: saved.memory } : {}),
     };
   } catch {
     return {};
@@ -264,18 +268,174 @@ function linkTargetNote(installed: string): string {
   }
 }
 
+/**
+ * What the memory extractor WILL run, and what the key's model list says about it.
+ * The engine builds its ResponsesExtractor with `JARHEAD_MEMORY_MODEL` or, unset,
+ * @jarhead/memory's DEFAULT_MEMORY_MODEL — nothing in the engine reads the model
+ * list, so the doctor reports that id as fact and the key's best mini-class id (the
+ * module's own `pickMemoryModel`, one rule, not a copy) only as the thing to pin.
+ * Pure, so the table is a test.
+ */
+export interface ExtractorPlan {
+  /** The id the extractor is built with: the override, else DEFAULT_MEMORY_MODEL. */
+  readonly runs: string;
+  readonly pinned: boolean;
+  /** Whether `runs` appears in the key's list; undefined when there was no list to check. */
+  readonly listed: boolean | undefined;
+  /** The key's best mini-class Responses id by the memory module's rule; undefined when none is listed, or there was no list. */
+  readonly best: string | undefined;
+}
+
+export function extractorPlan(modelIds: Iterable<string> | undefined, override: string | undefined): ExtractorPlan {
+  const runs = override || DEFAULT_MEMORY_MODEL;
+  const list = modelIds ? [...modelIds] : undefined;
+  return { runs, pinned: Boolean(override), listed: list ? list.includes(runs) : undefined, best: list ? pickMemoryModel(list) : undefined };
+}
+
+/** What the memory rows need from the world, so they run in a test without a key, a daemon or a store on disk. */
+export interface MemoryCheckInput {
+  /** `Settings.memory` (settings.json; default on). */
+  readonly enabled: boolean;
+  readonly hasOpenAIKey: boolean;
+  /** The key's model list from the one GET /v1/models; undefined = not fetched (no key, or the request failed). */
+  readonly modelIds: ReadonlySet<string> | undefined;
+  /** `JARHEAD_MEMORY_MODEL`. */
+  readonly override: string | undefined;
+  /** The running daemon's `snapshot.memory`; undefined = no daemon answering, or one from before the module. */
+  readonly summary: MemorySummary | undefined;
+  /** `<stateDir>/memory` and how many rows its append-only log holds; undefined rows = no store yet. */
+  readonly storeDir: string;
+  readonly storeRows: number | undefined;
+}
+
+/** "just now", "3 min ago", "2 h ago", "4 d ago" — the suffix is part of the word, so no caller writes "just now ago". */
+export function agoWords(at: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86_400)} d ago`;
+}
+
+/**
+ * The `memory` group: what the durable memory holds and how it matches (from the
+ * running daemon when one answers, else the store's row count), and which model
+ * the extractor WILL run (the override or the module's default — reported as fact,
+ * with the key's best mini only as the thing to pin). Off = one row, no extractor
+ * row. Never opens a session, never calls the extractor; the
+ * one network call it leans on is the key row's model list. The cost words are
+ * honest: the budgets CAP what memory costs a prompt (≤ 250 brain / ≤ 120 voice
+ * tokens); the saving is Kevin not re-explaining himself, not fewer prompt bytes.
+ */
+export function memoryChecks(input: MemoryCheckInput): Check[] {
+  const out: Check[] = [];
+  const matching = input.hasOpenAIKey ? "openai embeddings (text-embedding-3-small, 512 dims)" : "keywords (no OPENAI_API_KEY — nothing leaves the Mac)";
+  if (!input.enabled) {
+    out.push({ group: "memory", name: "memory", status: "ok", detail: `off (Settings › Memory) — nothing is extracted, injected or embedded; the store under ${input.storeDir} stays as it is`, required: false });
+  } else if (input.summary) {
+    const m = input.summary;
+    const learned = m.lastRunAt ? `learned ${agoWords(m.lastRunAt)}${m.lastRun ? ` (+${m.lastRun.added} · ~${m.lastRun.updated} · ${m.lastRun.noop} noop · ${m.lastRun.extractor})` : ""}` : "not learned yet (runs after a conversation closes, at a quiet moment)";
+    const waiting = m.pending ? ` · ${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting` : "";
+    const spent = m.budgetUsed ? ` · last prompts ${m.budgetUsed.brain} brain / ${m.budgetUsed.voice} voice tokens` : "";
+    out.push({
+      group: "memory",
+      name: "memory",
+      status: m.enabled ? "ok" : "warn",
+      detail: `${m.count} remembered · ${m.forgotten} forgotten · ${m.archived} archived · matching ${m.embeddings} · ${learned}${waiting}${spent} (caps ${BRAIN_MEMORY_TOKENS} brain / ${VOICE_MEMORY_TOKENS} voice tokens per prompt)`,
+      required: false,
+      fix: m.enabled ? undefined : "the daemon reports memory off while settings.json says on — restart the daemon or flip Settings › Memory",
+    });
+  } else {
+    const store = input.storeRows === undefined ? `no store yet at ${input.storeDir} (it appears after the first closed conversation)` : `${input.storeRows} row${input.storeRows === 1 ? "" : "s"} in ${join(input.storeDir, "memory.jsonl")} (counts come from a running daemon)`;
+    out.push({ group: "memory", name: "memory", status: "ok", detail: `on · matching ${matching} · ${store} · caps ${BRAIN_MEMORY_TOKENS} brain / ${VOICE_MEMORY_TOKENS} voice tokens per prompt`, required: false });
+  }
+  // Off is Kevin's choice: no extractor row, nothing is configured to run.
+  if (!input.enabled) return out;
+  const plan = extractorPlan(input.modelIds, input.override);
+  const via = plan.pinned ? "JARHEAD_MEMORY_MODEL" : "the memory module's default";
+  const spend = "Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each";
+  const pin = plan.best && plan.best !== plan.runs ? (plan.pinned ? ` — the key also lists ${plan.best}` : ` — the key's best mini-class id is ${plan.best}: pin it with JARHEAD_MEMORY_MODEL=${plan.best}`) : "";
+  if (!input.hasOpenAIKey) {
+    out.push({ group: "memory", name: "extractor", status: "ok", detail: "rules (regex over Kevin's lines) — no OPENAI_API_KEY; with one, a mini-class Responses model reads each closed conversation once", required: false });
+  } else if (plan.listed === false) {
+    out.push({
+      group: "memory",
+      name: "extractor",
+      status: "warn",
+      detail: `runs ${plan.runs} (${via}) — not listed for this key, so every run falls back to rules with one warning`,
+      required: false,
+      fix: plan.best ? `pin JARHEAD_MEMORY_MODEL=${plan.best} in ~/.jarhead/env (the key's best mini-class Responses id)` : "set JARHEAD_MEMORY_MODEL in ~/.jarhead/env to a Responses model the key lists, or leave the rules extractor to it",
+    });
+  } else if (plan.listed === true) {
+    out.push({ group: "memory", name: "extractor", status: "ok", detail: `runs ${plan.runs} (${via}, listed for this key)${pin}. ${spend}`, required: false });
+  } else {
+    // No list: the keys row already says why. A pin is Kevin's word; the default is only unverified.
+    out.push({
+      group: "memory",
+      name: "extractor",
+      status: plan.pinned ? "ok" : "warn",
+      detail: `runs ${plan.runs} (${via}, not checked: the key's model list could not be read) — a wrong id falls back to rules with one warning`,
+      required: false,
+    });
+  }
+  return out;
+}
+
+// ---- words shared with `jarhead status` (main.ts runs on import, so they live here, where a test can reach them)
+
+/** Every AgentStatus, checked against the protocol's union so a new status cannot go unlisted on `jarhead status`. */
+export const AGENT_STATUSES: readonly AgentStatus[] = Object.keys({ working: 0, idle: 0, blocked: 0, done: 0, ended: 0, unknown: 0, offline: 0 } satisfies Record<AgentStatus, 0>) as AgentStatus[];
+
+/** "3 working · 1 blocked · 8 ended" — the statuses present, in AGENT_STATUSES order; "" when none. `ended` and `unknown` are listed apart: no live process vs evidence missing. */
+export function agentsByStatus(agents: readonly Pick<AgentInfo, "status">[]): string {
+  const counts = new Map<AgentStatus, number>();
+  for (const a of agents) counts.set(a.status, (counts.get(a.status) ?? 0) + 1);
+  return AGENT_STATUSES.filter((s) => counts.has(s))
+    .map((s) => `${counts.get(s)} ${s}`)
+    .join(" · ");
+}
+
+/** One line for `jarhead status`: what the durable memory holds and when it last learned; the cost words are the caps, not a saving. */
+export function memoryLine(m: MemorySummary | undefined, now = Date.now()): string {
+  if (!m) return "(an older daemon: no summary)";
+  if (!m.enabled) return "off — nothing is extracted, injected or embedded; the store stays as it is";
+  const parts = [`${m.count} remembered`, `${m.forgotten} forgotten`, `${m.archived} archived`, `matching ${m.embeddings}`];
+  if (m.pending) parts.push(`${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting`);
+  parts.push(m.lastRunAt ? `learned ${agoWords(m.lastRunAt, now)}${m.lastRun ? ` (+${m.lastRun.added} · ~${m.lastRun.updated} · ${m.lastRun.extractor})` : ""}` : "never learned yet");
+  if (m.budgetUsed) parts.push(`last prompts ${m.budgetUsed.brain} brain / ${m.budgetUsed.voice} voice tokens (caps ${BRAIN_MEMORY_TOKENS} / ${VOICE_MEMORY_TOKENS})`);
+  if (m.lastUsedIds?.length) parts.push(`${m.lastUsedIds.length} used this turn`);
+  return parts.join(" · ");
+}
+
+/** A memory item's id as the store mints it (core `newId("m")`: "m_", base-36 time, six characters). The CLI refuses anything else before a socket is opened. */
+export const MEMORY_ID = /^m_[A-Za-z0-9]{6,40}$/;
+
+/** Rows in the memory store's append-only log; undefined when there is no store. Line count only — never the contents. */
+function memoryStoreRows(dir: string): number | undefined {
+  try {
+    const text = readFileSync(join(dir, "memory.jsonl"), "utf8");
+    return text.length === 0 ? 0 : text.split("\n").filter((l) => l.length > 0).length;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runChecks(): Promise<Check[]> {
   const cfg = readConfig();
   const checks: Check[] = [];
   const add = (c: Check): void => void checks.push(c);
 
   // ---- keys
+  // The one free GET /v1/models: the key row, the Live model row, the openai brain row
+  // and the memory extractor pick all read this set. Never a Live session.
+  let modelIds: Set<string> | undefined;
   if (!cfg.openaiApiKey) {
     add({ group: "keys", name: "OPENAI_API_KEY", status: "fail", detail: "missing", required: true, fix: "put OPENAI_API_KEY=... in ~/.jarhead/env" });
   } else {
     try {
       const r = await json("https://api.openai.com/v1/models", { Authorization: `Bearer ${cfg.openaiApiKey}` });
       const ids = new Set(((r.body as { data?: { id: string }[] } | undefined)?.data ?? []).map((m) => m.id));
+      if (r.status === 200) modelIds = ids;
       const hasLive = ids.has(cfg.liveModel);
       const src = keySource("OPENAI_API_KEY");
       const where = src === "state-dir" ? "~/.jarhead/env" : src === "repo" ? ".env.local" : "shell env";
@@ -411,6 +571,13 @@ export async function runChecks(): Promise<Check[]> {
     required: false,
     ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
   });
+
+  // ---- memory: what Jarhead durably knows about Kevin, how it matches, which model reads the conversations.
+  // Reads the running daemon's summary and the store's row count; the model list is the keys row's one GET. Never a session, never the extractor.
+  {
+    const memoryDir = join(cfg.stateDir, "memory");
+    for (const c of memoryChecks({ enabled: saved.memory ?? true, hasOpenAIKey: Boolean(cfg.openaiApiKey), modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir) })) add(c);
+  }
 
   // ---- agents: the sessions on this Mac and the connector that continues one
   for (const c of defaultConnectors({ claudeBin: cfg.claudeBin })) {

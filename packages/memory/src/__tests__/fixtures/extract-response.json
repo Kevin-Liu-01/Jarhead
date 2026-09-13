@@ -1,0 +1,30 @@
+{
+ "id": "resp_1",
+ "object": "response",
+ "status": "completed",
+ "model": "gpt-5-mini",
+ "output": [
+  {
+   "type": "reasoning",
+   "id": "rs_1",
+   "summary": []
+  },
+  {
+   "type": "message",
+   "id": "msg_1",
+   "role": "assistant",
+   "status": "completed",
+   "content": [
+    {
+     "type": "output_text",
+     "annotations": [],
+     "text": "{\"items\": [{\"kind\": \"fact\", \"text\": \"Kevin goes by Kev.\", \"subjects\": [\"name\"], \"importance\": 5, \"confidence\": 0.9, \"evidence\": [1]}, {\"kind\": \"preference\", \"text\": \"Kevin prefers short answers.\", \"subjects\": [\"answers\", \"brevity\"], \"importance\": 4, \"confidence\": 0.8, \"evidence\": [3, 4]}, {\"kind\": \"fact\", \"text\": \"Kevin is probably tired today.\", \"subjects\": [], \"importance\": 1, \"confidence\": 0.3, \"evidence\": [2]}, {\"kind\": \"procedure\", \"text\": \"How Kevin likes it done: read the diff before saying a PR is fine, then check the tests and the CI status. Then re-read the description once more for anything the reviewer might have missed before answering, and say so briefly.\", \"subjects\": [\"review\"], \"importance\": 3, \"confidence\": 0.7, \"evidence\": [3]}, {\"kind\": \"fact\", \"text\": \"Kevin's card is 4111 1111 1111 1111.\", \"subjects\": [\"card\"], \"importance\": 2, \"confidence\": 0.9, \"evidence\": [1]}]}"
+    }
+   ]
+  }
+ ],
+ "usage": {
+  "input_tokens": 812,
+  "output_tokens": 210
+ }
+}

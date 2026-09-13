@@ -1,0 +1,16 @@
+{
+ "id": "resp_2",
+ "status": "completed",
+ "output": [
+  {
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "output_text",
+     "text": "{\"op\": \"ADD\", \"target\": \"A\", \"text\": \"\", \"contradicts\": true}"
+    }
+   ]
+  }
+ ]
+}

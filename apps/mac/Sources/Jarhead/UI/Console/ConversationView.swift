@@ -20,26 +20,57 @@ private let turnMaxWidth: CGFloat = 640
 struct ConversationPane: View, Equatable {
     let agent: AgentInfo
     let transcript: AgentTranscript?
+    /// The daemon client is connected (AppState.connected): nothing can arrive while it is not,
+    /// so no indicator may claim it will.
+    var connected = true
+    /// Rows Kevin brought back with "Load earlier" (AppState.prependedCount): the feed's ceiling
+    /// grows by as many. Held to a flat 400 the page he asked for would sit above the fold,
+    /// unseen, and the next press would re-send the same `before` id — a no-op.
+    var loaded = 0
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
+    /// This pane's name on the wire (`agent.open {viewer}`): one per pane instance — the root
+    /// keys the pane to the agent's id, so a new session is a new token — and stable across the
+    /// app's reconnects, so a re-open after a daemon restart never counts twice and the tail ends
+    /// when this pane's one `agent.close` lands. Never per send.
+    @State private var viewer = UUID().uuidString
 
     static func == (a: ConversationPane, b: ConversationPane) -> Bool {
-        a.agent == b.agent && a.transcript == b.transcript
+        a.agent == b.agent && a.transcript == b.transcript && a.connected == b.connected && a.loaded == b.loaded
     }
+
+    /// Something can still arrive: derived every body from the engine's tail flag, the
+    /// connection and the agent's lease-bounded status — never a latch the app must remember
+    /// to clear (the old `live` flag stayed true across 48 daemon restarts in two days).
+    private var isLive: Bool { ConversationPane.isLive(transcript: transcript, agent: agent, connected: connected) }
+    /// The "typing" face: the working lease, so it cannot outlive 30 s of silence.
+    private var typing: Bool { ConversationPane.typing(transcript: transcript, agent: agent, connected: connected) }
 
     var body: some View {
         VStack(spacing: 0) {
-            ConversationHeader(agent: agent, transcript: transcript, close: close)
-            ConversationFeed(agent: agent, transcript: transcript)
+            ConversationHeader(agent: agent, transcript: transcript, live: isLive, typing: typing, close: close)
+            ConversationFeed(agent: agent, transcript: transcript, typing: typing, viewer: viewer, loaded: loaded)
             ConversationComposer(agent: agent, close: close)
         }
-        // Follow the session while it is on screen; stop the tail when it is not.
-        // The root gives the pane the agent's id as identity, so switching
-        // sessions closes one and opens the next.
-        .onAppear { actions.send(.agentOpen(agentId: agent.id)) }
-        .onDisappear { actions.send(.agentClose(agentId: agent.id)) }
+        // Follow the session while it is on screen; stop the tail when it is not. The root
+        // gives the pane the agent's id as identity, so switching sessions closes one and
+        // opens the next. A daemon restart forgets every open (the new engine has none): the
+        // pane re-sends its open on each reconnect — only while the window is visible. A
+        // hidden Console closes its tail and reopens it when shown, so an hour hidden costs
+        // no tailing and no thousands of rows to lay out when the window comes back.
+        .onAppear { if session.windowVisible { open() } }
+        .onDisappear(perform: closeTail)
+        .onChange(of: session.reconnectCount) {
+            if session.windowVisible { open() }
+        }
+        .onChange(of: session.windowVisible) { _, visible in
+            if visible { open() } else { closeTail() }
+        }
     }
+
+    private func open() { actions.send(.agentOpenAs(agentId: agent.id, viewer: viewer)) }
+    private func closeTail() { actions.send(.agentCloseAs(agentId: agent.id, viewer: viewer)) }
 
     /// Back to the stream — the live one: a ledger day left open behind the
     /// conversation would otherwise take its place, two clicks from live.
@@ -56,6 +87,33 @@ struct ConversationPane: View, Equatable {
 // MARK: - What the agent's detail says (pure)
 
 extension ConversationPane {
+    /// Following, and something can still arrive: the engine tails the file (`transcript.live`),
+    /// the daemon is connected, and a process still owns the session — working, idle or blocked
+    /// (AgentTranscript.isLive, the model's one derivation). An ended, done, unknown or offline
+    /// session is over whatever the tail flag says, so a stale `live: true` from before a
+    /// restart never lights the dot; no transcript yet is not live either.
+    static func isLive(transcript: AgentTranscript?, agent: AgentInfo, connected: Bool) -> Bool {
+        transcript?.isLive(agent: agent, connected: connected) ?? false
+    }
+
+    /// The agent is writing right now: live, and its status is the lease-bounded `working`
+    /// (a turn-bearing write within 30 s). Idle and blocked are live but not typing.
+    static func typing(transcript: AgentTranscript?, agent: AgentInfo, connected: Bool) -> Bool {
+        transcript?.typing(agent: agent, connected: connected) ?? false
+    }
+
+    /// The most rows the feed lays out: the newest 400 (AppState.maxTranscriptMessages trims the
+    /// held transcript to the same; this is the view's own ceiling, so a transcript from an
+    /// older model never lays out thousands) plus what Kevin loaded (`loaded`).
+    static let maxRows = AppState.maxTranscriptMessages
+
+    /// The newest `maxRows + loaded` of a transcript; the rest stay behind "Load earlier". The
+    /// model's cap moves the same way (AppState.prependedCount), so what it holds is what shows.
+    static func shown(_ all: [AgentMessage], loaded: Int = 0) -> [AgentMessage] {
+        let cap = maxRows + max(0, loaded)
+        return all.count > cap ? Array(all.suffix(cap)) : all
+    }
+
     /// The question a blocked session is waiting on, from its detail — the sessions
     /// connector writes "… · needs Kevin's yes or no: Bash — pnpm test" — or nil
     /// when the detail does not read like a permission question.
@@ -112,12 +170,14 @@ extension ConversationPane {
 private struct ConversationHeader: View {
     let agent: AgentInfo
     let transcript: AgentTranscript?
+    /// Derived by the pane (ConversationPane.isLive / typing): shown while following, pulsing only while writing.
+    let live: Bool
+    let typing: Bool
     let close: () -> Void
 
     @Environment(\.consoleActions) private var actions
 
     private var tool: AgentTool { agent.resolvedTool }
-    private var live: Bool { transcript?.live ?? false }
     private var count: Int { transcript?.total ?? agent.messageCount ?? 0 }
 
     var body: some View {
@@ -145,11 +205,12 @@ private struct ConversationHeader: View {
                     .help(agent.detail.map { "\(agent.status.rawValue) · \($0)" } ?? agent.status.rawValue)
                 Spacer(minLength: 8)
                 HStack(spacing: 6) {
-                    // The live dot fades in when the tail starts; the count rolls its digits.
+                    // The live dot fades in while the tail can still bring something and pulses
+                    // only while the agent is writing (the 30 s lease); the count rolls its digits.
                     if live {
-                        ConsoleDot(color: brandColor(tool), live: true, size: 6)
-                            .help("Live — following the session as it grows")
-                            .accessibilityLabel("Live")
+                        ConsoleDot(color: brandColor(tool), live: typing, size: 6)
+                            .help(typing ? "Live — the session is writing" : "Live — following the session; quiet for now")
+                            .accessibilityLabel(typing ? "Live, writing" : "Live")
                             .transition(.opacity)
                     }
                     Text(ConsoleFormat.messageCount(count))
@@ -199,6 +260,12 @@ private struct ConversationHeader: View {
 private struct ConversationFeed: View {
     let agent: AgentInfo
     let transcript: AgentTranscript?
+    /// The agent is writing (ConversationPane.typing): the last row's indicator and a running call's pulse.
+    var typing = false
+    /// The pane's viewer token, for the Reload / Try again re-open.
+    var viewer = ""
+    /// Rows Kevin loaded (ConversationPane.loaded): the ceiling grows by as many.
+    var loaded = 0
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -217,8 +284,14 @@ private struct ConversationFeed: View {
     @State private var settled = false
 
     private static let bottomId = "conversation-bottom"
+    /// What stands above the first row at the top of the feed: the stack's top padding (8), the
+    /// "Load earlier" row (24) and its bottom padding (8). A viewport top inside it is "at the top".
+    private static let loadEarlierStrip: CGFloat = 40
+    /// A one-line row, for the anchor's unit point (SwiftUI aligns a fraction of the row with the
+    /// same fraction of the viewport; the row's own height is not known here — ±2 pt on a two-line row).
+    private static let rowEstimate: CGFloat = 34
 
-    private var messages: [AgentMessage] { transcript?.messages ?? [] }
+    private var messages: [AgentMessage] { ConversationPane.shown(transcript?.messages ?? [], loaded: loaded) }
     private var tool: AgentTool { agent.resolvedTool }
 
     var body: some View {
@@ -230,16 +303,20 @@ private struct ConversationFeed: View {
                             emptyView.frame(minHeight: outer.size.height)
                                 .transition(.opacity)
                         } else {
-                            // Not lazy, like the stream: a stable document is what sticky scrolling needs.
-                            VStack(alignment: .leading, spacing: 0) {
-                                if let t = transcript, !t.complete, let first = t.messages.first {
-                                    loadEarlier(before: first, remaining: max(0, t.total - t.messages.count))
+                            // Lazy, unlike the stream: a conversation can hold hundreds of selectable
+                            // rows (the cap is 400) and a busy Codex thread appends for hours, so only the
+                            // rows on screen are materialised; the AppKit probe re-pins the bottom on every
+                            // document change, which is what a lazy stack's re-estimated heights need.
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                if let t = transcript, !t.complete, let first = messages.first {
+                                    loadEarlier(before: first, remaining: max(0, t.total - messages.count))
                                 }
                                 ForEach(messages) { message in
-                                    // The last message of a live transcript is the one being written:
-                                    // a thinking row there shows the ASCII indicator.
+                                    // The last message of a transcript whose agent is writing is the one
+                                    // being written: a thinking row there shows the ASCII indicator.
+                                    // `typing` is the lease-bounded status, never the tail flag alone.
                                     ConversationRow(message: message, tool: tool,
-                                                    live: (transcript?.live ?? false) && message.id == messages.last?.id)
+                                                    live: typing && message.id == messages.last?.id, typing: typing)
                                         .rowAppear(animated: settled && !loadingEarlier)
                                 }
                                 Color.clear.frame(height: 1).id(Self.bottomId)
@@ -292,13 +369,25 @@ private struct ConversationFeed: View {
             }
             .onChange(of: messages.first?.id) { oldId, _ in
                 loadingEarlier = false
-                // Rows arrived *above* the one Kevin was reading (an older page, asked for
-                // or not): hold his place. The tracker still has the height from before
-                // this update; the document grows once it lays out, so shift on the next turn.
+                // Rows arrived *above* the one Kevin was reading (an older page): hold his place.
+                // The tracker still has the geometry from before this update; the document grows
+                // once it lays out, so act on the next turn. At the top — where "Load earlier" is
+                // pressed — anchor by the ROW: SwiftUI puts the row he was reading back under the
+                // strip that stood above it. Not by the document's height: a lazy stack re-estimates
+                // rows below the viewport too (under the meters' 20 Hz churn that put the row four
+                // rows off). Mid-feed, where the strip is not the reference, the probe's hold on the
+                // document's growth is what there is.
                 guard !tracker.stuck, let oldId,
                       let index = messages.firstIndex(where: { $0.id == oldId }), index > 0,
-                      let before = tracker.lastGeometry?.content else { return }
-                DispatchQueue.main.async { tracker.probe?.keepOffset(previousContent: before) }
+                      let geo = tracker.lastGeometry else { return }
+                DispatchQueue.main.async {
+                    if geo.minY <= Self.loadEarlierStrip {
+                        let rowTop = Self.loadEarlierStrip - geo.minY
+                        proxy.scrollTo(oldId, anchor: UnitPoint(x: 0, y: rowTop / max(1, geo.viewport - Self.rowEstimate)))
+                    } else {
+                        tracker.probe?.keepOffset(previousContent: geo.content)
+                    }
+                }
             }
             .task(id: loadingEarlier) {
                 guard loadingEarlier else { return }
@@ -353,13 +442,13 @@ private struct ConversationFeed: View {
         DispatchQueue.main.async { settled = true }
     }
 
-    /// Ask for the tail again. The pane already holds one `agent.open` (onAppear)
-    /// and gives back exactly one `agent.close` (onDisappear); the engine counts
-    /// viewers per open, so a bare re-open would leave the tail running after
-    /// Kevin leaves. Close first — a no-op when nothing is open — then open.
+    /// Ask for the tail again, as this pane's viewer: opens are idempotent per viewer, so a
+    /// re-open never double-counts, and the pane's one `agent.close` (onDisappear) still ends
+    /// the tail. Close first so the engine re-pages from the file rather than answering from
+    /// what it already follows.
     private func reopen() {
-        actions.send(.agentClose(agentId: agent.id))
-        actions.send(.agentOpen(agentId: agent.id))
+        actions.send(.agentCloseAs(agentId: agent.id, viewer: viewer))
+        actions.send(.agentOpenAs(agentId: agent.id, viewer: viewer))
     }
 
     private var emptyView: some View {
@@ -393,8 +482,10 @@ private struct ConversationFeed: View {
 struct ConversationRow: View, Equatable {
     let message: AgentMessage
     let tool: AgentTool
-    /// The transcript is live and this is its last message (still being thought or written).
+    /// The agent is writing and this is its last message (still being thought or written).
     var live = false
+    /// The agent is writing (ConversationPane.typing): a running call's dot pulses only then.
+    var typing = false
 
     var body: some View {
         if message.thinking == true {
@@ -407,7 +498,7 @@ struct ConversationRow: View, Equatable {
                 AssistantTurn(message: message, tool: tool)
             case .tool:
                 if let call = message.tool {
-                    ToolCallCard(message: message, call: call)
+                    ToolCallCard(message: message, call: call, typing: typing)
                 } else {
                     NoteRow(message: message, symbol: "terminal.fill")
                 }
@@ -487,6 +578,9 @@ private struct UserTurn: View {
 private struct ToolCallCard: View {
     let message: AgentMessage
     let call: AgentToolCall
+    /// The agent is writing: only then does a running call's dot pulse. A call left `running`
+    /// by a session that stopped writing sits still until its result — or `interrupted` — lands.
+    var typing = false
 
     @State private var expanded = false
 
@@ -499,6 +593,10 @@ private struct ToolCallCard: View {
         case .interrupted: return ConsoleTheme.titanium
         }
     }
+
+    /// The word beside the dot when the status needs one: "interrupted" (settled grey, no
+    /// output will come); the other states speak through the dot and the output.
+    private var statusWord: String? { call.status == .interrupted ? "interrupted" : nil }
 
     /// What the folded line shows after the name: the input, else the message's own text.
     private var preview: String {
@@ -520,10 +618,16 @@ private struct ToolCallCard: View {
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         Text(call.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
                             .lineLimit(1).truncationMode(.tail).layoutPriority(1)
-                        // Running → done / error: the dot's colour crossfades (ConsoleDot).
-                        ConsoleDot(color: dotColor, live: call.status == .running, size: 5)
+                        // Running → done / error / interrupted: the dot's colour crossfades (ConsoleDot);
+                        // it pulses only while the agent is actually writing.
+                        ConsoleDot(color: dotColor, live: call.status == .running && typing, size: 5)
                             .help(call.status.rawValue)
                             .accessibilityLabel(call.status.rawValue)
+                        if let word = statusWord {
+                            Text(word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                                .lineLimit(1).layoutPriority(1)
+                                .transition(.opacity)
+                        }
                         if !expanded, !preview.isEmpty {
                             Text(preview).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                                 .lineLimit(1).truncationMode(.tail)
@@ -548,14 +652,20 @@ private struct ToolCallCard: View {
                         ioBlock("input", call.input)
                         if let output = call.output {
                             ioBlock("output", output)
+                        } else if call.status == .interrupted {
+                            // No result ever came: the session's process ended (or its file went)
+                            // with this call open. Said plainly, in the settled grey.
+                            Text("interrupted — the session ended before this call answered")
+                                .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.titanium)
                         } else if call.status == .running {
-                            Text("running…").font(ConsoleTheme.sans(11)).italic().foregroundStyle(ConsoleTheme.fg3)
+                            Text(typing ? "running…" : "running — no result yet").font(ConsoleTheme.sans(11)).italic().foregroundStyle(ConsoleTheme.fg3)
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: 10, bottom: 8, trailing: 10))
                     .transition(Motion.appear)
                 }
             }
+            .animation(Motion.fade, value: call.status)
             .overlay(Rectangle().stroke(ConsoleTheme.hair, lineWidth: 1))
             .padding(.leading, iconGap)
             // The same measure as the turns around it, so a wide window keeps one right edge.

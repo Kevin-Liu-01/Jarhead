@@ -222,6 +222,9 @@ struct OnboardingModel: Equatable {
     var connected: Bool
     var daemonDetail: String
     var setup: SetupStatus
+    /// The voice id and accent the engine has (Settings.voice, Settings.accentKind: "american" from an older daemon).
+    var voice: String
+    var accent: String
     var brain: BrainKind
     var brainModel: String
     var brainBaseUrl: String?
@@ -242,6 +245,8 @@ struct OnboardingModel: Equatable {
         connected = state.connected
         daemonDetail = state.daemonDetail
         setup = snap.setupStatus
+        voice = snap.settings.voice
+        accent = snap.settings.accentKind
         brain = snap.settings.brain
         brainModel = snap.settings.brainModel
         brainBaseUrl = snap.settings.brainBaseUrl
@@ -319,10 +324,17 @@ struct OnboardingReport: Equatable {
         return m.isEmpty || detail.contains(m) ? nil : m
     }
 
+    /// "Cedar · English, American accent" — the voice as the Done page names it; no accent
+    /// phrase for "none" (the voice keeps its own rendering).
+    static func voiceDetail(_ voice: String, accent: String) -> String {
+        let label = ConsoleTheme.voiceLabel(voice)
+        return accent == "none" ? label : "\(label), \(ConsoleTheme.accentLabel(accent)) accent"
+    }
+
     init(model m: OnboardingModel) {
         let setup = m.setup
         switch setup.openaiKey {
-        case .ok: voice = Line(mark: .ok, text: "OpenAI key works", id: setup.liveModel)
+        case .ok: voice = Line(mark: .ok, text: "OpenAI key works", id: setup.liveModel, detail: OnboardingReport.voiceDetail(m.voice, accent: m.accent))
         case .invalid: voice = Line(mark: .attention, text: "OpenAI rejected the key")
         case .missing: voice = Line(mark: .attention, text: "No OpenAI key")
         case .unchecked: voice = setup.secrets.openai ? Line(mark: .neutral, text: "OpenAI key on file, not checked yet") : Line(mark: .attention, text: "No OpenAI key")
@@ -380,3 +392,38 @@ struct OnboardingReport: Equatable {
         [.voice, .brain, .permissions, .wake].first { mark($0) == .attention }
     }
 }
+
+#if DEBUG
+// MARK: - Bench (debug builds; no XCTest target in apps/mac)
+
+/// The Setup › Voice pins, runnable from Scripts/appstate-bench.sh's `onboarding` stage
+/// (compiled with -D DEBUG -D ONBOARDING_BENCH and the onboarding preview's file list): the Done
+/// report names the voice "Cedar · English, American accent" and drops the accent phrase for
+/// none; the Voice and Accent rows keep a saved id outside their lists so a pick never shows
+/// nothing. One line per check, "ok" or "FAIL" first — the shape AppStateBench uses.
+@MainActor
+enum OnboardingBench {
+    static func run() -> [String] {
+        var out: [String] = []
+        func check(_ ok: Bool, _ what: String) { out.append((ok ? "ok   " : "FAIL ") + what) }
+
+        let cedar = OnboardingReport.voiceDetail("cedar", accent: "american")
+        check(cedar == "Cedar · English, American accent", "Done report names the voice: \(cedar)")
+        let none = OnboardingReport.voiceDetail("cedar", accent: "none")
+        check(none == "Cedar · English", "no accent phrase for none: \(none)")
+        let british = OnboardingReport.voiceDetail("marin", accent: "british")
+        check(british == "Marin · English, British accent", "british: \(british)")
+        let unknown = OnboardingReport.voiceDetail("zz-unknown", accent: "american")
+        check(unknown == "zz-unknown · English, American accent", "an unknown voice id is kept raw, still English: \(unknown)")
+
+        check(OnboardingVoiceStep.voiceOptions(for: "cedar") == ConsoleTheme.voices, "a known voice: the 22 as they are")
+        check(OnboardingVoiceStep.voiceOptions(for: "zz-unknown") == ConsoleTheme.voices + ["zz-unknown"], "an unknown saved voice is appended so the field shows it")
+        check(ConsoleTheme.voices.count == 22, "ConsoleTheme.voices mirrors VOICES (22)")
+        let accents = ConsoleTheme.accents.map(\.id)
+        check(accents == ["american", "british", "none"], "accents in the protocol's order: \(accents)")
+        check(OnboardingVoiceStep.accentOptions(for: "british") == accents, "a known accent: the three as they are")
+        check(OnboardingVoiceStep.accentOptions(for: "scottish") == accents + ["scottish"], "an unknown saved accent is appended")
+        return out
+    }
+}
+#endif
