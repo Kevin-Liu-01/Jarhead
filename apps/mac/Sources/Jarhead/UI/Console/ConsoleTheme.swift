@@ -142,6 +142,8 @@ enum ConsoleTheme {
         case .idle: return StatusMeta(color: titanium, symbol: nil, live: false)
         case .blocked: return StatusMeta(color: speaking, symbol: "exclamationmark.circle.fill", live: false)
         case .done: return StatusMeta(color: acting, symbol: "checkmark.circle.fill", live: false)
+        // The process is gone: over, however old. Never a pulse.
+        case .ended: return StatusMeta(color: titanium, symbol: "stop.circle.fill", live: false)
         case .unknown: return StatusMeta(color: titanium, symbol: "questionmark.circle.fill", live: false)
         case .offline: return StatusMeta(color: fg3, symbol: "circle.slash.fill", live: false)
         }

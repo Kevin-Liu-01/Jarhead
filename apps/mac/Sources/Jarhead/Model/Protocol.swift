@@ -106,6 +106,72 @@ public struct Worker: Codable, Identifiable, Equatable, Sendable {
     public var steps: Int
 }
 
+// MARK: - Memory: what Jarhead knows about Kevin across sessions (mirror of MemoryItem / MemorySummary).
+
+public enum MemoryKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case preference, fact, episode, procedure, contact, place
+    public init(from decoder: Decoder) throws {
+        self = MemoryKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .fact
+    }
+}
+
+public enum MemoryState: String, Codable, Equatable, Sendable {
+    case live, forgotten, merged, archived
+    public init(from decoder: Decoder) throws {
+        self = MemoryState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .live
+    }
+}
+
+public struct MemorySource: Codable, Equatable, Sendable {
+    public var sessionId: String?
+    public var at: Double
+    public var type: String
+}
+
+public struct MemoryItem: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    public var kind: MemoryKind
+    public var text: String
+    public var subjects: [String]
+    public var confidence: Double
+    public var importance: Double
+    public var createdAt: Double
+    public var lastSeenAt: Double
+    public var seenCount: Int
+    public var sources: [MemorySource]
+    public var state: MemoryState
+    public var mergedInto: String?
+    public var supersedes: [String]?
+    /// extracted | kevin | tool
+    public var origin: String
+}
+
+public struct MemorySummary: Codable, Equatable, Sendable {
+    public struct LastRun: Codable, Equatable, Sendable {
+        public var extractor: String
+        public var added: Int
+        public var updated: Int
+        public var noop: Int
+        public var refused: Int
+        public var ms: Double
+    }
+    public struct BudgetUsed: Codable, Equatable, Sendable {
+        public var brain: Int
+        public var voice: Int
+    }
+    public var enabled: Bool
+    public var count: Int
+    public var forgotten: Int
+    public var archived: Int
+    /// openai | keyword
+    public var embeddings: String
+    public var pending: Int
+    public var lastRunAt: Double?
+    public var lastRun: LastRun?
+    public var budgetUsed: BudgetUsed?
+    public var lastUsedIds: [String]?
+}
+
 public struct DelegationTimings: Codable, Equatable {
     public var delegatedAt: Double
     public var firstThinkingAt: Double?
@@ -140,7 +206,7 @@ public enum AgentKind: String, Codable {
 }
 
 public enum AgentStatus: String, Codable {
-    case idle, working, blocked, done, unknown, offline
+    case idle, working, blocked, done, ended, unknown, offline
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = AgentStatus(rawValue: raw) ?? .unknown
@@ -180,6 +246,8 @@ public struct AgentInfo: Codable, Identifiable, Equatable {
     public var cwd: String?
     public var updatedAt: Double
     public var messageCount: Int?
+    /// One word on why the status is what it is (archived, blocked, running, quiet, ended, unseen, resumed).
+    public var hint: String?
 
     /// The tool, inferred from the id when the connector did not say.
     public var resolvedTool: AgentTool {
@@ -202,7 +270,7 @@ public enum AgentRole: String, Codable {
 
 public struct AgentToolCall: Codable, Equatable {
     public enum Status: String, Codable {
-        case running, done, error
+        case running, done, error, interrupted
         public init(from decoder: Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
             self = Status(rawValue: raw) ?? .done
@@ -229,6 +297,13 @@ public struct AgentTranscript: Codable, Equatable {
     public var total: Int
     public var complete: Bool
     public var live: Bool
+    /// Byte range of the session file these messages came from; older pages are read before `startOffset`.
+    public var cursor: TranscriptCursor?
+
+    public struct TranscriptCursor: Codable, Equatable {
+        public var startOffset: Int
+        public var endOffset: Int
+    }
 
     public static func empty(_ agentId: String) -> AgentTranscript {
         AgentTranscript(agentId: agentId, messages: [], total: 0, complete: false, live: false)
@@ -363,7 +438,14 @@ public struct Settings: Codable, Equatable {
     public var shotsRetentionDays: Int?
     /// Workers: let the brain split independent work across a second pair of hands. Optional on the wire.
     public var workers: Bool?
+    /// The language the voice speaks ("en"), how the English sounds (american | british | none), and durable memory. Optional on the wire.
+    public var language: String?
+    public var accent: String?
+    public var memory: Bool?
 
+    public var languageTag: String { language ?? "en" }
+    public var accentKind: String { accent ?? "american" }
+    public var memoryOn: Bool { memory ?? true }
     public var workersOn: Bool { workers ?? true }
     public var wakeSettings: WakeSettings { wake ?? .standard }
     public var isOnboarded: Bool { onboarded ?? false }
@@ -464,6 +546,9 @@ public struct SessionInfo: Codable, Equatable {
     public var expiresAt: Double
     public var usageSeconds: Double
     public var contextRatio: Double?
+    /// The voice and accent this session opened with (a change is heard at the next wake).
+    public var voice: String?
+    public var accent: String?
 }
 
 /// Present while paused: the pause closed `sessionId` (the meter stopped) and holds the
@@ -567,6 +652,8 @@ public struct Snapshot: Codable, Equatable {
     public var hiddenAgents: [String]?
     /// The delegation's workers (running, and finished within the last half minute). Optional on the wire.
     public var workers: [Worker]?
+    /// What Jarhead remembers about Kevin (counts, mode, the last run). Optional on the wire.
+    public var memory: MemorySummary?
 
     public var allWorkers: [Worker] { workers ?? [] }
     public var runningWorkers: [Worker] { allWorkers.filter { $0.status.isRunning } }
@@ -598,6 +685,17 @@ public enum EngineCommand: Equatable {
     /// Follow / stop following an agent's conversation; older page before a message id.
     case agentOpen(agentId: String)
     case agentClose(agentId: String)
+    /// The same, naming the pane (`viewer`) so opens are per pane and a closed pane's tail ends.
+    case agentOpenAs(agentId: String, viewer: String)
+    case agentCloseAs(agentId: String, viewer: String)
+    /// Switch now: pause, then resume with the newly picked voice or accent (refused while work runs).
+    case voiceReopen
+    // Memory (the Console's Memory rail). Forget and Restore are states; nothing is deleted.
+    case memoryForget(id: String)
+    case memoryRestore(id: String)
+    case memoryEdit(id: String, text: String, kind: String?)
+    case memoryAdd(text: String, kind: String?)
+    case memoryRun
     case agentHistory(agentId: String, before: String)
     /// Kevin circled a region (global points, y down) — with his stroke.
     case markAdd(rect: Rect, path: [Point2]?)
@@ -647,6 +745,20 @@ public enum EngineCommand: Equatable {
         case .agentRefresh: return ["type": "agent.refresh"]
         case .agentOpen(let id): return ["type": "agent.open", "agentId": id]
         case .agentClose(let id): return ["type": "agent.close", "agentId": id]
+        case .agentOpenAs(let id, let viewer): return ["type": "agent.open", "agentId": id, "viewer": viewer]
+        case .agentCloseAs(let id, let viewer): return ["type": "agent.close", "agentId": id, "viewer": viewer]
+        case .voiceReopen: return ["type": "voice.reopen"]
+        case .memoryForget(let id): return ["type": "memory.forget", "id": id]
+        case .memoryRestore(let id): return ["type": "memory.restore", "id": id]
+        case .memoryEdit(let id, let text, let kind):
+            var o: [String: Any] = ["type": "memory.edit", "id": id, "text": text]
+            if let kind { o["kind"] = kind }
+            return o
+        case .memoryAdd(let text, let kind):
+            var o: [String: Any] = ["type": "memory.add", "text": text]
+            if let kind { o["kind"] = kind }
+            return o
+        case .memoryRun: return ["type": "memory.run"]
         case .agentHistory(let id, let before): return ["type": "agent.history", "agentId": id, "before": before]
         case .markAdd(let rect, let path):
             var o: [String: Any] = ["type": "mark.add", "rect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]]
@@ -701,15 +813,21 @@ public struct SettingsPatch: Equatable {
     public var orbHome: String?
     public var ledgerRetentionDays: Int?
     public var shotsRetentionDays: Int?
+    public var workers: Bool?
+    public var language: String?
+    public var accent: String?
+    public var memory: Bool?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
-                wake: WakeSettings? = nil, reflexes: Bool? = nil, orbHome: String? = nil) {
+                wake: WakeSettings? = nil, reflexes: Bool? = nil, orbHome: String? = nil,
+                workers: Bool? = nil, language: String? = nil, accent: String? = nil, memory: Bool? = nil) {
         self.voice = voice; self.brain = brain; self.brainModel = brainModel; self.brainBaseUrl = brainBaseUrl; self.effort = effort
         self.onboarded = onboarded
         self.micDeviceId = micDeviceId; self.idleSleepMinutes = idleSleepMinutes; self.autoWake = autoWake; self.orbPosition = orbPosition
         self.wake = wake
         self.reflexes = reflexes; self.orbHome = orbHome
+        self.workers = workers; self.language = language; self.accent = accent; self.memory = memory
     }
 
     public var json: [String: Any] {
@@ -729,6 +847,10 @@ public struct SettingsPatch: Equatable {
         if let v = orbHome { o["orbHome"] = v }
         if let v = ledgerRetentionDays { o["ledgerRetentionDays"] = v }
         if let v = shotsRetentionDays { o["shotsRetentionDays"] = v }
+        if let v = workers { o["workers"] = v }
+        if let v = language { o["language"] = v }
+        if let v = accent { o["accent"] = v }
+        if let v = memory { o["memory"] = v }
         return o
     }
 }

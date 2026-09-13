@@ -86,7 +86,7 @@ export type DaemonMessage =
   | { readonly type: "ear.hints"; readonly strings: readonly string[] }
   /** Full-text hits over the ledger for the Console's search box. */
   | { readonly type: "ledger.hits"; readonly id: string; readonly hits: unknown[] }
-  | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" }
+  | { readonly type: "agent.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
    * ToolResult as the runner produced it (text / image {pngBase64, width, height,

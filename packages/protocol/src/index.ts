@@ -99,6 +99,59 @@ export const WORKER_MAX = 2;
 /** How long a finished worker stays in the snapshot for the Console before it is dropped. */
 export const WORKER_LINGER_MS = 30_000;
 
+// ---- memory: what Jarhead knows about Kevin across sessions ------------------
+//
+// A dedicated module (@jarhead/memory) keeps an append-only record of one-sentence
+// items ("Kevin prefers …"), extracted from closed conversations, deduplicated by
+// embedding similarity, scored by recency, importance and use, and injected into
+// prompts under a hard token budget. Forget is a state; nothing is ever deleted.
+export type MemoryKind = "preference" | "fact" | "episode" | "procedure" | "contact" | "place";
+export type MemoryState = "live" | "forgotten" | "merged" | "archived";
+export type MemoryOrigin = "extracted" | "kevin" | "tool";
+export interface MemorySource {
+  readonly sessionId?: string;
+  readonly at: number;
+  readonly type: "heard" | "said" | "request" | "summary" | "kevin" | "tool";
+}
+export interface MemoryItem {
+  readonly id: string;
+  readonly kind: MemoryKind;
+  /** One sentence, third person, redacted. */
+  readonly text: string;
+  readonly subjects: readonly string[];
+  readonly confidence: number;
+  readonly importance: number;
+  readonly createdAt: number;
+  readonly lastSeenAt: number;
+  readonly seenCount: number;
+  readonly sources: readonly MemorySource[];
+  readonly state: MemoryState;
+  /** When merged: the item that carries it now. */
+  readonly mergedInto?: string;
+  /** Items this one replaced (a contradiction resolved the newer way). */
+  readonly supersedes?: readonly string[];
+  readonly origin: MemoryOrigin;
+}
+export interface MemorySummary {
+  readonly enabled: boolean;
+  readonly count: number;
+  readonly forgotten: number;
+  readonly archived: number;
+  /** How items are matched: OpenAI embeddings (a key is present) or keywords. */
+  readonly embeddings: "openai" | "keyword";
+  /** Conversations waiting for a quiet moment to be read. */
+  readonly pending: number;
+  readonly lastRunAt?: number;
+  readonly lastRun?: { readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number };
+  /** Tokens the last prompts spent on memory. */
+  readonly budgetUsed?: { readonly brain: number; readonly voice: number };
+  /** Items the last delegation was given (the Now rail's "used this turn"). */
+  readonly lastUsedIds?: readonly string[];
+}
+/** Hard caps on what memory may cost a prompt. */
+export const BRAIN_MEMORY_TOKENS = 250;
+export const VOICE_MEMORY_TOKENS = 120;
+
 /**
  * Why Jarhead went to sleep. `said`: a spoken cue ("go to sleep", "goodnight", "that's
  * all"); `idle`: the idle timer; `pause-decayed`: an unresumed pause; `brain-changed`: the
@@ -150,7 +203,14 @@ export interface Delegation {
 /** "sessions" is the read-only discovery of agent sessions on disk and in processes (Claude Code, Codex, …). */
 export type AgentKind = "claude-code" | "sessions";
 
-export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown" | "offline";
+/**
+ * `working` needs a live owner AND a turn-bearing write inside its lease; `ended` is a
+ * session whose process is gone (any age); `unknown` is degraded evidence only (ps/lsof
+ * failed); `offline` is a run-driven session whose runner has gone.
+ */
+export type AgentStatus = "idle" | "working" | "blocked" | "done" | "ended" | "unknown" | "offline";
+/** One word on why the status is what it is; the rail shows it instead of a relative time. */
+export type AgentHint = "archived" | "blocked" | "running" | "quiet" | "ended" | "unseen" | "resumed";
 
 /** The CLI or app behind a session — drives the icon and brand colour in the UI. */
 export type AgentTool = "claude" | "codex" | "cursor" | "gemini" | "opencode" | "amp" | "droid" | "hermes" | "pi" | "other";
@@ -168,6 +228,7 @@ export interface AgentInfo {
   readonly updatedAt: number;
   /** Total messages in the conversation, when known. */
   readonly messageCount?: number;
+  readonly hint?: AgentHint;
 }
 
 // ------------------------------------------------------- conversations ---
@@ -179,7 +240,8 @@ export interface AgentToolCall {
   /** Pretty-printed input, truncated by the connector. */
   readonly input?: string;
   readonly output?: string;
-  readonly status: "running" | "done" | "error";
+  /** `interrupted`: the session ended while this call was still running. */
+  readonly status: "running" | "done" | "error" | "interrupted";
 }
 
 /** One turn of an agent's conversation, normalised across Codex / Claude Code / others. */
@@ -208,6 +270,8 @@ export interface AgentTranscript {
   readonly complete: boolean;
   /** True while the engine is tailing the session file for new turns. */
   readonly live: boolean;
+  /** Byte range of the session file these messages came from; `agent.history` pages before `startOffset`. */
+  readonly cursor?: { readonly startOffset: number; readonly endOffset: number };
 }
 
 // ------------------------------------------------------------- marks ---
@@ -300,6 +364,12 @@ export interface Settings {
   readonly shotsRetentionDays: number;
   /** Let the brain split independent work across workers (a second pair of hands). */
   readonly workers: boolean;
+  /** The language the voice speaks, whatever it hears (BCP-47; "en"). */
+  readonly language: string;
+  /** How the English is spoken; rendered as one line of the session's instructions. */
+  readonly accent: Accent;
+  /** Durable memory of Kevin across sessions (extraction, retrieval, the Memory rail). */
+  readonly memory: boolean;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -322,6 +392,9 @@ export const DEFAULT_SETTINGS: Settings = {
   ledgerRetentionDays: 0,
   shotsRetentionDays: 14,
   workers: true,
+  language: "en",
+  accent: "american",
+  memory: true,
 };
 
 /**
@@ -404,8 +477,20 @@ export interface AudioLevels {
   readonly output: number;
 }
 
+export type Accent = "american" | "british" | "none";
+export const ACCENTS: readonly Accent[] = ["american", "british", "none"];
+/** GPT-Live-1's built-in voices (mirror of `BuiltInVoice` in @jarhead/live; a type-level test keeps them equal). All speak English. */
+export const VOICES = [
+  "alloy", "ash", "ballad", "beacon", "bossa", "cedar", "cinder", "coral", "delta", "echo", "gleam",
+  "marin", "meridian", "quartz", "ripple", "sage", "shimmer", "stone", "tempo", "verse", "vesper", "willow",
+] as const;
+export type Voice = (typeof VOICES)[number];
+
 export interface SessionInfo {
   readonly id: string;
+  /** The voice and accent this session was opened with (a change is heard at the next wake). */
+  readonly voice?: string;
+  readonly accent?: Accent;
   readonly startedAt: number;
   readonly expiresAt: number;
   /** Cumulative billed seconds, from session.usage.updated. */
@@ -447,6 +532,8 @@ export interface Snapshot {
   readonly hiddenAgents?: readonly string[];
   /** The delegation's workers: running ones and those finished within WORKER_LINGER_MS. */
   readonly workers?: readonly Worker[];
+  /** What Jarhead remembers about Kevin: counts, mode, the last run, what the last turn used. */
+  readonly memory?: MemorySummary;
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
@@ -532,7 +619,7 @@ export type EngineEvent =
   /** Drop whatever is queued for the speaker (stop, cancel, sleep). */
   | { readonly type: "speaker-flush" }
   /** A page of an opened agent's conversation (`replace`), or new turns while it is open (`append`). */
-  | { readonly type: "agent.transcript"; readonly transcript: AgentTranscript; readonly mode: "replace" | "append" };
+  | { readonly type: "agent.transcript"; readonly transcript: AgentTranscript; readonly mode: "replace" | "append" | "prepend" };
 
 /**
  * A settings change. `null` clears an optional field (JSON has no way to send
@@ -598,8 +685,18 @@ export type EngineCommand =
   /** Check the OpenAI key and the brain; results land in snapshot.setup. */
   | { readonly type: "config.probe" }
   /** Follow an agent's conversation: newest page now, live turns until closed. */
-  | { readonly type: "agent.open"; readonly agentId: string }
-  | { readonly type: "agent.close"; readonly agentId: string }
+  /** `viewer` names the pane that opened it (the daemon prefixes its client id) so opens are per pane and a dead client's tails close. */
+  | { readonly type: "agent.open"; readonly agentId: string; readonly viewer?: string }
+  | { readonly type: "agent.close"; readonly agentId: string; readonly viewer?: string }
+  /** Kevin pressed Switch now after picking a voice or accent: pause, then resume with the new voice (never while work runs). */
+  | { readonly type: "voice.reopen" }
+  // ---- memory (the Console's Memory rail and the CLI). Forget is a state, never a deletion.
+  | { readonly type: "memory.forget"; readonly id: string }
+  | { readonly type: "memory.restore"; readonly id: string }
+  | { readonly type: "memory.edit"; readonly id: string; readonly text: string; readonly kind?: MemoryKind }
+  | { readonly type: "memory.add"; readonly text: string; readonly kind?: MemoryKind }
+  /** Run extraction over what is new now (the quiet-tick run, on demand). */
+  | { readonly type: "memory.run" }
   /** Older turns before message `before`. */
   | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
   /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
@@ -660,7 +757,7 @@ export type OverlayCommand =
  * over this. `at` is wall-clock ms.
  */
 export type LedgerRow =
-  | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string }
+  | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }
   | { readonly at: number; readonly type: "session.closed"; readonly sessionId: string; readonly reason: string; readonly usageSeconds: number }
   /** A pause closed `sessionId` to stop the meter; the conversation is held. */
   | { readonly at: number; readonly type: "pause"; readonly sessionId: string; readonly usageSeconds: number }
@@ -679,6 +776,12 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "worker"; readonly worker: Worker }
   /** Jarhead went to sleep: why, the cue if spoken, the session it closed, whether the voice said its one-word farewell. Written before the close. */
   | { readonly at: number; readonly type: "sleep"; readonly cause: SleepCause; readonly phrase?: string; readonly sessionId?: string; readonly farewell?: boolean }
+  // ---- memory audit rows: ids only (an item's text lives in the memory store, so a forgotten item's words never sit in a day file).
+  | { readonly at: number; readonly type: "memory.added"; readonly id: string; readonly kind: MemoryKind; readonly origin: MemoryOrigin }
+  | { readonly at: number; readonly type: "memory.updated"; readonly id: string }
+  | { readonly at: number; readonly type: "memory.forgotten"; readonly id: string; readonly by: "kevin" | "reflex" | "cli" }
+  | { readonly at: number; readonly type: "memory.restored"; readonly id: string }
+  | { readonly at: number; readonly type: "memory.run"; readonly sessionId?: string; readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number }
   // ---- conversation cleanup: tombstone rows appended to TODAY's file; the bytes of the
   // conversation stay where they were written. `chainId` is any session id of the chain
   // (the walk resolves it to the root); the last row by `at` wins; `restored` undoes both
@@ -709,6 +812,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
   "worker.stop",
+  "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {

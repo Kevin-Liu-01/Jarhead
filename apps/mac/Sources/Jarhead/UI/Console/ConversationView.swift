@@ -495,6 +495,8 @@ private struct ToolCallCard: View {
         case .running: return ConsoleTheme.thinking
         case .done: return ConsoleTheme.acting
         case .error: return ConsoleTheme.error
+        // The session ended with this call still open: settled, grey, never a pulse.
+        case .interrupted: return ConsoleTheme.titanium
         }
     }
 
