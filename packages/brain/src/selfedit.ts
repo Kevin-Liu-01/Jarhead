@@ -259,9 +259,13 @@ export const DEFAULT_CHECKS = (ctx: CheckContext): CheckCommand[] => {
 
 /** The line of a failed check worth reading out: the first error-looking one, else the last. */
 export function firstFailureLine(output: string): string | undefined {
-  const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
-  const hit = lines.find((l) => /(^|\s)(error|✖|✘|✗|not ok|FAIL|failed|Error:|TS\d{4}:|AssertionError|ELIFECYCLE)(\s|:|\b)/.test(l) && !/^ℹ/.test(l));
-  return (hit ?? lines[lines.length - 1])?.slice(0, 200);
+  // A passing test whose NAME says "failed" ("✔ … a failed queue is refused") is not a failure:
+  // passing lines and the runner's ℹ summary never qualify. Hard markers first (a failing test,
+  // an assertion, pnpm's ELIFECYCLE, a compiler code), the loose words only when nothing harder is there.
+  const lines = output.split("\n").map((l) => l.trim()).filter(Boolean).filter((l) => !/^[✔✓]/.test(l) && !/^ℹ/.test(l));
+  const hard = lines.find((l) => /(^|\s)(✖|✘|✗|not ok|AssertionError|ELIFECYCLE|TS\d{4}:|Error:)(\s|:|\b)/.test(l));
+  const loose = hard ?? lines.find((l) => /(^|\s)(error|FAIL|failed)(\s|:|\b)/.test(l));
+  return (loose ?? lines[lines.length - 1])?.slice(0, 200);
 }
 
 function gitExec(repo: string, args: readonly string[], opts: { readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined } = {}): Promise<string> {
