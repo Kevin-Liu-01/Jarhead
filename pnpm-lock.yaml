@@ -150,6 +150,9 @@ importers:
       '@jarhead/brain':
         specifier: workspace:*
         version: link:../brain
+      '@jarhead/cli':
+        specifier: workspace:*
+        version: link:../cli
       '@jarhead/core':
         specifier: workspace:*
         version: link:../core
