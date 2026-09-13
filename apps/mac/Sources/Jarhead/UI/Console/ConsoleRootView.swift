@@ -31,6 +31,62 @@ struct ConsoleRootView: View {
         nowIsThreadPane ? ids : ids.filter { $0 != "main" }
     }
 
+
+    /// The centre pane, type-erased on purpose: the five-way choice below sat inside `body`'s
+    /// one expression and the compiler on a slower toolchain (CI's runner) gave up type-checking
+    /// it ("unable to type-check this expression in reasonable time"). An `AnyView` boundary here
+    /// keeps `body`'s inference small; the panes themselves are unchanged and still `.equatable()`.
+    private func centrePane(openAgent: AgentInfo?, openChain: JarheadChain?, openThread: WorkThread?, snap: Snapshot, threads: [WorkThread]) -> AnyView {
+        AnyView(Group {
+            if let agent = openAgent {
+                // Only that agent's transcript reaches the pane; its id is the pane's
+                // identity, so switching sessions closes one tail and opens the next —
+                // and gives the new pane its own viewer token (ConversationPane.viewer).
+                // `loaded` is what "Load earlier" brought back: the feed's ceiling grows by it.
+                ConversationPane(agent: agent, transcript: state.transcripts[agent.id], connected: state.connected,
+                                 loaded: state.prependedCount[agent.id] ?? 0)
+                    .equatable()
+                    .id(agent.id)
+                    .transition(.identity)
+            } else if let chain = openChain {
+                // A past Jarhead conversation, read-only, from the ledger.
+                JarheadConversationPane(chain: chain, entries: session.jarheadEntries, log: session.jarheadLog,
+                                        loading: session.jarheadLoading, view: session.jarheadView,
+                                        scrollTarget: session.jarheadScrollTarget)
+                    .equatable()
+                    .id(chain.id)
+                    .transition(.identity)
+            } else if let thread = openThread {
+                // One thread's conversation over its own stream (`thread.open` as this pane's
+                // viewer): its id is the pane's identity, so switching threads closes one stream
+                // and opens the next. "main" is Now seen as a thread — the same feed the Now
+                // stream will be once the snapshot stops carrying the cards (SNAPSHOT_FULL_NOW).
+                ThreadPane(thread: thread, store: state.threadStores[thread.id], phase: snap.phase,
+                           connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
+                    .equatable()
+                    .id(thread.id)
+                    .transition(.identity)
+            } else if ConsoleRootView.nowIsThreadPane, session.ledgerDay == nil, let main = state.threads["main"] {
+                // Now as the main thread's own pane (the flip; see `nowIsThreadPane`). A ledger
+                // day underneath, or a daemon without threads, still draws the StreamPane below.
+                ThreadPane(thread: main, store: state.threadStores["main"], phase: snap.phase,
+                           connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
+                    .equatable()
+                    .id("now:main")
+                    .transition(.identity)
+            } else {
+                StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
+                           hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
+                           ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
+                           clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected,
+                           threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes ?? false)
+                    .equatable()
+                    .transition(.identity)
+            }
+
+        })
+    }
+
     var body: some View {
         let snap = state.snapshot
         // The session Kevin stepped into, while it is still on the rail.
@@ -75,51 +131,7 @@ struct ConsoleRootView: View {
                 // ground-coloured cells that goes rank by rank (Motion.curtain). Nothing is
                 // masked: a mask on a pane of text cost 0.3–0.5 s a frame (AGENTS.md).
                 ZStack {
-                    if let agent = openAgent {
-                        // Only that agent's transcript reaches the pane; its id is the pane's
-                        // identity, so switching sessions closes one tail and opens the next —
-                        // and gives the new pane its own viewer token (ConversationPane.viewer).
-                        // `loaded` is what "Load earlier" brought back: the feed's ceiling grows by it.
-                        ConversationPane(agent: agent, transcript: state.transcripts[agent.id], connected: state.connected,
-                                         loaded: state.prependedCount[agent.id] ?? 0)
-                            .equatable()
-                            .id(agent.id)
-                            .transition(.identity)
-                    } else if let chain = openChain {
-                        // A past Jarhead conversation, read-only, from the ledger.
-                        JarheadConversationPane(chain: chain, entries: session.jarheadEntries, log: session.jarheadLog,
-                                                loading: session.jarheadLoading, view: session.jarheadView,
-                                                scrollTarget: session.jarheadScrollTarget)
-                            .equatable()
-                            .id(chain.id)
-                            .transition(.identity)
-                    } else if let thread = openThread {
-                        // One thread's conversation over its own stream (`thread.open` as this pane's
-                        // viewer): its id is the pane's identity, so switching threads closes one stream
-                        // and opens the next. "main" is Now seen as a thread — the same feed the Now
-                        // stream will be once the snapshot stops carrying the cards (SNAPSHOT_FULL_NOW).
-                        ThreadPane(thread: thread, store: state.threadStores[thread.id], phase: snap.phase,
-                                   connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
-                            .equatable()
-                            .id(thread.id)
-                            .transition(.identity)
-                    } else if ConsoleRootView.nowIsThreadPane, session.ledgerDay == nil, let main = state.threads["main"] {
-                        // Now as the main thread's own pane (the flip; see `nowIsThreadPane`). A ledger
-                        // day underneath, or a daemon without threads, still draws the StreamPane below.
-                        ThreadPane(thread: main, store: state.threadStores["main"], phase: snap.phase,
-                                   connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
-                            .equatable()
-                            .id("now:main")
-                            .transition(.identity)
-                    } else {
-                        StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
-                                   hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
-                                   ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
-                                   clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected,
-                                   threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes ?? false)
-                            .equatable()
-                            .transition(.identity)
-                    }
+                    centrePane(openAgent: openAgent, openChain: openChain, openThread: openThread, snap: snap, threads: threads)
                     Color.clear
                         .allowsHitTesting(false)
                         .id(paneKey)
