@@ -541,6 +541,13 @@ final class NotchDock {
         if pinned || pinAfterMark { pinAfterMark = true }
     }
 
+    /// The mark's own trace was cut short and the blob stays out (`MarkHomeRule`
+    /// interrupted): the pin folded for the mark is forgotten, so the next `parked` —
+    /// the sleep tuck, minutes later — does not pop the island open pinned on its own.
+    func dropPinAcrossTrace() {
+        pinAfterMark = false
+    }
+
     /// Mark mode ended (a commit, a cancel): the mouse follows the pointer rule again,
     /// and Kevin's pin is restored now if the blob is home, else when it comes home.
     func markEnded() {
