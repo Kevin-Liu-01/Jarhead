@@ -493,8 +493,10 @@ struct AgentsRail: View, Equatable {
         }
     }
 
+    /// `Agents 7` — the rows a process owns (asks · working · idle); the tip says how many are over.
     private var agentsHead: some View {
-        ConsoleSectionHead("Agents", count: visibleAgents.isEmpty ? nil : visibleAgents.count) {
+        let alive = visibleAgents.filter(AgentsRail.live).count
+        return ConsoleSectionHead("Agents", count: visibleAgents.isEmpty ? nil : alive) {
             Button {
                 actions.send(.agentRefresh)
                 if !Motion.reduced { withAnimation(Motion.gentle) { refreshSpin += 360 } }
@@ -506,6 +508,7 @@ struct AgentsRail: View, Equatable {
             .consoleHelp("Refresh")
             .accessibilityLabel("Refresh agents")
         }
+        .modifier(ConsoleOptionalTip(tip: visibleAgents.isEmpty ? nil : RailWords.agentsTip(alive: alive, over: visibleAgents.count - alive)))
     }
 
     /// Rows arriving and leaving (a new session, a conversation closing, one moved to the Trash)
@@ -974,12 +977,24 @@ struct AgentsRail: View, Equatable {
     // MARK: - Agents
 
     /// A tool's sessions under a fold whose closed head carries the count and the one exceptional
-    /// word — the `[1 asks]` badge — then the resting count (`2 working`); open by default, remembered per tool.
+    /// word — the `[1 asks]` badge — then the resting item (`2 working` · `3 idle` · `ended · 40m`); open by
+    /// default iff a row of its asks or works, remembered per tool. Inside: the live rows, then the over
+    /// rows folded under `Ended n` — or listed directly when nothing is alive (a fold never holds only a fold).
     private func groupView(_ group: Group, now: Double) -> some View {
         let id = AgentsRailWords.groupId(group.tool)
+        let live = group.agents.filter(AgentsRail.live), over = group.agents.filter { !AgentsRail.live($0) }
+        let endedId = RailWords.endedId(group.tool)
         return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents, now: now),
-                                 defaultOpen: true, siblings: groups.map { AgentsRailWords.groupId($0.tool) }, focused: focus.ringOn(id)) {
-            ForEach(group.agents) { agent in agentRow(agent, now: now, hidden: false) }
+                                 defaultOpen: group.agents.contains(where: AgentsRail.hot), siblings: groups.map { AgentsRailWords.groupId($0.tool) }, focused: focus.ringOn(id)) {
+            ForEach(live) { agent in agentRow(agent, now: now, hidden: false) }
+            if !live.isEmpty, !over.isEmpty {
+                EndedFold(id: endedId, count: over.count, newestAge: over.first.map { ConsoleFormat.relative($0.updatedAt, now: now) },
+                          open: isFoldOpen(endedId), focused: focus.ringOn(endedId), toggle: { fold(endedId, !isFoldOpen(endedId)) }) {
+                    ForEach(over) { agent in agentRow(agent, now: now, hidden: false) }
+                }
+            } else {
+                ForEach(over) { agent in agentRow(agent, now: now, hidden: false) }
+            }
         }
     }
 
@@ -999,10 +1014,11 @@ struct AgentsRail: View, Equatable {
         }
     }
 
-    private func agentRow(_ agent: AgentInfo, now: Double, hidden: Bool) -> some View {
+    private func agentRow(_ agent: AgentInfo, now: Double, hidden: Bool, lifted: Bool = false) -> some View {
         let open = session.openAgentId == agent.id
         let id = AgentsRailWords.agentId(agent.id)
-        return AgentRowView(agent: agent, now: now, open: open, hidden: hidden, focused: focus.ringOn(id),
+        return AgentRowView(agent: agent, now: now, open: open, tone: RailTone.agent(status: agent.status, hidden: hidden), lifted: lifted || open,
+                            hidden: hidden, focused: focus.ringOn(id),
                             hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                             toggle: {
                                 // The pane switch in the wipe's own animation (Motion.wipeAnimation): the
@@ -1037,6 +1053,32 @@ struct AgentsRail: View, Equatable {
                 .padding(.leading, textInset).padding(.trailing, railInset).padding(.bottom, 4)
                 .consoleHelp(connector.detail)
         }
+    }
+}
+
+/// `› Ended 1 … 7m` inside an open tool group: the over rows behind one closed sub-head (22, a
+/// `ConsoleGroupHead`), the newest row's age as its figure while closed; drawn only under live rows.
+private struct EndedFold<Content: View>: View {
+    let id: String
+    let count: Int
+    let newestAge: String?
+    let open: Bool
+    var focused = false
+    let toggle: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ConsoleGroupHead(title: ConsoleDisclosureWords.ended, count: "\(count)", figure: open ? nil : newestAge, folded: !open, toggle: toggle,
+                             focused: focused, tip: ConsoleDisclosureWords.ended(count))
+                .padding(.top, 4)
+            if open {
+                content()
+                    .transition(Motion.appear)
+            }
+        }
+        .animation(Motion.snappy, value: open)
+        .id(id)
     }
 }
 
@@ -1208,26 +1250,43 @@ private struct RailSelection: View {
     }
 }
 
-/// A row's trailing status: the word sans 11 fg3, or the `asks` badge while it waits on Kevin;
+/// A row's trailing status: the word sans 11 fg3 — with the glyph table's working dot (cyan, pulsing)
+/// before it, or an age in mono after it (`idle · 31m`) — or the `asks` badge while it waits on Kevin;
 /// the two crossfade. Room for the ⋯ at rest follows it.
 private struct RailStatusZone: View {
     let asks: Bool
     let word: String
     let key: String
+    /// The working dot before the word.
+    var dot = false
+    /// `31m` after the word, mono titanium.
+    var age: String? = nil
 
     var body: some View {
         ZStack {
             if asks {
                 ConsoleBadge(word: .asks).transition(.opacity)
             } else {
-                Text(word).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
-                    .contentTransition(.opacity)
-                    .transition(.opacity)
+                HStack(spacing: 6) {
+                    if dot { ConsoleDot(color: ConsoleTheme.status(.working).color, live: true, size: 6).transition(.opacity) }
+                    wordText
+                }
+                .transition(.opacity)
             }
         }
         .layoutPriority(1)
         .animation(Motion.fade, value: key)
         Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
+    }
+
+    /// `idle` · `idle · 31m`: the word sans fg3, the dot and the age in mono titanium.
+    private var wordText: some View {
+        var text = Text(word).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+        if let age {
+            text = text + Text(ConsoleDisclosureWords.joiner).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+                + Text(age).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+        }
+        return text.lineLimit(1).contentTransition(.opacity)
     }
 }
 
@@ -1319,8 +1378,12 @@ struct JarheadNowRow: View {
     /// The mark, "Now", the id stamp, the phase dot (or the pause glyph), the meta line.
     private var label: some View {
         let meta = info.meta(now: now)
+        let quiet = info.sessionId == nil
         return HStack(alignment: .top, spacing: iconGap) {
-            JarheadMark()
+            // Blue while a session runs or a pause holds one; titanium's grey while nothing is live.
+            ZStack { JarheadMark(quiet: quiet).id(quiet).transition(.opacity) }
+                .frame(width: 20, height: 20)
+                .animation(Motion.fade, value: quiet)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(AgentsRailWords.now)
@@ -1423,8 +1486,8 @@ struct ThreadRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // A finished thread sits back; the words stay legible.
-        .opacity(thread.status.isLive ? 1 : 0.62)
+        // A finished thread sits back (the ladder's quiet step); the words stay legible.
+        .opacity(RailTone.thread(thread.status).alpha)
         .overlay(alignment: .topTrailing) {
             ConsoleRowOverflow(verbs: verbs).padding(.top, 4).padding(.trailing, railInset)
         }
@@ -1822,14 +1885,18 @@ struct SearchGroups: Identifiable {
 
 // MARK: - Agent rows
 
-/// One agent session at 44: the tool's mark on the icon column, the name, the status as a word in
-/// the trailing zone (the `asks` badge while blocked), the ⋯ at rest, one mono meta line. The
-/// connector's detail and the working directory are the row's card.
+/// One agent session: 44 while it asks or works (the brand mark, the name, `[asks]` or the working
+/// dot + word, the ⋯, one mono meta line `project · age`), 28 otherwise (the mark — titanium once the
+/// process is gone — the name, `idle · 31m` or the one word, the ⋯). The tone (`RailTone`) sets the
+/// mark and the row's alpha; `lifted` (its pane open, or a search result) brings the alpha to 1.0.
+/// The connector's detail, the message count, the hint and the working directory are the row's card.
 struct AgentRowView: View {
     let agent: AgentInfo
     let now: Double
     let open: Bool
-    /// In the folded "Hidden" group: dimmed, with Unhide.
+    var tone: RailTone = .bright
+    var lifted = false
+    /// In the folded "Hidden" group: with Unhide.
     var hidden = false
     var focused = false
     var hovered: (Bool) -> Void = { _ in }
@@ -1843,16 +1910,23 @@ struct AgentRowView: View {
 
     private var tool: AgentTool { agent.resolvedTool }
 
-    /// project · 42 msgs · 2m — whichever parts the connector gave.
+    /// The row is 44 with a meta line while a figure on it ticks (it asks or works); 28 otherwise.
+    private var tall: Bool { AgentsRail.hot(agent) }
+
+    /// `project · 2m` — the 44 row's meta line.
     private var metaLine: String {
-        ConsoleFormat.agentMeta(agent, now: now)
+        ConsoleFormat.agentMetaShort(agent, now: now)
     }
 
-    /// `name [asks] · detail · cwd`.
-    static func card(_ agent: AgentInfo) -> ConsoleTipCard {
+    /// The row's alpha: the tone's, lifted to 1.0 while its pane is open or the search found it.
+    private var alpha: CGFloat { lifted ? 1 : tone.alpha }
+
+    /// `name [asks] · detail · 42 msgs · 31m · quiet · cwd`.
+    static func card(_ agent: AgentInfo, now: Double) -> ConsoleTipCard {
         var card = ConsoleTipCard(title: agent.name)
         if agent.status == .blocked { card.badge = .asks } else { card.status = AgentsRailWords.status(agent.status) }
         if let d = agent.detail, !d.isEmpty { card.lines.append(d) }
+        card.lines.append(ConsoleFormat.agentCardLine(agent, now: now))
         if let cwd = agent.cwd, !cwd.isEmpty { card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.cwd, value: ConsoleFormat.truncPath(cwd, max: 48))) }
         card.last = ConsoleTipCard.Row(key: ConsoleRowWords.opensPane, value: ConsoleRowWords.returnKey)
         return card
@@ -1861,48 +1935,60 @@ struct AgentRowView: View {
     var body: some View {
         Button(action: toggle) {
             label
-                .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
+                .padding(EdgeInsets(top: 4, leading: railInset, bottom: tall ? 6 : 4, trailing: railInset))
+                .frame(maxWidth: .infinity, minHeight: tall ? 44 : 28, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(hidden ? 0.62 : 1)
+        // The tone's alpha (idle 0.72 · over 0.48), lifted while read; the hover ground, the verbs and the ring stay at full.
+        .opacity(alpha)
+        .animation(Motion.fade, value: alpha)
+        .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
         .overlay(alignment: .topTrailing) { controls.padding(.top, 4).padding(.trailing, railInset) }
         .modifier(ConsoleFocusRing(on: focused))
         .contextMenu { ConsoleVerbMenu(verbs: verbs) }
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
-        .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent), edge: .trailing)
+        .animation(Motion.snappy, value: tall)
+        .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent, now: now), edge: .trailing)
         .modifier(ConsoleVerbFloat(id: AgentsRailWords.agentTip(agent.id), verbs: verbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)" + (hidden ? ", hidden" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])
     }
 
-    /// The mark, the name, the status zone, the meta line.
+    /// The mark (titanium while the tone is back), the name, the status zone, and on a tall row the meta line.
     private var label: some View {
         HStack(alignment: .top, spacing: iconGap) {
-            BrandMark(tool: tool)
+            BrandMark(tool: tool, quiet: tone == .back)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(agent.name)
-                        .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                titleRow
+                if tall {
+                    Text(metaLine)
+                        .font(ConsoleTheme.mono(11)).monospacedDigit()
+                        .foregroundStyle(ConsoleTheme.fg3)
                         .lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 4)
-                    // Room for the Unhide in the overlay.
-                    if hidden { Color.clear.frame(width: restoreWidth, height: 20) }
-                    RailStatusZone(asks: agent.status == .blocked, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue)
+                        .contentTransition(ConsoleMotion.numeric)
+                        .animation(Motion.snappy, value: metaLine)
+                        .transition(.opacity)
                 }
-                .frame(height: 20)
-                Text(metaLine)
-                    .font(ConsoleTheme.mono(11)).monospacedDigit()
-                    .foregroundStyle(ConsoleTheme.fg3)
-                    .lineLimit(1).truncationMode(.tail)
-                    .contentTransition(ConsoleMotion.numeric)
-                    .animation(Motion.snappy, value: metaLine)
             }
         }
+    }
+
+    /// The name, room for Unhide, then the status zone: `[asks]` · `● working` · `idle · 31m` · the word alone.
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            Text(agent.name)
+                .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            // Room for the Unhide in the overlay.
+            if hidden { Color.clear.frame(width: restoreWidth, height: 20) }
+            RailStatusZone(asks: agent.status == .blocked, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue,
+                           dot: agent.status == .working, age: agent.status == .idle ? ConsoleFormat.relative(agent.updatedAt, now: now) : nil)
+        }
+        .frame(height: 20)
     }
 
     /// Above the button: Unhide where the label left room, then the ⋯ at rest.
@@ -1920,7 +2006,11 @@ struct AgentRowView: View {
     }
 
     /// Roughly what the status word takes, so a hidden row's Unhide sits left of it.
-    private var statusWidth: CGFloat { agent.status == .blocked ? 44 : CGFloat(AgentsRailWords.status(agent.status).count) * 6 + 8 }
+    private var statusWidth: CGFloat {
+        if agent.status == .blocked { return 44 }
+        let word = AgentsRailWords.status(agent.status).count + (agent.status == .idle ? 6 : 0)
+        return CGFloat(word) * 6 + 8
+    }
 
     private var verbs: [ConsoleVerb] {
         [ConsoleVerb(id: "hide", title: hidden ? AgentsRailWords.unhide : AgentsRailWords.hide, run: hide)]
