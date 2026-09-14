@@ -5045,6 +5045,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       memory: this.memory.summary(),
       // Every live thread (main first) and those finished within THREAD_LINGER_MS, ≤ THREADS_MAX summaries.
       threads: this.threads.threads(),
+      // Automations (design11): the contract's field; the Automations table projects the rows, the ring and the next fire here.
+      automations: [],
     };
   }
 
