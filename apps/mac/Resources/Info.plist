@@ -33,19 +33,13 @@
   <string>Jarhead listens for its wake word with on-device speech recognition while it is asleep. Nothing is sent anywhere until you authenticate.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Jarhead drives other apps to do what you ask: the browser, Finder, System Events. Only while you are talking to it.</string>
-  <key>NSSystemAdministrationUsageDescription</key>
-  <string>Jarhead needs accessibility access to move the cursor, click, and type for you.</string>
   <key>NSCameraUsageDescription</key>
   <string>Jarhead looks through the camera only when you ask it to. Nothing is recorded or kept.</string>
   <key>NSContactsUsageDescription</key>
   <string>Jarhead reads Contacts only when you ask for a name or an address.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Jarhead reads and adds calendar events when you ask. Nothing is synced anywhere else.</string>
-  <key>NSCalendarsUsageDescription</key>
-  <string>Jarhead reads and adds calendar events when you ask. Nothing is synced anywhere else.</string>
   <key>NSRemindersFullAccessUsageDescription</key>
-  <string>Jarhead reads and adds reminders when you ask.</string>
-  <key>NSRemindersUsageDescription</key>
   <string>Jarhead reads and adds reminders when you ask.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Jarhead finds devices and servers on your network when you ask it to reach one.</string>
