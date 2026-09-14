@@ -114,9 +114,10 @@ test("brain `local` round-trips through settings.json with an empty model (best 
   assert.equal(picked["brainModel"], "qwen3.5:27b");
   assert.equal("brainBaseUrl" in picked, false);
   // The contract's pin: the local brain rides on brain / brainModel / brainBaseUrl and adds no key.
+  // `automations` (design11, 2026-09-14) is the one key added since: the automations block (switch, unattended kinds, quiet hours, recipes).
   assert.deepEqual(
     [...SETTINGS_KEYS].sort(),
-    ["accent", "autoWake", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
+    ["accent", "autoWake", "automations", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
   );
   assert.ok(!SETTINGS_KEYS.some((k) => /local/i.test(k)));
 });
