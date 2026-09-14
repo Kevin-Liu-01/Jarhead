@@ -134,7 +134,8 @@ private struct ThreadHeader: View {
                 .layoutPriority(1)
                 if let path = thread.lastScreenshotPath, !path.isEmpty {
                     // Where its hands last were: the thumbnail opens the shot. Whole or not at all — at
-                    // the pane's minimum the buttons and the figures come first (the shot is on the card too).
+                    // the pane's minimum the verbs and the figures come first (the shot is on the card too):
+                    // the verbs are `fixedSize`, so the HStack sizes them first and the thumb yields.
                     let url = actions.screenshotURL(path)
                     ViewThatFits(in: .horizontal) {
                         ScreenshotThumb(url: url, onTap: { session.lightbox = ConsoleLightboxItem(url: url, caption: "\(thread.name) · last screenshot") }, width: 64)
@@ -152,12 +153,14 @@ private struct ThreadHeader: View {
                     if thread.status == .paused {
                         Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: "play.fill") }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                            .fixedSize()
                             .layoutPriority(1)
                             .consoleHelp(HelpCopy.resumeThread(thread.name))
                             .transition(.opacity)
                     } else {
                         Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: "pause.fill") }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                            .fixedSize()
                             .layoutPriority(1)
                             .consoleHelp(HelpCopy.pauseThread(thread.name))
                             .transition(.opacity)
@@ -166,6 +169,7 @@ private struct ThreadHeader: View {
                 if thread.canStop, thread.status.isLive {
                     Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: "stop.fill") }
                         .buttonStyle(ConsoleButtonStyle(kind: thread.status.isBusy ? .danger : .ghost, height: 24, small: true))
+                        .fixedSize()
                         .layoutPriority(1)
                         .consoleHelp(isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name))
                         .accessibilityLabel("Stop \(thread.name)")
@@ -173,6 +177,7 @@ private struct ThreadHeader: View {
                 }
                 Button(action: close) { Label("Now", systemImage: "chevron.left") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                    .fixedSize()
                     .layoutPriority(1)
                     .consoleHelp(HelpCopy.backNow)
                     .accessibilityLabel("Back to Now")
