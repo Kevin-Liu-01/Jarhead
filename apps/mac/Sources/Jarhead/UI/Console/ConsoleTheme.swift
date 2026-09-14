@@ -36,6 +36,12 @@ enum ConsoleTheme {
 
     static let hover = dynamic(light: nsColor(0x070707, 0.04), dark: NSColor(white: 1, alpha: 0.05))
     static let active = dynamic(light: nsColor(0x070707, 0.07), dark: NSColor(white: 1, alpha: 0.08))
+    /// Hover / highlight on a *raised* surface (a popup row, a card row): `hover` at 0.05 is
+    /// invisible on `raised`, so a float's rows use this and nothing else does.
+    static let lift = dynamic(light: nsColor(0x070707, 0.08), dark: NSColor(white: 1, alpha: 0.10))
+    /// A float paints this much `ground` outside its hairline so it never doubles a line it
+    /// floats over — the ground is the seam.
+    static let seam: CGFloat = 2
     /// The one accent: the primary action, focus rings, the selected state.
     static let accent = dynamic(light: nsColor(0x2f5ce0), dark: nsColor(0x5b82ff))
     static let onAccent = Color.white
@@ -98,6 +104,10 @@ enum ConsoleTheme {
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
+
+    /// The badge's two faces: a word (sans 10 medium) or a figure (mono 10) in a 16 pt box.
+    static let badge = sans(10, .medium)
+    static let badgeFigure = mono(10)
 
     // MARK: metadata
 
@@ -963,40 +973,6 @@ private struct ConsoleButtonBody: View {
     }
 }
 
-/// Text field chrome: 6pt box, hairline at rest, accent ring while focused; the
-/// one ring turns red while `error` (a rejected passphrase), never a second stroke.
-/// `grows` is for a `TextField(axis: .vertical)`: `height` becomes the minimum and
-/// the box wraps with the text instead of clipping it.
-struct ConsoleFieldModifier: ViewModifier {
-    var mono = false
-    var height: CGFloat = 32
-    var focused = false
-    var error = false
-    var grows = false
-
-    func body(content: Content) -> some View {
-        content
-            .textFieldStyle(.plain)
-            .font(mono ? ConsoleTheme.mono(12) : ConsoleTheme.sans(13))
-            .foregroundStyle(ConsoleTheme.fg)
-            .tint(ConsoleTheme.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, grows ? 5 : 0)
-            .frame(minHeight: height, maxHeight: grows ? nil : height)
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(error ? ConsoleTheme.error : (focused ? ConsoleTheme.accent : ConsoleTheme.hair), lineWidth: 1))
-            // The ring answers focus and a rejection at once.
-            .animation(Motion.snappy, value: error)
-            .animation(Motion.snappy, value: focused)
-    }
-}
-
-extension View {
-    func consoleField(mono: Bool = false, height: CGFloat = 32, focused: Bool = false, error: Bool = false, grows: Bool = false) -> some View {
-        modifier(ConsoleFieldModifier(mono: mono, height: height, focused: focused, error: error, grows: grows))
-    }
-}
-
 /// A short sideways shake (three cycles, ±4pt) for a rejected entry. Drive it by
 /// adding 1 to `shakes` inside `withAnimation`; the caller skips that under reduce motion.
 struct ConsoleShake: GeometryEffect {
@@ -1010,128 +986,6 @@ struct ConsoleShake: GeometryEffect {
 
     func effectValue(size: CGSize) -> ProjectionTransform {
         ProjectionTransform(CGAffineTransform(translationX: amplitude * sin(shakes * .pi * 6), y: 0))
-    }
-}
-
-/// A picker drawn as a field: value, chevron, hairline box; the menu lists the options.
-/// `fieldTitle` is the collapsed label when the full title is too long for the field; `dim`
-/// names the options drawn quiet (a model that does not fit this Mac) — still pickable.
-struct ConsoleMenuField<Value: Hashable>: View {
-    let value: Value
-    let options: [Value]
-    let title: (Value) -> String
-    let pick: (Value) -> Void
-    var mono = false
-    var fieldTitle: ((Value) -> String)? = nil
-    var dim: ((Value) -> Bool)? = nil
-
-    @State private var hovering = false
-
-    private func isDim(_ option: Value) -> Bool {
-        guard let dim else { return false }
-        return dim(option)
-    }
-
-    var body: some View {
-        Menu {
-            Picker("", selection: Binding(get: { value }, set: { pick($0) })) {
-                ForEach(options, id: \.self) { option in
-                    Text(title(option)).foregroundStyle(isDim(option) ? ConsoleTheme.fg3 : ConsoleTheme.fg).tag(option)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } label: {
-            HStack(spacing: 6) {
-                Text((fieldTitle ?? title)(value))
-                    .font(mono ? ConsoleTheme.mono(12) : ConsoleTheme.sans(12))
-                    .foregroundStyle(ConsoleTheme.fg)
-                    .lineLimit(1).truncationMode(.tail)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(ConsoleTheme.fg3)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 26)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? ConsoleTheme.hover : .clear))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-    }
-}
-
-/// One option of a segmented control: the active one filled with the text colour and lettered
-/// in the ground, the rest plain with a hover. The filled thumb is one view on the control's
-/// matched geometry id, so it glides between options (Motion.snappy). The rail's tabs, the
-/// Home row and `ConsoleSegments` all draw their options with this.
-struct ConsoleSegmentOption: View {
-    let title: String
-    let on: Bool
-    /// The control's namespace: the filled thumb glides between its options.
-    let thumb: Namespace.ID
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(ConsoleTheme.sans(12, .medium))
-                .foregroundStyle(on ? ConsoleTheme.ground : ConsoleTheme.fg2)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
-                .frame(height: 28)
-                .background {
-                    if on {
-                        Rectangle().fill(ConsoleTheme.fg).matchedGeometryEffect(id: "thumb", in: thumb)
-                    } else if hovering {
-                        Rectangle().fill(ConsoleTheme.hover)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-        .animation(Motion.snappy, value: on)
-        .accessibilityAddTraits(on ? .isSelected : [])
-    }
-}
-
-/// A segmented control over any few values (Settings › Accent, the Memory rail's
-/// Live | Forgotten | Archived): one hairline box, dividers between options, the thumb gliding
-/// to the pick. Two or three options; more belongs in a `ConsoleMenuField`.
-struct ConsoleSegments<Value: Hashable>: View {
-    let value: Value
-    let options: [Value]
-    let title: (Value) -> String
-    let pick: (Value) -> Void
-    var accessibilityLabel: String? = nil
-
-    @Namespace private var thumb
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(options.enumerated()), id: \.element) { index, option in
-                if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
-                ConsoleSegmentOption(title: title(option), on: option == value, thumb: thumb) {
-                    withAnimation(Motion.snappy) { pick(option) }
-                }
-            }
-        }
-        .frame(height: 28)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-        .animation(Motion.snappy, value: value)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityLabel ?? title(value))
     }
 }
 
