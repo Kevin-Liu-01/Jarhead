@@ -335,7 +335,11 @@ struct RightRail: View, Equatable {
 
     var body: some View {
         VStack(spacing: 0) {
-            RailTabs(selected: tab) { picked in withAnimation(Motion.snappy) { session.select(picked) } }
+            ConsoleSegments(value: tab, options: Array(ConsoleSession.Tab.allCases), title: { $0.rawValue },
+                            pick: { picked in session.select(picked) },
+                            accessibilityLabel: SettingsWords.panel, size: .rail, id: "rail.tabs")
+                .padding(.horizontal, railInset)
+                .frame(height: 40)
             ConsoleHairline()
             CrashNoticeRow()
             ScrollView(.vertical) {
@@ -423,32 +427,6 @@ struct CrashNoticeRow: View {
     }
 }
 
-/// Segmented control: one hairline box, dividers between options, the active
-/// option filled with the text colour and lettered in the ground. The filled thumb
-/// is one view on a matched geometry id, so it glides between options (Motion.snappy).
-private struct RailTabs: View {
-    let selected: ConsoleSession.Tab
-    let select: (ConsoleSession.Tab) -> Void
-
-    @Namespace private var thumb
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(ConsoleSession.Tab.allCases.enumerated()), id: \.element.id) { index, tab in
-                if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
-                ConsoleSegmentOption(title: tab.rawValue, on: tab == selected, thumb: thumb) { select(tab) }
-            }
-        }
-        .frame(height: 28)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-        .padding(.horizontal, railInset)
-        .frame(height: 40)
-        .animation(Motion.snappy, value: selected)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(SettingsWords.panel)
-    }
-}
 
 /// A section: head, content, and the section's own bottom rule. Shared with the Local brain's
 /// "Leaves the Mac" section (LocalBrainRows.swift), so it is not private to this file.

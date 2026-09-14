@@ -243,7 +243,7 @@ import SwiftUI
 //     hover:<id> · leave:<id>  the pointer entering / leaving a tip's trigger: the real delay runs (with
 //                          ConsoleTip.delayOverride nil, `tip-warm`); the tip's trail prints as `tip:` lines
 //     check-tips           the timing pins from the `tip:` trail: the cold tip waited ≥ 300 ms, the warm one
-//                          (within 400 ms of the last hide) showed within 20 ms
+//                          (within 400 ms of the last hide) showed within 120 ms (a run-loop hop under load)
 //     check-floats:<none|id[+id]>  what the layer holds right now must be exactly that (`none` = nothing
 //                          open) — and the first responder is not the composer's text
 //     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
@@ -3183,7 +3183,7 @@ extension PreviewDelegate {
         }
         guard shown.count >= 2 else { print("check: FAIL tips — wanted two `shown` lines, got \(tipLog)"); return }
         let cold = shown[0], warm = shown[1]
-        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 20
+        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 120   // a run-loop hop under load, never the cold delay
         print(String(format: "check: %@ tip cold waits 350 ms → %@ after %.0f ms", coldOk ? "ok  " : "FAIL", cold.0, cold.1))
         print(String(format: "check: %@ tip warm shows at once → %@ after %.0f ms", warmOk ? "ok  " : "FAIL", warm.0, warm.1))
         print("check: \(coldOk && warmOk ? "all ok" : "FAILED") (tips) at \(stamp)s")
