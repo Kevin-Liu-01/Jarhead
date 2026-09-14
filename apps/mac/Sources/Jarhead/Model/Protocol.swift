@@ -267,7 +267,7 @@ public struct Delegation: Codable, Identifiable, Equatable {
     public var timings: DelegationTimings
     /// The thread that ran it; nil = main.
     public var threadId: String?
-    /// Steps in the ledger when `steps` is a cut window.
+    /// Step total of a thread's delegation; a thread page shows it before its steps are paged in. Absent on main's delegations.
     public var stepCount: Int?
 }
 

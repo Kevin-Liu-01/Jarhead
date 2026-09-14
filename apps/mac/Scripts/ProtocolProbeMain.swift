@@ -194,7 +194,7 @@ struct Probe {
         check(snap.liveThreads.count == rawLive && snap.spawnedLiveThreads.count == rawSpawned,
               "liveThreads \(snap.liveThreads.count) = raw statuses outside done/failed/stopped; spawned live \(snap.spawnedLiveThreads.map(\.name).joined(separator: ", "))")
 
-        // A thread's delegation keeps its threadId and (in the small snapshot) its stepCount, card for card.
+        // A thread's delegation keeps its threadId and its stepCount, card for card.
         let rawDelegations = raw["delegations"] as? [[String: Any]] ?? []
         let byThread = snap.delegations.map(\.threadId)
         let rawByThread = rawDelegations.map { $0["threadId"] as? String }
