@@ -125,7 +125,7 @@ import SwiftUI
 //   PREVIEW_REDUCE_MOTION=1         pin Motion.reduced on (Motion.reducedOverride): plain fades, halved
 //                                   durations, no rise/slide, still two-tone dither glyphs — the Reduce Motion path for real
 //   PREVIEW_SLOW_THUMBS=1           hold every screenshot thumbnail for a minute before it decodes
-//                                   (ConsoleThumbnails.holdForPreview), so the dithered skeletons are shot
+//                                   (Thumbnails.holdForPreview), so the dithered skeletons are shot
 //   PREVIEW_WIPE_SECONDS=2          stretch Motion.wipe to that long (Motion.wipeSecondsOverride; the
 //                                   `wipe` scenario's default), so a `snap:` mid-wipe is a reproducible frame
 //   PREVIEW_NO_LEVELS=1             no fake 20 Hz audio levels (the meters hold still) — the `timing`
@@ -261,7 +261,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
         // PREVIEW_SLOW_THUMBS=1: thumbnails never land during the shot, so the skeletons show.
         if env["PREVIEW_SLOW_THUMBS"] == "1" {
-            ConsoleThumbnails.holdForPreview = true
+            Thumbnails.holdForPreview = true
             print("thumbnails: held for preview")
         }
 
@@ -988,8 +988,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Problems: the Copy chip only from remedy.copy.
         expect("problems row has Copy", NowPanel.problemCopy(fake.localProblem) ?? "nil", "ollama pull qwen3.5:27b")
         expect("no Copy without remedy.copy", NowPanel.problemCopy(fake.accessibilityProblem) ?? "nil", "nil")
-        expect("brain.local is amber", ConsoleTheme.problemTint("brain.local") == ConsoleTheme.speaking ? "speaking" : "error", "speaking")
-        expect("brain.local glyph", ConsoleTheme.problemSymbol("brain.local"), "brain.fill")
+        expect("brain.local is amber", ConsoleTheme.problem("brain.local").tint == ConsoleTheme.speaking ? "speaking" : "error", "speaking")
+        expect("brain.local glyph", ConsoleTheme.problem("brain.local").symbol, "brain.fill")
         expect("local-empty carries the one problem", fallback.problems.map(\.kind).joined(separator: ","), "brain.local")
 
         // Leaves the Mac: four rows, their glyphs.

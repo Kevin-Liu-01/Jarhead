@@ -571,7 +571,8 @@ private struct ProblemRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: iconGap) {
-            ConsoleIcon(name: ConsoleTheme.problemSymbol(problem.kind), tint: ConsoleTheme.problemTint(problem.kind))
+            let look = ConsoleTheme.problem(problem.kind)
+            ConsoleIcon(name: look.symbol, tint: look.tint)
             VStack(alignment: .leading, spacing: 4) {
                 Text(problem.text).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
                     .textSelection(.enabled)
@@ -801,23 +802,38 @@ private struct PermissionsRailList: View {
     }
 }
 
-/// One circled region: the engine's crop of it, 80pt wide, in the frame weight;
-/// a placeholder with the region's size while the crop is still on its way.
-/// Dimmed once a delegation has used it. Click opens the full crop.
+/// One circled region (or captured window): the engine's crop of it, 80pt wide, in the frame
+/// weight; a placeholder with the region's size while the crop is still on its way. Dimmed once
+/// a delegation has used it. Click opens the full crop; hovering shows a × that forgets it
+/// (`mark.remove`). The caption is `ComposerWords.markCaption` — the notch's tooltip reads the same.
 private struct MarkThumb: View {
     let mark: ScreenMark
 
     @Environment(\.consoleActions) private var actions
     @Environment(\.colorScheme) private var scheme
     @EnvironmentObject private var session: ConsoleSession
+    @State private var hovering = false
 
     /// Three across with 6pt gaps is 252pt: inside the section's 272 even while
     /// the panel's first layout still reserves a 15pt legacy scroller.
     private static let width: CGFloat = 80
 
-    private var caption: String {
-        let size = "\(Int(mark.rect.w.rounded()))×\(Int(mark.rect.h.rounded()))"
-        return [size, ConsoleFormat.time(mark.at), mark.consumed ? "used" : nil].compactMap { $0 }.joined(separator: " · ")
+    private var caption: String { ComposerWords.markCaption(mark, now: Date()) }
+
+    /// The × at the top-right corner while hovering: this one mark leaves, the others stay.
+    private var forgetButton: some View {
+        Button { actions.send(.markRemove(id: mark.id)) } label: {
+            Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ConsoleTheme.fg)
+                .frame(width: 16, height: 16)
+                .background(ConsoleTheme.ground.opacity(0.94))
+                .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Forget this circle")
+        .accessibilityLabel("Forget this circle")
+        .padding(2)
+        .opacity(hovering ? 1 : 0)
+        .animation(ConsoleMotion.hover, value: hovering)
     }
 
     var body: some View {
@@ -825,7 +841,7 @@ private struct MarkThumb: View {
             if let path = mark.screenshotPath, !path.isEmpty {
                 let url = actions.screenshotURL(path)
                 ScreenshotThumb(url: url, onTap: {
-                    session.lightbox = ConsoleLightboxItem(url: url, caption: "Circled · \(caption)")
+                    session.lightbox = ConsoleLightboxItem(url: url, caption: caption)
                 }, width: Self.width)
             } else {
                 // No screenshot yet: the dithered skeleton (ground → raised) under the scope and the size.
@@ -845,8 +861,10 @@ private struct MarkThumb: View {
         }
         .opacity(mark.consumed ? 0.5 : 1)
         .animation(Motion.fade, value: mark.consumed)
+        .overlay(alignment: .topTrailing) { forgetButton }
+        .onHover { hovering = $0 }
         .help(caption)
-        .accessibilityLabel("Circled region, \(caption)")
+        .accessibilityLabel(caption)
     }
 }
 

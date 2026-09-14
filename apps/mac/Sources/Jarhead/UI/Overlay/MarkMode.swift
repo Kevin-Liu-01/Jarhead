@@ -44,6 +44,10 @@ final class MarkModeController {
     private(set) var outcome: String?
     /// How key status was obtained, for the preview harness and logs.
     private(set) var focus = "none"
+    /// Installed by the manager: runs once when the mode ends, however it ends (after
+    /// `commitMark` on a stroke, so a question waiting on the mark goes out first). The
+    /// manager clears `AppState.marking` here — the one place it turns false.
+    var onEnd: (() -> Void)?
 
     init(manager: OverlayManager, windows: [OverlayWindow]) {
         self.manager = manager
@@ -160,8 +164,11 @@ final class MarkModeController {
         // Sealed: it stays `echoSeconds`, then fades.
         publish(done: true, ttlMs: Self.echoSeconds * 1000)
         strokeId = nil
-        end(outcome: "marked \(Int(box.width.rounded()))×\(Int(box.height.rounded())) with \(stroke.count) points")
+        // The mark goes to the engine before the mode ends: `mark.add` (and the question an
+        // Ask left waiting on `markCommitted`) are on the socket before `marking` turns false
+        // and the dock unfolds — the order the acceptance pins.
         manager?.commitMark(points: stroke)
+        end(outcome: "marked \(Int(box.width.rounded()))×\(Int(box.height.rounded())) with \(stroke.count) points")
     }
 
     private func end(outcome: String) {
@@ -195,6 +202,7 @@ final class MarkModeController {
         previousApp = nil
         origin = nil
         manager?.markModeDidEnd(self)
+        onEnd?()
     }
 
     // MARK: - Cursor + hint

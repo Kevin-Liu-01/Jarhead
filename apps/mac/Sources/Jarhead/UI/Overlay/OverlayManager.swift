@@ -45,6 +45,10 @@ public final class OverlayManager {
         guard !windows.isEmpty else { return }
         let ctl = MarkModeController(manager: self, windows: windows)
         markMode = ctl
+        // The dock folds before the overlay takes the mouse; the controller's end — a stroke,
+        // Escape, a click that did not move, the timeout — is the one place it unfolds.
+        ctl.onEnd = { [weak self] in self?.state.marking = false }
+        state.marking = true
         ctl.begin()
     }
 
@@ -204,6 +208,8 @@ public final class OverlayManager {
         func r(_ v: CGFloat) -> Double { (v * 2).rounded() / 2 }
         state.send(.markAdd(rect: Rect(x: r(box.minX), y: r(box.minY), w: r(box.width), h: r(box.height)),
                             path: path.map { Point2(x: r($0.x), y: r($0.y)) }))
+        // The mark is on the socket: an Ask that waited for it sends its question now, in order.
+        state.markCommitted.send(())
     }
 
     func markModeDidEnd(_ ctl: MarkModeController) {

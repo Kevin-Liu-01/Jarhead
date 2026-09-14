@@ -9,6 +9,7 @@ import Carbon
 ///   ⌥⎋       stop (AppState.transportStop: close the session, sleep)
 ///   ⌥⇧Space  go / pause (AppState.transportToggle: wake or resume · pause)
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
+///   ⌥⇧⏎      type to Jarhead (the notch's field while the blob is parked there, else the Console)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -17,6 +18,8 @@ final class Hotkeys {
         case stop = 3
         case transportToggle = 4
         case markScreen = 5
+        /// 6 was ⌥⇧P, the old pause alias, deleted with the no-legacy contract; never reused.
+        case sayLine = 7
 
         var keyCode: UInt32 {
             switch self {
@@ -25,12 +28,13 @@ final class Hotkeys {
             case .stop: return UInt32(kVK_Escape)
             case .transportToggle: return UInt32(kVK_Space)
             case .markScreen: return UInt32(kVK_ANSI_C)
+            case .sayLine: return UInt32(kVK_Return)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .transportToggle, .markScreen: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -43,6 +47,7 @@ final class Hotkeys {
             case .stop: return ("\u{1b}", [.option])
             case .transportToggle: return (" ", [.option, .shift])
             case .markScreen: return ("c", [.option, .shift])
+            case .sayLine: return ("\r", [.option, .shift])
             }
         }
     }

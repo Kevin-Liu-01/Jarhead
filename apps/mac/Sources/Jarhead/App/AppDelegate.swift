@@ -360,6 +360,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.transportStop()
         case .markScreen:
             state.beginMarkMode()
+        case .sayLine:
+            // ⌥⇧Return: the notch's field while the blob is parked there, else the Console's composer.
+            orb.sayLine()
         case .transportToggle:
             // ⌥⇧Space: go when asleep or paused, pause in session.
             state.transportToggle()

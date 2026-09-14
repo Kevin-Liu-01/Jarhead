@@ -447,34 +447,12 @@ enum ConsoleTheme {
     /// (WakeGate.listens(in:)); anywhere else the voice engine has it and the gate rests.
     static func gateRests(_ phase: Phase) -> Bool { phase != .asleep && phase != .error && phase != .paused }
 
-    // MARK: problems (Snapshot.problems) — one solid symbol per kind
+    // MARK: problems (Snapshot.problems) — the glyph table is ProblemGlyphs; the colours are the Console's
 
-    /// The Problems section's glyph for a `ProblemKind`; the triangle for one it does not know.
-    static func problemSymbol(_ kind: String) -> String {
-        switch kind {
-        case "permission.accessibility": return "hand.raised.fill"
-        case "permission.screenRecording": return "rectangle.inset.filled.badge.record"
-        case "permission.microphone": return "mic.fill"
-        case "permission.fullDiskAccess": return "internaldrive.fill"
-        case "permission.other": return "lock.fill"
-        case "brain.unavailable", "brain.probe", "brain.local": return "brain.fill"
-        case "voice.limit": return "waveform.badge.exclamationmark"
-        case "voice.connection": return "wifi.exclamationmark"
-        case "voice.key": return "key.fill"
-        case "hands.helper": return "hand.tap.fill"
-        case "disk.low": return "externaldrive.fill.badge.exclamationmark"
-        case "dock": return "dock.rectangle"
-        case "daemon": return "gearshape.2.fill"
-        case "crash": return "bolt.trianglebadge.exclamationmark.fill"
-        default: return "exclamationmark.triangle.fill"
-        }
-    }
-
-    /// A permission missing is a warning (the hands work less), and so is Jarhead twice in the
-    /// Dock (`dock`: cosmetic, one press fixes it) and the local server or model needing Kevin
-    /// (`brain.local`: he runs the printed command); everything else is an error.
-    static func problemTint(_ kind: String) -> Color {
-        kind.hasPrefix("permission.") || kind == "dock" || kind == "brain.local" ? speaking : error
+    /// The Problems section's glyph and tint for a `ProblemKind`: a warning (a permission
+    /// missing, `dock`, `brain.local`) in the speaking amber, an error in red.
+    static func problem(_ kind: String) -> (symbol: String, tint: Color) {
+        (ProblemGlyphs.symbol(for: kind), ProblemGlyphs.isWarning(kind) ? speaking : error)
     }
 
     // MARK: retention (Settings) — the menus' options and their words
@@ -486,67 +464,6 @@ enum ConsoleTheme {
 
     static func retentionTitle(_ days: Int, forever: String) -> String {
         days <= 0 ? forever : (days == 1 ? "1 day" : "\(days) days")
-    }
-}
-
-extension EngineCommand {
-    /// A typed problem's remedy command as the wire carries it ({type, …}) → the case the
-    /// Console can send; nil for one it does not know, when the caller falls back to
-    /// `problem.retry` for the kind.
-    init?(remedyJSON o: [String: JSONValue]) {
-        guard case .string(let type)? = o["type"] else { return nil }
-        func str(_ key: String) -> String? {
-            if case .string(let s)? = o[key] { return s }
-            return nil
-        }
-        func bool(_ key: String) -> Bool? {
-            if case .bool(let b)? = o[key] { return b }
-            return nil
-        }
-        switch type {
-        case "sleep":
-            // With a cause the ledger records it ("dock", "command"); without, today's bare sleep.
-            if let cause = str("cause"), !cause.isEmpty { self = .sleepCause(cause) } else { self = .sleep }
-        case "mute": self = .mute
-        case "unmute": self = .unmute
-        case "stop": self = .stop
-        case "go": self = .go
-        case "pause": self = .pause
-        case "resume": self = .resume
-        case "interrupt": self = .interrupt(how: str("how") ?? "pressed")
-        case "clear-problems": self = .clearProblems
-        case "agent.refresh": self = .agentRefresh
-        case "daemon.restart": self = .daemonRestart
-        case "config.probe": self = .probeSetup
-        case "open-console": self = .openConsole
-        case "open-ledger": self = .openLedger
-        case "ledger.sweep": self = .ledgerSweep
-        case "conversation.new": self = .conversationNew
-        case "now.clear": self = .nowClear
-        case "now.restore": self = .nowRestore
-        case "mark.clear": self = .markClear
-        case "request-permission":
-            guard let which = str("which") else { return nil }
-            self = .requestPermission(which)
-        case "problem.retry":
-            guard let kind = str("kind") else { return nil }
-            self = .problemRetry(kind: kind)
-        case "agent.hide":
-            guard let id = str("agentId") else { return nil }
-            self = .agentHide(agentId: id, hidden: bool("hidden") ?? true)
-        case "thread.stop":
-            // One thread, never the transport: the session and the other threads stay.
-            guard let id = str("threadId"), !id.isEmpty else { return nil }
-            self = .threadStop(threadId: id)
-        case "ledger.restore-day":
-            guard let day = str("day") else { return nil }
-            self = .ledgerRestoreDay(day: day)
-        case "ledger.trash-day":
-            guard let day = str("day") else { return nil }
-            self = .ledgerTrashDay(day: day, what: str("what") ?? "both")
-        default:
-            return nil
-        }
     }
 }
 
