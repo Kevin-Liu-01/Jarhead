@@ -34,7 +34,7 @@ embedding model, memory matches by keywords — still nothing leaves for memory.
 
 `pnpm jarhead models` lists what is pulled: id · size · trained context · tools / vision /
 thinking / embedding · fit against this Mac's RAM · which the brain and memory use. Cloud tags
-(`:cloud`, `remote_host` set) are listed dimmed and never offered: they run on ollama.com.
+(`:cloud`, `remote_host` set) are never listed or offered: they run on ollama.com, not on this Mac.
 
 ## 3. Pick it
 
