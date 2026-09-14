@@ -4,8 +4,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ledger } from "@jarhead/core";
-import { MAIN_THREAD_ID, THREAD_LINGER_MS, type LedgerRow, type Thread } from "@jarhead/protocol";
+import { MAIN_THREAD_ID, THREAD_LINGER_MS, type Delegation, type LedgerRow, type Thread } from "@jarhead/protocol";
 import { RESTART_REASON, ThreadTable } from "../threads/table.ts";
+import { world } from "./world.ts";
 
 /**
  * A daemon that restarts over a state dir whose day files hold a live thread: the
@@ -15,6 +16,12 @@ import { RESTART_REASON, ThreadTable } from "../threads/table.ts";
  * ever touched here), and the thread shows in the summaries within the linger. A
  * second rebuild over the same files appends nothing.
  */
+
+/** What a day file written before 2026-09-13 holds that no writer produces now: a row of the retired type and a step tagged with the old key. Built here once, as JSON, the way Ledger.parse meets it. */
+function oldDayRows(now: number): LedgerRow[] {
+  const rows = `[{"at":${now - 8000},"type":"worker","worker":{"id":"w_old","name":"Spotify","delegationId":"dlg_old","task":"play Focus","lane":"background","status":"working","startedAt":${now - 8000},"steps":1}},{"at":${now - 7000},"type":"delegation.step","delegationId":"dlg_old","step":{"id":"s_old","at":${now - 7000},"kind":"note","text":"Spotify: on it.","worker":"Spotify"}}]`; // before 2026-09-13
+  return JSON.parse(rows) as LedgerRow[];
+}
 
 function mk(id: string, name: string, at: number, extra: Partial<Thread> = {}): Thread {
   return { id, name, lane: "background", status: "starting", parentId: MAIN_THREAD_ID, parentDelegationId: "dlg_p", liveId: "item_1", task: `${name}'s job`, apps: [], startedAt: at, updatedAt: at, turns: 0, steps: 0, waits: 0, budget: { steps: 25, seconds: 180 }, canSay: true, canStop: true, ...extra };
@@ -96,4 +103,53 @@ test("rebuild keeps the main thread: a `thread.started` for main comes back idle
   assert.equal(table.liveCount(), 1);
   assert.equal(table.spawnedLiveCount(), 0);
   assert.equal(ledger.read(now).length, 1, "nothing appended");
+});
+
+test("before 2026-09-13: day files hold `worker` rows and `delegation.step` rows whose step says `worker` — rebuild skips both, yields no thread and does not throw; the step is main's (no tag) on a replay", () => {
+  const now = Date.now();
+  const dlg: Delegation = { id: "dlg_old", liveId: "item_old", createdAt: now - 9000, offsetMs: 0, request: "play focus on spotify", status: "done", steps: [], timings: { delegatedAt: now - 9000 } };
+  const oldRows: LedgerRow[] = [
+    { at: now - 9000, type: "delegation.created", delegation: dlg },
+    ...oldDayRows(now),
+    { at: now - 6000, type: "delegation.step", delegationId: "dlg_old", step: { id: "s_old2", at: now - 6000, kind: "tool", tool: { name: "applescript", input: {}, ok: true, ms: 4 } } },
+    { at: now - 5000, type: "session.started", sessionId: "live_old", voice: "cedar" } as unknown as LedgerRow,
+  ];
+  const { table, orphans, rows } = ThreadTable.rebuild(oldRows, { now: () => now });
+  assert.equal(orphans.length, 0, "a row of the retired type is not a thread");
+  assert.equal(rows.length, 0, "nothing to end, nothing appended");
+  assert.equal(table.summaries(now).length, 0);
+  assert.equal(table.liveCount(), 0);
+  assert.equal(table.byNameRecent("spotify"), undefined);
+  assert.equal(table.statusLine(), "nothing is running");
+  // The old step's tag is not `thread`: every reader of DelegationStep.thread sees main's step.
+  const step = (oldRows[2] as Extract<LedgerRow, { type: "delegation.step" }>).step;
+  assert.equal(step.kind, "note");
+  assert.equal(step.thread, undefined, "no [Name] tag on a step from before the rename");
+  // A torn last line never reaches rebuild (Ledger.parse skips it); a row of a type nobody knows is skipped the same way.
+  assert.doesNotThrow(() => ThreadTable.rebuild([...oldRows, { at: now, type: "nothing.known" } as unknown as LedgerRow], { now: () => now }));
+});
+
+test("before 2026-09-13: an engine starting over a state dir whose day file holds those old rows rebuilds its table without a thread and reads the day (usage, sessions) without throwing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-threads-rebuild-old-"));
+  // The world's clock starts here (world.ts); the rows sit on that day so the engine's day reads find them.
+  const now = 1_757_500_000_000;
+  // The world's engine keeps its state under <dir>/state (world.ts).
+  const ledger = new Ledger(join(dir, "state"));
+  const oldRows: LedgerRow[] = [
+    { at: now - 9000, type: "delegation.created", delegation: { id: "dlg_old", liveId: "item_old", createdAt: now - 9000, offsetMs: 0, request: "play focus on spotify", status: "done", steps: [], timings: { delegatedAt: now - 9000 } } },
+    ...oldDayRows(now),
+    { at: now - 5000, type: "session.started", sessionId: "live_old", voice: "cedar" } as unknown as LedgerRow,
+    { at: now - 4000, type: "session.closed", sessionId: "live_old", reason: "sleep", usageSeconds: 3 } as unknown as LedgerRow,
+  ];
+  for (const row of oldRows) ledger.append(row);
+  const w = world({}, { dir });
+  try {
+    await w.engine.start();
+    const snap = w.engine.snapshot();
+    assert.deepEqual(snap.threads.map((t) => t.id), [MAIN_THREAD_ID], "the retired row is not a thread; main is the table's only record");
+    assert.equal(w.engine.ledger.read(now).length, 5, "every old row still reads; Ledger.parse is not a schema check");
+    assert.equal(ledger.read(now).filter((r) => r.type === "thread.ended").length, 0, "nothing to end, nothing appended");
+  } finally {
+    await w.engine.stop();
+  }
 });

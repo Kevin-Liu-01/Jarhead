@@ -92,7 +92,7 @@ test("auto resolves to codex when the CLI is found and signed in, and says so in
     const snap = engine.snapshot();
     assert.equal(snap.setup.brainResolved, "codex");
     assert.equal(snap.brainReady, true);
-    assert.equal(snap.problems.filter((p) => /codex/i.test(p)).length, 0);
+    assert.equal(snap.problems.filter((p) => /codex/i.test(p.text)).length, 0);
   } finally {
     await engine.stop();
     w.restore();
@@ -109,7 +109,7 @@ test("auto skips a Codex that is installed but not signed in without a problem l
     assert.match(engine.brainInfo.detail, /responses delegation via gpt-5\.6-terra \(auto: no other brain is signed in or configured\)/);
     assert.equal(engine.snapshot().setup.brainResolved, "openai-responses");
     // Not configured is not a problem: no key, no login, nothing Kevin asked for.
-    assert.deepEqual(engine.snapshot().problems.filter((p) => /codex|claude|anthropic|compatible/i.test(p)), []);
+    assert.deepEqual(engine.snapshot().problems.filter((p) => /codex|claude|anthropic|compatible/i.test(p.text)), []);
   } finally {
     await engine.stop();
     w.restore();
@@ -125,7 +125,7 @@ test("auto says which configured backend broke when it lands on openai-responses
     await engine.ready();
     assert.equal(engine.brainInfo.kind, "openai-responses");
     assert.match(engine.brainInfo.detail, /responses delegation via gpt-5\.6-terra \(auto: Codex could not start; no other brain is signed in or configured\)/);
-    const problems = engine.snapshot().problems.filter((p) => /codex/i.test(p));
+    const problems = engine.snapshot().problems.filter((p) => /codex/i.test(p.text)).map((p) => p.text);
     assert.equal(problems.length, 1, problems.join("\n"));
     assert.match(problems[0]!, /^Codex brain unavailable \(.*did not answer --version.*\); trying the next backend$/);
   } finally {
@@ -142,7 +142,7 @@ test("an explicit codex that cannot start records a problem and walks on down th
     await engine.ready();
     assert.equal(engine.brainInfo.kind, "openai-responses");
     assert.equal(engine.snapshot().setup.brainResolved, "openai-responses");
-    const problems = engine.snapshot().problems.filter((p) => /codex/i.test(p));
+    const problems = engine.snapshot().problems.filter((p) => /codex/i.test(p.text)).map((p) => p.text);
     assert.equal(problems.length, 1, problems.join("\n"));
     assert.match(problems[0]!, /^Codex brain unavailable \(Codex 0\.153\.4-fake via JARHEAD_CODEX_BIN is not signed in; .*\); trying the next backend$/);
   } finally {

@@ -31,11 +31,8 @@ export function threadBrief(name: string, task: string, lane: ThreadLane, parent
     lane === "background"
       ? "Lane: background — you have no pointer, keyboard or front app. Act through applescript (Apple events: Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, the file tools, run_shell (never `open` an app or `osascript`) and the web. A tool that needs the screen is refused: do the rest and report that the screen is needed."
       : 'Lane: screen — you may click and type once the screen is yours; a tool that answers "waiting for the screen" means do the rest first, or call it again.';
-  return `Jarhead (to its thread ${name}): You are one of Jarhead's threads, named ${name}. Your one job: ${task.trim()} ${laneText} speak_progress speaks once per turn, as "${name}: …" — use it for one thing worth hearing, otherwise work in silence and end with one sentence of what you did; Jarhead speaks it for you. Never call thread_*, worker_* or self_*. Kevin's own words, for names and gates: "${parentRequest.replace(/\s+/g, " ").trim().slice(0, 400)}".`;
+  return `Jarhead (to its thread ${name}): You are one of Jarhead's threads, named ${name}. Your one job: ${task.trim()} ${laneText} speak_progress speaks once per turn, as "${name}: …" — use it for one thing worth hearing, otherwise work in silence and end with one sentence of what you did; Jarhead speaks it for you. Never call thread_* or self_*. Kevin's own words, for names and gates: "${parentRequest.replace(/\s+/g, " ").trim().slice(0, 400)}".`;
 }
-
-/** The same brief, under the name the workers pass used. */
-export const workerBrief = threadBrief;
 
 /** "Kevin said yes": the resume text a confirmation turn appends to the brief. */
 export const CONFIRMATION_RESUME = "\n\nJarhead (to its thread): Kevin said yes. Call the same tool again with exactly the same arguments, then finish your job.";

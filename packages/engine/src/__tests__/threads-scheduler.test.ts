@@ -170,8 +170,7 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
   };
   const threadVoice: ThreadVoice = {
     splitLine: (_parentId, name) => voice.split.push(name),
-    workerStep: () => undefined,
-    workerSay: (_parentId, _name, text) => voice.says.push(text),
+    threadSay: (_parentId, _name, text) => voice.says.push(text),
   };
   const agents = new AgentRegistry([fakeConnector], 0);
   const table = new ThreadTable({ now });
@@ -629,16 +628,16 @@ test("speak_progress on a thread speaks once per turn as '<Name>: …' and never
   h.scheduler.dispose();
 });
 
-test("stop by kevin speaks '<Name> stopped.', by cut is silent, by the brain (thread_stop) answers the brain; stopNamed is case-insensitive and false for a finished thread; worker_* aliases answer as thread_*; thread_wait waits for a settled or waiting thread and reads a finished one", async () => {
+test("stop by kevin speaks '<Name> stopped.', by cut is silent, by the brain (thread_stop) answers the brain; stopNamed is case-insensitive and false for a finished thread; thread_wait waits for a settled or waiting thread and reads a finished one", async () => {
   const h = harness();
   h.script = async () => undefined;
   const task = { delegationId: "item_1", request: h.parent.request, dialogue: "", confirmation: false, offsetMs: 0, signal: new AbortController().signal };
-  const started = await h.scheduler.tool("worker_start", { name: "Spotify", task: "play Focus", lane: "background" }, { task });
+  const started = await h.scheduler.tool("thread_start", { name: "Spotify", task: "play Focus", lane: "background" }, { task });
   assert.match(text(started), /^started thread Spotify \(t_/);
   const second = await h.scheduler.tool("thread_start", { name: "Slack", task: "tell Ben" }, { task });
   assert.equal(second.kind, "text");
   await until(() => h.byName("Spotify") !== undefined && h.byName("Slack") !== undefined);
-  const read = await h.scheduler.tool("worker_read", { name: "spotify" }, { task });
+  const read = await h.scheduler.tool("thread_read", { name: "spotify" }, { task });
   assert.match(text(read), /^Spotify: still working \(0 steps, 0 s\); thread_wait again or thread_stop it$/);
   const waiting = h.scheduler.tool("thread_wait", { name: "Spotify", timeout: 5 }, { task });
   await settle(20);
@@ -647,7 +646,7 @@ test("stop by kevin speaks '<Name> stopped.', by cut is silent, by the brain (th
   assert.deepEqual(h.voice.says, ["Spotify stopped."]);
   assert.equal(await h.scheduler.stopNamed("spotify"), false, "finished: not live");
   assert.equal(await h.scheduler.stop("t_nobody"), false);
-  const stopped = await h.scheduler.tool("worker_stop", { name: "Slack" }, { task });
+  const stopped = await h.scheduler.tool("thread_stop", { name: "Slack" }, { task });
   assert.match(text(stopped), /^Slack stopped \(0 steps\)\. Kevin was told: "Slack stopped\."$/);
   assert.deepEqual(h.voice.says, ["Spotify stopped.", "Slack stopped."]);
   assert.equal(h.byName("Slack")!.cancels, 1);
@@ -709,7 +708,7 @@ test("statusLine through the scheduler: the tool's phrase while acting, the ques
   h.scheduler.dispose();
 });
 
-test("apps are claimed from open_app, `tell application`, and a browser host; a tagged orb.fly from the thread's toolset carries `thread` to the overlay and lands on the record as `at`; the Worker list keeps the old shape", async () => {
+test("apps are claimed from open_app, `tell application`, and a browser host; a tagged orb.fly from the thread's toolset carries `thread` to the overlay and lands on the record as `at`; the summaries carry the app and the lane", async () => {
   const h = harness();
   h.script = async (job) => {
     await job.runner.run("applescript", { script: 'tell application "Spotify" to play track "x"' });
@@ -730,16 +729,16 @@ test("apps are claimed from open_app, `tell application`, and a browser host; a 
   assert.ok(h.events.some((e) => e.kind === "at" && (e as { x: number }).x === 100), "the coalesced `at` event reached the sink");
   assert.deepEqual(h.table.get(id)!.apps, ["Spotify"], "the Apple event's app; a web fetch is no app");
   assert.equal(h.table.get(id)!.app, "Spotify");
-  const list = h.scheduler.list();
+  const list = h.spawned();
   assert.equal(list.length, 1);
   assert.equal(list[0]!.id, id);
   assert.equal(list[0]!.name, "Spotify");
-  assert.equal(list[0]!.status, "working");
-  assert.equal(list[0]!.delegationId, "dlg_parent");
+  assert.equal(list[0]!.status, "acting", "the Apple event was an act");
+  assert.equal(list[0]!.parentDelegationId, "dlg_parent");
   assert.equal(list[0]!.app, "Spotify");
   assert.equal(list[0]!.lane, "background");
   await h.scheduler.cancelAll("done");
-  assert.equal(h.scheduler.list()[0]!.status, "cancelled");
+  assert.equal(h.spawned()[0]!.status, "stopped");
   h.scheduler.dispose();
 });
 
@@ -810,7 +809,7 @@ test("idle end: a thread waiting on a yes nobody gives, or paused, for THREAD_ID
   h.scheduler.dispose();
 });
 
-test("stopAll (sleep) stops every thread and every spare, flushes the coalescer, and the next warm() boots again; the Worker-shaped list and the summaries agree on who lingers", async () => {
+test("stopAll (sleep) stops every thread and every spare, flushes the coalescer, and the next warm() boots again; the summaries say who lingers", async () => {
   const h = harness({ spares: 1 });
   h.scheduler.warm();
   await settle(5);
@@ -826,10 +825,9 @@ test("stopAll (sleep) stops every thread and every spare, flushes the coalescer,
   assert.equal(spare.stops, 1, "the spare's process ended too");
   assert.equal(h.scheduler.spareIds.length, 0);
   assert.equal(h.events[h.events.length - 1]!.kind, "ended");
-  assert.equal(h.scheduler.list().length, 1, "the finished thread lingers in the Worker shape");
-  assert.equal(h.spawned().length, 1);
+  assert.equal(h.spawned().length, 1, "the finished thread lingers in the summaries");
   h.clock.t += 30_001;
-  assert.equal(h.scheduler.list().length, 0);
+  assert.equal(h.spawned().length, 0);
   assert.equal(h.scheduler.warm(), 1, "a new wake warms again");
   await h.scheduler.stopAll();
   h.scheduler.dispose();

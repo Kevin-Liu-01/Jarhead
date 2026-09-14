@@ -408,7 +408,7 @@ test("usageToday: today's closed sessions from the ledger plus the open one, fol
   }
 });
 
-test("go: asleep → wake; awake → nothing (no toast, one session); connecting → nothing; paused → resume. Legacy: resume when not paused only says so; wake while awake is idempotent", async () => {
+test("go: asleep → wake; awake → nothing (no toast, one session); connecting → nothing; paused → resume. Also: resume when not paused only says so; go while awake is idempotent", async () => {
   const w = world();
   const { engine, lives, events } = w;
   try {
@@ -420,7 +420,7 @@ test("go: asleep → wake; awake → nothing (no toast, one session); connecting
     assert.equal(lives.length, 1);
     events.length = 0;
     await engine.command({ type: "go" });
-    await engine.command({ type: "wake" });
+    await engine.command({ type: "go" });
     assert.equal(lives.length, 1, "go while awake opens nothing");
     assert.equal(events.filter((e) => e.type === "toast").length, 0, "and says nothing");
     assert.equal(engine.snapshot().session?.id, "sess_1");
@@ -431,7 +431,7 @@ test("go: asleep → wake; awake → nothing (no toast, one session); connecting
     await engine.command({ type: "go" });
     assert.equal(lives.length, 2);
     assert.equal(engine.transportState, "awake");
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     events.length = 0;
     await engine.command({ type: "resume" });
     assert.ok(events.some((e) => e.type === "toast" && e.text === "asleep — wake it instead"));
@@ -729,7 +729,7 @@ test("a socket that closes before session.started is one failed start, not a rec
     assert.equal(engine.transportState, "asleep");
     assert.equal(engine.snapshot().session, undefined);
     assert.equal(engine.snapshot().problems.length, 1);
-    assert.match(engine.snapshot().problems[0] ?? "", /could not start a Live session: live socket closed before start/);
+    assert.match(engine.snapshot().problems[0]?.text ?? "", /could not start a Live session: live socket closed before start/);
     assert.ok(!events.some((e) => e.type === "toast" && /reconnecting/.test(e.text)), "a refused socket is not a lost connection");
     await settle(700);
     assert.equal(lives.length, 1, "no reconnect every 500 ms");
@@ -1021,13 +1021,13 @@ test("Stop inside the reconnect window after connection_lost writes the stop row
     // The server drops the session; the engine will reconnect in 500 ms. Kevin presses Stop first.
     a.live.serverClosed("connection_lost", 5);
     assert.equal(a.engine.snapshot().session, undefined, "detached");
-    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p)), true);
+    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p.text)), true);
     a.clock.t += 100;
     await a.engine.command({ type: "stop" });
     const stops = rows<Stop>(a, "stop").filter((r) => r.how === "pressed");
     assert.equal(stops.length, 1, "Kevin's word is on the ledger even though nothing was connecting yet");
     assert.ok(stops[0]!.at >= rows<Closed>(a, "session.closed").at(-1)!.at, "after the closed row");
-    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p)), false, "the reconnect row left with the stop");
+    assert.equal(a.engine.snapshot().problems.some((p) => /reconnecting/.test(p.text)), false, "the reconnect row left with the stop");
     await settle(600); // the reconnect timer fires into a stopped engine
     assert.equal(a.lives.length, 1, "nothing reopened");
     assert.equal(a.engine.transportState, "asleep");
@@ -1077,7 +1077,7 @@ test("sleep with a cause: the transport's Stop writes its stop row and then the 
 
     const before = rows<SleepRow>(w, "sleep").length;
     await engine.command({ type: "sleep" });
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     assert.equal(rows<SleepRow>(w, "sleep").length, before, "asleep already: nothing recorded");
 
     await engine.command({ type: "go" });

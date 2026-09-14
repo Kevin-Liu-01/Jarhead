@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { HelloPermissions } from "@jarhead/hands";
-import { PERMISSION_KINDS, type Grant, type PermissionInfo, type PermissionKind } from "@jarhead/protocol";
+import { PERMISSION_KINDS, grantOf, type Grant, type PermissionInfo, type PermissionKind } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
 import { RecordingHands, settle, world, type World } from "./world.ts";
 
@@ -54,14 +54,16 @@ function permissionWorld(fresh?: HelloPermissions): { w: World; hands: Permissio
 /** start() reads the helper's greeting in the background; wait for it (the first test in a file pays for cold fs reads in agents.refresh()). */
 async function started(w: World): Promise<void> {
   await w.engine.start();
-  for (let i = 0; i < 200 && w.engine.snapshot().permissions.all === undefined; i++) await settle(10);
-  assert.ok(w.engine.snapshot().permissions.all, "the helper's greeting was folded");
+  for (let i = 0; i < 200 && w.engine.snapshot().permissions.all.length === 0; i++) await settle(10);
+  assert.ok(w.engine.snapshot().permissions.all.length > 0, "the helper's greeting was folded");
 }
 
-const grants = (w: World): [string, string][] => (w.engine.snapshot().permissions.all ?? []).map((r) => [r.kind, r.grant]);
-const row = (w: World, kind: PermissionKind): PermissionInfo | undefined => w.engine.snapshot().permissions.all?.find((r) => r.kind === kind);
+const grants = (w: World): [string, string][] => w.engine.snapshot().permissions.all.map((r) => [r.kind, r.grant]);
+const row = (w: World, kind: PermissionKind): PermissionInfo | undefined => w.engine.snapshot().permissions.all.find((r) => r.kind === kind);
+/** The grant the snapshot's rows carry for a kind ("unknown" without a row) — what every reader of `permissions` computes. */
+const grant = (w: World, kind: PermissionKind): Grant => grantOf(w.engine.snapshot().permissions, kind);
 const toasts = (w: World): string[] => w.events.flatMap((e) => (e.type === "toast" ? [e.text] : []));
-const problems = (w: World): readonly string[] => w.engine.snapshot().problems;
+const problems = (w: World): readonly string[] => w.engine.snapshot().problems.map((p) => p.text);
 /** What the app's PermissionsCenter sends after a sweep: every kind, its own labels, one grant overridden. */
 const appList = (overrides: Partial<Record<PermissionKind, Grant>> = {}): PermissionInfo[] =>
   PERMISSION_KINDS.map((kind) => ({ kind, grant: overrides[kind] ?? "granted", ask: "prompt", required: false, label: `app ${kind}`, why: "from the app", detail: `d-${kind}` }));
@@ -70,10 +72,9 @@ test("a helper read builds the list when the app has not sent one; missing grant
   const { w } = permissionWorld();
   try {
     await started(w);
-    const snap = w.engine.snapshot();
-    assert.equal(snap.permissions.accessibility, "granted");
-    assert.equal(snap.permissions.screenRecording, "granted");
-    assert.equal(snap.permissions.microphone, "unknown", "the microphone is the app's to report");
+    assert.equal(grant(w, "accessibility"), "granted");
+    assert.equal(grant(w, "screenRecording"), "granted");
+    assert.equal(grant(w, "microphone"), "unknown", "the microphone is the app's to report: no row until it does");
     assert.deepEqual(grants(w), [
       ["accessibility", "granted"],
       ["screenRecording", "granted"],
@@ -85,10 +86,10 @@ test("a helper read builds the list when the app has not sent one; missing grant
     assert.equal(fda.ask, "settings", "only System Settings grants it");
     assert.equal(fda.required, true);
     assert.ok(typeof fda.checkedAt === "number");
-    assert.ok(snap.problems.includes(Engine.PERMISSION_PROBLEMS.fullDiskAccess));
-    assert.ok(snap.problems.includes(Engine.PERMISSION_PROBLEMS.inputMonitoring));
-    assert.ok(!snap.problems.includes(Engine.PERMISSION_PROBLEMS.accessibility));
-    assert.ok(!snap.problems.includes(Engine.PERMISSION_PROBLEMS.screenRecording));
+    assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.fullDiskAccess));
+    assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.inputMonitoring));
+    assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility));
+    assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.screenRecording));
     assert.match(Engine.PERMISSION_PROBLEMS.fullDiskAccess, /EPERM/);
     assert.match(Engine.PERMISSION_PROBLEMS.fullDiskAccess, /Full Disk Access/);
     assert.match(Engine.PERMISSION_PROBLEMS.inputMonitoring, /earlier build/, "the ad-hoc-row hint is on every helper kind");
@@ -118,11 +119,11 @@ test("problems clear and a toast fires when a grant appears; a revocation is a p
     assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.fullDiskAccess));
     assert.ok(toasts(w).some((t) => /^Full Disk Access granted/.test(t)));
     assert.equal(helperExits(), 0);
-    // Accessibility revoked: problem back, a warning, and the field follows.
+    // Accessibility revoked: problem back, a warning, and the row follows.
     hands.fresh = { ...hands.fresh, accessibility: false };
     w.clock.t += 31_000;
     await poll();
-    assert.equal(w.engine.snapshot().permissions.accessibility, "denied");
+    assert.equal(grant(w, "accessibility"), "denied");
     assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility));
     assert.ok(toasts(w).includes("Accessibility was revoked"));
     // Granted again: the resident helper restarts so its AX connection carries the new right.
@@ -130,7 +131,7 @@ test("problems clear and a toast fires when a grant appears; a revocation is a p
     w.clock.t += 31_000;
     await poll();
     await settle();
-    assert.equal(w.engine.snapshot().permissions.accessibility, "granted");
+    assert.equal(grant(w, "accessibility"), "granted");
     assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility));
     assert.ok(toasts(w).some((t) => /^Accessibility granted/.test(t)));
     assert.equal(helperExits(), 1, "the helper was restarted once, for the Accessibility grant");
@@ -189,7 +190,7 @@ test("the app's list wins for everything else; the helper's fresh read updates o
     // The app read every kind. It says Full Disk Access is on (a resident process's stale answer); contacts denied.
     const list = appList({ contacts: "denied" });
     w.engine.setPermissions([...list, null, {}, { kind: "teleport", grant: "granted" }, "nonsense"]);
-    const all = w.engine.snapshot().permissions.all!;
+    const all = w.engine.snapshot().permissions.all;
     assert.deepEqual(all.map((r) => r.kind), [...PERMISSION_KINDS], "the app's rows, in its order; junk dropped");
     assert.equal(row(w, "contacts")?.grant, "denied");
     assert.equal(row(w, "contacts")?.label, "app contacts");
@@ -198,7 +199,7 @@ test("the app's list wins for everything else; the helper's fresh read updates o
     assert.equal(row(w, "fullDiskAccess")?.detail, "d-fullDiskAccess");
     assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.fullDiskAccess), "the app's stale 'granted' clears no problem");
     assert.equal(toasts(w).length, 0);
-    assert.equal(w.engine.snapshot().permissions.microphone, "granted", "the microphone follows the app's list");
+    assert.equal(grant(w, "microphone"), "granted", "the microphone follows the app's list");
     // A fresh read flips Input Monitoring: that row's grant moves, its label stays the app's, nothing else changes.
     hands.fresh = { ...hands.fresh, inputMonitoring: true };
     w.clock.t += 31_000;
@@ -206,7 +207,7 @@ test("the app's list wins for everything else; the helper's fresh read updates o
     assert.equal(row(w, "inputMonitoring")?.grant, "granted");
     assert.equal(row(w, "inputMonitoring")?.label, "app inputMonitoring");
     assert.equal(row(w, "contacts")?.grant, "denied");
-    assert.equal(w.engine.snapshot().permissions.all?.length, 16);
+    assert.equal(w.engine.snapshot().permissions.all.length, 16);
     assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.inputMonitoring));
     // The app's list carrying the microphone denied raises the mic problem; granted again clears it.
     w.engine.setPermissions(appList({ microphone: "denied" }));
@@ -229,7 +230,7 @@ test("the app reports a helper kind's grant before the poll: the engine keeps it
     w.engine.setPermissions(appList());
     assert.equal(row(w, "accessibility")?.grant, "denied", "the engine's last fresh read stands until it reads again");
     assert.equal(row(w, "accessibility")?.detail, "d-accessibility", "the row itself is the app's");
-    assert.equal(w.engine.snapshot().permissions.accessibility, "denied");
+    assert.equal(grant(w, "accessibility"), "denied");
     assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility), "the app's word clears no problem");
     assert.equal(helperExits(), 0, "and restarts no helper");
     // The disagreement made the next tick read fresh (no waiting for the 3 s interval): the read clears the problem, toasts, restarts the helper.
@@ -237,7 +238,7 @@ test("the app reports a helper kind's grant before the poll: the engine keeps it
     await poll();
     await settle();
     assert.equal(row(w, "accessibility")?.grant, "granted");
-    assert.equal(w.engine.snapshot().permissions.accessibility, "granted");
+    assert.equal(grant(w, "accessibility"), "granted");
     assert.ok(!problems(w).includes(Engine.PERMISSION_PROBLEMS.accessibility));
     assert.ok(toasts(w).some((t) => /^app accessibility granted — hands can click and type now$/.test(t)), "the toast wears the app's row label");
     assert.equal(helperExits(), 1, "restarted once, by the fresh read");
@@ -279,14 +280,14 @@ test("a single permission message updates its row, or adds the catalogue row for
     assert.equal(row(w, "contacts")?.grant, "granted");
     assert.equal(row(w, "contacts")?.detail, "asked today", "a message without detail keeps the last one");
     w.engine.setPermission("microphone", "denied");
-    assert.equal(w.engine.snapshot().permissions.microphone, "denied");
+    assert.equal(grant(w, "microphone"), "denied");
     assert.equal(row(w, "microphone")?.grant, "denied");
     assert.ok(problems(w).some((p) => /Microphone access denied/.test(p)));
     w.engine.setPermission("microphone", "granted");
     assert.ok(!problems(w).some((p) => /Microphone access denied/.test(p)));
     // An unknown kind is dropped, not a row.
     w.engine.setPermission("teleport", "granted");
-    assert.ok(!w.engine.snapshot().permissions.all?.some((r) => (r.kind as string) === "teleport"));
+    assert.ok(!w.engine.snapshot().permissions.all.some((r) => (r.kind as string) === "teleport"));
   } finally {
     await w.engine.stop();
   }
@@ -310,7 +311,7 @@ test("the app's list is one row per kind (the last wins) and never drops a helpe
     ]);
     assert.ok(problems(w).includes(Engine.PERMISSION_PROBLEMS.fullDiskAccess), "the problem and its row agree");
     w.engine.setPermission("contacts", "granted");
-    assert.deepEqual(w.engine.snapshot().permissions.all?.filter((r) => r.kind === "contacts").map((r) => r.grant), ["granted"], "one row moved, not a first of two");
+    assert.deepEqual(w.engine.snapshot().permissions.all.filter((r) => r.kind === "contacts").map((r) => r.grant), ["granted"], "one row moved, not a first of two");
   } finally {
     await w.engine.stop();
   }
@@ -421,7 +422,7 @@ test("JARHEAD_PERMISSIONS_DRY_RUN=1 logs what the sweep would ask and asks nothi
   }
 });
 
-test("an older helper that prints only two grants leaves the other rows alone; for those the app's word is taken and its problems follow it", async () => {
+test("a helper that prints only two grants leaves the other rows alone; for those the app's word is taken and its problems follow it", async () => {
   const { w, helperExits } = permissionWorld({ accessibility: false, screenRecording: true });
   try {
     await started(w);

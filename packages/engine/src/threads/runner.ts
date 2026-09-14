@@ -1,11 +1,11 @@
 import { logger } from "@jarhead/core";
 import { ACTING_MEMBERS, USER_IDLE_POLL_MS, WAIT_MAX_MS, isBusyResult, type AcquireOptions, type ConfirmationDesk, type FocusLease, type LeaseOutcome, type ToolResult } from "@jarhead/hands";
 import { ToolRunner, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions } from "@jarhead/brain";
-import { ACTING_TOOLS } from "@jarhead/brain";
+import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
 
 /**
  * The runners a thread's tools go through. `runner.ts` in @jarhead/brain is a rail:
- * `LaneRunner` (a spawned thread's) and `WorkerAwareRunner` (the main lane's — the
+ * `LaneRunner` (a spawned thread's) and `ThreadAwareRunner` (the main lane's — the
  * engine's `runner`) subclass ToolRunner through `LeasedRunner`, what the two share,
  * and re-record the step the base records; they never edit it.
  *
@@ -26,21 +26,11 @@ const log = logger("engine.threads.runner");
 /** A spawned thread's lane: never `voice` (that is the main thread's). */
 export type SpawnLane = "screen" | "background";
 
-/** The thread tools, and the worker_* names kept one release as aliases. */
-export const THREAD_TOOLS: ReadonlySet<string> = new Set(["thread_start", "thread_wait", "thread_read", "thread_stop", "worker_start", "worker_wait", "worker_read", "worker_stop"]);
-/** @deprecated the same set, under the workers pass's name. */
-export const WORKER_TOOLS = THREAD_TOOLS;
-
-/** `worker_x` → `thread_x`; a thread name is itself. */
-export function canonicalThreadTool(name: string): string {
-  return name.startsWith("worker_") ? `thread_${name.slice("worker_".length)}` : name;
-}
+/** The thread tools: the main brain's four verbs over its spawned threads. */
+export const THREAD_TOOLS: ReadonlySet<string> = new Set(["thread_start", "thread_wait", "thread_read", "thread_stop"]);
 
 /** Tools that need the pointer, keyboard, front app or the system clipboard: the lease's business. */
 export const FOCUS_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "open_url", "browser_click", "browser_type", "clipboard_read", "clipboard_write"]);
-
-/** An AppleScript that drives the screen rather than an app's dictionary. */
-export const FOCUS_APPLESCRIPT = /\b(keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b/i;
 
 /**
  * A shell head that brings something to the front: `open` (unless a flag cluster
@@ -56,8 +46,6 @@ const SHELL_PREFIXES: ReadonlySet<string> = new Set(["sudo", "env", "nohup", "ex
 
 /** Depth one: a spawned thread never spawns a thread and never edits Jarhead. */
 export const DENIED_FOR_THREADS: ReadonlySet<string> = new Set([...THREAD_TOOLS, "self_edit", "self_check", "self_review", "self_apply", "self_discard", "self_status"]);
-/** @deprecated the same set, under the workers pass's name. */
-export const DENIED_FOR_WORKERS = DENIED_FOR_THREADS;
 
 export const LANE_REFUSAL = "refused: this hand runs in the background lane — the pointer and keyboard are not its; use applescript (Apple events), browser_*, files, shell or web, or report that the screen is needed";
 
@@ -351,7 +339,7 @@ export interface LaneRunnerOptions extends LeasedRunnerOptions {
 type RankedAcquire = AcquireOptions & { readonly rank?: number | undefined };
 
 /**
- * A spawned thread's runner. Refuses what is not a thread's (thread_*, worker_*,
+ * A spawned thread's runner. Refuses what is not a thread's (thread_*,
  * self_*), refuses screen work in the background lane with one line, and in the
  * screen lane takes the lease around every screen tool (waiting at most WAIT_MAX_MS,
  * then answering "waiting for the screen"). A queued confirmation's text says whose
@@ -417,7 +405,7 @@ export class LaneRunner extends LeasedRunner {
       told = true;
       this.laneOpts.onWaiting?.(true, reason);
     };
-    if (holder !== undefined && holder !== this.actor) tell(`${holder === WorkerAwareRunner.ACTOR ? "Jarhead's hands have" : holder === "dictation" ? "dictation has" : `thread ${holder} has`} the screen`);
+    if (holder !== undefined && holder !== this.actor) tell(`${holder === ThreadAwareRunner.ACTOR ? "Jarhead's hands have" : holder === "dictation" ? "dictation has" : `thread ${holder} has`} the screen`);
     const slow = setTimeout(() => {
       if (!told) tell("the screen is not free yet");
     }, USER_IDLE_POLL_MS);
@@ -447,20 +435,20 @@ export class LaneRunner extends LeasedRunner {
    */
   private finish(name: string, out: RunOutcome): RunOutcome {
     let result = this.laneOpts.desk.render(out.result);
-    if (result.kind === "needs-confirmation" && /\((?:worker|thread)_wait\)/.test(result.question)) result = { ...result, question: result.question.replace(/\((?:worker|thread)_wait\)/, "(end your turn; Jarhead resumes you when Kevin answers)") };
+    if (result.kind === "needs-confirmation" && result.question.includes("(thread_wait)")) result = { ...result, question: result.question.replace("(thread_wait)", "(end your turn; Jarhead resumes you when Kevin answers)") };
     this.laneOpts.onOutcome?.(name, result);
     return result === out.result ? out : { ...out, result };
   }
 }
 
-// ---------------------------------------------------- WorkerAwareRunner
+// ---------------------------------------------------- ThreadAwareRunner
 
 /** As much of the scheduler as the main lane's runner needs: the thread tools. */
 export interface ThreadToolSource {
   tool(name: string, args: Record<string, unknown>, ctx: { readonly task: BrainTask | undefined }): Promise<ToolResult>;
 }
 
-export interface WorkerAwareRunnerOptions extends LeasedRunnerOptions {
+export interface ThreadAwareRunnerOptions extends LeasedRunnerOptions {
   readonly pool: ThreadToolSource;
   readonly lease: FocusLease;
   /** The desk, for the queued-question text when the main lane's question waits behind a thread's. */
@@ -469,19 +457,19 @@ export interface WorkerAwareRunnerOptions extends LeasedRunnerOptions {
 
 /**
  * The main lane's runner (the engine's `runner`): every brain call, reflex and the
- * eyes' shot go through it. It answers `thread_*` (and the `worker_*` aliases) from
+ * eyes' shot go through it. It answers `thread_*` from
  * the scheduler and records the step as the base would; for screen tools it takes
  * the lease with priority (Jarhead's own hands never wait on a thread's idle — only
  * on its op in flight and MIN_HOLD, and on Kevin's own hands through the helper's
  * busy answer) and releases it when the turn ends or a question is asked.
  */
-export class WorkerAwareRunner extends LeasedRunner {
-  private readonly mainOpts: WorkerAwareRunnerOptions;
+export class ThreadAwareRunner extends LeasedRunner {
+  private readonly mainOpts: ThreadAwareRunnerOptions;
   /** `thread_wait` calls in flight: the main brain is blocked on its threads and its hands touch nothing. */
   private waitingOn = 0;
 
-  constructor(opts: WorkerAwareRunnerOptions) {
-    super(opts, opts.lease, WorkerAwareRunner.ACTOR);
+  constructor(opts: ThreadAwareRunnerOptions) {
+    super(opts, opts.lease, ThreadAwareRunner.ACTOR);
     this.mainOpts = opts;
   }
 
@@ -497,17 +485,12 @@ export class WorkerAwareRunner extends LeasedRunner {
     return this.waitingOn > 0;
   }
 
-  /** @deprecated read `waitingOnThreads`. */
-  get waitingOnWorkers(): boolean {
-    return this.waitingOnThreads;
-  }
-
   override async run(name: string, input: unknown): Promise<RunOutcome> {
     const started = this.clock();
     const args = argsOf(input);
     if (THREAD_TOOLS.has(name)) {
       let result: ToolResult;
-      const waits = canonicalThreadTool(name) === "thread_wait";
+      const waits = name === "thread_wait";
       if (waits) this.waitingOn++;
       try {
         result = await this.mainOpts.pool.tool(name, args, { task: this.taskRef });
@@ -527,14 +510,14 @@ export class WorkerAwareRunner extends LeasedRunner {
     const got = await this.takeScreen();
     if (got.ok && got.refocused) this.sinkRef?.step({ kind: "note", text: `brought ${got.refocused} back to the front` });
     const out = await this.actUnderLease(name, args, () => this.runBase(name, input));
-    if ((name === "open_app" || name === "focus_app") && out.result.kind === "text") this.lease.rememberFront(WorkerAwareRunner.ACTOR, String(args["name"] ?? args["app"] ?? ""));
-    if (out.result.kind === "needs-confirmation") this.lease.release(WorkerAwareRunner.ACTOR, "question");
+    if ((name === "open_app" || name === "focus_app") && out.result.kind === "text") this.lease.rememberFront(ThreadAwareRunner.ACTOR, String(args["name"] ?? args["app"] ?? ""));
+    if (out.result.kind === "needs-confirmation") this.lease.release(ThreadAwareRunner.ACTOR, "question");
     return this.rendered(out);
   }
 
   /**
    * The main lane's question, queued behind a thread's, reads as "Queued behind <Name>'s
-   * question … stop and wait (worker_wait)" — not as a question to relay: Kevin hears one
+   * question … stop and wait (thread_wait)" — not as a question to relay: Kevin hears one
    * question at a time, and this one is asked (by Jarhead itself) when the floor clears.
    */
   private rendered(out: RunOutcome): RunOutcome {
@@ -551,15 +534,12 @@ export class WorkerAwareRunner extends LeasedRunner {
    */
   private async takeScreen(): Promise<LeaseOutcome> {
     const signal = this.taskRef?.signal;
-    const got = await this.lease.acquire(WorkerAwareRunner.ACTOR, { priority: true, signal, timeoutMs: MAIN_LEASE_WAIT_MS });
+    const got = await this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: MAIN_LEASE_WAIT_MS });
     if (got.ok || got.reason === "cancelled" || got.reason === "cut") return got;
     const holder = this.lease.holder;
     log.warn(`main lane: ${got.reason} for ${MAIN_LEASE_WAIT_MS} ms; taking the screen`);
     this.lease.cancelAll("Jarhead's hands took the screen");
     this.sinkRef?.step({ kind: "note", text: `took the screen${holder ? ` from ${holder}` : ""} (${got.reason})` });
-    return this.lease.acquire(WorkerAwareRunner.ACTOR, { priority: true, signal, timeoutMs: WAIT_MAX_MS });
+    return this.lease.acquire(ThreadAwareRunner.ACTOR, { priority: true, signal, timeoutMs: WAIT_MAX_MS });
   }
 }
-
-/** The main lane's runner, under the threads pass's name. */
-export { WorkerAwareRunner as ThreadAwareRunner };

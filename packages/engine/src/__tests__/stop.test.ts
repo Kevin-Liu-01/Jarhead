@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { LedgerRow } from "@jarhead/protocol";
+import { MAIN_THREAD_ID, type LedgerRow } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
 import { delegate, frame, nextUtterance, rows, settle, until, world } from "./world.ts";
 
@@ -123,7 +123,7 @@ test("interrupt with nothing running is harmless: a flush, a toast, the voice to
     assert.equal(engine.currentPhase, "listening");
     assert.equal(engine.snapshot().session?.id, "sess_1");
     // Asleep: still harmless, and honest about it.
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     events.length = 0;
     await engine.command({ type: "interrupt" });
     assert.equal(engine.currentPhase, "asleep");
@@ -236,8 +236,8 @@ test("stop aftermath: nothing is left running, armed or billed; asleep at once; 
     assert.equal(engine.outputGated, false, "no gate: there is no session to gate");
     assert.equal(engine.transportState, "asleep");
 
-    // While the old cancel is still in flight: wake opens a fresh session, say-text reaches it, a new delegation runs on it.
-    await engine.command({ type: "wake" });
+    // While the old cancel is still in flight: go opens a fresh session, say-text reaches it, a new delegation runs on it.
+    await engine.command({ type: "go" });
     assert.equal(engine.currentPhase, "listening");
     assert.equal(lives.length, 2);
     const next = lives[1]!;
@@ -263,7 +263,7 @@ test("stop aftermath: nothing is left running, armed or billed; asleep at once; 
     // And sleep does not hang on a brain whose cancel never answers; the session is closed at once regardless.
     realBrain.cancel = () => new Promise<void>(() => undefined);
     const s0 = Date.now();
-    const sleeping = engine.sleep();
+    const sleeping = engine.command({ type: "sleep" });
     assert.equal(next.currentState, "closed", "closed before the brain's cancel is awaited");
     await sleeping;
     assert.ok(Date.now() - s0 < 2000, "sleep is bounded even when the brain's cancel hangs");
@@ -274,38 +274,38 @@ test("stop aftermath: nothing is left running, armed or billed; asleep at once; 
   }
 });
 
-test("interrupt while workers run: every worker is cancelled quietly (its brain's cancel once), the parent is cancelled, the session stays open; worker.stop cancels one worker with its one line and keeps the other", async () => {
+test("interrupt while threads run: every thread is cancelled quietly (its brain's cancel once), the parent is cancelled, the session stays open; thread.stop stops one thread with its one line and keeps the other", async () => {
   const w = world();
   const { engine, live, brain } = w;
   try {
-    w.workers.script = async () => undefined;
+    w.threads.script = async () => undefined;
     await engine.start();
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
     await settle();
-    await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
-    await engine.runner.run("worker_start", { name: "Slack", task: "tell Ben", lane: "screen" });
+    await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
+    await engine.runner.run("thread_start", { name: "Slack", task: "tell Ben", lane: "screen" });
     await settle(50);
-    const workers = engine.snapshot().workers ?? [];
-    assert.equal(workers.length, 2);
+    const spawned = () => engine.snapshot().threads.filter((x) => x.id !== MAIN_THREAD_ID);
+    assert.equal(spawned().length, 2);
     live.commentary.length = 0;
     // The Console's Stop on one row.
-    await engine.command({ type: "worker.stop", workerId: workers.find((x) => x.name === "Spotify")!.id });
+    await engine.command({ type: "thread.stop", threadId: spawned().find((x) => x.name === "Spotify")!.id });
     await until(() => live.commentary.length > 0, 1500);
-    assert.equal((engine.snapshot().workers ?? []).find((x) => x.name === "Spotify")!.status, "cancelled");
-    assert.equal((engine.snapshot().workers ?? []).find((x) => x.name === "Slack")!.status, "working");
+    assert.equal(spawned().find((x) => x.name === "Spotify")!.status, "stopped");
+    assert.equal(spawned().find((x) => x.name === "Slack")!.status, "thinking");
     assert.deepEqual(live.commentary, ["Spotify stopped."]);
     assert.equal(live.currentState, "started");
     // The spoken stop: everything.
     live.commentary.length = 0;
     await engine.command({ type: "interrupt", how: "said" });
     assert.equal(brain.cancels, 1);
-    assert.deepEqual((engine.snapshot().workers ?? []).map((x) => x.status), ["cancelled", "cancelled"]);
-    assert.equal(w.workers.byName("Slack")!.cancels, 1);
-    assert.equal(w.workers.byName("Spotify")!.cancels, 1, "cancelled once, whichever verb");
-    assert.deepEqual(live.commentary, [], "a cut says nothing per worker");
+    assert.deepEqual(spawned().map((x) => x.status), ["stopped", "stopped"]);
+    assert.equal(w.threads.byName("Slack")!.cancels, 1);
+    assert.equal(w.threads.byName("Spotify")!.cancels, 1, "cancelled once, whichever verb");
+    assert.deepEqual(live.commentary, [], "a cut says nothing per thread");
     assert.equal(engine.snapshot().delegations[0]!.status, "cancelled");
     assert.equal(live.currentState, "started", "the session stays");
     assert.equal(rows<StopRow>(w, "stop").length, 1);

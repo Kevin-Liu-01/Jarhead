@@ -226,7 +226,7 @@ for (const reason of ["connection_lost", "expired"] as const) {
       assert.ok(events.some((e) => e.type === "toast" && e.text === "back"), "the toast is 'back', not 'resumed'");
       assert.ok(!events.some((e) => e.type === "toast" && e.text === "resumed"));
       assert.equal(engine.transportState, "awake");
-      assert.equal(engine.snapshot().problems.some((p) => /reconnecting/.test(p)), false, "the reconnect row left");
+      assert.equal(engine.snapshot().problems.some((p) => /reconnecting/.test(p.text)), false, "the reconnect row left");
       const closed = rows<Extract<LedgerRow, { type: "session.closed" }>>(w, "session.closed");
       assert.equal(closed[0]!.usageSeconds, 42, "usage from the closed event");
     } finally {

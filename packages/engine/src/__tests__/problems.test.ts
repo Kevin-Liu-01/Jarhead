@@ -33,10 +33,10 @@ class GrantHands extends RecordingHands {
 
 async function greeted(w: World): Promise<void> {
   await w.engine.start();
-  for (let i = 0; i < 200 && w.engine.snapshot().permissions.all === undefined; i++) await settle(10);
+  for (let i = 0; i < 200 && w.engine.snapshot().permissions.all.length === 0; i++) await settle(10);
 }
 
-test("typedProblems is the same list as problems, with kind, remedy and since; a repeat keeps its place and its since; the cap and clear-problems apply to both", async () => {
+test("the snapshot's problems carry kind, remedy and since; a repeat keeps its place and its since; the cap and clear-problems apply", async () => {
   const w = world();
   const { engine, clock } = w;
   try {
@@ -47,7 +47,7 @@ test("typedProblems is the same list as problems, with kind, remedy and since; a
     clock.t += 1000;
     engine.problemOf("other", "first"); // a repeat: no second row, since unchanged
     engine.problemOf("disk.low", "disk", { label: "Reveal shots", open: "/x/shots" });
-    assert.deepEqual(engine.snapshot().problems, ["first", "disk"]);
+    assert.deepEqual(engine.snapshot().problems.map((p) => p.text), ["first", "disk"]);
     assert.deepEqual(typed(w), [
       { kind: "other", text: "first", since: t0 },
       { kind: "disk.low", text: "disk", remedy: { label: "Reveal shots", open: "/x/shots" }, since: t0 + 1000 },
@@ -87,11 +87,11 @@ test("a missing grant is a permission.* problem with Request / Open pane as its 
     await (engine as unknown as { pollPermissions(): Promise<void> }).pollPermissions();
     assert.equal(ofKind(w, "permission.fullDiskAccess").length, 0);
     // The microphone: denied is permission.microphone with the app's pane; granted clears it.
-    engine.setMicrophonePermission("denied");
+    engine.setPermission("microphone", "denied");
     const mic = ofKind(w, "permission.microphone");
     assert.equal(mic.length, 1);
     assert.deepEqual(mic[0]!.remedy, { label: "Open pane", command: { type: "request-permission", which: "microphone" } });
-    engine.setMicrophonePermission("granted");
+    engine.setPermission("microphone", "granted");
     assert.equal(ofKind(w, "permission.microphone").length, 0);
     // problem.retry on the app-owned kinds reads fresh and closely: a grant revoked meanwhile is seen on that read.
     hands.fresh = { ...hands.fresh, fullDiskAccess: false };
@@ -312,7 +312,7 @@ test("problem.retry on the brain clears the rows and restarts the brain; on voic
   }
 });
 
-test("the snapshot carries problemsTyped alongside problems (the same list), and the problem.retry command reaches retryProblem", async () => {
+test("the snapshot's problems are the typed list, and the problem.retry command reaches retryProblem", async () => {
   const w = world();
   const { engine } = w;
   try {
@@ -322,19 +322,19 @@ test("the snapshot carries problemsTyped alongside problems (the same list), and
     engine.problemOf("disk.low", "Disk low: 3 MB free", { label: "Reveal shots", open: "/x/shots" });
     const snap = engine.snapshot();
     assert.deepEqual(
-      snap.problemsTyped?.map((p) => p.text),
-      snap.problems,
-      "the typed list is the plain list, in order",
+      snap.problems.map((p) => p.text),
+      ["command failed: nope", "Disk low: 3 MB free"],
+      "the typed list carries the lines, in order",
     );
     assert.deepEqual(
-      snap.problemsTyped?.map((p) => p.kind),
+      snap.problems.map((p) => p.kind),
       ["other", "disk.low"],
     );
-    assert.deepEqual(snap.problemsTyped?.[1]?.remedy, { label: "Reveal shots", open: "/x/shots" });
+    assert.deepEqual(snap.problems[1]?.remedy, { label: "Reveal shots", open: "/x/shots" });
     // The remedy button's command, through the command arm the rail sends.
     await engine.command({ type: "problem.retry", kind: "other" });
-    assert.deepEqual(engine.snapshot().problems, ["Disk low: 3 MB free"]);
-    assert.equal(engine.snapshot().problemsTyped?.length, 1);
+    assert.deepEqual(engine.snapshot().problems.map((p) => p.text), ["Disk low: 3 MB free"]);
+    assert.equal(engine.snapshot().problems.length, 1);
   } finally {
     await engine.stop();
   }

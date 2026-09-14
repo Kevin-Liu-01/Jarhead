@@ -4,7 +4,7 @@ import { FakeHands, ScreenStateCache, type NativeHands } from "@jarhead/hands";
 import type { RunOutcome } from "@jarhead/brain";
 import { ACTING_TOOLS } from "@jarhead/brain";
 import { SETTLE_MS as LEASE_SETTLE_MS } from "@jarhead/hands";
-import { ActionObserver, BACKGROUND_OBSERVED_TOOLS, OBSERVED_TOOLS, OBSERVE_BUDGET_MS, OBSERVE_SETTLE_MS, OBSERVE_SLOW_SETTLE_MS } from "../observe.ts";
+import { ActionObserver, BACKGROUND_OBSERVES, OBSERVE_BUDGET_MS, OBSERVE_SETTLE_MS, OBSERVE_SLOW_SETTLE_MS } from "../observe.ts";
 
 /**
  * ActionObserver: an acting tool's text result gains one `now:` line read from the
@@ -16,21 +16,20 @@ import { ActionObserver, BACKGROUND_OBSERVED_TOOLS, OBSERVED_TOOLS, OBSERVE_BUDG
 const text = (t: string): RunOutcome => ({ result: { kind: "text", text: t }, ms: 5 });
 const instant = async (): Promise<void> => undefined;
 
-test("OBSERVED_TOOLS is the delegator's ACTING_TOOLS (the set firstActionAt stamps on); the settle constants carry the observer's name, apart from the lease's SETTLE_MS", () => {
-  assert.deepEqual([...OBSERVED_TOOLS].sort(), [...ACTING_TOOLS].sort());
+test("the settle constants carry the observer's name, apart from the lease's SETTLE_MS; the background set is inside the brain's ACTING_TOOLS", () => {
   assert.equal(OBSERVE_SETTLE_MS, 150);
   assert.equal(OBSERVE_SLOW_SETTLE_MS, 400);
   assert.equal(OBSERVE_BUDGET_MS, 300);
   assert.equal(LEASE_SETTLE_MS, 300, "the hands' SETTLE_MS is the lease's, a different thing — the observer's are named apart");
-  assert.deepEqual([...BACKGROUND_OBSERVED_TOOLS].sort(), ["browser_click", "browser_navigate", "browser_type"]);
-  assert.ok([...BACKGROUND_OBSERVED_TOOLS].every((t) => OBSERVED_TOOLS.has(t)));
+  assert.deepEqual([...BACKGROUND_OBSERVES].sort(), ["browser_click", "browser_navigate", "browser_type"]);
+  assert.ok([...BACKGROUND_OBSERVES].every((t) => ACTING_TOOLS.has(t)));
 });
 
-test("a background lane's observer (`only: BACKGROUND_OBSERVED_TOOLS`) annotates browser_navigate but not applescript / run_shell / write_file / show_circle, and probes nothing for them", async () => {
+test("a background lane's observer (`only: BACKGROUND_OBSERVES`) annotates browser_navigate but not applescript / run_shell / write_file / show_circle, and probes nothing for them", async () => {
   const hands = new FakeHands();
   hands.frontApp = "Cursor";
   const state = new ScreenStateCache(hands);
-  const bg = new ActionObserver({ state, sleep: instant, only: BACKGROUND_OBSERVED_TOOLS });
+  const bg = new ActionObserver({ state, sleep: instant, only: BACKGROUND_OBSERVES });
   for (const n of ["applescript", "run_shell", "write_file", "edit_file", "show_circle", "left_click"]) {
     assert.equal(bg.observes(n), false, `${n}: not a background lane's business`);
     const out = text("played Focus");

@@ -530,9 +530,6 @@ export interface FakeThreadBrain {
   resolve: ((r: BrainResult) => void) | undefined;
 }
 
-/** @deprecated the same record, under the workers pass's name. */
-export type FakeWorkerBrain = FakeThreadBrain;
-
 /** What a scripted thread turn sees. Return a result to finish the turn; return undefined to hold it for `brain.resolve`. */
 export interface ThreadJob {
   readonly brain: FakeThreadBrain;
@@ -541,9 +538,6 @@ export interface ThreadJob {
   /** The thread's own lane runner: `runner.run("type", …)` goes through its lane's rules. */
   readonly runner: ToolRunner;
 }
-
-/** @deprecated the same, under the workers pass's name. */
-export type WorkerJob = ThreadJob;
 
 export interface ThreadWorld {
   /** Every thread brain the engine built, in order (the spares included). */
@@ -556,12 +550,9 @@ export interface ThreadWorld {
   byName(name: string): FakeThreadBrain | undefined;
 }
 
-/** @deprecated the same, under the workers pass's name. */
-export type WorkerWorld = ThreadWorld;
-
-/** The thread's name from the brief a task carries (`threadBrief` opens with it); the old `<liveId>/<name>` shape is read too. */
+/** The thread's name from the brief a task carries (`threadBrief` opens with it); a test that names the delegation `<liveId>/<name>` is read too. */
 export function threadNameOf(task: BrainTask): string | undefined {
-  const m = /^Jarhead \(to its (?:thread|worker) ([^)]+)\)/.exec(task.dialogue);
+  const m = /^Jarhead \(to its thread ([^)]+)\)/.exec(task.dialogue);
   if (m?.[1]) return m[1];
   const tail = task.delegationId.split("/").pop();
   return tail && !/^dlg_/.test(tail) ? tail : undefined;
@@ -573,17 +564,16 @@ export interface World {
   live: FakeLive;
   /** Every session the engine opened, in order; a resume or a re-wake appends one. `lives.at(-1)` is the current. */
   lives: FakeLive[];
-  /** The acting helper: the main brain's, dictation's and screen-lane workers' ops. */
+  /** The acting helper: the main brain's, dictation's and screen-lane threads' ops. */
   hands: RecordingHands;
-  /** The reading helper: the AX warm tick, ear hints, the wake shot, `user_idle`, background workers' ops. */
+  /** The reading helper: the AX warm tick, ear hints, the wake shot, `user_idle`, background threads' ops. */
   handsBg: RecordingHands;
   events: EngineEvent[];
   overlays: OverlayCommand[];
   audio: Buffer[];
   brain: BrainState;
-  /** The spawned threads' fake brains (`threads` and `workers` are the same object; `workers` is the old name). */
+  /** The spawned threads' fake brains. */
   threads: ThreadWorld;
-  workers: ThreadWorld;
   /** The memory module's stand-in the engine was built over (undefined when a test injected its own seams). */
   memory: FakeMemoryService | undefined;
   clock: { t: number };
@@ -638,8 +628,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
     },
     stop: async () => undefined,
   };
-  // Thread brains: one fake per spawned thread, scripted by the test. The engine's option is still
-  // named `makeWorkerBrain` (engine.ts); `makeThreadBrain` is the seam every new test reads.
+  // Thread brains: one fake per spawned thread, scripted by the test.
   const threads: ThreadWorld = {
     brains: [],
     script: undefined,
@@ -715,7 +704,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
   // `observeSettleMs: 0`: the observer's 150 ms settle before it reads the screen after an acting tool is real time
   // (an app's reaction), pointless against a fake helper that answers at once; the `now:` line itself still lands.
-  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeWorkerBrain: makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];
@@ -724,7 +713,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   engine.on("event", (e) => events.push(e));
   engine.on("overlay", (c) => overlays.push(c));
   engine.on("audio", (pcm) => audio.push(pcm));
-  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, threads, workers: threads, memory: fakeMemory, clock, dir };
+  return { engine, live, lives, hands, handsBg, events, overlays, audio, brain: brainState, threads, memory: fakeMemory, clock, dir };
 }
 
 export const settle = (ms = 30): Promise<void> => new Promise((r) => setTimeout(r, ms));

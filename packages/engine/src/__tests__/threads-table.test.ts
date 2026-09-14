@@ -235,7 +235,8 @@ test("statusLine: one deterministic line per status, the phrase quoted when the 
   assert.equal(threadLine({ ...mk("t_9", "Zed", clock.t), status: "idle" }, clock.t), "Zed is idle");
   assert.equal(phraseForTool("open_app", { name: "Slack" }), "opening Slack");
   assert.equal(phraseForTool("frontmost_app", {}), "checking which app is in front", "a look's phrase is the spoken progress line, lower-cased, no full stop");
-  assert.equal(phraseForTool("thread_start", { name: "Slack" }), undefined, "a tool the voice has no words for gives nothing");
+  assert.equal(phraseForTool("thread_start", { name: "Slack" }), "starting Slack on the side", "the split's own progress line, as a phrase");
+  assert.equal(phraseForTool("teleport", {}), undefined, "a tool the voice has no words for gives nothing");
   assert.equal(phraseForLine("Spotify: Playing Focus."), "playing Focus");
   // Only a phrase that reads after "<Name> is" is quoted: a doing-word first, two words at least, never a continuation.
   assert.equal(phraseForLine("I am pressing play now"), "pressing play now", "the subject goes");

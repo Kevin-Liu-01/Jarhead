@@ -464,7 +464,7 @@ test("thread.answer: Allow on Spotify's pane while Slack's question holds the fl
   }
 });
 
-test("wire: a spawned thread's step emits 0 snapshots and exactly one thread.event ≤ 200 B; snapshot.threads lists main first then the spawned threads (≤ 16); thread.transcript frames go out only once a viewer opened the thread (replace with a seq cursor, then coalesced appends); SNAPSHOT_FULL_NOW=true keeps today's transcript/delegations shape (no stepCount, every step) and the flag off cuts them", async () => {
+test("wire: a spawned thread's step emits 0 snapshots and exactly one thread.event ≤ 200 B; snapshot.threads lists main first then the spawned threads (≤ 16); thread.transcript frames go out only once a viewer opened the thread (replace with a seq cursor, then coalesced appends); the snapshot's delegations carry every step (no stepCount)", async () => {
   const w = world();
   const { engine, live, events } = w;
   try {
@@ -518,22 +518,11 @@ test("wire: a spawned thread's step emits 0 snapshots and exactly one thread.eve
     assert.ok(main.type === "thread.transcript" && main.mode === "replace" && main.transcript.threadId === MAIN_THREAD_ID, JSON.stringify(main).slice(0, 200));
     const kinds = main.type === "thread.transcript" ? main.transcript.entries.map((e) => e.kind) : [];
     assert.ok(kinds.includes("utterance") && kinds.includes("delegation") && kinds.includes("step"), `the main pane carries its utterances, its card and its steps: ${kinds.join(",")}`);
-    // Phase B behind the flag: today's shape while true; the small shape when false.
+    // The snapshot carries every step of a main-thread delegation: the Console's card reads them from it.
     for (let i = 0; i < 14; i++) await engine.runner.run("frontmost_app", {});
     const full = engine.snapshot();
-    assert.equal(Engine.SNAPSHOT_FULL_NOW, true);
     assert.ok(full.delegations[0]!.steps.length >= 14);
-    assert.ok(full.delegations.every((d) => d.stepCount === undefined), "no new key on today's shape");
-    Engine.SNAPSHOT_FULL_NOW = false;
-    try {
-      const small = engine.snapshot();
-      assert.equal(small.delegations[0]!.steps.length, Engine.SNAPSHOT_STEPS);
-      assert.equal(small.delegations[0]!.stepCount, full.delegations[0]!.steps.length);
-      assert.ok(small.transcript.length <= Engine.SNAPSHOT_TRANSCRIPT);
-      assert.ok(JSON.stringify(small).length < JSON.stringify(full).length);
-    } finally {
-      Engine.SNAPSHOT_FULL_NOW = true;
-    }
+    assert.ok(full.delegations.every((d) => d.stepCount === undefined), "main's delegations carry their steps, never a count");
   } finally {
     await engine.stop();
   }

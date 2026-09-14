@@ -1,6 +1,6 @@
 import { logger } from "@jarhead/core";
-import { ACTING_MEMBERS, READ_ONLY_TOOLS, renderObservation, type ScreenStateCache } from "@jarhead/hands";
-import type { RunOutcome } from "@jarhead/brain";
+import { READ_ONLY_TOOLS, renderObservation, type ScreenStateCache } from "@jarhead/hands";
+import { ACTING_TOOLS, type RunOutcome } from "@jarhead/brain";
 import type { Point } from "@jarhead/protocol";
 
 /**
@@ -24,15 +24,6 @@ import type { Point } from "@jarhead/protocol";
 
 const log = logger("engine.observe");
 
-/**
- * The tools whose results carry an observation: the hands' acting members plus the
- * tools that act without the hands and the shapes drawn on the screen — the same set
- * `firstActionAt` stamps on (packages/brain/src/delegator.ts ACTING_TOOLS; observe.test.ts
- * pins the two equal). A copy, not an import: the delegator's set is not on the package's
- * public surface and the two are pinned rather than coupled.
- */
-export const OBSERVED_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"]);
-
 /** Tools whose effect lands later than the ack (a page load, a DOM click's handlers): a longer settle before the read. */
 export const SLOW_SETTLE_TOOLS: ReadonlySet<string> = new Set(["browser_click", "browser_navigate"]);
 
@@ -42,7 +33,7 @@ export const SLOW_SETTLE_TOOLS: ReadonlySet<string> = new Set(["browser_click", 
  * window after its `tell application "Spotify" to play` is 150–300 ms spent on a nudge
  * in the wrong direction; a page load is worth the line. Pass as `only`.
  */
-export const BACKGROUND_OBSERVED_TOOLS: ReadonlySet<string> = new Set(["browser_navigate", "browser_click", "browser_type"]);
+export const BACKGROUND_OBSERVES: ReadonlySet<string> = new Set(["browser_navigate", "browser_click", "browser_type"]);
 
 /** The settle before the read (named for the observer: @jarhead/hands has its own SETTLE_MS for the lease). */
 export const OBSERVE_SETTLE_MS = 150;
@@ -53,7 +44,7 @@ export const OBSERVE_BUDGET_MS = 300;
 export interface ActionObserverOptions {
   /** The cache over the READING helper (never the acting one: the read must not queue behind the act it observes). */
   readonly state: ScreenStateCache;
-  /** Observe only these tools (∩ OBSERVED_TOOLS) — BACKGROUND_OBSERVED_TOOLS for a background lane. Default: every acting tool. */
+  /** Observe only these tools (∩ ACTING_TOOLS) — BACKGROUND_OBSERVES for a background lane. Default: every acting tool. */
   readonly only?: ReadonlySet<string>;
   /** The runner's redactor: the line is appended after `redactResult` and must itself carry no secret (I7). */
   readonly redact?: (text: string) => string;
@@ -90,7 +81,7 @@ export class ActionObserver {
 
   /** Does this observer watch `name`? An acting tool, and one of `only` when the lane named some. */
   observes(name: string): boolean {
-    return OBSERVED_TOOLS.has(name) && (this.opts.only === undefined || this.opts.only.has(name));
+    return ACTING_TOOLS.has(name) && (this.opts.only === undefined || this.opts.only.has(name));
   }
 
   /**
@@ -139,7 +130,7 @@ export class ActionObserver {
 export const SERIALIZER_BYPASS: ReadonlySet<string> = new Set([
   ...READ_ONLY_TOOLS,
   "speak_progress", "remember",
-  "thread_start", "thread_wait", "thread_read", "thread_stop", "worker_start", "worker_wait", "worker_read", "worker_stop",
+  "thread_start", "thread_wait", "thread_read", "thread_stop",
   "agent_start", "agent_send", "agent_wait", "agent_read",
 ]);
 
