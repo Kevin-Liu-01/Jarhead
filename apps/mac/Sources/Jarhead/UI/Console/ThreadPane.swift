@@ -14,6 +14,14 @@ import AppKit
 
 private let iconGap: CGFloat = 8
 
+enum ThreadPaneWords {
+    static let lastShot = "last screenshot"
+    static let shotTip = "thread.shot."
+    static let askTip = "thread.ask."
+    /// The header's second line (the brief and the figures) under the 40 pt name line.
+    static let briefHeight: CGFloat = 20
+}
+
 struct ThreadPane: View, Equatable {
     let thread: WorkThread
     /// What the engine has sent for this thread (AppState.threadStores); nil until the first page.
@@ -102,7 +110,6 @@ private struct ThreadHeader: View {
                     .font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(2)
-                    .consoleHelp(thread.task.isEmpty ? thread.name : thread.task)
                 // The status word turns as the thread works, waits and finishes: a crossfade.
                 Text(meta.label)
                     .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
@@ -116,7 +123,7 @@ private struct ThreadHeader: View {
                 HStack(spacing: 6) {
                     if live {
                         ConsoleDot(color: meta.color, live: true, size: 6)
-                            .consoleHelp("Live — the thread is working")
+                            .consoleHelp(HelpCopy.liveThread)
                             .accessibilityLabel("Live")
                             .transition(.opacity)
                     }
@@ -132,7 +139,9 @@ private struct ThreadHeader: View {
                     ViewThatFits(in: .horizontal) {
                         ScreenshotThumb(url: url, onTap: { session.lightbox = ConsoleLightboxItem(url: url, caption: "\(thread.name) · last screenshot") }, width: 64)
                             .frame(height: 30)
-                            .consoleHelp("The last screenshot this thread took")
+                            .consoleHelp(id: ThreadPaneWords.shotTip + thread.id, spoken: ThreadPaneWords.lastShot) {
+                                ConsoleTipPreview(title: thread.name, subtitle: ThreadPaneWords.lastShot, url: url, meta: ConsoleTipPreview.fileMeta(url))
+                            }
                         Color.clear.frame(width: 0, height: 0)
                     }
                     .transition(.opacity)
@@ -144,13 +153,13 @@ private struct ThreadHeader: View {
                         Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: "play.fill") }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                             .layoutPriority(1)
-                            .consoleHelp("Resume \(thread.name) — one continuation turn")
+                            .consoleHelp(HelpCopy.resumeThread(thread.name))
                             .transition(.opacity)
                     } else {
                         Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: "pause.fill") }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                             .layoutPriority(1)
-                            .consoleHelp("Pause \(thread.name) — its turn stops, its brain and place are kept")
+                            .consoleHelp(HelpCopy.pauseThread(thread.name))
                             .transition(.opacity)
                     }
                 }
@@ -158,20 +167,20 @@ private struct ThreadHeader: View {
                     Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: "stop.fill") }
                         .buttonStyle(ConsoleButtonStyle(kind: thread.status.isBusy ? .danger : .ghost, height: 24, small: true))
                         .layoutPriority(1)
-                        .consoleHelp(isMain ? "Stop this turn — the threads carry on, the session stays open (⌥⌘.)"
-                              : "Stop \(thread.name) — the others and the session carry on (⌥⌘.)")
+                        .consoleHelp(isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name))
                         .accessibilityLabel("Stop \(thread.name)")
                         .transition(.opacity)
                 }
                 Button(action: close) { Label("Now", systemImage: "chevron.left") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
-                    .consoleHelp("Back to Now (⌘0; Esc in the composer)")
+                    .consoleHelp(HelpCopy.backNow)
                     .accessibilityLabel("Back to Now")
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
             .animation(Motion.gentle, value: thread.status)
+            ThreadPaneBrief(thread: thread)
             ConsoleHairline()
         }
         .accessibilityElement(children: .contain)
@@ -194,7 +203,27 @@ private struct ThreadHeader: View {
             .lineLimit(1)
             .contentTransition(ConsoleMotion.numeric)
             .animation(Motion.snappy, value: text)
-            .consoleHelp("started \(ConsoleFormat.time(thread.startedAt)) · \(thread.turns) turn\(thread.turns == 1 ? "" : "s") · budget \(thread.budget.steps) steps / \(thread.budget.seconds) s")
+    }
+}
+
+/// The header's second line: the brief whole (what the thread was asked) and, in mono, the
+/// figures that were a tooltip — `started 14:37 · 1 turn · budget 25 steps / 180 s`.
+private struct ThreadPaneBrief: View {
+    let thread: WorkThread
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(thread.task.isEmpty ? thread.name : thread.task)
+                .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg2)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 8)
+            Text(ConsoleTipCard.threadMetaLine(thread))
+                .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                .lineLimit(1).fixedSize()
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .frame(height: ThreadPaneWords.briefHeight)
     }
 }
 
@@ -359,17 +388,17 @@ struct ThreadQuestionStrip: View {
                 .lineLimit(3).truncationMode(.tail)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-                .consoleHelp("\(name) asks: \(question)")
+                .consoleHelp(id: ThreadPaneWords.askTip + threadId, card: .question(name: name, question: question), edge: .below)
                 .contentTransition(.opacity)
             Spacer(minLength: 8)
             Button("Allow") { actions.send(.threadAnswer(threadId: threadId, yes: true)) }
                 .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
                 .layoutPriority(1)
-                .consoleHelp("Yes to \(name)'s question — a click, never Return")
+                .consoleHelp(HelpCopy.allowThread(name))
             Button("Deny") { actions.send(.threadAnswer(threadId: threadId, yes: false)) }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
                 .layoutPriority(1)
-                .consoleHelp("No — \(name) drops the question")
+                .consoleHelp(HelpCopy.denyThread(name))
         }
         .padding(EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12))
         .accessibilityElement(children: .contain)

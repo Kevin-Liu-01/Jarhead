@@ -15,6 +15,7 @@
 #   everything" sweep on the Permissions step (waiting: a dialog that returned at once; folders:
 #   three kinds sharing one pane). Permissions are canned per scenario (all sixteen kinds, mixed
 #   statuses) and every ask prints — nothing here touches TCC. See OnboardingPreviewMain.swift.
+#   PREVIEW_TIP=<id> pins a trigger's tip on the Setup root's float layer at 0.6 s (tipOpen:<id>).
 #   PREVIEW_OPEN=<field> (voice | accent | brain | model | auth …) opens that step's menu field on the
 #   Setup window's float layer at 0.6 s (`menuOpen:setup.<field>` — the field answers once it is on
 #   the layer; until then the log says it was asked).
@@ -38,6 +39,7 @@ export PREVIEW_SCENARIO="${PREVIEW_SCENARIO:-ready}"
 if [[ -n "${PREVIEW_APPEARANCE:-}" ]]; then export PREVIEW_APPEARANCE; fi
 if [[ -n "${PREVIEW_SIZE:-}" ]]; then export PREVIEW_SIZE; fi
 if [[ -n "${PREVIEW_OPEN:-}" ]]; then export PREVIEW_OPEN; fi
+if [[ -n "${PREVIEW_TIP:-}" ]]; then export PREVIEW_TIP; fi
 
 # shoot <step> <out.png>: run the harness on one step, screenshot its window, kill it.
 shoot() {

@@ -27,6 +27,8 @@ import SwiftUI
 //   PREVIEW_SWEEP=asking|waiting|settings|folders|done    pin an "Ask for everything" sweep on the Permissions step
 //   PREVIEW_OPEN=<field>                  open that step's menu field on the Setup window's float layer at
 //                                         0.6 s (ConsoleSession.previewNotification, menuOpen "setup.<field>")
+//   PREVIEW_TIP=<id>                      pin that trigger's tip on the Setup root's float layer at 0.6 s
+//                                         (tipOpen:<id>; the tier-1 id is ConsoleTip.id(for: words) unless the site named one)
 //                                         (the progress line, the Next/Cancel controls, the summary)
 // Permissions are a canned list of all sixteen kinds with mixed statuses (per scenario); every
 // ask — the sweep, a row's Request, Open Settings — prints instead of prompting.
@@ -188,6 +190,14 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
                 let id = "setup.\(field)"
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: [ConsolePreviewKey.menuOpen: id])
                 print("open: menuOpen \(id) asked at \(stamp())s → floats \(ConsoleFloatSlot.placed.keys.sorted())")
+                fflush(stdout)
+            }
+        }
+        // PREVIEW_TIP=<id>: that trigger's tip pinned on the Setup root's layer at 0.6 s (tipOpen:<id>).
+        if let id = env["PREVIEW_TIP"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: [ConsolePreviewKey.tipOpen: id])
+                print("open: tipOpen \(id) asked at \(stamp())s → floats \(ConsoleFloatSlot.placed.keys.sorted())")
                 fflush(stdout)
             }
         }

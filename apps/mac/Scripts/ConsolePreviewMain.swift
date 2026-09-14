@@ -224,6 +224,12 @@ import SwiftUI
 //                          the kit's previewNotification keys (ConsolePreviewKey): the control with that
 //                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
 //                          is highlighted / the disclosure folds or opens
+//     hover:<id> · leave:<id>  the pointer entering / leaving a tip's trigger: the real delay runs (with
+//                          ConsoleTip.delayOverride nil, `tip-warm`); the tip's trail prints as `tip:` lines
+//     check-tips           the timing pins from the `tip:` trail: the cold tip waited ≥ 300 ms, the warm one
+//                          (within 400 ms of the last hide) showed within 20 ms
+//     check-floats:<none|id[+id]>  what the layer holds right now must be exactly that (`none` = nothing
+//                          open) — and the first responder is not the composer's text
 //     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
 //     spike-scroll:<row>   scroll the spike's rail so that row sits at its top (48 pt for row 2)
 //     check-kit            the kit's pure pins as `check:` lines: placement (below · flips · clamps · trailing
@@ -262,6 +268,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     var spikeLog: [String] = []
     /// Every `probe-floats` result, in order, read by `check-spike`.
     var floatProbes: [[String: CGRect]] = []
+    /// The tips' trail (`tip:` lines: armed · shown after n ms · hidden · pinned), read by `check-tips`.
+    var tipLog: [String] = []
     /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
     lazy var trace = MainThreadTrace(launchedAt: launchedAt)
     /// The conversation scenarios' pane, opened once the app is active (`openPendingAgentAfterActivation`).
@@ -321,7 +329,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // the window is inactive (a shot behind the lock screen); the spike mounted for `kit-spike`.
         ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
         ConsoleFloatLayer.holdWhileInactive = true
-        if scenario == "kit-spike" {
+        ConsoleTip.report = { [weak self] line in
+            self?.tipLog.append(line)
+            print("tip: \(line)")
+        }
+        // `menu-escape` / `menu-outside` drive the layer's closing contract with the spike's popup until
+        // Builder B's Voice field opens on the layer (then: menuOpen:settings.voice on the Settings tab).
+        if scenario == "kit-spike" || scenario == "menu-escape" || scenario == "menu-outside" {
             ConsoleFloatSpike.enabled = true
             ConsoleFloatSpike.report = { [weak self] line in
                 self?.spikeLog.append(line)
@@ -396,7 +410,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // and says `complete: false`, so "Load earlier" offers the rest and a `load-earlier:` action
             // prepends into the same cap the app has (the view's own ceiling is the pure check).
             state.applyTranscript(fake.longTranscript(agentId: FakeData.endedId, count: 1_200), mode: "replace")
-        case "threads", "thread-pane", "thread-answer":
+        case "threads", "thread-pane", "thread-answer", "tip-thread", "tip-thumb":
             // Jarhead's threads under one running delegation: the snapshot's summaries land the way
             // EngineClient publishes them (applySnapshotThreads), each thread's conversation the way
             // its `thread.open` page would (applyThreadTranscript replace).
@@ -595,6 +609,15 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (No comma in the text: "," separates the actions.)
         case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
+        // The kit's tips (Builder A): a thread's card on the stream's chip (the same ConsoleTipCard.thread the rails
+        // draw), `?` pinning the composer's Stop after `focus:`, the warm re-show timed from the trail, the pane
+        // header's thumb as a preview; the layer's closing contract on the spike's popup (Esc; an outside click).
+        case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:chip.\(FakeData.slackId)@0.8,probe-floats@1.3"
+        case "tip-key": defaultActions = "check-kit@0.3,focus:stream.stop@0.8,keyDown:?@1.0,probe-floats@1.4"
+        case "tip-warm": defaultActions = "check-kit@0.3,hover:stream.go@0.5,leave:stream.go@1.2,hover:stream.mute@1.3,probe-floats@1.5,check-tips@1.6"
+        case "tip-thumb": defaultActions = "check-kit@0.3,thread-open:\(FakeData.slackId)@0.3,tipOpen:thread.shot.\(FakeData.slackId)@1.0,probe-floats@1.6"
+        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,probe-floats@0.8,keyDown:escape@0.9,probe-floats@1.1,check-floats:none@1.2"
+        case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,probe-floats@0.8,click:(300,300)@0.9,probe-floats@1.1,check-floats:none@1.2"
         case "kit-spike": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,keyDown:down@0.9,keyDown:up@1.0,keyDown:down@1.1,keyDown:return@1.3,"
             + "menuOpen:kit.spike@1.5,keyDown:escape@1.7,menuOpen:kit.spike@1.9,probe-floats@2.1,spike-scroll:2@2.2,probe-floats@2.5,"
             + "check-spike@2.6,menuOpen:kit.spike@2.7,keyDown:down@2.8"
@@ -847,6 +870,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeFloats(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
+            } else if action == "check-tips" {
+                checkTips(stamp: stamp)
+            } else if action.hasPrefix("check-floats:") {
+                checkFloats(String(action.dropFirst("check-floats:".count)), stamp: stamp)
             } else if action == "check-spike" {
                 checkSpike(stamp: stamp)
             } else if let info = memoryAction(action) {
@@ -2915,7 +2942,8 @@ extension PreviewDelegate {
 
     /// `focus:` `menuOpen:` `tipOpen:` `chip:` `highlight:` `fold:<id>:<open|closed>` `spike-scroll:<row>` → userInfo.
     func kitAction(_ action: String) -> [String: Any]? {
-        let plain = [ConsolePreviewKey.focus, ConsolePreviewKey.menuOpen, ConsolePreviewKey.tipOpen, ConsolePreviewKey.chip, ConsolePreviewKey.highlight]
+        let plain = [ConsolePreviewKey.focus, ConsolePreviewKey.menuOpen, ConsolePreviewKey.tipOpen, ConsolePreviewKey.chip, ConsolePreviewKey.highlight,
+                     ConsolePreviewKey.hover, ConsolePreviewKey.leave]
         for key in plain where action.hasPrefix(key + ":") { return [key: String(action.dropFirst(key.count + 1))] }
         if action.hasPrefix("fold:") {
             let parts = action.dropFirst("fold:".count).split(separator: ":").map(String.init)
@@ -3069,6 +3097,58 @@ extension PreviewDelegate {
         expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
         expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
         expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
+        expect("copy: a thread's verb carries its name", HelpCopy.stopThread("Slack").hint, "Stop Slack — the others carry on")
+        checkTipCards(expect)
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+
+    /// The tip's pure pins: the card's spoken form, the stable id, the outline's arrow inside its frame.
+    func checkTipCards(_ expect: (String, String, String) -> Void) {
+        let t0: Double = 1_757_856_000_000
+        if let slack = fake?.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0) {
+            let card = ConsoleTipCard.thread(slack)
+            expect("tip card: thread title · badge · lines", "\(card.title) · \(card.badge.map(ConsoleBadge.text) ?? "-") · \(card.lines.count) lines · foot \(card.foot.map(\.key).joined(separator: " "))",
+                   "Slack · asks · 2 lines · foot started lane steps budget")
+            expect("tip card: thread spoken", card.spoken,
+                   "Slack, asks, Send “running late — there in 10” to Ben?, tell Ben on Slack that Kevin is running late, started \(ConsoleFormat.time(t0)), lane screen, steps 4 · 1 turn, budget 25 steps / 180 s, Opens its pane ⏎")
+            expect("tip card: thread meta line", ConsoleTipCard.threadMetaLine(slack), "started \(ConsoleFormat.time(t0)) · 1 turn · budget 25 steps / 180 s")
+        }
+        expect("tip card: connection foot", ConsoleTipCard.connection(connected: true, detail: "engine · pid 48213").spoken, "Connected, daemon engine · pid 48213")
+        expect("tip card: chain sessions", ConsoleTipCard.chain(sessionIds: ["7f3a9c2e41b0aaaa", "8c1d2e3f4a5b6c7d"]).spoken, "2 sessions, 7f3a9c2e → 8c1d2e3f")
+        expect("tip card: empty lines drop", ConsoleTipCard(title: "T", lines: ["", "a"]).spoken, "T, a")
+        expect("tip id: stable and distinct", "\(ConsoleTip.id(for: "Go") == ConsoleTip.id(for: "Go")) \(ConsoleTip.id(for: "Go") != ConsoleTip.id(for: "Pause"))", "true true")
+        let rect = CGRect(x: 0, y: 0, width: 200, height: 40)
+        let below = ConsoleTipOutline(side: .below, arrow: 20).path(in: rect)
+        expect("tip arrow: inside the frame, on the facing edge", "\(below.boundingRect == rect) \(below.contains(CGPoint(x: 20, y: 1))) \(below.contains(CGPoint(x: 40, y: 1))) \(below.contains(CGPoint(x: 40, y: 6)))", "true true false true")
+        let trailing = ConsoleTipOutline(side: .trailing, arrow: 12).path(in: rect)
+        expect("tip arrow: beside a row it points left", "\(trailing.contains(CGPoint(x: 1, y: 12))) \(trailing.contains(CGPoint(x: 1, y: 30)))", "true false")
+        expect("tip words", "\(ConsoleTipWords.opensPane) \(ConsoleTipWords.returnKey) \(ConsoleTipWords.question)", "Opens its pane ⏎ ?")
+        expect("tip bubble: the arrow's edge faces the anchor", "\(ConsoleTipBubble<EmptyView>.arrowEdge(.below) == .top) \(ConsoleTipBubble<EmptyView>.arrowEdge(.trailing) == .leading)", "true true")
+    }
+
+    /// `check-tips`: from the `tip:` trail — the cold tip waited, the warm one showed at once.
+    func checkTips(stamp: String) {
+        let shown = tipLog.compactMap { line -> (String, Double)? in
+            let parts = line.split(separator: " ").map(String.init)
+            guard parts.count >= 5, parts[0] == "shown", parts[2] == "after", let ms = Double(parts[3]) else { return nil }
+            return (parts[1], ms)
+        }
+        guard shown.count >= 2 else { print("check: FAIL tips — wanted two `shown` lines, got \(tipLog)"); return }
+        let cold = shown[0], warm = shown[1]
+        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 20
+        print(String(format: "check: %@ tip cold waits 350 ms → %@ after %.0f ms", coldOk ? "ok  " : "FAIL", cold.0, cold.1))
+        print(String(format: "check: %@ tip warm shows at once → %@ after %.0f ms", warmOk ? "ok  " : "FAIL", warm.0, warm.1))
+        print("check: \(coldOk && warmOk ? "all ok" : "FAILED") (tips) at \(stamp)s")
+    }
+
+    /// `check-floats:<none|id[+id]>`: exactly those floats are open, and the composer has not taken focus.
+    func checkFloats(_ spec: String, stamp: String) {
+        let want = spec == "none" ? [] : spec.split(separator: "+").map(String.init).sorted()
+        let have = ConsoleFloatSlot.placed.keys.sorted()
+        let responder = jarheadWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let composerFree = !responder.contains("TextView")
+        print("check: \(have == want ? "ok  " : "FAIL") floats open → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(have == want ? "" : " (want \(spec))")")
+        print("check: \(composerFree ? "ok  " : "FAIL") composer not focused → firstResponder \(responder)")
+        print("check: \(have == want && composerFree ? "all ok" : "FAILED") (floats) at \(stamp)s")
     }
 }

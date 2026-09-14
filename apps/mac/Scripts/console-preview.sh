@@ -14,9 +14,15 @@
 #   ConsoleFloatLayer over the stream, opened by `menuOpen:kit.spike`, driven by `keyDown:` through the
 #   responder chain and scrolled under (`spike-scroll:2`); run.log ends with `check: spike focus ↑↓ Return
 #   Esc OK`, `check: spike anchor under scroll OK (…)`, the `probe-floats:` rects and `check: all ok (kit)`.
+#   The kit's tips (Builder A): `tip-thread` pins the thread card on the stream's Slack chip (`tipOpen:chip.<id>`
+#   — the same ConsoleTipCard.thread the rails draw; retarget to a rail row once one carries the card),
+#   `tip-key` gives the composer's Stop focus and presses `?` (the pinned bubble with its ⌘. keycap and the one
+#   key ring), `tip-warm` runs the real 350 ms delay (hover Go, leave, hover Mute within 400 ms → at once;
+#   run.log's `tip:` trail and `check: … (tips)`), `tip-thumb` opens Slack's pane and pins the header thumb's
+#   preview; `menu-escape` / `menu-outside` drive the layer's closing contract on the spike's popup (Esc; a
+#   click at (300,300)) and end `check: … (floats)`. Every one runs `check-kit@0.3` and ends `check: all ok (kit)`.
 #   The kit's other scenario names are reserved here and render today's UI until their builder lands:
-#   menu-* (the Voice / Model / Backend popups, Esc, an outside click), tip-* (a rail row's card, `?` on
-#   a focused control, the warm re-show, a thumb preview), toggle (On | Off), settings-index,
+#   menu-voice / menu-voice-filter / menu-model / menu-backend (the popups), toggle (On | Off), settings-index,
 #   permissions-groups, problems-groups, ledger-months, memory-chips, list-keys, agents-groups.
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
@@ -155,7 +161,9 @@ if [[ "$SCENARIO" == "kit-spike" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}
 # The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it).
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
 # The Threads pass's scenarios run their actions to 1.8 s (an `ended` event, an Allow, a landed turn).
-case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending|tip-thumb) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+# The pane header keeps its buttons and figures before the thumb (ViewThatFits): a wider window holds the thumb the preview hangs from.
+if [[ "$SCENARIO" == "tip-thumb" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1400x760}"; fi
 # `thread-history` (the paged main pane: scroll up, Load earlier, the page lands, geometry after) runs to 2.3 s.
 # Its run.log: `send: {"type":"thread.history",…,"before":2}`, `action: thread-history main … orphans 4→0 … complete false→true`,
 # and two `geometry` lines whose `distance` agree (the row Kevin was reading stayed put while the page grew above it).
