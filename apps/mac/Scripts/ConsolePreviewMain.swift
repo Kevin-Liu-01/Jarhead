@@ -3345,8 +3345,12 @@ extension PreviewDelegate {
         let text = ConsoleDisclosureSummary.text
         expect("rail: the seven fold ids", SettingsWords.folds.joined(separator: ","),
                "settings.audio,settings.brain,settings.leaves,settings.session,settings.memory,settings.retention,settings.wake")
-        expect("rail: toggle hints", [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint].joined(separator: " / "),
-               "wakes on launch / learns nothing while off / listens on-device")
+        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint]
+        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device")
+        // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
+        let sans11 = NSFont.systemFont(ofSize: 11)
+        let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: sans11]).width }.max() ?? 0
+        expect("rail: every toggle hint fits beside the toggle (≤ 112 pt at sans 11)", widest <= 112 ? "fits" : String(format: "%.0f pt", widest), "fits")
         expect("rail: filter days", "\(LedgerWords.filterDays) · \(LedgerWords.filterPast) · \(LedgerWords.unread)", "Filter days · 8 · —")
         guard let fake else { expect("rail: fixtures", "none", "fixtures"); return failed }
         // Permissions: the areas, their counts and the closed heads' words.

@@ -64,7 +64,7 @@ enum SettingsWords {
     // toggles' hints (≤ 4 words: the consequence, not the label)
     static let wakeHint = "listens on-device"
     static let autoWakeHint = "wakes on launch"
-    static let rememberHint = "learns nothing while off"
+    static let rememberHint = "learns while on"
     // words on the rows
     static let minutes = "min"
     static let notch = "Notch"
