@@ -14,8 +14,8 @@ export { OPENAI_THRESHOLDS, KEYWORD_THRESHOLDS, THRESH_UPDATE, THRESH_BAND } fro
  * long query's words against one item's (asymmetric: coverage of the item).
  */
 export interface Embedder {
-  readonly kind: "openai" | "keyword" | "fake";
-  /** Names the vector space in the cache (text-embedding-3-small, keyword, fake). */
+  readonly kind: "openai" | "local" | "keyword" | "fake";
+  /** Names the vector space in the cache (text-embedding-3-small, a local server's id such as nomic-embed-text:latest, keyword, fake). */
   readonly model: string;
   /** 0 = no vectors are stored (keyword). */
   readonly dims: number;

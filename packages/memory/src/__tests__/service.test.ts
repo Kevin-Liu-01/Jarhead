@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { BRAIN_MEMORY_TOKENS, VOICE_MEMORY_TOKENS, type LedgerRow } from "@jarhead/protocol";
 import { FakeEmbedder } from "../embed/embedder.ts";
 import { KeywordEmbedder } from "../embed/keyword.ts";
+import { LocalEmbedder } from "../embed/local.ts";
 import { EmbedError } from "../embed/openai.ts";
 import { ExtractUnavailableError, type Decider, type Extractor } from "../extract/extractor.ts";
 import { RulesExtractor } from "../extract/rules.ts";
 import { DEFER_MAX_TRIES, FORGET_RECENT_MS, MIN_NEW_KEVIN_LINES } from "../limits.ts";
 import { MAX_SLICES, MemoryService, type MemoryServiceOptions } from "../service.ts";
 import type { Candidate, ExtractInput } from "../types.ts";
-import { clock, fixtureRows, fresh, heard, ids, redactFake, said, ScriptedExtractor, T0 } from "./helpers.ts";
+import { clock, fakeFetch, fixtureRows, fresh, heard, ids, jsonResponse, redactFake, said, ScriptedExtractor, T0 } from "./helpers.ts";
 
 /**
  * The façade, end to end over the fixture: idempotent ingestion behind the
@@ -299,7 +300,60 @@ test("list/search: newest first, capped, no vector anywhere in the JSON; search 
   assert.equal(svc.list("forgotten").length, 1);
   assert.equal((await svc.search("dentist", 10, "forgotten")).length, 1);
   assert.ok(s.lastRunAt && s.lastRun?.added === 6 && s.lastRun.extractor === "responses");
-  assert.equal(world().svc.embeddings(), "openai", "a vector embedder reports openai");
+  assert.equal(s.embeddingModel, undefined, "keyword matching names no model");
+  assert.equal(s.embeddingDims, undefined);
+});
+
+/** A fake Ollama that answers /api/embed with `dims`-wide unit vectors (position i of each batch lit). */
+function ollamaEmbedder(dims: number): Promise<LocalEmbedder> {
+  const ff = fakeFetch((call) => jsonResponse({ embeddings: (call.body as { input: string[] }).input.map((_, i) => Array.from({ length: dims }, (__, k) => (k === i % dims ? 1 : 0.001 * (i + 1)))) }));
+  return LocalEmbedder.probe({ flavor: "ollama", baseUrl: "http://127.0.0.1:11434", model: "nomic-embed-text:latest", fetchImpl: ff.fetch });
+}
+
+test("a vector embedder reports its kind: openai for OpenAI, local for local — and the summary names the model and dims; the fake reports openai (it pins OpenAI-scale cosines)", async () => {
+  const fake = world();
+  assert.equal(fake.svc.embeddings(), "openai");
+  assert.deepEqual([fake.svc.summary().embeddingModel, fake.svc.summary().embeddingDims], ["fake", 512]);
+  const local = world({ embedder: await ollamaEmbedder(768) });
+  assert.equal(local.svc.embeddings(), "local");
+  const s = local.svc.summary();
+  assert.deepEqual([s.embeddings, s.embeddingModel, s.embeddingDims], ["local", "nomic-embed-text:latest", 768]);
+  const words = world({ embedder: new KeywordEmbedder() });
+  assert.equal(words.svc.embeddings(), "keyword");
+});
+
+test("reembed embeds only misses and returns 0 when done: a store filled under one embedder is re-vectored under the next, `limit` at a time, through the cache; forgotten items are left alone; keyword mode is always done", async () => {
+  const dir = fresh();
+  const first = world({ dir });
+  await first.svc.ingestSession("A", fixtureRows());
+  assert.equal(first.svc.list().length, 6);
+  first.svc.forget(first.svc.list()[0]!.id, "kevin");
+  // the brain moved to local: the same <stateDir>/memory under a local embedding model
+  const local = await ollamaEmbedder(768);
+  const calls: string[][] = [];
+  const spy = local.embed.bind(local);
+  local.embed = (texts, signal) => {
+    calls.push([...texts]);
+    return spy(texts, signal);
+  };
+  const svc = new MemoryService({ dir, now: () => T0 + 200_000, embedder: local, extractor: new RulesExtractor(), redact: redactFake, newId: ids("n"), log: { info() {}, warn() {} } });
+  assert.equal(svc.list().length, 5);
+  assert.ok(svc.list().every((i) => svc.store.vectorFor(i.id, local) === undefined), "nothing is in the new space yet");
+  assert.equal(await svc.reembed(2), 2);
+  assert.deepEqual(calls.map((c) => c.length), [2]);
+  assert.equal(await svc.reembed(2), 2);
+  assert.equal(await svc.reembed(2), 1, "only the last miss; hits never reach the model");
+  assert.deepEqual(calls.map((c) => c.length), [2, 2, 1]);
+  assert.equal(await svc.reembed(2), 0, "done");
+  assert.equal(await svc.reembed(), 0);
+  assert.equal(calls.length, 3, "a done sweep makes no call");
+  assert.ok(svc.list("live").every((i) => svc.store.vectorFor(i.id, local)));
+  assert.equal(svc.store.vectorFor(svc.list("forgotten")[0]!.id, local), undefined, "the forgotten item was not embedded");
+  assert.equal(svc.summary().embeddings, "local");
+  const rows = readFileSync(join(dir, "embeddings.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; dims: number });
+  assert.equal(rows.filter((r) => r.model === "fake").length, 6, "the old space's rows stay");
+  assert.equal(rows.filter((r) => r.model === "nomic-embed-text:latest" && r.dims === 768).length, 5);
+  assert.equal(await world({ embedder: new KeywordEmbedder() }).svc.reembed(), 0);
 });
 
 test("retrieval: the delegator's `${request}\\n${kevinRecent}` query is an LRU hit when its lines were primed — 0 embedder calls on the delegation path, the composed vector lands under the full query's sha, and only a query with no primed line races the network", async () => {

@@ -18,7 +18,8 @@ export interface Thresholds {
 }
 
 export type MemoryBy = "kevin" | "reflex" | "cli";
-export type ExtractorKind = "responses" | "rules";
+/** Which extractor wrote a run: OpenAI's Responses API, a local model over Chat Completions, or the regex rules. */
+export type ExtractorKind = "responses" | "local" | "rules";
 
 export interface RunCounts {
   readonly added: number;
