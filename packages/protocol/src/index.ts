@@ -562,7 +562,7 @@ export interface RingLine {
   readonly more: number;
 }
 
-/** One change on one row; broadcast like thread.event (≤ 200 B, coalesced 50 ms per id). */
+/** One change on one row; broadcast like thread.event, coalesced 50 ms per id. `state`, `missed` and `tick` fit 200 B (detail ≤ 70); `fired` carries its presses and a line capped at 80, ≈ 270 B (protocol.test.ts measures them). */
 export type AutomationEvent = { readonly seq: number; readonly at: number; readonly id: string } & (
   | { readonly kind: "set"; readonly automation: Automation }
   | { readonly kind: "fired"; readonly actions: readonly AutomationActionKind[]; readonly line: string; readonly ok: boolean; readonly detail?: string; readonly lateMs?: number; readonly presses: readonly AutomationPress[] }
@@ -974,7 +974,7 @@ export type ProblemKind =
   | "automation.missed" | "automation.blocked" | "automation.budget" | "automation.notifications" | "automation.watch";
 
 export interface ProblemRemedy {
-  /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock". */
+  /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock"; the automation problems say "Run now" (missed), "Open Console" (blocked), "Ask" (watch). */
   readonly label: string;
   /** What the button does: an EngineCommand the surface sends, or a URL/path the surface opens. */
   readonly command?: EngineCommand;
@@ -1055,7 +1055,7 @@ export type EngineEvent =
   | { readonly type: "thread.event"; readonly event: ThreadEvent }
   /** A page of a thread's conversation (`replace`), new rows (`append`) or older ones (`prepend`); viewers only. */
   | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" }
-  /** One change on one automation row (broadcast, ≤ 200 B, coalesced 50 ms per id). */
+  /** One change on one automation row (broadcast, coalesced 50 ms per id; ≤ 200 B except `fired`, ≈ 270 B with its presses). */
   | { readonly type: "automation.event"; readonly event: AutomationEvent }
   /** The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS. */
   | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly automationId: string }
