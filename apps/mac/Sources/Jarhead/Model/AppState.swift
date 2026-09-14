@@ -99,6 +99,18 @@ public final class AppState: ObservableObject {
     /// Mark mode (Kevin circles something on screen). Installed by the app.
     public var beginMarkModeHandler: () -> Void = {}
     public func beginMarkMode() { beginMarkModeHandler() }
+    /// Mark mode is on: every overlay window takes the stroke. Set by OverlayManager.beginMarkMode
+    /// (true, before ctl.begin()) and MarkModeController.end (false). Read by the dock to fold and
+    /// to read "Circle something · Esc".
+    @Published public var marking: Bool = false
+    /// Fired by OverlayManager.commitMark right after send(.markAdd). The dock's Ask uses it to send
+    /// the question after the mark (same socket, in order: the engine registers the mark before
+    /// any await).
+    public let markCommitted = PassthroughSubject<Void, Never>()
+    /// The × on one circled thumbnail; the engine ignores an id it does not hold.
+    public func markRemove(_ id: String) { send(.markRemove(id: id)) }
+    /// The notch's Window box: the front window as a mark, whole. Works asleep.
+    public func markWindow() { send(.markWindow) }
 
     // MARK: threads
 

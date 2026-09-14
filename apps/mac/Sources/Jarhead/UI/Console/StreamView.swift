@@ -1193,65 +1193,6 @@ struct ToolStepRow: View {
 
 // MARK: - Screenshots
 
-/// A decoded bitmap boxed so it can cross task boundaries.
-struct ConsoleBitmap: @unchecked Sendable {
-    let cg: CGImage
-}
-
-/// Decodes and downsamples screenshots off the main thread with ImageIO, once
-/// per path, and hands the UI a small CGImage. The full-resolution read is
-/// only for the lightbox.
-actor ConsoleThumbnails {
-    static let shared = ConsoleThumbnails()
-
-    /// Set only by the preview harness (PREVIEW_SLOW_THUMBS=1): every thumbnail waits a minute
-    /// before decoding, so the dithered skeletons stay on screen to shoot.
-    nonisolated(unsafe) static var holdForPreview = false
-
-    private var cache: [String: ConsoleBitmap] = [:]
-    private var inflight: [String: Task<ConsoleBitmap?, Never>] = [:]
-
-    func thumbnail(for url: URL, maxPixel: Int) async -> CGImage? {
-        if Self.holdForPreview { try? await Task.sleep(nanoseconds: 60_000_000_000) }
-        let key = "\(maxPixel)|\(url.path)"
-        if let hit = cache[key] { return hit.cg }
-        let task: Task<ConsoleBitmap?, Never>
-        if let running = inflight[key] {
-            task = running
-        } else {
-            task = Task.detached(priority: .utility) { ConsoleThumbnails.decodeThumbnail(url, maxPixel: maxPixel) }
-            inflight[key] = task
-        }
-        let result = await task.value
-        inflight[key] = nil
-        if let result = result {
-            if cache.count >= 256 { cache.removeAll(keepingCapacity: true) }
-            cache[key] = result
-        }
-        return result?.cg
-    }
-
-    nonisolated static func decodeThumbnail(_ url: URL, maxPixel: Int) -> ConsoleBitmap? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return ConsoleBitmap(cg: image)
-    }
-
-    /// Full resolution, decoded immediately so the first draw does no work on the main thread.
-    nonisolated static func decodeFull(_ url: URL) -> ConsoleBitmap? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return ConsoleBitmap(cg: image)
-    }
-}
-
 struct ScreenshotThumb: View {
     let url: URL
     let onTap: () -> Void
@@ -1292,7 +1233,7 @@ struct ScreenshotThumb: View {
         .onHover { hovering = $0 }
         .onTapGesture { if image != nil { onTap() } }
         .task(id: url) {
-            let decoded = await ConsoleThumbnails.shared.thumbnail(for: url, maxPixel: maxPixel)
+            let decoded = await Thumbnails.shared.thumbnail(for: url, maxPixel: maxPixel)
             guard !Task.isCancelled else { return }
             image = decoded
             failed = decoded == nil
@@ -1339,9 +1280,9 @@ struct LightboxView: View {
         .onTapGesture(perform: dismiss)
         .task {
             let url = item.url
-            let decoded = await Task.detached(priority: .userInitiated) { ConsoleThumbnails.decodeFull(url) }.value
+            let decoded = await Task.detached(priority: .userInitiated) { Thumbnails.decodeFull(url) }.value
             guard !Task.isCancelled else { return }
-            image = decoded?.cg
+            image = decoded
             failed = decoded == nil
         }
     }
@@ -1385,18 +1326,14 @@ struct ComposerBar: View {
 
     private var placeholder: String { ComposerBar.placeholder(phase: phase, typedWakes: typedWakes) }
 
-    /// The field's words: what typing does in this phase. Paused: resumes (the engine's own
-    /// rule). Asleep: refused unless typed lines wake — and the placeholder says which.
+    /// The field's words (`ComposerWords.placeholder`: the notch's field reads the same table).
     static func placeholder(phase: Phase, typedWakes: Bool) -> String {
-        if phase == .paused { return "Paused — press Go or type to resume" }
-        if ConsoleTheme.sessionPhases.contains(phase) { return "Say something…" }
-        return typedWakes ? "Type to wake Jarhead…" : "Type to Jarhead… (asleep: press Go)"
+        ComposerWords.placeholder(phase: phase, paused: phase == .paused, typedWakes: typedWakes)
     }
 
-    /// Whether a submitted line stays in the field: asleep (or in error) with typed wakes off, the
-    /// engine refuses it — no paid session on a stray Return — so the words are kept for the Go.
+    /// Whether a submitted line stays in the field (`ComposerWords.keepsText`: the engine would refuse it).
     static func keepsText(phase: Phase, typedWakes: Bool) -> Bool {
-        (phase == .asleep || phase == .error) && !typedWakes
+        ComposerWords.keepsText(phase: phase, typedWakes: typedWakes)
     }
 
     /// The Go/Pause button's spoken name, for accessibility.

@@ -598,7 +598,7 @@ public final class OrbPanelController {
             .store(in: &cancellables)
         // The dock's content: built whole from the snapshot, the thread store, the mark
         // state, the gate and the decoded thumbnails; set only when it differs.
-        Publishers.CombineLatest4(state.$snapshot, state.$threads, state.markingPublisher.removeDuplicates(), state.$wakeGate.removeDuplicates())
+        Publishers.CombineLatest4(state.$snapshot, state.$threads, state.$marking.eraseToAnyPublisher().removeDuplicates(), state.$wakeGate.removeDuplicates())
             .combineLatest(thumbsChanged)
             .map { [weak self] top, _ -> (DockContent, [ScreenMark]) in
                 guard let self else { return (.empty, []) }
@@ -610,7 +610,7 @@ public final class OrbPanelController {
         // Mark mode: the island folds before the overlay takes the mouse, and unfolds
         // when the stroke is done or cancelled. An Ask that was waiting for a mark that
         // never came is forgotten.
-        state.markingPublisher
+        state.$marking.eraseToAnyPublisher()
             .removeDuplicates()
             .sink { [weak self] marking in
                 guard let self else { return }
