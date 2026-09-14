@@ -80,6 +80,16 @@ struct ConsoleBadge: View {
         }
     }
 
+    /// A session's status as a badge word: `blocked` is the one that asks (amber); the resting
+    /// words (`working · idle · done · ended · offline`) stay titanium; `unknown` is no badge.
+    static func agent(_ s: AgentStatus) -> Word? {
+        switch s {
+        case .blocked: return .asks
+        case .unknown: return nil
+        default: return .word(s.rawValue)
+        }
+    }
+
     static func isFigure(_ w: Word) -> Bool {
         if case .figure = w { return true }
         return false

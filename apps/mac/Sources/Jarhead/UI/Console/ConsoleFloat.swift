@@ -51,6 +51,29 @@ enum ConsolePreviewKey {
     static let chip = "chip"
     /// `highlight:<id>` → a list's focused row.
     static let highlight = "highlight"
+    /// `hover:<id>` / `leave:<id>` → the pointer entering / leaving a tip's trigger (the real delay runs).
+    static let hover = "hover"
+    static let leave = "leave"
+}
+
+/// Where the layer put a float, handed to its content through the environment so a tip's bubble
+/// draws its arrow on the facing edge, pointing at the anchor. `.zero` until the slot has placed it.
+struct ConsoleFloatGeometry: Equatable {
+    var side: ConsoleFloatPlacement.Side = .below
+    /// The arrow's centre along the facing edge, in the float's own space.
+    var arrowOffset: CGFloat = ConsoleFloatPlacement.radius + 4
+    var rect: CGRect = .zero
+}
+
+private struct ConsoleFloatGeometryKey: EnvironmentKey {
+    static let defaultValue = ConsoleFloatGeometry()
+}
+
+extension EnvironmentValues {
+    var consoleFloatGeometry: ConsoleFloatGeometry {
+        get { self[ConsoleFloatGeometryKey.self] }
+        set { self[ConsoleFloatGeometryKey.self] = newValue }
+    }
 }
 
 extension View {
@@ -80,10 +103,18 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
 
     func body(content view: Content) -> some View {
         view
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { moved(to: $0) }
             .anchorPreference(key: ConsoleFloatKey.self, value: .bounds) { anchor in
                 on ? [ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)] : []
             }
+    }
+
+    /// A menu follows its field (the frame is the republish key); a tip lets go when its anchor
+    /// moves (a scroll under the pointer) — NSMenu-like, and never a stale arrow.
+    private func moved(to next: CGRect) {
+        let was = frame
+        frame = next
+        if on, kind == .tip, was != .zero, was != next { dismiss() }
     }
 }
 
@@ -112,8 +143,15 @@ struct ConsoleFloatLayer: View {
                 }
             }
         }
+        .animation(.easeOut(duration: Motion.instant), value: shown.map(\.id))
         .onChange(of: active) { if active != .key, !Self.holdWhileInactive { floats.forEach { $0.dismiss() } } }
-        .onChange(of: floats.map(\.id)) { monitor.set(floats) }
+        .onChange(of: floats.map(\.id)) { monitor.set(floats); closeTipsUnderMenu() }
+    }
+
+    /// A menu opening takes the tips with it: none draws beside a menu, and none waits behind one.
+    private func closeTipsUnderMenu() {
+        guard menu != nil else { return }
+        floats.filter { $0.kind == .tip }.forEach { $0.dismiss() }
     }
 }
 
@@ -130,13 +168,17 @@ struct ConsoleFloatSlot: View {
     @MainActor static var placed: [String: CGRect] = [:]
 
     var body: some View {
+        let side = ConsoleFloatPlacement.side(anchor: anchor, size: size, bounds: bounds, edge: float.edge)
         let rect = ConsoleFloatPlacement.rect(anchor: anchor, size: size, bounds: bounds, edge: float.edge)
+        let arrow = ConsoleFloatPlacement.arrowOffset(anchor: anchor, rect: rect, side: side)
         float.content()
+            .environment(\.consoleFloatGeometry, ConsoleFloatGeometry(side: side, arrowOffset: arrow, rect: rect))
             .fixedSize()
             .onGeometryChange(for: CGSize.self, of: \.size) { size = $0 }
             .offset(x: rect.minX, y: rect.minY)
             .allowsHitTesting(float.kind == .menu)
             .accessibilityHidden(float.kind == .tip)
+            .transition(.opacity)
             .onChange(of: rect, initial: true) { Self.placed[float.id] = rect }
             .onDisappear { Self.placed[float.id] = nil }
     }
