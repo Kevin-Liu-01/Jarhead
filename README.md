@@ -27,7 +27,7 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 🖱️ **Uses the Mac.** 67 tools in nine families — computer (screen, mouse, keyboard) · desktop (apps, windows, controls) · browser · agents · threads · shell, progress and memory · system (files, web, AppleScript, clipboard) · self-edit · drawing. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.
 - ⚡ **Reflexes under the model.** An on-device ear runs beside the voice; unambiguous commands (scroll, page, keys, tabs, "open Safari", "click Save", "search the wiki for design", dictation) go straight through the policy-gated hands in milliseconds. The model is told afterwards.
 - 🧵 **Threads: several things at once, each a full Jarhead.** "Tell Ben on Slack I'm late and put on Focus on Spotify" splits into named threads — Spotify on a background lane by Apple events, Slack on the screen lane — each with its own brain, conversation, budget and blob (up to three beside the main one). Ask "what is Spotify doing" or say "stop the Slack one" and the engine's table answers with no model call and without ending what you were saying; every thread gets the same prompt, memory, screenshots and confirmation handshake as the main one.
-- ✋ **Your hands win.** A key, click or scroll of yours holds Jarhead's hands for 1.5 s; a focus change mid-type cancels the type and says how many characters landed; a worker is never refocused behind you.
+- ✋ **Your hands win.** A key, click or scroll of yours holds Jarhead's hands for 1.5 s; a focus change mid-type cancels the type and says how many characters landed; a thread is never refocused behind you.
 - 🛡️ **Gated by policy, not by absence.** One table decides run / confirm / refuse per call, with a spoken reason. A confirmation is your own spoken yes, for that action, once. A grant remembers a yes for this conversation, this app, this action class — never for send, pay, delete, post or purchase.
 - 🗂️ **Knows your agents.** The Console lists every Claude Code, Codex and other coding-agent session on the Mac with its own mark. Step into one, watch it grow live, answer its Allow / Deny, talk to it.
 - 🖍️ **Sees what you circle.** `⌥⇧C`, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task.
@@ -35,7 +35,7 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 📍 **Lives in the notch.** Tucked asleep, peeking awake, a Dynamic-Island-style island under the pointer with the transport, Stop and Mute, and "Working · 0:12" while a task runs. Drag it into the notch and it goes to sleep.
 - 🌙 **Sleeps when you say so.** "Go to sleep", "that's all for now", "power down", "good night" — it says exactly "night.", closes the session, tucks in. Ten idle minutes do the same. "Shut down my Mac" is a task, not a cue.
 - 🗣️ **Narrates intent, not keystrokes.** One clause per state change — "found the invoice", "typing the amount" — never per click, never a tool's name. Per-click lines stay on the Console's timeline.
-- 🧾 **Append-only ledger.** Every utterance, delegation, tool call, screenshot path, worker, grant, problem and sleep is a row in `~/.jarhead/ledger/<day>.jsonl`. The Console shows only what was recorded. Search it from the rail or `pnpm jarhead ledger search`.
+- 🧾 **Append-only ledger.** Every utterance, delegation, tool call, screenshot path, thread, grant, problem and sleep is a row in `~/.jarhead/ledger/<day>.jsonl`. The Console shows only what was recorded. Search it from the rail or `pnpm jarhead ledger search`.
 - 🧠 **Remembers you, quietly.** After a conversation closes, a small model reads it once and keeps one-sentence items about you — "Kevin prefers short answers", "how Kevin likes a PR checked" — in an append-only store under `~/.jarhead/memory`, matched by embeddings, scored by recency and use. Each task gets at most 250 tokens of it, each session at most 120, never read back to you. Forget hides an item; nothing is deleted. Off with one switch.
 - 🗣️ **English, whatever it hears.** The voice speaks English with an American accent by default, even when someone in the room speaks something else; British or no accent is a setting, heard at the next wake. Twenty-two voices, all labelled `<Name> · English`.
 - 🗑️ **Cleans up without deleting.** Conversations Move to Trash, Archive, Restore, Rename, Pin — never "Delete". A move is a tombstone row; whole days move into `~/.jarhead/trash` by rename and come back the same way. Retention is a setting whose default is forever.
@@ -88,11 +88,12 @@ The blob flew to its target and stays there. The perch is where it came from; th
 ### The Console
 
 <p align="center">
-  <img src="docs/media/console-workers.jpg" width="920" alt="The Console during a split: the Now stream with worker_start calls, [Notes] and [Slack] tags, a screenshot; the Workers rail with Notes done, Spotify working, Slack waiting for the screen, each with Stop">
+  <img src="docs/media/console-threads.jpg" width="920" alt="The Console during a split: the Now stream with thread_start calls, [Notes] and [Slack] tags, a screenshot; the Threads rail with Notes done, Spotify working, Slack waiting for the screen, each with Stop">
 </p>
 
 Two hands at once: Notes and Spotify on the background lane, Slack on the screen lane
-waiting because you are typing. The Workers rail has a Stop per running worker.
+waiting because you are typing. The Threads rail lists each live thread under its
+parent, with a Stop per thread.
 
 <table>
   <tr>
@@ -204,7 +205,7 @@ flowchart LR
     DEL["Delegator + Reflexes"]
     B["Brain<br/>codex · claude-code · anthropic-api<br/>openai-compatible · openai-responses"]
     TR["ToolRunner + policy"]
-    W["Workers<br/>background · screen lanes"]
+    W["Threads<br/>table · scheduler · brain pool"]
     LED["Ledger<br/>~/.jarhead/ledger"]
     AG["Agents<br/>sessions on disk and running"]
   end
@@ -242,7 +243,7 @@ apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wa
 ## Numbers
 
 Measured on this Mac and written down; the harnesses are in the repo. Sources:
-[`docs/LATENCY.md`](docs/LATENCY.md), [`docs/REDESIGN.md`](docs/REDESIGN.md) §12 · §13 · §16 · §18,
+[`docs/LATENCY.md`](docs/LATENCY.md), [`docs/REDESIGN.md`](docs/REDESIGN.md) §12 · §13 · §16 · §20,
 [`docs/latency/after.json`](docs/latency/after.json), [`packages/hands/native/README.md`](packages/hands/native/README.md).
 
 | what | number |
@@ -262,7 +263,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 | Live billing | **$0.05 / min, per second**, muted or not; a closed session costs nothing |
 | idle sleep | 10 min without an addressed turn (setting) |
 | threads | main + 3 live · 25 steps / 180 s default · 40 / 300 cap · linger 30 s |
-| the lease | hand-over after 3 s idle · a taker waits 1.5 s · a worker waits ≤ 8 s, three waits fail it |
+| the lease | hand-over after 3 s idle · a taker waits 1.5 s · a thread waits ≤ 8 s, three waits fail it |
 | your hands | a key, click or scroll of yours holds the helper `busy` for 1500 ms |
 | liveness | ping every 2 s · two unanswered → drop, reconnect, kick |
 | crash | relaunch ≤ 3 in 10 min · daemon lingers 90 s |
@@ -308,7 +309,7 @@ the menu-bar icon › *Set Up…*.
 pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), threads N (M live), memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
 pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model)
-pnpm jarhead cmd go|pause|stop|interrupt|mute|unmute|sleep [cause]|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>   # worker.stop <id> is the older alias
+pnpm jarhead cmd go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop|thread.pause|thread.resume   # thread.* take <id|name>
 pnpm jarhead ledger [YYYY-MM-DD]    # a day, no daemon needed
 pnpm jarhead ledger search "<words>" [--limit N]
 pnpm jarhead ledger trash <day> [--shots|--both] · restore <day> · sweep
@@ -345,10 +346,9 @@ The state directory is `~/.jarhead`:
 | `⌥⎋` | stop — cut everything, close the session, sleep |
 | `⌥⇧Space` | go / pause |
 | `⌥⇧C` | circle something on screen |
-| `⌥⇧P` | alias of `⌥⇧Space` |
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
-`jarhead://stop` (`wake`, `resume`, `sleep` are aliases).
+`jarhead://stop`.
 
 ### Permissions
 
@@ -382,12 +382,12 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | `JARHEAD_IDLE_SLEEP_MINUTES` | idle sleep (10) |
 | `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN`, `JARHEAD_CURSOR_AGENT_BIN` | the CLIs when they are not on PATH |
 | `JARHEAD_CODEX_SIMPLE_EFFORT`, `JARHEAD_CODEX_SERVICE_TIER`, `JARHEAD_CODEX_PRIME`, `JARHEAD_CODEX_BASE` | Codex tuning, all opt-in |
-| `JARHEAD_WORKER_SAY=instructions` | send the worker lines ("Spotify alongside.") through Live's instructions channel instead of commentary |
 | `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start — **every test launch** |
 | `JARHEAD_NO_AUDIO=1` | never touch the microphone (headless launches) |
 | `JARHEAD_STATE_DIR`, `JARHEAD_SOCKET`, `JARHEAD_REPO`, `JARHEAD_NODE`, `JARHEAD_HANDS_BIN` | where things are |
 | `JARHEAD_SIGN_IDENTITY` | the code-signing identity (`-` forces ad-hoc) |
 | `JARHEAD_INSTALL_HYGIENE=0\|fix` | skip the Dock / LaunchServices pass, or repair the Dock |
+| `JARHEAD_INSTALL_SNAPSHOT=1` | take a rollback snapshot (a `Jarhead.app.zip` archive under `build/previous/`) before the in-place install; default off, git is the rollback |
 | `JARHEAD_LINGER_MS` | how long the daemon waits for a relaunch (90 000) |
 | `JARHEAD_PERMISSIONS_DRY_RUN=1` (`_DENY`) | log what would be asked, ask nothing |
 | `JARHEAD_CRASH_TEST=exception\|signal`, `JARHEAD_NO_RELAUNCH=1` | crash a dev build on purpose; keep it down |
@@ -412,7 +412,7 @@ pnpm test                                      # node:test over packages/*/src/*
 node --import tsx --test packages/core/src/__tests__/policy.test.ts
 JARHEAD_AUTO_WAKE=0 pnpm jarheadd              # the engine alone, quiet
 cd apps/mac && swift build && JARHEAD_REPO=$PWD/../.. .build/debug/Jarhead   # the app from a terminal (Terminal owns TCC then)
-pnpm build:media                               # build:icon (the Dock icon, docs/media/icon.png, the contact strip) + build:banner (docs/media/banner.png)
+pnpm build:media                               # build:icon (the Dock icon, the contact strip docs/media/icon-sizes.png) + build:banner (docs/media/banner.png)
 ```
 
 Protocol first: change `packages/protocol/src/index.ts`, then its Swift mirror
@@ -424,7 +424,7 @@ macOS 15 (`.github/workflows/check.yml`).
 no TCC — the screenshots above come from them:
 
 ```bash
-apps/mac/Scripts/console-preview.sh <scenario> [out.png]    # live · workers · conversation · jarhead · ledger · settings · problems · cleanup · search · light · …
+apps/mac/Scripts/console-preview.sh <scenario> [out.png]    # live · threads · conversation · jarhead · ledger · settings · problems · cleanup · search · light · …
 apps/mac/Scripts/onboarding-preview.sh <step> [out.png]     # welcome · voice · brain · permissions · wake · agents · done · all
 ORB_NOTCH=1 ORB_SHOT_DIR=… apps/mac/Scripts/orb-preview.sh  # the blob, the notch, the overlay; knobs in UI/Orb/OrbPreviewApp.swift
 scripts/make-readme-shots.sh                               # every README screenshot into docs/media, fixed names, ≤ 1600 px, ≤ 600 KB
@@ -444,12 +444,9 @@ Working rules for anyone — or anything — editing this repo: [`AGENTS.md`](AG
 - [`docs/REDESIGN.md`](docs/REDESIGN.md) — architecture, every decision, dated.
 - [`docs/LATENCY.md`](docs/LATENCY.md) — the before and after numbers, the field side by side, the honest assessment.
 - [`docs/DEMO.md`](docs/DEMO.md) — a ninety-second single take.
-- [`docs/GITHUB.md`](docs/GITHUB.md) — the repository description and topics.
 - [`apps/mac/README.md`](apps/mac/README.md) — the native app: packaging, TCC, wake word, audio, wire protocol.
 - [`packages/hands/native/README.md`](packages/hands/native/README.md) — the helper's protocol, ops, numbers.
 - [`AGENTS.md`](AGENTS.md) — rules for agents editing this repo.
-
-v1 (an Electron prototype) lives in the git history before `1ff11e2`.
 
 ## License
 

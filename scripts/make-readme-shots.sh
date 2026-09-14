@@ -4,7 +4,7 @@
 #   scripts/make-readme-shots.sh                 # everything (compiles the three harnesses first)
 #   scripts/make-readme-shots.sh --skip-build    # reuse the harness binaries from the last run
 #   scripts/make-readme-shots.sh --only console  # one group: console | onboarding | orb | icon
-#   scripts/make-readme-shots.sh --icon          # also run `pnpm build:icon` (docs/media/icon.png + the contact strip)
+#   scripts/make-readme-shots.sh --icon          # also run `pnpm build:icon` (the .icns and the contact strip)
 #   scripts/make-readme-shots.sh --audit         # no shots: only check README.md against docs/media
 #
 # Drives the preview harnesses in apps/mac/Scripts — nothing here starts the app, the
@@ -14,9 +14,9 @@
 # it the PNG is the wallpaper), the blob / notch / overlay shots are drawn in-process
 # (ORB_SHOT_INPROCESS=1 — no grant needed, nothing of the desktop is read).
 # docs/media/banner.png (the README's hero) is NOT produced here: `pnpm build:banner`
-# (scripts/make-banner.ts) renders it. docs/media/icon.png and
-# apps/mac/Resources/preview-icon-sizes.png come from `pnpm build:icon`
-# (scripts/make-icon.ts); this script only copies the strip.
+# (scripts/make-banner.ts) renders it. apps/mac/Resources/preview-icon-sizes.png (the
+# icon contact strip) comes from `pnpm build:icon` (scripts/make-icon.ts); this script
+# only copies it to docs/media/icon-sizes.png.
 #
 # Formats and budgets. Every output is <= 1600 px wide and <= 600 KB (README_SHOTS_MAX_W,
 # README_SHOTS_MAX_BYTES). `place <src> <name> [auto|png|jpg]` decides the file:
@@ -31,20 +31,21 @@
 #                   1400 → 1200 px and fails when 1200 is still over budget.
 # A file that fits nowhere is removed from docs/media and the run exits 1, so a red run
 # never leaves an over-budget file behind. The last step audits README.md: every
-# docs/media/<file> it names must exist (banner.png and icon.png only warn — other
-# tools make them), and every file in docs/media should be named.
+# docs/media/<file> it names must exist (banner.png only warns — `pnpm build:banner`
+# makes it), and every file in docs/media should be named.
 #
 # Scenarios and the file each one becomes (all in docs/media/):
 #
 #   console (apps/mac/Scripts/console-preview.sh <scenario>; the window shot @2x, JPEG)
-#     workers         console-workers.jpg       the split: Notes + Spotify on the background lane, Slack on the
-#                                               screen lane; Workers rail with Stop on the running ones, chips, [Name] tags
+#     threads         console-threads.jpg       the split: Notes + Spotify on the background lane, Slack on the
+#                                               screen lane; the Threads rail with Stop on the live ones, one chip
+#                                               per spawned thread under its parent card, [Name] tags
 #     conversation    console-conversation.jpg  a Claude Code session stepped into: tool calls, folded reasoning,
 #                                               a permission question with Allow / Deny, circled regions
 #                                               (the harness opens the pane once the app is active, so the
 #                                               title bar is active in the shot without any re-keying)
 #     jarhead         console-jarhead.jpg       a past Jarhead conversation (paused → resumed chain, "resumed ×1")
-#     ledger          console-ledger.jpg        the Ledger tab: day picker, the day's rows, worker and sleep rows
+#     ledger          console-ledger.jpg        the Ledger tab: day picker, the day's rows, thread and sleep rows
 #     settings        console-settings.jpg      asleep, Settings tab, the wake gate listening
 #                                               (PREVIEW_WINDOW_SIZE=1180x900 so the retention block ends in frame)
 #     problems        console-problems.jpg      the Now tab's typed problems, one remedy button each
@@ -81,7 +82,8 @@
 #     overlay         overlay-shapes.png        the teaching shapes: circle, arrow, rect, text, stroke
 #
 #   icon
-#     icon-sizes.png  a copy of apps/mac/Resources/preview-icon-sizes.png (16…256, small ones blown up 4x)
+#     icon-sizes.png  a copy of apps/mac/Resources/preview-icon-sizes.png, the icon contact strip
+#                     (16…256 at 1:1, the 16 / 32 / 64 blown up 4x underneath)
 #
 # Points in the orb recipes assume the 1728x1117 built-in display (the harness header says so).
 set -euo pipefail
@@ -225,7 +227,7 @@ if want console; then
     SKIP_BUILD=1   # compiled once; every later scenario reuses the binary
     place "$TMP/console-$scenario.png" "$name" jpg
   }
-  console workers       console-workers
+  console threads       console-threads
   console conversation  console-conversation
   console jarhead       console-jarhead
   console ledger        console-ledger
@@ -315,14 +317,14 @@ fi
 
 # ------------------------------------------------------------------ audit
 # README.md against docs/media: a name the README uses must exist; a file here should be
-# named. banner.png (`pnpm build:banner`) and icon.png (`pnpm build:icon`) are not this
-# script's to make, so their absence is a warning, not a failure.
+# named. banner.png (`pnpm build:banner`) is not this script's to make, so its absence is
+# a warning, not a failure.
 echo "audit"
 missing=0
 for ref in $(grep -oE 'docs/media/[A-Za-z0-9._-]+' "$ROOT/README.md" | sort -u); do
   if [[ ! -f "$ROOT/$ref" ]]; then
     case "$(basename "$ref")" in
-      banner.png|icon.png) echo "  $ref is named by README.md and does not exist yet (another tool makes it)" ;;
+      banner.png) echo "  $ref is named by README.md and does not exist yet (another tool makes it)" ;;
       *) echo "  $ref is named by README.md and does not exist" >&2; missing=1 ;;
     esac
   fi

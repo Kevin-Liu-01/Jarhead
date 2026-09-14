@@ -86,7 +86,7 @@ the last word is here, on the worker queue, immediately before an op's first `CG
 - **`user_idle {}`** → `{keyMs, clickMs, scrollMs, moveMs, foreignMs}`: milliseconds since the
   session's last key press, click, scroll and pointer move, and `foreignMs` — since the last
   key/click/scroll this process did *not* post (Kevin's own input). `1e12` when the session has
-  never seen that kind of event. The screen lease polls it before a worker takes the pointer.
+  never seen that kind of event. The screen lease polls it before a thread's lane takes the pointer.
   Per process: a helper that never posts (the engine's `background` one) counts every event as
   foreign, the acting helper's own posts included — so the lease reads `user_idle` from the
   acting helper (`FocusLeaseOptions.userIdle`), never from the reader.

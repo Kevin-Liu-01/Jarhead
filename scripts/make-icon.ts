@@ -7,11 +7,11 @@ import { Strip, encodePng } from "./dither.ts";
 import { SIZES, checkIcon, renderIcon } from "./icon-render.ts";
 
 /**
- * Generate the Dock icon: build/Jarhead.icns, build/icon.png (a 1024 preview),
- * docs/media/icon.png (the README's 256) and the contact strip of the 16 … 256 renders
- * with the small ones blown up 4× beside them (apps/mac/Resources/preview-icon-sizes.png
- * and its README copy docs/media/icon-sizes.png), so the dither and the face can be
- * checked by eye — the mark is the orb wearing the blob's `^ ^`.
+ * Generate the Dock icon: build/Jarhead.icns, build/icon.png (a 1024 preview) and the
+ * contact strip of the 16 … 256 renders with the small ones blown up 4× beside them
+ * (apps/mac/Resources/preview-icon-sizes.png and its README copy docs/media/icon-sizes.png),
+ * so the dither and the face can be checked by eye — the mark is the orb wearing the
+ * blob's `^ ^`.
  *
  * Written as raw pixels rather than shipping a binary asset: an .icns needs
  * seven sizes, and a hand-drawn one would either be a blurry upscale or a file
@@ -46,9 +46,6 @@ for (const size of SIZES) {
 const icns = join(REPO_ROOT, "build", "Jarhead.icns");
 execFileSync("iconutil", ["-c", "icns", iconset, "-o", icns]);
 writeFileSync(join(REPO_ROOT, "build", "icon.png"), encodePng(1024, renders.get(1024) ?? renderRgba(1024)));
-// The README's icon: the 256 render, as the Dock shows it at 2× on a 128 pt tile.
-const mediaIcon = join(REPO_ROOT, "docs", "media", "icon.png");
-writeFileSync(mediaIcon, encodePng(256, renders.get(256) ?? renderRgba(256)));
 
 // The contact strip: 16 / 32 / 64 / 128 / 256 at 1:1 along the top, then the 16, 32
 // and 64 blown up 4× (nearest neighbour) underneath, so the grain in the small
@@ -83,6 +80,5 @@ writeFileSync(mediaStrip, stripPng);
 
 console.log(`  ${icns}`);
 console.log(`  ${join(REPO_ROOT, "build", "icon.png")}`);
-console.log(`  ${mediaIcon}`);
 console.log(`  ${stripPath}`);
 console.log(`  ${mediaStrip}`);
