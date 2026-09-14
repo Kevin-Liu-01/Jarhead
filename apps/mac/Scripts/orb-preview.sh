@@ -104,9 +104,10 @@
 #   Scripts/orb-preview.sh --notch-checks [name…]                                                     # every recipe below in turn (~3 min), logs under $OUT/notch-checks/<name>/,
 #                                                                                                     # then one summary of every check: line; exit 1 when any reads FAIL
 #   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY_AT=99 ORB_SHOT_DIR=… plus, per recipe:
-#     base       ORB_NOTCH_OPEN_TIMING=1 ORB_EXIT_AFTER=4.5                                            # island 420×184 zones / text limits / ink cache / a11y children / open timing / the foot's tooltip
-#     marks      ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_NOTCH_PRESS="forget:0@3.9"
-#     marks-clear … the same marks, ORB_NOTCH_PRESS="clear@3.9"                                         # → notch-{tucked,peek,island}-marks.png
+#     base       ORB_NOTCH_OPEN_TIMING=1 ORB_NOTCH_LINE_AT="…@3.7" ORB_EXIT_AFTER=4.5                     # island 420×184 zones / strip seams / text limits / ink cache / a11y children / open timing / the foot's
+#                                                                                                     # tooltip / a landing line's animated hero swap; every notch run ends with the ink-after-the-close line
+#     marks      ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_NOTCH_PRESS="forget:0@4.2"
+#     marks-clear … the same marks, ORB_NOTCH_PRESS="clear@4.2"                                         # → notch-{tucked,peek,island}-marks.png
 #     ask-*      ORB_NOTCH_PRESS="ask@3.3" with a pending mark / a window mark / no marks + ORB_NOTCH_STROKE_AT=3.5 /
 #                ORB_NOTCH_PHASE=asleep (± ORB_NOTCH_TYPED_WAKES=1 with a pending mark)                 # → notch-island-asleep.png
 #     window     ORB_NOTCH_PRESS="window@3.0;window@4.0" ORB_NOTCH_ACTIVE=3.5
@@ -131,7 +132,9 @@
 #     fleet      ORB_FLEET="…three…" ORB_EXIT_AFTER=4.5                                                # → fleet-notch-{peek,island}.png at 184 (three threads: the chip line)
 #     reduce-*   marks / question / circle again with ORB_REDUCE_MOTION=1                              # + the reduce-motion check line
 #     kind-*     ORB_NOTCH_KIND=plain|question|marks forces the display's kind, ORB_NOTCH_KIND_AT="kind@4.2" swaps it with the
-#                island open: the tooltip lines (the foot, the hero's question, the film caption) and the kind-change beats
+#                island open: the tooltip lines (the foot, the hero's question, the film caption) and the kind-change beats;
+#                kind-plain lands a line after the swap's window (the hero still animates), kind-marks → plain reads the
+#                Console box's tooltip beside `◎ 3`
 #
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's
@@ -176,9 +179,9 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
     grep -E "check:|notch sends:|overlay sends:" "$dir/run.log" | sed 's/^/  /'
   }
   ONLY=("$@")
-  recipe base 4.5 ORB_NOTCH_OPEN_TIMING=1
-  recipe marks 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="forget:0@3.9"
-  recipe marks-clear 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="clear@3.9"
+  recipe base 4.5 ORB_NOTCH_OPEN_TIMING=1 ORB_NOTCH_LINE_AT="a new line lands on the open island@3.7"
+  recipe marks 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="forget:0@4.2"   # after the five-marks beat (3.45 s + 0.15) with room for a late tick
+  recipe marks-clear 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="clear@4.2"
   recipe ask-pending 4.5 ORB_NOTCH_MARKS="pending:640x400@-40@Slack" ORB_NOTCH_PRESS="ask@3.3"
   recipe ask-window 4.5 ORB_NOTCH_MARKS="pending:640x400@-40@Slack;window:1280x800@-5@Safari" ORB_NOTCH_PRESS="ask@3.3"
   recipe ask-none 9 ORB_NOTCH_PRESS="ask@3.0" ORB_NOTCH_STROKE_AT=3.5
@@ -206,7 +209,7 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe reduce-marks 5 ORB_REDUCE_MOTION=1 ORB_NOTCH_MARKS="$MARKS"
   recipe reduce-question 4.5 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_SHOT_TAG=question
   recipe reduce-circle 11 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_CIRCLE_AT=3.2   # no counter: the peek's 322 proves the dots gone
-  recipe kind-plain 5.5 ORB_NOTCH_KIND=plain ORB_NOTCH_METER="252,138,738" ORB_NOTCH_KIND_AT="question@4.2" ORB_NOTCH_SHOT_TAG=kind-plain
+  recipe kind-plain 5.5 ORB_NOTCH_KIND=plain ORB_NOTCH_METER="252,138,738" ORB_NOTCH_KIND_AT="question@4.2" ORB_NOTCH_LINE_AT="a line after the kind swap@5.0" ORB_NOTCH_SHOT_TAG=kind-plain
   recipe kind-question 5.5 ORB_NOTCH_KIND=question ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION='Slack:Send "shipping Friday" to #general?' \
     ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-question
   recipe kind-marks 5.5 ORB_NOTCH_KIND=marks ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-marks

@@ -293,6 +293,9 @@ import SwiftUI
 //                          list of that kind whatever the content, for the tooltip lines and the shots
 //   ORB_NOTCH_KIND_AT="kind@t"   the forced kind changes at t with the island open: beats 1–4 are sampled for 0.5 s and
 //                          must dip within `Motion.quick` then rise while beats 0 and 5 hold (the kind-change line)
+//   ORB_NOTCH_LINE_AT="text@t"   a transcript line lands at t with the island open: 0.3 s later exactly one animated hero
+//                          swap (old = the hero before, new = the line) must have started at the landing — the hero-swap
+//                          line; after ORB_NOTCH_KIND_AT's window it proves the swap is not latched off by a kind change
 //   ORB_NOTCH_PILL_TEST=1  asleep: gate + toast + a landed mark + a problem, the slot read as each expires, then the island opened
 //   ORB_NOTCH_PHASE_SWEEP=t   every phase 0.2 s apart: Mute in the hit list in a session's phases only, Stop always
 //   ORB_NOTCH_OPEN_TIMING=1   the open spring from the pointer's approach: 0.5 by 60 ms, 0.9 by 130 ms, hit rects at 0 ms
@@ -1307,6 +1310,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                       "satellites \(self.fleet.previewSatelliteCount) leaving \(self.fleet.previewLeavingCount) pool \(self.fleet.previewPanelPoolCount) made \(self.fleet.previewPanelsMade) rung \(self.fleet.previewRung) link paused \(self.fleet.previewLinkPaused ? 1 : 0)")
             }
             if let self, self.notchMode {
+                self.inkAfterCloseCheck()
                 // The dock's safety count: nothing but Go (and a typed line under typedWakes) may open a session.
                 print(self.stamp, self.notchSends.line)
                 print(self.stamp, "overlay sends: mark.add \(self.notchSends.markAdd); other: \(self.notchSends.otherTypes.isEmpty ? "none" : self.notchSends.otherTypes.joined(separator: " ")); checks failed \(self.notchChecksFailed)")
@@ -2996,6 +3000,16 @@ extension OrbPreviewDelegate {
                 print("ORB_NOTCH_KIND_AT: could not parse \(spec); want kind@t")
             }
         }
+        // ORB_NOTCH_LINE_AT="text@t": a transcript line lands with the island open; 0.3 s later the hero must have swapped
+        // once, animated (old ≠ new, the new the line) — after a kind change's window too, not only before the first.
+        if let spec = env["ORB_NOTCH_LINE_AT"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, let t = Double(parts[1]) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.heroLineLands(parts[0]) }
+            } else {
+                print("ORB_NOTCH_LINE_AT: could not parse \(spec); want text@t")
+            }
+        }
         if let t = Double(env["ORB_NOTCH_CIRCLE_AT"] ?? "") {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPress("circle") }
             DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.4) { [weak self] in self?.notchStroke() }
@@ -3609,6 +3623,7 @@ extension OrbPreviewDelegate {
         for (i, a) in names.enumerated() { for b in names[(i + 1)...] { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
         // Every hit rect ≥ 20 pt on both sides, but for the inherited mini × (12×12) and the chip-line Stop (16×14).
         let hits = orb.previewNotchHitList
+        let content = orb.previewDockContent
         let small = hits.filter { $0.rect.width < 19.5 || $0.rect.height < 19.5 }.filter { !($0.name.hasPrefix("forget:") || $0.name.hasPrefix("threadStop:")) }
         check(island && anchorOK && displayOK && stripOK && footOK && overlaps.isEmpty && small.isEmpty,
               "island 420×184; anchor face 57,40 word y 60–76 go 14–36 y 123–145 stop 42–68 mute 74–100 y 122–146; head y 12–30 hero y 30–96 field x 114–290 y 122–146; strip clear 302–328 circle 328–354 window 354–380 ask 380–406 y 122–146; foot seam 153.5 console 354–380 sleep 380–406 y 156–180; hairline 183.5; no rect overlaps within a kind; every hit rect ≥ 20 pt (inherited mini × and chip Stop excepted)",
@@ -3622,6 +3637,11 @@ extension OrbPreviewDelegate {
         check(limits, "text limits head/hero/chips ≤ 406, field ≤ 290, footRight ≤ 342 (problem text ≤ remedy.minX − 8), films ≤ 382, tiles ≤ 406, minis ≤ 406",
               String(format: "head %.0f hero %.0f chips %.0f field %.0f footRight %.0f remedy.minX %.0f films %.0f tiles %.0f minis %.0f", r("head")?.maxX ?? -1, r("hero")?.maxX ?? -1,
                      r("chips")?.maxX ?? -1, r("field")?.maxX ?? -1, r("footRight")?.maxX ?? -1, remedyMin, filmsEnd, tilesEnd, minisEnd))
+
+        stripSeamCheck(hits: hits)
+        consoleTooltipCheck(hits: hits)
+        if content.problem != nil { problemRowCheck() }
+        if content.marks.contains(where: { $0.hasPixels }) { thumbPixelsCheck() }
 
         let n = NotchGeometry.current()?.notch.width ?? 185
         let bytes = orb.previewNotchInkBytes, cap = orb.previewNotchInkCapacityBytes
@@ -3652,7 +3672,6 @@ extension OrbPreviewDelegate {
         if notchOpenTiming { openTimingCheck() }
         if env["ORB_REDUCE_MOTION"] == "1" { reduceMotionCheck() }
 
-        let content = orb.previewDockContent
         if env["ORB_NOTCH_MARKS"] != nil, content.marks.count >= 3, content.question == nil { marksRowCheck(layout: rects) }
         if env["ORB_NOTCH_QUESTION"] != nil {
             let line = orb.previewNotchLineText
@@ -3674,10 +3693,19 @@ extension OrbPreviewDelegate {
                 && thumbs.count <= 2 && minisOK && hidden && tiles.isEmpty
             check(ok, "question waiting → kind question; head \"✋ Slack asks\" hittable thread:ID; hero = the question ≤ 2 lines; Allow 114–198 / Deny 206–290 y 82–110; minis ≤ 2 at x 340/376; Ask/Clear absent; tiles absent (dots on the peek)",
                   "kind \(kind); source \(source.map { "x\(Int($0.minX))–\(Int($0.maxX)) y\(Int($0.minY))–\(Int($0.maxY))" } ?? "none"); hero '\(line)' lines \(heroLines.count); allow \(allow.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none") deny \(deny.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"); minis \(minis.map { Int($0.minX) }); ask/clear hidden \(hidden ? 1 : 0); tiles \(tiles)")
+            // The count is the minis' and the `+n` slot's: no `◎ N` at the head's right end, and only the foot's `.console`.
+            let consoles = names.filter { $0.name == "console" }
+            let headRightW = r("headRight")?.width ?? -1
+            let headTip = orb.previewNotchTooltipAt(NSPoint(x: 396, y: 21))
+            check(kind == "question" && consoles.count == 1 && abs(headRightW) < 0.5 && !headTip.contains("circled"),
+                  "question kind → no `◎ N` in the head whatever the marks (headRight width 0, one .console rect: the foot box); the minis and `+n` carry the count",
+                  "kind \(kind) marks \(content.marks.count); console rects \(consoles.count) at \(consoles.map { "y\(Int($0.rect.minY))" }); headRight width \(Int(headRightW)); tooltip at (396,21) '\(headTip)'")
         }
         if env["ORB_NOTCH_METER"] != nil { meterCheck(env: env) }
         if let request = env["ORB_NOTCH_REQUEST"] {
             let working = orb.previewNotchLineText
+            let swapsBefore = orb.previewNotchHeroSwaps.count
+            let endedAt = CACurrentMediaTime()
             state.snapshot.delegations[0].status = .done
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self else { return }
@@ -3685,6 +3713,13 @@ extension OrbPreviewDelegate {
                 let last = self.state.snapshot.transcript.last?.text ?? ""
                 self.check(working == request && after == last, "hero shows the delegation request while working, last line otherwise",
                            "working '\(working)'; after the delegation ended '\(after)' (last line '\(last)')")
+                // The swap is compared once `workingSince` has landed (its own sink, after the content), so it fires at
+                // the flip — old ≠ new — not on the next counter tick with the new text leaving under itself.
+                let swaps = Array(self.orb.previewNotchHeroSwaps.dropFirst(swapsBefore))
+                let swap = swaps.last
+                let ok = swaps.count == 1 && swap.map { $0.from == request && $0.to == last && $0.from != $0.to && $0.at >= endedAt && $0.at - endedAt < 0.1 } == true
+                self.check(ok, "hero request → last line: one animated swap at the flip (old = the request, new = the last line, within 100 ms), never late or against itself",
+                           "swaps since the flip \(swaps.count): " + swaps.map { String(format: "'%@' → '%@' at +%.0f ms", $0.from, $0.to, ($0.at - endedAt) * 1000) }.joined(separator: "; "))
             }
         }
         if env["ORB_NOTCH_SCREEN_RECORDING"] == "0" {
@@ -3698,6 +3733,87 @@ extension OrbPreviewDelegate {
             if remedyResult != nil { screenRecordingCheck() }
             else if !(env["ORB_NOTCH_PRESS"] ?? "").contains("remedy") { screenRecordingCheck() }
         }
+    }
+
+    /// At exit — after the open and the close spring have each added their sizes: the cache still under its cap, the
+    /// prewarmed resting sizes (the island, the lip, the peek and its breath buckets) still held (pinned, never the
+    /// first evicted), and no settled frame drawn stretched since the run began.
+    func inkAfterCloseCheck() {
+        let n = NotchGeometry.current()?.notch.width ?? 185
+        let bytes = orb.previewNotchInkBytes, cap = orb.previewNotchInkCapacityBytes
+        let hasOpen = orb.previewNotchInkHas(width: NotchGeometry.islandWidth, height: NotchGeometry.islandHeight)
+        let hasLip = orb.previewNotchInkHas(width: n, height: NotchGeometry.lipHeight)
+        var breathMissing: [Int] = []
+        var extra: CGFloat = 0
+        while extra <= 30 {
+            if !orb.previewNotchInkHas(width: n + extra, height: NotchGeometry.peekHeight) { breathMissing.append(Int(extra)) }
+            extra += 2
+        }
+        let pinned = orb.previewNotchInkPinned(width: NotchGeometry.islandWidth, height: NotchGeometry.islandHeight) && orb.previewNotchInkPinned(width: n, height: NotchGeometry.peekHeight)
+        // A size with chips or the counter is not prewarmed and may draw one stretched frame while its render lands (by
+        // design); a prewarmed resting size may not — that is the cache having evicted it.
+        let stretched = orb.previewNotchStretchedFrames, resting = orb.previewNotchStretchedRestingFrames
+        check(bytes <= cap && hasOpen && hasLip && breathMissing.isEmpty && pinned && resting == 0,
+              "ink after the close: ≤ 32 MB; 420×184, the lip and the peek's breath buckets (+0…30) still held (prewarmed keys pinned); 0 stretched frames at a resting size for the run",
+              "\(bytes / 1024) KB of \(cap >> 20) MB; 420×184 \(hasOpen ? "yes" : "NO") lip \(hasLip ? "yes" : "NO") breath missing \(breathMissing) pinned \(pinned ? 1 : 0); stretched frames \(stretched) (at a resting size \(resting)); \(orb.previewNotchDrawReadout)")
+    }
+
+    /// The strip's seams (Clear|Circle|Window|Ask, Console|Sleep): the cells touch, so a point 1 pt right of a drawn
+    /// seam is the right-hand cell's and 1 pt left the left-hand's — a strip cell takes no slop across a seam.
+    /// Before, Clear's 2 pt slop reached into Circle: a click at x 329 cleared every mark.
+    private func stripSeamCheck(hits: [(name: String, rect: NSRect)]) {
+        var wrong: [String] = [], probed = 0
+        for (left, right) in [("clear", "circle"), ("circle", "window"), ("window", "ask"), ("console", "sleep")] {
+            guard let rr = hits.first(where: { $0.name == right })?.rect,
+                  let l = hits.filter({ $0.name == left }).first(where: { abs($0.rect.maxX - rr.minX) < 0.5 && abs($0.rect.minY - rr.minY) < 0.5 })?.rect else { continue }
+            probed += 1
+            let y = rr.midY
+            let hitRight = orb.previewNotchButtonAt(NSPoint(x: rr.minX + 1, y: y)), hitLeft = orb.previewNotchButtonAt(NSPoint(x: l.maxX - 1, y: y))
+            if hitRight != right { wrong.append("(\(Int(rr.minX + 1)),\(Int(y))) → '\(hitRight)' want \(right)") }
+            if hitLeft != left { wrong.append("(\(Int(l.maxX - 1)),\(Int(y))) → '\(hitLeft)' want \(left)") }
+        }
+        check(probed > 0 && wrong.isEmpty, "strip seams: 1 pt right of a shared seam hits the right-hand cell, 1 pt left the left-hand (no slop across a seam)",
+              "\(probed) seams probed" + (wrong.isEmpty ? "" : "; wrong \(wrong)"))
+    }
+
+    /// `.console` may sit in the list three times (`+n` film, `◎ N`, the box): the tooltip is the rect under the pointer's,
+    /// so the foot box says `Console (⌥⇧J)` however many others exist. Read whenever a duplicate is live.
+    private func consoleTooltipCheck(hits: [(name: String, rect: NSRect)]) {
+        let consoles = hits.filter { $0.name == "console" }
+        // The foot box is appended after the film and the head rect: the last of its name.
+        guard consoles.count > 1, let box = consoles.last?.rect else { return }
+        let tip = orb.previewNotchTooltipAt(NSPoint(x: box.midX, y: box.midY))
+        let want = orb.previewNotchTooltip("console")
+        check(tip == want && !want.isEmpty, "Console box tooltip is the Console help while `+n` or `◎ N` also carry .console (the rect under the pointer, not the first of its name)",
+              "\(consoles.count) console rects; box at (\(Int(box.midX)),\(Int(box.midY))) → '\(tip)' (want '\(want)')")
+    }
+
+    /// The problem row's clause draws only with ≥ 60 pt of room before the remedy; else it is omitted whole.
+    private func problemRowCheck() {
+        let row = orb.previewNotchProblemRow
+        let clause = row.components(separatedBy: "clause '").last?.components(separatedBy: "' room").first ?? "?"
+        let room = Double(row.components(separatedBy: " room ").last ?? "") ?? -1
+        let ok = !row.isEmpty && room >= 0 && (clause.isEmpty || clause.hasPrefix("+") || room >= 60)
+        check(ok, "problem row: the clause draws only with ≥ 60 pt of room before the remedy (else omitted with its · ; the foot tooltip keeps the whole text)", row)
+    }
+
+    /// Every decoded thumbnail fills the 84×60 film at 2× (168×120 px) without upscaling, unless its source is smaller
+    /// — the decode's longer side is 216 (2 × 84 × 16:9), not 170, so a wide crop still brings 120 px of height.
+    private func thumbPixelsCheck() {
+        let shown = Array(orb.previewDockContent.marks.reversed())
+        var wrong: [String] = [], decoded = 0
+        for entry in orb.previewNotchThumbPixels {
+            let parts = entry.split(separator: ":").map(String.init)
+            guard parts.count == 2, let i = Int(parts[0]), i < shown.count, parts[1] != "none" else { continue }
+            let wh = parts[1].split(separator: "x").compactMap { Double($0) }
+            guard wh.count == 2 else { wrong.append(entry); continue }
+            decoded += 1
+            // The harness writes each crop at a quarter of its points, at 2× (`writeMarkPNG`): the source's pixels.
+            let src = (w: max(24, shown[i].size.width / 4) * 2, h: max(16, shown[i].size.height / 4) * 2)
+            if wh[0] + 0.5 < min(168, src.w) || wh[1] + 0.5 < min(120, src.h) { wrong.append("\(entry) (source \(Int(src.w))×\(Int(src.h)))") }
+        }
+        check(decoded > 0 && wrong.isEmpty, "thumbnails decode ≥ 168×120 px (the 84×60 film at 2×, aspect-filled) unless the source is smaller — maxPixel 216, no upscaling into the film",
+              "decoded \(decoded) \(orb.previewNotchThumbPixels)" + (wrong.isEmpty ? "" : "; short \(wrong)"))
     }
 
     /// "island 420×184 | face x57–57 y40–40 | word x14–100 y60–76 | … | kind:plain" → rects keyed by name
@@ -3730,6 +3846,16 @@ extension OrbPreviewDelegate {
         let newestCaption = orb.previewDockContent.marks.last?.caption ?? ""
         let headTip = orb.previewNotchTooltipAt(NSPoint(x: 300, y: 21))
         let captionHeadOK = !newestCaption.isEmpty && headTip == newestCaption
+        // The head caption fits its 180 pt span by dropping trailing ` · ` parts, never cut mid-word: what is drawn is
+        // the full caption's figures (the kind word gone) cut at a ` · `, and the tooltip keeps the whole string.
+        let drawn = orb.previewNotchHeadCaption
+        let figures = newestCaption.components(separatedBy: " · ").dropFirst().joined(separator: " · ")
+        let drawnParts = drawn.components(separatedBy: " · "), figureParts = figures.components(separatedBy: " · ")
+        let prefixOK = !drawn.isEmpty && drawnParts.count <= figureParts.count && Array(figureParts.prefix(drawnParts.count)) == drawnParts
+        let headRightW = layout["headRight"]?.width ?? -1
+        let fitOK = prefixOK && headRightW > 0 && headRightW <= 180.5 && !drawn.contains("…") && drawnParts.count < figureParts.count
+        check(fitOK, "head caption fits 180 pt by dropping trailing · parts (element phrase, then age), never cut mid-word; the tooltip keeps the full caption",
+              "drawn '\(drawn)' (\(drawnParts.count) of \(figureParts.count) parts, headRight \(Int(headRightW)) pt); full '\(newestCaption)'")
         let content = orb.previewDockContent
         let shown = Array(content.marks.reversed())
         let capturing = shown.firstIndex { !$0.hasPixels }
@@ -3781,6 +3907,14 @@ extension OrbPreviewDelegate {
             let overflowOK = overflow.count == 3 && overflow.filter { !$0.hasPrefix("+") }.count == 2 && overflow.last == "+3" && plusOK
             let windowCaption = self.orb.previewDockContent.marks.first { $0.isWindow }?.caption ?? ""
             let captionOK = windowCaption.hasPrefix("Captured · Safari · 1280×800")
+            // Two `.console` rects live: the "+3" film says "3 more circled — Console", the foot box the Console help.
+            let plusTip = plusRect.map { self.orb.previewNotchTooltipAt(NSPoint(x: $0.midX, y: $0.midY)) } ?? ""
+            let boxRect = self.orb.previewNotchHitList.filter { $0.name == "console" }.last?.rect
+            let boxTip = boxRect.map { self.orb.previewNotchTooltipAt(NSPoint(x: $0.midX, y: $0.midY)) } ?? ""
+            let consoleHelp = self.orb.previewNotchTooltip("console")
+            self.check(plusTip == "3 more circled — Console" && boxTip == consoleHelp && boxRect.map { abs($0.minY - 156) < 0.5 } == true,
+                       "+3 film tooltip \"3 more circled — Console\"; the foot's Console box keeps the Console help (tooltip by the rect under the pointer)",
+                       "+3 → '\(plusTip)'; box at y\(boxRect.map { Int($0.minY) } ?? -1) → '\(boxTip)' (want '\(consoleHelp)')")
             self.fakeMarks = keep
             self.publishFakeMarks()
             let ok = slotsOK && overflowOK && framesOK && skeletonOK && heroOK && captionHeadOK && captionOK
@@ -3897,9 +4031,37 @@ extension OrbPreviewDelegate {
         }
     }
 
+    /// ORB_NOTCH_LINE_AT: the line lands (the snapshot's transcript), and the hero's swap is read 0.3 s on: exactly one
+    /// animated swap since, from the hero before to this line, at the landing — with the island open. Before, the key was
+    /// compared in `content.didSet` with the old `lastLine`, so the swap fired on the next counter tick with old = new;
+    /// and after any kind change on an open island (`canvasChangedAt` never reset) it never fired again.
+    private func heroLineLands(_ text: String) {
+        ensureIslandOpen()
+        let before = orb.previewNotchLineText
+        let swapsBefore = orb.previewNotchHeroSwaps.count
+        let landedAt = CACurrentMediaTime()
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        state.snapshot.transcript.append(TranscriptItem(id: "t_lands_\(Int(nowMs))", speaker: .jarhead, text: text, startMs: 0, endMs: 1000, at: nowMs, final: true))
+        print(stamp, "notch: a line lands with the island \(orb.previewNotchMode): '\(text)' (hero was '\(before)')")
+        fflush(stdout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            let swaps = Array(self.orb.previewNotchHeroSwaps.dropFirst(swapsBefore))
+            let swap = swaps.last
+            // What left is the lines as wrapped (the last may end in …): the hero before, or its head.
+            func left(_ from: String, is hero: String) -> Bool { from == hero || (from.hasSuffix("…") && hero.hasPrefix(String(from.dropLast()))) }
+            let ok = swaps.count == 1 && swap.map { left($0.from, is: before) && $0.to == text && $0.from != $0.to && $0.at >= landedAt && $0.at - landedAt < 0.1 } == true
+                && self.orb.previewNotchLineText == text
+            self.check(ok, "a line lands on the open island → one animated hero swap at the landing (old = the hero before, new = the line), also after a kind change's window",
+                       "hero now '\(self.orb.previewNotchLineText)'; swaps since \(swaps.count): " + swaps.map { String(format: "'%@' → '%@' at +%.0f ms", $0.from, $0.to, ($0.at - landedAt) * 1000) }.joined(separator: "; "))
+        }
+    }
+
     /// ORB_NOTCH_KIND_AT: beats 1–4 dip (a sample under 0.5 within `Motion.quick` + a frame) then are back at 1 by the
-    /// end of the window; beats 0 and 5 never leave 1 ± 0.02.
+    /// end of the window; beats 0 and 5 never leave 1 ± 0.02. Then, with the new kind laid out, the Console box's
+    /// tooltip when `◎ N` joined the hit list (marks kind → plain with marks).
     private func kindSwapCheck() {
+        consoleTooltipCheck(hits: orb.previewNotchHitList)
         let quick = Motion.quick + 0.04
         let display = [1, 2, 3, 4], held = [0, 5]
         let dipped = display.allSatisfy { i in kindSwapSamples.contains { $0.t <= quick && $0.alpha[i] >= 0 && $0.alpha[i] < 0.5 } }

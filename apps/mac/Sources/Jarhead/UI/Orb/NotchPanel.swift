@@ -862,6 +862,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                 workingChangedAt = window == nil ? -1 : CACurrentMediaTime()
                 relayoutChips()
                 setMode(mode, animated: true)
+                // The request is the hero only while working: the flip is a hero change,
+                // compared now (it arrives by its own sink, after the content).
+                noteCanvasChanges()
             } else if workingSince != oldValue {
                 needsDisplay = true
             }
@@ -908,9 +911,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var meterFillTo: CGFloat = 0
     private var meterFillAt = -1.0
 
-    /// After any content change: the kind, the hero and the meter's target are compared with
-    /// the last frame's, and each that moved starts its own window. Only with the island's
-    /// content shown (a change while folded snaps: the content arrives whole with the open).
+    /// A kind or hero change's whole window: the leave over `quick`, the arrival over
+    /// `base`, the last display beat's stagger. `isAnimating` keeps the link alive for
+    /// it; a hero change inside a kind swap's window rides the swap (no second motion).
+    private var swapWindow: Double { seconds(Motion.quick) + seconds(Motion.base) + Double(Self.contentElements) * Motion.stagger }
+
+    /// After any change to what the display shows — `content`, the last line, the working
+    /// state (each has its own setter; the hero reads all three): the kind, the hero and
+    /// the meter's target are compared with the last frame's, and each that moved starts
+    /// its own window. Only with the island's content shown (a change while folded snaps:
+    /// the content arrives whole with the open).
     private func noteCanvasChanges() {
         let now = CACurrentMediaTime()
         let live = contentShown && window != nil
@@ -925,9 +935,15 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         hasher.combine(kind.rawValue); hasher.combine(choice.text)
         let key = hasher.finalize()
         if key != heroKey {
-            if live, let cached = heroLinesCache, !cached.lines.isEmpty, canvasChangedAt < 0 {
+            // The window, not the sign: `canvasChangedAt` is never reset, so `< 0` would
+            // latch the hero to a snap after the first kind change on an open island.
+            let kindSwapping = canvasChangedAt >= 0 && now - canvasChangedAt < swapWindow
+            if live, let cached = heroLinesCache, !cached.lines.isEmpty, !kindSwapping {
                 heroPrevious = (cached.lines, cached.attrs)
                 heroChangedAt = now
+                #if JARHEAD_ORB_PREVIEW
+                Self.previewHeroSwaps.append((cached.lines.map { $0 as String }.joined(separator: " "), choice.text, now))
+                #endif
             } else {
                 heroPrevious = nil
                 heroChangedAt = -1
@@ -1467,7 +1483,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         if flashPress != nil, now - flashAt < base { return true }
         if workingChangedAt >= 0, now - workingChangedAt < base { return true }
         // A kind or hero change mid-open, the meter's fill on its way.
-        let swap = seconds(Motion.quick) + base + Double(Self.contentElements) * Motion.stagger
+        let swap = swapWindow
         if canvasChangedAt >= 0, now - canvasChangedAt < swap { return true }
         if heroChangedAt >= 0, now - heroChangedAt < swap { return true }
         if meterFillAt >= 0, now - meterFillAt < base { return true }
@@ -1762,23 +1778,38 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     }
 
     /// The head's right span: the film caption while films show (≤ 180), else `◎ N` while
-    /// any mark exists (≥ 30, the glyph and the figure), else nothing.
+    /// any mark exists in the plain kind (≥ 30, the glyph and the figure), else nothing.
+    /// The question kind has no `◎ N`: the minis and the `+n` slot carry the count, and
+    /// the question is the one dominant element.
     private func headRightWidth(kind: CanvasKind) -> CGFloat {
         if kind == .marks {
             guard let caption = headCaption() else { return 0 }
-            return min(180, Self.textWidth(caption as NSString, Self.headDimAttrs) + 4)
+            return min(Self.headCaptionMaxWidth, Self.textWidth(caption as NSString, Self.headDimAttrs) + 4)
         }
-        guard !content.marks.isEmpty else { return 0 }
+        guard kind == .plain, !content.marks.isEmpty else { return 0 }
         return max(30, 10 + 4 + Self.textWidth("\(content.marks.count)" as NSString, Self.workAttrs) + 2)
     }
 
+    /// The head caption's span, the figures and their 4 pt of air.
+    static let headCaptionMaxWidth: CGFloat = 180
+
     /// The caption in the head while films show: the hovered film's, else the newest's —
-    /// its figures (`640×400 · 14:03 · pending · …`) without the leading kind word, which
-    /// the film itself says; the full caption is the film's tooltip.
+    /// its figures (`640×400 · 14:03 · pending`) without the leading kind word, which the
+    /// film itself says, fitted to the span by dropping trailing ` · ` parts (the element
+    /// phrase first, then the age) — never cut mid-word; the full caption is the tooltip.
     private func headCaption() -> String? {
         guard let caption = headCaptionFull() else { return nil }
-        if let r = caption.range(of: " · "), caption[..<r.lowerBound].allSatisfy({ $0.isLetter }) { return String(caption[r.upperBound...]) }
-        return caption
+        var figures = caption
+        if let r = caption.range(of: " · "), caption[..<r.lowerBound].allSatisfy({ $0.isLetter }) { figures = String(caption[r.upperBound...]) }
+        return Self.fitCaption(figures, width: Self.headCaptionMaxWidth - 4, attrs: Self.headDimAttrs)
+    }
+
+    /// `parts` joined by ` · `, the trailing parts dropped one by one until the text is
+    /// no wider than `width`; the first part stays whatever its width.
+    static func fitCaption(_ caption: String, width: CGFloat, attrs: [NSAttributedString.Key: Any]) -> String {
+        var parts = caption.components(separatedBy: " · ")
+        while parts.count > 1, textWidth(parts.joined(separator: " · ") as NSString, attrs) > width { parts.removeLast() }
+        return parts.joined(separator: " · ")
     }
 
     /// The same film's whole caption — the head caption's tooltip.
@@ -2037,7 +2068,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
         // The head row and the remedy draw 18 tall; their hit rects take a point more each way, so every press is ≥ 20 pt.
         if z.kind == .question, let q = content.question { out.append((.thread(q.threadId), z.headLeft.insetBy(dx: 0, dy: -1))) }
-        if z.kind != .marks, !content.marks.isEmpty, z.headRight.width > 0 { out.append((.console, z.headRight.insetBy(dx: 0, dy: -1))) }
+        // `◎ N` is the plain kind's: the question kind counts its marks in the minis and the `+n` slot.
+        if z.kind == .plain, !content.marks.isEmpty, z.headRight.width > 0 { out.append((.console, z.headRight.insetBy(dx: 0, dy: -1))) }
         out.append((.console, z.console))
         if awake { out.append((.sleep, z.sleep)) }
         if let r = z.remedy { out.append((.remedy, r.insetBy(dx: 0, dy: -1))) }
@@ -2276,7 +2308,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
            let gradient = NotchInk.gradient(size: island.size, notchWidth: g.notch.width, scale: scale) {
             #if JARHEAD_ORB_PREVIEW
             // Only a resting island counts: the spring's way through the sizes stretches the nearest neighbour by design.
-            if !gradient.exact, springsSettled { Self.previewStretchedFrames += 1 }
+            // A resting size the dock prewarmed (pinned) drawn stretched is the cache having lost it — never by design.
+            if !gradient.exact, springsSettled {
+                Self.previewStretchedFrames += 1
+                if NotchInk.Cache.shared.isPinned(size: island.size, notchWidth: g.notch.width, scale: scale) { Self.previewStretchedRestingFrames += 1 }
+            }
             #endif
             cg.saveGState()
             cg.clip(to: island)
@@ -2973,24 +3009,42 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             img.draw(in: NSRect(x: glyphCentre.x - img.size.width / 2, y: glyphCentre.y - img.size.height / 2, width: img.size.width, height: img.size.height),
                      from: .zero, operation: .sourceOver, fraction: base, respectFlipped: true, hints: nil)
         }
-        let end = (z.remedy?.minX ?? z.footRight.maxX) - 8
-        let parts = Self.problemParts(p.text)
-        var x = z.foot.minX + 18
+        let row = problemRowText(p, z)
         let y = z.foot.minY + 6 + a.dy
-        let noun = parts.noun as NSString
-        let nounW = min(Self.textWidth(noun, Self.problemNounAttrs) + 1, max(0, end - x))
-        Self.drawShadowed(noun, in: NSRect(x: x, y: y, width: nounW, height: 16), Self.problemNounAttrs, shadow: Self.lineShadow)
-        x += nounW + 6
-        var clause = parts.clause.isEmpty ? "" : "· " + parts.clause
-        if p.more > 0 { clause += clause.isEmpty ? "+\(p.more)" : " · +\(p.more)" }
-        if !clause.isEmpty, end - x > 20 {
-            Self.drawShadowed(clause as NSString, in: NSRect(x: x, y: y, width: end - x, height: 16), Self.problemClauseAttrs, shadow: Self.lineShadow)
+        Self.drawShadowed(row.noun as NSString, in: NSRect(x: row.nounX, y: y, width: row.nounWidth, height: 16), Self.problemNounAttrs, shadow: Self.lineShadow)
+        if !row.clause.isEmpty {
+            Self.drawShadowed(row.clause as NSString, in: NSRect(x: row.clauseX, y: y, width: row.room, height: 16), Self.problemClauseAttrs, shadow: Self.lineShadow)
         }
         cg.restoreGState()
         if let r = z.remedy, let label = p.remedyLabel {
             drawBox(cg, which: .remedy, rect: r.offsetBy(dx: 0, dy: a.dy), symbol: nil, word: remedyWord(label), enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
         }
     }
+
+    /// The problem row's words and where they go: the noun from x 18, the clause (`· …`,
+    /// then ` · +n` when more wait) 6 pt after it — drawn only when 60 pt or more of the
+    /// room before the remedy is left for it, so a three-letter fragment (`· cir…`) never
+    /// stands beside the remedy; with less room only `+n` shows, and the foot tooltip
+    /// carries the whole text. `previewProblemRow` reads the same numbers.
+    private func problemRowText(_ p: DockContent.ProblemRow, _ z: Zones) -> (noun: String, nounX: CGFloat, nounWidth: CGFloat, clause: String, clauseX: CGFloat, room: CGFloat) {
+        let end = (z.remedy?.minX ?? z.footRight.maxX) - 8
+        let parts = Self.problemParts(p.text)
+        let nounX = z.foot.minX + 18
+        let nounWidth = min(Self.textWidth(parts.noun as NSString, Self.problemNounAttrs) + 1, max(0, end - nounX))
+        let clauseX = nounX + nounWidth + 6
+        let room = max(0, end - clauseX)
+        let more = p.more > 0 ? "+\(p.more)" : ""
+        var clause = ""
+        if !parts.clause.isEmpty, room >= Self.problemClauseMinRoom {
+            clause = "· " + parts.clause + (more.isEmpty ? "" : " · " + more)
+        } else if !more.isEmpty, room > 20 {
+            clause = more
+        }
+        return (parts.noun, nounX, nounWidth, clause, clauseX, room)
+    }
+
+    /// The least room the problem row's clause takes (points); under it the clause is omitted.
+    static let problemClauseMinRoom: CGFloat = 60
 
     /// "Screen Recording not granted: circles arrive without pixels" → the noun and the clause.
     static func problemParts(_ text: String) -> (noun: String, clause: String) {
@@ -3266,8 +3320,18 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
     }
 
-    /// The last transcript line, set by the dock from the content (mono, one line).
-    var lastLine = "" { didSet { if lastLine != oldValue { needsDisplay = true } } }
+    /// The last transcript line, set by the dock from the content (mono, one line). It is
+    /// a hero input, so the hero's key is compared here — after `content` has landed
+    /// (`NotchDock.setContent` sets the content first): compared in `content.didSet`
+    /// alone the key would still see the old line, and the swap would fire late, on the
+    /// next counter tick, with the new text leaving under itself.
+    var lastLine = "" {
+        didSet {
+            guard lastLine != oldValue else { return }
+            noteCanvasChanges()
+            needsDisplay = true
+        }
+    }
 
     // MARK: the pill slot's drawing
 
@@ -3382,7 +3446,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// `.console` appears up to three times in one hit list; the tooltip tells them apart by the rect.
     private func consoleHelp(rect: NSRect, zones z: Zones) -> String {
         let c = content
-        if z.kind != .marks, rect == z.headRight.insetBy(dx: 0, dy: -1) { return "\(c.marks.count) circled · \(c.pendingMarks) pending — Console" }
+        if z.kind == .plain, rect == z.headRight.insetBy(dx: 0, dy: -1) { return "\(c.marks.count) circled · \(c.pendingMarks) pending — Console" }
         if z.kind == .marks, let over = filmSlots(z).overflow, rect == over.rect { return "\(over.count) more circled — Console" }
         return helpText(for: .console)
     }
@@ -3396,7 +3460,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             return ""
         }
         let z = zones(in: islandOpenRect)
-        if let (which, rect) = buttonRects(in: islandOpenRect).first(where: { $0.0 == button(at: p) }) {
+        // The rect under the pointer, not the first of its name: `.console` has three.
+        if let (which, rect) = buttonHit(at: p) {
             return which == .console ? consoleHelp(rect: rect, zones: z) : helpText(for: which)
         }
         for (rect, text) in chipRects where rect.insetBy(dx: -2, dy: -2).contains(p) { return text }
@@ -3495,20 +3560,28 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// open (the layout is fixed; the ink reveals it, and `hitTest` keeps clicks to the
     /// ink). The circle gets a point more slop than the boxes: it is the one most
     /// reached for; the Say box and a chip on the chip line take none (they touch their
-    /// neighbours); a tile and the source row take the boxes' 2.
-    private func button(at p: NSPoint) -> Press? {
+    /// neighbours); a tile and the source row take the boxes' 2. A strip cell (Clear ·
+    /// Circle · Window · Ask, Console · Sleep) shares a seam with its neighbour, so it
+    /// takes slop only above and below: the drawn seam is the hit seam, and the first
+    /// point of the right-hand cell is never the left-hand control's.
+    private func button(at p: NSPoint) -> Press? { buttonHit(at: p)?.0 }
+
+    /// The control under `p` and the rect that caught it — `.console` appears up to
+    /// three times in one list, and the tooltip needs the one under the pointer.
+    private func buttonHit(at p: NSPoint) -> (Press, NSRect)? {
         guard mode == .island, parked else { return nil }
         let chipLine = content.threads.count >= 3 && currentKind == .plain
         return buttonRects(in: islandOpenRect).first { which, rect in
-            let slop: CGFloat
+            let slop: (dx: CGFloat, dy: CGFloat)
             switch which {
-            case .pause: slop = 3
-            case .field: slop = 0
-            case .thread: slop = chipLine ? 0 : 2
-            default: slop = 2
+            case .pause: slop = (3, 3)
+            case .field: slop = (0, 0)
+            case .thread: slop = chipLine ? (0, 0) : (2, 2)
+            case .clear, .circle, .window, .ask, .console, .sleep: slop = (0, 2)
+            default: slop = (2, 2)
             }
-            return rect.insetBy(dx: -slop, dy: -slop).contains(p)
-        }?.0
+            return rect.insetBy(dx: -slop.dx, dy: -slop.dy).contains(p)
+        }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -3584,6 +3657,8 @@ extension NotchView {
 
     /// Frames the gradient was drawn stretched (a size not yet rendered), since launch.
     nonisolated(unsafe) static var previewStretchedFrames = 0
+    /// Of those, the frames at a prewarmed (pinned) resting size — the island, the lip, the peek and its breath buckets.
+    nonisolated(unsafe) static var previewStretchedRestingFrames = 0
     /// Draw timing since launch: frames, total and worst seconds (the harness's frame budget check).
     nonisolated(unsafe) static var previewDrawFrames = 0
     nonisolated(unsafe) static var previewDrawTotal = 0.0
@@ -3618,7 +3693,7 @@ extension NotchView {
         }
         let face = String(format: "face x%.0f–%.0f y%.0f–%.0f", z.face.x - island.minX, z.face.x - island.minX, z.face.y - island.minY, z.face.y - island.minY)
         let heroUsed = NSRect(x: z.hero.minX, y: z.hero.minY, width: z.hero.width, height: CGFloat(z.heroLines) * Self.heroPitch)
-        var parts = [face, r("word", z.word), r("go", z.go), r("stop", z.stop), r("mute", z.mute), r("head", z.head), r("trace", z.trace), r("hero", z.hero),
+        var parts = [face, r("word", z.word), r("go", z.go), r("stop", z.stop), r("mute", z.mute), r("head", z.head), r("headRight", z.headRight), r("trace", z.trace), r("hero", z.hero),
                      r("heroUsed", heroUsed), r("tile0", z.tile0), r("tile1", z.tile1), r("chips", z.chips), r("allow", z.allow), r("deny", z.deny)]
         for (i, m) in z.mini.enumerated() { parts.append(r("mini\(i)", m)) }
         for (i, f) in z.film.enumerated() { parts.append(r("film\(i)", f)) }
@@ -3737,6 +3812,27 @@ extension NotchView {
         let island = islandOpenRect
         return tooltip(at: NSPoint(x: island.minX + p.x, y: island.minY + p.y))
     }
+    /// The control a press at a point (x/y from the island's top-left) would reach, by name; "" for none.
+    func previewButton(atIsland p: NSPoint) -> String {
+        let island = islandOpenRect
+        return button(at: NSPoint(x: island.minX + p.x, y: island.minY + p.y)).map { Self.previewName(of: $0) } ?? ""
+    }
+    /// The head caption as drawn this frame (fitted to its span), "" outside the marks kind.
+    var previewHeadCaption: String { currentKind == .marks ? (headCaption() ?? "") : "" }
+    /// The problem row as drawn: the noun, the clause (or "" when omitted) and the room left for it before the remedy.
+    var previewProblemRow: String {
+        guard let p = content.problem else { return "" }
+        let row = problemRowText(p, zones(in: islandOpenRect))
+        return String(format: "noun '%@' clause '%@' room %.0f", row.noun, row.clause, row.room)
+    }
+    /// Each mark's decoded thumbnail in pixels, newest first: "index:WxH" ("index:none" for a skeleton).
+    var previewThumbPixels: [String] {
+        Array(content.marks.reversed()).enumerated().map { i, m in
+            m.thumbnail.map { "\(i):\($0.width)x\($0.height)" } ?? "\(i):none"
+        }
+    }
+    /// Every animated hero swap so far: the lines that left, the text that arrived, when (CACurrentMediaTime).
+    nonisolated(unsafe) static var previewHeroSwaps: [(from: String, to: String, at: Double)] = []
     func previewTooltip(_ name: String) -> String { Press(previewName: name).map { helpText(for: $0) } ?? "" }
 
     static func previewName(of p: Press) -> String {

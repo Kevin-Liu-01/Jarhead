@@ -19,9 +19,9 @@ import AppKit
 // the notch, a short rim at the outer corners — so the island reads as the orb's
 // colour pooling out of the black. Rendered once per (size, scale) into a CGImage and
 // cached (an LRU capped at 32 MB by bytes — the 420×184 island at 2× is ≈ 1.24 MB, so
-// about 25 fit; the open and peek sizes are prewarmed, and the peek never grows past
-// `NotchGeometry.peekWidthCap`); the mode's intensity is the alpha it is drawn with, so
-// a static island allocates nothing per frame.
+// about 25 fit; the open and peek sizes are prewarmed and pinned (evicted last), and the
+// peek never grows past `NotchGeometry.peekWidthCap`); the mode's intensity is the alpha
+// it is drawn with, so a static island allocates nothing per frame.
 //
 // Nothing here blocks a frame: the tile and every image are rendered on
 // `Dither.renderQueue` (a few ms optimised, hundreds of ms in a -Onone build — `swift
@@ -240,8 +240,13 @@ enum NotchInk {
         /// 32 MB holds about 25 open-island images (420×184 at 2× is ≈ 1.24 MB); one
         /// open+close spring is ~25 distinct sizes and the peek's breath up to 16 more,
         /// most of them a fraction of that — stretched neighbours mid-spring are the
-        /// design; the resting sizes are prewarmed and exact.
+        /// design. The resting sizes are prewarmed and exact, and stay so: `prewarm`'s
+        /// keys are pinned — the LRU evicts them last, only once every spring size is
+        /// gone — so a close never costs the peek its breath buckets (their last hit was
+        /// before the pointer arrived, which would make them the first to go).
         let capacityBytes = 32 << 20
+        /// The keys `prewarm` asked for: the resting sizes, evicted only when nothing else is left.
+        private var pinned: Set<Key> = []
         /// Sizes the spring has left behind are the least useful to render.
         private let pendingCap = 8
 
@@ -279,10 +284,16 @@ enum NotchInk {
             for size in sizes {
                 guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { continue }
                 let k = NotchInk.key(size: size, notchWidth: notchWidth, scale: scale)
+                pinned.insert(k)
                 if images[k] != nil || warm.contains(k) || pending.contains(k) { continue }
                 warm.append(k)
             }
             pump()
+        }
+
+        /// Whether a size is one `prewarm` pinned (the harness reads it).
+        func isPinned(size: CGSize, notchWidth: CGFloat, scale: CGFloat) -> Bool {
+            pinned.contains(NotchInk.key(size: size, notchWidth: notchWidth, scale: scale))
         }
 
         private func request(_ key: Key) {
@@ -319,22 +330,25 @@ enum NotchInk {
             pump()
         }
 
-        /// Drop the least recently used images until the total fits; the one just landed stays.
+        /// Drop the least recently used images until the total fits; the one just landed
+        /// stays, and the pinned (prewarmed) sizes go only once every other is gone.
         private func evict(keeping fresh: Key) {
             var total = renderedBytes
-            var i = 0
-            while total > capacityBytes, i < order.count {
-                let k = order[i]
-                if k == fresh { i += 1; continue }
-                order.remove(at: i)
-                total -= bytes[k] ?? 0
-                images[k] = nil
-                bytes[k] = nil
+            for pass in 0..<2 where total > capacityBytes {
+                var i = 0
+                while total > capacityBytes, i < order.count {
+                    let k = order[i]
+                    if k == fresh || (pass == 0 && pinned.contains(k)) { i += 1; continue }
+                    order.remove(at: i)
+                    total -= bytes[k] ?? 0
+                    images[k] = nil
+                    bytes[k] = nil
+                }
             }
         }
     }
 
-    /// Pure Swift over an RGBX buffer: 360×132 pt at 2× is 190k pixels, a few ms
+    /// Pure Swift over an RGBX buffer: 420×184 pt at 2× is 309k pixels, a few ms
     /// optimised. Pure and thread-agnostic: it reads only the constants and the tile.
     /// The base is `Dither`'s banded diagonal ramp (its LUT, its tile, its quantiser);
     /// the notch's own shading — the highlight, the black into the notch, the vignette —

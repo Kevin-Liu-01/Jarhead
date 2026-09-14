@@ -3021,26 +3021,30 @@ working · 0:03"). Reduce Motion → fades. The main blob's untagged path is unc
 
 The dock — Kevin's word for the notch home: the blob tucked in the MacBook notch and the
 island that drops out of it, never the macOS Dock — is a control surface. The island is
-360×132 (`NotchGeometry.islandHeight`; `drop` 176, the panel 400×209), fixed rows, nothing
-reflows as chips come and go; AppKit and CoreGraphics only; one ink shape, its cache capped
-at 32 MB by bytes and prewarmed for the open and peek sizes. One value in
+420×184 (`NotchGeometry.islandWidth / islandHeight`; `drop` 228, the panel 460×261), four
+bands — anchor, display, control row, foot — never stacked rows; the display is composed
+per kind (`canvasKind`: question > marks > plain) and nothing else reflows as chips come
+and go; AppKit and CoreGraphics only; one ink shape, its cache capped at 32 MB by bytes,
+prewarmed for the open and peek sizes and those keys pinned (evicted last). One value in
 (`DockContent`: awake, in session, typedWakes, the request, the last line, the gate's words,
 marks, the question, the thread rows, the problem, the meter, marking, screen recording),
 action closures out (`NotchDock.circle / window / ask / clear / allow / deny / forgetMark /
 openMark / openThread / stopThread / console / sleep / remedy / say`).
 
-| Row | y | Content, in priority order |
+| Band | Zone (x, y, w, h) | Content |
 |---|---|---|
-| S1 head | 8–30 | phase word · `Working · m:ss` while a delegation runs |
-| S2 line | 34–54 | the Say field while it has key · `✋ <name> asks · <question>` · the running delegation's request · the last line · asleep: the gate's words · `—` |
-| S3 context | 58–86 | `[◎ Circle] [▭ Window]`, then ≤ 3 thumbnails 30×22 at x 174/210/246 (> 3: the two newest and `+n`); no marks → `Circle something · ⌥⇧C`; Screen Recording missing → `Captures need Screen Recording`, Circle/Window at 0.45 |
-| S4 threads | 90–104 | one chip per live thread, `Name · word · m:ss` with its own Stop; the asking thread leads and has no Stop |
-| S5 foot | 108–124 | in session `2.3 min · $0.12 · today 12.3 min` · paused `2.3 min · $0.12 · sleeps in 4 min` dimmed · asleep `today 12.3 min · $0.62` or `No session. Nothing billed.` |
-| R1 | 7–31 | Stop · Mute (in a session's phases only) |
-| R2 | 60–84 | Ask `?` · Clear `⌫` (while marks exist) — or, while a question waits, `[ Allow ] [ Deny ]` at x 252–296 / 302–346, clicks only: Return never answers |
-| R3 | 102–126 | Console · Sleep (awake only) |
+| anchor x 14–100 | face centre (57, 40) · word (14, 60, 86, 16) | the face, the phase word; fixed in every kind |
+| | go (14, 123, 22, 22) · stop (42, 122, 26, 24) · mute (74, 122, 26, 24) | Go is the transport ring in the phase colour; Mute in a session's phases only |
+| display x 114–406 | head (114, 12, 292, 18) | mono 11: the level trace · `Working · m:ss` · `✋ <name> asks` (→ the thread); right end: the film caption (marks kind, ≤ 180 pt, trailing ` · ` parts dropped to fit) or `◎ N` (plain kind with marks → Console) |
+| | hero (114, 30, 292, 66) | the one 18 pt line, up to three on a 22 pt pitch: the question · the running request · the last line · asleep, the gate's words; 3 lines plain, 2 with tiles or a question, 1 with films |
+| | middle by kind | plain: tiles (114/266, 80, 140, 32) for 1–2 threads or the chip line (114, 86, 292, 20) for 3+ · question: Allow (114, 82, 84, 28) · Deny (206, 82, 84, 28) and minis at x 340/376 · marks: three 84×60 films at x 114/206/298, y 56 (the newest first, `+n` → Console) |
+| control row y 122–146 | field (114, 122, 176, 24) | the Say box; ⌥⇧Return takes key |
+| | clear \| circle \| window \| ask (302 / 328 / 354 / 380, 122, 26, 24) | one strip, cells share seams (no hit slop across a seam); Clear while marks exist; Clear and Ask absent in the question kind |
+| foot y 154–184 | footLeft (14, 160, 40, 16) · bar (60, 165, 88, 6) · footRight (156, 160, 186, 16) | the meter: `m:ss` · the dithered bar · `2.3 min · $0.12 · today 12.3 min` (paused dimmed with `sleeps in N min`; asleep `today 12.3 min · $0.62` or `No session. Nothing billed.`) |
+| | problem row in the meter's place | glyph · noun · clause (only with ≥ 60 pt of room, else omitted) · the remedy box right-aligned to 342 |
+| | console \| sleep (354 / 380, 156, 26, 24) | one pair, one seam; Sleep awake only |
 
-Text ends at 276 on S1/S4/S5 and at 346 on S2; the right column sits at x 288–314 / 320–346.
+Text ends at 406 in the display and at 342 in the foot; the hairline sits at y 183.5.
 The peek carries glance chips right of the dots — question `✋ <name> asks`, marks `◎N`,
 the problem's glyph, the meter `2.3 min` — at most four, in that order, and never past 360 pt
 (the meter drops first, then the problem). Marking replaces them with `◎ Circle something ·

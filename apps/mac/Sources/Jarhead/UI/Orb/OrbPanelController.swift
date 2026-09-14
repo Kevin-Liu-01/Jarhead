@@ -181,8 +181,12 @@ public final class OrbPanelController {
     /// fleet's dots — built whole from the snapshot, the thread store, the mark state
     /// and the gate (`buildDockContent`); kept for a dock built later.
     private var dockContent = DockContent.empty
-    /// Decoded thumbnails by mark id (`Thumbnails.shared`, 2× the 84×60 film), dropped with their marks.
+    /// Decoded thumbnails by mark id (`Thumbnails.shared`, at `thumbMaxPixel`), dropped with their marks.
     private var markThumbs: [String: CGImage] = [:]
+    /// The thumbnail decode's longer side: the film is 84×60 pt drawn aspect-filled at 2×
+    /// (168×120 px), so a wide crop must still bring 120 px of height — 2 × 84 × 16:9 =
+    /// 216 keeps a 16:9 crop at 216×121 and a 16:10 one at 216×135, never upscaled into the film.
+    static let thumbMaxPixel = 216
     private var markThumbsRequested: Set<String> = []
     /// A thumbnail landed: the content is rebuilt.
     private let thumbsChanged = CurrentValueSubject<Int, Never>(0)
@@ -1092,9 +1096,9 @@ public final class OrbPanelController {
         requestThumbnails(for: marks)
     }
 
-    /// Decode each mark's crop once its path appears, off the main thread, at twice the
-    /// 84×60 film (the minis downsample from the same decode); drop what the snapshot no
-    /// longer lists.
+    /// Decode each mark's crop once its path appears, off the main thread, sized for the
+    /// aspect-filled 84×60 film at 2× (the minis downsample from the same decode); drop
+    /// what the snapshot no longer lists.
     private func requestThumbnails(for marks: [ScreenMark]) {
         let ids = Set(marks.map(\.id))
         markThumbs = markThumbs.filter { ids.contains($0.key) }
@@ -1103,7 +1107,7 @@ public final class OrbPanelController {
             guard let path = m.screenshotPath, !path.isEmpty else { continue }
             markThumbsRequested.insert(m.id)
             let id = m.id
-            Thumbnails.shared.thumbnail(for: state.screenshotURL(path), maxPixel: 170) { [weak self] img in
+            Thumbnails.shared.thumbnail(for: state.screenshotURL(path), maxPixel: Self.thumbMaxPixel) { [weak self] img in
                 guard let self, let img, self.markThumbsRequested.contains(id) else { return }
                 self.markThumbs[id] = img
                 self.thumbsChanged.send(self.thumbsChanged.value + 1)
@@ -2778,6 +2782,12 @@ extension OrbPanelController {
     public var previewNotchFieldPlaceholder: String { notch?.view.previewFieldPlaceholder ?? "" }
     public var previewNotchFieldPlaceholderWidth: CGFloat { notch?.view.previewFieldPlaceholderWidth ?? 0 }
     public func previewNotchTooltipAt(_ p: NSPoint) -> String { notch?.view.previewTooltip(atIsland: p) ?? "" }
+    public func previewNotchButtonAt(_ p: NSPoint) -> String { notch?.view.previewButton(atIsland: p) ?? "" }
+    public var previewNotchHeadCaption: String { notch?.view.previewHeadCaption ?? "" }
+    public var previewNotchProblemRow: String { notch?.view.previewProblemRow ?? "" }
+    public var previewNotchThumbPixels: [String] { notch?.view.previewThumbPixels ?? [] }
+    /// The animated hero swaps so far (`NotchView.previewHeroSwaps`): what left, what arrived, when.
+    public var previewNotchHeroSwaps: [(from: String, to: String, at: Double)] { NotchView.previewHeroSwaps }
     public func previewNotchSetKind(_ name: String?) { notch?.view.previewSetKind(name) }
     public var previewNotchPinned: Bool { notch?.previewPinned ?? false }
     public var previewNotchPinAfterMark: Bool { notch?.previewPinAfterMark ?? false }
@@ -2805,6 +2815,7 @@ extension OrbPanelController {
     public var previewNotchContentClock: String { notch?.view.previewContentClock ?? "" }
     public var previewNotchPulse: CGFloat { notch?.view.previewPulse ?? 0 }
     public var previewNotchStretchedFrames: Int { NotchView.previewStretchedFrames }
+    public var previewNotchStretchedRestingFrames: Int { NotchView.previewStretchedRestingFrames }
     public var previewNotchDrawReadout: String { NotchView.previewDrawReadout }
     public var previewNotchInkBytes: Int { NotchInk.Cache.shared.renderedBytes }
     public var previewNotchInkCapacityBytes: Int { NotchInk.Cache.shared.capacityBytes }
@@ -2812,6 +2823,12 @@ extension OrbPanelController {
         guard let g = notch?.geometry else { return false }
         let scale = notch?.panel.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         return NotchInk.Cache.shared.has(size: CGSize(width: width, height: height), notchWidth: g.notch.width, scale: scale)
+    }
+    /// Whether a size is one the dock prewarmed and the cache pins (evicted last).
+    public func previewNotchInkPinned(width: CGFloat, height: CGFloat) -> Bool {
+        guard let g = notch?.geometry else { return false }
+        let scale = notch?.panel.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        return NotchInk.Cache.shared.isPinned(size: CGSize(width: width, height: height), notchWidth: g.notch.width, scale: scale)
     }
     /// The controller's dock state: the content it built, the Ask waiting for a mark, the blob-home rule armed.
     var previewDockContent: DockContent { dockContent }
