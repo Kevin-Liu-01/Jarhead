@@ -495,7 +495,8 @@ struct ConsoleMenuFoot: View {
 
 /// The popup's keys without a filter (the filter field forwards its own through `onMoveCommand`):
 /// ↑↓ move (clamped, skipping disabled) · ⌥↑↓ Home End to the ends · Return picks · Space picks ·
-/// Esc closes unchanged · Tab closes · letters type ahead on titles. The highlight never glides.
+/// Esc closes unchanged (with a filter the field's `onExitCommand` takes it: the text clears first) ·
+/// Tab closes · letters type ahead on titles. The highlight never glides.
 struct ConsoleMenuKeys<Value: Hashable>: ViewModifier {
     let rows: [Value]
     let spec: ConsoleMenuSpec<Value>
@@ -510,7 +511,7 @@ struct ConsoleMenuKeys<Value: Hashable>: ViewModifier {
             .onKeyPress(.end) { highlight = ConsoleMenuModel.step(nil, by: -1, in: rows, disabled: spec.isDisabled); return .handled }
             .onKeyPress(.return) { pick(); return .handled }
             .onKeyPress(.space) { if hasFilter { return .ignored }; pick(); return .handled }
-            .onKeyPress(.escape) { spec.close(); return .handled }
+            .onKeyPress(.escape) { if hasFilter { return .ignored }; spec.close(); return .handled }
             .onKeyPress(.tab) { spec.close(); return .handled }
             .onKeyPress(characters: .alphanumerics, phases: .down) { press in
                 if hasFilter { return .ignored }
