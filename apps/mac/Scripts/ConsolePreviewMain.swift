@@ -2085,12 +2085,17 @@ struct FakeData {
         ]
     }
 
-    /// What Kevin circled: a crop the engine has taken, one still on its way, and one a delegation already used.
+    /// What Kevin circled: a crop the engine has taken (snapped to Slack's Send button, so the caption names
+    /// it), one still on its way, one a delegation already used — and the front window captured whole from
+    /// the notch's Window box (`source` "window": its caption reads "Captured · Safari · 1280×800 · …").
     func marks() -> [ScreenMark] {
         [
             ScreenMark(id: "m1", rect: Rect(x: 412, y: 220, w: 640, h: 400), path: nil, at: ago(9 * 60), screenshotPath: shot, consumed: true),
-            ScreenMark(id: "m2", rect: Rect(x: 880, y: 140, w: 512, h: 384), path: nil, at: ago(95), screenshotPath: shot, consumed: false),
+            ScreenMark(id: "m2", rect: Rect(x: 880, y: 140, w: 512, h: 384), path: nil, at: ago(95), screenshotPath: shot, consumed: false,
+                       element: ScreenMark.MarkElement(role: "button", title: "Send", app: "Slack")),
             ScreenMark(id: "m3", rect: Rect(x: 120, y: 600, w: 320, h: 200), path: nil, at: ago(4), screenshotPath: nil, consumed: false),
+            ScreenMark(id: "m4", rect: Rect(x: 120, y: 60, w: 1280, h: 800), path: nil, at: ago(30), screenshotPath: shot, consumed: false,
+                       element: ScreenMark.MarkElement(role: "window", title: "Jarhead — Safari", app: "Safari"), source: "window"),
         ]
     }
 

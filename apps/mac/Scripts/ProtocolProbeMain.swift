@@ -76,6 +76,13 @@ struct Probe {
         print("  \(ok ? "ok  " : "FAIL") \(what)")
     }
 
+    /// The notch pass's pins, spelled as its acceptance greps for them: `probe: <name> OK|FAIL`.
+    mutating func pin(_ ok: Bool, _ name: String, _ seen: String = "") {
+        checks += 1
+        if !ok { failures += 1 }
+        print("probe: \(name) \(ok ? "OK" : "FAIL")\(seen.isEmpty ? "" : (ok ? " (" : ": ") + seen + (ok ? ")" : ""))")
+    }
+
     mutating func warn(_ what: String) {
         if strict { check(false, what); return }
         warnings += 1
@@ -122,10 +129,22 @@ struct Probe {
         check(eight == ["thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say"], "exactly eight thread.* command types")
 
         // The notch panel's two mark commands, as ENGINE_COMMAND_TYPES spells them.
-        let remove = EngineCommand.markRemove(id: "m_9a1c").json
-        check(remove["type"] as? String == "mark.remove" && remove["id"] as? String == "m_9a1c", "markRemove → \(compact(remove))")
+        let remove = EngineCommand.markRemove(id: "mark_x").json
+        pin(remove["type"] as? String == "mark.remove" && remove["id"] as? String == "mark_x" && remove.count == 2, "mark.remove json", compact(remove))
         let window = EngineCommand.markWindow.json
-        check(window["type"] as? String == "mark.window" && window.count == 1, "markWindow → \(compact(window))")
+        pin(window["type"] as? String == "mark.window" && window.count == 1, "mark.window json", compact(window))
+
+        // A remedy naming either, and the permission request, read back through the one table both surfaces use
+        // (the Console's decoded shape and the notch's JSON text).
+        let removeRemedy: [String: JSONValue] = ["type": .string("mark.remove"), "id": .string("mark_x")]
+        let windowRemedy: [String: Any] = ["type": "mark.window"]
+        let permissionRemedy: [String: JSONValue] = ["type": .string("request-permission"), "which": .string("screenRecording")]
+        let decodedRemove = EngineCommand(remedyJSON: removeRemedy)
+        let decodedWindow = EngineCommand(remedyJSON: windowRemedy)
+        let decodedPermission = EngineCommand(remedyJSON: permissionRemedy)
+        let noId = EngineCommand(remedyJSON: ["type": "mark.remove"] as [String: Any])
+        pin(decodedRemove == .markRemove(id: "mark_x") && decodedWindow == .markWindow && decodedPermission == .requestPermission("screenRecording") && noId == nil,
+            "remedy decode mark.remove/mark.window/request-permission", "mark.remove without an id → nil")
 
         // The brain kinds: "local" is the seventh and decodes to .local; a kind this app does not
         // know decodes to .auto, never a crash (a newer daemon's kind).
@@ -210,6 +229,21 @@ struct Probe {
         let copyTexts = copies.compactMap { $0 }
         check(copies == rawCopies, "remedy.copy decoded: \(copyTexts.isEmpty ? "none on this snapshot" : copyTexts.joined(separator: ", ")) (as raw)")
         check(snap.marks.count == (raw["marks"] as? [Any])?.count, "marks \(snap.marks.count) · setup \(snap.setup.brain.rawValue) · \(snap.setup.brainResolved?.rawValue ?? "unresolved") (as raw)")
+        // The marks, record for record: `source` as raw (nil on a stroke), `isWindow` on the window one, the
+        // consumed one carrying its crop and its snapped element, the pending one without a path yet.
+        if !snap.marks.isEmpty {
+            let rawMarks = raw["marks"] as? [[String: Any]] ?? []
+            let sourcesOK = zip(snap.marks, rawMarks).allSatisfy { $0.source == $1["source"] as? String && $0.screenshotPath == $1["screenshotPath"] as? String && $0.consumed == $1["consumed"] as? Bool }
+            let windows = snap.marks.filter(\.isWindow)
+            let pending = snap.marks.filter { !$0.consumed && !$0.isWindow }
+            let consumed = snap.marks.filter(\.consumed)
+            let elementOK = consumed.first?.element?.role == "button" && consumed.first?.element?.app == "Slack" && consumed.first?.screenshotPath != nil
+                && pending.first?.screenshotPath == nil && windows.first?.element?.role == "window" && windows.first?.screenshotPath != nil
+            let strokesNoSource = snap.marks.filter { !$0.isWindow }.allSatisfy { $0.source == nil }
+            pin(sourcesOK && elementOK && strokesNoSource && snap.marks.count == 3 && windows.count == 1 && pending.count == 1 && consumed.count == 1,
+                "marks decoded 3 (window 1, pending 1, consumed 1)",
+                "window \(windows.map(\.id)) pending \(pending.map(\.id)) consumed \(consumed.map(\.id)); source nil on \(snap.marks.filter { $0.source == nil }.count)")
+        }
 
         // The local server and the data paths: required members of setup (app and daemon ship
         // together), decoded field for field against the raw block.

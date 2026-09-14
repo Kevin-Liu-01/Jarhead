@@ -170,6 +170,12 @@
       },
       "problems": [
         {
+          "kind": "permission.screenRecording",
+          "text": "Screen Recording not granted: circles arrive without pixels.",
+          "remedy": { "label": "Request", "command": { "type": "request-permission", "which": "screenRecording" } },
+          "since": 1789243188000
+        },
+        {
           "kind": "permission.fullDiskAccess",
           "text": "Full Disk Access not granted: files outside Desktop, Documents and Downloads are out of reach.",
           "remedy": { "label": "Open pane", "command": { "type": "request-permission", "which": "fullDiskAccess" } },
@@ -197,7 +203,31 @@
           { "what": "web", "where": "cloud", "detail": "the sites you ask for (web_fetch, web_search)" }
         ]
       },
-      "marks": [],
+      "marks": [
+        {
+          "id": "mark_7f3a1c",
+          "rect": { "x": 412, "y": 220, "w": 640, "h": 400 },
+          "at": 1789242660000,
+          "screenshotPath": "shots/2026-09-13/mark_7f3a1c.png",
+          "consumed": true,
+          "element": { "role": "button", "title": "Send", "app": "Slack" }
+        },
+        {
+          "id": "mark_9b02de",
+          "rect": { "x": 880, "y": 140, "w": 512, "h": 384 },
+          "at": 1789243195000,
+          "consumed": false
+        },
+        {
+          "id": "mark_c41e88",
+          "rect": { "x": 120, "y": 60, "w": 1280, "h": 800 },
+          "at": 1789243198000,
+          "screenshotPath": "shots/2026-09-13/mark_c41e88.png",
+          "consumed": false,
+          "element": { "role": "window", "title": "Jarhead — Safari", "app": "Safari" },
+          "source": "window"
+        }
+      ],
       "trash": {
         "path": "/Users/kevin/.jarhead/trash",
         "days": 0,

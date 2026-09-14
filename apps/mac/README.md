@@ -58,6 +58,7 @@ Go resumes it with that context.
 | `⌥⎋` | stop — interrupt everything, close the session (the meter stops), sleep |
 | `⌥⇧Space` | go / pause — go wakes, or resumes a pause with its context; pause closes the session (the meter stops) and keeps the conversation |
 | `⌥⇧C` | circle something on screen for Jarhead |
+| `⌥⇧Return` | type to Jarhead: the notch island pins open and its Say field takes key (`OrbPanelController.sayLine`); away from the notch, the Console's composer |
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
 `jarhead://stop` — the three transport verbs — plus `jarhead://orb` (summon the blob) and
@@ -287,6 +288,25 @@ accessibility and screen recording, which are TCC checks on the responsible proc
   traces drags and frames regions being read. Brains have `show_circle`,
   `show_arrow`, `show_rect`, `show_text`, `show_stroke` and `show_clear` to
   teach on the click-through layer; shapes fade after a few seconds.
+- **The dock is a control surface** (`UI/Orb/NotchPanel.swift`: the 360×132 island,
+  one `DockContent` value in, action closures out; `OrbPanelController` builds the
+  content from the snapshot and the thread store). Press `◎` on the island: the dock
+  folds to the peek (`NotchDock.foldForMark`, before the overlay takes the mouse), the
+  peek reads `◎ Circle something · Esc`, Kevin draws, the overlay sends `mark.add`, and
+  the engine's `orb.trace` echo has the blob outline the circle — then, because the trace
+  was started from the dock, **the blob comes home** to the notch instead of loitering by
+  the line (`homeAfterTrace`), and a pinned island is pinned again once it is parked.
+  `▭` sends `mark.window` (the front window whole; with Jarhead's own window frontmost, a
+  toast and nothing sent). The strip shows the marks as 30×22 thumbnails — a dithered
+  skeleton while the crop is on its way, half alpha once used — with a `×` (`mark.remove
+  {id}`), Clear (`mark.clear`) and Ask, which sends "What did I circle?" (or "What's in
+  this window?"), or circles first when nothing is pending. Each live thread is a chip with
+  its own Stop (`thread.stop`), and the asking one's question sits on the line with Allow /
+  Deny (`thread.answer`; Return never answers). `⌥⇧Return` opens the Say field (`say-text`;
+  asleep, the engine's `typedWakes` rule decides). Sleep sends `sleep {cause:"dock"}`. The
+  peek carries at most four glance chips — question, marks, problem, meter — and the pill
+  slot under the island ranks gate > toast > mark-landed > problem. Nothing on the dock but
+  Go (and a typed line under `typedWakes`) opens a paid session.
 
 The contract for all of it is in `docs/REDESIGN.md` §9.
 
@@ -367,9 +387,13 @@ App → daemon:
 - `hello {pid,version?,audio?}` — first; `audio:true` subscribes to speaker frames,
   `pid` excludes the app's windows from screenshots.
 - `command {command}` — an `EngineCommand` (`go`, `pause`, `resume`, `stop`, `interrupt`,
-  `sleep`, `set-settings`, `thread.*`, `agent.*`…). `set-settings` patches follow
+  `sleep`, `set-settings`, `thread.*`, `agent.*`, `mark.*`…). `set-settings` patches follow
   `SettingsPatch` in `packages/protocol`: `null` clears an optional field, so "system
-  default microphone" is `{ micDeviceId: null }`.
+  default microphone" is `{ micDeviceId: null }`. The mark group: `mark.add {rect, path?}`
+  (the overlay's stroke), `mark.remove {id}` (the `×` on one thumbnail — an unknown or
+  malformed id changes nothing), `mark.window` (the front window whole as a mark, `source`
+  "window", works asleep; no front window → a warn toast), `mark.clear`. A `ScreenMark` on
+  the snapshot carries `source?: "circle" | "window"` (absent = a stroke).
 - `mic-level {level}`.
 - `permission {which,state,detail?}` — one kind as the app read it; `permissions {all}` —
   every `PermissionInfo` after a read that changed something.
@@ -473,7 +497,7 @@ Sources/Jarhead/Model        Protocol.swift, AppState.swift (the contract; do no
 Sources/Jarhead/UI           Dither, Motion; Orb (BlobField, BlobPhysics, BlobFleet + SatelliteBlob — one blob per thread, NotchPanel, NotchInk, OrbTrace), Overlay, Console, Onboarding
 Sources/JarheadObjC          JHTry: the @try/@catch shim AVFoundation calls run inside
 Resources                    Info.plist, entitlements.plist, preview-icon-sizes.png (the icon contact strip; the harnesses' other preview-*.png are gitignored)
-Scripts                      orb-preview.sh, console-preview.sh (scenarios incl. `threads`, `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, protocol-probe.sh (the Swift mirror against fixtures/snapshot-threads.json), permissions-probe.sh (read-only readers + dry-run sweep), appstate-bench.sh, *PreviewMain.swift / *ProbeMain.swift / AppStateBenchMain.swift; fixtures/ holds the probe fixture and the one fake screenshot the previews resolve
+Scripts                      orb-preview.sh (`--notch-checks`: every rule of the island as `check:` lines), console-preview.sh (scenarios incl. `threads`, `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, protocol-probe.sh (the Swift mirror against fixtures/snapshot-threads.json), permissions-probe.sh (read-only readers + dry-run sweep), appstate-bench.sh, *PreviewMain.swift / *ProbeMain.swift / AppStateBenchMain.swift; fixtures/ holds the probe fixture and the one fake screenshot the previews resolve
 ```
 
 `Scripts/appstate-bench.sh` runs the model's acceptance checks (apps/mac has no XCTest
