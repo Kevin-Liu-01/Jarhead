@@ -190,8 +190,9 @@ public final class OrbPanelController {
     /// (same socket, in order — the engine registers the mark before any await).
     private var askAfterMark = false
     /// A mark's own trace launched from the dock brings the blob home instead of staying
-    /// by the line (`trace` sets it, `workDone` consumes it); every other trace stays.
-    private var homeAfterTrace = false
+    /// by the line (`MarkHomeRule`: `trace` arms it, `cancelFlight` and another job's fly
+    /// interrupt it, `workDone` settles it); every other trace stays.
+    private var markHome = MarkHomeRule()
     /// The pending marks last seen, for the tucked "◎ N circled · Go to ask" pill.
     private var pendingMarksSeen = 0
     /// Notch mode is on: the setting says notch, a display has one, and Kevin has not
@@ -1261,9 +1262,12 @@ public final class OrbPanelController {
     /// (`cancelTuckSlip`: whole again at the staging point, or the flight proceeds from
     /// there); a phase change lets it finish, because in notch mode every transition
     /// leads to the notch and the new face shows through it; a Stop shivers it and lets
-    /// it finish (`reactToStop`); a hide finishes it at once.
-    private func beginTuckSlip() {
-        guard let notch, !tucked, slip == nil else { return }
+    /// it finish (`reactToStop`); a hide finishes it at once. Returns false when it cannot
+    /// begin — no dock, already tucked, a slip under way — so a caller with a flight to
+    /// close (`workDone`) can end it here instead.
+    @discardableResult
+    private func beginTuckSlip() -> Bool {
+        guard let notch, !tucked, slip == nil else { return false }
         endFlight(clearTrail: false)
         sleepTuck?.cancel(); sleepTuck = nil
         settlingAfterWork = false
@@ -1287,6 +1291,7 @@ public final class OrbPanelController {
         timeline("slip begins")
         fflush(stdout)
         #endif
+        return true
     }
 
     /// One display frame of a slip (from `physicsTick`). Returns true while one runs.
@@ -1692,6 +1697,9 @@ public final class OrbPanelController {
         guard !body.dragging, panel.isVisible || tucked else { return }
         if expanded { collapse() }
         if !positioned { placeInitially() }
+        // Another job's fly ends a mark echo's way home — the line it overtakes, or the
+        // hover it retargets under Reduce Motion — so its own hover ends where it worked.
+        pinAcrossTrace(markHome.flyBegins(reason: reason))
         // A plain fly overtakes a trace: the half-drawn line comes down, the pen morphs back.
         if trace != nil { cancelTrace() }
         pendingTrace = nil
@@ -1822,14 +1830,20 @@ public final class OrbPanelController {
     /// (`stayHere`), in free mode and in notch mode alike: the dock is for waking up
     /// and going to sleep (`fellAsleep`, `wokeUp`), not for the end of every job.
     private func workDone() {
-        if homeAfterTrace {
-            homeAfterTrace = false
-            if notchMode, notch != nil {
-                beginTuckSlip()
-                return
-            }
-        }
+        // A mark's own echo goes home; when the slip cannot run (already tucked or
+        // slipping, no dock) the flight still ends here, never half torn down.
+        if markHome.workDone(notchMode: notchMode) == .tuck, beginTuckSlip() { return }
         stayHere()
+    }
+
+    /// The dock does with the pin it folded for a mark what the blob-home rule's
+    /// transition said (`MarkHomeRule.Pin`).
+    private func pinAcrossTrace(_ pin: MarkHomeRule.Pin) {
+        switch pin {
+        case .keep: notch?.keepPinAcrossTrace()
+        case .drop: notch?.dropPinAcrossTrace()
+        case .leave: break
+        }
     }
 
     /// Stay where you worked: the flight ends here. The body parks — still, and stuck
@@ -1875,6 +1889,9 @@ public final class OrbPanelController {
         guard !body.dragging else { return }
         // Already slipping into the notch: that is home.
         if slip?.kind == .tuck { return }
+        // Home at once is where a mark echo was heading anyway: its rule is over, and the
+        // pin folded for the mark comes back with the blob at the tuck as it would have.
+        markHome.homeBound()
         if trace != nil { cancelTrace() }
         if flight == .none {
             guard !body.isActive, let home = homePoint, hypot(body.center.x - home.x, body.center.y - home.y) > 2 else { return }
@@ -1945,6 +1962,12 @@ public final class OrbPanelController {
     /// perch; a led body would keep the link running).
     private func cancelFlight() {
         takeoff?.cancel(); takeoff = nil
+        // Whatever cut the flight short — Kevin's hand, the capsule, a hide, a display
+        // going away — ends a mark echo's way home with it: the blob stays out where he
+        // left it, so the dock forgets the pin it folded for the mark rather than popping
+        // the island open pinned at the next tuck with nobody near. (A Stop disarmed the
+        // rule already, pin kept: its sleep tucks the blob.)
+        pinAcrossTrace(markHome.interrupted())
         // Taken before the trace comes down: a drawing pen leaves `flight` at none,
         // and the teardown (the wake, the target, the hover) is owed all the same.
         let wasFlying = flight != .none
@@ -1995,8 +2018,7 @@ public final class OrbPanelController {
         // (or, under Reduce Motion, only flies to it) and comes back to the notch instead
         // of loitering by the line; Kevin's pin, if the island had one, comes back with
         // it. Every other trace stays where it worked.
-        homeAfterTrace = tucked && reason == "mark"
-        if homeAfterTrace { notch?.keepPinAcrossTrace() }
+        pinAcrossTrace(markHome.traceBegins(tucked: tucked, reason: reason))
         let shown = panel.isVisible || tucked
         if !shown || sim.reducedMotion {
             // The line, whole; the blob flies to it if it is on screen.
@@ -2154,7 +2176,9 @@ public final class OrbPanelController {
     private func reactToStop() {
         pendingFly = nil
         pendingTrace = nil
-        homeAfterTrace = false
+        // A mark echo's way home is over, and the Stop's sleep tucks the blob: the pin
+        // folded for the mark comes back with it there, as it would have.
+        markHome.homeBound()
         pendingPoke?.cancel(); pendingPoke = nil
         if !tucked { blobView.paused = false }
         sim.nudge(1.6)
@@ -2782,7 +2806,7 @@ extension OrbPanelController {
     /// The controller's dock state: the content it built, the Ask waiting for a mark, the blob-home rule armed.
     var previewDockContent: DockContent { dockContent }
     public var previewAskAfterMark: Bool { askAfterMark }
-    public var previewHomeAfterTrace: Bool { homeAfterTrace }
+    public var previewHomeAfterTrace: Bool { markHome.armed }
     /// The sim's levels — raw as sent, eased, and the island level — for the same readout.
     public var previewSimLevels: String {
         let l = sim.previewLevels
@@ -3001,3 +3025,77 @@ extension OrbPanelController {
     }
 }
 #endif
+
+/// The blob-home rule of a mark's own echo, as the one small state machine the
+/// controller drives. The trace the engine sends after a mark commits (reason "mark")
+/// while the blob is tucked brings the blob back to the notch — with the island's pin,
+/// if it had one — instead of leaving it by the line; every other trace and every fly
+/// ends where it worked (`stayHere`). The rule belongs to that one trace: whatever
+/// ends its work early with the blob staying out — Kevin's hand (a drag, a summon, the
+/// capsule), the orb hiding, a display going away (`cancelFlight`), another job's fly
+/// overtaking the line or retargeting the Reduce Motion hover (`fly(to:)`), a second
+/// trace taking the line down (`trace`) — interrupts it, so a later unrelated job ends
+/// where it worked and the dock forgets the pin it folded for the mark rather than
+/// popping the island open pinned at the next sleep tuck with nobody near. A route home
+/// by other means — the explicit `orb.home`, a Stop (whose sleep tucks the blob) — only
+/// disarms it: the blob is coming home anyway, and the pin comes back with it at the
+/// tuck as it would have. Every transition answers with what the dock does with that
+/// pin (`Pin`); `OrbPanelController` holds one and relays the answer
+/// (`pinAcrossTrace`). Foundation-only, so `Scripts/orb-home-probe.sh` pins every
+/// transition without a window.
+struct MarkHomeRule: Equatable {
+    /// What the dock does with the pin it folded for the mark.
+    enum Pin: Equatable {
+        /// Keep it across the blob's absence; it comes back with the blob (`keepPinAcrossTrace`).
+        case keep
+        /// Forget it: the blob stays out (`dropPinAcrossTrace`).
+        case drop
+        /// Nothing changes for the pin.
+        case leave
+    }
+    /// Where the work's end leaves the body.
+    enum End: Equatable { case tuck, stay }
+
+    /// The mark echo's way home is owed.
+    private(set) var armed = false
+
+    /// A trace begins (`trace(points:…)`). Armed when it is a mark's echo from the dock
+    /// (`.keep`). One that is not, arriving while an echo was still owed its way home,
+    /// ends that rule with the blob out by its new line (`.drop`).
+    mutating func traceBegins(tucked: Bool, reason: String?) -> Pin {
+        let owed = armed
+        armed = tucked && reason == "mark"
+        if armed { return .keep }
+        return owed ? .drop : .leave
+    }
+
+    /// A fly lands on the controller (`fly(to:)`). One for another job (any reason but
+    /// "mark") ends the rule as an interruption would; the mark echo's own Reduce
+    /// Motion flight (reason "mark", from `trace`) leaves it armed.
+    mutating func flyBegins(reason: String?) -> Pin {
+        if reason == "mark" { return .leave }
+        return interrupted()
+    }
+
+    /// The flight or trace is cut short with the blob staying out (`cancelFlight`): the
+    /// rule ends and the dock forgets the pin — once, by the interruption (`.drop` only
+    /// while a rule was owed).
+    mutating func interrupted() -> Pin {
+        defer { armed = false }
+        return armed ? .drop : .leave
+    }
+
+    /// The blob is on its way home by another route — the explicit `orb.home`
+    /// (`flyHome`), a Stop whose sleep tucks it (`reactToStop`): the rule is over and the
+    /// pin's own rule applies at the tuck, so nothing is dropped.
+    mutating func homeBound() {
+        armed = false
+    }
+
+    /// The work is over (`workDone`): the mark echo's own end in notch mode tucks; every
+    /// other end, and one with the notch not home any more, stays. Consumes the rule.
+    mutating func workDone(notchMode: Bool) -> End {
+        defer { armed = false }
+        return armed && notchMode ? .tuck : .stay
+    }
+}

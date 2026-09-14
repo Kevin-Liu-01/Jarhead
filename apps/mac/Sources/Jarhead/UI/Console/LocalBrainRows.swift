@@ -46,12 +46,14 @@ enum LocalBrainWords {
         return s
     }
 
-    /// The menu's rows: "" (best fit) first while nothing explicit is saved, the tool-capable
-    /// models best fit first, then the saved id when the server does not list it (the
-    /// `voiceOptions` idiom: a pick never shows nothing).
+    /// The menu's rows: "" (best fit) always first — the setting's own default, so a pin is
+    /// one click to undo when a newer model lands and the engine's pick should move again —
+    /// the tool-capable models best fit first, then the saved id when the server does not
+    /// list it (the `voiceOptions` idiom: a pick never shows nothing).
     static func modelOptions(saved: String, status: LocalServerStatus) -> [String] {
         var ids = status.pickable.map(\.id)
-        if saved.isEmpty { ids.insert("", at: 0) } else if !ids.contains(saved) { ids.append(saved) }
+        ids.insert("", at: 0)
+        if !saved.isEmpty, !ids.contains(saved) { ids.append(saved) }
         return ids
     }
 
@@ -131,7 +133,8 @@ enum LocalBrainWords {
 
 /// The Model row for the Local brain: a menu over the tool-capable models the server lists
 /// (size and fit beside each; one that does not fit drawn quiet), the engine's best fit as the
-/// first row while nothing is saved, and the saved id even when the server no longer lists it.
+/// first row always — the way back from a pin — and the saved id even when the server no
+/// longer lists it.
 struct LocalModelMenu: View {
     let status: LocalServerStatus
     /// Settings.brainModel (or the wizard's draft): "" = the best fit on this Mac.

@@ -1008,7 +1008,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("collapsed: saved id", LocalBrainWords.collapsedTitle(saved: "qwen3.5:9b", status: up), "qwen3.5:9b")
         expect("options: best fit first, tool-capable only", LocalBrainWords.modelOptions(saved: "", status: up).joined(separator: ","), ",qwen3.5:27b,qwen3.5:9b,gpt-oss:120b,llama3.3:70b,deepseek-v3.1:671b")
         expect("options: a saved id off the server is appended", LocalBrainWords.modelOptions(saved: "qwen3:8b", status: up).last ?? "nil", "qwen3:8b")
-        expect("options: a saved listed id adds nothing", String(LocalBrainWords.modelOptions(saved: "qwen3.5:9b", status: up).count), "5")
+        // The way back from a pin: "" (best fit) stays the first row after an explicit pick, so
+        // the Console can send brainModel "" again — the setting's own default — from the menu.
+        expect("options: best fit row survives a listed pick", LocalBrainWords.modelOptions(saved: "qwen3.5:9b", status: up).joined(separator: ","), ",qwen3.5:27b,qwen3.5:9b,gpt-oss:120b,llama3.3:70b,deepseek-v3.1:671b")
+        expect("options: best fit row survives an unlisted pick", LocalBrainWords.modelOptions(saved: "qwen3:8b", status: up).first ?? "nil", "")
+        expect("options: a saved listed id adds nothing but the best fit row", String(LocalBrainWords.modelOptions(saved: "qwen3.5:9b", status: up).count), "6")
+        expect("row title after a pick still names the engine's pick", LocalBrainWords.modelTitle("", status: up), "best fit · qwen3.5:27b")
         expect("row title", LocalBrainWords.modelTitle("qwen3.5:27b", status: up), "qwen3.5:27b  ·  17 GB · fits")
         expect("row title: tight", LocalBrainWords.modelTitle("gpt-oss:120b", status: up), "gpt-oss:120b  ·  65 GB · tight fit")
         expect("row title: best fit names the pick", LocalBrainWords.modelTitle("", status: up), "best fit · qwen3.5:27b")
