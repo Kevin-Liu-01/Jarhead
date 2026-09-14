@@ -88,7 +88,7 @@ struct OnboardingRootView: View {
             OnboardingBrainStep(setup: model.setup, brain: model.brain, brainModel: model.brainModel, brainBaseUrl: model.brainBaseUrl, actions: actions).equatable()
         case .permissions:
             OnboardingPermissionsStep(permissions: model.permissions, sweep: model.sweep, actions: actions).equatable()
-        case .wake:
+        case .wakeWord:
             OnboardingWakeStep(wake: model.wake, gate: model.wakeGate, heard: model.wakeHeard, passphraseSet: model.wakePassphraseSet, actions: actions).equatable()
         case .agents:
             OnboardingAgentsStep(agents: model.agents, connectors: model.connectors, actions: actions).equatable()

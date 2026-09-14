@@ -339,7 +339,7 @@ extension AppState {
     /// The snapshot's `threads` (live, plus those finished within the engine's 30 s linger): the
     /// whole truth for what it lists, so each replaces ours unless ours is fresher (an event
     /// landed after the snapshot was built; on the same clock an end stands — an end never
-    /// un-ends). nil is an older daemon: nothing is known, nothing is touched.
+    /// un-ends).
     ///
     /// A live thread of ours the snapshot does not list: the snapshot may simply predate it —
     /// the client parks a snapshot up to 33 ms while a `started` event lands at once, so on every
@@ -348,9 +348,7 @@ extension AppState {
     /// engine restarted without the ledger rows, or dropped it without a word) so the rail never
     /// shows a pulse nothing feeds — with its clock left alone, so the next snapshot that lists
     /// it live wins the merge and heals it.
-    public func applySnapshotThreads(_ list: [WorkThread]?) {
-        guard let list else { return }
-        threadsKnown = true
+    public func applySnapshotThreads(_ list: [WorkThread]) {
         var seen = Set<String>()
         for t in list {
             seen.insert(t.id)

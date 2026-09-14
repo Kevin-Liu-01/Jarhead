@@ -38,16 +38,9 @@ enum StreamEntry: Identifiable, Equatable {
 }
 
 extension StreamEntry {
-    /// The workers this row draws: a delegation card's own (`Worker.delegationId`), none for an
-    /// utterance or a system line — so a worker ticking re-evaluates its card and no other row
-    /// (StreamRow is Equatable over its workers).
-    func workers(from all: [Worker]) -> [Worker] {
-        guard case .delegation(let d) = self, !all.isEmpty else { return [] }
-        return all.filter { $0.delegationId == d.id }
-    }
-
     /// The threads this row draws: the ones a delegation card started (`Thread.parentDelegationId`),
-    /// in the rail's order; none for the rest — the same seam as `workers(from:)`.
+    /// in the rail's order; none for an utterance or a system line — so a thread turning
+    /// re-evaluates its card and no other row (StreamRow is Equatable over its threads).
     func threads(from all: [WorkThread]) -> [WorkThread] {
         guard case .delegation(let d) = self, !all.isEmpty else { return [] }
         return AppState.railOrder(all.filter { $0.parentDelegationId == d.id })
@@ -82,10 +75,6 @@ enum StreamBuilder {
         var order: [String] = []
         // The last transport row: what a close the engine asked for meant (ConsoleFormat.closeReason).
         var transport: String?
-        // The hands whose "working" line is said. A worker's rows are one per status change
-        // (starting, working, the waits, working again, the end); the stream keeps the first
-        // "working" and the end — its waits are on the parent card as note steps already.
-        var workersAnnounced: Set<String> = []
         // A thread's name, from its `thread.started` row, for the rows that carry only its id.
         var threadNames: [String: String] = [:]
 
@@ -176,16 +165,10 @@ enum StreamBuilder {
                 if row.sleepCause != "stop", let t = ConsoleFormat.tombstone(row) {
                     out.append(.system(SystemEntry(id: "zz:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
                 }
-            case "worker":
-                // A hand's life, one row per status change; the stream says "Slack · working" once,
-                // then how it ended (done, failed, cancelled). The log (JarheadLog) lists every row.
-                guard let w = row.worker, Self.announces(w.status, seen: workersAnnounced.contains(w.id)) else { break }
-                workersAnnounced.insert(w.id)
-                if let t = ConsoleFormat.tombstone(row) {
-                    out.append(.system(SystemEntry(id: "wk:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
-                }
             default:
-                // The cleanup's tombstone rows read as terse system lines: "Moved to Trash", "Restored", "Renamed".
+                // The cleanup's tombstone rows read as terse system lines: "Moved to Trash", "Restored",
+                // "Renamed". A type the Console does not know yields no line and is skipped — including
+                // the `worker` rows in day files from before 2026-09-13.
                 if let t = ConsoleFormat.tombstone(row) {
                     out.append(.system(SystemEntry(id: "tb:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
                 }
@@ -194,17 +177,6 @@ enum StreamBuilder {
         for id in order { if let d = delegations[id] { out.append(.delegation(d)) } }
         out.sort { $0.at < $1.at }
         return out
-    }
-
-    /// Which of a worker's rows the stream says: the first `working` (the hand has begun) and
-    /// the end. `starting`, the two waits and a return to `working` are not lines of their own —
-    /// a screen-lane hand that waited twice would otherwise read as seven lines for two facts.
-    static func announces(_ status: WorkerStatus, seen: Bool) -> Bool {
-        switch status {
-        case .working: return !seen
-        case .done, .failed, .cancelled: return true
-        case .starting, .waitingScreen, .awaitingConfirmation: return false
-        }
     }
 
     static func stats(_ rows: [LedgerRow]) -> LedgerStats {
@@ -250,7 +222,7 @@ extension ConsoleFormat {
     /// when it had to force one (`client_closed`) — says nothing about why; the
     /// transport row before it does. Mirrors `Ledger.sessions()`: "paused" after a
     /// `pause`, "stopped" after a pressed `stop`, "asleep · why" after a `sleep` row
-    /// (`transport` "sleep:<cause>"), "closed" with none (an older engine's idle sleep);
+    /// (`transport` "sleep:<cause>"), "closed" with none (a close no transport row preceded);
     /// every other reason (idle, connection_lost, …) is kept as recorded — except the
     /// engine's own sleep label, "sleep:<cause>", which reads the same as the row.
     static func closeReason(_ reason: String?, after transport: String? = nil) -> String {
@@ -310,16 +282,12 @@ extension ConsoleFormat {
     /// words (lower case; the stream capitalises), a mono figure and a trailing note. nil
     /// for any other row. `conversation.trashed` by retention says so; `ledger.moved` names
     /// the day, what moved and where. The `sleep` row is the moon: "asleep · said" with the
-    /// cue in quotes. A `worker` row is "Spotify · working" / "Spotify · done" with its lane in
-    /// mono and its last line trailing — every row maps here (the log lists each status change);
-    /// the stream keeps a hand's first "working" and its end (StreamBuilder.announces).
+    /// cue in quotes. A `thread.started` / `thread.ended` row is "Spotify · started" / "Spotify ·
+    /// done" with its lane in mono.
     static func tombstone(_ row: LedgerRow) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
         switch row.type {
         case "sleep":
             return ("moon.zzz.fill", "sleep", SleepCauseFormat.line(row.sleepCause ?? "command"), row.sessionId.map { shortId($0) }, row.quotedPhrase)
-        case "worker":
-            guard let w = row.worker else { return nil }
-            return ("person.2.fill", "worker", "\(w.name) · \(w.status.words)", ConsoleTheme.lane(w.lane), w.detail)
         case "thread.started":
             // The whole record rides the row: "Spotify · started" with its lane in mono and the brief trailing.
             guard let t = row.thread else { return nil }

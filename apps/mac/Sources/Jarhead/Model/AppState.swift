@@ -111,9 +111,6 @@ public final class AppState: ObservableObject {
     /// The conversations the Console has opened (`thread.open`), keyed by thread id
     /// (Model/ThreadStore.swift: the seq-indexed pages, steps patched into their cards).
     @Published public var threadStores: [String: ThreadStore] = [:]
-    /// A snapshot carried `threads` at least once: the daemon speaks threads. False is an
-    /// older daemon — the Console shows no Threads section and sends no thread.* command.
-    @Published public var threadsKnown = false
     /// The newest event seq applied per thread (a replay is dropped). On the main actor.
     var threadLastSeq: [String: Int] = [:]
     /// Ids a snapshot has listed at least once: only these can be "gone" from a later one (a
@@ -499,22 +496,9 @@ public final class AppState: ObservableObject {
     }
     /// Whether anything installed the handlers: false is this build's gap, not the daemon's.
     public private(set) var memoryInstalled = false
-    private var memoryRefreshTask: Task<Void, Never>?
 
     public func memoryList(state: String = "live", limit: Int = 50) async -> [MemoryItem]? { await memoryListHandler(state, limit) }
     public func memorySearch(_ query: String, limit: Int = 30) async -> [MemoryItem]? { await memorySearchHandler(query, limit) }
-
-    /// Re-reads one state's list into `memoryItems`. A newer call cancels an older one still
-    /// in flight; a no-answer keeps what is shown.
-    public func refreshMemory(state: String = "live", limit: Int = 50) {
-        memoryRefreshTask?.cancel()
-        memoryRefreshTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let items = await self.memoryList(state: state, limit: limit)
-            guard !Task.isCancelled, let items else { return }
-            if items != self.memoryItems { self.memoryItems = items }
-        }
-    }
 
     // The verbs, as commands: the engine changes the state and the next snapshot's counts say so.
     public func memoryForget(_ id: String) { send(.memoryForget(id: id)) }
@@ -566,7 +550,7 @@ public final class AppState: ObservableObject {
 
     public static let cleanupUndoDepth = 20
     public static let cleanupToastSeconds: Double = 8
-    /// An override the ledger never confirmed (an older daemon) is dropped after this.
+    /// An override the ledger never confirmed (the row never came back over the socket) is dropped after this.
     public static let chainOverrideTTL: TimeInterval = 15
 
     public func ledgerSearch(_ query: String, limit: Int = 50) async -> [LedgerHit]? { await ledgerSearchHandler(query, limit) }
@@ -744,22 +728,6 @@ public final class AppState: ObservableObject {
     public var lastJarhead: TranscriptItem? { snapshot.transcript.last { $0.speaker == .jarhead } }
     public var activeDelegation: Delegation? { snapshot.delegations.last { $0.status == .running || $0.status == .awaitingConfirmation } }
     public var isAwake: Bool { snapshot.phase != .asleep && snapshot.phase != .error }
-    /// The delegation's workers as the snapshot lists them — running, and finished within
-    /// the last half minute (WORKER_LINGER_MS) so a finish line has a row to land on; []
-    /// from a daemon without workers.
-    public var workers: [Worker] { snapshot.allWorkers }
-    /// The workers still alive: starting, working, waiting for the screen or for Kevin's yes.
-    public var runningWorkers: [Worker] { snapshot.runningWorkers }
-}
-
-// MARK: - Workers
-
-extension AppState {
-    /// Stop one worker — the Console row's Stop. `worker.stop` cuts that hand alone: the
-    /// other worker, the main brain and the paid session carry on. Never `transportStop()`,
-    /// which closes the session and sleeps, and never the stop-pressed notification, which
-    /// the blob shivers on: nothing of Jarhead's own stopped.
-    public func workerStop(_ workerId: String) { send(.workerStop(workerId: workerId)) }
 }
 
 extension ThreadStatus {
@@ -779,22 +747,6 @@ extension ThreadStatus {
         case .done: return "done"
         case .failed: return "failed"
         case .stopped: return "stopped"
-        }
-    }
-}
-
-extension WorkerStatus {
-    /// The status as Kevin reads it, everywhere a worker is drawn: the rail row, the card's
-    /// chip, the ledger's line. The two waits say what is being waited for.
-    public var words: String {
-        switch self {
-        case .starting: return "starting"
-        case .working: return "working"
-        case .waitingScreen: return "waiting for the screen"
-        case .awaitingConfirmation: return "waiting for Kevin"
-        case .done: return "done"
-        case .failed: return "failed"
-        case .cancelled: return "cancelled"
         }
     }
 }
@@ -835,8 +787,7 @@ public enum SleepCauseFormat {
 }
 
 extension LedgerRow {
-    /// A `sleep` row's cause; nil for any other row. A row without one (an older engine's, or an
-    /// empty string) is the command.
+    /// A `sleep` row's cause; nil for any other row. A row whose cause is absent or empty is the command.
     public var sleepCause: String? {
         guard type == "sleep" else { return nil }
         guard let cause, !cause.isEmpty else { return "command" }
@@ -1117,7 +1068,7 @@ public enum TransportPress: Equatable {
 
 /// The transport: one Go/Pause button and one Stop, the same everywhere — the capsule's
 /// action row and right-click menu, the notch island, the Console composer (⌘P / ⌘.), the
-/// status and Dock menus, the hotkeys (⌥⇧Space, its alias ⌥⇧P, ⌥⎋) and the `jarhead://`
+/// status and Dock menus, the hotkeys (⌥⇧Space, ⌥⎋) and the `jarhead://`
 /// URLs. Every site calls these and nothing else, so no two sites can disagree about what
 /// a press means. Pause and Stop both *close* the Live session, so the meter stops the
 /// moment they land; the difference is what is kept: a pause holds the conversation

@@ -155,7 +155,7 @@ final class Probe {
             }
         }
 
-        say("phase \(phase.rawValue), reflexes \(state.snapshot.settings.reflexesOn ? "on" : "off"); listening for \(Int(seconds)) s")
+        say("phase \(phase.rawValue), reflexes \(state.snapshot.settings.reflexes ? "on" : "off"); listening for \(Int(seconds)) s")
         if let path = env["EAR_PROBE_FILE"] {
             feedFile(path, onBuffer: onBuffer)
         } else if !withMicrophone {

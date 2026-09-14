@@ -36,7 +36,7 @@ struct OnboardingWelcomeStep: View, Equatable {
 /// browsing the 22 voices never opens a paid session from here.
 struct OnboardingVoiceStep: View, Equatable {
     let setup: SetupStatus
-    /// What the engine has (Settings.voice, Settings.accentKind), so a pick made in the
+    /// What the engine has (Settings.voice, Settings.accent), so a pick made in the
     /// Console's Settings shows here too.
     let voice: String
     let accent: String

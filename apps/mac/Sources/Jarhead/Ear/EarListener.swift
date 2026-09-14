@@ -188,7 +188,7 @@ final class EarListener: @unchecked Sendable {
             self.segments = segments
             segments.onTranscript = { [weak self] t in self?.received(t) }
             segments.onError = { [weak self] message in self?.onStatus?(.recognitionError("ear recognition: \(message)")) }
-            segments.onRoll = { [weak self] retired, new in self?.rolled(from: retired, to: new) }
+            segments.onRoll = { [weak self] old, new in self?.rolled(from: old, to: new) }
             segments.shouldDeferRoll = { [weak self] in self?.microphoneHot ?? false }
         } else {
             segments = nil
@@ -360,11 +360,11 @@ final class EarListener: @unchecked Sendable {
     /// its words end with the last partial: send that as the segment's final, now, before
     /// the new task can call back — the engine reads an unknown older segment arriving
     /// late as a new one and would restart on its words.
-    private func rolled(from retired: Int, to new: Int) {
+    private func rolled(from old: Int, to new: Int) {
         guard running else { return }
-        if retired == currentSegment, !segmentFinalSeen, !segmentText.isEmpty {
+        if old == currentSegment, !segmentFinalSeen, !segmentText.isEmpty {
             let nowMs = Int((Date().timeIntervalSince1970 * 1000).rounded())
-            throttle.offer(EarThrottle.Item(text: segmentText, isFinal: true, segment: retired, atMs: nowMs))
+            throttle.offer(EarThrottle.Item(text: segmentText, isFinal: true, segment: old, atMs: nowMs))
         }
         currentSegment = new
         segmentText = ""
@@ -404,10 +404,5 @@ final class EarListener: @unchecked Sendable {
             NSLog("ear: on-device partial latency %@", window.description)
         }
         window = LatencyWindow(); wordSum = 0; floorSum = 0
-    }
-
-    /// The window so far, for harnesses. On the caller's thread; a snapshot.
-    func latencyWindow() -> LatencyWindow {
-        queue.sync { window }
     }
 }

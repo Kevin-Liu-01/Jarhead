@@ -189,12 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             crashNotice = nil
         }
 
-        // Setup wizard on first run (once the daemon has told us the settings). The
-        // payload carries the value; the snapshot itself is still the old one in here.
+        // Setup wizard on first run (once the daemon has told us the settings: the empty
+        // snapshot's defaults are skipped). The payload carries the value; the snapshot
+        // itself is still the old one in here.
         state.$snapshot
-            .map { (s: Snapshot) -> Bool? in s.settings.onboarded }
+            .filter { $0 != .empty }
+            .map { (s: Snapshot) -> Bool in s.settings.onboarded }
             .removeDuplicates()
-            .sink { [weak self] (onboarded: Bool?) in MainActor.assumeIsolated { self?.checkFirstRun(onboarded: onboarded) } }
+            .sink { [weak self] (onboarded: Bool) in MainActor.assumeIsolated { self?.checkFirstRun(onboarded: onboarded) } }
             .store(in: &cancellables)
 
         // Surface.
@@ -300,9 +302,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// First snapshot from the daemon: if setup never finished, open the wizard once.
-    /// `onboarded` is the value just published (nil until the daemon has spoken).
-    private func checkFirstRun(onboarded: Bool?) {
-        guard !firstRunChecked, let onboarded, state.connected else { return }
+    /// `onboarded` is the value just published.
+    private func checkFirstRun(onboarded: Bool) {
+        guard !firstRunChecked, state.connected else { return }
         firstRunChecked = true
         if !onboarded { onboarding.show() }
     }
@@ -358,8 +360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.transportStop()
         case .markScreen:
             state.beginMarkMode()
-        case .transportToggle, .transportToggleAlias:
-            // ⌥⇧Space (and ⌥⇧P, the same toggle): go when asleep or paused, pause in session.
+        case .transportToggle:
+            // ⌥⇧Space: go when asleep or paused, pause in session.
             state.transportToggle()
         }
     }
@@ -405,14 +407,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for url in urls where url.scheme == "jarhead" {
             let verb = url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             switch verb {
-            case "go", "wake", "resume":
-                // The transport's Go (`wake` and `resume` are the old names for it). Anything
-                // on this Mac (or a browser) can open a URL: while the gate is on and the
-                // engine is dormant, the URL authenticates like the spoken word; while
-                // paused it resumes like the word does, without authentication (WakeGate.heard).
+            case "go":
+                // The transport's Go. Anything on this Mac (or a browser) can open a URL: while
+                // the gate is on and the engine is dormant, the URL authenticates like the spoken
+                // word; while paused it resumes like the word does, without authentication
+                // (WakeGate.heard).
                 if !wake.requestWake(source: "jarhead://\(verb)") { state.transportGo() }
             case "pause": state.transportPause()
-            case "stop", "sleep": state.transportStop()
+            case "stop": state.transportStop()
             case "orb": orb.summon()
             case "setup": state.openOnboarding()
             default: console.show()
@@ -442,10 +444,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - helpers
 
+    /// The bundle's icns; from a `swift build` binary, the checkout's build/Jarhead.icns when it has been made.
     private func installDockIcon() {
         let candidates = [
             Bundle.main.url(forResource: "Jarhead", withExtension: "icns"),
-            URL(fileURLWithPath: "/Users/kevinliu/jarvis/build/Jarhead.icns"),
+            RepoLocator.repoRoot()?.appendingPathComponent("build/Jarhead.icns"),
         ]
         for url in candidates.compactMap({ $0 }) where FileManager.default.fileExists(atPath: url.path) {
             if let image = NSImage(contentsOf: url) {

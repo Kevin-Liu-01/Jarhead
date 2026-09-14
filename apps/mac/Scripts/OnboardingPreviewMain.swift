@@ -269,14 +269,25 @@ struct OnboardingFakeData {
     let now = Date().timeIntervalSince1970 * 1000
     func ago(_ s: Double) -> Double { now - s * 1000 }
 
-    func settings(brain: BrainKind, model: String, baseUrl: String? = nil, onboarded: Bool?, wake: WakeSettings) -> Settings {
-        Settings(voice: "cedar", brain: brain, brainModel: model, brainBaseUrl: baseUrl, effort: "medium", micDeviceId: nil,
-                 idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: wake, onboarded: onboarded)
+    func settings(brain: BrainKind, model: String, baseUrl: String? = nil, onboarded: Bool, wake: WakeSettings) -> Settings {
+        Settings(voice: "cedar", brain: brain, brainModel: model, brainBaseUrl: baseUrl, effort: "medium", onboarded: onboarded, micDeviceId: nil,
+                 idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: wake, reflexes: true, orbHome: "notch", ledgerRetentionDays: 0, shotsRetentionDays: 14,
+                 threads: true, language: "en", accent: "american", memory: true, observe: true, typedWakes: false, threadOverflow: "supersede", warmThreads: 2)
+    }
+
+    /// Snapshot.permissions: the canned rows with the three the hands and the voice need overridden.
+    func permissions(microphone: Grant, screenRecording: Grant, accessibility: Grant) -> Permissions {
+        let overrides: [PermissionKind: Grant] = [.microphone: microphone, .screenRecording: screenRecording, .accessibility: accessibility]
+        return Permissions(all: OnboardingFakePermissions.list(scenario: "ready").map { row in
+            var r = row
+            if let g = overrides[row.kind] { r.grant = g }
+            return r
+        })
     }
 
     func agents() -> [AgentInfo] {
         [
-            AgentInfo(id: "sessions:cc:1", kind: .sessions, name: "jarvis · console", status: .working, detail: "Claude Code — editing UI/Console", cwd: "/Users/kevinliu/jarvis/apps/mac", updatedAt: ago(120)),
+            AgentInfo(id: "sessions:cc:1", kind: .sessions, name: "jarhead · console", status: .working, detail: "Claude Code — editing UI/Console", cwd: "/Users/kevinliu/jarvis/apps/mac", updatedAt: ago(120)),
             AgentInfo(id: "sessions:cc:2", kind: .sessions, name: "kevin-wiki", status: .idle, detail: "Claude Code — waiting for input", cwd: "/Users/kevinliu/Documents/GitHub/kevin-wiki", updatedAt: ago(31 * 60)),
             AgentInfo(id: "sessions:codex:1", kind: .sessions, name: "gt · api hotfix", status: .done, detail: "Codex — opened PR #412", cwd: "/Users/kevinliu/gt/apps/api", updatedAt: ago(48 * 60)),
             AgentInfo(id: "claude-code:jarhead", kind: .claudeCode, name: "brain", status: .idle, detail: "Idle", cwd: "/Users/kevinliu", updatedAt: ago(3)),
@@ -294,38 +305,38 @@ struct OnboardingFakeData {
     func ready() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: false),
                  settings: settings(brain: .claudeCode, model: "claude-opus-5", onboarded: false, wake: .standard),
-                 permissions: Permissions(microphone: .granted, screenRecording: .granted, accessibility: .denied),
+                 permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .denied),
                  problems: [], brainReady: true, handsReady: false,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · claude-opus-5 · logged in as kevin", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)))
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)), marks: [], threads: [])
     }
 
     /// Brain "auto", resolved by the engine to Claude Code; no explicit model.
     func auto() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
                  settings: settings(brain: .auto, model: "", onboarded: true, wake: .standard),
-                 permissions: Permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
+                 permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
                  problems: [], brainReady: true, handsReady: true,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · logged in as kevin", brainResolved: .claudeCode, liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)))
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)), marks: [], threads: [])
     }
 
     func fresh() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: [], connectors: [ConnectorHealth(kind: .sessions, ok: true, detail: "No sessions found")],
                  settings: settings(brain: .claudeCode, model: "claude-opus-5", onboarded: false, wake: WakeSettings(enabled: true, phrases: ["jarhead", "hey jarhead"], auth: .either)),
-                 permissions: Permissions(microphone: .unknown, screenRecording: .denied, accessibility: .denied),
+                 permissions: permissions(microphone: .unknown, screenRecording: .denied, accessibility: .denied),
                  problems: [], brainReady: false, handsReady: false,
                  setup: SetupStatus(openaiKey: .missing, brain: .unavailable, brainDetail: "claude: not logged in — run `claude` once in a terminal", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: false, anthropic: false, brainApiKey: false)))
+                                    secrets: SetupStatus.Secrets(openai: false, anthropic: false, brainApiKey: false)), marks: [], threads: [])
     }
 
     func broken() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
                  settings: settings(brain: .openaiCompatible, model: "qwen3:32b", baseUrl: "http://localhost:11434", onboarded: true,
                                     wake: WakeSettings(enabled: true, phrases: ["jarhead"], auth: .passphrase)),
-                 permissions: Permissions(microphone: .denied, screenRecording: .granted, accessibility: .denied),
-                 problems: ["could not reach api.openai.com: fetch failed"], brainReady: false, handsReady: false,
+                 permissions: permissions(microphone: .denied, screenRecording: .granted, accessibility: .denied),
+                 problems: [Problem(kind: "voice.connection", text: "could not reach api.openai.com: fetch failed", remedy: nil, since: ago(30))], brainReady: false, handsReady: false,
                  setup: SetupStatus(openaiKey: .invalid, brain: .unavailable, brainDetail: "connect ECONNREFUSED 127.0.0.1:11434", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: true)))
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: true)), marks: [], threads: [])
     }
 }

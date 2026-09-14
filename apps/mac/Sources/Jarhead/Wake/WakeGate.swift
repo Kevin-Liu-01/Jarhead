@@ -102,7 +102,7 @@ final class WakeGate {
 
     init(state: AppState) {
         self.state = state
-        inputs = GateInputs(phase: state.snapshot.phase, wake: state.snapshot.settings.wakeSettings)
+        inputs = GateInputs(phase: state.snapshot.phase, wake: state.snapshot.settings.wake)
         connected = state.connected
         enabledByEnvironment = ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] != "1"
 
@@ -124,7 +124,7 @@ final class WakeGate {
         // Phase, wake settings and the connection decide whether we listen. The sink
         // payload is the new value; `state.snapshot` inside the sink is still the old one.
         state.$snapshot
-            .map { (s: Snapshot) -> GateInputs in GateInputs(phase: s.phase, wake: s.settings.wakeSettings) }
+            .map { (s: Snapshot) -> GateInputs in GateInputs(phase: s.phase, wake: s.settings.wake) }
             .removeDuplicates()
             .sink { [weak self] (inputs: GateInputs) in
                 MainActor.assumeIsolated {
@@ -376,8 +376,8 @@ final class WakeGate {
         beginAuthentication(inputs.wake.auth)
     }
 
-    /// A go asked for by something other than the spoken word (the `jarhead://go` URL and
-    /// its old names `wake` / `resume`). While the gate is on and the engine is dormant it
+    /// A go asked for by something other than the spoken word (the `jarhead://go` URL).
+    /// While the gate is on and the engine is dormant it
     /// goes through the same authentication as the word; while paused it resumes as the
     /// word does; it never opens the session by itself. Returns false when the gate is not
     /// in charge (disabled, or a session is open or opening), in which case the caller

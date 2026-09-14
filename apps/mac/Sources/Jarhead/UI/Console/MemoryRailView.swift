@@ -109,7 +109,7 @@ enum MemoryFormat {
 struct MemoryRailList: View {
     /// The snapshot's summary (Snapshot.memory): a change — a run, a Forget, a Restore — re-reads the list.
     let summary: MemorySummary?
-    /// Settings.memoryOn: off, the rows still show (the store stays) but the head says nothing is learned or used.
+    /// Settings.memory: off, the rows still show (the store stays) but the head says nothing is learned or used.
     let enabled: Bool
 
     @Environment(\.consoleActions) private var actions

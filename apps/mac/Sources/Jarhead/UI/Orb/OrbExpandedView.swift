@@ -44,7 +44,7 @@ final class OrbCapsuleModel: ObservableObject {
     var gateListens: Bool { !AppState.voiceAudioRuns(in: phase) }
     /// The gate block shows while the gate listens and the wake word is on — the same
     /// rule as the status menu's row. Paused included: the word resumes.
-    var showsGate: Bool { gateListens && snapshot.settings.wakeSettings.enabled }
+    var showsGate: Bool { gateListens && snapshot.settings.wake.enabled }
 }
 
 struct OrbPill: Equatable {
@@ -74,15 +74,9 @@ final class OrbStatusModel: ObservableObject {
 
 struct OrbCapsuleActions {
     /// Go / Pause — the transport's one button (`AppState.transportToggle`): go when asleep
-    /// or paused, pause in session, stop while connecting. Wire it. Until the controller
-    /// does, the view falls back to the retired `toggleAwake` / `togglePause` by phase
-    /// (`OrbCapsuleView.pressTransport`), so the button keeps working across the change.
-    var transportToggle: (() -> Void)? = nil
-    /// Retired: the capsule has one Go/Pause now. Kept so the controller's memberwise init
-    /// still compiles; the view reads them only as the fallback above.
-    var toggleAwake: () -> Void = {}
+    /// or paused, pause in session, stop while connecting.
+    var transportToggle: () -> Void = {}
     var toggleMute: () -> Void = {}
-    var togglePause: () -> Void = {}
     /// Stop — `AppState.transportStop` (the command, the stop-pressed notification, the
     /// overlay clear, the toast); the controller adds only the capsule's red flash (`stopFlash`).
     var stop: () -> Void = {}
@@ -511,7 +505,7 @@ struct OrbCapsuleView: View {
     /// prompt is open — a ghost Cancel.
     private func gateRow(now: Date, theme: OrbTheme) -> some View {
         let gate = model.wakeGate
-        let settings = model.snapshot.settings.wakeSettings
+        let settings = model.snapshot.settings.wake
         let full = OrbStyle.gateLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now, paused: model.paused)
         let label = OrbStyle.gateRowLabel(gate, phrases: settings.phrases, auth: settings.auth, now: now, paused: model.paused)
         return HStack(alignment: .center, spacing: 8) {
@@ -587,21 +581,8 @@ struct OrbCapsuleView: View {
         }
     }
 
-    /// Go/Pause pressed: `actions.transportToggle` (AppState.transportToggle). Transitional
-    /// fallback while the controller still wires the retired closures: the same decision
-    /// table (AppState.transportPress) dispatched onto them — pause / resume through
-    /// `togglePause`, wake through `toggleAwake`, and a stop while connecting.
-    private func pressTransport() {
-        if let toggle = actions.transportToggle {
-            toggle()
-            return
-        }
-        switch AppState.transportPress(for: model.phase) {
-        case .go: if model.paused { actions.togglePause() } else { actions.toggleAwake() }
-        case .pause: actions.togglePause()
-        case .stop: actions.stop()
-        }
-    }
+    /// Go/Pause pressed: `actions.transportToggle` (AppState.transportToggle decides by phase).
+    private func pressTransport() { actions.transportToggle() }
 
     private func latestStepText(_ d: Delegation) -> String {
         if let step = d.steps.last {

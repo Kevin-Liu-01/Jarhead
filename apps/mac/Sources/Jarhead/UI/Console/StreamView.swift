@@ -23,8 +23,6 @@ struct StreamPane: View, Equatable {
     let ledgerLoading: Bool
     /// Kevin cleared Now then (AppState.nowClearedAt): older items hide, the feed says "Cleared · Undo".
     var clearedAt: Double? = nil
-    /// The delegations' workers (Snapshot.workers): each card shows its own as chips under the timeline.
-    var workers: [Worker] = []
     /// The daemon client is connected (AppState.connected). While it is not, the snapshot on
     /// screen is the last one republished and nothing in it is being typed.
     var connected = true
@@ -40,7 +38,7 @@ struct StreamPane: View, Equatable {
     static func == (a: StreamPane, b: StreamPane) -> Bool {
         a.transcript == b.transcript && a.delegations == b.delegations && a.phase == b.phase && a.hasSession == b.hasSession
             && a.ledgerDay == b.ledgerDay && a.ledgerEntries == b.ledgerEntries && a.ledgerLoading == b.ledgerLoading
-            && a.clearedAt == b.clearedAt && a.workers == b.workers && a.connected == b.connected
+            && a.clearedAt == b.clearedAt && a.connected == b.connected
             && a.threads == b.threads && a.typedWakes == b.typedWakes
     }
 
@@ -74,8 +72,8 @@ struct StreamPane: View, Equatable {
                     .transition(Motion.appear)
             }
             ZStack {
-                // A past day's workers are its `worker` rows (system lines); only the live feed has the list.
-                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear, workers: ledgerDay == nil ? workers : [],
+                // A past day's threads are its `thread.*` rows (system lines); only the live feed has the list.
+                StreamFeed(entries: entries, modeKey: feedKey, emptyState: emptyState, undo: undoClear,
                            caretsOn: Self.caretsOn(ledgerDay: ledgerDay, hasSession: hasSession, connected: connected),
                            threads: ledgerDay == nil ? threads : [])
                     // The live feed's confirm rows answer the main conversation's question
@@ -409,13 +407,11 @@ struct StreamFeed: View {
     var scrollToId: String? = nil
     /// The empty state's Undo (the cleared Now).
     var undo: () -> Void = {}
-    /// The live delegations' workers; each card is handed its own (StreamEntry.workers(from:))
-    /// and every other row none, so a worker's tick leaves those rows equal. [] for a past day.
-    var workers: [Worker] = []
     /// The streaming caret may show (StreamPane.caretsOn): only the live feed with a session
     /// open and the daemon connected. Off for a ledger day and a past Jarhead conversation.
     var caretsOn = false
-    /// The live threads; each card is handed the ones it started (StreamEntry.threads(from:)). [] elsewhere.
+    /// The live threads; each card is handed the ones it started (StreamEntry.threads(from:)) and
+    /// every other row none, so a thread's tick leaves those rows equal. [] for a past day.
     var threads: [WorkThread] = []
     /// "Load earlier" at the top while more remains (a ThreadPane's paged stream); nil draws none.
     var earlier: StreamEarlier? = nil
@@ -466,8 +462,7 @@ struct StreamFeed: View {
                             VStack(alignment: .leading, spacing: 0) {
                                 if let earlier { loadEarlierRow(earlier) }
                                 ForEach(entries) { entry in
-                                    StreamRow(entry: entry, workers: entry.workers(from: workers), caret: entry.id == caretId,
-                                              threads: entry.threads(from: threads))
+                                    StreamRow(entry: entry, caret: entry.id == caretId, threads: entry.threads(from: threads))
                                         .rowAppear(animated: settled && !loadingEarlier)
                                         // The found row's ground, on its own opacity: the layout never moves.
                                         .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.active).opacity(highlightId == entry.id ? 1 : 0))
@@ -665,19 +660,17 @@ struct JumpPillStyle: ButtonStyle {
 
 struct StreamRow: View, Equatable {
     let entry: StreamEntry
-    /// This row's workers — a delegation card's own (StreamEntry.workers(from:)); [] for the
-    /// rest, so a hand's status turning re-evaluates its card and nothing else in the feed.
-    var workers: [Worker] = []
     /// This row may carry the streaming caret (the feed's newest utterance, in a live feed with
     /// a session open and the daemon connected); the item's `final` still decides whether it does.
     var caret = false
-    /// This card's spawned threads (StreamEntry.threads(from:)); [] for the rest.
+    /// This card's spawned threads (StreamEntry.threads(from:)); [] for the rest, so a thread's
+    /// status turning re-evaluates its card and nothing else in the feed.
     var threads: [WorkThread] = []
 
     var body: some View {
         switch entry {
         case .utterance(let t): UtteranceRow(item: t, caret: caret)
-        case .delegation(let d): DelegationCard(delegation: d, workers: workers, threads: threads)
+        case .delegation(let d): DelegationCard(delegation: d, threads: threads)
         case .system(let s): SystemRow(entry: s)
         }
     }
@@ -781,13 +774,11 @@ struct SystemRow: View {
 // MARK: - Delegation card
 
 /// The status glyph and the timeline's last mark crossfade as the delegation settles;
-/// steps, the workers' chips and the summary arriving after the card fade in and rise on
+/// steps, the threads' chips and the summary arriving after the card fade in and rise on
 /// their own ink (`rowAppear`), so the card — and the document under it — takes its new
 /// height at once and the feed's pinned bottom never chases an animated layout.
 struct DelegationCard: View {
     let delegation: Delegation
-    /// This delegation's workers (its second pair of hands), as chips under the timeline.
-    var workers: [Worker] = []
     /// The threads this delegation started (`Thread.parentDelegationId`), as chips that open their panes.
     var threads: [WorkThread] = []
 
@@ -815,11 +806,6 @@ struct DelegationCard: View {
 
             DelegationTimeline(timings: d.timings, status: d.status, tone: meta.color)
                 .padding(EdgeInsets(top: 7, leading: 10, bottom: 4, trailing: 10))
-
-            if !workers.isEmpty {
-                WorkerStrip(workers: workers, animated: settled)
-                    .padding(EdgeInsets(top: 2, leading: 10, bottom: 4, trailing: 10))
-            }
 
             if !threads.isEmpty {
                 ThreadStrip(threads: threads, animated: settled)
@@ -860,49 +846,6 @@ struct DelegationCard: View {
         .onAppear { DispatchQueue.main.async { settled = true } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Delegation, \(meta.label)")
-    }
-}
-
-/// The delegation's workers as chips in one wrapping row: `● Spotify · working`. A chip
-/// arriving fades in and rises on its own ink (`rowAppear`); its glyph and word crossfade as
-/// the hand finishes. Flat: a hairline box on the ground, no fill. Nothing here animates
-/// layout — a chip takes its width on the frame it changes, so the feed's pinned bottom holds.
-struct WorkerStrip: View {
-    let workers: [Worker]
-    /// False while the card is arriving: chips there from the start show at once.
-    var animated = true
-
-    var body: some View {
-        ConsoleFlow(hSpacing: 6, vSpacing: 6) {
-            ForEach(workers) { w in
-                WorkerChip(worker: w).rowAppear(animated: animated)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Workers: " + workers.map { "\($0.name) \($0.status.words)" }.joined(separator: ", "))
-    }
-}
-
-private struct WorkerChip: View {
-    let worker: Worker
-
-    var body: some View {
-        let meta = ConsoleTheme.worker(worker.status)
-        HStack(spacing: 4) {
-            ConsoleWorkerGlyph(status: worker.status)
-            Text(worker.name).font(ConsoleTheme.sans(11, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
-            Text("· \(meta.label)").font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
-                .contentTransition(.opacity)
-                .animation(Motion.fade, value: meta.label)
-        }
-        .padding(.trailing, 8)
-        .frame(height: 22)
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-        .fixedSize()
-        .help([worker.name, ConsoleTheme.lane(worker.lane), worker.task, worker.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(worker.name), \(meta.label), \(ConsoleTheme.lane(worker.lane)) lane")
     }
 }
 
@@ -964,9 +907,9 @@ private struct ThreadChip: View {
     }
 }
 
-/// `[Spotify]` on a step a worker ran (`DelegationStep.worker`): the hand's name in mono
-/// on the step's line, so the parent's own steps and its workers' read apart at a glance.
-private struct WorkerTag: View {
+/// `[Spotify]` on a step a spawned thread ran (`DelegationStep.thread`): the thread's name in
+/// mono on the step's line, so the parent's own steps and its threads' read apart at a glance.
+private struct ThreadTag: View {
     let name: String
     var body: some View {
         Text("[\(name)]").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
@@ -1141,7 +1084,7 @@ struct StepRow: View {
                 }
             }
             .animation(Motion.fade, value: live)
-            if let name = step.worker, name != "Jarhead" { WorkerTag(name: name) }
+            if let name = step.thread, name != "Jarhead" { ThreadTag(name: name) }
             content()
                 .lineSpacing(2)
                 .textSelection(.enabled)
@@ -1187,7 +1130,7 @@ struct ToolStepRow: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: iconGap) {
                 ConsoleIcon(name: "terminal.fill")
-                if let name = step.worker, name != "Jarhead" { WorkerTag(name: name) }
+                if let name = step.thread, name != "Jarhead" { ThreadTag(name: name) }
                 Button {
                     // Unfolds on its own once pressed: Motion.gentle, the chevron turning with it.
                     withAnimation(Motion.gentle) { expanded.toggle() }

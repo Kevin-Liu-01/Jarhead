@@ -86,8 +86,6 @@ struct AgentsRail: View, Equatable {
     /// Jarhead's threads in the rail's order (AppState.orderedThreads: waiting on Kevin → busy →
     /// the idle main → finished within the linger); [] draws no section.
     var threads: [WorkThread] = []
-    /// The daemon speaks threads (AppState.threadsKnown); an older one never gets the section.
-    var threadsKnown = false
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -97,7 +95,7 @@ struct AgentsRail: View, Equatable {
 
     static func == (a: AgentsRail, b: AgentsRail) -> Bool {
         a.agents == b.agents && a.connectors == b.connectors && a.jarhead == b.jarhead && a.now == b.now
-            && a.hiddenAgents == b.hiddenAgents && a.trash == b.trash && a.threads == b.threads && a.threadsKnown == b.threadsKnown
+            && a.hiddenAgents == b.hiddenAgents && a.trash == b.trash && a.threads == b.threads
     }
 
     /// What is selected, for the glide when the selection moves without a click (a
@@ -107,8 +105,8 @@ struct AgentsRail: View, Equatable {
             ?? session.openThreadId.map { "thread:\($0)" } ?? "now"
     }
 
-    /// The Threads section is drawn: the daemon speaks threads and lists at least one.
-    private var showsThreads: Bool { threadsKnown && !threads.isEmpty }
+    /// The Threads section is drawn: the engine lists at least one spawned thread.
+    private var showsThreads: Bool { !threads.isEmpty }
     /// The rows' order and status, so a status turning reflows the section under Motion.gentle.
     private var threadsKey: [String] { threads.map { "\($0.id)|\($0.status.rawValue)" } }
 

@@ -5,24 +5,27 @@ import Foundation
 // does it — the frame read as [String: Any], the `snapshot` sub-object re-serialised
 // and decoded as Snapshot, every `ledger.rows` row decoded on its own so one odd row
 // never hides the day. Not part of the package; compiled only by
-// Scripts/protocol-probe.sh over Protocol.swift and this file — no AppKit, no
-// SwiftUI, no AppState, so it runs anywhere swiftc does.
+// Scripts/protocol-probe.sh over the Model and Console sources and this file (the Console
+// sources for ConsoleFormat.tombstone and StreamBuilder, which the old-rows check below
+// drives) — no window, no AppState instance, no daemon.
 //
-// What it proves, per fixture (Scripts/fixtures/*.json, each a JSON array of frames):
-//   - the whole capture decodes: a daemon from before workers (snapshot-f6c3b40.json —
-//     no `workers`, no `settings.workers`, no worker or sleep rows) as well as one that
-//     has them (snapshot-workers.json);
-//   - a worker status or lane this app does not know decodes to the documented default
-//     (.working / .background) instead of failing the snapshot — every worker's raw
-//     JSON is compared against its decoded value;
-//   - `settings.workers` absent → workersOn; `DelegationStep.worker` (the [Name] chip)
-//     survives on snapshot steps and `delegation.step` rows; `worker` and `sleep` ledger
-//     rows keep their columns (the worker record vs its raw JSON; cause, phrase,
-//     sessionId, farewell);
-//   - the commands the app sends for these features encode as the daemon's
-//     isEngineCommand expects: {"type":"sleep","cause":…} and {"type":"worker.stop","workerId":…},
-//     and the eight thread.* commands ({"type":"thread.open","threadId":…,"viewer":…} …);
-//   - threads (snapshot-threads.json): `snapshot.threads` record for record against the raw
+// What it proves over Scripts/fixtures/snapshot-threads.json (a JSON array of frames in
+// packages/protocol's shapes — the probe is what keeps the fixture faithful to the contract):
+//   - the whole capture decodes: Settings with every required field present (`threads`, the
+//     language / accent / memory / observe / typedWakes / threadOverflow / warmThreads knobs),
+//     `permissions.all` row for row, `problems` typed (kind, text, remedy), `setup`, `marks`
+//     and `threads` present in every snapshot;
+//   - `DelegationStep.thread` (the [Name] tag) survives on snapshot steps and `delegation.step`
+//     rows; `sleep` ledger rows keep their columns (cause, phrase, sessionId, farewell);
+//   - the commands the app sends encode as the daemon's isEngineCommand expects:
+//     {"type":"sleep","cause":…} and the eight thread.* commands
+//     ({"type":"thread.open","threadId":…,"viewer":…} …);
+//   - the ONE compatibility, over the three rows appended to the fixture's `ledger.rows` frame
+//     as day files before 2026-09-13 hold them: a row of the retired type decodes (all-optional
+//     columns) and is skipped — ConsoleFormat.tombstone is nil, StreamBuilder yields no entry; a
+//     `delegation.step` whose step carries the retired key decodes with step.thread nil (the tag
+//     is lost, the step is main's); a `session.started` without `language` decodes with language nil;
+//   - threads: `snapshot.threads` record for record against the raw
 //     JSON — a status or lane this app does not know decodes to .thinking / .background, a
 //     live thread never reads as finished — plus `Delegation.threadId` / `stepCount`,
 //     `TranscriptItem.source`, the new Settings knobs; every `thread.event` kind
@@ -90,8 +93,6 @@ struct Probe {
         check(dock["type"] as? String == "sleep" && dock["cause"] as? String == "dock", "sleepCause(\"dock\") → \(compact(dock))")
         let bare = EngineCommand.sleep.json
         check(bare["type"] as? String == "sleep" && bare["cause"] == nil, ".sleep stays the bare sleep → \(compact(bare))")
-        let stop = EngineCommand.workerStop(workerId: "w_7f3a").json
-        check(stop["type"] as? String == "worker.stop" && stop["workerId"] as? String == "w_7f3a", "workerStop → \(compact(stop))")
 
         // The eight thread.* commands, as packages/protocol's ENGINE_COMMAND_TYPES spells them.
         let open = EngineCommand.threadOpen(threadId: "t_9a1c", viewer: "p1").json
@@ -155,47 +156,43 @@ struct Probe {
         if let s = snap.session { line += " · session \(s.id) · \(Int(s.usageSeconds)) s" }
         check(true, line)
 
-        // settings.workers: absent on an older daemon → on (the Swift default), present → as sent.
-        let rawWorkers = (raw["settings"] as? [String: Any])?["workers"]
-        let wanted = (rawWorkers as? Bool) ?? true
-        check(snap.settings.workersOn == wanted, "settings.workers \(rawWorkers.map { "\($0)" } ?? "absent") → workersOn \(snap.settings.workersOn)")
-
-        // Steps, and the worker chip on each: the decoded `worker` column must equal the raw one,
-        // step for step — a renamed key or a dropped optional would silently lose the [Name] chip.
+        // Steps, and the thread tag on each: the decoded `thread` column must equal the raw one,
+        // step for step — a renamed key or a dropped optional would silently lose the [Name] tag.
         let steps = snap.delegations.flatMap(\.steps)
         let rawSteps = (raw["delegations"] as? [[String: Any]] ?? []).flatMap { ($0["steps"] as? [[String: Any]]) ?? [] }
-        let byWorkers = steps.map(\.worker)
-        let rawByWorkers = rawSteps.map { $0["worker"] as? String }
-        let chips = Set(byWorkers.compactMap { $0 }).sorted().joined(separator: ", ")
-        let named = byWorkers.compactMap { $0 }.count
-        check(steps.count == rawSteps.count && byWorkers == rawByWorkers,
-              "delegations \(snap.delegations.count) · steps \(steps.count) · \(named == 0 ? "none by workers" : "\(named) by workers: \(chips)") (as raw)")
+        let byThreads = steps.map(\.thread)
+        let rawByThreads = rawSteps.map { $0["thread"] as? String }
+        let tags = Set(byThreads.compactMap { $0 }).sorted().joined(separator: ", ")
+        let named = byThreads.compactMap { $0 }.count
+        check(steps.count == rawSteps.count && byThreads == rawByThreads,
+              "delegations \(snap.delegations.count) · steps \(steps.count) · \(named == 0 ? "none by spawned threads" : "\(named) by spawned threads: \(tags)") (as raw)")
 
-        // Workers: count against the raw array, then every worker's raw record against its decoded value.
-        let rawList = raw["workers"] as? [[String: Any]]
-        let where_ = rawList == nil ? "no workers field: a daemon from before them" : "\(snap.runningWorkers.count) running"
-        check(snap.allWorkers.count == (rawList?.count ?? 0), "workers \(snap.allWorkers.count) (\(where_))")
-        for (w, rw) in zip(snap.allWorkers, rawList ?? []) {
-            let (ok, what) = workerMatches(w, rw)
-            check(ok, what)
-        }
+        // Permissions: the row list, kind for kind and grant for grant.
+        let rawPerms = (raw["permissions"] as? [String: Any])?["all"] as? [[String: Any]]
+        let permsOk = rawPerms != nil && snap.permissions.all.count == (rawPerms?.count ?? -1)
+            && zip(snap.permissions.all, rawPerms ?? []).allSatisfy { $0.kind.rawValue == $1["kind"] as? String && $0.grant.rawValue == $1["grant"] as? String && $0.required == $1["required"] as? Bool }
+        check(permsOk, "permissions.all \(snap.permissions.all.count) rows · \(snap.permissions.all.filter { $0.grant == .granted }.count) granted · missing required \(snap.permissions.missingRequired.map(\.rawValue)) (as raw)")
+
+        // Problems: typed, kind and remedy label for label.
+        let rawProblems = raw["problems"] as? [[String: Any]] ?? []
+        let problemsOk = snap.problems.count == rawProblems.count
+            && zip(snap.problems, rawProblems).allSatisfy { $0.kind == $1["kind"] as? String && $0.text == $1["text"] as? String && $0.remedy?.label == ($1["remedy"] as? [String: Any])?["label"] as? String }
+        check(problemsOk, "problems \(snap.problems.count)\(snap.problems.isEmpty ? "" : ": " + snap.problems.map { "\($0.kind) → \($0.remedy?.label ?? "Retry")" }.joined(separator: ", ")) (as raw)")
+        check(snap.marks.count == (raw["marks"] as? [Any])?.count, "marks \(snap.marks.count) · setup \(snap.setup.brain.rawValue) · \(snap.setup.brainResolved?.rawValue ?? "unresolved") (as raw)")
 
         // Threads: count against the raw array, every record against its raw JSON, and the
         // live / spawned splits the rail and the fleet read — a status this app does not know
         // must read as a live thinking thread, never as finished (a satellite would vanish).
-        let rawThreads = raw["threads"] as? [[String: Any]]
-        let whereT = rawThreads == nil ? "no threads field: a daemon from before them" : "\(snap.liveThreads.count) live · \(snap.spawnedLiveThreads.count) spawned live"
-        check(snap.allThreads.count == (rawThreads?.count ?? 0), "threads \(snap.allThreads.count) (\(whereT))")
-        for (t, rt) in zip(snap.allThreads, rawThreads ?? []) {
+        let rawThreads = raw["threads"] as? [[String: Any]] ?? []
+        check(raw["threads"] != nil && snap.threads.count == rawThreads.count, "threads \(snap.threads.count) (\(snap.liveThreads.count) live · \(snap.spawnedLiveThreads.count) spawned live)")
+        for (t, rt) in zip(snap.threads, rawThreads) {
             let (ok, what) = threadMatches(t, rt)
             check(ok, what)
         }
-        if let rawThreads {
-            let rawLive = rawThreads.filter { !threadTerminal.contains($0["status"] as? String ?? "") }.count
-            let rawSpawned = rawThreads.filter { !threadTerminal.contains($0["status"] as? String ?? "") && $0["id"] as? String != "main" }.count
-            check(snap.liveThreads.count == rawLive && snap.spawnedLiveThreads.count == rawSpawned,
-                  "liveThreads \(snap.liveThreads.count) = raw statuses outside done/failed/stopped; spawned live \(snap.spawnedLiveThreads.map(\.name).joined(separator: ", "))")
-        }
+        let rawLive = rawThreads.filter { !threadTerminal.contains($0["status"] as? String ?? "") }.count
+        let rawSpawned = rawThreads.filter { !threadTerminal.contains($0["status"] as? String ?? "") && $0["id"] as? String != "main" }.count
+        check(snap.liveThreads.count == rawLive && snap.spawnedLiveThreads.count == rawSpawned,
+              "liveThreads \(snap.liveThreads.count) = raw statuses outside done/failed/stopped; spawned live \(snap.spawnedLiveThreads.map(\.name).joined(separator: ", "))")
 
         // A thread's delegation keeps its threadId and (in the small snapshot) its stepCount, card for card.
         let rawDelegations = raw["delegations"] as? [[String: Any]] ?? []
@@ -212,12 +209,16 @@ struct Probe {
         let sources = snap.transcript.map(\.source)
         check(sources == rawItems.map { $0["source"] as? String }, "transcript \(snap.transcript.count) · \(sources.compactMap { $0 }.count) typed (source as raw)")
 
-        // The knobs this pass added, as sent (absent on an older daemon → nil).
+        // The settings, every required field as sent.
         let rs = raw["settings"] as? [String: Any] ?? [:]
-        let knobsOk = snap.settings.observe == rs["observe"] as? Bool && snap.settings.replayFinish == rs["replayFinish"] as? Bool
+        let knobsOk = snap.settings.threads == rs["threads"] as? Bool && snap.settings.observe == rs["observe"] as? Bool
             && snap.settings.typedWakes == rs["typedWakes"] as? Bool && snap.settings.threadOverflow == rs["threadOverflow"] as? String
-            && snap.settings.warmThreads == rs["warmThreads"] as? Int
-        let knobs = "observe \(snap.settings.observe.map { "\($0)" } ?? "absent") · replayFinish \(snap.settings.replayFinish.map { "\($0)" } ?? "absent") · typedWakes \(snap.settings.typedWakes.map { "\($0)" } ?? "absent") · threadOverflow \(snap.settings.threadOverflow ?? "absent") · warmThreads \(snap.settings.warmThreads.map { "\($0)" } ?? "absent")"
+            && snap.settings.warmThreads == rs["warmThreads"] as? Int && snap.settings.language == rs["language"] as? String
+            && snap.settings.accent == rs["accent"] as? String && snap.settings.memory == rs["memory"] as? Bool
+            && snap.settings.onboarded == rs["onboarded"] as? Bool && snap.settings.reflexes == rs["reflexes"] as? Bool
+            && snap.settings.orbHome == rs["orbHome"] as? String && snap.settings.wake.enabled == (rs["wake"] as? [String: Any])?["enabled"] as? Bool
+            && snap.settings.ledgerRetentionDays == rs["ledgerRetentionDays"] as? Int && snap.settings.shotsRetentionDays == rs["shotsRetentionDays"] as? Int
+        let knobs = "threads \(snap.settings.threads) · observe \(snap.settings.observe) · typedWakes \(snap.settings.typedWakes) · threadOverflow \(snap.settings.threadOverflow) · warmThreads \(snap.settings.warmThreads) · \(snap.settings.language) / \(snap.settings.accent) · memory \(snap.settings.memory) · notch \(snap.settings.livesInNotch)"
         check(knobsOk, "settings \(knobs) (as raw)")
     }
 
@@ -363,24 +364,6 @@ struct Probe {
         }
     }
 
-    /// A decoded Worker against its raw JSON: id, name and steps verbatim; status and lane
-    /// verbatim when this app knows the string, the documented default when it does not.
-    func workerMatches(_ w: Worker, _ rw: [String: Any]) -> (Bool, String) {
-        let rawStatus = rw["status"] as? String ?? "?"
-        let rawLane = rw["lane"] as? String ?? "?"
-        let knownStatus = WorkerStatus(rawValue: rawStatus) != nil
-        let knownLane = WorkerLane(rawValue: rawLane) != nil
-        var what = "\(w.name) · \(w.lane.rawValue) · \(w.status.rawValue)"
-        if !knownStatus { what += " (raw \"\(rawStatus)\" unknown to this app → .working)" }
-        if !knownLane { what += " (raw lane \"\(rawLane)\" unknown to this app → .background)" }
-        what += " · \(w.steps) steps · \(w.status.isRunning ? "running" : "finished")"
-        if let d = w.detail { what += " · \(d)" }
-        let statusOk = knownStatus ? w.status.rawValue == rawStatus : w.status == .working
-        let laneOk = knownLane ? w.lane.rawValue == rawLane : w.lane == .background
-        let recordOk = w.id == rw["id"] as? String && w.name == rw["name"] as? String && w.steps == rw["steps"] as? Int && w.delegationId == rw["delegationId"] as? String
-        return (statusOk && laneOk && recordOk, what)
-    }
-
     mutating func rows(_ any: Any?, frame: Int) {
         guard let raw = any as? [Any] else { check(false, "frame \(frame): ledger.rows carries rows"); return }
         // EngineClient.decodeRows: one row at a time, a bad row skipped. In a fixture every row
@@ -394,19 +377,33 @@ struct Probe {
         check(skipped.isEmpty, "frame \(frame): \(pairs.count) of \(raw.count) rows decode\(skipped.isEmpty ? "" : "; skipped \(skipped.joined(separator: ", "))")")
         print("  row types: \(pairs.map(\.row.type).joined(separator: " "))")
 
-        // delegation.step rows: the worker chip, row for row, as raw (nil where the main brain ran it).
+        // delegation.step rows: the thread tag, row for row, as raw (nil where the main brain ran it).
         let stepRows = pairs.filter { $0.row.type == "delegation.step" }
         if !stepRows.isEmpty {
-            let decodedChips = stepRows.map { $0.row.step?.worker }
-            let rawChips = stepRows.map { ($0.raw["step"] as? [String: Any])?["worker"] as? String }
-            let named = rawChips.compactMap { $0 }
-            check(decodedChips == rawChips && stepRows.allSatisfy { $0.row.step != nil },
-                  "\(stepRows.count) delegation.step rows → \(named.isEmpty ? "no worker chips" : "worker chips \(named.joined(separator: ", "))") (as raw)")
+            let decodedTags = stepRows.map { $0.row.step?.thread }
+            let rawTags = stepRows.map { ($0.raw["step"] as? [String: Any])?["thread"] as? String }
+            let named = rawTags.compactMap { $0 }
+            check(decodedTags == rawTags && stepRows.allSatisfy { $0.row.step != nil },
+                  "\(stepRows.count) delegation.step rows → \(named.isEmpty ? "no thread tags" : "thread tags \(named.joined(separator: ", "))") (as raw)")
         }
-        for (rw, r) in pairs where r.type == "worker" {
-            guard let w = r.worker, let rawW = rw["worker"] as? [String: Any] else { check(false, "worker row → the worker record decodes"); continue }
-            let (ok, what) = workerMatches(w, rawW)
-            check(ok, "worker row → \(what)")
+
+        // The ONE compatibility: rows as day files before 2026-09-13 hold them decode and are skipped, never a crash.
+        print("  rows from before 2026-09-13:")
+        let oldTypeRows = pairs.filter { $0.row.type == "worker" } // the row type day files before 2026-09-13 hold
+        check(!oldTypeRows.isEmpty, "the fixture carries a `worker` row, a step keyed `worker` and a session.started without language (before 2026-09-13)")
+        for (_, r) in oldTypeRows {
+            let noLine = StreamBuilder.fromLedger([r]).isEmpty
+            check(ConsoleFormat.tombstone(r) == nil && noLine, "a `\(r.type)` row (before 2026-09-13) decodes as \(r.id) and is skipped: tombstone nil, no stream entry")
+        }
+        for (rw, r) in stepRows where (rw["step"] as? [String: Any])?["worker"] != nil { // the step key from before 2026-09-13
+            check(r.step != nil && r.step?.thread == nil, "a delegation.step whose step says `worker` (before 2026-09-13) decodes with step.thread nil — the tag is lost, the step is main's")
+        }
+        for (rw, r) in pairs where r.type == "session.started" && rw["language"] == nil {
+            check(r.language == nil && r.accent == nil && r.sessionId == rw["sessionId"] as? String && r.voice == rw["voice"] as? String,
+                  "session.started \(r.sessionId ?? "?") without language (before 2026-09-13) decodes: voice \(r.voice ?? "?") · language nil")
+        }
+        for (rw, r) in pairs where r.type == "session.started" && rw["language"] != nil {
+            check(r.language == rw["language"] as? String && r.accent == rw["accent"] as? String, "session.started \(r.sessionId ?? "?") · \(r.language ?? "?") / \(r.accent ?? "?") (as raw)")
         }
         for (rw, r) in pairs where r.type == "sleep" {
             let cue = r.phrase.map { " · \"\($0)\"" } ?? ""

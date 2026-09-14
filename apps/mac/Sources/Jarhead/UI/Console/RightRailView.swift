@@ -28,8 +28,8 @@ struct RightRail: View, Equatable {
     let tab: ConsoleSession.Tab
     let wake: WakeGateInputs
     /// Jarhead's threads in the rail's order (AppState.orderedThreads, kept from events with the
-    /// five-minute linger); nil from a daemon without threads — the Workers section stands then.
-    var threads: [WorkThread]? = nil
+    /// five-minute linger).
+    var threads: [WorkThread] = []
 
     @EnvironmentObject private var session: ConsoleSession
 
@@ -54,12 +54,12 @@ struct RightRail: View, Equatable {
                         NowPanel(phase: snapshot.phase, sessionInfo: snapshot.session, pause: snapshot.pause, usageToday: snapshot.usageToday,
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
-                                 brain: snapshot.settings.brain, marks: snapshot.screenMarks, problemsTyped: snapshot.problemsTyped,
-                                 workers: snapshot.allWorkers, memory: snapshot.memory, threads: threads,
+                                 brain: snapshot.settings.brain, marks: snapshot.marks,
+                                 memory: snapshot.memory, threads: threads,
                                  openThread: { [session] id in withAnimation(Motion.wipeAnimation) { session.openThread(id) } })
                             .transition(.identity)
                     case .settings:
-                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setupStatus, phase: snapshot.phase, gate: wake, trash: snapshot.trash,
+                        SettingsPanel(settings: snapshot.settings, setup: snapshot.setup, phase: snapshot.phase, gate: wake, trash: snapshot.trash,
                                       sessionInfo: snapshot.session, memory: snapshot.memory)
                             .transition(.identity)
                     case .ledger:
@@ -247,33 +247,24 @@ struct NowPanel: View {
     /// Today's billed total, for the meter (Snapshot.usageToday); hidden when nothing was billed.
     let usageToday: UsageToday?
     let permissions: Permissions
-    let problems: [String]
+    /// The problems with their kind and remedy (Snapshot.problems), newest last.
+    let problems: [Problem]
     let brainReady: Bool
     let handsReady: Bool
     let brain: BrainKind
     /// What Kevin circled (Snapshot.marks); context for the next delegation.
     let marks: [ScreenMark]
-    /// The problems with their kind and remedy (Snapshot.problemsTyped); nil from a daemon that sends only the lines.
-    var problemsTyped: [Problem]? = nil
-    /// The delegation's workers (Snapshot.workers): running, and finished within the last half minute.
-    var workers: [Worker] = []
     /// What Jarhead remembers (Snapshot.memory); `lastUsedIds` is what the last delegation was given.
     var memory: MemorySummary? = nil
-    /// Jarhead's threads in the rail's order; nil from a daemon without threads (the Workers section shows instead).
-    var threads: [WorkThread]? = nil
+    /// Jarhead's threads in the rail's order; [] draws no section.
+    var threads: [WorkThread] = []
     /// A thread row's click: open its pane (ConsoleSession.openThread, filled in by the rail).
     var openThread: (String) -> Void = { _ in }
 
     @Environment(\.consoleActions) private var actions
 
-    /// The Threads section is drawn: the daemon speaks threads and lists at least one.
-    private var showsThreads: Bool { !(threads ?? []).isEmpty }
-
-    /// The typed list when the daemon sends one, else nothing (the plain lines render).
-    private var typed: [Problem]? {
-        guard let list = problemsTyped, !list.isEmpty || problems.isEmpty else { return nil }
-        return list
-    }
+    /// The Threads section is drawn: the engine lists at least one thread.
+    private var showsThreads: Bool { !threads.isEmpty }
 
     /// The ids the last delegation's memory block carried, while memory is on; [] hides the section.
     private var usedIds: [String] { NowPanel.usedIds(memory) }
@@ -425,9 +416,8 @@ struct NowPanel: View {
             // (a click opens its pane) and status word, `00:12 · background · 7 steps` in mono, the
             // last line (or the question it waits on), and Stop while it is live. The section
             // arrives with the first thread and keeps a finished one five minutes; a row rises
-            // in and drops out on its own ink. Below, the Workers section stands for a daemon
-            // from before threads.
-            if let threads, !threads.isEmpty {
+            // in and drops out on its own ink.
+            if !threads.isEmpty {
                 RailSection("Threads", count: threads.count, trailing: {
                     let busy = threads.filter { $0.status.isBusy }.count
                     if busy > 0 {
@@ -443,17 +433,6 @@ struct NowPanel: View {
                         }
                     }
                     .animation(Motion.gentle, value: threads.map(\.id))
-                }
-                .transition(Motion.appear)
-            } else if !workers.isEmpty {
-                RailSection("Workers", count: workers.count) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(workers) { w in
-                            WorkerRow(worker: w) { actions.send(.workerStop(workerId: w.id)) }
-                                .transition(Motion.appear)
-                        }
-                    }
-                    .animation(Motion.gentle, value: workers.map(\.id))
                 }
                 .transition(Motion.appear)
             }
@@ -480,8 +459,7 @@ struct NowPanel: View {
 
             // Every permission the app read (snapshot.permissions.all): the required rows,
             // then the rest folded behind an "n of 16 granted" row. The sweep runs in the
-            // app (AppDelegate answers `request-permission all` itself); older daemons
-            // without the list get the three rows the engine always tracked.
+            // app (AppDelegate answers `request-permission all` itself).
             RailSection("Permissions", trailing: {
                 Button("Ask for everything") { actions.send(.requestPermission("all")) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
@@ -500,44 +478,25 @@ struct NowPanel: View {
             }) {
                 // "None." and the list crossfade; a problem arriving rises in.
                 ZStack(alignment: .topLeading) {
-                    if problems.isEmpty && (typed?.isEmpty ?? true) {
+                    if problems.isEmpty {
                         Text("None.").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22)
                             .transition(.opacity)
-                    } else if let typed {
-                        // Typed: one solid symbol by kind, the line, and its one remedy as a small
-                        // ghost button — the fix is a click, not a hunt. Newest first, like the lines.
+                    } else {
+                        // One solid symbol by kind, the line, and its one remedy as a small ghost
+                        // button — the fix is a click, not a hunt. Newest first.
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(typed.reversed()) { p in
+                            ForEach(problems.reversed()) { p in
                                 ProblemRow(problem: p) { remedy(p) }
                                     .transition(Motion.appear)
-                            }
-                        }
-                        .transition(.opacity)
-                    } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            // Newest first; the id is the problem's place in the engine's append-only
-                            // list, so a row keeps its identity (and its transition) as others arrive.
-                            ForEach(Array(problems.enumerated().reversed()), id: \.offset) { _, p in
-                                HStack(alignment: .firstTextBaseline, spacing: iconGap) {
-                                    ConsoleIcon(name: "exclamationmark.triangle.fill", tint: ConsoleTheme.error)
-                                    Text(p).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
-                                        .textSelection(.enabled)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.vertical, 4)
-                                .transition(Motion.appear)
                             }
                         }
                         .transition(.opacity)
                     }
                 }
             }
-            .animation(Motion.gentle, value: problems)
-            .animation(Motion.gentle, value: typed?.map(\.id) ?? [])
+            .animation(Motion.gentle, value: problems.map(\.id))
         }
-        // The Threads / Workers and Memory sections arriving or leaving reflow the panel under them.
-        .animation(Motion.gentle, value: workers.isEmpty)
+        // The Threads and Memory sections arriving or leaving reflow the panel under them.
         .animation(Motion.gentle, value: showsThreads)
         .animation(Motion.gentle, value: usedIds.isEmpty)
     }
@@ -701,77 +660,6 @@ private struct ThreadRailRow: View {
     }
 }
 
-/// One worker (the ProblemRow idiom): the status glyph on the icon column; the name and its
-/// status word, with a 22pt ghost Stop trailing while it runs; "00:03 · background" in mono
-/// under them, the seconds rolling until it is done; its last line under that. Stop sends
-/// `worker.stop` for this hand alone — never `transportStop`, which closes the paid session
-/// and sleeps: the other worker, the main brain and the meter carry on. The tooltip has the brief.
-private struct WorkerRow: View {
-    let worker: Worker
-    let stop: () -> Void
-
-    var body: some View {
-        let meta = ConsoleTheme.worker(worker.status)
-        HStack(alignment: .top, spacing: iconGap) {
-            ConsoleWorkerGlyph(status: worker.status)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(worker.name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
-                        .lineLimit(1).layoutPriority(1)
-                    // The word turns as the hand works, waits and finishes; a crossfade, never a cut.
-                    Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                        .lineLimit(1).truncationMode(.tail)
-                        .contentTransition(.opacity)
-                        .animation(Motion.fade, value: meta.label)
-                    Spacer(minLength: 4)
-                    if worker.status.isRunning {
-                        Button("Stop", action: stop)
-                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                            .layoutPriority(1)
-                            .help("Stop \(worker.name) — the others and the session carry on")
-                            .accessibilityLabel("Stop \(worker.name)")
-                            .transition(.opacity)
-                    }
-                }
-                .frame(minHeight: 22)
-                elapsed
-                if let detail = worker.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
-                    Text(detail).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.fg3)
-                        .lineLimit(2).truncationMode(.tail)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .contentTransition(.opacity)
-                        .animation(Motion.fade, value: detail)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-        .animation(Motion.gentle, value: worker.status.isRunning)
-        .help("\(worker.name) · \(ConsoleTheme.lane(worker.lane)) lane · \(worker.task)\nstarted \(ConsoleFormat.time(worker.startedAt)) · \(worker.steps) steps")
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Worker \(worker.name), \(meta.label)" + (worker.detail.map { ". \($0)" } ?? ""))
-    }
-
-    /// "00:03 · background", the seconds rolling while the hand runs; frozen once it settles.
-    @ViewBuilder private var elapsed: some View {
-        if worker.status.isRunning {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                metaLine(now: ctx.date.timeIntervalSince1970 * 1000)
-            }
-        } else {
-            metaLine(now: worker.doneAt ?? worker.startedAt)
-        }
-    }
-
-    private func metaLine(now: Double) -> some View {
-        let text = ConsoleFormat.workerMeta(worker, now: now)
-        return Text(text).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-            .lineLimit(1)
-            .contentTransition(ConsoleMotion.numeric)
-            .animation(Motion.snappy, value: text)
-    }
-}
-
 /// The Permissions section's rows. With the full list: the required kinds, then a
 /// disclosure row "n of 16 granted" that unfolds the rest. A row that is not granted
 /// carries Request (its prompt) or Open Settings (System Settings only, or denied);
@@ -784,18 +672,13 @@ private struct PermissionsRailList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let all = permissions.all, !all.isEmpty {
-                ForEach(all.filter(\.required)) { info in row(info) }
-                foldRow(all)
-                if expanded {
-                    ForEach(all.filter { !$0.required }) { info in
-                        row(info).transition(Motion.appear)
-                    }
+            let all = permissions.all
+            ForEach(all.filter(\.required)) { info in row(info) }
+            if !all.isEmpty { foldRow(all) }
+            if expanded {
+                ForEach(all.filter { !$0.required }) { info in
+                    row(info).transition(Motion.appear)
                 }
-            } else {
-                PermissionsRailList.legacyRow("microphone", "Microphone", permissions.microphone, "mic.fill", send: actions.send)
-                PermissionsRailList.legacyRow("screenRecording", "Screen recording", permissions.screenRecording, "rectangle.inset.filled.badge.record", send: actions.send)
-                PermissionsRailList.legacyRow("accessibility", "Accessibility", permissions.accessibility, "accessibility.fill", send: actions.send)
             }
         }
         .animation(Motion.gentle, value: expanded)
@@ -858,35 +741,6 @@ private struct PermissionsRailList: View {
         .frame(height: 28)
         .help(tip)
         .animation(Motion.gentle, value: info.grant)
-    }
-
-    /// The three rows the engine always tracked, for a daemon that sends no list.
-    static func legacyRow(_ which: String, _ name: String, _ grant: Grant, _ symbol: String, send: @escaping (EngineCommand) -> Void) -> some View {
-        let meta = ConsoleTheme.grant(grant)
-        let opensSettings = which == "microphone" && grant == .denied
-        return HStack(spacing: iconGap) {
-            ConsoleIcon(name: symbol)
-            Text(name).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
-            Spacer(minLength: 4)
-            if grant != .granted {
-                Button { send(.requestPermission(which)) } label: {
-                    if opensSettings {
-                        Label("Open Settings", systemImage: "gearshape.fill").lineLimit(1)
-                    } else {
-                        Text("Request")
-                    }
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                .layoutPriority(1)
-                .help(opensSettings ? "Open System Settings › Privacy › Microphone" : "Ask for \(name.lowercased()) access. Already on in System Settings? That row belongs to an earlier build: remove Jarhead there, press this, and switch the new row on. Takes effect within seconds, no relaunch.")
-                .transition(ConsoleMotion.arriveLeave)
-            }
-            ConsoleIcon(name: meta.symbol, tint: meta.color)
-                .help(meta.label)
-                .accessibilityLabel(meta.label)
-        }
-        .frame(height: 28)
-        .animation(Motion.gentle, value: grant)
     }
 
     /// Solid SF Symbol per kind (the Setup step's table says the same; the Console preview
@@ -1088,7 +942,7 @@ struct SettingsPanel: View {
     /// The brain on screen: the pick just sent, until the daemon echoes it.
     private var kind: BrainKind { brainSent?.kind ?? settings.brain }
 
-    private var wake: WakeSettings { settings.wakeSettings }
+    private var wake: WakeSettings { settings.wake }
 
     private var voiceOptions: [String] {
         ConsoleTheme.voices + (ConsoleTheme.voices.contains(settings.voice) ? [] : [settings.voice])
@@ -1104,7 +958,7 @@ struct SettingsPanel: View {
     static func needsSwitch(settings: Settings, session: SessionInfo?, phase: Phase) -> Bool {
         guard let session, AppState.inSessionPhases.contains(phase) else { return false }
         guard let voice = session.voice else { return false }
-        return voice != settings.voice || (session.accent ?? settings.accentKind) != settings.accentKind
+        return voice != settings.voice || (session.accent ?? settings.accent) != settings.accent
     }
 
     private var needsSwitch: Bool { Self.needsSwitch(settings: settings, session: sessionInfo, phase: phase) }
@@ -1169,16 +1023,16 @@ struct SettingsPanel: View {
                     // One language today: a value, not a menu with one row. The menu appears
                     // when a second language exists (ConsoleTheme.languages).
                     formRow("Language") {
-                        Text(ConsoleTheme.languageLabel(settings.languageTag))
+                        Text(ConsoleTheme.languageLabel(settings.language))
                             .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
                             .frame(height: 26)
                             .help("Jarhead speaks English whatever language it hears")
-                            .accessibilityLabel("Language: \(ConsoleTheme.languageLabel(settings.languageTag))")
+                            .accessibilityLabel("Language: \(ConsoleTheme.languageLabel(settings.language))")
                     }
                     formRow("Accent") {
-                        ConsoleSegments(value: settings.accentKind, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
+                        ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
                                         pick: { patch(SettingsPatch(accent: $0)) },
-                                        accessibilityLabel: "Accent: \(ConsoleTheme.accentLabel(settings.accentKind))")
+                                        accessibilityLabel: "Accent: \(ConsoleTheme.accentLabel(settings.accent))")
                             .help("How the English sounds; best-effort on the voice's side")
                     }
                     // The promise, and when a pick lands. Switch now closes the session and
@@ -1315,18 +1169,18 @@ struct SettingsPanel: View {
                 }
                 Button("Learn now") { actions.send(.memoryRun) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .disabled(!settings.memoryOn || memory == nil)
-                    .help(settings.memoryOn ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
+                    .disabled(!settings.memory || memory == nil)
+                    .help(settings.memory ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
             }) {
                 VStack(spacing: 2) {
                     formRow("Remember") {
-                        Toggle("", isOn: Binding(get: { settings.memoryOn }, set: { patch(SettingsPatch(memory: $0)) }))
+                        Toggle("", isOn: Binding(get: { settings.memory }, set: { patch(SettingsPatch(memory: $0)) }))
                             .toggleStyle(.switch).controlSize(.small).labelsHidden()
                             .tint(ConsoleTheme.accent)
                             .help("Learn durable things about Kevin from each conversation and use them quietly next time")
                             .accessibilityLabel("Remember across sessions")
                     }
-                    if !settings.memoryOn {
+                    if !settings.memory {
                         hint("Off: nothing is learned or used. What was remembered stays.").transition(Motion.appear)
                     }
                     formRow("Matching") {
@@ -1340,10 +1194,10 @@ struct SettingsPanel: View {
                     }
                     formRow("Known") { memoryCounts }
                     hint(ConsoleTheme.memoryBudgetHint)
-                    MemoryRailList(summary: memory, enabled: settings.memoryOn)
+                    MemoryRailList(summary: memory, enabled: settings.memory)
                         .padding(.top, 6)
                 }
-                .animation(Motion.gentle, value: settings.memoryOn)
+                .animation(Motion.gentle, value: settings.memory)
             }
             // Retention is a mover, not a deleter: older days MOVE to the trash by the sweep
             // and come back with Restore; the trash is emptied in Finder, by Kevin, never here.
@@ -1374,8 +1228,8 @@ struct SettingsPanel: View {
                 } else {
                     Button("Sweep now") { withAnimation(Motion.snappy) { sweepArmed = true } }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .disabled((settings.ledgerRetentionDays ?? 0) == 0 && (settings.shotsRetentionDays ?? 14) == 0)
-                        .help((settings.ledgerRetentionDays ?? 0) == 0 && (settings.shotsRetentionDays ?? 14) == 0
+                        .disabled(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0)
+                        .help(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0
                               ? "Both keep forever; nothing would move"
                               : "Move the days past retention to the trash now (each comes back with Restore); asks first")
                         .transition(.opacity)
@@ -1383,17 +1237,17 @@ struct SettingsPanel: View {
             }) {
                 VStack(spacing: 2) {
                     formRow("Ledger") {
-                        ConsoleMenuField(value: settings.ledgerRetentionDays ?? 0, options: retentionOptions(ConsoleTheme.ledgerRetentionOptions, current: settings.ledgerRetentionDays ?? 0),
+                        ConsoleMenuField(value: settings.ledgerRetentionDays, options: retentionOptions(ConsoleTheme.ledgerRetentionOptions, current: settings.ledgerRetentionDays),
                                          title: { ConsoleTheme.retentionTitle($0, forever: "keep forever") },
                                          pick: { days in var p = SettingsPatch(); p.ledgerRetentionDays = days; patch(p) })
-                            .accessibilityLabel("Ledger retention: \(ConsoleTheme.retentionTitle(settings.ledgerRetentionDays ?? 0, forever: "keep forever"))")
+                            .accessibilityLabel("Ledger retention: \(ConsoleTheme.retentionTitle(settings.ledgerRetentionDays, forever: "keep forever"))")
                     }
                     .help("Days a day's conversations stay on the rail before the sweep moves the day file to the trash")
                     formRow("Screenshots") {
-                        ConsoleMenuField(value: settings.shotsRetentionDays ?? 14, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays ?? 14),
+                        ConsoleMenuField(value: settings.shotsRetentionDays, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays),
                                          title: { ConsoleTheme.retentionTitle($0, forever: "forever") },
                                          pick: { days in var p = SettingsPatch(); p.shotsRetentionDays = days; patch(p) })
-                            .accessibilityLabel("Screenshot retention: \(ConsoleTheme.retentionTitle(settings.shotsRetentionDays ?? 14, forever: "forever"))")
+                            .accessibilityLabel("Screenshot retention: \(ConsoleTheme.retentionTitle(settings.shotsRetentionDays, forever: "forever"))")
                     }
                     .help("Days a day's screenshots stay before the sweep moves the folder to the trash")
                     hint("Older days move to the trash, never out of it. Pinned conversations keep their days.")

@@ -526,15 +526,6 @@ enum CrashGuard {
         os_unfair_lock_unlock(lock)
     }
 
-    /// The last lines, oldest first (for tests and the Console).
-    static func recentLines() -> [String] {
-        guard let ring = cgRing, let lock = cgRingLock else { return [] }
-        os_unfair_lock_lock(lock)
-        defer { os_unfair_lock_unlock(lock) }
-        let start = cgRingCount < cgSlots ? 0 : cgRingHead
-        return (0..<cgRingCount).map { String(cString: ring + ((start + $0) % cgSlots) * cgSlotBytes) }
-    }
-
     // MARK: the crash test knob
 
     /// `JARHEAD_CRASH_TEST=exception|signal`: crash on purpose two seconds in, so the report,

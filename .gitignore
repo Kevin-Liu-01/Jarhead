@@ -18,3 +18,7 @@ coverage/
 *.pem
 *.p12
 secrets/
+
+# The Swift harnesses write their pictures here; only the icon-size check is tracked.
+apps/mac/Resources/preview-*.png
+!apps/mac/Resources/preview-icon-sizes.png

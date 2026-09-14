@@ -24,7 +24,7 @@ enum RepoLocatorError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .repoNotFound(let why): return "repo not found: \(why). Set JARHEAD_REPO=/path/to/jarvis."
+        case .repoNotFound(let why): return "repo not found: \(why). Set JARHEAD_REPO=/path/to/checkout."
         case .nodeNotFound(let why): return "node not found: \(why). Set JARHEAD_NODE=/path/to/node."
         case .missing(let path): return "missing \(path). Run pnpm install in the repo."
         }
@@ -88,6 +88,10 @@ enum RepoLocator {
 
         return RepoLocation(repo: repo, node: node, tsx: tsx, daemon: daemon, handsBin: hands, fromBundle: fromBundle)
     }
+
+    /// The checkout this binary was built in (the package.json named "jarhead" above the
+    /// executable), without touching node; nil from an installed bundle or a stray binary.
+    static func repoRoot() -> URL? { walkUpForRepo(from: Bundle.main.executableURL) }
 
     // MARK: - helpers
 
