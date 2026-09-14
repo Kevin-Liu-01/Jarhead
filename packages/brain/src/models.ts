@@ -18,6 +18,7 @@ export function foreignModel(kind: BrainKind, model: string | undefined): boolea
     case "claude-code":
       return /^(gpt-|o\d|chatgpt|gemini|llama|mistral|qwen|deepseek)/i.test(m);
     case "auto":
+    case "local":
       return false;
   }
 }
