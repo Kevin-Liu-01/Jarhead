@@ -166,6 +166,10 @@ case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-o
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
+# The right rail's scenarios (Builder D): `ledger-months` picks two August days and Sep 10, then ↓ ⏎ on the list
+# (to 2.4 s); the Permissions areas and Problems kinds open their folds by id (to 0.8 s).
+if [[ "$SCENARIO" == "ledger-months" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+case "$SCENARIO" in permissions-groups|problems-groups|settings-index) PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.8}";; esac
 # The Threads pass's scenarios run their actions to 1.8 s (an `ended` event, an Allow, a landed turn).
 case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending|tip-thumb) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
 # The pane header keeps its buttons and figures before the thumb (ViewThatFits): a wider window holds the thumb the preview hangs from.
