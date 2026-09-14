@@ -39,6 +39,8 @@ test("ear → hands: a partial scrolls after the stability window through the ga
     clock.t += 400;
     delegate(w, "jarhead scroll down.", "item_1");
     await settle();
+    // The delegator's "already did it" path is a few awaits deep; under a loaded runner it can outlast one settle.
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_1")?.status === "done", 3000);
     assert.equal(brain.tasks.length, 0, "no brain");
     assert.equal(hands.named("scroll").length, 1, "not scrolled twice");
     const d = engine.snapshot().delegations.find((x) => x.liveId === "item_1")!;
@@ -51,6 +53,7 @@ test("ear → hands: a partial scrolls after the stability window through the ga
     nextUtterance(w);
     delegate(w, "jarhead press escape", "item_2");
     await settle();
+    await until(() => engine.snapshot().delegations.find((x) => x.liveId === "item_2")?.status === "done", 3000);
     assert.equal(hands.named("key").length, 1);
     assert.equal(engine.snapshot().delegations.find((x) => x.liveId === "item_2")!.status, "done");
   } finally {
