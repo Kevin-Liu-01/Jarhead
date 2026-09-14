@@ -1528,6 +1528,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         let extracted = items.first { $0.id == "m_kev" }!
         expect("memory meta: extracted says nothing of its origin", MemoryFormat.meta(extracted, now: fake.now), "seen 5× · 12h")
         expect("memory tooltip: kind, scores, the sources", MemoryFormat.tooltip(pref).components(separatedBy: "\n").first ?? "", "preference · importance 0.9 · confidence 0.9")
+        // The card's source rows are terse: the clock today, the day this year, the year only when it differs.
+        let noon = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14, hour: 12))!.timeIntervalSince1970 * 1000
+        let sourceNow = { (h: Double) in MemoryFormat.source(MemorySource(sessionId: "s", at: noon - h * 3_600_000, type: "heard"), now: noon) }
+        expect("memory card: source today is the clock", sourceNow(1.75), "10:15 · heard")
+        expect("memory card: source this year is the day", sourceNow(48), "Sep 12 · heard")
+        expect("memory card: source another year says the year", sourceNow(24 * 400), "Aug 10, 2025 · heard")
+        expect("memory card: foot is terse (≤ 60, no year today)", MemoryFormat.card(pref, now: fake.now).foot.filter { $0.key == MemoryWords.source }.allSatisfy { $0.value.count <= 60 && !$0.value.contains("2026") } ? "terse" : "long", "terse")
         expect("memory empty: live", MemoryFormat.emptyLine(state: .live, query: ""), "Nothing remembered yet.")
         expect("memory empty: forgotten", MemoryFormat.emptyLine(state: .forgotten, query: ""), "Nothing forgotten.")
         expect("memory empty: a query", MemoryFormat.emptyLine(state: .live, query: " dentist "), "No memory matches “dentist”.")

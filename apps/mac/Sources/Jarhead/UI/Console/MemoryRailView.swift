@@ -96,11 +96,11 @@ enum MemoryFormat {
         return parts.joined(separator: " · ")
     }
 
-    /// The tooltip: the kind with its scores, then every source as `Sep 11, 2026 at 2:02 PM · heard`.
-    static func tooltip(_ item: MemoryItem) -> String {
+    /// The spoken form: the kind with its scores, then every source as `10:16 · heard` / `Sep 12 · summary`.
+    static func tooltip(_ item: MemoryItem, now: Double = Date().timeIntervalSince1970 * 1000) -> String {
         var lines = ["\(item.kind.rawValue) · importance \(score(item.importance)) · confidence \(score(item.confidence))"]
         if !item.subjects.isEmpty { lines.append(item.subjects.joined(separator: ", ")) }
-        for s in item.sources.suffix(4) { lines.append("\(ConsoleFormat.fullDate(s.at)) · \(s.type)") }
+        for s in item.sources.suffix(4) { lines.append(source(s, now: now)) }
         if let into = item.mergedInto { lines.append("merged into \(ConsoleFormat.shortId(into))") }
         return lines.joined(separator: "\n")
     }
@@ -112,11 +112,14 @@ enum MemoryFormat {
         if !item.subjects.isEmpty { card.lines.append("\(MemoryWords.subjects): \(item.subjects.joined(separator: ", "))") }
         card.foot = [ConsoleTipCard.Row(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
                      ConsoleTipCard.Row(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
-        for s in item.sources.suffix(4) { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
+        for s in item.sources.suffix(4) { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.source, value: source(s, now: now))) }
         card.foot.append(ConsoleTipCard.Row(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
         if let into = item.mergedInto { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
         return card
     }
+
+    /// A source as a foot value, terse: `10:16 · said` today, `Sep 12 · summary` this year, else the year too.
+    static func source(_ s: MemorySource, now: Double) -> String { "\(ConsoleFormat.dayOrTime(s.at, now: now)) · \(s.type)" }
 
     /// 0.8 → "0.8"; the scores are shown to one decimal.
     static func score(_ v: Double) -> String { String(format: "%.1f", max(0, min(1, v))) }
@@ -637,5 +640,26 @@ private struct MemoryUsedRow: View {
                    badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: MemoryRow.badgeWidth,
                    meta: MemoryFormat.meta(item, now: now), focused: focused, id: MemoryWords.usedCardId(item.id), card: MemoryFormat.card(item, now: now),
                    accessibilityHint: MemoryWords.opensSettings, onHover: hovered, primary: open)
+    }
+}
+
+extension ConsoleFormat {
+    private static let hourMinute: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"; return f
+    }()
+    private static let monthDay: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "MMM d"; return f
+    }()
+    private static let monthDayYear: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "MMM d, yyyy"; return f
+    }()
+
+    /// A moment as the card's mono figure: `10:16` today, `Sep 12` this year, `Sep 12, 2025` before.
+    static func dayOrTime(_ ms: Double, now: Double = Date().timeIntervalSince1970 * 1000) -> String {
+        let date = Date(timeIntervalSince1970: ms / 1000), today = Date(timeIntervalSince1970: now / 1000)
+        let cal = Calendar.current
+        if cal.isDate(date, inSameDayAs: today) { return hourMinute.string(from: date) }
+        if cal.component(.year, from: date) == cal.component(.year, from: today) { return monthDay.string(from: date) }
+        return monthDayYear.string(from: date)
     }
 }
