@@ -28,6 +28,11 @@ enum OnboardingWords {
     static let wakeLabel = "Wake word"
     static let wakeHint = "listens on-device"
     static let required = "required"
+    // the Permissions step's two folds
+    static let requiredFold = "setup.permissions.required"
+    static let moreFold = "setup.permissions.more"
+    static let requiredHead = "required"
+    static let moreHead = "more it can use"
     static let saveAndCheck = "Save & check"
     static let apply = "Apply"
     static let set = "Set"

@@ -41,8 +41,8 @@ struct OnboardingPermissionsStep: View, Equatable {
             if let sweep {
                 sweepBox(sweep).transition(Motion.appear)
             }
-            group("required · \(required.filter { $0.grant == .granted }.count) of \(required.count) granted", required)
-            group("more it can use · \(optional.filter { $0.grant == .granted }.count) of \(optional.count) granted", optional)
+            group(OnboardingWords.requiredFold, OnboardingWords.requiredHead, required, defaultOpen: true)
+            group(OnboardingWords.moreFold, OnboardingWords.moreHead, optional, defaultOpen: false)
             // Grants are re-read from a fresh process every few seconds and the hands
             // helper restarts itself when one appears, so nothing here needs a relaunch.
             ConsoleHint("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
@@ -57,22 +57,24 @@ struct OnboardingPermissionsStep: View, Equatable {
         .animation(Motion.gentle, value: sweep)
     }
 
-    /// A titled box of rows.
-    private func group(_ title: String, _ rows: [PermissionInfo]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(ConsoleTheme.sans(11, .medium)).foregroundStyle(ConsoleTheme.titanium)
-                .padding(.leading, 2)
-                .contentTransition(.opacity)
+    /// A fold of rows: `required 3 of 7` open, `more it can use 3 of 9` folded with its count and
+    /// the missing ones as one badge — so 620 × 520 holds the required set (the design's Setup row).
+    private func group(_ id: String, _ title: String, _ rows: [PermissionInfo], defaultOpen: Bool) -> some View {
+        let granted = rows.filter { $0.grant == .granted }.count
+        return ConsoleDisclosure(id: id, title: title, count: ConsoleDisclosureWords.ofTotal(granted, rows.count),
+                                 summary: Self.summary(missing: rows.count - granted), size: .group, defaultOpen: defaultOpen,
+                                 siblings: [OnboardingWords.requiredFold, OnboardingWords.moreFold]) {
             VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.kind) { i, info in
                     if i > 0 { ConsoleHairline(weight: .row) }
                     row(info)
                 }
             }
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
         }
     }
+
+    /// The folded head's one badge: `[4 missing]`, or nothing when every row is granted.
+    static func summary(missing: Int) -> [ConsoleDisclosureSummaryItem] { missing > 0 ? [.badge(.missing(missing))] : [.badge(.allOk)] }
 
     /// The sweep's one line and its controls; while a step waits on the user (a dialog
     /// that returned at once, a System Settings pane), what to do and the Open Settings /
