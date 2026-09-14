@@ -746,7 +746,8 @@ export const DEFAULT_SETTINGS: Settings = {
  */
 export const SETTINGS_KEYS = [
   "voice", "brain", "brainModel", "brainBaseUrl", "effort", "onboarded", "micDeviceId", "idleSleepMinutes", "autoWake", "orbPosition", "wake", "reflexes", "orbHome",
-  "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads", "automations",
+  "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads",
+  "automations", // design11: the automations block joins SETTINGS_KEYS so settings.json keeps it
 ] as const satisfies readonly (keyof Settings)[];
 type SettingsKeysCover = Record<(typeof SETTINGS_KEYS)[number], 0>;
 const settingsKeysCoverEverything: Record<keyof Settings, 0> = {} as SettingsKeysCover;

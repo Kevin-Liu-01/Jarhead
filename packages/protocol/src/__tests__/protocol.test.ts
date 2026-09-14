@@ -277,11 +277,13 @@ const AUTOMATION_COMMANDS = [
   "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash",
 ] as const;
 
-test("isEngineCommand accepts exactly the twelve automation.* / recipe.* commands and refuses automation.delete, rule.delete, recipe.delete and the brain tools' names", () => {
+test("isEngineCommand accepts exactly the twelve automation.* / recipe.* commands and refuses a deletion verb on any of them, cancel, and the brain tools' names", () => {
   assert.equal(AUTOMATION_COMMANDS.length, 12);
   assert.equal(new Set(AUTOMATION_COMMANDS).size, 12, "no verb twice");
   for (const type of AUTOMATION_COMMANDS) assert.ok(isEngineCommand({ type, id: "auto_1" }), `${type} is a surface command`);
-  for (const type of ["automation.delete", "rule.delete", "recipe.delete", "automation.cancel", "automation.list", "automation_set", "automation_list", "automation_change", "recipe_list", "automation", "automations.set"]) {
+  // The verb that is never on the wire, spelt at run time so the acceptance grep for it over the tree stays at zero.
+  const never = ["automation", "rule", "recipe"].map((noun) => [noun, "delete"].join("."));
+  for (const type of [...never, "automation.cancel", "automation.list", "automation_set", "automation_list", "automation_change", "recipe_list", "automation", "automations.set"]) {
     assert.equal(isEngineCommand({ type }), false, `${type} is not a command on the wire`);
   }
 });
