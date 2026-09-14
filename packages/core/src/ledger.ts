@@ -60,12 +60,15 @@ export interface LedgerSearchHit {
  * session (`readSession` places them by that); `ledger.moved`, `agent.hidden` and the
  * memory audit rows (`memory.*`: ids only, written when the memory module learns,
  * forgets or restores — often long after the session they came from closed) belong
- * to nobody's session.
+ * to nobody's session. So do the automation rows (`automation.*`, `recipe.*`): a 07:10
+ * alarm fires while asleep, with no session open, and a row set in a conversation is the
+ * record of the schedule, not of that conversation.
  */
 const META_TYPES: ReadonlySet<string> = new Set([
   "conversation.trashed", "conversation.restored", "conversation.archived", "conversation.renamed", "conversation.pinned",
   "now.cleared", "now.restored", "ledger.moved", "agent.hidden", "grant",
   "memory.added", "memory.updated", "memory.forgotten", "memory.restored", "memory.run",
+  "automation.set", "automation.fired", "automation.state", "automation.missed", "recipe.set", "recipe.trashed",
 ]);
 
 /**

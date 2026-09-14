@@ -394,6 +394,31 @@ test("conversations: now.cleared / now.restored per session, last by `at`; the r
   assert.ok(!ledger.readSession("S").some((r) => r.type === "ledger.moved" || r.type === "agent.hidden"));
 });
 
+test("automations: the six automation.* / recipe.* rows written inside an open session are the record's, never the session's; a row type from a newer daemon still falls through", () => {
+  const ledger = fresh();
+  ledger.append({ at: local(12, 10, 0), type: "session.started", sessionId: "S", voice: "cedar" });
+  ledger.append(heard(local(12, 10, 1), "wake me at seven ten on weekdays"));
+  const automation = {
+    id: "auto_1", name: "Wake up", when: { kind: "every" as const, every: { kind: "weekly" as const, days: ["mon" as const], at: "07:10" as const }, phrase: "mon 07:10" },
+    then: [{ kind: "chime" as const, line: "Wake up, Kevin" }], clauses: { quiet: "override" as const }, echo: "Monday at 7:10, a chime", state: "armed" as const,
+    fires: 0, missed: 0, createdAt: local(12, 10, 2), updatedAt: local(12, 10, 2), createdBy: { by: "brain" as const, request: "wake me at seven ten" },
+  };
+  ledger.append({ at: local(12, 10, 2), type: "automation.set", automation, by: "brain" });
+  ledger.append({ at: local(12, 10, 3), type: "automation.fired", id: "auto_1", actions: ["chime"], ok: true, line: "07:10 · Wake up", ms: 4 });
+  ledger.append({ at: local(12, 10, 4), type: "automation.state", id: "auto_1", state: "snoozed", by: "kevin", until: local(12, 10, 14) });
+  ledger.append({ at: local(12, 10, 5), type: "automation.missed", id: "auto_1", dueAt: local(12, 10, 4), why: "mac-slept" });
+  ledger.append({ at: local(12, 10, 6), type: "recipe.set", recipe: { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: local(12, 10, 6) }, by: "kevin" });
+  ledger.append({ at: local(12, 10, 7), type: "recipe.trashed", name: "tests" });
+  ledger.append(said(local(12, 10, 8), "armed"));
+  ledger.append({ at: local(12, 10, 9), type: "session.closed", sessionId: "S", reason: "sleep", usageSeconds: 9 });
+  assert.deepEqual(ledger.readSession("S").map((r) => r.type), ["session.started", "heard", "said", "session.closed"], "the automation rows are not the session's");
+  assert.equal(ledger.read(local(12, 10, 0)).filter((r) => r.type.startsWith("automation.") || r.type.startsWith("recipe.")).length, 6, "the day file keeps all six");
+  // A type this build does not know (a newer daemon's) is read, kept in the day, and placed by position like any unknown row of before 2026-09-13.
+  ledger.append({ at: local(12, 10, 10), type: "automation.something-new", id: "auto_1" } as unknown as LedgerRow);
+  assert.equal(ledger.read(local(12, 10, 0)).length, 11);
+  assert.ok(ledger.sessions().some((s) => s.id === "S"));
+});
+
 test("conversations: a chain whose root day is gone resolves to the last known session; the old tombstone is counted, not applied", () => {
   const ledger = fresh();
   // Only B's day is live: its resumedFrom names an A the ledger never saw start.
