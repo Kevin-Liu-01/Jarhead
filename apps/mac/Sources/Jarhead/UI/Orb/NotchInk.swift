@@ -18,7 +18,7 @@ import AppKit
 // palette), then blended into pure black toward the notch — longest under
 // the notch, a short rim at the outer corners — so the island reads as the orb's
 // colour pooling out of the black. Rendered once per (size, scale) into a CGImage and
-// cached (small LRU); the mode's intensity is the alpha it is drawn with, so a static
+// cached (an LRU capped at 32 MB by bytes, the open and peek sizes prewarmed); the mode's intensity is the alpha it is drawn with, so a static
 // island allocates nothing per frame.
 //
 // Nothing here blocks a frame: the tile and every image are rendered on
@@ -211,12 +211,15 @@ enum NotchInk {
     /// one that pays for it.
     static func prewarm() { Dither.prewarm() }
 
-    /// A small LRU of rendered gradients — the spring passes through a dozen sizes on
-    /// its way open or closed, the peek breathes through a few, and a static island hits
-    /// the same one every frame — fed by one background worker that renders the most
-    /// recently asked-for size first (the island's current size lands before the sizes
-    /// the spring has already left behind), then backfills. Main-actor state; the worker
-    /// only ever calls the pure `render` and hops back.
+    /// The rendered gradients, an LRU capped by bytes — the spring passes through a dozen
+    /// sizes on its way open or closed, the peek breathes through a few, and a static
+    /// island hits the same one every frame — fed by one background worker that renders
+    /// the most recently asked-for size first (the island's current size lands before
+    /// the sizes the spring has already left behind), then backfills. `prewarm` queues
+    /// the sizes the dock knows it will show (the open island, the lip, the peek and its
+    /// breath) behind the live requests, so the first open is drawn exact, never
+    /// stretched. Main-actor state; the worker only ever calls the pure `render` and
+    /// hops back.
     @MainActor
     final class Cache {
         static let shared = Cache()
@@ -224,14 +227,18 @@ enum NotchInk {
         nonisolated static var renderQueue: DispatchQueue { Dither.renderQueue }
 
         private var images: [Key: CGImage] = [:]
+        private var bytes: [Key: Int] = [:]
         private var order: [Key] = []
         /// Asked for and not yet rendered, oldest first; the worker takes the last.
         private var pending: [Key] = []
+        /// Prewarm sizes, drained after `pending` is empty, in the order given.
+        private var warm: [Key] = []
         private var rendering = false
         private let observers = NSHashTable<AnyObject>.weakObjects()
-        /// One open+close spring is ~25 distinct sizes and the peek's breath up to 16
-        /// more; most of these images are small (the island's own is ~530 kB at 2×).
-        private let capacity = 48
+        /// 32 MB holds about 42 open-island images (360×132 at 2× is ≈ 760 kB); one
+        /// open+close spring is ~25 distinct sizes and the peek's breath up to 16 more,
+        /// most of them a fraction of that.
+        let capacityBytes = 32 << 20
         /// Sizes the spring has left behind are the least useful to render.
         private let pendingCap = 8
 
@@ -254,12 +261,26 @@ enum NotchInk {
             return Rendered(image: img, size: NotchInk.pointSize(of: key), exact: false)
         }
 
-        /// Whether the exact image for this size is in the cache (the bench's check).
+        /// Whether the exact image for this size is in the cache (the bench's and the harness's check).
         func has(size: CGSize, notchWidth: CGFloat, scale: CGFloat) -> Bool {
             images[NotchInk.key(size: size, notchWidth: notchWidth, scale: scale)] != nil
         }
 
         var count: Int { images.count }
+        /// Bytes held right now (the harness pins `renderedBytes ≤ capacityBytes`).
+        var renderedBytes: Int { bytes.values.reduce(0, +) }
+
+        /// Render these sizes (points) at `scale` for a notch of `notchWidth` in the
+        /// background, after whatever the live island asks for. Sizes already held are skipped.
+        func prewarm(sizes: [CGSize], notchWidth: CGFloat, scale: CGFloat) {
+            for size in sizes {
+                guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { continue }
+                let k = NotchInk.key(size: size, notchWidth: notchWidth, scale: scale)
+                if images[k] != nil || warm.contains(k) || pending.contains(k) { continue }
+                warm.append(k)
+            }
+            pump()
+        }
 
         private func request(_ key: Key) {
             if let i = pending.firstIndex(of: key) { pending.remove(at: i) }
@@ -269,7 +290,10 @@ enum NotchInk {
         }
 
         private func pump() {
-            guard !rendering, let key = pending.popLast() else { return }
+            guard !rendering else { return }
+            let next: Key?
+            if let live = pending.popLast() { next = live } else if !warm.isEmpty { next = warm.removeFirst() } else { next = nil }
+            guard let key = next else { return }
             rendering = true
             let owner = self
             Self.renderQueue.async {
@@ -283,16 +307,31 @@ enum NotchInk {
         private func landed(_ key: Key, _ img: CGImage?) {
             rendering = false
             if let img {
+                if images[key] == nil { order.append(key) }
                 images[key] = img
-                order.append(key)
-                if order.count > capacity { images[order.removeFirst()] = nil }
+                bytes[key] = img.bytesPerRow * img.height
+                evict(keeping: key)
             }
             for o in observers.allObjects { (o as? NotchInkObserver)?.notchInkRendered() }
             pump()
         }
+
+        /// Drop the least recently used images until the total fits; the one just landed stays.
+        private func evict(keeping fresh: Key) {
+            var total = renderedBytes
+            var i = 0
+            while total > capacityBytes, i < order.count {
+                let k = order[i]
+                if k == fresh { i += 1; continue }
+                order.remove(at: i)
+                total -= bytes[k] ?? 0
+                images[k] = nil
+                bytes[k] = nil
+            }
+        }
     }
 
-    /// Pure Swift over an RGBX buffer: 360×92 pt at 2× is 132k pixels, a few ms
+    /// Pure Swift over an RGBX buffer: 360×132 pt at 2× is 190k pixels, a few ms
     /// optimised. Pure and thread-agnostic: it reads only the constants and the tile.
     /// The base is `Dither`'s banded diagonal ramp (its LUT, its tile, its quantiser);
     /// the notch's own shading — the highlight, the black into the notch, the vignette —

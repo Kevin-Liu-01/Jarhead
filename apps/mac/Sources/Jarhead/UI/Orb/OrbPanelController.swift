@@ -23,7 +23,8 @@ import SwiftUI
 /// short wind-up (it turns the acting colour and tenses), then the flight spring —
 /// one overshoot, one squish, a ripple on arrival — and it hovers beside the work for
 /// the command's dwell (counted from being parked; a repeat fly to the same spot only
-/// extends it). Then it stays where it worked (`stayHere`) — in both homes: it settles
+/// extends it). Then it stays where it worked (`stayHere`) — in both homes (the one
+/// exception: a mark's own echo started from the dock brings it back to the notch): it settles
 /// there, sticks if it is touching an edge, and that spot is saved as `orbPosition`
 /// exactly as a drop would be — debounced, once, when settled — so a relaunch finds it
 /// there and it never drifts back to some earlier spot. The perch is different: it is
@@ -176,6 +177,23 @@ public final class OrbPanelController {
     // Home: free, or the notch.
     /// The notch dock, built the first time notch mode comes on; nil until then.
     private var notch: NotchDock?
+    /// The dock's content — everything the island shows that is not the face or the
+    /// fleet's dots — built whole from the snapshot, the thread store, the mark state
+    /// and the gate (`buildDockContent`); kept for a dock built later.
+    private var dockContent = DockContent.empty
+    /// Decoded thumbnails by mark id (`Thumbnails.shared`, 2× the 30×22 frame), dropped with their marks.
+    private var markThumbs: [String: CGImage] = [:]
+    private var markThumbsRequested: Set<String> = []
+    /// A thumbnail landed: the content is rebuilt.
+    private let thumbsChanged = CurrentValueSubject<Int, Never>(0)
+    /// The dock's Ask with nothing circled: circle first, and the question follows the mark
+    /// (same socket, in order — the engine registers the mark before any await).
+    private var askAfterMark = false
+    /// A mark's own trace launched from the dock brings the blob home instead of staying
+    /// by the line (`trace` sets it, `workDone` consumes it); every other trace stays.
+    private var homeAfterTrace = false
+    /// The pending marks last seen, for the tucked "◎ N circled · Go to ask" pill.
+    private var pendingMarksSeen = 0
     /// Notch mode is on: the setting says notch, a display has one, and Kevin has not
     /// dragged the blob out since it last went to sleep.
     private var notchMode = false
@@ -578,11 +596,56 @@ public final class OrbPanelController {
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.updateHomeMode(animated: true) } }
             }
             .store(in: &cancellables)
-        // The notch island's one line: the last thing said.
-        state.$snapshot
-            .map { (s: Snapshot) -> String in s.transcript.last?.text ?? "" }
+        // The dock's content: built whole from the snapshot, the thread store, the mark
+        // state, the gate and the decoded thumbnails; set only when it differs.
+        Publishers.CombineLatest4(state.$snapshot, state.$threads, state.markingPublisher.removeDuplicates(), state.$wakeGate.removeDuplicates())
+            .combineLatest(thumbsChanged)
+            .map { [weak self] top, _ -> (DockContent, [ScreenMark]) in
+                guard let self else { return (.empty, []) }
+                return (self.buildDockContent(snapshot: top.0, threads: top.1, marking: top.2, gate: top.3), top.0.marks)
+            }
+            .removeDuplicates { $0.0 == $1.0 }
+            .sink { [weak self] content, marks in self?.dockContentChanged(content, marks: marks) }
+            .store(in: &cancellables)
+        // Mark mode: the island folds before the overlay takes the mouse, and unfolds
+        // when the stroke is done or cancelled. An Ask that was waiting for a mark that
+        // never came is forgotten.
+        state.markingPublisher
             .removeDuplicates()
-            .sink { [weak self] line in self?.notch?.view.lastLine = line }
+            .sink { [weak self] marking in
+                guard let self else { return }
+                if marking {
+                    self.notch?.foldForMark()
+                } else {
+                    self.notch?.markEnded()
+                    self.askAfterMark = false
+                }
+            }
+            .store(in: &cancellables)
+        // The mark is registered (`mark.add` sent): the Ask that asked for it sends its
+        // question now, in order on the same socket.
+        state.markCommitted
+            .sink { [weak self] in
+                guard let self, self.askAfterMark else { return }
+                self.askAfterMark = false
+                self.state.send(.sayText(ComposerWords.askAboutMarks(window: false)))
+            }
+            .store(in: &cancellables)
+        // Toasts on the notch: the latest, 1.5 s, while the blob is parked there.
+        state.$toasts
+            .map(\.last)
+            .removeDuplicates { $0?.id == $1?.id }
+            .compactMap { $0 }
+            .sink { [weak self] t in
+                guard let self, self.tucked else { return }
+                let tone: PillTone
+                switch t.tone {
+                case .info: tone = .info
+                case .warn: tone = .warn
+                case .error: tone = .error
+                }
+                self.notch?.showPill(t.text, symbol: nil, tone: tone, seconds: 1.5)
+            }
             .store(in: &cancellables)
         // The island's working state: "Working · 0:12" while a delegation runs, counted from its start.
         state.$snapshot
@@ -840,7 +903,7 @@ public final class OrbPanelController {
             notch = dock
             hideNotchAfterDrag = false
             dock.setGatePill(gatePill.value)
-            dock.view.lastLine = state.snapshot.transcript.last?.text ?? ""
+            dock.setContent(dockContent)
             if flight == .none, !body.dragging, !expanded, slip == nil {
                 // A transition's way home, or a blob already dormant (the pill pressed
                 // on a sleeping blob): the way up is the quiet one.
@@ -875,8 +938,175 @@ public final class OrbPanelController {
         dock.dragOut = { [weak self] p in self?.dragOutOfNotch(at: p) }
         dock.dragMoved = { [weak self] p in self?.pointerDragged(to: p) }
         dock.dragEnded = { [weak self] in self?.pointerUp(clickCount: 1, time: ProcessInfo.processInfo.systemUptime) }
+        // The island's boxes. Circle sends nothing itself (`mark.add` is the overlay's);
+        // a thread's Stop is one `thread.stop`, never the transport's; Sleep is the
+        // drop's sleep with its cause; nothing here opens a paid session but Go and a
+        // typed line under `typedWakes`.
+        dock.circle = { [weak self] in self?.circleFromDock() }
+        dock.window = { [weak self] in self?.windowFromDock() }
+        dock.ask = { [weak self] in self?.askFromDock() }
+        dock.clear = { [weak self] in self?.clearFromDock() }
+        dock.allow = { [weak self] id in self?.state.threadAnswer(id, yes: true) }
+        dock.deny = { [weak self] id in self?.state.threadAnswer(id, yes: false) }
+        dock.forgetMark = { [weak self] id in self?.state.markRemove(id) }
+        dock.openMark = { [weak self] _ in self?.state.openConsole() }
+        dock.openThread = { [weak self] id in self?.state.openThread(id) }
+        dock.stopThread = { [weak self] id in self?.state.threadStop(id) }
+        dock.console = { [weak self] in self?.state.openConsole() }
+        dock.sleep = { [weak self] in self?.state.send(.sleepCause("dock")) }
+        dock.remedy = { [weak self] row in self?.remedyFromDock(row) }
+        dock.say = { [weak self] text in self?.state.send(.sayText(text)) }
         dock.setThreads(threadDots)
+        dock.setContent(dockContent)
         return dock
+    }
+
+    // MARK: - The dock's boxes
+
+    /// The ◎ box: the island folds out of the way first, then the overlay takes the stroke.
+    private func circleFromDock() {
+        notch?.foldForMark()
+        state.beginMarkMode()
+    }
+
+    /// The ▭ box: the front window as a mark. With Jarhead itself frontmost (the Console
+    /// clicked) there is no window of Kevin's to capture: a toast, nothing sent.
+    private func windowFromDock() {
+        if NSApp.isActive {
+            notch?.showPill("Bring a window forward first", symbol: "macwindow", tone: .warn, seconds: 1.5)
+        } else {
+            state.markWindow()
+        }
+    }
+
+    /// The ? box: with a mark pending, the one question about it (a window's asks about
+    /// the window); with nothing circled, circle first and the question follows the mark.
+    private func askFromDock() {
+        if dockContent.pendingMarks > 0 {
+            let newestPendingIsWindow = dockContent.marks.last(where: { !$0.consumed })?.isWindow ?? false
+            state.send(.sayText(ComposerWords.askAboutMarks(window: newestPendingIsWindow)))
+        } else {
+            askAfterMark = true
+            notch?.foldForMark()
+            state.beginMarkMode()
+        }
+    }
+
+    /// The ⌫ box: every mark leaves (the PNGs stay the day's shots); the pill says how many.
+    private func clearFromDock() {
+        let n = dockContent.marks.count
+        state.send(.markClear)
+        notch?.showPill("Cleared · \(n)", symbol: "eraser.fill", tone: .info, seconds: 1.5)
+    }
+
+    /// The problem pill's box: the remedy's command when the engine gave one this app can
+    /// send, its place when it named one (`jarhead://setup` in-process), else
+    /// `problem.retry` for the kind — the Console's dispatch.
+    private func remedyFromDock(_ row: DockContent.ProblemRow) {
+        if let json = row.remedyJSON, let data = json.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let cmd = EngineCommand(remedyJSON: obj) {
+            state.send(cmd)
+        } else if let target = row.openTarget, !target.isEmpty {
+            if target.lowercased().hasPrefix("jarhead://setup") {
+                state.openOnboarding()
+            } else if let url = URL(string: target) {
+                NSWorkspace.shared.open(url)
+            }
+        } else {
+            state.send(.problemRetry(kind: row.kind))
+        }
+    }
+
+    /// ⌥⇧Return: type to Jarhead — the notch's field while the blob is parked there, else
+    /// the Console's composer.
+    public func sayLine() {
+        if tucked, let notch { notch.focusField() } else { state.openConsole() }
+    }
+
+    // MARK: - The dock's content
+
+    /// One `DockContent` from the snapshot, the thread store (rail order: the asking
+    /// thread first), the mark state and the gate. Spawned threads only: main's turn is
+    /// the transport's; main's awaiting-confirmation delegation counts as "Jarhead asks".
+    private func buildDockContent(snapshot s: Snapshot, threads store: [String: WorkThread], marking: Bool, gate: WakeGateState) -> DockContent {
+        let now = Date()
+        let awake = s.phase != .asleep
+        let inSession = AppState.inSessionPhases.contains(s.phase)
+        let marks: [DockContent.Mark] = s.marks.map { m in
+            DockContent.Mark(id: m.id, size: CGSize(width: m.rect.w, height: m.rect.h), at: Date(timeIntervalSince1970: m.at / 1000),
+                             consumed: m.consumed, isWindow: m.isWindow, caption: ComposerWords.markCaption(m, now: now),
+                             hasPixels: m.screenshotPath != nil, thumbnail: markThumbs[m.id])
+        }
+        let live = AppState.railOrder(Array(store.values)).filter { $0.status.isLive && $0.id != Self.mainThreadId }
+        var rows: [DockContent.ThreadRow] = []
+        var question: DockContent.Question?
+        for t in live {
+            let asking = t.status == .waitingKevin
+            rows.append(DockContent.ThreadRow(id: t.id, name: t.name, word: t.status.orbWord, since: Date(timeIntervalSince1970: t.startedAt / 1000),
+                                              tone: OrbPalette.color(for: t.status.satellitePhase), canStop: t.canStop && !asking, asks: t.question))
+            if question == nil, asking, let q = t.question, !q.isEmpty {
+                question = DockContent.Question(threadId: t.id, name: t.name, text: q)
+            }
+        }
+        if question == nil, let d = s.delegations.last(where: { $0.status == .awaitingConfirmation }) {
+            question = DockContent.Question(threadId: Self.mainThreadId, name: "Jarhead", text: d.request)
+        }
+        var problem: DockContent.ProblemRow?
+        if let p = s.problems.first {
+            var json: String?
+            if let cmd = p.remedy?.command, let data = try? JSONEncoder().encode(cmd) { json = String(data: data, encoding: .utf8) }
+            problem = DockContent.ProblemRow(kind: p.kind, symbol: ProblemGlyphs.symbol(for: p.kind), warn: ProblemGlyphs.isWarning(p.kind), text: p.text,
+                                             remedyLabel: p.remedy?.label, remedyJSON: json, openTarget: p.remedy?.open, more: max(0, s.problems.count - 1))
+        }
+        var meter = DockContent.Meter(inSession: inSession, paused: !inSession && s.pause != nil, elapsed: nil, billedSeconds: nil,
+                                      todaySeconds: s.usageToday?.seconds, sleepsIn: nil)
+        if let session = s.session {
+            meter.elapsed = max(0, now.timeIntervalSince1970 - session.startedAt / 1000)
+            meter.billedSeconds = session.usageSeconds
+        }
+        if let pause = s.pause, !inSession {
+            meter.billedSeconds = pause.usageSeconds
+            meter.sleepsIn = max(0, (pause.sleepsAt - now.timeIntervalSince1970 * 1000) / 1000)
+        }
+        let ws = s.settings.wake
+        let gateLabel = awake ? nil : OrbStyle.gateLabel(gate, phrases: ws.phrases, auth: ws.auth, now: now, paused: s.phase == .paused)
+        return DockContent(awake: awake, inSession: inSession, typedWakes: s.settings.typedWakes,
+                           request: s.delegations.last { $0.status == .running }?.request,
+                           lastLine: s.transcript.last?.text, gateLabel: gateLabel,
+                           marks: marks, question: question, threads: rows, problem: problem, meter: meter,
+                           marking: marking, screenRecordingGranted: s.permissions.grant(.screenRecording) != .denied)
+    }
+
+    /// New content: the dock takes it; a mark that landed while tucked gets its six
+    /// seconds of "◎ N circled · Go to ask"; crops on their way are asked for.
+    private func dockContentChanged(_ c: DockContent, marks: [ScreenMark]) {
+        if c.pendingMarks > pendingMarksSeen, tucked, !c.awake {
+            notch?.showPill("◎ \(c.pendingMarks) circled · Go to ask", symbol: nil, tone: .mark, seconds: 6)
+        }
+        pendingMarksSeen = c.pendingMarks
+        dockContent = c
+        notch?.setContent(c)
+        // The snapshot itself (not `state.snapshot`: `@Published` publishes before the property is set).
+        requestThumbnails(for: marks)
+    }
+
+    /// Decode each mark's crop once its path appears, off the main thread, at twice the
+    /// 30×22 frame; drop what the snapshot no longer lists.
+    private func requestThumbnails(for marks: [ScreenMark]) {
+        let ids = Set(marks.map(\.id))
+        markThumbs = markThumbs.filter { ids.contains($0.key) }
+        markThumbsRequested = markThumbsRequested.filter { ids.contains($0) }
+        for m in marks where !markThumbsRequested.contains(m.id) {
+            guard let path = m.screenshotPath, !path.isEmpty else { continue }
+            markThumbsRequested.insert(m.id)
+            let id = m.id
+            Thumbnails.shared.thumbnail(for: state.screenshotURL(path), maxPixel: 60) { [weak self] img in
+                guard let self, let img, self.markThumbsRequested.contains(id) else { return }
+                self.markThumbs[id] = img
+                self.thumbsChanged.send(self.thumbsChanged.value + 1)
+            }
+        }
     }
 
     /// Where home is: the notch's dock in notch mode, else the perch — the spot Kevin last put it by hand.
@@ -1592,6 +1822,13 @@ public final class OrbPanelController {
     /// (`stayHere`), in free mode and in notch mode alike: the dock is for waking up
     /// and going to sleep (`fellAsleep`, `wokeUp`), not for the end of every job.
     private func workDone() {
+        if homeAfterTrace {
+            homeAfterTrace = false
+            if notchMode, notch != nil {
+                beginTuckSlip()
+                return
+            }
+        }
         stayHere()
     }
 
@@ -1754,6 +1991,12 @@ public final class OrbPanelController {
         guard !body.dragging else { return }
         if trace != nil { cancelTrace() }
         pendingTrace = nil
+        // A mark's own echo (reason "mark") started from the dock: the blob outlines it
+        // (or, under Reduce Motion, only flies to it) and comes back to the notch instead
+        // of loitering by the line; Kevin's pin, if the island had one, comes back with
+        // it. Every other trace stays where it worked.
+        homeAfterTrace = tucked && reason == "mark"
+        if homeAfterTrace { notch?.keepPinAcrossTrace() }
         let shown = panel.isVisible || tucked
         if !shown || sim.reducedMotion {
             // The line, whole; the blob flies to it if it is on screen.
@@ -1911,6 +2154,7 @@ public final class OrbPanelController {
     private func reactToStop() {
         pendingFly = nil
         pendingTrace = nil
+        homeAfterTrace = false
         pendingPoke?.cancel(); pendingPoke = nil
         if !tucked { blobView.paused = false }
         sim.nudge(1.6)
@@ -2485,6 +2729,60 @@ extension OrbPanelController {
     public var previewNotchThreadDots: String { notch?.view.previewThreadDots ?? "" }
     /// The working strip's measured alphas at forced levels (`NotchView.previewStripProbe`); nil without a dock.
     public var previewNotchStripProbe: String? { notch?.view.previewStripProbe() }
+    // The dock's surface (NotchPanel's preview accessors, forwarded; "" / [] / false without a dock).
+    public var previewNotchLayout: String { notch?.view.previewLayoutReadout ?? "" }
+    public var previewNotchHitList: [(name: String, rect: NSRect)] { notch?.view.previewHitList ?? [] }
+    public var previewNotchChips: [String] { notch?.view.previewChips ?? [] }
+    public var previewNotchChipsExtraWidth: CGFloat { notch?.view.previewChipsExtraWidth ?? 0 }
+    public var previewNotchPeekWidthTarget: CGFloat { notch?.view.previewPeekWidthTarget ?? 0 }
+    public var previewNotchPillText: String { notch?.view.previewPillText ?? "" }
+    public var previewNotchPillKind: String { notch?.view.previewPillKind ?? "" }
+    public var previewNotchLipChip: String { notch?.view.previewLipChip ?? "" }
+    public var previewNotchLipGlow: String { notch?.view.previewLipGlow ?? "" }
+    public var previewNotchLineText: String { notch?.view.previewLineText ?? "" }
+    public var previewNotchFootText: String { notch?.view.previewFootText ?? "" }
+    public var previewNotchFootDim: Bool { notch?.view.previewFootDim ?? false }
+    public func previewNotchBoxDim(_ name: String) -> CGFloat { notch?.view.previewBoxDim(name) ?? 0 }
+    public var previewNotchThumbs: [String] { notch?.view.previewThumbs ?? [] }
+    public var previewNotchThreadChips: [String] { notch?.view.previewThreadChips ?? [] }
+    public var previewNotchPinned: Bool { notch?.previewPinned ?? false }
+    public var previewNotchPinAfterMark: Bool { notch?.previewPinAfterMark ?? false }
+    public var previewNotchMarking: Bool { notch?.previewMarking ?? false }
+    public var previewNotchIgnoresMouse: Bool { notch?.previewIgnoresMouse ?? true }
+    /// Press an island control by name (`NotchView.Press(previewName:)`); false when it is not live.
+    @discardableResult public func previewNotchPress(_ name: String) -> Bool { notch?.previewPress(name) ?? false }
+    public func previewNotchHoverControl(_ name: String?) { notch?.view.previewSetHovered(name) }
+    public func previewNotchTooltip(_ name: String) -> String { notch?.view.previewTooltip(name) ?? "" }
+    public var previewNotchFieldFocused: Bool { notch?.view.previewFieldFocused ?? false }
+    public var previewNotchFieldText: String {
+        get { notch?.view.previewFieldText ?? "" }
+        set { notch?.view.previewFieldText = newValue }
+    }
+    public func previewNotchFieldReturn() { notch?.view.previewFieldReturn() }
+    public func previewNotchFieldEscape() { notch?.view.previewFieldEscape() }
+    public var previewNotchCanBecomeKey: Bool { notch?.panel.canBecomeKey ?? false }
+    public var previewNotchIsKey: Bool { notch?.panel.isKeyWindow ?? false }
+    public func previewNotchKeyEquivalentSwallowed(_ event: NSEvent) -> Bool { notch?.panel.performKeyEquivalent(with: event) ?? false }
+    public var previewNotchAccessibilityCounts: (buttons: Int, children: Int, hitRects: Int) {
+        guard let v = notch?.view else { return (0, 0, 0) }
+        return (v.previewAccessibilityButtonCount, v.previewAccessibilityChildCount, v.previewHitRectCount)
+    }
+    public func previewNotchContentAppearance(_ i: Int) -> (alpha: CGFloat, dy: CGFloat)? { notch?.view.previewContentAppearance(i) }
+    public var previewNotchContentClock: String { notch?.view.previewContentClock ?? "" }
+    public var previewNotchPulse: CGFloat { notch?.view.previewPulse ?? 0 }
+    public var previewNotchStretchedFrames: Int { NotchView.previewStretchedFrames }
+    public var previewNotchDrawReadout: String { NotchView.previewDrawReadout }
+    public var previewNotchInkBytes: Int { NotchInk.Cache.shared.renderedBytes }
+    public var previewNotchInkCapacityBytes: Int { NotchInk.Cache.shared.capacityBytes }
+    public func previewNotchInkHas(width: CGFloat, height: CGFloat) -> Bool {
+        guard let g = notch?.geometry else { return false }
+        let scale = notch?.panel.screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        return NotchInk.Cache.shared.has(size: CGSize(width: width, height: height), notchWidth: g.notch.width, scale: scale)
+    }
+    /// The controller's dock state: the content it built, the Ask waiting for a mark, the blob-home rule armed.
+    var previewDockContent: DockContent { dockContent }
+    public var previewAskAfterMark: Bool { askAfterMark }
+    public var previewHomeAfterTrace: Bool { homeAfterTrace }
     /// The sim's levels — raw as sent, eased, and the island level — for the same readout.
     public var previewSimLevels: String {
         let l = sim.previewLevels
