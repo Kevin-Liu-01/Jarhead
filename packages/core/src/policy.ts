@@ -429,7 +429,7 @@ const DESTRUCTIVE_SHELL: ReadonlyArray<{ readonly re: RegExp; readonly why: stri
   { re: /\bgit\s+branch\s+(-\w*D\b|--delete\s+--force)/, why: "that deletes an unmerged branch" },
   { re: /\b(npm|pnpm|yarn|cargo|gem|twine|poetry)\s+(publish|unpublish|push|upload)\b/, why: "publishing leaves this machine and cannot be taken back" },
   { re: /\bbrew\s+(uninstall|remove|rm|autoremove|zap)\b/, why: "uninstalls software" },
-  { re: /\bollama\s+(pull|rm|create|push|cp)\b/, why: "fetches, changes or removes local model weights (gigabytes) — ask first" },
+  { re: /\bollama\s+(pull|rm|create|push|cp|run|launch)\b/, why: "fetches, runs, changes or removes local model weights (gigabytes; `run` and `launch` pull a missing model and wait at a prompt) — ask first" },
   { re: /\b(lms)\s+(get|import|rm)\b/, why: "fetches or removes local model weights — ask first" },
   { re: /\bdefaults\s+(write|delete|import)\b/, why: "changes app or system preferences" },
   { re: /\blaunchctl\b/, why: "launchctl changes what runs at login" },

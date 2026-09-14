@@ -11,7 +11,10 @@ export const CHAT_DECIDE_TIMEOUT_MS = 8_000;
 /** Chars of transcript per slice: a 32k+ window reads twice what a small one does. */
 export const CHAT_MAX_CHARS_LARGE = 24_000;
 export const CHAT_MAX_CHARS_SMALL = 12_000;
-const MAX_TOKENS = 900;
+/** Room for the JSON alone: a model that does not think spends nothing before it. */
+export const CHAT_MAX_TOKENS = 900;
+/** A thinking model reasons before the JSON even when asked not to (gpt-oss ignores "none"): `max_tokens` maps to `num_predict` on /v1, so this is what keeps the reasoning from starving the answer. */
+export const CHAT_MAX_TOKENS_THINKING = 4_096;
 
 export interface ChatExtractorOptions {
   /** The server root ("http://127.0.0.1:11434"); /v1 is added here. */
@@ -20,6 +23,14 @@ export interface ChatExtractorOptions {
   readonly model: string;
   /** The model's trained window, when discovery knows it; sizes `maxChars`. */
   readonly contextLength?: number;
+  /**
+   * The target model carries Ollama's `thinking` capability: the request sends
+   * `reasoning_effort: "none"` (Ollama maps it to think:false; the gpt-oss family
+   * ignores booleans, so send "low" when the model id starts with `gpt-oss`) and
+   * `max_tokens` is raised to 4096 so reasoning cannot starve the JSON. Without
+   * it the body is the plain one: max_tokens 900, no reasoning_effort.
+   */
+  readonly thinking?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly extractTimeoutMs?: number;
   readonly decideTimeoutMs?: number;
@@ -60,9 +71,11 @@ function unfence(content: string): string {
 /**
  * Extraction and band decisions over a local model's Chat Completions
  * endpoint (Ollama, LM Studio, llama.cpp all serve /v1): the same prompts and
- * schemas as the Responses extractor, temperature 0, ≤ 900 tokens, strict
- * json_schema. Item text and the closed conversation go to 127.0.0.1 and
- * nowhere else. A server that 400s the json_schema shape is asked once more
+ * schemas as the Responses extractor, temperature 0, ≤ 900 tokens (4096 with
+ * thinking turned off for a model that has it, since Ollama thinks by default
+ * and would spend the budget before the JSON), strict json_schema. Item text
+ * and the closed conversation go to the server root and nowhere else. A
+ * server that 400s the json_schema shape is asked once more
  * in json_object mode with the schema written into the user text, and stays
  * there for the life of the process. Every failure is an
  * ExtractUnavailableError the service answers with the rules extractor; a
@@ -77,6 +90,7 @@ export class ChatExtractor implements Extractor, Decider {
   private readonly extractTimeoutMs: number;
   private readonly decideTimeoutMs: number;
   private readonly apiKey: string | undefined;
+  private readonly thinking: boolean;
   private readonly rules = new RulesDecider();
   /** True after a 400 on response_format json_schema: the schema rides in the user text from then on. */
   private jsonObjectOnly = false;
@@ -89,6 +103,12 @@ export class ChatExtractor implements Extractor, Decider {
     this.extractTimeoutMs = opts.extractTimeoutMs ?? CHAT_EXTRACT_TIMEOUT_MS;
     this.decideTimeoutMs = opts.decideTimeoutMs ?? CHAT_DECIDE_TIMEOUT_MS;
     this.apiKey = opts.apiKey;
+    this.thinking = opts.thinking ?? false;
+  }
+
+  /** Ollama reads `reasoning_effort` on /v1 as `think`: "none" turns it off; gpt-oss knows only low/medium/high, so "low" is its floor. */
+  private get reasoningEffort(): "none" | "low" {
+    return /^gpt-oss/i.test(this.model) ? "low" : "none";
   }
 
   /** The service's per-slice transcript cap: 24 000 chars when the window is 32k or more, else 12 000. */
@@ -126,7 +146,8 @@ export class ChatExtractor implements Extractor, Decider {
       model: this.model,
       messages,
       temperature: 0,
-      max_tokens: MAX_TOKENS,
+      max_tokens: this.thinking ? CHAT_MAX_TOKENS_THINKING : CHAT_MAX_TOKENS,
+      ...(this.thinking ? { reasoning_effort: this.reasoningEffort } : {}),
       stream: false,
       response_format: this.jsonObjectOnly ? { type: "json_object" } : { type: "json_schema", json_schema: { name, schema, strict: true } },
     });

@@ -5,8 +5,10 @@ import type { LocalModel, LocalServerStatus } from "@jarhead/protocol";
 import {
   EMBED_PREFERENCE,
   LOCAL_KEEP_ALIVE,
+  LOCAL_KEEP_ALIVE_MS,
   LOCAL_NUM_CTX_MAX,
   LOCAL_NUM_PREDICT,
+  LOCAL_SERVER_KEEP_ALIVE_MS,
   LOCAL_TEMPERATURE,
   LOCAL_TOOLS,
   LocalBrain,
@@ -711,6 +713,84 @@ test("local: warmUp posts /api/generate keep_alive 30m without prompt; cool post
     assert.equal(brain.status.models.find((m) => m.id === "qwen3.5:27b")?.loaded, false);
     await brain.stop();
     assert.equal(server.seen.filter((s) => s.path === "/api/generate").length, 2, "stop() does not unload; that is cool()'s job");
+  } finally {
+    await server.close();
+  }
+});
+
+test("local: the warm guess ages — /api/ps alone is trusted for Ollama's 5 m default, Jarhead's own chunk or preload for its 30 m keep_alive; a warm guess that saw no chunk flips cold for the next turn", async () => {
+  assert.equal(LOCAL_KEEP_ALIVE, "30m", "the string Ollama gets and the span the guess ages by are one constant");
+  assert.equal(LOCAL_KEEP_ALIVE_MS, 30 * 60_000);
+  assert.equal(LOCAL_SERVER_KEEP_ALIVE_MS, 5 * 60_000);
+  const T0 = 1_789_243_208_790;
+  let now = T0;
+  let answer: "hang" | "chunk" = "hang";
+  const fake: OllamaFake = { shows: 0, models: fixture("aging"), loaded: ["qwen3.5:27b"], chat: () => (answer === "hang" ? "hang" : { status: 200, ndjson: [chunk({ content: "here." }, true)] }) };
+  const server = await localServer(ollamaRoute(fake));
+  // Budgets far apart: the sentence and the "loading …" line say which one was picked, the elapsed time confirms it.
+  const timeouts = { firstChunkColdMs: 400, firstChunkWarmMs: 60, stallMs: 5000 };
+  const loadedFlag = (b: LocalBrain) => b.status.models.find((m) => m.id === "qwen3.5:27b")?.loaded;
+  const turn = async (b: LocalBrain) => {
+    const log = makeSink();
+    const started = Date.now();
+    const r = await b.handle(makeTask("hi"), log.sink);
+    return { r, log, ms: Date.now() - started };
+  };
+  try {
+    const { runner } = makeRunner();
+    const brain = new LocalBrain({ runner, baseUrl: server.url, model: "qwen3.5:27b", effort: "medium", threads: () => true, ramBytes: RAM, timeouts, now: () => now });
+    assert.equal((await brain.start()).ready, true);
+    assert.equal(loadedFlag(brain), true, "discovery saw it in /api/ps");
+
+    // Within Ollama's default keep_alive of the sighting: warm budget, and when nothing comes the guess is dropped.
+    now = T0 + 4 * 60_000;
+    const warm = await turn(brain);
+    assert.equal(warm.r.status, "failed");
+    assert.equal(warm.r.error, "qwen3.5:27b sent nothing for 0 s; Ollama is busy or let it go — say it again and I will wait for the load");
+    assert.equal(warm.log.thinking.some((t) => t.startsWith("loading ")), false, "a warm guess shows no loading line");
+    assert.ok(warm.ms < 300, `the warm budget (60 ms) ended it, not the cold one: ${warm.ms} ms`);
+    assert.equal(loadedFlag(brain), false, "the warm guess was wrong, so it is gone");
+
+    // The next turn is cold: the loading line, the long budget, the loading sentence.
+    const cold = await turn(brain);
+    assert.equal(cold.r.error, "qwen3.5:27b sent nothing for 0 s while loading; is Ollama busy with another model?");
+    assert.deepEqual(cold.log.thinking.filter((t) => t.startsWith("loading ")), ["loading qwen3.5:27b (17 GB)"]);
+    assert.ok(cold.ms >= 350, `the cold budget (400 ms) ran: ${cold.ms} ms`);
+
+    // A preload marks it loaded at `now`; 29 minutes on it is still warm, 31 minutes on it is cold again.
+    assert.equal((await brain.warmUp()).warm, true);
+    assert.equal(loadedFlag(brain), true);
+    now += 29 * 60_000;
+    const stillWarm = await turn(brain);
+    assert.match(stillWarm.r.error ?? "", /let it go/);
+    assert.ok(stillWarm.ms < 300, `warm budget within keep_alive: ${stillWarm.ms} ms`);
+    assert.equal((await brain.warmUp()).warm, true);
+    now += 31 * 60_000;
+    const aged = await turn(brain);
+    assert.match(aged.r.error ?? "", /while loading/, "keep_alive ran out: the weights are gone and the cold budget applies although nothing flipped the flag");
+    assert.ok(aged.ms >= 350, `cold budget past keep_alive: ${aged.ms} ms`);
+    assert.equal(loadedFlag(brain), true, "the flag itself is discovery's word; only the budget ages it");
+
+    // A turn that answers refreshes the clock from its end: 29 minutes later the guess is still warm.
+    answer = "chunk";
+    const ok = await turn(brain);
+    assert.equal(ok.r.status, "done", ok.r.error);
+    now += 29 * 60_000;
+    answer = "hang";
+    const afterAnswer = await turn(brain);
+    assert.match(afterAnswer.r.error ?? "", /let it go/);
+    assert.ok(afterAnswer.ms < 300, `a completed turn restarted the 30 m: ${afterAnswer.ms} ms`);
+    await brain.stop();
+
+    // A sighting alone, 6 minutes old: Ollama's default keep_alive has passed, so the first turn is cold without any timeout first.
+    const later = new LocalBrain({ runner, baseUrl: server.url, model: "qwen3.5:27b", effort: "medium", threads: () => true, ramBytes: RAM, timeouts, now: () => now });
+    await later.start();
+    assert.equal(loadedFlag(later), true);
+    now += 6 * 60_000;
+    const stale = await turn(later);
+    assert.match(stale.r.error ?? "", /while loading/);
+    assert.ok(stale.ms >= 350, `a stale /api/ps sighting gets the cold budget: ${stale.ms} ms`);
+    await later.stop();
   } finally {
     await server.close();
   }

@@ -44,7 +44,11 @@ export const LOCAL_NUM_CTX_MIN = 16_384;
 export const LOCAL_NUM_CTX_MAX = 65_536;
 /** Room for thinking; stops a looping model (the request timeout was the only brake). */
 export const LOCAL_NUM_PREDICT = 4_096;
-export const LOCAL_KEEP_ALIVE = "30m";
+/** How long Ollama keeps the weights after one of Jarhead's own requests (or its preload); `loaded` is trusted for this long after the last one. */
+export const LOCAL_KEEP_ALIVE_MS = 30 * 60_000;
+export const LOCAL_KEEP_ALIVE = `${LOCAL_KEEP_ALIVE_MS / 60_000}m`;
+/** Ollama's own default keep_alive: how long a model discovery found in memory, but Jarhead did not load, is trusted to stay. */
+export const LOCAL_SERVER_KEEP_ALIVE_MS = 5 * 60_000;
 export const LOCAL_TEMPERATURE = 0.6;
 /** No chunk for this long → "the local model went quiet for 60 s". */
 export const LOCAL_STALL_MS = 60_000;
@@ -448,10 +452,12 @@ export interface OllamaChatTransportOptions {
   readonly model: LocalModel;
   readonly numCtx: number;
   readonly think: ReturnType<typeof thinkFor>;
-  /** Whether the model is in memory right now (discovery's /api/ps): a cold load is given longer before its first chunk. */
+  /** Whether the model is in memory right now (discovery's /api/ps, aged by keep_alive): a cold load is given longer before its first chunk. */
   readonly loaded: () => boolean;
-  /** The first chunk arrived: the weights are in memory now, so the next turn gets the warm budget. */
+  /** A chunk arrived, and the stream ended: the weights are in memory and Ollama's keep_alive counts from here, so the next turn gets the warm budget. */
   readonly onLoaded?: (() => void) | undefined;
+  /** The warm budget passed with no chunk: the weights were not in memory after all (Ollama let them go, or is loading another model), so the next turn gets the cold budget. */
+  readonly onEvicted?: (() => void) | undefined;
   readonly keepAlive?: string | undefined;
   readonly apiKey?: string | undefined;
   /** Test seam over the LOCAL_* timing constants. */
@@ -564,7 +570,7 @@ export class OllamaChatTransport implements ChatTransport {
     } catch (e) {
       if (timer) clearTimeout(timer);
       if (signal.aborted) throw e;
-      if (watchdog.signal.aborted) return fail(this.timeoutSentence(why, firstChunkMs, stallMs));
+      if (watchdog.signal.aborted) return fail(this.timeoutSentence(why, warm, firstChunkMs, stallMs));
       return fail(`could not reach ${serverLabel({ flavor: "ollama" })} at ${this.o.baseUrl}: ${(e as Error).message}`);
     }
     if (!res.ok) {
@@ -622,10 +628,12 @@ export class OllamaChatTransport implements ChatTransport {
       }
       partial += decoder.decode();
       if (partial.trim()) take(partial);
+      // keep_alive counts from the end of the request: the model is warm from now, not from the first chunk.
+      if (!first) this.o.onLoaded?.();
     } catch (e) {
       if (timer) clearTimeout(timer);
       if (signal.aborted) throw e;
-      if (watchdog.signal.aborted) return fail(this.timeoutSentence(why, firstChunkMs, stallMs));
+      if (watchdog.signal.aborted) return fail(this.timeoutSentence(why, warm, firstChunkMs, stallMs));
       return fail(`the stream from ${id} broke: ${(e as Error).message}`);
     } finally {
       if (timer) clearTimeout(timer);
@@ -642,10 +650,16 @@ export class OllamaChatTransport implements ChatTransport {
     return { content: stripped.content, ...(reasoning ? { reasoning } : {}), toolCalls, finish: finishOf(done?.done_reason, toolCalls.length), usage };
   }
 
-  private timeoutSentence(why: "first" | "stall" | "deadline" | undefined, firstChunkMs: number, stallMs: number): string {
+  /** `warm` is the guess the budget was picked on; a warm guess that saw no chunk was wrong, and says so to the brain. */
+  private timeoutSentence(why: "first" | "stall" | "deadline" | undefined, warm: boolean, firstChunkMs: number, stallMs: number): string {
     const id = this.o.model.id;
     if (why === "deadline") return "I ran out of time";
-    if (why === "first") return `${id} sent nothing for ${Math.round(firstChunkMs / 1000)} s${this.o.loaded() ? "" : " while loading"}; is Ollama busy with another model?`;
+    if (why === "first") {
+      const s = Math.round(firstChunkMs / 1000);
+      if (!warm) return `${id} sent nothing for ${s} s while loading; is Ollama busy with another model?`;
+      this.o.onEvicted?.();
+      return `${id} sent nothing for ${s} s; Ollama is busy or let it go — say it again and I will wait for the load`;
+    }
     return `the local model went quiet for ${Math.round(stallMs / 1000)} s`;
   }
 
@@ -697,6 +711,8 @@ export interface LocalBrainOptions {
   readonly onStatus?: ((s: LocalServerStatus) => void) | undefined;
   /** Test seam for the transport's timing constants. */
   readonly timeouts?: OllamaChatTransportOptions["timeouts"];
+  /** Test seam: the clock discovery is stamped with and the loaded guess ages by. */
+  readonly now?: (() => number) | undefined;
 }
 
 /** Discovery older than this is redone at start(). */
@@ -728,9 +744,13 @@ export class LocalBrain implements Brain {
   private ready = false;
   private readyDetail = "not started";
   private readonly fetchImpl: typeof fetch;
+  private readonly now: () => number;
+  /** When Jarhead itself last saw each model's weights in memory (a chunk, a stream's end, a preload); absent = only discovery's /api/ps says so. */
+  private readonly loadedAt = new Map<string, number>();
 
   constructor(private readonly opts: LocalBrainOptions) {
     this.fetchImpl = opts.fetch ?? fetch;
+    this.now = opts.now ?? Date.now;
     this.current = opts.status ?? { reachable: false, baseUrl: opts.baseUrl ? normalizeBaseUrl(opts.baseUrl) : "", models: [], ramBytes: opts.ramBytes, checkedAt: 0 };
   }
 
@@ -750,8 +770,8 @@ export class LocalBrain implements Brain {
   }
 
   async start(): Promise<{ ready: boolean; detail: string }> {
-    const fresh = this.opts.status && Date.now() - this.opts.status.checkedAt < STATUS_FRESH_MS && this.current === this.opts.status;
-    const status = fresh ? this.opts.status! : await discoverLocalServer({ baseUrl: this.opts.baseUrl, fetch: this.fetchImpl, ramBytes: this.opts.ramBytes, apiKey: this.opts.apiKey });
+    const fresh = this.opts.status && this.now() - this.opts.status.checkedAt < STATUS_FRESH_MS && this.current === this.opts.status;
+    const status = fresh ? this.opts.status! : await discoverLocalServer({ baseUrl: this.opts.baseUrl, fetch: this.fetchImpl, ramBytes: this.opts.ramBytes, apiKey: this.opts.apiKey, now: this.now });
     const resolved = resolveLocalModel(this.opts.model, status);
     if ("error" in resolved) {
       this.current = status;
@@ -794,8 +814,9 @@ export class LocalBrain implements Brain {
             model,
             numCtx: this.numCtx,
             think: this.think,
-            loaded: () => this.current.models.find((m) => m.id === model.id)?.loaded ?? false,
+            loaded: () => this.isLoaded(model.id),
             onLoaded: () => this.markLoaded(model.id, true),
+            onEvicted: () => this.markLoaded(model.id, false),
             apiKey: this.opts.apiKey,
             timeouts: this.opts.timeouts,
           })
@@ -888,7 +909,22 @@ export class LocalBrain implements Brain {
     if (r?.status === 200) this.markLoaded(this.model.id, false);
   }
 
+  /**
+   * The warm guess, aged: `loaded` from discovery or a mark is trusted only while the
+   * keep-alive it came with has not run out — LOCAL_KEEP_ALIVE after one of Jarhead's own
+   * requests, Ollama's default after a /api/ps sighting alone. Nothing here re-reads the
+   * server; a stale true costs a cold load under the warm budget, a stale false costs nothing.
+   */
+  private isLoaded(id: string): boolean {
+    if (!this.current.models.find((m) => m.id === id)?.loaded) return false;
+    const mine = this.loadedAt.get(id);
+    const since = mine === undefined ? this.current.checkedAt : Math.max(mine, this.current.checkedAt);
+    return this.now() - since < (mine === undefined ? LOCAL_SERVER_KEEP_ALIVE_MS : LOCAL_KEEP_ALIVE_MS);
+  }
+
   private markLoaded(id: string, loaded: boolean): void {
+    if (loaded) this.loadedAt.set(id, this.now());
+    else this.loadedAt.delete(id);
     if (this.current.models.find((m) => m.id === id)?.loaded === loaded) return;
     this.current = { ...this.current, models: this.current.models.map((m) => (m.id === id ? { ...m, loaded } : m)) };
   }

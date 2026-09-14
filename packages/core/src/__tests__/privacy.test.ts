@@ -51,21 +51,62 @@ test("(a) a local brain on loopback with a local embedder: voice cloud · brain 
   assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves");
 });
 
-test("(b) the same brain pinned on a LAN box: the brain row is lan and says the words leave for the network", () => {
-  const { paths, where, byWhat } = rows({ ...base, local: ollama("http://10.0.0.5:11434") });
+test("(b) the same brain pinned on a LAN box: brain and memory rows are lan — the embedder posts item text and the extractor posts closed conversations to that host", () => {
+  const lan = ollama("http://10.0.0.5:11434");
+  const { paths, where, byWhat } = rows({ ...base, local: lan });
   wellFormed(paths);
-  assert.deepEqual(where, ["cloud", "lan", "mac", "cloud"]);
+  assert.deepEqual(where, ["cloud", "lan", "lan", "cloud"]);
   assert.match(byWhat.brain?.detail ?? "", /^qwen3.5:27b on Ollama 0.34.0 at 10\.0\.0\.5:11434 — .*leave for your network$/);
+  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b at 10.0.0.5:11434 — item text and closed conversations leave for your network");
+  // Keyword matching runs in the daemon, so only the extractor's conversations cross the wire.
+  const keyword = rows({ ...base, local: lan, memory: keywordMemory }).byWhat.memory;
+  assert.equal(keyword?.where, "lan");
+  assert.equal(keyword?.detail, "keywords · extractor qwen3.5:27b at 10.0.0.5:11434 — closed conversations leave for your network");
+  // A pinned id the LAN server does not list: rules read, so only item text goes over, and keywords send nothing.
+  const gone = { ...lan, models: [EMBED] };
+  const rulesEmbed = rows({ ...base, brainModel: "qwen3.5:27b", local: gone }).byWhat.memory;
+  assert.equal(rulesEmbed?.where, "lan");
+  assert.equal(rulesEmbed?.detail, "embeddings embeddinggemma 768 dims · rules at 10.0.0.5:11434 — item text leaves for your network");
+  const rulesKeyword = rows({ ...base, brainModel: "qwen3.5:27b", local: gone, memory: keywordMemory }).byWhat.memory;
+  assert.equal(rulesKeyword?.where, "mac");
+  assert.equal(rulesKeyword?.detail, "keywords · rules — nothing leaves");
+  // A loopback pin, however spelt, stays mac.
+  for (const url of ["http://localhost:11434", "http://[::1]:11434", "http://127.0.0.1:11434/"]) {
+    assert.equal(rows({ ...base, local: ollama(url) }).byWhat.memory?.where, "mac", url);
+  }
 });
 
-test("(c) the fallback: brain local in settings, openai-responses running → brain cloud naming OpenAI, memory still mac (it follows the setting)", () => {
-  const { paths, where, byWhat } = rows({ ...base, brainResolved: "openai-responses", brainDetail: "Responses · gpt-5.6-terra", local: NONE });
+test("(c) the fallback: brain local in settings, openai-responses running → brain cloud naming OpenAI's own model as a stand-in for the local one, memory mac on rules (the server is down, so no local model reads)", () => {
+  const { paths, where, byWhat } = rows({ ...base, brainModel: "qwen3.5:27b", brainResolved: "openai-responses", brainDetail: "responses delegation via gpt-5.6-terra", local: NONE });
   wellFormed(paths);
   assert.deepEqual(where, ["cloud", "cloud", "mac", "cloud"]);
-  assert.match(byWhat.brain?.detail ?? "", /^OpenAI .*screenshots and tool results leave$/);
+  assert.equal(byWhat.brain?.detail, "OpenAI responses delegation via gpt-5.6-terra — standing in for qwen3.5:27b until it is back; screenshots and tool results leave");
+  assert.equal(byWhat.brain?.detail.includes("OpenAI qwen3.5"), false, "the local id is never credited to OpenAI");
   assert.equal(byWhat.brain?.detail.includes("ChatGPT login"), false, "Responses is the key, not the plan");
   assert.equal(byWhat.memory?.where, "mac");
-  assert.match(byWhat.memory?.detail ?? "", /^embeddings embeddinggemma 768 dims · extractor .* — nothing leaves$/);
+  assert.equal(byWhat.memory?.detail, "embeddings embeddinggemma 768 dims · rules — nothing leaves");
+  // No pin (best fit) and nothing picked: the stand-in names "the local model"; an empty detail falls back to the default-model words.
+  const unpinned = rows({ ...base, brainResolved: "openai-responses", brainDetail: "", local: NONE }).byWhat.brain;
+  assert.equal(unpinned?.detail, "OpenAI the backend's default model — standing in for the local model until it is back; screenshots and tool results leave");
+  // A cloud setting with a pinned cloud model is untouched by the stand-in wording.
+  const cloud = rows({ ...base, brain: "openai-responses", brainModel: "gpt-5.6", brainResolved: "openai-responses", brainDetail: "responses delegation via gpt-5.6", local: NONE, memory: keywordMemory }).byWhat.brain;
+  assert.equal(cloud?.detail, "OpenAI gpt-5.6 — screenshots and tool results leave");
+});
+
+test("(g) the memory row names a local extractor only when one can read: server offline → rules; pinned model gone from the server → rules; listed (or :latest) → the model", () => {
+  const offline = rows({ ...base, brainModel: "qwen3.5:27b", local: NONE, memory: keywordMemory }).byWhat.memory;
+  assert.equal(offline?.where, "mac");
+  assert.equal(offline?.detail, "keywords · rules — nothing leaves", "the bridge builds RulesExtractor for an offline server");
+  const removed = rows({ ...base, brainModel: "qwen3.5:27b", local: { ...ollama("http://127.0.0.1:11434"), models: [EMBED] }, memory: keywordMemory }).byWhat.memory;
+  assert.equal(removed?.detail, "keywords · rules — nothing leaves", "a ChatExtractor on a missing id 404s into rules every run");
+  const { picked: _none, ...noPick } = ollama("http://127.0.0.1:11434");
+  void _none;
+  const unresolvedPick = rows({ ...base, brainModel: "", local: noPick, memory: keywordMemory }).byWhat.memory;
+  assert.equal(unresolvedPick?.detail, "keywords · rules — nothing leaves", "no pick yet means rules read");
+  const latest = rows({ ...base, brainModel: "qwen3.5", local: { ...ollama("http://127.0.0.1:11434"), models: [{ ...QWEN, id: "qwen3.5:latest" }, EMBED] }, memory: keywordMemory }).byWhat.memory;
+  assert.equal(latest?.detail, "keywords · extractor qwen3.5 — nothing leaves", "Kevin's spelling resolves to :latest on the server");
+  const localOff = rows({ ...base, brainModel: "qwen3.5:27b", local: NONE }).byWhat.memory;
+  assert.equal(localOff?.detail, "embeddings embeddinggemma 768 dims · rules — nothing leaves");
 });
 
 test("(d) codex with an OpenAI key and OpenAI embeddings: brain cloud via the ChatGPT login, memory cloud naming what leaves", () => {

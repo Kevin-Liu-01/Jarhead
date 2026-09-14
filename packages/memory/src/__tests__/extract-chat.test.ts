@@ -105,6 +105,49 @@ test("chat extractor: a 400 on the json_schema shape is asked once more as json_
   assert.equal(always400.calls.length, 2, "the json_object retry, then the fault is reported");
 });
 
+test("chat extractor: a model with the thinking badge is asked not to think — reasoning_effort none and max_tokens 4096 in the body — gpt-oss gets low (it ignores booleans), and a model without the badge keeps the plain body", async () => {
+  const json = fixtureText("extract-response.json");
+  const qwen = fakeFetch(() => chatResponse(json));
+  assert.equal((await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.5:27b", fetchImpl: qwen.fetch, thinking: true }).extract(input)).length, 5);
+  const q = body(0, qwen);
+  assert.equal(q["reasoning_effort"], "none", "Ollama maps none to think:false, so num_predict is spent on the JSON, not on reasoning");
+  assert.equal(q["max_tokens"], 4096, "and the budget has room even when the model reasons anyway");
+  assert.deepEqual(Object.keys(q).sort(), ["max_tokens", "messages", "model", "reasoning_effort", "response_format", "stream", "temperature"]);
+  assert.equal(q["temperature"], 0);
+  assert.equal(q["stream"], false);
+
+  const oss = fakeFetch(() => chatResponse(json));
+  await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "gpt-oss:20b", fetchImpl: oss.fetch, thinking: true }).extract(input);
+  assert.equal(body(0, oss)["reasoning_effort"], "low", "gpt-oss knows only low/medium/high");
+  assert.equal(body(0, oss)["max_tokens"], 4096);
+
+  // The decide body carries the same lever: a band decision under a thinking model must not time out on reasoning either.
+  const decide = fakeFetch(() => chatResponse(fixtureText("decide-response.json")));
+  const existing = item({ id: "m_1", text: "Kevin prefers dark mode", kind: "preference" });
+  await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.5:27b", fetchImpl: decide.fetch, thinking: true }).decide({ kind: "preference", text: "Kevin prefers light mode", subjects: [], importance: 0.6, confidence: 0.7, evidence: [1] }, [{ item: existing, sim: 0.8 }], { thresholds: OPENAI_THRESHOLDS, now: T0 });
+  assert.equal(body(0, decide)["reasoning_effort"], "none");
+  assert.equal(body(0, decide)["max_tokens"], 4096);
+
+  // The json_object retry keeps the lever too.
+  const retried = fakeFetch((_c, n) => (n === 1 ? jsonResponse({ error: { message: "response_format json_schema is not supported" } }, 400) : chatResponse(json)));
+  await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "qwen3.5:27b", fetchImpl: retried.fetch, thinking: true }).extract(input);
+  assert.equal(retried.calls.length, 2);
+  assert.equal(body(1, retried)["reasoning_effort"], "none");
+  assert.deepEqual(body(1, retried)["response_format"], { type: "json_object" });
+
+  for (const thinking of [false, undefined]) {
+    const plain = fakeFetch(() => chatResponse(json));
+    await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "llama3.1:8b", fetchImpl: plain.fetch, ...(thinking === undefined ? {} : { thinking }) }).extract(input);
+    const p = body(0, plain);
+    assert.equal("reasoning_effort" in p, false, `no lever for a model without the badge (thinking: ${String(thinking)})`);
+    assert.equal(p["max_tokens"], 900);
+  }
+  // A gpt-oss id without the badge (a server that did not report it) is left alone too: the flag, not the name, decides.
+  const ossPlain = fakeFetch(() => chatResponse(json));
+  await new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "gpt-oss:20b", fetchImpl: ossPlain.fetch }).extract(input);
+  assert.equal("reasoning_effort" in body(0, ossPlain), false);
+});
+
 test("chat extractor: a thinking model's <think> block, an unterminated one, a <thinking> block, the harmony analysis channel and ``` fences are stripped before the parse; content that is still not JSON is bad-json", async () => {
   const json = fixtureText("extract-response.json");
   const wrapped = fakeFetch(() => chatResponse(`<think>\nLet me read the lines.\nLine 1 is Kevin's name.\n</think>\n${json}`));
