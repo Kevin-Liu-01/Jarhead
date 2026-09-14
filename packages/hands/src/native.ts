@@ -441,7 +441,7 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
     });
   }
 
-  /** The resident helper's greeting: its version, pid and the grants it read at launch (a key an older build did not print is absent). */
+  /** The resident helper's greeting: its version, pid and the grants it read at launch (a key the helper did not print is absent). */
   async hello(): Promise<{ version: string; pid: number; permissions: HelloPermissions }> {
     const raw = await this.request<{ version: string; pid: number; permissions?: unknown }>("hello", {}, 3000);
     return { version: raw.version, pid: raw.pid, permissions: parseHelperPermissions(raw.permissions) };

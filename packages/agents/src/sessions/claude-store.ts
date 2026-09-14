@@ -227,7 +227,7 @@ export function parseClaudeSession(sessionId: string, path: string, slug: string
     if (cwd === undefined) cwd = CWD_RE.exec(line)?.[1];
     if (line.includes('"type":"assistant"')) {
       if (line.includes('"isSidechain":true')) return;
-      // A line without an id (older builds, hand-made fixtures) is a message of its own.
+      // A line without an id (earlier Claude Code versions, hand-made fixtures) is a message of its own.
       const messageId = MESSAGE_ID_RE.exec(line)?.[1];
       if (messageId === undefined || messageId !== lastAssistantId) messages += 1;
       lastAssistantId = messageId;

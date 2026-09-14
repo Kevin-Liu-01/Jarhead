@@ -5,8 +5,8 @@ import { REPO_ROOT } from "./env.ts";
 /**
  * What Jarhead may do without asking.
  *
- * v1 asked before almost everything and was, as a result, useless for the thing it
- * was for. v2 inverts the default: anything on Kevin's own machine runs, unless it
+ * An assistant that asks before almost everything is useless for the thing it is
+ * for. The default here: anything on Kevin's own machine runs, unless it
  * is destructive (then a spoken yes first) or on the never-list (then never, yes or
  * no). Jarhead is gated by policy, not by absence: the tools can do everything, and
  * this module is the one place that says what needs a question.

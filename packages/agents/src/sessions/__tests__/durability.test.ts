@@ -860,12 +860,12 @@ test("settle after a replay: a source whose page was 'no file yet' follows the f
   mkdirSync(claudeRoot);
   const sid = "abcdefab-1234-4abc-8abc-abcdefab0d0d";
   const cc = new ClaudeCodeConnector({ sdk: fakeSdk(sid), claudeRoot, tailPollMs: 20, tailCoalesceMs: 10 });
-  const worker = await cc.start({ cwd: home2, name: "worker" });
-  await until(() => sdkIdKnown(cc, worker.id), 2_000, "the session id from init");
-  assert.deepEqual(await cc.transcript(worker.id), { messages: [], total: 0, complete: true }, "no file yet");
-  assert.equal(await cc.settle(worker.id), undefined, "nothing read, nothing to settle");
+  const helper = await cc.start({ cwd: home2, name: "helper" });
+  await until(() => sdkIdKnown(cc, helper.id), 2_000, "the session id from init");
+  assert.deepEqual(await cc.transcript(helper.id), { messages: [], total: 0, complete: true }, "no file yet");
+  assert.equal(await cc.settle(helper.id), undefined, "nothing read, nothing to settle");
   const got: TranscriptDelta[] = [];
-  const stopCc = cc.watch(worker.id, (d) => got.push(d));
+  const stopCc = cc.watch(helper.id, (d) => got.push(d));
   await sleep(60);
   const pdir = join(claudeRoot, projectSlug(home2));
   mkdirSync(pdir);
@@ -875,7 +875,7 @@ test("settle after a replay: a source whose page was 'no file yet' follows the f
     `${cl({ type: "user", uuid: "u1", message: { role: "user", content: "run it" } }, "2026-09-01T10:00:00.000Z")}\n${cl({ type: "assistant", uuid: "a1", message: { id: "msg_1", role: "assistant", content: [{ type: "tool_use", id: "toolu_open", name: "Bash", input: { command: "pnpm test" } }], stop_reason: "tool_use" } }, "2026-09-01T10:00:01.000Z")}\n`,
   );
   await until(() => got.flatMap((d) => d.messages).some((m) => m.id === "toolu_open"), 3_000, "the replayed running call through the Claude Code watch");
-  const ccSettled = await cc.settle(worker.id);
+  const ccSettled = await cc.settle(helper.id);
   assert.deepEqual(ccSettled?.messages.map((m) => [m.id, m.tool?.status]), [["toolu_open", "interrupted"]]);
   assert.equal(ccSettled?.total, 2);
   stopCc();

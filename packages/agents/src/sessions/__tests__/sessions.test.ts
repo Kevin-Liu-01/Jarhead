@@ -274,7 +274,7 @@ test("parseClaudeSession: an assistant message split over thinking/text/tool_use
   assert.equal(s.messageCount, 3, "1 prompt + 2 assistant messages over 5 assistant lines");
   assert.equal(s.lastAssistantText, "Both ran.");
   const noIds = [user, line(undefined, { type: "text", text: "a" }, "l1"), line(undefined, { type: "tool_use", id: "toolu_01", name: "Read", input: { file_path: "/x" } }, "l2")];
-  assert.equal(parseClaudeSession("s", "/x/s.jsonl", "-x", noIds, [], facts).messageCount, 3, "no message.id (older builds): every line is its own message");
+  assert.equal(parseClaudeSession("s", "/x/s.jsonl", "-x", noIds, [], facts).messageCount, 3, "no message.id (earlier Claude Code versions): every line is its own message");
   const toolIdOnly = [user, line(undefined, { type: "tool_use", id: "msg_looks_like_one", name: "Read", input: { id: "msg_also" } }, "l1"), line(undefined, { type: "tool_use", id: "msg_looks_like_one", name: "Read", input: {} }, "l2")];
   assert.equal(parseClaudeSession("s", "/x/s.jsonl", "-x", toolIdOnly, [], facts).messageCount, 3, "ids inside content blocks are not the message id");
 });

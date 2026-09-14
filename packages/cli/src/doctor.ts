@@ -438,7 +438,7 @@ export async function runChecks(): Promise<Check[]> {
       if (r.status === 200) modelIds = ids;
       const hasLive = ids.has(cfg.liveModel);
       const src = keySource("OPENAI_API_KEY");
-      const where = src === "state-dir" ? "~/.jarhead/env" : src === "repo" ? ".env.local" : "shell env";
+      const where = src === "state-dir" ? "~/.jarhead/env" : "shell env";
       add({
         group: "keys",
         name: "OPENAI_API_KEY",

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LineSplitter, REPO_ROOT, logger } from "@jarhead/core";
-import { DaemonClient, DaemonServer, type EngineLike } from "@jarhead/daemon";
+import { DaemonClient, DaemonServer, type ToolHost } from "@jarhead/daemon";
 import { SECRET_KEYS, type Effort } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
@@ -1370,9 +1370,6 @@ export function daemonPidAt(socketPath: string, timeoutMs = 1000): Promise<numbe
 export async function socketAnswers(socketPath: string, timeoutMs = 1000): Promise<boolean> {
   return (await daemonPidAt(socketPath, timeoutMs)) !== undefined;
 }
-
-/** What the private tool socket fronts: the runner and the lane lookup `tool.run` reads, nothing else of the engine. */
-type ToolHost = Pick<EngineLike, "runner" | "runnerFor">;
 
 /**
  * The private socket's host: only `tool.run` is answered there. A spawned thread's brain

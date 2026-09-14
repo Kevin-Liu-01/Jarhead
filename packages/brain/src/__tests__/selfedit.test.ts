@@ -358,9 +358,14 @@ test("self_status and doctor row with nothing pending", async (t: TestContext) =
 /** An engine that only records the commands the daemon hands it. */
 class RecordingEngine extends EventEmitter implements EngineLike {
   commands: unknown[] = [];
-  ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
+  ledger = { read: () => [], days: () => [], sessions: () => [], readSession: () => [], search: () => [], readChain: () => ({ rows: [], truncated: false }) };
+  memory = { list: () => [], search: async () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner = { run: async (name: string): Promise<{ result: ToolResult }> => ({ result: { kind: "text", text: `${name} ok` } }) };
+  runnerFor(): undefined {
+    return undefined;
+  }
+  dropViewers(): void {}
   snapshot(): unknown {
     return {};
   }
@@ -369,7 +374,8 @@ class RecordingEngine extends EventEmitter implements EngineLike {
   }
   feedMic(): void {}
   reportInputLevel(): void {}
-  setMicrophonePermission(): void {}
+  setPermission(): void {}
+  setPermissions(): void {}
   registerOwnPid(): void {}
   ear(): void {}
   problem(): void {}

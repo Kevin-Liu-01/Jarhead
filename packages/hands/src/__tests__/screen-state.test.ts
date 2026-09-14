@@ -79,12 +79,12 @@ test("get(maxAgeMs) is an O(1) hit within age and the same config, a miss when t
   assert.equal(unkeyed.get(500, "cfg-1"), undefined, "unknown config: a miss when the caller names one");
   unkeyed.absorb({ ax: { app: "Safari", window: "w", labels: [] } });
   assert.equal(unkeyed.get(500, "cfg-1"), undefined, "an absorb without a config keeps it unkeyed");
-  const v1 = cache.version;
+  const before = cache.version;
   cache.invalidate("after left_click");
   assert.equal(cache.get(Number.POSITIVE_INFINITY), undefined, "invalidated");
-  assert.equal(cache.version, v1 + 1);
+  assert.equal(cache.version, before + 1);
   cache.invalidate("again");
-  assert.equal(cache.version, v1 + 1, "invalidating nothing changes nothing");
+  assert.equal(cache.version, before + 1, "invalidating nothing changes nothing");
 });
 
 test("refresh runs its probes together (arrivals within one hop, ≤ parallel in flight) and answers with the partial state past the budget; late probes still fill the cache unless invalidated", async () => {

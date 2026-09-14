@@ -117,21 +117,21 @@ test("store: embed() goes through embeddings.jsonl — misses hit the embedder o
   store.load();
   const e = new FakeEmbedder({ dims: 8 });
   const texts = ["Kevin goes by Kev", "Kevin prefers short answers", "Kevin goes by Kev"];
-  const v1 = await store.embed(e, texts);
+  const first = await store.embed(e, texts);
   assert.equal(e.calls.length, 1);
   assert.deepEqual(e.calls[0], ["Kevin goes by Kev", "Kevin prefers short answers"], "duplicates within a batch embed once");
-  assert.equal(v1.length, 3);
-  assert.equal(v1[0]!.length, 8);
-  const v2 = await store.embed(e, ["kevin goes by kev.", "Kevin prefers short answers"]);
+  assert.equal(first.length, 3);
+  assert.equal(first[0]!.length, 8);
+  const second = await store.embed(e, ["kevin goes by kev.", "Kevin prefers short answers"]);
   assert.equal(e.calls.length, 1, "case, whitespace and trailing punctuation share a sha");
-  assert.deepEqual([...v2[0]!], [...v1[0]!]);
+  assert.deepEqual([...second[0]!], [...first[0]!]);
   const it = store.add({ kind: "fact", text: "Kevin goes by Kev", confidence: 0.9, importance: 1, origin: "kevin" }, src);
   assert.ok(store.vectorFor(it.id, e));
   const other = new FakeEmbedder({ dims: 16 });
   assert.equal(store.vectorFor(it.id, other), undefined, "never a vector from another space");
   const reloaded = new MemoryStore({ dir, now: () => T0, newId: ids() });
   reloaded.load();
-  assert.deepEqual([...reloaded.vectorFor(it.id, e)!], [...v1[0]!], "the cache round-trips through base64 exactly");
+  assert.deepEqual([...reloaded.vectorFor(it.id, e)!], [...first[0]!], "the cache round-trips through base64 exactly");
   assert.equal(reloaded.cache.size, 2);
 });
 

@@ -543,7 +543,7 @@ test("ClaudeCodeConnector: tool is claude; transcript() and watch() read the CLI
     const claudeRoot = join(t.dir, "projects");
     mkdirSync(claudeRoot);
     const c = new ClaudeCodeConnector({ sdk: fakeSdk(sid), claudeRoot, tailPollMs: 20, tailCoalesceMs: 10 });
-    const info = await c.start({ cwd: t.dir, name: "worker" });
+    const info = await c.start({ cwd: t.dir, name: "helper" });
     assert.equal(info.tool, "claude");
     await until(() => deltasReady(c, info.id), 2_000, "the session id from init");
     assert.deepEqual(await c.transcript(info.id), { messages: [], total: 0, complete: true }, "no file yet");
@@ -551,7 +551,7 @@ test("ClaudeCodeConnector: tool is claude; transcript() and watch() read the CLI
     const stop = c.watch(info.id, (d) => deltas.push(d));
     await sleep(60);
     // The CLI writes the session under its project slug; here it is copied from the fixture under the reported id.
-    const dir = join(claudeRoot, "-tmp-worker");
+    const dir = join(claudeRoot, "-tmp-helper");
     mkdirSync(dir);
     const path = join(dir, `${sid}.jsonl`);
     writeFileSync(path, readFileSync(S1_PATH));
@@ -576,7 +576,7 @@ test("ClaudeCodeConnector: the file is found where the CLI writes it with one st
     const claudeRoot = join(t.dir, "projects");
     mkdirSync(claudeRoot);
     const c = new ClaudeCodeConnector({ sdk: fakeSdk(sid), claudeRoot, tailPollMs: 20, tailCoalesceMs: 10 });
-    const info = await c.start({ cwd: t.dir, name: "worker" });
+    const info = await c.start({ cwd: t.dir, name: "helper" });
     await until(() => deltasReady(c, info.id), 2_000, "the session id from init");
     assert.deepEqual(await c.transcript(info.id), { messages: [], total: 0, complete: true }, "no file yet: the Console shows an empty conversation");
 
