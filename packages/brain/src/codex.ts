@@ -12,6 +12,7 @@ import { delegationPrompt } from "./anthropic.ts";
 import { progressLine } from "./responses.ts";
 import type { ToolRunner } from "./runner.ts";
 import { CODEX_MCP_SERVER, codexMcpConfigArgs, codexPromptTrimArgs, prepareCodexHome, toml, type CodexHome } from "./codex-config.ts";
+import { codexModel } from "./models.ts";
 import { CodexAppServer, type AppServerItem, type TurnResult, type UserInput } from "./codex-app-server.ts";
 
 export { CODEX_MCP_SERVER } from "./codex-config.ts";
@@ -253,8 +254,8 @@ export interface CodexExecOptions {
   readonly serviceTier?: string | undefined;
   /** Switch off the coding-session prompt blocks (default true; see codexPromptTrimArgs). */
   readonly trimPrompt?: boolean | undefined;
-  /** A worker's brain: its bridge stamps every tool.run with this id (env JARHEAD_WORKER), so the daemon routes to that worker's lane. */
-  readonly worker?: string | undefined;
+  /** A thread's brain: its bridge stamps every tool.run with this id (env JARHEAD_THREAD), so the daemon routes to that thread's lane. */
+  readonly thread?: string | undefined;
 }
 
 /** The argv of one delegation; the prompt itself arrives on stdin (`-`). */
@@ -520,12 +521,12 @@ export interface CodexBrainOptions {
   /** Which base prompt the thread gets: Jarhead's (`codexBaseInstructions`, default) or Codex's own (env JARHEAD_CODEX_BASE=codex). */
   readonly baseInstructions?: "jarhead" | "codex" | undefined;
   /**
-   * This brain is a worker's (the engine's pool builds one per worker over that
-   * worker's lane runner): the worker id rides to the bridge as JARHEAD_WORKER so the
-   * daemon routes its tool calls to the right lane, and the thread is never primed —
+   * This brain is a spawned thread's (the engine's scheduler builds one per thread over
+   * that thread's lane runner): the thread id rides to the bridge as JARHEAD_THREAD so the
+   * daemon routes its tool calls to the right lane, and the Codex thread is never primed —
    * it runs one task and costs Kevin's plan nothing more.
    */
-  readonly worker?: string | undefined;
+  readonly thread?: string | undefined;
 }
 
 /** One `codex exec --json` event, as far as this brain reads it. */
@@ -623,7 +624,8 @@ export class CodexBrain implements Brain {
 
   constructor(private readonly opts: CodexBrainOptions) {
     this.probe = opts.probe;
-    this.model = opts.model?.trim() || undefined;
+    // The override alone; the config model joins it once the probe has read ~/.codex/config.toml.
+    this.model = codexModel(opts.model, undefined);
   }
 
   /** Where Codex runs from: `<stateDir>/codex-home`, or Kevin's ~/.codex when that could not be built. */
@@ -643,8 +645,8 @@ export class CodexBrain implements Brain {
   }
 
   private primeThreads(): boolean {
-    // A worker's thread runs one task: a primer would be a paid request for nothing.
-    if (this.opts.worker) return false;
+    // A spawned thread's brain runs one task: a primer would be a paid request for nothing.
+    if (this.opts.thread) return false;
     if (this.opts.primeThreads !== undefined) return this.opts.primeThreads;
     const v = (this.env()["JARHEAD_CODEX_PRIME"] ?? "").trim().toLowerCase();
     return !(v === "0" || v === "false" || v === "off" || v === "no");
@@ -654,9 +656,9 @@ export class CodexBrain implements Brain {
     return this.opts.serviceTier ?? (this.env()["JARHEAD_CODEX_SERVICE_TIER"]?.trim() || undefined);
   }
 
-  /** The worker id for the bridge's env (`codexMcpConfigArgs` reads `worker`), or nothing for the main brain. */
-  private workerConfig(): { readonly worker?: string } {
-    return this.opts.worker ? { worker: this.opts.worker } : {};
+  /** The thread id for the bridge's env (`codexMcpConfigArgs` reads `thread`), or nothing for the main brain. */
+  private threadConfig(): { readonly thread?: string } {
+    return this.opts.thread ? { thread: this.opts.thread } : {};
   }
 
   private baseInstructions(): string | undefined {
@@ -704,7 +706,7 @@ export class CodexBrain implements Brain {
       this.home = prepareCodexHome({ stateDir: this.opts.stateDir, sourceHome: this.opts.codexHome ?? codexHomeDir(this.env()) });
       (this.home.isolated ? log.info : log.warn)(this.home.detail);
       const socket = await this.ensureToolSocket();
-      const model = this.model ?? probe.configModel;
+      const model = codexModel(this.model, probe.configModel);
       // The warm transport gets a short patience window; past it the brain is ready
       // on exec and the app-server keeps starting in the background (an explicit
       // `transport: "app-server"` still waits for it, since there is no fallback).
@@ -744,14 +746,14 @@ export class CodexBrain implements Brain {
       cwd: this.cwd(),
       env: codexEnv(base, codexHome),
       codexHome,
-      model: this.model ?? probe.configModel,
+      model: codexModel(this.model, probe.configModel),
       effort: this.opts.effort,
       serviceTier: this.serviceTier(),
       node: this.node(),
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
-      ...this.workerConfig(),
+      ...this.threadConfig(),
       developerInstructions: `${brainSystemPrompt(this.opts.userName)}\n\n${codexAddendum(this.opts.userName)}`,
       baseInstructions: this.baseInstructions(),
       primeThreads: this.primeThreads(),
@@ -856,7 +858,7 @@ export class CodexBrain implements Brain {
       return this.toolSocket;
     }
     const path = join(this.opts.stateDir, "codex-tools.sock");
-    const server = new DaemonServer(runnerOnlyEngine(this.opts.runner, this.opts.stateDir, this.opts.worker), path);
+    const server = new DaemonServer(toolHost(this.opts.runner, this.opts.thread), path);
     await server.listen();
     this.privateServer = server;
     this.toolSocket = path;
@@ -1060,13 +1062,13 @@ export class CodexBrain implements Brain {
     const attached = existingAttachments(task);
     const args = codexExecArgs({
       cwd: this.cwd(),
-      model: this.model ?? probe.configModel,
+      model: codexModel(this.model, probe.configModel),
       effort: this.opts.effort,
       node: this.node(),
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
-      ...this.workerConfig(),
+      ...this.threadConfig(),
       images: attached.map((a) => a.path),
       serviceTier: this.serviceTier(),
     });
@@ -1369,28 +1371,20 @@ export async function socketAnswers(socketPath: string, timeoutMs = 1000): Promi
   return (await daemonPidAt(socketPath, timeoutMs)) !== undefined;
 }
 
+/** What the private tool socket fronts: the runner and the lane lookup `tool.run` reads, nothing else of the engine. */
+type ToolHost = Pick<EngineLike, "runner" | "runnerFor">;
+
 /**
- * An EngineLike that only has a runner: enough for `tool.run`, nothing else answers.
- * A worker's brain lands here when the daemon's pid check fails (a 1 s self-ping under
- * wake load): its bridge stamps every call with the worker id, and the daemon routes a
- * stamped call through `runnerFor` only — so the private server answers for exactly
- * that id with the worker's own lane runner, or the worker would be refused every tool
- * for its whole life. Any other id is not this brain's.
+ * The private socket's host: only `tool.run` is answered there. A spawned thread's brain
+ * lands here when the daemon's pid check fails (a 1 s self-ping under wake load): its
+ * bridge stamps every call with the thread id, and the daemon routes a stamped call
+ * through `runnerFor` only — so the host answers for exactly that id with the thread's
+ * own lane runner, or the thread would be refused every tool for its whole life. Any
+ * other id is not this brain's.
  */
-function runnerOnlyEngine(runner: ToolRunner, stateDir: string, worker?: string): EngineLike {
+function toolHost(runner: ToolRunner, thread?: string): ToolHost {
   return {
-    on: () => undefined,
-    snapshot: () => ({ phase: "asleep", note: "codex tool socket" }),
-    command: async () => undefined,
-    ear: () => undefined,
-    feedMic: () => undefined,
-    reportInputLevel: () => undefined,
-    setMicrophonePermission: () => undefined,
-    registerOwnPid: () => undefined,
-    problem: (text) => log.warn(text),
-    ledger: { read: () => [], days: () => [], sessions: () => [], readSession: () => [] },
-    config: { stateDir },
     runner,
-    runnerFor: (id) => (worker !== undefined && id === worker ? runner : undefined),
+    runnerFor: (id) => (thread !== undefined && id === thread ? runner : undefined),
   };
 }

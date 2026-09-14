@@ -24,7 +24,7 @@ const ROOTS = ["/Users/kevinliu/.jarhead/worktrees", "/Users/kevinliu/.jarhead/t
 function exec(o: { verifyCode?: number; requirement?: string; dvv?: string; dump?: string; dumpCode?: number; dock?: string; calls?: string[][] }): Exec {
   return (cmd, args, _opts) => {
     o.calls?.push([cmd, ...args]);
-    if (cmd === CODESIGN && args[0] === "-dvv") return { code: 0, stdout: "", stderr: o.dvv ?? "Executable=/Applications/Jarhead.app/Contents/MacOS/Jarhead\nAuthority=Jarvis Local Signing\n" };
+    if (cmd === CODESIGN && args[0] === "-dvv") return { code: 0, stdout: "", stderr: o.dvv ?? "Executable=/Applications/Jarhead.app/Contents/MacOS/Jarhead\nAuthority=Jarhead Local Signing\n" };
     if (cmd === CODESIGN && args[0] === "--verify") return { code: o.verifyCode ?? 0, stdout: "", stderr: o.verifyCode ? "/Applications/Jarhead.app: a sealed resource is missing or invalid" : "/Applications/Jarhead.app: valid on disk\n" };
     if (cmd === CODESIGN && args[0] === "-d") return { code: 0, stdout: "", stderr: o.requirement ?? 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n' };
     if (cmd === LSREGISTER && args[0] === "-dump") return o.dumpCode ? { code: o.dumpCode, stdout: "", stderr: `spawnSync ${LSREGISTER} ETIMEDOUT` } : { code: 0, stdout: o.dump ?? fixture("ls-dump-bundle.txt"), stderr: "" };
@@ -34,7 +34,7 @@ function exec(o: { verifyCode?: number; requirement?: string; dvv?: string; dump
 }
 
 const byName = (rows: readonly Check[]): Record<string, Check> => Object.fromEntries(rows.map((r) => [r.name, r]));
-const CLEAN_DUMP = fixture("ls-dump-bundle.txt").split("--------------------------------------------------------------------------------").filter((b) => /\/Applications\/Jarhead\.app|Grapher|jarvis\/apps\/mac/.test(b)).join("--------------------------------------------------------------------------------");
+const CLEAN_DUMP = fixture("ls-dump-bundle.txt").split("--------------------------------------------------------------------------------").filter((b) => b.includes("/Applications/Jarhead.app") || b.includes("Grapher") || b.includes("/Users/kevinliu/jarvis/apps/mac")).join("--------------------------------------------------------------------------------");
 
 test("doctor app rows: a healthy Mac — installed, real identity, strict ok with the identifier, one LaunchServices record, one pinned tile; every row ok and read-only", () => {
   const calls: string[][] = [];
@@ -43,7 +43,7 @@ test("doctor app rows: a healthy Mac — installed, real identity, strict ok wit
   assert.ok(rows.every((r) => r.group === "app" && r.status === "ok" && !r.required), JSON.stringify(rows.filter((r) => r.status !== "ok")));
   const r = byName(rows);
   assert.equal(r["Jarhead.app"]!.detail, "/Applications/Jarhead.app (build/Jarhead.app → symlink)");
-  assert.equal(r["signing identity"]!.detail, "Jarvis Local Signing");
+  assert.equal(r["signing identity"]!.detail, "Jarhead Local Signing");
   assert.equal(r["install"]!.detail, "/Applications/Jarhead.app · inode 103261417 · strict ok · requirement identifier com.kevinliu.jarhead");
   assert.equal(r["launch services"]!.detail, "1 record: /Applications/Jarhead.app");
   assert.equal(r["dock"]!.detail, "1 pinned, 0 recent");

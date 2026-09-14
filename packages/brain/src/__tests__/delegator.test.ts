@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Transcript, type LiveSession } from "@jarhead/live";
 import { ConfirmationState } from "@jarhead/hands";
-import { Delegator, NAMED_STOP_FRAGMENT_ECHO_MS, STOP_NAME_WAIT_MS, type DelegationTimingsExtra, type DelegatorThreads, type DelegatorWorkers, type WorkerFloor } from "../delegator.ts";
+import { Delegator, NAMED_STOP_FRAGMENT_ECHO_MS, STOP_NAME_WAIT_MS, type DelegationTimingsExtra, type DelegatorThreads, type ThreadFloor } from "../delegator.ts";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "../brain.ts";
 import { parseReflex } from "../reflex.ts";
 
@@ -192,18 +192,72 @@ test("delegator: a confirmation question relayed as commentary is spoken even wh
   d.dispose();
 });
 
-// ------------------------------------------------------------------ workers ---
+// ------------------------------------------------------------------ threads ---
 
 /**
- * The engine's WorkerPool as the delegator sees it, scripted: how many workers each
- * delegation has alive, a drain the test resolves by hand, who holds the question
- * floor, and what a resume was asked for.
+ * The engine's threads (the table and the scheduler) as the delegator sees them, scripted:
+ * the live names for the grammar, how many spawned threads each delegation has alive, a
+ * drain the test resolves by hand, who holds the question floor, what a resume was asked
+ * for, and what the verbs did. `new FakeThreads([])` is an engine with no thread live.
  */
-class FakePool implements DelegatorWorkers {
+class FakeThreads implements DelegatorThreads {
+  names: string[];
+  stopped: string[] = [];
+  paused: string[] = [];
+  followUps: { id: string; request: string; items: number; marks: number }[] = [];
+  /** The overflow rule's hooks (Settings.threadOverflow = "spawn"): what was spawned, and which apps a live thread claims. */
+  spawned: { parent: string; name: string; task: string }[] = [];
+  claimed: string[] = [];
+  mode: "supersede" | "spawn" = "supersede";
   alive = new Map<string, number>();
-  floor: WorkerFloor | undefined;
+  floor: ThreadFloor | undefined;
   resumed: string[] = [];
   drains: Array<{ id: string; resolve: () => void; aborted: boolean }> = [];
+  constructor(names: string[] = ["Spotify", "Slack"]) {
+    this.names = names;
+  }
+  liveNames(): readonly string[] {
+    return this.names;
+  }
+  /** The ones stopped here still answer to their name for a while (the table's linger). */
+  recentNames(): readonly string[] {
+    return this.stopped;
+  }
+  overflow(): "supersede" | "spawn" {
+    return this.mode;
+  }
+  appClaimed(app: string): boolean {
+    return this.claimed.some((a) => a.toLowerCase() === app.toLowerCase());
+  }
+  spawn(parent: string, name: string, task: string): boolean {
+    this.spawned.push({ parent, name, task });
+    this.names.push(name);
+    return true;
+  }
+  byNameLive(name: string): { readonly id: string; readonly name: string } | undefined {
+    const n = this.names.find((x) => x.toLowerCase() === name.toLowerCase());
+    return n ? { id: `t_${n.toLowerCase()}`, name: n } : undefined;
+  }
+  statusLine(name?: string): string {
+    return name ? `${name} is working — 3 seconds in` : `Two threads: ${this.names.join(" working, ")} working`;
+  }
+  async followUp(id: string, request: string, o: { readonly items?: readonly unknown[] | undefined; readonly marks?: readonly unknown[] | undefined }): Promise<boolean> {
+    this.followUps.push({ id, request, items: o.items?.length ?? 0, marks: o.marks?.length ?? 0 });
+    return true;
+  }
+  async stopNamed(name: string): Promise<boolean> {
+    if (!this.byNameLive(name)) return false;
+    this.stopped.push(name);
+    this.names = this.names.filter((n) => n.toLowerCase() !== name.toLowerCase());
+    return true;
+  }
+  floorThread(): ThreadFloor | undefined {
+    return this.floor;
+  }
+  async pauseNamed(name: string): Promise<boolean> {
+    this.paused.push(name);
+    return this.byNameLive(name) !== undefined;
+  }
   drain(id: string, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve) => {
       const entry = { id, resolve, aborted: false };
@@ -217,20 +271,17 @@ class FakePool implements DelegatorWorkers {
     for (const v of this.alive.values()) n += v;
     return n;
   }
-  async resume(workerId: string): Promise<void> {
-    this.resumed.push(workerId);
-  }
-  floorLane(): WorkerFloor | undefined {
-    return this.floor;
+  async resume(threadId: string): Promise<void> {
+    this.resumed.push(threadId);
   }
 }
 
 const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-test("workers: the split line is spoken once and counts as the voiced tool; worker steps land on the parent tagged and stamp no marks; a finish line reaches Live exactly once; the parent drains after its brain is done and finishes when the workers do", async () => {
+test("threads: the split line is spoken once and counts as the voiced tool; a finish line reaches Live exactly once; the parent drains after its brain is done and finishes when the threads do", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   let clock = 100_000;
   let d!: Delegator;
   const brain: Brain = {
@@ -239,22 +290,19 @@ test("workers: the split line is spoken once and counts as the voiced tool; work
     handle: async (_task, sink) => {
       const parent = d.active!.id;
       sink.step({ kind: "tool", tool: { name: "frontmost_app", input: {}, ok: true, ms: 9 } });
-      // worker_start: the pool registers the worker and speaks the split (as the engine's WorkerAwareRunner does), then the step lands.
+      // thread_start: the scheduler admits the thread and speaks the split (as the engine's lane runner does), then the step lands.
       pool.alive.set(parent, 1);
       d.splitLine(parent, "Spotify");
       d.splitLine(parent, "Spotify"); // a second call is not a second line
-      sink.step({ kind: "tool", tool: { name: "worker_start", input: { name: "Spotify", task: "play Focus", lane: "background" }, ok: true, ms: 12 } });
+      sink.step({ kind: "tool", tool: { name: "thread_start", input: { name: "Spotify", task: "play Focus", lane: "background" }, ok: true, ms: 12 } });
       // The main brain's own first action: no "Opening Slack." — the split line was the task's voiced line.
       sink.step({ kind: "tool", tool: { name: "open_app", input: { name: "Slack" }, ok: true, ms: 40 } });
-      // The worker acts meanwhile: its steps are the parent's, tagged, and never stamp the parent's marks.
-      d.workerStep(parent, "Spotify", { kind: "tool", tool: { name: "applescript", input: { script: 'tell application "Spotify" to play' }, ok: true, ms: 900 } });
-      d.workerStep(parent, "Spotify", { kind: "thinking", text: "playing it" });
       return { status: "done", summary: "Sent." };
     },
     cancel: async () => undefined,
     stop: async () => undefined,
   };
-  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => ++clock, commentaryCoalesceMs: 0, voiceFirstTool: true });
+  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: pool, now: () => ++clock, commentaryCoalesceMs: 0, voiceFirstTool: true });
   const phases: string[] = [];
   d.on("phase", (p) => phases.push(p));
   transcript.push({ speaker: "kevin", delta: "tell ben on slack i'm late and play focus on spotify", startMs: 0, endMs: 2000 });
@@ -268,17 +316,16 @@ test("workers: the split line is spoken once and counts as the voiced tool; work
   assert.equal(d.draining?.id, parent.id);
   assert.equal(d.active?.id, parent.id, "active = running ?? draining");
   assert.ok(parent.steps.some((s) => s.kind === "note" && /the brain is done; 1 hand still working; draining/.test(s.text ?? "")), parent.steps.map((s) => s.text).join(" | "));
-  assert.deepEqual(parent.steps.filter((s) => s.worker).map((s) => `${s.worker}:${s.kind}:${s.tool?.name ?? s.text}`), ["Spotify:tool:applescript", "Spotify:thinking:playing it"], "worker steps carry the worker's name");
   const t = parent.timings as DelegationTimingsExtra;
-  assert.equal(t.firstActionAt, parent.steps.find((s) => s.tool?.name === "open_app")!.at, "the main brain's open_app is the first action, not the worker's applescript");
-  assert.deepEqual(t.toolRoundTripMs, [9, 12, 40], "the worker's 900 ms round trip is not the main brain's");
+  assert.equal(t.firstActionAt, parent.steps.find((s) => s.tool?.name === "open_app")!.at, "the main brain's open_app is the first action; thread_start is a silent tool");
+  assert.deepEqual(t.toolRoundTripMs, [9, 12, 40]);
   assert.ok(!phases.includes("idle"), "not idle while draining");
   assert.equal(d.announceSleep(5), false, "a draining delegation is not idle");
 
-  // The worker finishes: its one line, through the parent, exactly once — while the parent's brain is long gone.
-  d.workerSay(parent.id, "Spotify", "Spotify: playing Focus.");
+  // The thread finishes: its one line, through the parent, exactly once — while the parent's brain is long gone.
+  d.threadSay(parent.id, "Spotify", "Spotify: playing Focus.");
   assert.deepEqual(spoken(), ["Spotify alongside.", "Sent.", "Spotify: playing Focus."]);
-  assert.deepEqual(d.all()[0]!.steps.filter((s) => s.kind === "commentary" && s.worker).map((s) => s.text), ["Spotify: playing Focus."]);
+  assert.deepEqual(d.all()[0]!.steps.filter((s) => s.kind === "commentary" && s.thread).map((s) => `${s.thread}: ${s.text}`), ["Spotify: Spotify: playing Focus."], "the line is on the timeline, tagged with the thread's name");
   assert.equal(pool.drains.length, 1);
   pool.alive.set(parent.id, 0);
   pool.drains[0]!.resolve();
@@ -289,23 +336,20 @@ test("workers: the split line is spoken once and counts as the voiced tool; work
   assert.equal(d.draining, undefined);
   assert.equal(phases.at(-1), "idle");
   assert.equal(spoken().length, 3, "nothing more was said at the finish");
-  // A thread's line for a parent that finished DONE is still owed to Kevin (DECISIONS §7): it lands on the kept
-  // record and reaches Live on the append id that record had — never dropped. A step for it still goes nowhere
-  // (a thread's steps are on its own record).
-  d.workerSay(parent.id, "Spotify", "late");
-  d.workerStep(parent.id, "Spotify", { kind: "note", text: "late" });
+  // A thread's line for a parent that finished DONE is still owed to Kevin: it lands on the kept record and
+  // reaches Live on the append id that record had — never dropped.
+  d.threadSay(parent.id, "Spotify", "late");
   await tick();
   assert.deepEqual(spoken().slice(3), ["late"], "spoken once, after the slot closed");
   assert.equal(live.sent.filter((s) => s.type === "commentary").at(-1)?.payload.id, "item_1", "on the parent's own Live id");
   assert.equal(d.all()[0]!.steps.filter((s) => s.kind === "commentary" && s.text === "late").length, 1, "on the parent's record");
-  assert.equal(d.all()[0]!.steps.filter((s) => s.kind === "note" && s.text === "late").length, 0, "a step for a closed parent goes nowhere");
   d.dispose();
 });
 
-test("workers: two finish lines inside the coalesce window become one append; the fallback channel tells the voice to say the line now", async () => {
+test("threads: two finish lines inside the coalesce window become one append", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   let clock = 100_000;
   let d!: Delegator;
   const brain: Brain = {
@@ -318,7 +362,7 @@ test("workers: two finish lines inside the coalesce window become one append; th
     cancel: async () => undefined,
     stop: async () => undefined,
   };
-  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => clock, commentaryCoalesceMs: 50 });
+  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: pool, now: () => clock, commentaryCoalesceMs: 50 });
   transcript.push({ speaker: "kevin", delta: "do both", startMs: 0, endMs: 900 });
   live.nowMs = 900;
   live.emit("delegation", "item_1", "client", 900);
@@ -326,34 +370,23 @@ test("workers: two finish lines inside the coalesce window become one append; th
   const id = d.all()[0]!.id;
   const spoken = (): string[] => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
   assert.deepEqual(spoken(), ["Both started."]);
-  d.workerSay(id, "Spotify", "Spotify: playing Focus.");
-  d.workerSay(id, "Slack", "Slack: sent.");
+  d.threadSay(id, "Spotify", "Spotify: playing Focus.");
+  d.threadSay(id, "Slack", "Slack: sent.");
   assert.deepEqual(spoken(), ["Both started."], "held: within the window of the summary");
   await tick(120);
   assert.deepEqual(spoken(), ["Both started.", "Spotify: playing Focus. Slack: sent."], "one append for the two");
+  assert.ok(!live.sent.some((s) => s.type === "instructions"), "commentary is the one channel a thread's line takes");
   pool.alive.set(id, 0);
   pool.drains[0]!.resolve();
   await tick();
   assert.equal(d.all()[0]!.status, "done");
-
-  // JARHEAD_WORKER_SAY=instructions: the probe's fallback — the voice is told to say it now.
-  const live2 = new FakeLive();
-  const pool2 = new FakePool();
-  let d2!: Delegator;
-  const brain2: Brain = { ...brain, handle: async () => { pool2.alive.set(d2.active!.id, 1); return { status: "done" }; } };
-  d2 = new Delegator({ live: live2 as unknown as LiveSession, transcript: new Transcript(() => 0), brain: brain2, confirmations: new ConfirmationState(), workers: pool2, now: () => clock, commentaryCoalesceMs: 0, workerSayChannel: "instructions" });
-  live2.emit("delegation", "item_9", "client", 900);
-  await tick();
-  d2.workerSay(d2.all()[0]!.id, "Spotify", "Spotify: playing Focus.");
-  assert.deepEqual(live2.sent.map((s) => `${s.type}:${s.payload.id}:${s.payload.content}`), ['instructions:null:A hand finished. Tell Kevin now in one short sentence: "Spotify: playing Focus.". Then wait.']);
   d.dispose();
-  d2.dispose();
 });
 
-test("workers: a new request parks the running parent as draining instead of cancelling its workers; a yes while a worker holds the floor resumes that worker and supersedes nothing; stop is heard while only workers run; a cut cancels the draining parent too", async () => {
+test("threads: a new request parks the running parent as draining instead of cancelling its threads; a yes while a thread holds the floor resumes that thread and supersedes nothing (main's own floor is no relay); stop is heard while only threads run; a cut cancels the draining parent too", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   const confirmations = new ConfirmationState();
   let clock = 100_000;
   let d!: Delegator;
@@ -375,9 +408,9 @@ test("workers: a new request parks the running parent as draining instead of can
     stop: async () => undefined,
   };
   const stops: string[] = [];
-  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, workers: pool, now: () => ++clock, commentaryCoalesceMs: 0, onStop: (reason) => stops.push(reason) });
+  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, threads: pool, now: () => ++clock, commentaryCoalesceMs: 0, onStop: (reason) => stops.push(reason) });
 
-  // 1. The parent: its brain starts a worker and keeps going.
+  // 1. The parent: its brain starts a thread and keeps going.
   transcript.push({ speaker: "kevin", delta: "tell ben on slack i'm late and play focus on spotify", startMs: 0, endMs: 2000 });
   live.nowMs = 2000;
   live.emit("delegation", "item_1", "client", 2000);
@@ -386,7 +419,7 @@ test("workers: a new request parks the running parent as draining instead of can
   pool.alive.set(parentId, 1);
   d.splitLine(parentId, "Spotify");
 
-  // 2. Kevin asks for something else while the brain runs: that turn ends, the worker carries on under the parked record.
+  // 2. Kevin asks for something else while the brain runs: that turn ends, the thread carries on under the parked record.
   transcript.push({ speaker: "kevin", delta: " what time is it", startMs: 5000, endMs: 5800 });
   live.nowMs = 5800;
   live.emit("delegation", "item_2", "client", 5800);
@@ -397,23 +430,23 @@ test("workers: a new request parks the running parent as draining instead of can
   assert.equal(d.active?.id, d.all()[1]!.id, "the new request runs");
   assert.equal(d.draining?.id, parentId, "the parent drains");
   assert.equal(d.all()[0]!.status, "running", "still open on the timeline");
-  assert.ok(d.all()[0]!.steps.some((s) => s.kind === "note" && /Kevin asked something else; the workers carry on; draining/.test(s.text ?? "")));
+  assert.ok(d.all()[0]!.steps.some((s) => s.kind === "note" && /Kevin asked something else; the threads carry on; draining/.test(s.text ?? "")));
   assert.equal(pool.drains.length, 1);
-  assert.equal(pool.drains[0]!.aborted, false, "the supersede did not abort the drain: only a cut verb ends workers");
-  // The worker's line still lands on the parked parent.
-  d.workerSay(parentId, "Spotify", "Spotify: playing Focus.");
+  assert.equal(pool.drains[0]!.aborted, false, "the supersede did not abort the drain: only a cut verb ends threads");
+  // The thread's line still lands on the parked parent.
+  d.threadSay(parentId, "Spotify", "Spotify: playing Focus.");
   assert.deepEqual(live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content), ["Spotify alongside.", "Spotify: playing Focus."]);
 
-  // 3. A worker asks (the desk put its question on the root); Kevin says yes: the yes is armed for that worker
+  // 3. A thread asks (the desk put its question on the root); Kevin says yes: the yes is armed for that thread
   //    and it resumes — the running turn ("what time is it") is untouched.
   confirmations.ask("send the message in Slack", "click_element", { name: "Send" });
-  pool.floor = { id: "w_slack", name: "Slack" };
+  pool.floor = { id: "t_slack", name: "Slack" };
   pool.alive.set(parentId, 2);
   transcript.push({ speaker: "kevin", delta: " yes", startMs: 9000, endMs: 9300 });
   live.nowMs = 9300;
   live.emit("delegation", "item_3", "client", 9300);
   await tick();
-  assert.deepEqual(pool.resumed, ["w_slack"]);
+  assert.deepEqual(pool.resumed, ["t_slack"]);
   assert.equal(seen.length, 2, "no brain task for the yes");
   assert.equal(cancels, 1, "the running turn was not superseded");
   assert.equal(d.active?.id, d.all()[1]!.id, "…and still runs");
@@ -421,11 +454,11 @@ test("workers: a new request parks the running parent as draining instead of can
   assert.equal(relay.status, "done");
   assert.equal(relay.summary, "relayed the yes to Slack");
   assert.equal(relay.request, "yes");
-  assert.ok(relay.steps.some((s) => s.worker === "Slack" && /yes for Slack's question/.test(s.text ?? "")));
-  assert.equal(confirmations.consume("click_element", { name: "Send" }), true, "the yes was armed on the root for the worker's exact action");
+  assert.ok(relay.steps.some((s) => s.thread === "Slack" && /yes for Slack's question/.test(s.text ?? "")));
+  assert.equal(confirmations.consume("click_element", { name: "Send" }), true, "the yes was armed on the root for the thread's exact action");
   pool.floor = undefined;
 
-  // 4. The running turn finishes with no workers of its own: done; the parent still drains, so nothing is idle.
+  // 4. The running turn finishes with no threads of its own: done; the parent still drains, so nothing is idle.
   const phases: string[] = [];
   d.on("phase", (p) => phases.push(p));
   holds[1]!({ status: "done", summary: "Three o'clock." });
@@ -435,13 +468,13 @@ test("workers: a new request parks the running parent as draining instead of can
   assert.ok(!phases.includes("idle"));
   assert.equal(d.announceSleep(5), false);
 
-  // 5. "stop" while only workers run reaches the engine's stop, as it does while a brain runs.
+  // 5. "stop" while only threads run reaches the engine's stop, as it does while a brain runs.
   live.emit("inputTranscript", " stop");
   await tick();
   assert.deepEqual(stops, ["Kevin said stop"]);
 
   // 6. The cut: the draining parent is cancelled too, its drain wait ends, nothing more is said for it.
-  d.workerSay(parentId, "Spotify", "late line");
+  d.threadSay(parentId, "Spotify", "late line");
   await d.cancel("Kevin said stop", { quiet: true });
   assert.equal(d.all()[0]!.status, "cancelled");
   assert.equal(d.all()[0]!.summary, "Kevin said stop");
@@ -456,7 +489,7 @@ test("workers: a new request parks the running parent as draining instead of can
   d.dispose();
 });
 
-test("workers: without a pool nothing changes — a new request supersedes as before, and the worker methods are inert", async () => {
+test("threads: without an engine's threads nothing changes — a new request supersedes as before, and the thread methods are inert", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
   let cancels = 0;
@@ -476,14 +509,14 @@ test("workers: without a pool nothing changes — a new request supersedes as be
   await tick();
   const id = d.active!.id;
   d.splitLine(id, "Spotify");
-  d.workerSay(id, "Spotify", "Spotify: done.");
+  d.threadSay(id, "Spotify", "Spotify: done.");
   transcript.push({ speaker: "kevin", delta: " open safari", startMs: 3000, endMs: 3800 });
   live.nowMs = 3800;
   live.emit("delegation", "item_2", "client", 3800);
   await tick();
   assert.equal(d.all()[0]!.status, "cancelled");
   assert.equal(d.all()[0]!.summary, "superseded by a new request");
-  assert.equal(d.draining, undefined, "no workers: nothing drains");
+  assert.equal(d.draining, undefined, "no threads: nothing drains");
   assert.equal(cancels, 1);
   // The lines were spoken while it ran (they are Jarhead's own), then the supersede dropped nothing more.
   assert.deepEqual(live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content), ["Spotify alongside.", "Spotify: done."]);
@@ -603,7 +636,7 @@ test("sleep cue: a dismissal through Live goes to onSleep with Kevin's words, be
 test("sleep cue: a dismissal while only a draining delegation exists goes to onSleep; the engine's cut then closes the draining record as cancelled and nothing more is said for it", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   let clock = 100_000;
   let d!: Delegator;
   const brain: Brain = {
@@ -621,7 +654,7 @@ test("sleep cue: a dismissal while only a draining delegation exists goes to onS
     slept.push(phrase);
     void d.cancel("going to sleep", { quiet: true });
   };
-  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => ++clock, commentaryCoalesceMs: 0, onSleep });
+  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: pool, now: () => ++clock, commentaryCoalesceMs: 0, onSleep });
   const phases: string[] = [];
   d.on("phase", (p) => phases.push(p));
   const spoken = (): string[] => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
@@ -647,15 +680,15 @@ test("sleep cue: a dismissal while only a draining delegation exists goes to onS
   assert.equal(d.draining, undefined);
   assert.equal(phases.at(-1), "idle");
   assert.deepEqual(spoken(), ["Started."], "nothing spoken for the cue or the cut: the engine's farewell is the word");
-  d.workerSay(a, "Spotify", "Spotify: playing Focus.");
+  d.threadSay(a, "Spotify", "Spotify: playing Focus.");
   assert.deepEqual(spoken(), ["Started."], "a late line for the cancelled parent goes nowhere");
   d.dispose();
 });
 
-test("workers: park over park — a second parent parked while an older one drains leaves the older one draining; each closes only when its own hands are done, each finish line is spoken once, idle only when the last has drained", async () => {
+test("threads: park over park — a second parent parked while an older one drains leaves the older one draining; each closes only when its own hands are done, each finish line is spoken once, idle only when the last has drained", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   let clock = 100_000;
   const holds: Array<(r: BrainResult) => void> = [];
   const brain: Brain = {
@@ -669,7 +702,7 @@ test("workers: park over park — a second parent parked while an older one drai
     cancel: async () => undefined,
     stop: async () => undefined,
   };
-  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
   const phases: string[] = [];
   d.on("phase", (p) => phases.push(p));
   const spoken = (): string[] => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
@@ -687,7 +720,7 @@ test("workers: park over park — a second parent parked while an older one drai
   assert.equal(d.draining?.id, a);
   assert.equal(pool.drains.length, 1);
 
-  // B: its brain starts Slack (the pool is at WORKER_MAX) and is still running when…
+  // B: its brain starts Slack and is still running when…
   transcript.push({ speaker: "kevin", delta: " tell ben i'm late", startMs: 5000, endMs: 5800 });
   live.nowMs = 5800;
   live.emit("delegation", "item_2", "client", 5800);
@@ -709,11 +742,10 @@ test("workers: park over park — a second parent parked while an older one drai
   assert.equal(pool.drains[0]!.aborted, false);
   assert.ok(!d.all()[0]!.steps.some((s) => /parked over/.test(s.text ?? "")), "no 'parked over it': A keeps its record");
 
-  // A's worker finishes: its one line, on A, exactly once; its late steps still land on A.
-  d.workerSay(a, "Spotify", "Spotify: playing Focus.");
-  d.workerStep(a, "Spotify", { kind: "note", text: "wrapping up" });
+  // A's thread finishes: its one line, on A, exactly once.
+  d.threadSay(a, "Spotify", "Spotify: playing Focus.");
   assert.deepEqual(spoken(), ["Spotify alongside.", "A done.", "Slack alongside.", "Spotify: playing Focus."]);
-  assert.ok(d.all()[0]!.steps.some((s) => s.worker === "Spotify" && s.text === "wrapping up"));
+  assert.ok(d.all()[0]!.steps.some((s) => s.thread === "Spotify" && s.text === "Spotify: playing Focus."));
   pool.alive.set(a, 0);
   pool.drains[0]!.resolve();
   await tick();
@@ -731,12 +763,12 @@ test("workers: park over park — a second parent parked while an older one drai
   assert.equal(d.draining?.id, b);
   assert.ok(!phases.includes("idle"), "not idle while B drains");
   assert.equal(d.announceSleep(5), false);
-  d.workerSay(b, "Slack", "Slack: sent.");
+  d.threadSay(b, "Slack", "Slack: sent.");
   pool.alive.set(b, 0);
   pool.drains[1]!.resolve();
   await tick();
   assert.equal(d.all()[1]!.status, "cancelled", "B's own turn was cut by the third request; the record says so");
-  assert.equal(d.all()[1]!.summary, "Kevin asked something else; the workers carried on");
+  assert.equal(d.all()[1]!.summary, "Kevin asked something else; the threads carried on");
   assert.deepEqual(spoken(), ["Spotify alongside.", "A done.", "Slack alongside.", "Spotify: playing Focus.", "Three o'clock.", "Slack: sent."], "every finish line once, none lost");
   assert.equal(d.active, undefined);
   assert.equal(d.draining, undefined);
@@ -745,10 +777,10 @@ test("workers: park over park — a second parent parked while an older one drai
   d.dispose();
 });
 
-test("workers: a yes while the pool names a floor worker but the root holds no question (dropped, or past its TTL) is no relay — it supersedes the running turn and the brain gets the word like any request", async () => {
+test("threads: a yes while the scheduler names a floor thread but the root holds no question (dropped, or past its TTL) is no relay — it supersedes the running turn and the brain gets the word like any request", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   const confirmations = new ConfirmationState();
   let clock = 100_000;
   let cancels = 0;
@@ -766,19 +798,19 @@ test("workers: a yes while the pool names a floor worker but the root holds no q
     },
     stop: async () => undefined,
   };
-  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, workers: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, threads: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
   transcript.push({ speaker: "kevin", delta: "tell ben i'm late", startMs: 0, endMs: 1500 });
   live.nowMs = 1500;
   live.emit("delegation", "item_1", "client", 1500);
   await tick();
   // The desk's floor still points at Slack's question, but the root has none (the pending was dropped or expired).
-  pool.floor = { id: "w_slack", name: "Slack" };
+  pool.floor = { id: "t_slack", name: "Slack" };
   assert.equal(confirmations.pending, undefined);
   transcript.push({ speaker: "kevin", delta: " yes", startMs: 5000, endMs: 5300 });
   live.nowMs = 5300;
   live.emit("delegation", "item_2", "client", 5300);
   await tick();
-  assert.deepEqual(pool.resumed, [], "nothing to arm: no worker is resumed on a stale floor");
+  assert.deepEqual(pool.resumed, [], "nothing to arm: no thread is resumed on a stale floor");
   assert.equal(cancels, 1, "today's path: the running turn is superseded");
   assert.equal(d.all()[0]!.status, "cancelled");
   assert.equal(d.all()[0]!.summary, "superseded by a new request");
@@ -789,49 +821,39 @@ test("workers: a yes while the pool names a floor worker but the root holds no q
   d.dispose();
 });
 
-test("workers: a worker's question through workerStep is the worker's — the parent's status never flips to awaiting-confirmation and the main brain's per-click lines stay gated; the parent closes done", async () => {
+test("threads: a yes while the main brain's own question holds the floor (\"Jarhead\") is no relay — nothing is resumed; the yes is armed and the brain gets the word as ever", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
+  const confirmations = new ConfirmationState();
   let clock = 100_000;
-  let d!: Delegator;
-  const brain: Brain = {
-    kind: "fake",
-    start: async () => ({ ready: true, detail: "" }),
-    handle: async (_task, sink) => {
-      const parent = d.active!.id;
-      sink.step({ kind: "tool", tool: { name: "open_app", input: { name: "Slack" }, ok: true, ms: 40 } }); // voiced as it lands
-      pool.alive.set(parent, 1);
-      d.workerStep(parent, "Spotify", { kind: "confirm", text: "play the playlist Focus? Ask Kevin to confirm out loud." });
-      assert.equal(d.all()[0]!.status, "running", "a worker's confirm step does not flip the parent");
-      sink.commentary("Clicking Send."); // per click after something was voiced: gated — a worker's question lifts no gate
-      sink.commentary("Found Ben."); // a state change: spoken
-      return { status: "done", summary: "Sent." };
-    },
-    cancel: async () => undefined,
-    stop: async () => undefined,
-  };
-  d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => ++clock, commentaryCoalesceMs: 0, voiceFirstTool: true });
-  transcript.push({ speaker: "kevin", delta: "tell ben i'm late and play focus", startMs: 0, endMs: 1500 });
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations, threads: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
+  transcript.push({ speaker: "kevin", delta: "reply to ben", startMs: 0, endMs: 1500 });
   live.nowMs = 1500;
   live.emit("delegation", "item_1", "client", 1500);
   await tick();
-  const spoken = (): string[] => live.sent.filter((s) => s.type === "commentary").map((s) => s.payload.content);
-  assert.deepEqual(spoken(), ["Opening Slack.", "Found Ben.", "Sent."], "the per-click line stayed on the timeline");
-  const parent = d.all()[0]!;
-  assert.equal(parent.status, "running", "draining, not awaiting-confirmation");
-  assert.deepEqual(parent.steps.filter((s) => s.kind === "confirm").map((s) => s.worker), ["Spotify"], "the question is on the timeline, tagged as the worker's");
-  pool.alive.set(parent.id, 0);
-  pool.drains[0]!.resolve();
+  confirmations.ask("send the reply", "click_element", { name: "Send" });
+  pool.floor = { id: "main", name: "Jarhead" };
+  transcript.push({ speaker: "kevin", delta: " yes", startMs: 5000, endMs: 5300 });
+  live.nowMs = 5300;
+  live.emit("delegation", "item_2", "client", 5300);
   await tick();
-  assert.equal(d.all()[0]!.status, "done", "a worker's pending question is the worker's, never the parent's awaiting-confirmation");
+  assert.deepEqual(pool.resumed, [], "main is never resumed through the floor");
+  assert.equal(brain.cancels, 1, "the yes is the brain's: the running turn is superseded as for any request");
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1]!.request, "yes");
+  assert.equal(seen[1]!.confirmation, true, "armed on the root: the next attempt of the exact action goes through");
+  assert.equal(d.all().length, 2, "no relay record");
+  await d.cancel("done", { quiet: true });
   d.dispose();
 });
 
 test("parkRunning: parking a running turn by hand ends it — the turn's signal is aborted and the brain's cancel awaited, its later result is discarded for the given one, and the record closes with that when the hands drain", async () => {
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
-  const pool = new FakePool();
+  const pool = new FakeThreads([]);
   let clock = 100_000;
   let cancels = 0;
   let aborted = false;
@@ -850,7 +872,7 @@ test("parkRunning: parking a running turn by hand ends it — the turn's signal 
     },
     stop: async () => undefined,
   };
-  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), workers: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), threads: pool, now: () => ++clock, commentaryCoalesceMs: 0 });
   await d.parkRunning("nothing runs");
   assert.equal(d.all().length, 0, "nothing to park: a no-op");
   transcript.push({ speaker: "kevin", delta: "play focus on spotify", startMs: 0, endMs: 1500 });
@@ -891,59 +913,6 @@ class ReflexRunnerLike {
 // The Delegator's view of the threads: a thread verb is answered from the table before the supersede, words
 // addressed to a live thread by name are a follow-up on ITS brain, a stop word with two threads live waits
 // STOP_NAME_WAIT_MS for a name, the records are indexed (O(1) per step past 200 pushes).
-
-class FakeThreads implements DelegatorThreads {
-  names: string[] = ["Spotify", "Slack"];
-  stopped: string[] = [];
-  paused: string[] = [];
-  followUps: { id: string; request: string; items: number; marks: number }[] = [];
-  /** The overflow rule's hooks (Settings.threadOverflow = "spawn"): what was spawned, and which apps a live thread claims. */
-  spawned: { parent: string; name: string; task: string }[] = [];
-  claimed: string[] = [];
-  mode: "supersede" | "spawn" = "supersede";
-  liveNames(): readonly string[] {
-    return this.names;
-  }
-  /** The ones stopped here still answer to their name for a while (the table's linger). */
-  recentNames(): readonly string[] {
-    return this.stopped;
-  }
-  overflow(): "supersede" | "spawn" {
-    return this.mode;
-  }
-  appClaimed(app: string): boolean {
-    return this.claimed.some((a) => a.toLowerCase() === app.toLowerCase());
-  }
-  spawn(parent: string, name: string, task: string): boolean {
-    this.spawned.push({ parent, name, task });
-    this.names.push(name);
-    return true;
-  }
-  byNameLive(name: string): { readonly id: string; readonly name: string } | undefined {
-    const n = this.names.find((x) => x.toLowerCase() === name.toLowerCase());
-    return n ? { id: `t_${n.toLowerCase()}`, name: n } : undefined;
-  }
-  statusLine(name?: string): string {
-    return name ? `${name} is working — 3 seconds in` : `Two threads: ${this.names.join(" working, ")} working`;
-  }
-  async followUp(id: string, request: string, o: { readonly items?: readonly unknown[] | undefined; readonly marks?: readonly unknown[] | undefined }): Promise<boolean> {
-    this.followUps.push({ id, request, items: o.items?.length ?? 0, marks: o.marks?.length ?? 0 });
-    return true;
-  }
-  async stopNamed(name: string): Promise<boolean> {
-    if (!this.byNameLive(name)) return false;
-    this.stopped.push(name);
-    this.names = this.names.filter((n) => n.toLowerCase() !== name.toLowerCase());
-    return true;
-  }
-  floorThread(): { readonly id: string; readonly name: string } | undefined {
-    return undefined;
-  }
-  async pauseNamed(name: string): Promise<boolean> {
-    this.paused.push(name);
-    return this.byNameLive(name) !== undefined;
-  }
-}
 
 /** A brain that holds every task until the abort signal (the running turn the verbs must not touch). */
 function holdingBrain(seen: BrainTask[]): Brain & { cancels: number } {

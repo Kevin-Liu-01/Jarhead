@@ -83,11 +83,11 @@ export function rsyncArgs(stage: string, installed: string): string[] {
 }
 
 /**
- * The rollback snapshot of the installed bundle into build/previous/ before an update — a ZIP
- * archive (`ditto -c -k`), never a directory: LaunchServices registered a directory snapshot as a
- * second Jarhead whatever it was called (build/previous/Jarhead.app first, then Jarhead.app.previous
- * — Spotlight finds the Info.plist inside). An archive has no bundle to find. `snapshotNameOk` is
- * the guard; `--sequesterRsrc --keepParent` keeps resource forks and the top-level Jarhead.app.
+ * The rollback snapshot of the installed bundle before an update, when one was asked for
+ * (`InstallSpec.previous`) — a ZIP archive (`ditto -c -k`), never a directory: LaunchServices
+ * registers any directory holding an Info.plist as a bundle, a second Jarhead whatever the
+ * directory is called. An archive has no bundle to find. `snapshotNameOk` is the guard;
+ * `--sequesterRsrc --keepParent` keeps resource forks and the top-level Jarhead.app.
  */
 export function snapshotArgs(installed: string, previous: string): string[] {
   return ["-c", "-k", "--sequesterRsrc", "--keepParent", installed, previous];
@@ -253,14 +253,12 @@ export interface InstallSpec {
   /** The signed stage bundle (build/stage/Jarhead.app). */
   readonly stage: string;
   readonly installed: string;
-  /** Where the rollback snapshot goes (build/previous/Jarhead.app.zip — an archive, never a directory; see snapshotNameOk). */
-  readonly previous: string;
   /**
-   * Earlier snapshot directories to retire before the snapshot (build/previous/Jarhead.app):
-   * named `.app`, LaunchServices kept registering them as a second Jarhead. Build artifacts
-   * only — never a path under the Trash or /Applications.
+   * Where the rollback snapshot goes (build/previous/Jarhead.app.zip — an archive, never a
+   * directory; see snapshotNameOk). Absent: no snapshot is taken and no rollback line is
+   * printed — the rollback is `git checkout <previous> && pnpm build:mac`.
    */
-  readonly retire?: readonly string[];
+  readonly previous?: string;
   /** The checkout's symlink to the installed bundle (build/Jarhead.app). */
   readonly link: string;
   /** Removed once the installed copy verifies (build/stage); kept for inspection on a failure. */
@@ -289,40 +287,29 @@ export type InstallOutcome =
       readonly rsync: RsyncSummary | undefined;
       /** Present when a snapshot was taken and the caller should print it. */
       readonly rollback: string | undefined;
-      /** The `.app`-named snapshot directories that were removed (spec.retire, those that existed). */
-      readonly retired: readonly string[];
       readonly line: string;
     }
   | { readonly ok: false; readonly what: string; readonly lines: readonly string[] };
 
 /**
  * Step 5 of `pnpm build:mac`, in order: plan (refuse a symlink / file / other uid /
- * no write bit — or a snapshot path named `.app` — before anything is written) → retire
- * the old `.app`-named snapshots → first install `cp -R`, else snapshot to `previous`
- * then rsync in place (never --inplace; `._*` in the itemized output means -E leaked
- * and the build fails) → verify the INSTALLED copy: strict + deep, the designated
- * requirement's identifier, a sha256 parity walk against the stage, the directory
- * inode unchanged → remove the stage → relink. Any failure keeps the stage and names
- * the rollback when a snapshot exists.
+ * no write bit — or a snapshot path named `.app` — before anything is written) → first
+ * install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
+ * place (never --inplace; `._*` in the itemized output means -E leaked and the build
+ * fails) → verify the INSTALLED copy: strict + deep, the designated requirement's
+ * identifier, a sha256 parity walk against the stage, the directory inode unchanged →
+ * remove the stage → relink. Any failure keeps the stage and names the rollback when a
+ * snapshot was taken.
  */
 export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome {
   const plan = planInstall(io.probe(spec.installed), spec.uid, spec.installed);
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
-  if (!snapshotNameOk(spec.previous)) {
+  if (spec.previous !== undefined && !snapshotNameOk(spec.previous)) {
     return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle — a second Jarhead; snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };
   }
-  // Snapshots from before the rename: a full bundle named Jarhead.app under build/previous,
-  // which LaunchServices took for a second Jarhead on every scan. Gone before the new
-  // snapshot is taken, so the record for the path is stale (step 6 unregisters it).
-  const retired: string[] = [];
-  for (const path of spec.retire ?? []) {
-    if (!io.probe(path).exists) continue;
-    io.rmTree(path);
-    retired.push(path);
-  }
-  const rollback = rollbackLine(spec.previous, spec.installed);
+  const rollback = spec.previous !== undefined ? rollbackLine(spec.previous, spec.installed) : undefined;
   let rollbackOk = false;
-  const withRollback = (lines: string[]): string[] => (rollbackOk ? [...lines, rollback] : lines);
+  const withRollback = (lines: string[]): string[] => (rollbackOk && rollback ? [...lines, rollback] : lines);
   const fail = (what: string, ...lines: string[]): InstallOutcome => ({ ok: false, what, lines: withRollback(lines.filter(Boolean)) });
 
   let rsync: RsyncSummary | undefined;
@@ -331,10 +318,12 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
     const cp = io.exec("cp", ["-R", spec.stage, `${dirname(spec.installed)}/`]);
     if (cp.code !== 0) return fail(`cp -R exited ${cp.code}`, cp.stderr.trim());
   } else {
-    io.mkdirp(dirname(spec.previous));
-    const snap = io.exec(DITTO, snapshotArgs(spec.installed, spec.previous));
-    rollbackOk = snap.code === 0;
-    if (!rollbackOk) io.warn(`rollback snapshot failed (${snap.code}); continuing without one: ${snap.stderr.trim()}`);
+    if (spec.previous !== undefined) {
+      io.mkdirp(dirname(spec.previous));
+      const snap = io.exec(DITTO, snapshotArgs(spec.installed, spec.previous));
+      rollbackOk = snap.code === 0;
+      if (!rollbackOk) io.warn(`rollback snapshot failed (${snap.code}); continuing without one: ${snap.stderr.trim()}`);
+    }
     const r = io.exec(RSYNC, rsyncArgs(spec.stage, spec.installed));
     if (r.code !== 0) return fail(`rsync exited ${r.code}`, r.stderr.trim());
     rsync = parseItemized(r.stdout);
@@ -358,5 +347,5 @@ export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome
   if (spec.cleanup) io.rmTree(spec.cleanup);
   io.relink(spec.installed, spec.link);
   const line = installLine({ plan, inodeAfter: after.inode, rsync, installed: spec.installed, bundleId: spec.bundleId });
-  return { ok: true, plan, inodeAfter: after.inode, rsync, rollback: rollbackOk ? rollback : undefined, retired, line };
+  return { ok: true, plan, inodeAfter: after.inode, rsync, rollback: rollbackOk ? rollback : undefined, line };
 }

@@ -75,8 +75,8 @@ test("runner archives screenshots, routes agent tools, and gates shell", async (
 });
 
 test("tool specs are complete and map to zod shapes", () => {
-  // 67: the 63 of f6c3b40 plus the four worker_* specs (pinned again in mcp-bridge.test.ts).
-  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, workers, misc, system, self, draw");
+  // 67 (pinned again in mcp-bridge.test.ts): a tool added or lost anywhere in the table moves this number on purpose.
+  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, threads, misc, system, self, draw");
   assert.equal(ALL_TOOL_SPECS.length, 67);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   assert.equal(names.size, ALL_TOOL_SPECS.length, "no duplicate tool names");
@@ -273,7 +273,6 @@ test("the Codex addendum's cheat-sheet names real tools and their parameters onl
   assert.equal(line, 'Threads: thread_start {name, task, lane?, budget?} — one thread per independent app (background = Apple events/browser/files/shell/web only, screen = waits for the pointer), started in the same turn as your own first action; do not thread_wait: end your turn and Jarhead speaks their finish lines; thread_read {name}; thread_stop {name}. On a thread, speak_progress speaks once, with your name.');
   assert.ok(addendum.indexOf("Agents and self:") < addendum.indexOf("Threads: "));
   assert.equal(addendum.split("\n").filter((l) => l.startsWith("Threads: ")).length, 1, "one line, not a section");
-  assert.equal(addendum.split("\n").filter((l) => l.startsWith("Workers: ")).length, 0, "the Workers line is gone");
   // The observation sentence and the batching rule, one line each, after the Threads line.
   assert.match(addendum, /\nEvery acting tool answers with what is now in front, focused and under the pointer, read 150 ms after it landed: that line is your verification; screenshot only when it says something you did not expect\.\n/);
   assert.match(addendum, /\nLook-only tools may be awaited together in one exec \(await Promise\.all\(\[\.\.\.\]\)\); acting tools run in order and stop at the first needs_confirmation/);

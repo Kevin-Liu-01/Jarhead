@@ -64,8 +64,8 @@ function basenameOf(path: string): string {
 /**
  * Stale: (a) Jarhead's own id at any path but the installed one; (b) a sub-id
  * (`com.kevinliu.jarhead.ear-probe`) under a stale root or at a path that is gone;
- * (c) any other bundle named Jarhead.app under a stale root or gone — the retired
- * Electron shell in the Trash has a different id but the same name, and `open -a
+ * (c) any other bundle named Jarhead.app under a stale root or gone — a foreign bundle
+ * named Jarhead.app (a different id) in the Trash has the same name, and `open -a
  * Jarhead` can pick it. A live checkout's own probe bundle is not stale. Paths are
  * compared resolved: a record at build/Jarhead.app (a symlink to the installed bundle)
  * IS the installed bundle, and `lsregister -u` on it could unregister the real one.

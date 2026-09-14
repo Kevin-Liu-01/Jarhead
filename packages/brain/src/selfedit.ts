@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { LineSplitter, REPO_ROOT, classifyAction, logger, newId } from "@jarhead/core";
 import { ClaudeSession, claudeEnv, loadSdk, type PermissionDecision, type SdkLike } from "@jarhead/agents";
 import { codexConfigModel, codexEnv, codexHomeDir, codexSignedIn, findCodexBinary } from "./codex.ts";
+import { codexModel } from "./models.ts";
 import { describeShellResult, runShell, type ShellRunResult } from "./shell.ts";
 
 /**
@@ -534,7 +535,7 @@ export class SelfEditManager {
   }
 
   private runCodex(bin: string, codexHome: string, dir: string, prompt: string, budgetMs: number, signal: AbortSignal | undefined, progress: (line: string) => void): Promise<{ ok: boolean; summary: string }> {
-    const model = this.opts.model?.trim() || codexConfigModel(codexHome);
+    const model = codexModel(this.opts.model, codexConfigModel(codexHome));
     const args = ["exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "--ignore-user-config", ...(model ? ["-m", model] : []), "-C", dir, "-"];
     const env = codexEnv(this.opts.env ?? process.env, codexHome);
     return new Promise((resolve) => {
