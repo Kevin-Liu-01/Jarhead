@@ -163,6 +163,8 @@ enum RailWords {
     static func endedId(_ tool: AgentTool) -> String { AgentsRailWords.groupId(tool) + endedSuffix }
     /// `rail.day.2026-09-13` → `2026-09-13`; nil for any other id.
     static func day(ofId id: String) -> String? { id.hasPrefix(dayPrefix) ? String(id.dropFirst(dayPrefix.count)) : nil }
+    /// The folds the rail draws as group heads (the disclosures listen for their own ids).
+    static func ownsFold(_ id: String) -> Bool { id.hasPrefix(dayPrefix) || id == olderId || id.hasSuffix(endedSuffix) }
     /// `×1` — the chain row's mono figure badge.
     static func resumedFigure(_ n: Int) -> String { "×\(n)" }
     /// `resumed once` · `resumed 3×` — the badge's tip.
@@ -350,14 +352,40 @@ struct AgentsRail: View, Equatable {
         return order.map { DayGroup(day: $0, chains: map[$0] ?? []) }
     }
 
-    /// Every chain row on screen, top to bottom — what a ⇧-click ranges over.
+    /// A day placed on the rail: Today · Yesterday, or one of the days inside Older.
+    private struct PlacedDay: Identifiable {
+        let group: DayGroup
+        let place: RailDayPlace
+        var id: String { group.day }
+    }
+
+    /// The rail's clock for the day places and the fold defaults; the drawn rows take the TimelineView's `now`.
+    private var railNow: Date { Date(timeIntervalSince1970: ConsoleFormat.nowMs / 1000) }
+
+    /// The days placed, newest first; inside a day the crash litter (`isEmptyConversation`) sorts last.
+    private func placedDays(now: Date) -> [PlacedDay] {
+        days.map { group in
+            let chains = group.chains.filter { !$0.isEmptyConversation } + group.chains.filter(\.isEmptyConversation)
+            return PlacedDay(group: DayGroup(day: group.day, chains: chains), place: RailDayPlace.of(day: group.day, now: now))
+        }
+    }
+
+    /// The tools with a row that asks or works: their groups open by default.
+    private var hotTools: Set<String> { Set(groups.filter { $0.agents.contains(where: AgentsRail.hot) }.map { $0.tool.rawValue }) }
+
+    /// Every chain row on screen, top to bottom — what a ⇧-click ranges over; folded days leave theirs out.
     private var visibleOrder: [String] {
         var out = pinnedChains.map(\.id)
-        for group in days { out += group.chains.map(\.id) }
+        let placed = placedDays(now: railNow)
+        for day in placed where day.place != .older { out += dayRows(day).map(\.id) }
+        if isFoldOpen(RailWords.olderId) { for day in placed where day.place == .older { out += dayRows(day).map(\.id) } }
         if session.archivedOpen { out += archived.map(\.id) }
         if session.trashOpen { out += trashed.map(\.id) }
         return out
     }
+
+    /// A day's rows while its head is open, none while it is folded.
+    private func dayRows(_ day: PlacedDay) -> [JarheadChain] { isFoldOpen(RailWords.dayId(day.group.day)) ? day.group.chains : [] }
 
     private var selectedChains: [JarheadChain] { jarhead.filter { session.selectedChainIds.contains($0.id) } }
 
@@ -367,15 +395,16 @@ struct AgentsRail: View, Equatable {
             + connectors.filter { !$0.ok && !ConsoleTheme.kindOrder.contains($0.kind) }
     }
 
-    /// The rows reflow when a chain changes place — a pin, an archive, a trash, a restore, a rename.
+    /// The rows reflow when a chain changes place — a pin, an archive, a trash, a restore, a rename — or a fold turns.
     private var layoutKey: [String] {
-        jarhead.map { "\($0.id)|\($0.state)|\($0.pinned)|\($0.displayTitle)" }
+        jarhead.map { "\($0.id)|\($0.state)|\($0.pinned)|\($0.displayTitle)" } + ["fold:\(foldTick)"]
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // The head owns its bottom rule; it meets the right rail's tab row at the same height.
-            JarheadRailHead(count: jarhead.isEmpty ? nil : jarhead.count, hitCount: hitCount, move: { step($0) }, openFocused: openFocusedHit)
+            JarheadRailHead(count: jarhead.isEmpty ? nil : jarhead.filter(\.isActive).count, hitCount: hitCount, move: { step($0) }, openFocused: openFocusedHit,
+                            tip: RailWords.jarheadTip(active: jarhead.filter(\.isActive).count, archived: archived.count, trashed: trashed.count))
                 .frame(height: 40)
             ConsoleHairline()
             if selectedChains.count > 1 {
@@ -394,7 +423,7 @@ struct AgentsRail: View, Equatable {
                         }
                         .padding(.top, 8).padding(.bottom, 24)
                         .consoleListKeys(ConsoleListKeys(focus: focus, ids: walkIds, heads: headIds, title: rowTitle, typeAhead: !session.searchOpen,
-                                                         primary: primary, fold: fold, escape: escape))
+                                                         primary: primary, fold: fold, escape: escape, parentHead: parentHead))
                         .modifier(railAnimations)
                         .onChange(of: focus.id) { _, id in
                             if let id, focus.keyboard { withAnimation(Motion.snappy) { proxy.scrollTo(id, anchor: nil) } }
@@ -404,8 +433,32 @@ struct AgentsRail: View, Equatable {
                 .thinScrollers()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ConsoleFoldStore.changed)) { _ in foldTick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleFoldStore.changed)) { _ in withAnimation(Motion.snappy) { foldTick += 1 } }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: preview)
+        .onChange(of: session.openJarheadSessionId) { _, id in if let id { reveal(AgentsRailWords.chainId(id)) } }
+        .onChange(of: session.openAgentId) { _, id in if let id { reveal(AgentsRailWords.agentId(id)) } }
         .modifier(railHousekeeping)
+    }
+
+    /// The harness's `fold:<id>:<open|closed>` for the folds the rail draws as group heads (the day heads,
+    /// Older, a tool's Ended), and `probe-rail`: the focus and the walk, one line into run.log.
+    private func preview(_ note: Notification) {
+        guard let info = note.userInfo else { return }
+        if let id = info[ConsolePreviewKey.fold] as? String, let open = info[ConsolePreviewKey.foldOpen] as? Bool, RailWords.ownsFold(id) {
+            fold(id, open)
+        }
+        if info["probeRail"] as? Bool == true {
+            let ids = walkIds
+            print("rail-probe: focus=\(focus.id ?? "nil") walk=\(ids.count) \(ids.joined(separator: " "))")
+        }
+    }
+
+    /// A row stepped into from outside the rail (a card link, the harness) never hides inside a fold:
+    /// its head opens first — and Older's, when the head is a day inside it.
+    private func reveal(_ id: String) {
+        guard let head = parentHead(id) else { return }
+        if let day = RailWords.day(ofId: head), RailDayPlace.of(day: day, now: railNow) == .older, !isFoldOpen(RailWords.olderId) { fold(RailWords.olderId, true) }
+        if !isFoldOpen(head) { fold(head, true) }
     }
 
     /// The rail's rows: the search's hits, or the Jarhead section and the Agents section.
@@ -460,7 +513,7 @@ struct AgentsRail: View, Equatable {
     /// wherever it moved, click or not.
     private var railAnimations: RailAnimations {
         RailAnimations(agents: agents.map(\.id), layout: layoutKey, threads: threadsKey, down: down.map(\.kind), hidden: hiddenAgents,
-                       folds: [session.archivedOpen, session.trashOpen, session.hiddenAgentsOpen, session.isSearching], selection: selectionKey)
+                       folds: [session.archivedOpen, session.trashOpen, session.hiddenAgentsOpen, session.isSearching], foldTick: foldTick, selection: selectionKey)
     }
 
     private var railHousekeeping: RailHousekeeping {
@@ -469,21 +522,63 @@ struct AgentsRail: View, Equatable {
 
     // MARK: - keys (ConsoleListKeys)
 
-    /// Every row and head on screen, top to bottom — what ↑↓ walk; folded groups leave their rows out.
+    /// Every row and head on screen, top to bottom — what ↑↓ walk; folded heads leave their rows out.
     private var walkIds: [String] {
         _ = foldTick
         if session.isSearching { return searchWalk }
         var out = [AgentsRailWords.nowId] + threads.map { AgentsRailWords.threadId($0.id) }
         out += pinnedChains.map { AgentsRailWords.chainId($0.id) }
-        for group in days { out += group.chains.map { AgentsRailWords.chainId($0.id) } }
+        let placed = placedDays(now: railNow)
+        for day in placed where day.place != .older { out += dayWalk(day) }
+        let older = placed.filter { $0.place == .older }
+        if !older.isEmpty {
+            out.append(RailWords.olderId)
+            if isFoldOpen(RailWords.olderId) { for day in older { out += dayWalk(day) } }
+        }
         if !archived.isEmpty { out.append(AgentsRailWords.archivedId); if session.archivedOpen { out += archived.map { AgentsRailWords.chainId($0.id) } } }
         if !trashed.isEmpty { out.append(AgentsRailWords.trashId); if session.trashOpen { out += trashed.map { AgentsRailWords.chainId($0.id) } } }
         for group in groups {
             out.append(AgentsRailWords.groupId(group.tool))
-            if ConsoleFoldStore.isOpen(AgentsRailWords.groupId(group.tool), default: true) { out += group.agents.map { AgentsRailWords.agentId($0.id) } }
+            if isFoldOpen(AgentsRailWords.groupId(group.tool)) { out += groupWalk(group) }
         }
         if !hiddenRows.isEmpty { out.append(AgentsRailWords.hiddenId); if session.hiddenAgentsOpen { out += hiddenRows.map { AgentsRailWords.agentId($0.id) } } }
         return out
+    }
+
+    /// A day's head, then its rows while it is open.
+    private func dayWalk(_ day: PlacedDay) -> [String] {
+        [RailWords.dayId(day.group.day)] + dayRows(day).map { AgentsRailWords.chainId($0.id) }
+    }
+
+    /// An open tool group's walk: the live rows, then the Ended head (and its rows while open) — or the
+    /// over rows directly when nothing is alive (a fold never holds only a fold).
+    private func groupWalk(_ group: Group) -> [String] {
+        let live = group.agents.filter(AgentsRail.live), over = group.agents.filter { !AgentsRail.live($0) }
+        var out = live.map { AgentsRailWords.agentId($0.id) }
+        if !live.isEmpty, !over.isEmpty {
+            let id = RailWords.endedId(group.tool)
+            out.append(id)
+            if isFoldOpen(id) { out += over.map { AgentsRailWords.agentId($0.id) } }
+        } else {
+            out += over.map { AgentsRailWords.agentId($0.id) }
+        }
+        return out
+    }
+
+    /// The head a row inside a fold sits under (← rings it; stepping into the row opens it).
+    private func parentHead(_ id: String) -> String? {
+        if let chain = jarhead.first(where: { AgentsRailWords.chainId($0.id) == id }) {
+            if chain.isArchived { return AgentsRailWords.archivedId }
+            if chain.isTrashed { return AgentsRailWords.trashId }
+            return chain.pinned ? nil : RailWords.dayId(chain.day)
+        }
+        if let agent = agents.first(where: { AgentsRailWords.agentId($0.id) == id }) {
+            if hiddenAgents.contains(agent.id) { return AgentsRailWords.hiddenId }
+            guard let group = groups.first(where: { $0.tool == agent.resolvedTool }) else { return nil }
+            if !AgentsRail.live(agent), group.agents.contains(where: AgentsRail.live) { return RailWords.endedId(group.tool) }
+            return AgentsRailWords.groupId(group.tool)
+        }
+        return nil
     }
 
     /// The search's rows: the title matches, then each group's row and its hits.
@@ -500,7 +595,13 @@ struct AgentsRail: View, Equatable {
     }
 
     private var headIds: Set<String> {
-        Set([AgentsRailWords.archivedId, AgentsRailWords.trashId, AgentsRailWords.hiddenId] + groups.map { AgentsRailWords.groupId($0.tool) })
+        var out = Set([AgentsRailWords.archivedId, AgentsRailWords.trashId, AgentsRailWords.hiddenId, RailWords.olderId])
+        out.formUnion(days.map { RailWords.dayId($0.day) })
+        for group in groups {
+            out.insert(AgentsRailWords.groupId(group.tool))
+            if group.agents.contains(where: AgentsRail.live), group.agents.contains(where: { !AgentsRail.live($0) }) { out.insert(RailWords.endedId(group.tool)) }
+        }
+        return out
     }
 
     /// `k of n`: conversations the search matched, of every conversation on the rail.
@@ -524,6 +625,7 @@ struct AgentsRail: View, Equatable {
         if id == AgentsRailWords.nowId { withAnimation(Motion.snappy) { actions.showNow() }; return }
         if headIds.contains(id) { fold(id, !isFoldOpen(id)); return }
         if let chain = jarhead.first(where: { AgentsRailWords.chainId($0.id) == id }) {
+            reveal(id)
             withAnimation(Motion.snappy) { if session.openJarheadSessionId == chain.id { actions.showNow() } else { actions.openJarheadConversation(chain) } }
         } else if let agent = agents.first(where: { AgentsRailWords.agentId($0.id) == id }) {
             withAnimation(Motion.wipeAnimation) { if session.openAgentId == agent.id { actions.showNow() } else { session.openAgent(agent.id) } }
@@ -534,17 +636,30 @@ struct AgentsRail: View, Equatable {
         }
     }
 
+    /// A fold's state: the three bound ones from the window; every other id from the store, its default
+    /// the ladder's (`RailFolds`: Today and the days inside Older open, Yesterday, Older and Ended closed,
+    /// a tool open iff a row of its asks or works).
     private func isFoldOpen(_ id: String) -> Bool {
         switch id {
         case AgentsRailWords.archivedId: return session.archivedOpen
         case AgentsRailWords.trashId: return session.trashOpen
         case AgentsRailWords.hiddenId: return session.hiddenAgentsOpen
-        default: return ConsoleFoldStore.isOpen(id, default: true)
+        default: return ConsoleFoldStore.isOpen(id, default: RailFolds.defaultOpen(id, now: railNow, hotTools: hotTools))
         }
     }
 
-    /// → / ← on a head: the store posts, the disclosure (bound or remembered) follows.
+    /// → / ← on a head: the store posts, the disclosure (bound or remembered) or the group head follows.
     private func fold(_ id: String, _ open: Bool) { ConsoleFoldStore.set(id, open) }
+
+    /// ⌥-click on a day head: it opens and the other day heads (and Older, unless the day sits inside it) fold.
+    private func foldOtherDays(keeping id: String) {
+        let placed = placedDays(now: railNow)
+        var siblings = placed.map { RailWords.dayId($0.group.day) }
+        let inside = RailWords.day(ofId: id).map { RailDayPlace.of(day: $0, now: railNow) == .older } ?? false
+        if !inside { siblings.append(RailWords.olderId) }
+        ConsoleFoldStore.set(id, true)
+        ConsoleFoldStore.foldSiblings(siblings, keeping: id)
+    }
 
     /// Esc: the search closes if it is open; else the highlight lets go.
     private func escape() {
@@ -601,7 +716,7 @@ struct AgentsRail: View, Equatable {
         // thread's pane (its own cards, steps, screenshots, Allow / Deny, composer); the main
         // thread's row is the same conversation as Now seen as a thread. Stop per row.
         if showsThreads {
-            threadsHead(total: threads.count, busy: threads.filter { $0.status.isBusy }.count).padding(.top, 8)
+            threadsHead(total: threads.count, busy: threads.filter { $0.status.isBusy }.count, asks: threads.filter { $0.status == .waitingKevin }.count).padding(.top, 8)
                 .transition(Motion.appear)
             ForEach(threads) { thread in threadRow(thread, now: now) }
         }
@@ -615,18 +730,22 @@ struct AgentsRail: View, Equatable {
             .transition(Motion.appear)
         }
 
-        // A day's rows under a sticky head: the day in words, its count, the date in mono.
-        ForEach(days) { group in
-            Section {
-                ForEach(group.chains) { chain in chainRow(chain, now: now) }
-            } header: {
-                ConsoleGroupHead(title: ConsoleFormat.day(group.day), count: "\(group.chains.count)", figure: group.day).padding(.top, 8)
+        // Today (open) and Yesterday (closed) under sticky folding heads; every older day inside one closed
+        // `Older` head, its days top-level Sections after it so each still pins while it scrolls.
+        let placed = placedDays(now: Date(timeIntervalSince1970: now / 1000))
+        ForEach(placed.filter { $0.place != .older }) { day in daySection(day, now: now) }
+        let older = placed.filter { $0.place == .older }
+        if !older.isEmpty {
+            Section { EmptyView() } header: { olderHead(older).padding(.top, 8) }
+                .transition(Motion.appear)
+            if isFoldOpen(RailWords.olderId) {
+                ForEach(older) { day in daySection(day, now: now) }
             }
-            .transition(Motion.appear)
         }
 
         if !archived.isEmpty {
             ConsoleDisclosure(id: AgentsRailWords.archivedId, title: ConsoleDisclosureWords.archived, count: "\(archived.count)",
+                              summary: ConsoleDisclosureSummary.chains(count: archived.count, billedSeconds: archived.reduce(0) { $0 + $1.usageSeconds }),
                               open: $session.archivedOpen, focused: focus.ringOn(AgentsRailWords.archivedId)) {
                 ForEach(archived) { chain in chainRow(chain, now: now) }
             }
@@ -644,6 +763,43 @@ struct AgentsRail: View, Equatable {
             .padding(.top, 8)
             .transition(Motion.appear)
         }
+    }
+
+    /// A day's rows under its sticky head while the head is open; the head alone while it is folded.
+    private func daySection(_ day: PlacedDay, now: Double) -> some View {
+        let id = RailWords.dayId(day.group.day)
+        let open = isFoldOpen(id)
+        return Section {
+            if open { ForEach(day.group.chains) { chain in chainRow(chain, now: now) } }
+        } header: {
+            dayHead(day, id: id, open: open, now: now).padding(.top, 8)
+        }
+        .transition(Motion.appear)
+    }
+
+    /// `⌄ Today 2` · `› Yesterday 5 … 26 min`: the word, the count, the billed figure while closed; the tip
+    /// carries the full date (inside Older) and the newest title.
+    private func dayHead(_ day: PlacedDay, id: String, open: Bool, now: Double) -> some View {
+        let chains = day.group.chains
+        let billed = chains.reduce(0) { $0 + $1.usageSeconds }
+        let title = ConsoleFormat.day(day.group.day, now: Date(timeIntervalSince1970: now / 1000))
+        let tipTitle = day.place == .older ? ConsoleFormat.fullDay(day.group.day) : title
+        return ConsoleGroupHead(title: title, count: "\(chains.count)",
+                                figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.day(billedSeconds: billed)),
+                                folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
+                                tip: RailWords.dayTip(title: tipTitle, count: chains.count, billed: billed, newest: RailWords.newestTitle(chains)))
+    }
+
+    /// `› Older 31 … since Aug 2`: every day before yesterday behind one head; the figure is the oldest day inside.
+    private func olderHead(_ older: [PlacedDay]) -> some View {
+        let id = RailWords.olderId
+        let open = isFoldOpen(id)
+        let count = older.reduce(0) { $0 + $1.group.chains.count }
+        let oldest = older.last?.group.day ?? ""
+        return ConsoleGroupHead(title: ConsoleDisclosureWords.older, count: "\(count)",
+                                figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.older(since: oldest)),
+                                folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
+                                tip: RailWords.olderTip(count: count, since: ConsoleFormat.shortDay(oldest)))
     }
 
     private func trashFolder(_ trash: TrashInfo) -> some View {
@@ -674,9 +830,9 @@ struct AgentsRail: View, Equatable {
             .transition(Motion.appear)
     }
 
-    /// 24pt: the section's symbol, "Threads", and "3 · 2 running" in mono.
-    private func threadsHead(total: Int, busy: Int) -> some View {
-        let count = ConsoleFormat.threadsCount(total: total, busy: busy)
+    /// 24pt: the section's symbol, "Threads", and "3 · 1 asks" (else "3 · 2 running", else "3") in mono.
+    private func threadsHead(total: Int, busy: Int, asks: Int) -> some View {
+        let count = ConsoleFormat.threadsCount(total: total, busy: busy, asks: asks)
         return HStack(spacing: iconGap) {
             ConsoleIcon(name: ConsoleTheme.threadsSymbol)
             Text("Threads").font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
@@ -898,6 +1054,8 @@ private struct JarheadRailHead: View {
     /// ↑↓ from the field: the hits' highlight moves.
     var move: (Int) -> Void = { _ in }
     let openFocused: () -> Void
+    /// `7 conversations · 2 archived · 2 in the Trash` — what the count leaves out.
+    var tip: String? = nil
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -931,6 +1089,7 @@ private struct JarheadRailHead: View {
                     .consoleHelp(HelpCopy.search.hint, key: HelpCopy.search.key)
                     .accessibilityLabel(HelpCopy.search.name)
                 }
+                .modifier(ConsoleOptionalTip(tip: tip))
                 .padding(.trailing, -4)
                 .transition(Motion.swap)
             }
@@ -1080,6 +1239,7 @@ private struct RailAnimations: ViewModifier {
     let down: [AgentKind]
     let hidden: Set<String>
     let folds: [Bool]
+    let foldTick: Int
     let selection: String
 
     func body(content: Content) -> some View {
@@ -1090,6 +1250,7 @@ private struct RailAnimations: ViewModifier {
             .animation(Motion.gentle, value: down)
             .animation(Motion.gentle, value: hidden)
             .animation(Motion.gentle, value: folds)
+            .animation(Motion.snappy, value: foldTick)
             .animation(Motion.snappy, value: selection)
     }
 }
