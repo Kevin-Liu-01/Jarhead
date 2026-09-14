@@ -3,10 +3,9 @@ import assert from "node:assert/strict";
 import { CODEX_MCP_SERVER, codexBridgeEnv, codexMcpConfigArgs, type CodexMcpConfig } from "../codex-config.ts";
 
 /**
- * The bridge's env in the Codex argv: `JARHEAD_SOCKET` as it always was, plus
- * `JARHEAD_WORKER` when the Codex process is a worker's brain. The one-key form
- * must stay byte-identical — codex.test.ts pins it — so a main brain's argv is
- * exactly what it was before workers existed.
+ * The bridge's env in the Codex argv: `JARHEAD_SOCKET`, plus `JARHEAD_THREAD` when the
+ * Codex process is a thread's brain. Both forms are pinned byte for byte — codex.test.ts
+ * reads the same argv — because Codex parses the value as TOML.
  */
 
 const base: CodexMcpConfig = {
@@ -19,32 +18,33 @@ const base: CodexMcpConfig = {
 const ENV_KEY = `mcp_servers.${CODEX_MCP_SERVER}.env=`;
 const envArg = (args: readonly string[]): string => args.find((a) => a.startsWith(ENV_KEY)) ?? "";
 
-test("codex-config: without a worker the bridge env is exactly {JARHEAD_SOCKET=…} — byte-identical to before workers", () => {
+test("codex-config: for the main brain the bridge env is exactly {JARHEAD_SOCKET=…} — one key, no thread", () => {
   const args = codexMcpConfigArgs(base);
   assert.equal(args.filter((a) => a === "-c").length, 6, "six -c pairs, as the exec argv always had");
   assert.equal(envArg(args), 'mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock"}');
-  assert.ok(!args.some((a) => a.includes("JARHEAD_WORKER")), "no worker key anywhere in the argv");
-  assert.deepEqual(codexMcpConfigArgs({ ...base, worker: undefined }), args);
-  assert.deepEqual(codexMcpConfigArgs({ ...base, worker: "" }), args, "an empty id is no worker");
+  assert.ok(!args.some((a) => a.includes("JARHEAD_THREAD")), "no thread key anywhere in the argv");
+  assert.deepEqual(codexMcpConfigArgs({ ...base, thread: undefined }), args);
+  assert.deepEqual(codexMcpConfigArgs({ ...base, thread: "" }), args, "an empty id is no thread");
 });
 
-test("codex-config: a worker rides into the bridge env as JARHEAD_WORKER next to the socket, and nothing else in the argv moves", () => {
+test("codex-config: a thread rides into the bridge env as JARHEAD_THREAD next to the socket, and nothing else in the argv moves", () => {
   const plain = codexMcpConfigArgs(base);
-  const worker = codexMcpConfigArgs({ ...base, worker: "w_7f3a" });
-  assert.equal(worker.length, plain.length);
-  const changed = plain.map((a, i) => [a, worker[i]] as const).filter(([a, b]) => a !== b);
+  const thread = codexMcpConfigArgs({ ...base, thread: "t_7f3a" });
+  assert.equal(thread.length, plain.length);
+  const changed = plain.map((a, i) => [a, thread[i]] as const).filter(([a, b]) => a !== b);
   assert.deepEqual(changed, [
-    ['mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock"}', 'mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_WORKER="w_7f3a"}'],
+    ['mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock"}', 'mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_THREAD="t_7f3a"}'],
   ]);
+  assert.equal(codexBridgeEnv({ socketPath: base.socketPath, thread: "t_7f3a" }), '{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_THREAD="t_7f3a"}');
 });
 
-test("codex-config: the worker id is a TOML basic string — quotes, backslashes and a stray brace cannot break out of the inline table", () => {
-  const hostile = 'w"} \\ evil';
-  const env = codexBridgeEnv({ socketPath: base.socketPath, worker: hostile });
-  assert.equal(env, `{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_WORKER=${JSON.stringify(hostile)}}`);
+test("codex-config: the thread id is a TOML basic string — quotes, backslashes and a stray brace cannot break out of the inline table", () => {
+  const hostile = 't"} \\ evil';
+  const env = codexBridgeEnv({ socketPath: base.socketPath, thread: hostile });
+  assert.equal(env, `{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_THREAD=${JSON.stringify(hostile)}}`);
   // Two keys, both quoted, one table: the shape a TOML inline table has.
-  assert.match(env, /^\{JARHEAD_SOCKET="[^"]*", JARHEAD_WORKER="(?:[^"\\]|\\.)*"\}$/);
-  assert.equal(envArg(codexMcpConfigArgs({ ...base, worker: hostile })), `${ENV_KEY}${env}`);
+  assert.match(env, /^\{JARHEAD_SOCKET="[^"]*", JARHEAD_THREAD="(?:[^"\\]|\\.)*"\}$/);
+  assert.equal(envArg(codexMcpConfigArgs({ ...base, thread: hostile })), `${ENV_KEY}${env}`);
 });
 
 // ------------------------------------------------------------ TOML, not regex
@@ -140,7 +140,7 @@ test("codex-config: the reader used below is strict TOML for the inline-table su
     ['{JARHEAD_SOCKET="/a",}', /trailing comma/],
     ['{JARHEAD_SOCKET=/a}', /basic string/],
     ['{JARHEAD_SOCKET="/a"', /, or }/],
-    ['{JARHEAD_SOCKET="/a" JARHEAD_WORKER="w"}', /, or }/],
+    ['{JARHEAD_SOCKET="/a" JARHEAD_THREAD="t"}', /, or }/],
     ['{JARHEAD_SOCKET="/a"\n}', /, or }/],
     ['{JARHEAD_SOCKET="/a", JARHEAD_SOCKET="/b"}', /duplicate key/],
     ['{JARHEAD_SOCKET="/a\tb"}', /raw control character/],
@@ -156,27 +156,27 @@ test("codex-config: the reader used below is strict TOML for the inline-table su
   ]);
 });
 
-test("codex-config: the bridge env parses as a TOML inline table and every value comes back as it went in — plain, worker, hostile", () => {
+test("codex-config: the bridge env parses as a TOML inline table and every value comes back as it went in — plain, thread, hostile", () => {
   const plain = readTomlInlineTable(codexBridgeEnv({ socketPath: base.socketPath }));
   assert.deepEqual([...plain], [["JARHEAD_SOCKET", base.socketPath]]);
-  const worker = readTomlInlineTable(codexBridgeEnv({ socketPath: base.socketPath, worker: "w_7f3a" }));
-  assert.deepEqual([...worker], [
+  const thread = readTomlInlineTable(codexBridgeEnv({ socketPath: base.socketPath, thread: "t_7f3a" }));
+  assert.deepEqual([...thread], [
     ["JARHEAD_SOCKET", base.socketPath],
-    ["JARHEAD_WORKER", "w_7f3a"],
+    ["JARHEAD_THREAD", "t_7f3a"],
   ]);
   // Ids and paths that need every escape TOML has: quotes, a backslash, a brace, a tab,
   // a newline, a control character (BEL), DEL (which JSON leaves raw and TOML forbids),
   // a non-ASCII letter and an astral symbol.
-  for (const id of ['w"} \\ evil', "w\t\n", `w${String.fromCharCode(7)}`, `w${String.fromCharCode(0x7f)}`, "wé😀", "w_{}=,"]) {
+  for (const id of ['t"} \\ evil', "t\t\n", `t${String.fromCharCode(7)}`, `t${String.fromCharCode(0x7f)}`, "té😀", "t_{}=,"]) {
     const socket = '/Users/kévin/.jarhead/jar"head.sock';
-    const env = readTomlInlineTable(codexBridgeEnv({ socketPath: socket, worker: id }));
+    const env = readTomlInlineTable(codexBridgeEnv({ socketPath: socket, thread: id }));
     assert.equal(env.get("JARHEAD_SOCKET"), socket, JSON.stringify(id));
-    assert.equal(env.get("JARHEAD_WORKER"), id, JSON.stringify(id));
+    assert.equal(env.get("JARHEAD_THREAD"), id, JSON.stringify(id));
     assert.equal(env.size, 2);
   }
   // The whole -c argument: a dotted key, one =, a TOML value.
-  const arg = envArg(codexMcpConfigArgs({ ...base, worker: "w_7f3a" }));
+  const arg = envArg(codexMcpConfigArgs({ ...base, thread: "t_7f3a" }));
   const eq = arg.indexOf("=");
   assert.equal(arg.slice(0, eq), "mcp_servers.jarhead.env");
-  assert.equal(readTomlInlineTable(arg.slice(eq + 1)).get("JARHEAD_WORKER"), "w_7f3a");
+  assert.equal(readTomlInlineTable(arg.slice(eq + 1)).get("JARHEAD_THREAD"), "t_7f3a");
 });

@@ -366,7 +366,7 @@ export function zodShape(spec: ToolSpec): Record<string, z.ZodTypeAny> {
     // Arrays of numbers (coordinates), of [x, y] pairs (show_stroke), or of strings.
     else if (type === "array") t = z.array(prop.items?.type === "number" ? z.number() : prop.items?.type === "array" ? z.array(z.number()) : z.string());
     else if (Array.isArray(prop.type)) t = z.union([z.string(), z.number()]);
-    // A nested object (worker_start's `budget`): its own shape, extra keys allowed — the bridge and the
+    // A nested object (thread_start's `budget`): its own shape, extra keys allowed — the bridge and the
     // Responses/Anthropic brains pass the JSON schema through untouched; only this SDK path needs zod.
     else if (type === "object") {
       const nested = raw as { properties?: Record<string, unknown>; required?: readonly string[] };

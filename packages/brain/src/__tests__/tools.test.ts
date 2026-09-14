@@ -11,7 +11,7 @@ import { htmlToText, parseDuckDuckGo } from "../web.ts";
 import { globToRegExp } from "../files.ts";
 import { redactSecrets, runShell, secretValues, truncateOutput } from "../shell.ts";
 import { zodShape } from "../claude.ts";
-import { ALL_TOOL_SPECS, AGENT_SPECS, OBSERVATION_CLAUSE, SELF_SPECS, SYSTEM_SPECS, THREAD_SPECS, THREAD_TOOL_NAMES, WORKER_SPECS, WORKER_TOOL_ALIASES, specByName, threadToolName } from "../tools.ts";
+import { ALL_TOOL_SPECS, AGENT_SPECS, OBSERVATION_CLAUSE, SELF_SPECS, SYSTEM_SPECS, THREAD_SPECS, specByName } from "../tools.ts";
 import { progressLine } from "../responses.ts";
 import { FakeHands, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -348,20 +348,13 @@ test("tool table: the new specs are complete, zod-shaped, and have progress line
   assert.ok(!/\b1280\b/.test(JSON.stringify(specByName("screenshot"))), "no stale quick-shot size in the screenshot spec");
 });
 
-test("tool table: the four thread specs replace the worker specs after the agents (67 stays), carry the split rule, the same-turn rule and 'do not thread_wait', cap thread_wait at 240 s, accept worker_* as aliases by name, have progress lines, and are not the runner's without a scheduler", async () => {
+test("tool table: the four thread specs follow the agents (67 stays), carry the split rule, the same-turn rule and 'do not thread_wait', cap thread_wait at 240 s, have progress lines, and are not the runner's without a scheduler", async () => {
   assert.deepEqual(THREAD_SPECS.map((s) => s.name), ["thread_start", "thread_wait", "thread_read", "thread_stop"]);
   const names = ALL_TOOL_SPECS.map((s) => s.name);
   assert.equal(names.indexOf("thread_start"), names.indexOf("agent_start") + 1, "THREAD_SPECS follow AGENT_SPECS in the table");
   assert.equal(ALL_TOOL_SPECS.length, 67);
   assert.equal(AGENT_SPECS.length, 5, "a Thread is not an Agent: the agent tools are unchanged");
-  assert.ok(!names.some((n) => n.startsWith("worker_")), "the worker_* names are gone from the spec list");
-  assert.equal(WORKER_SPECS, THREAD_SPECS, "the deprecated alias still compiles for one release");
-  // Aliases: the scheduler answers the old names for one release; the mapping is by name only.
-  assert.deepEqual(WORKER_TOOL_ALIASES, { worker_start: "thread_start", worker_wait: "thread_wait", worker_read: "thread_read", worker_stop: "thread_stop" });
-  for (const [old, now] of Object.entries(WORKER_TOOL_ALIASES)) assert.equal(threadToolName(old), now);
-  assert.equal(threadToolName("thread_read"), "thread_read");
-  assert.equal(threadToolName("left_click"), undefined);
-  assert.deepEqual([...THREAD_TOOL_NAMES].sort(), ["thread_read", "thread_start", "thread_stop", "thread_wait", "worker_read", "worker_start", "worker_stop", "worker_wait"]);
+  assert.ok(!("kind" in (specByName("agent_start")!.parameters.properties as Record<string, unknown>)), "agent_start takes `tool`; no second spelling");
   // The rule the standing orders do not carry: one thread per independent app, in the same turn as the
   // brain's own first action; do not thread_wait; a thread's speak_progress speaks once with its name.
   const start = specByName("thread_start")!;
@@ -399,12 +392,15 @@ test("tool table: the four thread specs replace the worker specs after the agent
   assert.match(specByName("thread_read")!.description, /queued, starting, thinking, acting, waiting for the screen, waiting on Kevin's yes, paused, done, failed, stopped/, "the one status vocabulary");
   assert.match(specByName("thread_stop")!.description, /Kevin hears one line that it stopped/);
   for (const n of ["thread_read", "thread_stop"]) assert.deepEqual(Object.keys(zodShape(specByName(n)!)), ["name"], n);
-  // Progress lines for the timeline exist for the old names (responses.ts is not this pass's file: the thread_* lines are a seam).
-  assert.equal(progressLine("worker_start", { name: "Spotify", task: "play Focus" }), "Starting Spotify on the side.");
-  // A plain ToolRunner has no scheduler: the thread tools (and their aliases) are the engine's runner's, not its.
+  // Progress lines for the timeline: one per thread tool.
+  assert.equal(progressLine("thread_start", { name: "Spotify", task: "play Focus" }), "Starting Spotify on the side.");
+  assert.equal(progressLine("thread_wait", { name: "all" }), "Waiting for the other hands.");
+  assert.equal(progressLine("thread_read", { name: "Slack" }), "Checking on Slack.");
+  assert.equal(progressLine("thread_stop", { name: "Slack" }), "Stopping Slack.");
+  // A plain ToolRunner has no scheduler: the thread tools are the engine's runner's, not its.
   const { runner } = makeRunner();
   runner.attach(makeSink().sink, makeTask("play focus on spotify"));
-  for (const n of ["thread_start", "thread_wait", "thread_read", "thread_stop", "worker_start"]) {
+  for (const n of ["thread_start", "thread_wait", "thread_read", "thread_stop"]) {
     const r = await runner.run(n, { name: "Spotify", task: "play Focus" });
     assert.equal(r.result.kind, "error", n);
     assert.match(resultText(r.result), new RegExp(`unknown tool ${n}`), `${n} is not available here`);
@@ -528,7 +524,7 @@ test("secret values are redacted from every result, wherever they came from", as
 
 test("applescript: native reads of secret stores, split literals and computed shell commands are refused; keystrokes into a hands-off app in front ask; the checkout and agents are gated", async () => {
   const home = fakeHome();
-  const { runner } = makeRunner({ home, repoRoot: join(home, "jarvis") });
+  const { runner } = makeRunner({ home, repoRoot: join(home, "jarhead") });
   runner.attach(makeSink().sink, makeTask("automate"));
   assert.match(resultText((await runner.run("applescript", { script: `read (POSIX file "${join(home, ".jarhead", "env")}")` })).result), /refused: .*~\/\.jarhead\/env/);
   assert.match(resultText((await runner.run("applescript", { script: `set f to POSIX file "${join(home, ".ssh", "id_ed25519")}"\nread f` })).result), /refused: .*~\/\.ssh/);
@@ -554,7 +550,7 @@ test("applescript: native reads of secret stores, split literals and computed sh
   assert.equal((await front.runner.run("applescript", { script: "return 1 + 1" })).result.kind, "text", "a script without keystrokes does not care who is in front");
 
   // The running checkout: file tools and the shell ask even when Kevin named the folder; agent_start there asks.
-  const repo = join(home, "jarvis");
+  const repo = join(home, "jarhead");
   mkdirSync(join(repo, "packages", "core", "src"), { recursive: true });
   writeFileSync(join(repo, "packages", "core", "src", "policy.ts"), "export const x = 1;\n");
   runner.attach(makeSink().sink, makeTask(`fix the bug in ${repo}`));

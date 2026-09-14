@@ -4,7 +4,7 @@ import { ConfirmationState } from "@jarhead/hands";
 import { Transcript, type LiveSession } from "@jarhead/live";
 import { EventEmitter } from "node:events";
 import { Delegator } from "../delegator.ts";
-import { BROWSER_APPS, ReflexRunner, endsTerminally, parseReflex, similarity, type Reflex, type ReflexOutcome } from "../reflex.ts";
+import { BROWSER_APPS, FOCUS_APPLESCRIPT, ReflexRunner, endsTerminally, parseReflex, similarity, type Reflex, type ReflexOutcome } from "../reflex.ts";
 import type { Brain, BrainTask } from "../brain.ts";
 import { FakeHands, makeRunner } from "./fakes.ts";
 
@@ -454,9 +454,6 @@ test("tail matching: the last clause runs on its own only for TAIL_KINDS; the he
   assert.deepEqual(parseReflex("go to localhost 3000")!.input, { url: "http://localhost:3000/" });
   assert.deepEqual(parseReflex("go to localhost port 8080")!.input, { url: "http://localhost:8080/" });
 });
-
-/** workers.ts's FOCUS_APPLESCRIPT (a copy; the engine package is not this test's to import): a script that drives the screen rather than an app's dictionary. */
-const FOCUS_APPLESCRIPT = /\b(keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b/i;
 
 test("media rows: play / pause / next / previous / volume / mute by Apple event to the music app, only when the policy says run and never a screen script", () => {
   const TABLE: ReadonlyArray<readonly [string, RegExp, string, boolean]> = [

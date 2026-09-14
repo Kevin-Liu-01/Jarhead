@@ -80,10 +80,10 @@ const DESKTOP_SPECS: Record<(typeof DESKTOP_TOOLS)[number], ToolSpec> = {
 
 export const AGENT_SPECS: readonly ToolSpec[] = [
   { name: "agents_list", description: "List the agent sessions on this Mac — Codex threads, Claude Code sessions and other agent CLIs found on disk or running, whichever vendor — with id, status (working/idle/blocked/done/ended — ended means no live process, however recent; unknown means the process evidence was missing), a one-line detail and working directory. Also reports each tool's health (installed, signed in, desktop app running).", parameters: { type: "object", properties: {} } },
-  { name: "agent_send", description: "Send a prompt or reply to an agent session by id or by a loose name ('the reviewer', 'gt-cloud', 'the codex in jarvis'). Works the same for every tool: a Codex thread open in the Codex app receives it there (queued), a saved Codex thread or Claude Code session is continued headlessly; a blocked Claude Code session takes 'yes'/'no' as the answer to its permission question. Returns immediately; use agent_wait to wait for it to settle.", parameters: { type: "object", properties: { agent: { type: "string" }, text: { type: "string" } }, required: ["agent", "text"] } },
+  { name: "agent_send", description: "Send a prompt or reply to an agent session by id or by a loose name ('the reviewer', 'gt-cloud', 'the codex in jarhead'). Works the same for every tool: a Codex thread open in the Codex app receives it there (queued), a saved Codex thread or Claude Code session is continued headlessly; a blocked Claude Code session takes 'yes'/'no' as the answer to its permission question. Returns immediately; use agent_wait to wait for it to settle.", parameters: { type: "object", properties: { agent: { type: "string" }, text: { type: "string" } }, required: ["agent", "text"] } },
   { name: "agent_read", description: "Read an agent session's latest output: its last assistant message (any tool), or the last lines of its terminal.", parameters: { type: "object", properties: { agent: { type: "string" }, lines: { type: "integer", minimum: 5, maximum: 400 } }, required: ["agent"] } },
   { name: "agent_wait", description: "Wait until an agent session is idle, blocked, done or ended (its process gone — agent_send still resumes a saved Codex thread), or the timeout, seconds, passes. Returns its status and last output.", parameters: { type: "object", properties: { agent: { type: "string" }, timeout: { type: "number", minimum: 1, maximum: 600 } }, required: ["agent"] } },
-  { name: "agent_start", description: "Start a new agent session in a folder: tool 'codex' (a new Codex thread, Kevin's ChatGPT login, appears in the Codex app) or 'claude-code' (a headless Claude Code session), with a working directory and the first prompt. Existing sessions found on this Mac are continued with agent_send, not started here.", parameters: { type: "object", properties: { tool: { type: "string", enum: ["codex", "claude-code"], description: "which agent CLI runs the session" }, cwd: { type: "string", description: "absolute path of the folder to work in" }, name: { type: "string" }, prompt: { type: "string" }, kind: { type: "string", description: "deprecated alias of tool" } }, required: ["tool", "cwd", "prompt"] } },
+  { name: "agent_start", description: "Start a new agent session in a folder: tool 'codex' (a new Codex thread, Kevin's ChatGPT login, appears in the Codex app) or 'claude-code' (a headless Claude Code session), with a working directory and the first prompt. Existing sessions found on this Mac are continued with agent_send, not started here.", parameters: { type: "object", properties: { tool: { type: "string", enum: ["codex", "claude-code"], description: "which agent CLI runs the session" }, cwd: { type: "string", description: "absolute path of the folder to work in" }, name: { type: "string" }, prompt: { type: "string" } }, required: ["tool", "cwd", "prompt"] } },
 ];
 
 /**
@@ -93,9 +93,7 @@ export const AGENT_SPECS: readonly ToolSpec[] = [
  * the split rule the standing orders do not: one thread per independent app, started in
  * the SAME turn as the brain's own first action; never `thread_wait` for them — end the
  * turn and Jarhead speaks their lines. The engine's scheduler enforces the lanes and the
- * caps; a brain without one gets "not available here". The `worker_*` names of the
- * previous release are accepted by the scheduler as aliases (WORKER_TOOL_ALIASES) but are
- * not in the spec list.
+ * caps; a brain without one gets "not available here".
  */
 export const THREAD_SPECS: readonly ToolSpec[] = [
   {
@@ -122,20 +120,6 @@ export const THREAD_SPECS: readonly ToolSpec[] = [
   { name: "thread_stop", description: "Stop a thread by name: its current step ends, nothing more runs, and Kevin hears one line that it stopped. Use it when its part is no longer wanted or you are taking it over yourself.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
 ];
 
-/** The previous release's names → the thread tools; the scheduler answers both for one release, the spec list carries only the new. */
-export const WORKER_TOOL_ALIASES: Readonly<Record<string, string>> = { worker_start: "thread_start", worker_wait: "thread_wait", worker_read: "thread_read", worker_stop: "thread_stop" };
-
-/** Every name the scheduler answers: the four thread tools and their worker_* aliases. */
-export const THREAD_TOOL_NAMES: ReadonlySet<string> = new Set([...THREAD_SPECS.map((s) => s.name), ...Object.keys(WORKER_TOOL_ALIASES)]);
-
-/** `worker_start` → `thread_start`; a thread tool's own name unchanged; undefined for anything else. */
-export function threadToolName(name: string): string | undefined {
-  if (THREAD_SPECS.some((s) => s.name === name)) return name;
-  return WORKER_TOOL_ALIASES[name];
-}
-
-/** @deprecated the specs are THREAD_SPECS; kept one release so an import compiles (the names inside are thread_*). */
-export const WORKER_SPECS: readonly ToolSpec[] = THREAD_SPECS;
 
 export const MISC_SPECS: readonly ToolSpec[] = [
   {

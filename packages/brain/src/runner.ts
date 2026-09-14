@@ -413,10 +413,10 @@ export class ToolRunner {
         return { kind: "text", text: `${settled.name}: ${settled.status}${settled.detail ? ` (${settled.detail})` : ""}\n${output}` };
       }
       case "agent_start": {
-        // Vendor-neutral: `tool` names the CLI (`kind` is the old spelling). Codex threads
-        // start through the sessions connector, which persists them like any other thread;
-        // Claude Code keeps its own headless connector.
-        const tool = String(args["tool"] ?? args["kind"] ?? "").trim().toLowerCase();
+        // Vendor-neutral: `tool` names the CLI. Codex threads start through the sessions
+        // connector, which persists them like any other thread; Claude Code keeps its own
+        // headless connector.
+        const tool = String(args["tool"] ?? "").trim().toLowerCase();
         if (!tool) return { kind: "error", message: "agent_start needs a tool: 'codex' or 'claude-code'" };
         const connectorKind = tool === "codex" ? "sessions" : tool === "claude-code" || tool === "claude" ? "claude-code" : undefined;
         if (!connectorKind) return { kind: "error", message: `unknown tool "${tool}"; agent_start starts 'codex' or 'claude-code' sessions` };

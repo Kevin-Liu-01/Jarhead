@@ -27,8 +27,8 @@ export interface TimingsExtra extends DelegationTimings {
  * that acted on the Mac: the hands' acting members, the tools that act without
  * the hands, and the overlays drawn on his screen ("circle where Slack is": the
  * circle IS the visible action; `show_clear` removes, it does not show). Only a
- * step whose tool returned ok counts. The Delegator and the bench keep the same
- * list (delegator-timings.test.ts and bench-brain.test.ts pin it).
+ * step whose tool returned ok counts. The one acting set: the Delegator, the threads'
+ * turns, the engine's observer and the bench all import it from here.
  */
 export const ACTING_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"]);
 
@@ -49,12 +49,12 @@ export interface StampOptions {
  * The timings after this step: `firstToolAt` on the first tool / screenshot /
  * confirm step, `firstActionAt` on the first acting tool whose `tool` step returned
  * ok (never a look, an `error` step or a `confirm` question), one round-trip sample
- * per tool. A step tagged with a worker's name stamps nothing (the parent's marks
+ * per tool. A step tagged with a thread's name stamps nothing (the parent's marks
  * measure the parent); the eyes' shot stamps nothing. Returns the same object when
  * nothing changed.
  */
 export function stampStep(timings: TimingsExtra, step: Omit<DelegationStep, "id" | "at">, opts: StampOptions): TimingsExtra {
-  if (opts.looking || step.worker) return timings;
+  if (opts.looking || step.thread) return timings;
   if (step.kind !== "tool" && step.kind !== "screenshot" && step.kind !== "confirm") return timings;
   const acting = opts.acting ?? ACTING_TOOLS;
   const max = opts.maxSamples ?? MAX_ROUND_TRIP_SAMPLES;

@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Transcript, type LiveSession } from "@jarhead/live";
-import { ACTING_MEMBERS, ConfirmationState } from "@jarhead/hands";
-import { ACTING_TOOLS, Delegator } from "../delegator.ts";
+import { ConfirmationState } from "@jarhead/hands";
+import { Delegator } from "../delegator.ts";
 import type { Brain, BrainResult } from "../brain.ts";
 
 /**
@@ -94,11 +94,7 @@ test("delegator timings: speechEndAt takes the last utterance that ended before 
   assert.equal(bare.delegator.all()[0]?.timings.speechEndAt, undefined, "no session clock, no wall-clock speech end");
 });
 
-test("delegator timings: ACTING_TOOLS is the hands' acting members, the tools that act without them, and the overlays Kevin sees — a show_circle that drew stamps firstActionAt", async () => {
-  // The same list packages/cli/src/__tests__/bench-brain.test.ts pins the bench's copy to.
-  const BEYOND_THE_HANDS = ["applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"];
-  assert.deepEqual([...ACTING_TOOLS].sort(), [...ACTING_MEMBERS, ...BEYOND_THE_HANDS].sort());
-  assert.ok(!ACTING_TOOLS.has("show_clear"), "clearing the overlays shows nothing");
+test("delegator timings: the overlays Kevin sees act — a show_circle that drew stamps firstActionAt, after a look that did not", async () => {
   const marks: Record<string, number> = {};
   const { live, transcript, delegator } = harness((sink, tick) => {
     marks["look"] = tick();

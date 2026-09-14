@@ -3,17 +3,13 @@ import { isAbsolute, join } from "node:path";
 import { logger, newId, Marks, type Ledger } from "@jarhead/core";
 import { chunkForAppend, type LiveSession, type Transcript } from "@jarhead/live";
 import { YES_PATTERN, type ConfirmationState } from "@jarhead/hands";
-import type { Delegation, DelegationStatus, DelegationStep, DelegationTimings, ScreenMark, TranscriptItem } from "@jarhead/protocol";
+import { MAIN_THREAD_ID, type Delegation, type DelegationStatus, type DelegationStep, type DelegationTimings, type ScreenMark, type TranscriptItem } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { markNote } from "./attachments.ts";
 import { addressesJarhead, normalizeUtterance, parseReflex, type Reconciliation, type Reflex, type ReflexKind, type ReflexOutcome } from "./reflex.ts";
 import { progressLine } from "./responses.ts";
-import type { RunOutcome } from "./runner.ts";
 import { ACTING_TOOLS, stampStep, type TimingsExtra } from "./timings.ts";
 import { ALL_TOOL_SPECS } from "./tools.ts";
-
-// The acting set lives in timings.ts now (shared with the threads' turns); the bench and the tests still read it from here.
-export { ACTING_TOOLS };
 
 /**
  * Where the voice meets the brain.
@@ -21,10 +17,10 @@ export { ACTING_TOOLS };
  * Listens to one LiveSession, builds a task for every delegation from the
  * transcript, runs it on the brain, and relays progress back through the three
  * append channels with the 500-token cap respected. Also owns the two spoken
- * escape hatches: "stop" ends the running task (through the engine's
- * stopEverything when it is wired, so the speaker, the hands and the toast go
- * with it), and a "yes" arms a pending confirmation so the next attempt of that
- * exact action goes through.
+ * escape hatches: "stop" ends the running task (through the engine's interrupt
+ * when it is wired, so the speaker, the hands and the toast go with it), and a
+ * "yes" arms a pending confirmation so the next attempt of that exact action goes
+ * through.
  *
  * Two things happen here before a brain is involved. A *reflex* — "scroll down",
  * "press enter", "open Safari" — is run straight through the ToolRunner and the
@@ -40,15 +36,15 @@ export { ACTING_TOOLS };
  *
  * Two kinds of slot. `running` is the delegation whose brain turn is in flight —
  * still exactly one at a time. A *draining* delegation is one whose brain has
- * finished (or was cut short by Kevin's next request) while the workers it started
- * are still at work: it stays on the timeline, its workers' steps and finish lines
- * land on it, and it closes when they drain. Several may drain at once (a two-app
- * errand, then another, then a third request): each keeps its own record until its
- * own workers are done — a parent is never closed over a hand still working, so
- * every worker's one finish line is still spoken. Kevin's words are judged before
- * anything is superseded: a dismissal ("go to sleep", "that's all") goes to the
- * engine's one sleep function, and a "yes" meant for a worker's question resumes
- * that worker without touching the brain's running turn.
+ * finished (or was cut short by Kevin's next request) while the threads it started
+ * are still at work: it stays on the timeline, their finish lines land on it, and it
+ * closes when they drain. Several may drain at once (a two-app errand, then another,
+ * then a third request): each keeps its own record until its own threads are done —
+ * a parent is never closed over a hand still working, so every thread's one finish
+ * line is still spoken. Kevin's words are judged before anything is superseded: a
+ * dismissal ("go to sleep", "that's all") goes to the engine's one sleep function,
+ * and a "yes" meant for a thread's question resumes that thread without touching
+ * the brain's running turn.
  */
 
 const log = logger("delegator");
@@ -100,10 +96,10 @@ export interface DelegatorOptions {
   /** The reflex table and its runner; absent = every task goes to the brain. */
   readonly reflexes?: ReflexSource | undefined;
   /**
-   * Kevin said "stop" while a task ran. When wired (the engine's stopEverything)
-   * it owns the whole stop — speaker, hands, jobs, toast, this delegation — and
-   * the delegator does not cancel on its own; without it the delegator cancels
-   * the task itself.
+   * Kevin said "stop" while a task ran. When wired (the engine's interrupt) it owns
+   * the whole stop — speaker, hands, jobs, toast, this delegation — and the
+   * delegator does not cancel on its own; without it the delegator cancels the task
+   * itself.
    */
   readonly onStop?: ((reason: string) => void) | undefined;
   /**
@@ -114,14 +110,6 @@ export interface DelegatorOptions {
    * dismissal is the brain's like any request (the reflex table never runs it).
    */
   readonly onSleep?: ((phrase: string) => void) | undefined;
-  /**
-   * The engine's worker pool as the delegator sees it. With it, a delegation whose
-   * brain finished with workers still running drains instead of finishing, a new
-   * request parks the running one instead of cancelling its workers, a "yes" for a
-   * worker's question resumes that worker, and a spoken "stop" is heard while only
-   * workers run. Absent = no workers anywhere.
-   */
-  readonly workers?: DelegatorWorkers | undefined;
   /**
    * A reason to refuse every new delegation right now ("Kevin paused you"), or
    * undefined to take them. A refused delegation still gets its record: created
@@ -153,22 +141,17 @@ export interface DelegatorOptions {
    */
   readonly voiceFirstTool?: boolean | undefined;
   /**
-   * How a worker's line reaches the voice: `commentary` (default) appends it on
-   * the parent's delegation through the 600 ms coalescer like every other line;
-   * `instructions` is the fallback channel should a paid probe show Live drops
-   * commentary on a delegation whose brain turn ended — the voice is told to say
-   * the line now. Default from env JARHEAD_WORKER_SAY.
-   */
-  readonly workerSayChannel?: "commentary" | "instructions" | undefined;
-  /**
    * The engine's threads — the table and the scheduler — as the delegator sees them.
-   * With it, a thread verb ("what is Spotify doing", "stop the Slack one", "pause
-   * Spotify") is answered from the table as an aside before anything running is
-   * touched, words addressed to a live thread by name ("spotify, skip this song") are
-   * a follow-up turn on ITS brain, a spoken "stop" with two or more threads live waits
-   * STOP_NAME_WAIT_MS for a name before the work is cut, and the overflow rule
-   * (`overflow() === "spawn"`) may start a thread instead of superseding the running
-   * turn. Absent = no threads: every path is as it was.
+   * With it, a delegation whose brain finished with threads still running drains
+   * instead of finishing, a new request parks the running one instead of cancelling
+   * its threads, a "yes" for a thread's question resumes that thread, a spoken
+   * "stop" is heard while only threads run, a thread verb ("what is Spotify doing",
+   * "stop the Slack one", "pause Spotify") is answered from the table as an aside
+   * before anything running is touched, words addressed to a live thread by name
+   * ("spotify, skip this song") are a follow-up turn on ITS brain, a spoken "stop"
+   * with two or more threads live waits STOP_NAME_WAIT_MS for a name before the work
+   * is cut, and the overflow rule (`overflow() === "spawn"`) may start a thread instead
+   * of superseding the running turn. Absent = no threads anywhere.
    */
   readonly threads?: DelegatorThreads | undefined;
   /** How long the work cut waits for a name after a stop word with ≥ 2 threads live (default STOP_NAME_WAIT_MS; tests shorten it). */
@@ -185,19 +168,13 @@ export interface DelegatorOptions {
    * delegation time and cut at LOOK_BUDGET_MS. Absent = no preamble.
    */
   readonly look?: ((signal: AbortSignal) => Promise<string | undefined>) | undefined;
-  /**
-   * Confirmation replay (DECISIONS §11, rail-adjacent to the toolset handshake): Jarhead
-   * would re-run the armed member+input itself on Kevin's yes instead of asking the brain
-   * to call the tool again. Present for the wiring, UNWIRED — never called — until Kevin
-   * names the handshake (`Settings.replayFinish` stays false).
-   */
-  readonly replay?: ((member: string, input: Record<string, unknown>, sink: BrainSink) => Promise<RunOutcome>) | undefined;
 }
 
 /**
  * The engine's threads (ThreadScheduler + ThreadTable), as much as the delegator needs:
  * the LIVE names for the grammar, one line of status from the table, a follow-up or a
- * stop/pause/resume by name, the floor, and the overflow hooks.
+ * stop/pause/resume by name, the floor, the overflow hooks, and the drain a parent
+ * waits on once its brain is done and its threads are not.
  */
 export interface DelegatorThreads {
   /** Live spawned threads' names (never the main thread's); the grammar matches only these. */
@@ -215,8 +192,8 @@ export interface DelegatorThreads {
   followUp(threadId: string, request: string, opts: { readonly items?: readonly TranscriptItem[] | undefined; readonly marks?: readonly BrainAttachment[] | undefined }): Promise<boolean>;
   /** "stop the Slack one": that thread only; the scheduler speaks "<Name> stopped." itself. False when no live thread has the name. */
   stopNamed(name: string): Promise<boolean>;
-  /** The thread whose question holds the floor — main included, as "Jarhead" — or undefined. */
-  floorThread(): { readonly id: string; readonly name: string } | undefined;
+  /** The thread whose question holds the floor — main included, as "Jarhead" — or undefined when the floor is free. */
+  floorThread(): ThreadFloor | undefined;
   pauseNamed?(name: string): Promise<boolean>;
   resumeNamed?(name: string): Promise<boolean>;
   /** Settings.threadOverflow: `supersede` (today) or `spawn` (a request naming an unclaimed app becomes a thread while the turn has acted). */
@@ -225,32 +202,22 @@ export interface DelegatorThreads {
   appClaimed?(app: string): boolean;
   /** Start a thread named `name` for `task` under the running delegation; true when admitted. */
   spawn?(parentDelegationId: string, name: string, task: string): boolean;
-}
-
-/** The engine's WorkerPool, as much of it as the delegator needs. */
-export interface DelegatorWorkers {
   /**
-   * Resolves once every worker of this delegation has finished, failed or been
-   * cancelled — or at once when the signal aborts (a cut ends the wait, never the
-   * workers: their controllers are the pool's).
+   * Resolves once every thread of this delegation has finished, failed or been
+   * stopped — or at once when the signal aborts (a cut ends the wait, never the
+   * threads: their controllers are the scheduler's).
    */
   drain(delegationId: string, signal: AbortSignal): Promise<void>;
-  /** Workers still alive for this delegation, or in total without an id. */
+  /** Spawned threads still alive for this delegation, or in total without an id. */
   running(delegationId?: string): number;
-  /** Kevin's yes was armed for the worker holding the question floor: it re-runs its tool on its own thread. */
-  resume(workerId: string): Promise<void>;
-  /**
-   * The worker whose question holds the confirmation floor right now, or
-   * undefined when the floor is free or the main brain's own question holds it. A
-   * bare id is accepted; with the name the record can say who the yes went to.
-   */
-  floorLane(): WorkerFloor | string | undefined;
+  /** Kevin's yes was armed for the thread holding the question floor: it re-runs its tool on its own brain. */
+  resume(threadId: string): Promise<void>;
   /** True while Jarhead is mid-exchange (spoke or was spoken to a moment ago). Informational here: Live's attention gate is the addressing test for a spoken cue. */
   inExchange?(): boolean;
 }
 
-/** Who holds the confirmation floor, when it is a worker. */
-export interface WorkerFloor {
+/** Who holds the confirmation floor: a thread's id and the name Kevin hears ("main" is "Jarhead"). */
+export interface ThreadFloor {
   readonly id: string;
   readonly name: string;
 }
@@ -354,13 +321,14 @@ function namesATool(text: string): boolean {
 const GENERIC_WORKING_LINE = "working on it.";
 /**
  * Tools that only look, remember or already speak: not worth a spoken line when
- * they are the brain's first move. The worker tools are here too: the split is
- * voiced once by the pool's own line (`splitLine`), never as "Checking worker start".
+ * they are the brain's first move. The thread tools are here too: the split is
+ * voiced once by the scheduler's own line (`splitLine`), never as "Starting Spotify
+ * on the side".
  */
 const SILENT_TOOLS: ReadonlySet<string> = new Set([
   "screenshot", "zoom", "cursor_position", "frontmost_app", "list_windows", "element_at", "find_element", "read_focused_text", "wait",
   "browser_tabs", "browser_find", "agents_list", "self_status", "recall", "remember", "speak_progress", "show_clear",
-  "worker_start", "worker_wait", "worker_read", "worker_stop",
+  "thread_start", "thread_wait", "thread_read", "thread_stop",
 ]);
 /** A prefired reflex is adopted by the delegation for its utterance within this long; then its record is finished as never delegated. */
 const PREFIRE_TTL_MS = 8000;
@@ -413,7 +381,7 @@ interface Prefired {
  * A delegation holding a slot — running, or draining. `abort` is the brain turn's signal (a
  * supersede or a cut ends the turn); `cut` is the whole delegation's, aborted only
  * by a cut verb — the drain waits on it, so Kevin's next request never ends the
- * wait for the workers it left behind. `result` is set once the brain's turn is
+ * wait for the threads it left behind. `result` is set once the brain's turn is
  * over and the delegation is draining.
  */
 interface Slot {
@@ -443,7 +411,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private namedStop: { name: string; at: number; via: NamedStopVia } | undefined;
   /** The delegation whose brain turn is in flight: one at a time, as ever. */
   private running: Slot | undefined;
-  /** Delegations whose brain is done but whose workers are not: each drains, then finishes; insertion order = age. */
+  /** Delegations whose brain is done but whose threads are not: each drains, then finishes; insertion order = age. */
   private readonly parked = new Map<string, Slot>();
   /** A failed reflex batch's account of itself, handed to the brain task that follows (by delegation id). */
   private readonly reflexNotes = new Map<string, readonly string[]>();
@@ -461,12 +429,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private prefired: Prefired | undefined;
   /** Utterances already considered for a prefire (id:text), so a settled utterance is tried once. */
   private prefireSeen = "";
-  private readonly workerSayChannel: "commentary" | "instructions";
 
   constructor(private readonly opts: DelegatorOptions) {
     super();
     this.now = opts.now ?? Date.now;
-    this.workerSayChannel = opts.workerSayChannel ?? (process.env["JARHEAD_WORKER_SAY"] === "instructions" ? "instructions" : "commentary");
     const { live } = opts;
     const onDelegation = (id: string, target: "client" | "responses", offsetMs: number): void => void this.onDelegation(id, target, offsetMs);
     const onInput = (delta: string): void => this.onInputDelta(delta);
@@ -479,14 +445,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     return this.delegations;
   }
 
-  /** The delegation Jarhead is busy with: the one whose brain runs, else the newest whose workers are still at work. */
+  /** The delegation Jarhead is busy with: the one whose brain runs, else the newest whose threads are still at work. */
   get active(): Delegation | undefined {
     return this.running?.delegation ?? this.newestParked()?.delegation;
   }
 
   /**
-   * The newest delegation whose brain is done and whose workers are draining, if any
-   * (the engine's ear compares it with `active`: equal means only workers are at work).
+   * The newest delegation whose brain is done and whose threads are draining, if any
+   * (the engine's ear compares it with `active`: equal means only threads are at work).
    */
   get draining(): Delegation | undefined {
     return this.newestParked()?.delegation;
@@ -510,7 +476,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   }
 
   /**
-   * "stop" while anything runs — the brain's turn, or only a worker or two — ends
+   * "stop" while anything runs — the brain's turn, or only a thread or two — ends
    * it. Checked on fragments so it lands fast; the engine's stop runs after the
    * other listeners on this fragment have had it (its output gate would otherwise
    * be lifted by the very words that asked for it). With two or more spawned threads
@@ -518,13 +484,13 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * name — "stop … the slack one" ends Slack alone; a bare stop still ends everything,
    * one beat later. With one thread or none the path is exactly the old one: the cut
    * on the fragment. A settled utterance may be a reflex: not while the brain runs,
-   * but a draining delegation's hands are the pool's and Kevin's own "scroll down"
-   * still lands.
+   * but a draining delegation's hands are the scheduler's and Kevin's own "scroll
+   * down" still lands.
    */
   private onInputDelta(delta: string): void {
     this.lastInputAt = Date.now();
     this.sleepAnnouncedAt = undefined; // Kevin is speaking: the idle stretch is over
-    const busy = this.running !== undefined || this.parked.size > 0 || (this.opts.workers?.running() ?? 0) > 0;
+    const busy = this.running !== undefined || this.parked.size > 0 || (this.opts.threads?.running() ?? 0) > 0;
     if (busy) {
       const recent = (this.opts.transcript.last("kevin")?.text ?? "") + delta;
       // A stop is waiting for a name: these words may be it ("… the slack one").
@@ -820,10 +786,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   /**
    * End what is running — the brain's turn and a draining delegation alike (a cut
-   * verb: interrupt, Stop, Pause, sleep; the engine cancels the workers themselves).
-   * `quiet` skips the delegator's own word to the voice — the engine's
-   * stopEverything sends the one instruction for the whole stop and asks for that,
-   * so the voice is not told both to acknowledge and to be silent.
+   * verb: interrupt, Stop, Pause, sleep; the engine stops the threads themselves).
+   * `quiet` skips the delegator's own word to the voice — the engine's interrupt
+   * sends the one instruction for the whole stop and asks for that, so the voice is
+   * not told both to acknowledge and to be silent.
    */
   async cancel(reason: string, opts: { readonly quiet?: boolean } = {}): Promise<void> {
     // A stop still waiting for a name is over: this cut got there first (the ear's own window, a pressed
@@ -865,8 +831,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     if (this.prefireTimer) clearTimeout(this.prefireTimer);
     this.prefireTimer = undefined;
 
-    // Kevin's words first: a dismissal and a yes for a worker are answered before
-    // anything running is touched, so neither ends a turn or a worker by accident.
+    // Kevin's words first: a dismissal and a yes for a thread are answered before
+    // anything running is touched, so neither ends a turn or a thread by accident.
     // The window: since the last finish — or, while a delegation runs, since now (its
     // words are not this request's; the transcript's last utterance is, as when the
     // supersede used to move the window first).
@@ -893,7 +859,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.markReflex(aside.id);
       const addressed = addressesJarhead(request);
-      const inExchange = this.opts.workers?.inExchange?.() ?? this.opts.reflexes?.inExchange?.();
+      const inExchange = this.opts.threads?.inExchange?.() ?? this.opts.reflexes?.inExchange?.();
       // The one false positive worse than a miss is a "goodnight" meant for someone in the
       // room. Live's attention gate is the test on this path; when it fired on words that
       // neither name Jarhead nor land mid-exchange, the log says so, for the day it is wrong.
@@ -912,16 +878,16 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const record = ledger ? (g: { app: string; actionClass: string; until: number }): void => ledger.append({ at: this.now(), type: "grant", chainId: confirmations.conversationId, app: g.app, actionClass: g.actionClass, until: g.until }) : undefined;
     const isYes = YES_PATTERN.test(transcript.last("kevin")?.text ?? "");
 
-    // (b) A yes while a worker's question holds the floor: the yes is armed on the root
-    // and that worker re-runs its tool on its own thread. The brain's running turn is
-    // not superseded — the yes was never for it.
-    const floor = isYes ? this.workerFloor() : undefined;
-    if (floor && this.opts.workers && confirmations.arm(record) !== undefined) {
+    // (b) A yes while a spawned thread's question holds the floor: the yes is armed on
+    // the root and that thread re-runs its tool on its own brain. The brain's running
+    // turn is not superseded — the yes was never for it.
+    const floor = isYes ? this.threadFloor() : undefined;
+    if (floor && this.opts.threads && confirmations.arm(record) !== undefined) {
       const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
       this.appendIds.set(aside.id, appendId);
-      this.addStep(aside.id, { kind: "note", text: `yes for ${floor.name}'s question; the running task carries on`, worker: floor.name });
+      this.addStep(aside.id, { kind: "note", text: `yes for ${floor.name}'s question; the running task carries on`, thread: floor.name });
       try {
-        await this.opts.workers.resume(floor.id);
+        await this.opts.threads.resume(floor.id);
         this.closeRecord(aside.id, "done", `relayed the yes to ${floor.name}`);
       } catch (e) {
         this.closeRecord(aside.id, "failed", `could not relay the yes to ${floor.name}: ${(e as Error).message.slice(0, 200)}`);
@@ -971,7 +937,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       } catch (e) {
         log.warn(`follow-up for ${thread.name}: ${(e as Error).message}`);
       }
-      this.addStep(aside.id, { kind: "note", text: ok ? `follow-up for ${thread.name}: "${addressed.words.slice(0, 120)}"; the running task carries on` : `${thread.name} could not take the follow-up`, worker: thread.name });
+      this.addStep(aside.id, { kind: "note", text: ok ? `follow-up for ${thread.name}: "${addressed.words.slice(0, 120)}"; the running task carries on` : `${thread.name} could not take the follow-up`, thread: thread.name });
       if (!ok) this.sayAside(aside.id, appendId, threads.statusLine(thread.name));
       this.closeRecord(aside.id, ok ? "done" : "failed", ok ? `passed to ${thread.name}` : `${thread.name} is not live`);
       log.info(`delegation ${aside.id}: follow-up for ${thread.name} ("${addressed.words.slice(0, 60)}"), main untouched`);
@@ -979,8 +945,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     }
 
     // (c) A new delegation while one runs: the voice decided Kevin wants something else.
-    // The brain's turn ends. Workers it started carry on: their delegation is parked
-    // to drain rather than cancelled (only a cut verb ends workers).
+    // The brain's turn ends. Threads it started carry on: their delegation is parked
+    // to drain rather than cancelled (only a cut verb ends threads).
     if (this.running) {
       const old = this.running;
       // Overflow (Settings.threadOverflow = "spawn"; the default `supersede` is the path below): a
@@ -992,15 +958,15 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         if (app && acted && !CORRECTION.test(request) && !(threads.appClaimed?.(app) ?? false) && !threads.byNameLive(app) && threads.spawn(old.delegation.id, app, request)) {
           const aside = this.recordAside(liveId, offsetMs, request, speechEndAt, requestItems);
           this.appendIds.set(aside.id, appendId);
-          this.addStep(aside.id, { kind: "note", text: `overflow: the request names ${app}, which the running task has not touched — a thread of its own; the running task carries on`, worker: app });
+          this.addStep(aside.id, { kind: "note", text: `overflow: the request names ${app}, which the running task has not touched — a thread of its own; the running task carries on`, thread: app });
           this.closeRecord(aside.id, "done", `${app} alongside`);
           log.info(`delegation ${aside.id}: overflow → thread ${app} ("${request.slice(0, 60)}"); the running turn carries on`);
           return;
         }
       }
       old.abort.abort();
-      if ((this.opts.workers?.running(old.delegation.id) ?? 0) > 0) {
-        this.park(old, "Kevin asked something else; the workers carry on", { status: "cancelled", summary: "Kevin asked something else; the workers carried on" });
+      if ((this.opts.threads?.running(old.delegation.id) ?? 0) > 0) {
+        this.park(old, "Kevin asked something else; the threads carry on", { status: "cancelled", summary: "Kevin asked something else; the threads carried on" });
       } else {
         this.dropCommentary(old.delegation.id);
         this.finish(old.delegation.id, { status: "cancelled", summary: "superseded by a new request" });
@@ -1142,8 +1108,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       if (!spokenAlready) say(result.summary);
     }
     // The brain is done; its hands may not be. The delegation then drains — Kevin's
-    // next request starts at once, and this record closes when the workers do.
-    const hands = result.status === "cancelled" ? 0 : (this.opts.workers?.running(id) ?? 0);
+    // next request starts at once, and this record closes when the threads do.
+    const hands = result.status === "cancelled" ? 0 : (this.opts.threads?.running(id) ?? 0);
     if (hands > 0) {
       this.park(run, `the brain is done; ${hands} hand${hands === 1 ? "" : "s"} still working`, result);
       return;
@@ -1173,11 +1139,10 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     return spoke && sessionStart > 0 ? sessionStart + spoke.endMs : undefined;
   }
 
-  /** The worker holding the confirmation floor, named when the pool names it. */
-  private workerFloor(): WorkerFloor | undefined {
-    const floor = this.opts.workers?.floorLane();
-    if (!floor) return undefined;
-    return typeof floor === "string" ? { id: floor, name: floor } : floor;
+  /** The spawned thread holding the confirmation floor; undefined when the floor is free or the main brain's own question holds it. */
+  private threadFloor(): ThreadFloor | undefined {
+    const floor = this.opts.threads?.floorThread();
+    return floor && floor.id !== MAIN_THREAD_ID ? floor : undefined;
   }
 
   /** The thread verb in this request, if it is one: the whole of it, or an addressed last utterance after room talk. Live names and the ones that just ended. */
@@ -1267,7 +1232,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   /**
    * A delegation answered here without the brain and without a slot — a sleep cue,
-   * a yes relayed to a worker: created on the ledger like any other, finished by
+   * a yes relayed to a thread: created on the ledger like any other, finished by
    * `closeRecord`. A prefire parked for an earlier utterance is closed on the way.
    */
   private recordAside(liveId: string, offsetMs: number, request: string, speechEndAt: number | undefined, requestItems: readonly TranscriptItem[]): Delegation {
@@ -1492,8 +1457,9 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
    * Record a step and keep the latency marks — first tool, first action, every round
    * trip — through the pure `stampStep` the threads' turns stamp with too, so the bench
    * cannot tell whose turn a `delegation.finished` row was. The eyes' pre-warm shot is
-   * the engine's, not the brain's (no mark); a worker's step (`step.worker`) is on the
-   * timeline but stamps none. One `step` event for the main thread's log.
+   * the engine's, not the brain's (no mark); a step tagged with a thread's name
+   * (`step.thread`) is on the timeline but stamps none. One `step` event for the main
+   * thread's log.
    */
   private addStep(id: string, step: Omit<DelegationStep, "id" | "at">): void {
     const full: DelegationStep = { id: newId("step"), at: this.now(), ...step };
@@ -1503,29 +1469,16 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     if (updated) this.emit("step", id, full);
   }
 
-  // ------------------------------------------------------------------ workers
+  // ------------------------------------------------------------------ threads
 
   /**
-   * A worker's step lands on its parent's timeline, tagged with the worker's name,
-   * while the parent runs or drains. Nothing is voiced here: workers never narrate.
+   * The one or two lines a spawned thread gets to say — its finish line ("Spotify:
+   * playing Focus."), a promoted question ("Spotify asks: …") — as Jarhead's own words
+   * on the parent's delegation: never gated, coalesced with the rest, and spoken whether
+   * the parent's brain is still running or the delegation is draining (the scheduler
+   * formats the line; this only carries it). The commentary channel is the one channel.
    */
-  workerStep(parentId: string, name: string, step: Omit<DelegationStep, "id" | "at" | "worker">): void {
-    if (!this.slot(parentId)) {
-      log.debug(`worker ${name}: step for ${parentId}, which is not running or draining; dropped`);
-      return;
-    }
-    this.addStep(parentId, { ...step, worker: name });
-  }
-
-  /**
-   * The one or two lines a worker gets to say — its finish line ("Spotify: playing
-   * Focus."), a promoted question ("Spotify asks: …") — as Jarhead's own words on the
-   * parent's delegation: never gated, coalesced with the rest, and spoken whether the
-   * parent's brain is still running or the delegation is draining (the pool formats the
-   * line; this only carries it). `instructions` (JARHEAD_WORKER_SAY) is the fallback
-   * channel: the voice is told to say it now.
-   */
-  workerSay(parentId: string, name: string, text: string): void {
+  threadSay(parentId: string, name: string, text: string): void {
     const slot = this.slot(parentId);
     if (!slot) {
       // The parent's slot is gone — its turn closed and its hands drained, or the thread
@@ -1539,26 +1492,18 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
         return;
       }
       const liveId = kept ? (this.appendIds.get(parentId) ?? null) : null;
-      log.info(`thread ${name}: "${text.slice(0, 60)}" for ${parentId} after its slot closed; spoken through ${this.workerSayChannel === "instructions" ? "the voice's instructions" : liveId ? `delegation ${liveId}` : "the general context"}`);
-      if (kept) this.addStep(parentId, { kind: "commentary", text, worker: name });
-      if (this.workerSayChannel === "instructions") {
-        this.opts.live.appendInstructions(null, `A hand finished. Tell Kevin now in one short sentence: "${text}". Then wait.`);
-        return;
-      }
+      log.info(`thread ${name}: "${text.slice(0, 60)}" for ${parentId} after its slot closed; spoken through ${liveId ? `delegation ${liveId}` : "the general context"}`);
+      if (kept) this.addStep(parentId, { kind: "commentary", text, thread: name });
       this.queueCommentary(parentId, liveId, text);
       return;
     }
-    this.addStep(parentId, { kind: "commentary", text, worker: name });
-    if (this.workerSayChannel === "instructions") {
-      this.opts.live.appendInstructions(null, `A hand finished. Tell Kevin now in one short sentence: "${text}". Then wait.`);
-      return;
-    }
+    this.addStep(parentId, { kind: "commentary", text, thread: name });
     this.queueCommentary(parentId, slot.liveId, text);
   }
 
   /**
    * "<Name> alongside." — Jarhead's one line when work splits, at the first
-   * `worker_start` of a delegation and never again for it. It counts as the
+   * `thread_start` of a delegation and never again for it. It counts as the
    * task's voiced tool, so the first-tool line does not follow it with a second
    * sentence ("Opening Slack.").
    */
@@ -1572,8 +1517,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   /**
    * Park the running delegation by hand — the engine's word that its brain turn is
-   * over while its workers are not: it leaves the running slot and drains (its
-   * workers' steps and lines still land on it, Kevin's next request starts at once,
+   * over while its threads are not: it leaves the running slot and drains (its
+   * threads' finish lines still land on it, Kevin's next request starts at once,
    * and it finishes when they do, or when a cut ends the wait). This ENDS the turn it
    * parks: the turn's signal is aborted and the brain's cancel awaited, and whatever
    * the brain would still report is discarded — `result` is what the record closes
@@ -1591,8 +1536,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   /**
    * Move a slot from running to draining. Never closes an older draining delegation:
-   * its workers are still at work and its finish lines are still owed, so it keeps
-   * its record until its own drain resolves (WORKER_MAX bounds how many can be).
+   * its threads are still at work and its finish lines are still owed, so it keeps
+   * its record until its own drain resolves (THREAD_MAX_LIVE bounds how many can be).
    */
   private park(run: Slot, note: string, result: BrainResult): void {
     if (this.running !== run) return;
@@ -1603,23 +1548,23 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.addStep(id, { kind: "note", text: `${note}; draining` });
     this.lastDelegationEndMs = Math.max(this.lastDelegationEndMs, this.opts.live.nowMs || run.delegation.offsetMs);
     log.info(`delegation ${id} draining: ${note}${this.parked.size > 1 ? ` (${this.parked.size} draining)` : ""}`);
-    const workers = this.opts.workers;
-    if (!workers) {
+    const threads = this.opts.threads;
+    if (!threads) {
       this.finishParked(id);
       return;
     }
-    void workers
+    void threads
       .drain(id, run.cut.signal)
       .catch((e: unknown) => {
-        if (this.parked.get(id) === run) this.addStep(id, { kind: "error", text: `waiting for the workers: ${(e as Error).message.slice(0, 200)}` });
+        if (this.parked.get(id) === run) this.addStep(id, { kind: "error", text: `waiting for the threads: ${(e as Error).message.slice(0, 200)}` });
       })
       .then(() => this.finishParked(id));
   }
 
   /**
-   * A draining delegation's workers are done (or the wait was cut): it finishes
+   * A draining delegation's threads are done (or the wait was cut): it finishes
    * with the result its brain reported. Its last lines are flushed, never dropped
-   * — a worker's finish line queued a moment ago is still owed to Kevin.
+   * — a thread's finish line queued a moment ago is still owed to Kevin.
    */
   finishParked(id: string, why?: string): void {
     const slot = this.parked.get(id);
@@ -1676,8 +1621,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
   private voice(slot: Slot, text: string, fromBrain: boolean, gated = false): void {
     const id = slot.delegation.id;
     const spokenBefore = slot.marks.has("firstCommentary") || slot.marks.has("voicedTool");
-    // The main brain's own pending question lifts the gate; a worker's question is spoken by the pool with its name.
-    const asking = this.current(id)?.steps.some((s) => s.kind === "confirm" && !s.worker) ?? false;
+    // The main brain's own pending question lifts the gate; a thread's question is spoken by the scheduler with its name.
+    const asking = this.current(id)?.steps.some((s) => s.kind === "confirm" && !s.thread) ?? false;
     if (fromBrain && !slot.marks.has("firstCommentary")) {
       slot.marks.mark("firstCommentary");
       this.update(id, (d) => ({ ...d, timings: { ...d.timings, firstCommentaryAt: this.now() } }));
@@ -1694,7 +1639,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const { live } = this.opts;
     const lastThinkingAt = { value: 0 };
     // `say`'s guard is running-or-draining: a summary spoken as the brain hands over to
-    // its workers, and anything Jarhead has to say for a draining delegation, still lands.
+    // its threads, and anything Jarhead has to say for a draining delegation, still lands.
     const say = (text: string, fromBrain: boolean, gated = false): void => {
       const slot = this.slot(id);
       if (slot) this.voice(slot, text, fromBrain, gated);
@@ -1794,14 +1739,14 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
 
   /**
    * Close a delegation that held a slot: status (a pending question of the main
-   * brain's keeps it awaiting-confirmation; a worker's question is the worker's),
+   * brain's keeps it awaiting-confirmation; a thread's question is the thread's),
    * summary, doneAt, the ledger row, the request window — and idle once nothing
    * runs and nothing drains.
    */
   private closeSlot(slot: Slot, result: BrainResult): void {
     const id = slot.delegation.id;
     const doneAt = this.now();
-    const awaiting = slot.delegation.steps.some((s) => s.kind === "confirm" && !s.worker);
+    const awaiting = slot.delegation.steps.some((s) => s.kind === "confirm" && !s.thread);
     const status = result.status === "done" && awaiting ? "awaiting-confirmation" : result.status;
     const finished = this.update(id, (d) => ({
       ...d,
