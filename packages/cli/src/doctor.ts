@@ -740,14 +740,14 @@ export async function runChecks(): Promise<Check[]> {
   for (const c of localChecks({ status: localStatus, brain, brainModel, brainBaseUrl, memory: daemon?.memory })) add(c);
   // ---- memory: what Jarhead durably knows about Kevin, how it matches, which model reads the conversations.
   // Reads the running daemon's summary and the store's row count; the model list is the keys row's one GET. Never a session, never the extractor.
-  const memoryOn = saved.memory ?? true;
+  const memoryEnabled = saved.memory ?? true;
   const hasOpenAIKey = Boolean(cfg.openaiApiKey);
   {
     const memoryDir = join(cfg.stateDir, "memory");
     // The model memory reads with is the one that resolves on the server (Kevin's pick or the best fit) — none when nothing answers or nothing fits.
     const resolvedChat = resolveLocalModel(brainModel, localStatus);
     const localChat = "model" in resolvedChat ? resolvedChat.model.id : "";
-    for (const c of memoryChecks({ enabled: memoryOn, hasOpenAIKey, modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir), ...(brain === "local" ? { local: { reachable: localStatus.reachable, chat: localChat } } : {}) })) add(c);
+    for (const c of memoryChecks({ enabled: memoryEnabled, hasOpenAIKey, modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir), ...(brain === "local" ? { local: { reachable: localStatus.reachable, chat: localChat } } : {}) })) add(c);
   }
   // ---- privacy: where words go — the daemon's rows when one answers, else the same function over what the doctor read
   {
@@ -763,7 +763,7 @@ export async function runChecks(): Promise<Check[]> {
             brainDetail: running?.detail ?? "",
             local: localStatus,
             // No daemon: the summary the engine would report, so this row agrees with the memory group above (an absent summary reads as "off").
-            memory: daemon?.memory ?? memorySummaryWithoutDaemon({ enabled: memoryOn, brain, local: localStatus, hasOpenAIKey }),
+            memory: daemon?.memory ?? memorySummaryWithoutDaemon({ enabled: memoryEnabled, brain, local: localStatus, hasOpenAIKey }),
             hasOpenAIKey,
             liveModel: cfg.liveModel,
           });
