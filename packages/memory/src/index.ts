@@ -7,7 +7,9 @@
  * importance × confidence × use scoring with MMR under two hard token budgets,
  * consolidation and decay to `archived`. Forget is a state; nothing is deleted.
  * Costs: the OpenAI key for embeddings and extraction (dollars, bounded by the
- * input caps); never a Codex turn, never a Live session.
+ * input caps) — or, under the local brain, a model on this Mac for both, so item
+ * text and closed conversations never leave it; never a Codex turn, never a
+ * Live session.
  */
 export { MemoryService, MAX_SLICES } from "./service.ts";
 export type { MemoryServiceOptions, IngestOptions, IngestResult, RememberResult } from "./service.ts";
@@ -17,12 +19,19 @@ export type { ReplayState } from "./log.ts";
 export { EmbeddingCache } from "./embed/cache.ts";
 export { FakeEmbedder, similarityOf, compare, querySimilarityOf, thresholdsFor, hashVector } from "./embed/embedder.ts";
 export type { Embedder, Embedded, Space } from "./embed/embedder.ts";
-export { OpenAIEmbedder, EmbedError } from "./embed/openai.ts";
+export { OpenAIEmbedder } from "./embed/openai.ts";
+export { EmbedError } from "./embed/errors.ts";
+export type { EmbedErrorCode } from "./embed/errors.ts";
+export { LocalEmbedder, LOCAL_THRESHOLDS, localThresholdsFor, LOCAL_EMBED_BATCH, LOCAL_EMBED_TIMEOUT_MS, LOCAL_EMBED_KEEP_ALIVE } from "./embed/local.ts";
+export type { LocalEmbedderOptions } from "./embed/local.ts";
 export { KeywordEmbedder, keywordSimilarity, keywordQuerySimilarity, tokenWeights, tokens, stem } from "./embed/keyword.ts";
 export type { TokenWeight } from "./embed/keyword.ts";
 export { ExtractUnavailableError } from "./extract/extractor.ts";
 export type { Extractor, Decider, DecideContext } from "./extract/extractor.ts";
 export { ResponsesExtractor, DEFAULT_MEMORY_MODEL, pickMemoryModel } from "./extract/responses.ts";
+export { ChatExtractor, stripThinking, CHAT_EXTRACT_TIMEOUT_MS, CHAT_DECIDE_TIMEOUT_MS, CHAT_MAX_CHARS_LARGE, CHAT_MAX_CHARS_SMALL } from "./extract/chat.ts";
+export type { ChatExtractorOptions } from "./extract/chat.ts";
+export { parseCandidates, parseDecision } from "./extract/parse.ts";
 export { RulesExtractor, RulesDecider, isReversal, subjectsOf } from "./extract/rules.ts";
 export { buildExtractInput, localDay } from "./extract/input.ts";
 export { EXTRACT_INSTRUCTIONS, DECIDE_INSTRUCTIONS, EXTRACT_SCHEMA, DECIDE_SCHEMA, EXTRACT_MAX_ITEMS, stripBounds, renderExtractUser, renderDecideUser } from "./extract/prompt.ts";

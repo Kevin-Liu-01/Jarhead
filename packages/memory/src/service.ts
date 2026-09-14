@@ -4,7 +4,7 @@ import { consolidate, type ConsolidateOptions, type ConsolidateResult } from "./
 import { EmbeddingCache } from "./embed/cache.ts";
 import { querySimilarityOf, type Embedder } from "./embed/embedder.ts";
 import { tokenWeights } from "./embed/keyword.ts";
-import { EmbedError } from "./embed/openai.ts";
+import { EmbedError } from "./embed/errors.ts";
 import { ExtractUnavailableError, type Decider, type Extractor } from "./extract/extractor.ts";
 import { buildExtractInput } from "./extract/input.ts";
 import { RulesDecider, RulesExtractor, subjectsOf } from "./extract/rules.ts";
@@ -141,9 +141,10 @@ export class MemoryService {
     this.retrieveTimeoutMs = opts.retrieveTimeoutMs ?? RETRIEVE_TIMEOUT_MS;
   }
 
-  /** How items are matched, for the Console: vectors (a key is present) or words. */
-  embeddings(): "openai" | "keyword" {
-    return this.embedder.dims > 0 ? "openai" : "keyword";
+  /** How items are matched, for the Console: the embedder's kind — OpenAI vectors, a local model's, or words. The test embedder reports `openai` (it pins OpenAI-scale cosines). */
+  embeddings(): "openai" | "local" | "keyword" {
+    if (this.embedder.dims === 0) return "keyword";
+    return this.embedder.kind === "local" ? "local" : "openai";
   }
 
   private emit(row: LedgerRow): void {
@@ -586,6 +587,7 @@ export class MemoryService {
       forgotten: c.forgotten,
       archived: c.archived,
       embeddings: this.embeddings(),
+      ...(this.embedder.dims > 0 ? { embeddingModel: this.embedder.model, embeddingDims: this.embedder.dims } : {}),
       ...(this.lastRunAt !== undefined ? { lastRunAt: this.lastRunAt } : {}),
       ...(this.lastRun ? { lastRun: this.lastRun } : {}),
       budgetUsed: { ...this.budgetUsed },
@@ -600,6 +602,23 @@ export class MemoryService {
       this.consolidateCursor = r.done ? 0 : r.cursor;
       if (r.wrote) this.store.flush();
       return r;
+    });
+  }
+
+  /**
+   * After an embedder change: live items with no vector in the current space
+   * are embedded through the cache, `limit` at a time (only the misses reach
+   * the model; every hit is kept). Returns how many were embedded, 0 when every
+   * live item has a vector — the bridge calls this at quiet ticks until then, so
+   * a switch of brain heals in minutes. Throws what the embedder throws.
+   */
+  reembed(limit = 96): Promise<number> {
+    return this.serial(async () => {
+      if (this.embedder.dims === 0) return 0;
+      const missing = this.store.items("live").filter((it) => !this.store.vectorFor(it.id, this.embedder)).slice(0, Math.max(0, limit));
+      if (missing.length === 0) return 0;
+      await this.store.embed(this.embedder, missing.map((it) => it.text));
+      return missing.filter((it) => this.store.vectorFor(it.id, this.embedder)).length;
     });
   }
 

@@ -2,20 +2,13 @@ import type { Embedder } from "./embedder.ts";
 import { OPENAI_THRESHOLDS } from "../limits.ts";
 import { keywordQuerySimilarity, keywordSimilarity, type TokenWeight } from "./keyword.ts";
 import { cosine, l2normalize } from "../vec.ts";
+import { EmbedError } from "./errors.ts";
 
 export const EMBED_MODEL = "text-embedding-3-small";
 export const EMBED_DIMS = 512;
 export const EMBED_BATCH = 96;
 
-export type EmbedErrorCode = "no-key" | "http" | "timeout" | "bad-response";
-
-/** Why an embed() failed; the service defers the run on any of these rather than mixing vector spaces. */
-export class EmbedError extends Error {
-  constructor(readonly code: EmbedErrorCode, message: string, readonly status?: number) {
-    super(message);
-    this.name = "EmbedError";
-  }
-}
+export { EmbedError, type EmbedErrorCode } from "./errors.ts";
 
 export interface OpenAIEmbedderOptions {
   /** Read at call time, never from process.env here: the engine passes `() => config.openaiApiKey`. */
