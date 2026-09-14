@@ -114,7 +114,8 @@
 #                                                                                                     # → notch-peek-marking.png, notch-mark-return.png (acting: the
 #                                                                                                     # counter is on and the peek has no breath, so its width is exact)
 #     hotkey     ORB_NOTCH_HOTKEY_CIRCLE_AT=3.2 ORB_NOTCH_ESC_AT=3.9
-#     question   ORB_FLEET=… ORB_NOTCH_QUESTION="Slack:…" ORB_NOTCH_MARKS=… ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6   # → notch-{peek,island}-question.png
+#     question   ORB_FLEET=… ORB_NOTCH_QUESTION="Slack:…" ORB_NOTCH_MARKS=… ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6
+#                ORB_NOTCH_SHOT_TAG=question                                                          # → notch-{peek,island}-question.png (two scenario knobs: the tag names the frames)
 #     threads    ORB_FLEET=… ORB_NOTCH_PRESS="threadStop:Slack@3.4;thread:Slack@3.8;console@4.1;sleep@4.5;sleep@5.3"
 #     meter      ORB_NOTCH_METER="252,138,738" ORB_PAUSE_AT=4.0 ORB_SLEEP_AT=5.2 ORB_EXIT_AFTER=7.5      # → notch-peek-meter.png
 #     request    ORB_NOTCH_REQUEST="opening the PR in Cursor"
@@ -185,7 +186,7 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe circle 11 ORB_FLEET="$FLEET" ORB_NOTCH_PHASE=acting ORB_NOTCH_REQUEST="opening the PR in Cursor" ORB_NOTCH_PIN_AT=2.9 ORB_NOTCH_CIRCLE_AT=3.2
   recipe hotkey 5.5 ORB_NOTCH_HOTKEY_CIRCLE_AT=3.2 ORB_NOTCH_ESC_AT=3.9
   recipe question 6.5 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION='Slack:Send "shipping Friday" to #general?' ORB_NOTCH_MARKS="$MARKS" \
-    ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6
+    ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6 ORB_NOTCH_SHOT_TAG=question
   recipe threads 6.5 ORB_FLEET="$FLEET" ORB_NOTCH_PRESS="threadStop:Slack@3.4;thread:Slack@3.8;console@4.1;sleep@4.5;sleep@5.3"
   recipe meter 7.5 ORB_NOTCH_METER="252,138,738" ORB_PAUSE_AT=4.0 ORB_SLEEP_AT=5.2
   recipe request 4.8 ORB_NOTCH_REQUEST="opening the PR in Cursor"
@@ -201,7 +202,7 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe strip 3 ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_STRIP_PROBE=2.5
   recipe fleet 4.5 ORB_FLEET="Slack:screen:working@1000,300;Spotify:background:working;Mail:screen:working@1300,700"
   recipe reduce-marks 5 ORB_REDUCE_MOTION=1 ORB_NOTCH_MARKS="$MARKS"
-  recipe reduce-question 4.5 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40"
+  recipe reduce-question 4.5 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_SHOT_TAG=question
   recipe reduce-circle 11 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_CIRCLE_AT=3.2   # no counter: the peek's 322 proves the dots gone
   echo
   echo "summary (every check: line, deduplicated by text):"
