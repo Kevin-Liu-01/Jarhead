@@ -1,0 +1,179 @@
+import SwiftUI
+import AppKit
+
+// The Console's floats: tips and menus drawn in the window, over the columns, from anchors the
+// triggers publish. Nothing here opens a window. One `ConsoleFloatLayer` per window root
+// (`ConsoleRootView.chromeA`, `OnboardingRootView`) reads the anchors through a preference and
+// places each float with `ConsoleFloatPlacement`. Option (a) of the mechanics; the spike of kit
+// step 0 proved focus, keys and anchors on this Swift (see `ConsoleFloatSpike`).
+
+/// One floating surface a view asked for: who (a stable id), what kind, where (an anchor the root
+/// resolves in its own space) and how to draw it. `AnyView` is taken exactly once, here, at the
+/// content boundary. Equatable by id, kind and the anchor's last frame: a scroll inside a rail
+/// never invalidates the root's overlay on its own (the spike proved it), so the trigger tracks
+/// its frame with `onGeometryChange` and republishes — the layer re-runs, `proxy[anchor]`
+/// re-resolves, and the float follows its field.
+struct ConsoleFloat: Identifiable, Equatable {
+    enum Kind: Equatable { case tip, menu }
+    /// Controls open below; a rail row's card opens beside it.
+    enum Edge: Equatable { case below, trailing }
+
+    let id: String
+    let kind: Kind
+    let edge: Edge
+    let anchor: Anchor<CGRect>
+    /// The trigger's frame in the window's space when it last laid out — the republish key.
+    let frame: CGRect
+    let content: () -> AnyView
+    let dismiss: () -> Void
+
+    static func == (a: ConsoleFloat, b: ConsoleFloat) -> Bool { a.id == b.id && a.kind == b.kind && a.frame == b.frame }
+}
+
+struct ConsoleFloatKey: PreferenceKey {
+    static let defaultValue: [ConsoleFloat] = []
+    static func reduce(value: inout [ConsoleFloat], nextValue: () -> [ConsoleFloat]) { value.append(contentsOf: nextValue()) }
+}
+
+/// The `previewNotification` keys the harness drives the kit with (`ConsolePreviewMain.swift`):
+/// every trigger reads its own key from here, so the names live once.
+enum ConsolePreviewKey {
+    /// `menuOpen:<id>` → the menu field with that id opens.
+    static let menuOpen = "menuOpen"
+    /// `tipOpen:<id>` → the trigger with that id shows its tip pinned.
+    static let tipOpen = "tipOpen"
+    /// `focus:<id>` → the control with that id takes keyboard focus.
+    static let focus = "focus"
+    /// `fold:<id>:<open|closed>` → `["fold": id, "foldOpen": Bool]`.
+    static let fold = "fold"
+    static let foldOpen = "foldOpen"
+    /// `chip:<kind>` → the memory rail's kind chip.
+    static let chip = "chip"
+    /// `highlight:<id>` → a list's focused row.
+    static let highlight = "highlight"
+}
+
+extension View {
+    /// Publish a float while `on`; this view is its anchor. The trigger owns `on` (its @State)
+    /// and `dismiss` is how the layer asks it to let go (an outside click, a ⌘-key, the window
+    /// leaving key).
+    func consoleFloat<C: View>(_ id: String, kind: ConsoleFloat.Kind, edge: ConsoleFloat.Edge = .below, on: Bool,
+                               dismiss: @escaping () -> Void, @ViewBuilder content: @escaping () -> C) -> some View {
+        modifier(ConsoleFloatPublisher(id: id, kind: kind, edge: edge, on: on, dismiss: dismiss, content: content))
+    }
+
+    /// Installed once per window root, after everything the floats must draw over.
+    func consoleFloatLayer() -> some View {
+        overlayPreferenceValue(ConsoleFloatKey.self) { floats in ConsoleFloatLayer(floats: floats) }
+    }
+}
+
+/// The trigger's half: its frame tracked (so a scroll republishes) and the float published while `on`.
+struct ConsoleFloatPublisher<C: View>: ViewModifier {
+    let id: String
+    let kind: ConsoleFloat.Kind
+    let edge: ConsoleFloat.Edge
+    let on: Bool
+    let dismiss: () -> Void
+    let content: () -> C
+    @State private var frame: CGRect = .zero
+
+    func body(content view: Content) -> some View {
+        view
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
+            .anchorPreference(key: ConsoleFloatKey.self, value: .bounds) { anchor in
+                on ? [ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)] : []
+            }
+    }
+}
+
+/// Draws the floats over the whole root. While a menu is open only the menu is drawn (tips never
+/// sit beside a menu) and an outside-click catcher lies under it — the click is swallowed, as
+/// NSMenu swallows it. Everything goes when the window stops being key; one event monitor lives
+/// while anything is open.
+struct ConsoleFloatLayer: View {
+    let floats: [ConsoleFloat]
+    @Environment(\.controlActiveState) private var active
+    @State private var monitor = ConsoleFloatMonitor()
+
+    /// The harness pins this on so a shot behind the lock screen (the window inactive) keeps its floats.
+    @MainActor static var holdWhileInactive = false
+
+    private var menu: ConsoleFloat? { floats.first { $0.kind == .menu } }
+    private var shown: [ConsoleFloat] { menu.map { [$0] } ?? floats }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                if let menu { Color.clear.contentShape(Rectangle()).onTapGesture(perform: menu.dismiss) }
+                ForEach(shown) { f in
+                    ConsoleFloatSlot(float: f, anchor: proxy[f.anchor], bounds: proxy.frame(in: .local))
+                        .zIndex(f.kind == .menu ? 2 : 1)
+                }
+            }
+        }
+        .onChange(of: active) { if active != .key, !Self.holdWhileInactive { floats.forEach { $0.dismiss() } } }
+        .onChange(of: floats.map(\.id)) { monitor.set(floats) }
+    }
+}
+
+/// Measures its content once, places it with `ConsoleFloatPlacement` and offsets it there. The
+/// content is `.fixedSize()`, so the overlay never proposes a size to the window. Writes the
+/// placed rect to `ConsoleFloatSlot.placed` for the harness's `probe-floats:`.
+struct ConsoleFloatSlot: View {
+    let float: ConsoleFloat
+    let anchor: CGRect
+    let bounds: CGRect
+    @State private var size: CGSize = .zero
+
+    /// The last rect each float was placed at (`probe-floats:` prints them; the layer writes them).
+    @MainActor static var placed: [String: CGRect] = [:]
+
+    var body: some View {
+        let rect = ConsoleFloatPlacement.rect(anchor: anchor, size: size, bounds: bounds, edge: float.edge)
+        float.content()
+            .fixedSize()
+            .onGeometryChange(for: CGSize.self, of: \.size) { size = $0 }
+            .offset(x: rect.minX, y: rect.minY)
+            .allowsHitTesting(float.kind == .menu)
+            .accessibilityHidden(float.kind == .tip)
+            .onChange(of: rect, initial: true) { Self.placed[float.id] = rect }
+            .onDisappear { Self.placed[float.id] = nil }
+    }
+}
+
+/// One local event monitor while any float is open. It only observes (every event is returned
+/// unchanged) and it only looks at the key window: a tip dismisses on any mouse-down, wheel or
+/// key-down; a menu on a ⌘ key-down (the window's shortcut is about to run) and on a wheel
+/// outside itself. Outside clicks on a menu are the layer's catcher's, not the monitor's.
+@MainActor
+final class ConsoleFloatMonitor {
+    private var token: Any?
+    private var floats: [ConsoleFloat] = []
+
+    func set(_ floats: [ConsoleFloat]) {
+        self.floats = floats
+        if floats.isEmpty { remove(); return }
+        guard token == nil else { return }
+        token = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .keyDown]) { [weak self] event in
+            self?.observe(event)
+            return event
+        }
+    }
+
+    private func observe(_ event: NSEvent) {
+        guard event.window === NSApp.keyWindow else { return }
+        let command = event.type == .keyDown && event.modifierFlags.contains(.command)
+        for f in floats {
+            switch f.kind {
+            case .tip: f.dismiss()
+            case .menu: if command || event.type == .scrollWheel { f.dismiss() }
+            }
+        }
+    }
+
+    private func remove() {
+        if let token { NSEvent.removeMonitor(token) }
+        token = nil
+    }
+}

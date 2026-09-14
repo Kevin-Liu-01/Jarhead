@@ -116,6 +116,13 @@ import SwiftUI
 //     local-empty  = the Now tab with Ollama up but nothing on it that can call tools: the amber
 //                    `brain.local` row with Retry and Copy (`ollama pull qwen3.5:27b`, copied, never
 //                    run), the Ready row naming the fallback `openai-responses`. Runs `check-local`.
+//     kit-spike    = the component kit's day-0 spike: a temporary two-row popup (ConsoleFloatSpike) on
+//                    the ConsoleFloatLayer over the stream, driven by `menuOpen:kit.spike`, `keyDown:`,
+//                    `spike-scroll:` and `probe-floats`; `check-kit` prints the pure placement / tip /
+//                    badge / copy pins, `check-spike` the go/no-go lines (`check: spike focus ↑↓ Return
+//                    Esc OK`, `check: spike anchor under scroll OK`). Every `spike:` line is the popup
+//                    reporting a key it took. The kit's scenarios (menu-voice … agents-groups) are named
+//                    in console-preview.sh and render today's UI until their builder lands.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
 //   PREVIEW_SHOT_PNG                the screenshot step's file inside that dir
@@ -207,8 +214,25 @@ import SwiftUI
 //                          undo-toast presses the toast's Undo (AppState.undoCleanup(id:)); redo
 //                          runs the manager's redo once — the toast-then-⌘Z sequence must not
 //                          re-perform the action (undo after undo-toast: canUndo=false, nothing sent)
+//     keyDown:<name>       post a real key-down (and up) through window.sendEvent — the responder chain's
+//                          path to a focused SwiftUI view (a popup, a list), where `key:` reaches only
+//                          performKeyEquivalent. Names: escape up down left right return space tab ? a…z;
+//                          several joined with `+` land 40 ms apart (keyDown:m+a, keyDown:down+return)
+//     click:(x,y)          a left click at that point of the content view (points from its top-left),
+//                          down and up through sendEvent; prints the first responder before and after
+//     focus:<id> · menuOpen:<id> · tipOpen:<id> · chip:<kind> · highlight:<id> · fold:<id>:<open|closed>
+//                          the kit's previewNotification keys (ConsolePreviewKey): the control with that
+//                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
+//                          is highlighted / the disclosure folds or opens
+//     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
+//     spike-scroll:<row>   scroll the spike's rail so that row sits at its top (48 pt for row 2)
+//     check-kit            the kit's pure pins as `check:` lines: placement (below · flips · clamps · trailing
+//                          · arrow ≥ r + 4 · max list height · size == .zero), ConsoleTip.delay, every badge
+//                          word and tone, check-copy over HelpCopy — ends `check: all ok (kit)`
+//     check-spike          the spike's go/no-go from its `spike:` trail and the two probe-floats around the scroll
 //     Every action may carry `@<seconds>` (from launch): "open-jarhead@1.2,shot:mid@1.36";
-//     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s).
+//     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s). The list splits
+//     on commas outside parentheses, so `click:(300,300)` is one action.
 
 @main
 struct ConsolePreviewMain {
@@ -234,6 +258,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     let launchedAt = Date()
     /// How many `append` actions have run (they alternate Kevin / Jarhead).
     var appended = 0
+    /// The spike popup's trail (`spike:` lines), read by `check-spike`.
+    var spikeLog: [String] = []
+    /// Every `probe-floats` result, in order, read by `check-spike`.
+    var floatProbes: [[String: CGRect]] = []
     /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
     lazy var trace = MainThreadTrace(launchedAt: launchedAt)
     /// The conversation scenarios' pane, opened once the app is active (`openPendingAgentAfterActivation`).
@@ -288,6 +316,18 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.jarheadSessionRowsHandler = { id in fake.jarheadRows(for: id) }
         // The rail's search, as `ledger.search` would answer: a scan of the fake rows.
         state.ledgerSearchHandler = { query, limit in Array(fake.searchHits(query).prefix(limit)) }
+
+        // The kit's floats: the tip delay pinned to 0 in every shot but `tip-warm`; floats held while
+        // the window is inactive (a shot behind the lock screen); the spike mounted for `kit-spike`.
+        ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
+        ConsoleFloatLayer.holdWhileInactive = true
+        if scenario == "kit-spike" {
+            ConsoleFloatSpike.enabled = true
+            ConsoleFloatSpike.report = { [weak self] line in
+                self?.spikeLog.append(line)
+                print("spike: \(line)")
+            }
+        }
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
@@ -555,10 +595,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (No comma in the text: "," separates the actions.)
         case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
+        case "kit-spike": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,keyDown:down@0.9,keyDown:up@1.0,keyDown:down@1.1,keyDown:return@1.3,"
+            + "menuOpen:kit.spike@1.5,keyDown:escape@1.7,menuOpen:kit.spike@1.9,probe-floats@2.1,spike-scroll:2@2.2,probe-floats@2.5,"
+            + "check-spike@2.6,menuOpen:kit.spike@2.7,keyDown:down@2.8"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
-            for (index, spec) in actions.split(separator: ",").enumerated() {
+            for (index, spec) in Self.splitActions(actions).enumerated() {
                 let parts = spec.split(separator: "@", maxSplits: 1).map(String.init)
                 let action = parts[0]
                 let at = parts.count == 2 ? (Double(parts[1]) ?? 0) : 1.2 + 0.8 * Double(index)
@@ -792,6 +835,20 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeGround(stamp: stamp)
             } else if action.hasPrefix("load-earlier:") || action == "history" {
                 loadEarlier(action, stamp: stamp)
+            } else if let info = kitAction(action) {
+                // The kit's keys (ConsolePreviewKey): the trigger with that id answers.
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
+                print("action: \(action) at \(stamp)s")
+            } else if action.hasPrefix("keyDown:") {
+                keyDown(String(action.dropFirst("keyDown:".count)), stamp: stamp)
+            } else if action.hasPrefix("click:") {
+                click(String(action.dropFirst("click:".count)), stamp: stamp)
+            } else if action == "probe-floats" {
+                probeFloats(stamp: stamp)
+            } else if action == "check-kit" {
+                checkKit(stamp: stamp)
+            } else if action == "check-spike" {
+                checkSpike(stamp: stamp)
             } else if let info = memoryAction(action) {
                 // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
                 // `send:` line is the command, the `memory-rail:` line what the list holds after.
@@ -2837,5 +2894,181 @@ struct FakeData {
         r = row(ago(61), "sleep"); r.sessionId = "sess_7f3a9c2e41b0"; r.cause = "idle"; rows.append(r)
         r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "close_requested"; r.usageSeconds = 1020; rows.append(r)
         return rows
+    }
+}
+
+// MARK: - The kit (step 0): keys through the responder chain, clicks, floats, the pure pins
+
+extension PreviewDelegate {
+    /// PREVIEW_ACTION's list, split on commas outside parentheses (`click:(300,300)` is one action).
+    static func splitActions(_ list: String) -> [String] {
+        var out: [String] = [], current = "", depth = 0
+        for ch in list {
+            if ch == "(" { depth += 1 } else if ch == ")" { depth = max(0, depth - 1) }
+            if ch == ",", depth == 0 { out.append(current); current = "" } else { current.append(ch) }
+        }
+        out.append(current)
+        return out.filter { !$0.isEmpty }
+    }
+
+    private var jarheadWindow: NSWindow? { NSApp.windows.first(where: { $0.title == "Jarhead" }) }
+
+    /// `focus:` `menuOpen:` `tipOpen:` `chip:` `highlight:` `fold:<id>:<open|closed>` `spike-scroll:<row>` → userInfo.
+    func kitAction(_ action: String) -> [String: Any]? {
+        let plain = [ConsolePreviewKey.focus, ConsolePreviewKey.menuOpen, ConsolePreviewKey.tipOpen, ConsolePreviewKey.chip, ConsolePreviewKey.highlight]
+        for key in plain where action.hasPrefix(key + ":") { return [key: String(action.dropFirst(key.count + 1))] }
+        if action.hasPrefix("fold:") {
+            let parts = action.dropFirst("fold:".count).split(separator: ":").map(String.init)
+            guard parts.count == 2 else { return nil }
+            return [ConsolePreviewKey.fold: parts[0], ConsolePreviewKey.foldOpen: parts[1] == "open"]
+        }
+        if action.hasPrefix("spike-scroll:"), let row = Int(action.dropFirst("spike-scroll:".count)) { return [ConsoleFloatSpike.scrollKey: row] }
+        return nil
+    }
+
+    /// A key's virtual code, characters and modifiers, by the name `keyDown:` takes.
+    static func keySpec(_ name: String) -> (code: UInt16, chars: String, flags: NSEvent.ModifierFlags)? {
+        switch name {
+        case "escape": return (53, "\u{1b}", [])
+        case "return": return (36, "\r", [])
+        case "space": return (49, " ", [])
+        case "tab": return (48, "\t", [])
+        case "up": return (126, "\u{F700}", .function)
+        case "down": return (125, "\u{F701}", .function)
+        case "left": return (123, "\u{F702}", .function)
+        case "right": return (124, "\u{F703}", .function)
+        case "?": return (44, "?", .shift)
+        default: break
+        }
+        let letters: [Character: UInt16] = ["a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13,
+                                            "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46]
+        guard name.count == 1, let ch = name.first, let code = letters[ch] else { return nil }
+        return (code, name, [])
+    }
+
+    static func keyEvent(_ name: String, window: NSWindow, down: Bool) -> NSEvent? {
+        guard let spec = keySpec(name) else { return nil }
+        return NSEvent.keyEvent(with: down ? .keyDown : .keyUp, location: .zero, modifierFlags: spec.flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                windowNumber: window.windowNumber, context: nil, characters: spec.chars, charactersIgnoringModifiers: spec.chars,
+                                isARepeat: false, keyCode: spec.code)
+    }
+
+    /// `keyDown:<name>[+<name>…]`: each key down and up through the window's sendEvent, 40 ms apart.
+    func keyDown(_ spec: String, stamp: String) {
+        guard let window = jarheadWindow else { print("action: keyDown \(spec) at \(stamp)s → no window"); return }
+        window.makeKeyAndOrderFront(nil)
+        for (index, name) in spec.split(separator: "+").map(String.init).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04 * Double(index)) {
+                guard let down = Self.keyEvent(name, window: window, down: true), let up = Self.keyEvent(name, window: window, down: false) else {
+                    print("action: keyDown \(name) → unknown key (see the names in the header)")
+                    return
+                }
+                window.sendEvent(down)
+                window.sendEvent(up)
+                let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+                print("action: keyDown \(name) at \(stamp)s → key=\(window.isKeyWindow) firstResponder=\(responder)")
+            }
+        }
+    }
+
+    /// `click:(x,y)` — points from the content view's top-left; a left mouse down and up through sendEvent.
+    func click(_ spec: String, stamp: String) {
+        let numbers = spec.split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
+        guard numbers.count == 2, let window = jarheadWindow, let content = window.contentView else { print("action: click \(spec) → want (x,y) and a window"); return }
+        let point = NSPoint(x: numbers[0], y: content.bounds.height - numbers[1])
+        window.makeKeyAndOrderFront(nil)
+        let before = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let hit = content.hitTest(point).map { String(describing: type(of: $0)) } ?? "nil"
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                window.sendEvent(event)
+            }
+        }
+        let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        print("action: click (\(Int(numbers[0])),\(Int(numbers[1]))) at \(stamp)s → hit \(hit); firstResponder \(before) → \(after)")
+    }
+
+    /// `probe-floats`: the rect of every float the layer has placed, in the root's space.
+    func probeFloats(stamp: String) {
+        let placed = ConsoleFloatSlot.placed
+        floatProbes.append(placed)
+        guard !placed.isEmpty else { print("probe-floats: none at \(stamp)s"); return }
+        let line = placed.keys.sorted().map { id -> String in
+            let r = placed[id] ?? .zero
+            return String(format: "%@ x=%.1f y=%.1f w=%.1f h=%.1f", id, r.minX, r.minY, r.width, r.height)
+        }.joined(separator: " · ")
+        print("probe-floats: \(line) at \(stamp)s")
+    }
+
+    /// `check-spike`: the go/no-go for option (a) — focus and keys from the popup's own trail, the
+    /// anchor under a scroll from the two `probe-floats` around `spike-scroll:2` (48 pt).
+    func checkSpike(stamp: String) {
+        let want = ["focus in", "down → highlight 1", "up → highlight 0", "return → pick 1", "closed — picked Two", "escape", "closed — escape"]
+        let missing = want.filter { w in !spikeLog.contains(w) }
+        print(missing.isEmpty ? "check: spike focus ↑↓ Return Esc OK" : "check: FAIL spike focus ↑↓ Return Esc — missing \(missing) in \(spikeLog)")
+        let id = ConsoleFloatSpikeWords.id
+        guard floatProbes.count >= 2, let before = floatProbes[floatProbes.count - 2][id] else {
+            print("check: FAIL spike anchor under scroll — no popup rect before the scroll (\(floatProbes))")
+            return
+        }
+        let after = floatProbes[floatProbes.count - 1][id]
+        if let after, abs((before.minY - after.minY) - 48) < 2 {
+            print(String(format: "check: spike anchor under scroll OK (the popup followed its field: y %.1f → %.1f)", before.minY, after.minY))
+        } else if after == nil {
+            print("check: spike anchor under scroll OK (fallback: the float closed when its anchor moved)")
+        } else {
+            print(String(format: "check: FAIL spike anchor under scroll — y %.1f → %.1f, wanted −48 or closed", before.minY, after?.minY ?? -1))
+        }
+        print("check: \(missing.isEmpty ? "all ok" : "\(missing.count) FAILED") (spike) at \(stamp)s")
+    }
+
+    /// `check-kit`: the kit's pure pins as `check: ok|FAIL` lines.
+    func checkKit(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func fmt(_ r: CGRect) -> String { String(format: "%.0f,%.0f %.0f×%.0f", r.minX, r.minY, r.width, r.height) }
+        let bounds = CGRect(x: 0, y: 0, width: 1180, height: 760)
+        let field = CGRect(x: 900, y: 200, width: 182, height: 26)
+        let popup = CGSize(width: 220, height: 300)
+        expect("placement: below, leading-aligned, gap 4", fmt(ConsoleFloatPlacement.rect(anchor: field, size: popup, bounds: bounds, edge: .below)), "900,230 220×300")
+        let low = CGRect(x: 900, y: 600, width: 182, height: 26)
+        expect("placement: flips above when short", fmt(ConsoleFloatPlacement.rect(anchor: low, size: popup, bounds: bounds, edge: .below)), "900,296 220×300")
+        let right = CGRect(x: 1000, y: 200, width: 182, height: 26)
+        expect("placement: clamps x to maxX − 8", fmt(ConsoleFloatPlacement.rect(anchor: right, size: CGSize(width: 300, height: 300), bounds: bounds, edge: .below)), "872,230 300×300")
+        let row = CGRect(x: 8, y: 300, width: 244, height: 44)
+        let card = CGSize(width: 280, height: 160)
+        expect("placement: trailing beside a rail row, top-aligned", fmt(ConsoleFloatPlacement.rect(anchor: row, size: card, bounds: bounds, edge: .trailing)), "256,300 280×160")
+        let rightRow = CGRect(x: 900, y: 300, width: 260, height: 44)
+        expect("placement: trailing flips to leading when short", fmt(ConsoleFloatPlacement.rect(anchor: rightRow, size: card, bounds: bounds, edge: .trailing)), "616,300 280×160")
+        let clamped = ConsoleFloatPlacement.rect(anchor: right, size: CGSize(width: 300, height: 300), bounds: bounds, edge: .below)
+        expect("placement: arrow points at the anchor's centre", String(format: "%.0f", ConsoleFloatPlacement.arrowOffset(anchor: right, rect: clamped, side: .below)), "219")
+        let corner = CGRect(x: 870, y: 200, width: 4, height: 26)
+        expect("placement: arrow ≥ r + 4 from a corner", String(format: "%.0f", ConsoleFloatPlacement.arrowOffset(anchor: corner, rect: clamped, side: .below)), "10")
+        expect("placement: max list height under the field", String(format: "%.0f", ConsoleFloatPlacement.maxListHeight(anchor: field, bounds: bounds, side: .below)), "522")
+        expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
+        expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")
+        expect("tip delay: warm 0.2 s", "\(ConsoleTip.delay(sinceLastHide: 0.2))", "0.0")
+        expect("tip delay: never hidden", "\(ConsoleTip.delay(sinceLastHide: -1))", "0.35")
+        func badge(_ w: ConsoleBadge.Word) -> String { "\(ConsoleBadge.text(w)) · \(ConsoleBadge.toneKind(w).rawValue)" }
+        expect("badge: fits titanium", badge(.fits), "fits · rest")
+        expect("badge: tight speaking", badge(.tight), "tight · speaking")
+        expect("badge: too big error", badge(.tooBig), "too big · error")
+        expect("badge: missing(1) speaking", badge(.missing(1)), "1 missing · speaking")
+        expect("badge: asks speaking", badge(.asks), "asks · speaking")
+        expect("badge: off speaking", badge(.off), "off · speaking")
+        expect("badge: failed error", badge(.failed), "failed · error")
+        expect("badge: resting words", [ConsoleBadge.Word.noTools, .loaded, .saved, .auto, .default, .noKey, .thisMac, .ready, .allOk].map(badge).joined(separator: " / "),
+               "no tools · rest / loaded · rest / saved · rest / auto · rest / default · rest / no key · rest / this Mac · rest / Ready · rest / all ok · rest")
+        expect("badge: a figure is mono", "\(ConsoleBadge.isFigure(.figure("17 GB"))) \(ConsoleBadge.isFigure(.word("live")))", "true false")
+        for entry in HelpCopy.all { expect("copy: \(entry.name)", HelpCopy.violations(entry).joined(separator: ", "), "") }
+        expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
+        expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
+        expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 }

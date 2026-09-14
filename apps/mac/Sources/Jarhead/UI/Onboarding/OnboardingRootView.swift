@@ -57,6 +57,8 @@ struct OnboardingRootView: View {
         }
         .background(ConsoleGround())
         .frame(minWidth: 560, minHeight: 480)
+        // The one float layer: Setup's menu fields and tips draw here, over the rail and the pane.
+        .consoleFloatLayer()
         .task(id: PollKey(step: session.step, visible: session.visible)) {
             // TCC has no change notification: re-read (never a prompt) on every step
             // change, and every 2 s while the two steps that show it are on screen, so a
