@@ -166,35 +166,9 @@ enum ConsoleTheme {
         }
     }
 
-    struct WorkerMeta: Equatable {
-        let label: String
-        let color: Color
-        /// A pulsing dot instead of the symbol.
-        let live: Bool
-        let symbol: String
-    }
-
-    /// A worker's status as the rail row and the card's chip draw it: a pulsing dot while it
-    /// works (the acting green; the connecting grey while its brain spins up), an hourglass
-    /// while it waits for the screen — Kevin's hands, or the other lane's turn — in the third
-    /// text step, the raised hand while it waits for Kevin's yes, and the delegation's own
-    /// settled symbols once it is done, failed or cancelled.
-    static func worker(_ s: WorkerStatus) -> WorkerMeta {
-        switch s {
-        case .starting: return WorkerMeta(label: s.words, color: connecting, live: true, symbol: "circle.fill")
-        case .working: return WorkerMeta(label: s.words, color: acting, live: true, symbol: "circle.fill")
-        case .waitingScreen: return WorkerMeta(label: s.words, color: fg3, live: false, symbol: "hourglass.tophalf.filled")
-        case .awaitingConfirmation: return WorkerMeta(label: s.words, color: speaking, live: false, symbol: "hand.raised.fill")
-        case .done: return WorkerMeta(label: s.words, color: acting, live: false, symbol: "checkmark.circle.fill")
-        case .failed: return WorkerMeta(label: s.words, color: error, live: false, symbol: "xmark.octagon.fill")
-        case .cancelled: return WorkerMeta(label: s.words, color: fg3, live: false, symbol: "slash.circle.fill")
-        }
-    }
-
-    /// The lane's word on a worker's mono meta line: "background" (Apple events, browser,
-    /// files, shell, web — the pointer is never its) or "screen" (waits for the pointer).
-    static func lane(_ l: WorkerLane) -> String { l.rawValue }
-    /// A thread's lane: "voice" (the main conversation), "screen", "background".
+    /// A thread's lane on its mono meta line: "voice" (the main conversation), "screen" (waits
+    /// for the pointer) or "background" (Apple events, browser, files, shell, web — the pointer
+    /// is never its).
     static func lane(_ l: ThreadLane) -> String { l.rawValue }
 
     struct ThreadMeta: Equatable {
@@ -206,8 +180,8 @@ enum ConsoleTheme {
         let symbol: String
     }
 
-    /// A thread's status as one glyph, the same set the worker rows used so the rail reads as
-    /// before: a still grey dot for the idle main, a pulsing dot while it starts / thinks / acts
+    /// A thread's status as one glyph on the rail row, the card's chip and the pane's header:
+    /// a still grey dot for the idle main, a pulsing dot while it starts / thinks / acts
     /// (the connecting grey, the thinking violet, the acting green), the hourglass while it waits
     /// for the screen, the raised hand while it waits for Kevin, the pause bars while paused, and
     /// the delegation's settled symbols once done, failed or stopped.
@@ -271,11 +245,12 @@ enum ConsoleTheme {
         let name: String
     }
 
-    /// ballad first (the default: the male voice with the British lean, Jarhead's Jarvis), then cedar and marin (earlier defaults), the rest alphabetical —
-    /// the order `voices` has always had, so a saved pick keeps its place in the menu.
+    /// The 22 GPT-Live-1 voices (mirror of VOICES): ballad first (the default — the male voice with
+    /// the British lean), then cedar and marin, the rest alphabetical, so a saved pick keeps its
+    /// place in the menu.
     static let voiceOptions: [VoiceOption] = [
         VoiceOption(id: "ballad", name: "Ballad"), VoiceOption(id: "cedar", name: "Cedar"), VoiceOption(id: "marin", name: "Marin"),
-        VoiceOption(id: "alloy", name: "Alloy"), VoiceOption(id: "ash", name: "Ash"), VoiceOption(id: "ballad", name: "Ballad"),
+        VoiceOption(id: "alloy", name: "Alloy"), VoiceOption(id: "ash", name: "Ash"),
         VoiceOption(id: "beacon", name: "Beacon"), VoiceOption(id: "bossa", name: "Bossa"), VoiceOption(id: "cinder", name: "Cinder"),
         VoiceOption(id: "coral", name: "Coral"), VoiceOption(id: "delta", name: "Delta"), VoiceOption(id: "echo", name: "Echo"),
         VoiceOption(id: "gleam", name: "Gleam"), VoiceOption(id: "meridian", name: "Meridian"), VoiceOption(id: "quartz", name: "Quartz"),
@@ -415,7 +390,7 @@ enum ConsoleTheme {
     /// (WakeGate.listens(in:)); anywhere else the voice engine has it and the gate rests.
     static func gateRests(_ phase: Phase) -> Bool { phase != .asleep && phase != .error && phase != .paused }
 
-    // MARK: typed problems (Snapshot.problemsTyped) — one solid symbol per kind
+    // MARK: problems (Snapshot.problems) — one solid symbol per kind
 
     /// The Problems section's glyph for a `ProblemKind`; the triangle for one it does not know.
     static func problemSymbol(_ kind: String) -> String {
@@ -471,7 +446,6 @@ extension EngineCommand {
             return nil
         }
         switch type {
-        case "wake": self = .wake
         case "sleep":
             // With a cause the ledger records it ("dock", "command"); without, today's bare sleep.
             if let cause = str("cause"), !cause.isEmpty { self = .sleepCause(cause) } else { self = .sleep }
@@ -502,10 +476,6 @@ extension EngineCommand {
         case "agent.hide":
             guard let id = str("agentId") else { return nil }
             self = .agentHide(agentId: id, hidden: bool("hidden") ?? true)
-        case "worker.stop":
-            // One worker, never the transport: the session stays open.
-            guard let id = str("workerId"), !id.isEmpty else { return nil }
-            self = .workerStop(workerId: id)
         case "thread.stop":
             // One thread, never the transport: the session and the other threads stay.
             guard let id = str("threadId"), !id.isEmpty else { return nil }
@@ -675,13 +645,6 @@ enum ConsoleFormat {
     /// The Trash row: "3 days · 129 MB"; "empty" when nothing is there.
     static func trashLine(_ t: TrashInfo) -> String {
         t.days <= 0 && t.bytes <= 0 ? "empty" : "\(days(t.days)) · \(bytes(t.bytes))"
-    }
-
-    /// A worker's mono meta: "00:03 · background" — how long it has had its hands on the
-    /// work (ticking while it runs, frozen at `doneAt` after) and its lane.
-    static func workerMeta(_ w: Worker, now: Double) -> String {
-        let end = w.doneAt ?? now
-        return "\(duration(max(0, end - w.startedAt) / 1000)) · \(ConsoleTheme.lane(w.lane))"
     }
 
     /// A thread's mono meta: "00:12 · screen · 7 steps" — how long it has run (ticking while
@@ -883,28 +846,6 @@ struct ConsoleDelegationGlyph: View {
 
     var body: some View {
         let meta = ConsoleTheme.delegation(status)
-        ZStack {
-            if meta.live {
-                ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)
-            } else {
-                ConsoleIcon(name: meta.symbol, tint: meta.color).transition(.opacity)
-            }
-        }
-        .frame(width: 20, height: 20)
-        .animation(Motion.fade, value: status)
-        .help(meta.label)
-        .accessibilityLabel(meta.label)
-    }
-}
-
-/// A worker's status as one glyph on the icon column: a pulsing dot while it works, a solid
-/// symbol while it waits (the hourglass, the raised hand) and once it settles; the two
-/// crossfade as the status turns, so a hand finishing never cuts.
-struct ConsoleWorkerGlyph: View {
-    let status: WorkerStatus
-
-    var body: some View {
-        let meta = ConsoleTheme.worker(status)
         ZStack {
             if meta.live {
                 ConsoleDot(color: meta.color, live: true, size: 7).transition(.opacity)

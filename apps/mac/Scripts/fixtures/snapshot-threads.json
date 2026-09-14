@@ -139,23 +139,43 @@
         "orbHome": "notch",
         "ledgerRetentionDays": 0,
         "shotsRetentionDays": 14,
-        "workers": true,
+        "threads": true,
         "language": "en",
         "accent": "american",
         "memory": true,
         "observe": true,
-        "replayFinish": false,
         "typedWakes": false,
         "threadOverflow": "supersede",
         "warmThreads": 2
       },
       "permissions": {
-        "microphone": "granted",
-        "screenRecording": "granted",
-        "accessibility": "granted"
+        "all": [
+          {"kind": "microphone", "grant": "granted", "ask": "prompt", "required": true, "label": "Microphone", "why": "The voice hears you.", "checkedAt": 1789243199000},
+          {"kind": "speechRecognition", "grant": "granted", "ask": "prompt", "required": true, "label": "Speech Recognition", "why": "The wake word is heard on-device.", "checkedAt": 1789243199000},
+          {"kind": "screenRecording", "grant": "granted", "ask": "settings", "required": true, "label": "Screen Recording", "why": "The hands see the screen.", "checkedAt": 1789243199000},
+          {"kind": "accessibility", "grant": "granted", "ask": "settings", "required": true, "label": "Accessibility", "why": "The hands click and type.", "checkedAt": 1789243199000},
+          {"kind": "inputMonitoring", "grant": "unknown", "ask": "settings", "required": false, "label": "Input Monitoring", "why": "Hotkeys while another app is up.", "checkedAt": 1789243199000},
+          {"kind": "automation", "grant": "granted", "ask": "perApp", "required": false, "label": "Automation", "why": "Apple events drive other apps.", "detail": "granted: Spotify, Slack, System Events \u00b7 5 not running", "checkedAt": 1789243199000},
+          {"kind": "fullDiskAccess", "grant": "denied", "ask": "settings", "required": false, "label": "Full Disk Access", "why": "Files outside your folders.", "checkedAt": 1789243199000},
+          {"kind": "notifications", "grant": "granted", "ask": "prompt", "required": false, "label": "Notifications", "why": "A word when something finishes.", "checkedAt": 1789243199000},
+          {"kind": "camera", "grant": "unknown", "ask": "prompt", "required": false, "label": "Camera", "why": "Only when you ask.", "checkedAt": 1789243199000},
+          {"kind": "contacts", "grant": "unknown", "ask": "prompt", "required": false, "label": "Contacts", "why": "Names and addresses on request.", "checkedAt": 1789243199000},
+          {"kind": "calendars", "grant": "granted", "ask": "prompt", "required": false, "label": "Calendars", "why": "Events on request.", "checkedAt": 1789243199000},
+          {"kind": "reminders", "grant": "unknown", "ask": "prompt", "required": false, "label": "Reminders", "why": "Reminders on request.", "checkedAt": 1789243199000},
+          {"kind": "localNetwork", "grant": "unknown", "ask": "prompt", "required": false, "label": "Local Network", "why": "Devices on your network.", "checkedAt": 1789243199000},
+          {"kind": "filesDesktop", "grant": "granted", "ask": "prompt", "required": false, "label": "Desktop", "why": "Files on the Desktop.", "checkedAt": 1789243199000},
+          {"kind": "filesDocuments", "grant": "unknown", "ask": "prompt", "required": false, "label": "Documents", "why": "Files in Documents.", "checkedAt": 1789243199000},
+          {"kind": "filesDownloads", "grant": "granted", "ask": "prompt", "required": false, "label": "Downloads", "why": "Files in Downloads.", "checkedAt": 1789243199000}
+        ]
       },
-      "problems": [],
-      "problemsTyped": [],
+      "problems": [
+        {
+          "kind": "permission.fullDiskAccess",
+          "text": "Full Disk Access not granted: files outside Desktop, Documents and Downloads are out of reach.",
+          "remedy": { "label": "Open pane", "command": { "type": "request-permission", "which": "fullDiskAccess" } },
+          "since": 1789243190000
+        }
+      ],
       "brainReady": true,
       "handsReady": true,
       "setup": {
@@ -958,6 +978,25 @@
         "sessionId": "sess_d92e1a",
         "reason": "sleep:said",
         "usageSeconds": 61
+      },
+      {
+        "at": 1789243262750,
+        "type": "delegation.step",
+        "delegationId": "dl_61f0",
+        "step": { "id": "st_34", "at": 1789243262750, "kind": "note", "text": "Spotify: playing Focus.", "thread": "Spotify" }
+      },
+      { "at": 1789243262800, "type": "worker", "worker": { "id": "w_old", "name": "Spotify", "delegationId": "dlg_old", "task": "play the playlist Focus — a row as day files before 2026-09-13 hold it", "lane": "background", "status": "working", "startedAt": 1789243262500, "steps": 1 } },
+      {
+        "at": 1789243262900,
+        "type": "delegation.step",
+        "delegationId": "dlg_old",
+        "step": { "id": "s_old", "at": 1789243262900, "kind": "note", "text": "playing Focus — a step as day files before 2026-09-13 hold it", "worker": "Spotify" }
+      },
+      {
+        "at": 1789243263000,
+        "type": "session.started",
+        "sessionId": "live_old",
+        "voice": "cedar"
       }
     ]
   },
@@ -1011,23 +1050,36 @@
         "orbHome": "notch",
         "ledgerRetentionDays": 0,
         "shotsRetentionDays": 14,
-        "workers": true,
+        "threads": true,
         "language": "en",
         "accent": "american",
         "memory": true,
         "observe": true,
-        "replayFinish": false,
         "typedWakes": false,
         "threadOverflow": "supersede",
         "warmThreads": 2
       },
       "permissions": {
-        "microphone": "granted",
-        "screenRecording": "granted",
-        "accessibility": "granted"
+        "all": [
+          {"kind": "microphone", "grant": "granted", "ask": "prompt", "required": true, "label": "Microphone", "why": "The voice hears you.", "checkedAt": 1789243262000},
+          {"kind": "speechRecognition", "grant": "granted", "ask": "prompt", "required": true, "label": "Speech Recognition", "why": "The wake word is heard on-device.", "checkedAt": 1789243262000},
+          {"kind": "screenRecording", "grant": "granted", "ask": "settings", "required": true, "label": "Screen Recording", "why": "The hands see the screen.", "checkedAt": 1789243262000},
+          {"kind": "accessibility", "grant": "granted", "ask": "settings", "required": true, "label": "Accessibility", "why": "The hands click and type.", "checkedAt": 1789243262000},
+          {"kind": "inputMonitoring", "grant": "unknown", "ask": "settings", "required": false, "label": "Input Monitoring", "why": "Hotkeys while another app is up.", "checkedAt": 1789243262000},
+          {"kind": "automation", "grant": "granted", "ask": "perApp", "required": false, "label": "Automation", "why": "Apple events drive other apps.", "detail": "granted: Spotify, Slack, System Events \u00b7 5 not running", "checkedAt": 1789243262000},
+          {"kind": "fullDiskAccess", "grant": "denied", "ask": "settings", "required": false, "label": "Full Disk Access", "why": "Files outside your folders.", "checkedAt": 1789243262000},
+          {"kind": "notifications", "grant": "granted", "ask": "prompt", "required": false, "label": "Notifications", "why": "A word when something finishes.", "checkedAt": 1789243262000},
+          {"kind": "camera", "grant": "unknown", "ask": "prompt", "required": false, "label": "Camera", "why": "Only when you ask.", "checkedAt": 1789243262000},
+          {"kind": "contacts", "grant": "unknown", "ask": "prompt", "required": false, "label": "Contacts", "why": "Names and addresses on request.", "checkedAt": 1789243262000},
+          {"kind": "calendars", "grant": "granted", "ask": "prompt", "required": false, "label": "Calendars", "why": "Events on request.", "checkedAt": 1789243262000},
+          {"kind": "reminders", "grant": "unknown", "ask": "prompt", "required": false, "label": "Reminders", "why": "Reminders on request.", "checkedAt": 1789243262000},
+          {"kind": "localNetwork", "grant": "unknown", "ask": "prompt", "required": false, "label": "Local Network", "why": "Devices on your network.", "checkedAt": 1789243262000},
+          {"kind": "filesDesktop", "grant": "granted", "ask": "prompt", "required": false, "label": "Desktop", "why": "Files on the Desktop.", "checkedAt": 1789243262000},
+          {"kind": "filesDocuments", "grant": "unknown", "ask": "prompt", "required": false, "label": "Documents", "why": "Files in Documents.", "checkedAt": 1789243262000},
+          {"kind": "filesDownloads", "grant": "granted", "ask": "prompt", "required": false, "label": "Downloads", "why": "Files in Downloads.", "checkedAt": 1789243262000}
+        ]
       },
       "problems": [],
-      "problemsTyped": [],
       "brainReady": true,
       "handsReady": true,
       "setup": {

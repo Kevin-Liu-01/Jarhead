@@ -252,9 +252,8 @@ final class EngineClient: @unchecked Sendable {
 
     // MARK: the daemon row
 
-    /// On `net`. The last snapshot, republished with one typed problem on top: `daemon`, with
-    /// "Restart daemon" as its remedy. `problems` (the plain list older surfaces read) gets
-    /// the same line. Every utterance is sealed first: nothing is being typed by a daemon
+    /// On `net`. The last snapshot, republished with one problem on top: `daemon`, with
+    /// "Restart daemon" as its remedy. Every utterance is sealed first: nothing is being typed by a daemon
     /// that is gone, and a `final: false` item would keep its caret blinking for the whole
     /// outage (the last snapshot is all this client has; the engine's settle never runs).
     /// The daemon's next snapshot replaces the whole thing, row included.
@@ -263,12 +262,11 @@ final class EngineClient: @unchecked Sendable {
         onMain { st in
             var s = st.snapshot.finalisingTranscript()
             let text = EngineClient.daemonProblemText
-            s.problems = s.problems.filter { $0 != text } + [text]
-            var typed = (s.problemsTyped ?? []).filter { $0.kind != "daemon" }
-            typed.append(Problem(kind: "daemon", text: text,
-                                 remedy: ProblemRemedy(label: "Restart daemon", command: ["type": .string("daemon.restart")], open: nil),
-                                 since: sinceMs))
-            s.problemsTyped = typed
+            var problems = s.problems.filter { $0.kind != "daemon" }
+            problems.append(Problem(kind: "daemon", text: text,
+                                    remedy: ProblemRemedy(label: "Restart daemon", command: ["type": .string("daemon.restart")], open: nil),
+                                    since: sinceMs))
+            s.problems = problems
             st.snapshot = s
         }
     }
@@ -514,16 +512,15 @@ final class EngineClient: @unchecked Sendable {
     // MARK: - search
 
     /// Full-text hits over the live ledger for the Console's search box (`ledger.search`,
-    /// answered with `ledger.hits`). nil when nothing answers — a daemon from before the
-    /// message runs into the request timeout — so the rail can say so instead of "no hits".
+    /// answered with `ledger.hits`). nil when nothing answers — a disconnect, or the request
+    /// timeout — so the rail can say so instead of "no hits".
     func ledgerSearch(query: String, limit: Int = 50) async -> [LedgerHit]? {
         let any = await request(["type": "ledger.search", "query": query, "limit": limit])
         guard let list = any as? [Any] else { return nil }
         return list.compactMap { ($0 as? [String: Any]).flatMap(LedgerHit.init(json:)) }
     }
 
-    /// One request → one answer by id, or nil after `timeout` (the daemon ignores a message
-    /// type it does not know, so an older daemon shows up as a timeout) or on a disconnect.
+    /// One request → one answer by id, or nil after `timeout` or on a disconnect.
     private func request(_ message: [String: Any], timeout: TimeInterval = EngineClient.ledgerTimeout) async -> Any? {
         await withCheckedContinuation { (cont: CheckedContinuation<Any?, Never>) in
             net.async {
@@ -721,8 +718,7 @@ final class EngineClient: @unchecked Sendable {
             self.lastSnapshotPublish = .now()
             guard let s = self.pendingSnapshot else { return }
             self.pendingSnapshot = nil
-            // The snapshot's thread summaries merge into AppState.threads beside the events
-            // (a daemon without `threads` sends nil and touches nothing there).
+            // The snapshot's thread summaries merge into AppState.threads beside the events.
             self.onMain { st in
                 st.snapshot = s
                 st.applySnapshotThreads(s.threads)

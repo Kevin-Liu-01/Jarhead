@@ -9,7 +9,6 @@ import Carbon
 ///   ⌥⎋       stop (AppState.transportStop: close the session, sleep)
 ///   ⌥⇧Space  go / pause (AppState.transportToggle: wake or resume · pause)
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
-///   ⌥⇧P      alias of ⌥⇧Space (the old pause key; the same toggle)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -18,8 +17,6 @@ final class Hotkeys {
         case stop = 3
         case transportToggle = 4
         case markScreen = 5
-        /// ⌥⇧P: kept registered as a second key for the same Go/Pause toggle.
-        case transportToggleAlias = 6
 
         var keyCode: UInt32 {
             switch self {
@@ -28,13 +25,12 @@ final class Hotkeys {
             case .stop: return UInt32(kVK_Escape)
             case .transportToggle: return UInt32(kVK_Space)
             case .markScreen: return UInt32(kVK_ANSI_C)
-            case .transportToggleAlias: return UInt32(kVK_ANSI_P)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .transportToggle, .markScreen, .transportToggleAlias: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .transportToggle, .markScreen: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -47,7 +43,6 @@ final class Hotkeys {
             case .stop: return ("\u{1b}", [.option])
             case .transportToggle: return (" ", [.option, .shift])
             case .markScreen: return ("c", [.option, .shift])
-            case .transportToggleAlias: return ("p", [.option, .shift])
             }
         }
     }

@@ -383,8 +383,7 @@ public final class OrbPanelController {
         trail = BlobTrail(size: c)
         sim.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-        // The capsule's Go/Pause is the transport's (`transportToggle`); the retired
-        // toggleAwake / togglePause closures are left at their defaults.
+        // The capsule's Go/Pause is the transport's (`transportToggle`).
         capsuleHost.rootView = OrbCapsuleView(model: capsuleModel, actions: OrbCapsuleActions(
             transportToggle: { [weak self] in self?.state.transportToggle() },
             toggleMute: { [weak self] in self?.toggleMute() },
@@ -567,8 +566,8 @@ public final class OrbPanelController {
             }
             .store(in: &cancellables)
         // The first real snapshot: the settings are the daemon's now, and the home can
-        // be decided — whatever `orbHome` says, even nothing (an older daemon), which
-        // the sink above would not see as a change from the empty snapshot's nil.
+        // be decided — even when `orbHome` says what the empty snapshot already carried,
+        // which the sink above would not see as a change.
         // `connected` is not that moment: it flips before the first snapshot arrives.
         state.$snapshot
             .filter { $0 != .empty }
@@ -643,7 +642,7 @@ public final class OrbPanelController {
         // one's words (the app's "Stopped", then the engine's "stopped" a moment later)
         // does not flip the pill.
         Publishers.CombineLatest4(
-            state.$snapshot.map(\.problems.first).removeDuplicates(),
+            state.$snapshot.map { $0.problems.first?.text }.removeDuplicates(),
             gatePill.removeDuplicates(),
             homePill.removeDuplicates(),
             state.$toasts.map(\.last).removeDuplicates { a, b in
@@ -2279,7 +2278,7 @@ public final class OrbPanelController {
         menu.addItem(go)
         // The wake word gate, while asleep: what it is doing (the status menu's row).
         if !awake {
-            let ws = state.snapshot.settings.wakeSettings
+            let ws = state.snapshot.settings.wake
             let gate = menuTarget.item(OrbStyle.gateLabel(state.wakeGate, phrases: ws.phrases, auth: ws.auth), symbol: OrbStyle.gateSymbol(state.wakeGate)) {}
             gate.isEnabled = false
             menu.addItem(gate)

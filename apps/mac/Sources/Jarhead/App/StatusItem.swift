@@ -151,7 +151,7 @@ final class StatusItem: NSObject {
             menu.addItem(row)
         }
 
-        // Go / Pause: the transport's one button (⌥⇧Space; ⌥⇧P is the same toggle).
+        // Go / Pause: the transport's one button (⌥⇧Space).
         let look = AppState.transportLabel(for: phase)
         let transport = NSMenuItem(title: StatusItem.transportTitle(for: phase), action: #selector(doTransportToggle), keyEquivalent: " ")
         transport.keyEquivalentModifierMask = [.option, .shift]
@@ -163,8 +163,8 @@ final class StatusItem: NSObject {
 
         // The wake word gate, while the engine is dormant or paused: what it is doing and, if off, why.
         if WakeGate.listens(in: phase) {
-            let wakeSettings = state.snapshot.settings.wakeSettings
-            let gate = NSMenuItem(title: StatusItem.gateLabel(state.wakeGate, phrases: wakeSettings.phrases, auth: wakeSettings.auth, paused: paused), action: nil, keyEquivalent: "")
+            let wake = state.snapshot.settings.wake
+            let gate = NSMenuItem(title: StatusItem.gateLabel(state.wakeGate, phrases: wake.phrases, auth: wake.auth, paused: paused), action: nil, keyEquivalent: "")
             gate.isEnabled = false
             gate.image = StatusItem.symbol(StatusItem.gateSymbol(state.wakeGate))
             menu.addItem(gate)

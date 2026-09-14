@@ -19,8 +19,9 @@ import QuartzCore
 // `clingLength` of pull, then the patch lets go and it snaps to the hand. A corner
 // holds two patches, one per wall. Faster arrivals bounce, the hardest splat first.
 //
-// The squish maths is legacy/packages/app/contacts.js: half-plane walls for the work
-// area, closest-point-on-rect for windows, merged and capped at two.
+// The squish maths: the work area's edges are half-plane walls (the contact normal is
+// the wall's), a window is its closest point on the rect (the normal points from it to
+// the body's centre); the contacts are merged by normal and capped at two.
 
 // MARK: - Coordinate spaces
 
@@ -315,8 +316,8 @@ final class BlobBody {
     static let flyClearance: CGFloat = 36
     static let dragFraction = 0.25       // … and this deep while being pushed by hand
     static let restSpeed = 8.0
-    static let reach = 0.82              // contacts.js REACH
-    static let edgeSlop: CGFloat = 40    // main.js EDGE_SLOP: "near" an edge, for the lean
+    static let reach = 0.82              // how far past the surface a contact still counts
+    static let edgeSlop: CGFloat = 40    // "near" an edge, for the lean
 
     // Sticky borders (see `Adhesion`).
     /// Arriving at a wall slower than this (pt/s along the normal) sticks instead of bouncing.
@@ -1202,7 +1203,7 @@ final class BlobBody {
         leanY = (w.maxY - (center.y + half) <= Self.edgeSlop ? -1 : 0) + ((center.y - half) - w.minY <= Self.edgeSlop ? 1 : 0)
     }
 
-    // MARK: contacts (contacts.js)
+    // MARK: contacts
 
     /// Everything the blob is pressed against right now, strongest first, capped at
     /// two. A surface's contact carries the real distance from the centre to it, so

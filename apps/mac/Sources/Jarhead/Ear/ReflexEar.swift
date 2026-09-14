@@ -5,7 +5,7 @@ import Foundation
 /// The slice of the snapshot the ear reacts to.
 private struct EarInputs: Equatable {
     var phase: Phase
-    var reflexesOn: Bool
+    var reflexes: Bool
 }
 
 /// The slice of the snapshot's transcript the barge-in duck reacts to: Kevin's open
@@ -81,7 +81,7 @@ final class ReflexEar {
         self.state = state
         self.send = send
         listener = EarListener()
-        inputs = EarInputs(phase: state.snapshot.phase, reflexesOn: state.snapshot.settings.reflexesOn)
+        inputs = EarInputs(phase: state.snapshot.phase, reflexes: state.snapshot.settings.reflexes)
         connected = state.connected
         enabledByEnvironment = ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] != "1"
 
@@ -105,7 +105,7 @@ final class ReflexEar {
         })
 
         state.$snapshot
-            .map { (s: Snapshot) -> EarInputs in EarInputs(phase: s.phase, reflexesOn: s.settings.reflexesOn) }
+            .map { (s: Snapshot) -> EarInputs in EarInputs(phase: s.phase, reflexes: s.settings.reflexes) }
             .removeDuplicates()
             .sink { [weak self] (inputs: EarInputs) in
                 MainActor.assumeIsolated {
@@ -171,7 +171,7 @@ final class ReflexEar {
         if !enabledByEnvironment { return setOff("audio disabled (JARHEAD_NO_AUDIO)") }
         if !voiceAudioActive { return setOff("voice audio not running") } // asleep: the wake listener owns the mic
         if !connected { return setOff("daemon not connected") }
-        if !inputs.reflexesOn { return setOff("reflexes off") }
+        if !inputs.reflexes { return setOff("reflexes off") }
         switch inputs.phase {
         case .paused: return setOff("paused")
         case .muted: return setOff("muted")

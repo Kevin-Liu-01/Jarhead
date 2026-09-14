@@ -4,7 +4,7 @@
 # scenario: live | confirm | empty | settings | wake-locked | ledger | light |
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
-#           search | search-hit | problems | cleared | workers | loading | wipe | timing |
+#           search | search-hit | problems | cleared | loading | wipe | timing |
 #           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending (default live)
 #   The Threads pass: `threads` is Jarhead's threads (Snapshot.threads → AppState.threads) — the main
 #   thread idle, Spotify acting (background), Slack waiting on Kevin (screen) with its question, Notes
@@ -63,12 +63,8 @@
 #   the dithered skeletons are what a shot shows (`conversation` → preview-console-skeleton.png).
 #   PREVIEW_ACTION=probe-ground@1.5 prints the distinct colours of three blocks of the window's
 #   ground (top-left: ink only; bottom-right: the whisper; bottom-middle: the raised step).
-#   `workers` is the split: three hands under one running delegation (Snapshot.workers) — the
-#   Now tab's Workers section (status glyph, name, Stop, elapsed · lane, the last line), the
-#   delegation card's chips and the [Name] tag on a worker's steps; `ledger` and `jarhead-log`
-#   carry the `worker` rows (the stream: a hand's first "working" and its end; the log: every row)
-#   and the `sleep` row ("asleep · idle", "asleep · said “…”"). Its default actions print the
-#   `check:` pins into .build/console-preview/run.log and Spotify's Stop as `send: worker.stop`.
+#   `ledger` and `jarhead-log` carry the `sleep` row ("asleep · idle", "asleep · said “…”"); the
+#   `threads` scenario's default actions print the sleep-word `check:` pins (check-sleep) too.
 #   The cleanup scenarios: `cleanup` is the rail with a pinned chain above the days, "Archived (2)"
 #   folded, "Trash (2)" open with Restore on each row and the folder on its head, and the Agents
 #   section's "Hidden (1)" open; `cleanup-select` adds two ⌘-picked chains and the strip under the
@@ -108,6 +104,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SCENARIO="${1:-live}"
 OUT="${2:-}"
+case "$SCENARIO" in
+  live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending) ;;
+  *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
+esac
 BUILD=".build/console-preview"
 mkdir -p "$BUILD"
 # PREVIEW_SKIP_BUILD=1 reuses the last binary (a run of several scenarios compiles once).
@@ -117,7 +117,7 @@ if [[ "${PREVIEW_SKIP_BUILD:-}" != "1" || ! -x "$BUILD/console-preview" ]]; then
     Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
 fi
 export PREVIEW_SCENARIO="$SCENARIO"
-export PREVIEW_STATE_DIR="${PREVIEW_STATE_DIR:-$(cd Scripts/mock && pwd)}"
+export PREVIEW_STATE_DIR="${PREVIEW_STATE_DIR:-$(cd Scripts/fixtures && pwd)}"
 export PREVIEW_SHOT_PNG="${PREVIEW_SHOT_PNG:-preview-orb-expanded.png}"
 # Where a `shot:<name>` action writes: next to out.png (Resources when there is none).
 export PREVIEW_OUT_DIR="${PREVIEW_OUT_DIR:-$(cd "$(dirname "${OUT:-Resources/x.png}")" && pwd)}"

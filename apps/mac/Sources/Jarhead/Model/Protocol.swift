@@ -65,48 +65,8 @@ public struct DelegationStep: Codable, Identifiable, Equatable {
     public var text: String?
     public var tool: ToolStep?
     public var screenshotPath: String?
-    /// The worker's name when one of the delegation's workers ran this step.
-    public var worker: String?
-}
-
-// MARK: - Workers: a second pair of hands inside one delegation (mirror of Worker).
-
-public enum WorkerLane: String, Codable, Equatable, Sendable {
-    case background, screen
-    public init(from decoder: Decoder) throws {
-        self = WorkerLane(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .background
-    }
-}
-
-public enum WorkerStatus: String, Codable, Equatable, Sendable {
-    case starting, working, done, failed, cancelled
-    case waitingScreen = "waiting-screen"
-    case awaitingConfirmation = "awaiting-confirmation"
-    public init(from decoder: Decoder) throws {
-        self = WorkerStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .working
-    }
-    /// Still alive: not done, failed or cancelled.
-    public var isRunning: Bool {
-        switch self {
-        case .starting, .working, .waitingScreen, .awaitingConfirmation: return true
-        case .done, .failed, .cancelled: return false
-        }
-    }
-}
-
-public struct Worker: Codable, Identifiable, Equatable, Sendable {
-    public var id: String
-    /// Spoken as-is ("Spotify").
-    public var name: String
-    public var delegationId: String
-    public var task: String
-    public var lane: WorkerLane
-    public var status: WorkerStatus
-    public var detail: String?
-    public var startedAt: Double
-    public var doneAt: Double?
-    public var steps: Int
-    public var app: String?
+    /// The spawned thread's name when it ran this step on its parent's timeline; nil: main's.
+    public var thread: String?
 }
 
 // MARK: - Threads: independent lines of work, each as capable as the main conversation (mirror of Thread).
@@ -547,42 +507,40 @@ public struct Settings: Codable, Equatable {
     /// openai-compatible only: the Chat Completions server.
     public var brainBaseUrl: String?
     public var effort: String
+    /// First-run onboarding finished (keys, brain, permissions, wake word).
+    public var onboarded: Bool
+    /// getUserMedia deviceId; nil = the system default.
     public var micDeviceId: String?
     public var idleSleepMinutes: Double
+    /// Start listening on launch (ignored while the wake word gate is enabled).
     public var autoWake: Bool
+    /// Where the Orb sits, saved across launches.
     public var orbPosition: OrbPosition?
-    /// Optional on the wire so a daemon from before the gate existed still decodes.
-    public var wake: WakeSettings?
-    /// First-run onboarding finished. Optional on the wire for the same reason.
-    public var onboarded: Bool?
-    /// Reflexes: act on unambiguous spoken commands without the model.
-    public var reflexes: Bool?
+    public var wake: WakeSettings
+    /// Act on unambiguous spoken commands without the model (the 250 ms path).
+    public var reflexes: Bool
     /// "free" (float where it last worked) or "notch" (live in the MacBook notch).
-    public var orbHome: String?
-    /// Retention: days before a day's ledger / shots move to the trash (0 = never). Optional on the wire.
-    public var ledgerRetentionDays: Int?
-    public var shotsRetentionDays: Int?
-    /// Workers: let the brain split independent work across a second pair of hands. Optional on the wire.
-    public var workers: Bool?
-    /// The language the voice speaks ("en"), how the English sounds (american | british | none), and durable memory. Optional on the wire.
-    public var language: String?
-    public var accent: String?
-    public var memory: Bool?
-    /// Observation lines on acting tools; typed-while-asleep wakes; thread overflow rule; warm thread processes. Optional on the wire.
-    public var observe: Bool?
-    public var replayFinish: Bool?
-    public var typedWakes: Bool?
-    public var threadOverflow: String?
-    public var warmThreads: Int?
+    public var orbHome: String
+    /// Retention: days before a day's ledger / shots move to the trash (0 = never).
+    public var ledgerRetentionDays: Int
+    public var shotsRetentionDays: Int
+    /// Let the brain split independent work across threads.
+    public var threads: Bool
+    /// The language the voice speaks ("en") and how the English sounds (american | british | none).
+    public var language: String
+    public var accent: String
+    /// Durable memory of Kevin across sessions.
+    public var memory: Bool
+    /// Every acting tool answers with what is now in front (the observation line).
+    public var observe: Bool
+    /// A typed line while asleep wakes Jarhead (opens a paid session).
+    public var typedWakes: Bool
+    /// A new request naming an unclaimed app while main has acted: "supersede" or "spawn".
+    public var threadOverflow: String
+    /// Warm codex app-server processes kept ready for threads (0..3).
+    public var warmThreads: Int
 
-    public var languageTag: String { language ?? "en" }
-    public var accentKind: String { accent ?? "american" }
-    public var memoryOn: Bool { memory ?? true }
-    public var workersOn: Bool { workers ?? true }
-    public var wakeSettings: WakeSettings { wake ?? .standard }
-    public var isOnboarded: Bool { onboarded ?? false }
-    public var reflexesOn: Bool { reflexes ?? true }
-    public var livesInNotch: Bool { (orbHome ?? "notch") == "notch" }
+    public var livesInNotch: Bool { orbHome == "notch" }
 }
 
 /// Configuration health without secrets: key presence and the last probe.
@@ -653,17 +611,14 @@ public struct PermissionInfo: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Every permission as the app last read it (the process TCC keys on); one row per kind.
 public struct Permissions: Codable, Equatable {
-    public var microphone: Grant
-    public var screenRecording: Grant
-    public var accessibility: Grant
-    /// The whole list as the app last read it; optional on the wire for older daemons.
-    public var all: [PermissionInfo]?
-    public init(microphone: Grant, screenRecording: Grant, accessibility: Grant, all: [PermissionInfo]? = nil) {
-        self.microphone = microphone; self.screenRecording = screenRecording; self.accessibility = accessibility; self.all = all
-    }
+    public var all: [PermissionInfo]
+    public init(all: [PermissionInfo]) { self.all = all }
+    /// The grant a row records for `kind`; `.unknown` when no row has been read yet.
+    public func grant(_ kind: PermissionKind) -> Grant { all.first { $0.kind == kind }?.grant ?? .unknown }
     /// Required permissions that are not granted, by kind.
-    public var missingRequired: [PermissionKind] { (all ?? []).filter { $0.required && $0.grant != .granted }.map(\.kind) }
+    public var missingRequired: [PermissionKind] { all.filter { $0.required && $0.grant != .granted }.map(\.kind) }
 }
 
 public struct AudioLevels: Codable, Equatable {
@@ -768,41 +723,36 @@ public struct Snapshot: Codable, Equatable {
     public var connectors: [ConnectorHealth]
     public var settings: Settings
     public var permissions: Permissions
-    public var problems: [String]
+    /// Most recent problems, newest last: what kind, one line, and the one action that fixes it.
+    public var problems: [Problem]
     public var brainReady: Bool
     public var handsReady: Bool
-    /// Optional on the wire for older daemons.
-    public var setup: SetupStatus?
-    public var marks: [ScreenMark]?
+    public var setup: SetupStatus
+    /// Regions Kevin circled, newest last.
+    public var marks: [ScreenMark]
     /// While paused: which session the pause closed and when the pause decays to sleep.
     public var pause: PauseInfo?
-    /// Today's billed seconds (for the meter). Optional on the wire for older daemons.
+    /// Today's billed seconds (for the meter); optional in the contract.
     public var usageToday: UsageToday?
-    /// The problems with their remedies; `problems` (plain text) is the same list for older surfaces.
-    public var problemsTyped: [Problem]?
     public var trash: TrashInfo?
     public var hiddenAgents: [String]?
-    /// The delegation's workers (running, and finished within the last half minute). Optional on the wire.
-    public var workers: [Worker]?
-    /// What Jarhead remembers about Kevin (counts, mode, the last run). Optional on the wire.
+    /// What Jarhead remembers about Kevin (counts, mode, the last run); optional in the contract.
     public var memory: MemorySummary?
-    /// Live threads (main first) and those finished within the linger. Optional on the wire.
-    public var threads: [WorkThread]?
+    /// Every live thread (main first) and those finished within the linger.
+    public var threads: [WorkThread]
 
-    public var allThreads: [WorkThread] { threads ?? [] }
-    public var liveThreads: [WorkThread] { allThreads.filter { $0.status.isLive } }
+    public var liveThreads: [WorkThread] { threads.filter { $0.status.isLive } }
     public var spawnedLiveThreads: [WorkThread] { liveThreads.filter { $0.id != "main" } }
 
-    public var allWorkers: [Worker] { workers ?? [] }
-    public var runningWorkers: [Worker] { allWorkers.filter { $0.status.isRunning } }
-    public var setupStatus: SetupStatus { setup ?? .unknown }
-    public var screenMarks: [ScreenMark] { marks ?? [] }
-
+    /// The contract's DEFAULT_SETTINGS, no session, nothing read yet.
     public static let empty = Snapshot(
         phase: .asleep, session: nil, transcript: [], delegations: [], agents: [], connectors: [],
-        settings: Settings(voice: "cedar", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", micDeviceId: nil, idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, onboarded: nil, reflexes: nil, orbHome: nil),
-        permissions: Permissions(microphone: .unknown, screenRecording: .unknown, accessibility: .unknown),
-        problems: [], brainReady: false, handsReady: false, setup: nil, marks: [], pause: nil, usageToday: nil)
+        settings: Settings(voice: "ballad", brain: .auto, brainModel: "", brainBaseUrl: nil, effort: "medium", onboarded: false, micDeviceId: nil,
+                           idleSleepMinutes: 10, autoWake: true, orbPosition: nil, wake: .standard, reflexes: true, orbHome: "notch",
+                           ledgerRetentionDays: 0, shotsRetentionDays: 14, threads: true, language: "en", accent: "british", memory: true,
+                           observe: true, typedWakes: false, threadOverflow: "supersede", warmThreads: 2),
+        permissions: Permissions(all: []),
+        problems: [], brainReady: false, handsReady: false, setup: .unknown, marks: [], pause: nil, usageToday: nil, threads: [])
 }
 
 // MARK: - Commands (app → engine). Encoded as {"type": ..., ...} exactly like EngineCommand.
@@ -811,7 +761,7 @@ public enum EngineCommand: Equatable {
     /// `stop` is the transport's stop: interrupt everything, close the session (the meter
     /// stops), sleep. `go` is its one button: wake when asleep, resume when paused.
     /// `interrupt` cancels the current work and speech but stays awake (a spoken "stop").
-    case wake, sleep, mute, unmute, stop, go
+    case sleep, mute, unmute, stop, go
     /// Sleep with a cause the ledger records ("dock" when the blob is dropped into the notch).
     case sleepCause(String)
     case interrupt(how: String)
@@ -865,8 +815,6 @@ public enum EngineCommand: Equatable {
     case ledgerRestoreDay(day: String)
     case ledgerSweep
     case agentHide(agentId: String, hidden: Bool)
-    /// Stop one worker from its Console row; the others and the session carry on.
-    case workerStop(workerId: String)
     case problemRetry(kind: String)
     case openConsole, openLedger
     case requestPermission(String)
@@ -877,7 +825,6 @@ public enum EngineCommand: Equatable {
 
     public var json: [String: Any] {
         switch self {
-        case .wake: return ["type": "wake"]
         case .sleep: return ["type": "sleep"]
         case .sleepCause(let cause): return ["type": "sleep", "cause": cause]
         case .mute: return ["type": "mute"]
@@ -941,7 +888,6 @@ public enum EngineCommand: Equatable {
         case .ledgerRestoreDay(let day): return ["type": "ledger.restore-day", "day": day]
         case .ledgerSweep: return ["type": "ledger.sweep"]
         case .agentHide(let id, let hidden): return ["type": "agent.hide", "agentId": id, "hidden": hidden]
-        case .workerStop(let id): return ["type": "worker.stop", "workerId": id]
         case .problemRetry(let kind): return ["type": "problem.retry", "kind": kind]
         case .openConsole: return ["type": "open-console"]
         case .openLedger: return ["type": "open-ledger"]
@@ -974,12 +920,11 @@ public struct SettingsPatch: Equatable {
     public var orbHome: String?
     public var ledgerRetentionDays: Int?
     public var shotsRetentionDays: Int?
-    public var workers: Bool?
+    public var threads: Bool?
     public var language: String?
     public var accent: String?
     public var memory: Bool?
     public var observe: Bool?
-    public var replayFinish: Bool?
     public var typedWakes: Bool?
     public var threadOverflow: String?
     public var warmThreads: Int?
@@ -987,18 +932,18 @@ public struct SettingsPatch: Equatable {
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
                 wake: WakeSettings? = nil, reflexes: Bool? = nil, orbHome: String? = nil,
-                workers: Bool? = nil, language: String? = nil, accent: String? = nil, memory: Bool? = nil) {
+                threads: Bool? = nil, language: String? = nil, accent: String? = nil, memory: Bool? = nil) {
         self.voice = voice; self.brain = brain; self.brainModel = brainModel; self.brainBaseUrl = brainBaseUrl; self.effort = effort
         self.onboarded = onboarded
         self.micDeviceId = micDeviceId; self.idleSleepMinutes = idleSleepMinutes; self.autoWake = autoWake; self.orbPosition = orbPosition
         self.wake = wake
         self.reflexes = reflexes; self.orbHome = orbHome
-        self.workers = workers; self.language = language; self.accent = accent; self.memory = memory
+        self.threads = threads; self.language = language; self.accent = accent; self.memory = memory
     }
 
     /// The thread knobs, set after init (rarely patched; Settings › Threads).
-    public mutating func setThreads(observe: Bool? = nil, replayFinish: Bool? = nil, typedWakes: Bool? = nil, threadOverflow: String? = nil, warmThreads: Int? = nil) {
-        self.observe = observe; self.replayFinish = replayFinish; self.typedWakes = typedWakes; self.threadOverflow = threadOverflow; self.warmThreads = warmThreads
+    public mutating func setThreads(observe: Bool? = nil, typedWakes: Bool? = nil, threadOverflow: String? = nil, warmThreads: Int? = nil) {
+        self.observe = observe; self.typedWakes = typedWakes; self.threadOverflow = threadOverflow; self.warmThreads = warmThreads
     }
 
     public var json: [String: Any] {
@@ -1018,12 +963,11 @@ public struct SettingsPatch: Equatable {
         if let v = orbHome { o["orbHome"] = v }
         if let v = ledgerRetentionDays { o["ledgerRetentionDays"] = v }
         if let v = shotsRetentionDays { o["shotsRetentionDays"] = v }
-        if let v = workers { o["workers"] = v }
+        if let v = threads { o["threads"] = v }
         if let v = language { o["language"] = v }
         if let v = accent { o["accent"] = v }
         if let v = memory { o["memory"] = v }
         if let v = observe { o["observe"] = v }
-        if let v = replayFinish { o["replayFinish"] = v }
         if let v = typedWakes { o["typedWakes"] = v }
         if let v = threadOverflow { o["threadOverflow"] = v }
         if let v = warmThreads { o["warmThreads"] = v }
@@ -1131,6 +1075,9 @@ public enum OverlayCommand: Equatable {
 }
 
 // MARK: - Ledger rows (loosely typed: the Console renders what it recognises).
+//
+// Rows from day files before 2026-09-13 may say `worker` (a row type, a step key): all-optional
+// columns and per-row decoding (EngineClient.decodeRows) skip them.
 
 public struct LedgerRow: Codable, Identifiable {
     public var at: Double
@@ -1144,6 +1091,10 @@ public struct LedgerRow: Codable, Identifiable {
     public var summary: String?
     public var text: String?
     public var sessionId: String?
+    /// `session.started` rows: the voice, and the language and accent the session opened with.
+    public var voice: String?
+    public var language: String?
+    public var accent: String?
     public var reason: String?
     public var usageSeconds: Double?
     public var agent: AgentInfo?
@@ -1166,8 +1117,7 @@ public struct LedgerRow: Codable, Identifiable {
     public var app: String?
     public var actionClass: String?
     public var until: Double?
-    /// `worker` rows: the record at that moment. `sleep` rows: why, the cue, the farewell.
-    public var worker: Worker?
+    /// `sleep` rows: why, the cue, the farewell.
     public var cause: String?
     public var phrase: String?
     public var farewell: Bool?
@@ -1179,7 +1129,7 @@ public struct LedgerRow: Codable, Identifiable {
     /// The thread's own status word on `thread.status` / `thread.ended` rows (`status` above is the delegation's), and the change's detail.
     public var threadStatus: ThreadStatus?
     public var detail: String?
-    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? worker?.id ?? "")" }
+    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? threadId ?? "")" }
 }
 
 // MARK: - A JSON value for tool inputs/outputs of unknown shape.

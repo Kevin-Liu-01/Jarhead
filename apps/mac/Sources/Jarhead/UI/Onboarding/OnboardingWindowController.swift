@@ -58,7 +58,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     private func startStep() -> OnboardingStep {
-        guard state.snapshot.settings.isOnboarded else { return .welcome }
+        guard state.snapshot.settings.onboarded else { return .welcome }
         let report = OnboardingReport(model: OnboardingModel(state: state))
         return report.firstProblem ?? .welcome
     }
@@ -124,7 +124,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
 /// The rail, in order. `word` is the one word on the rail; `symbol` a solid SF Symbol.
 public enum OnboardingStep: String, CaseIterable, Identifiable {
-    case welcome, voice, brain, permissions, wake, agents, done
+    case welcome, voice, brain, permissions
+    /// The wake word step; "wake" in PREVIEW_STEP and the harness's file names. Declaration order is the wizard's order.
+    case wakeWord = "wake"
+    case agents, done
 
     public var id: String { rawValue }
 
@@ -134,7 +137,7 @@ public enum OnboardingStep: String, CaseIterable, Identifiable {
         case .voice: return "Voice"
         case .brain: return "Brain"
         case .permissions: return "Permissions"
-        case .wake: return "Wake"
+        case .wakeWord: return "Wake"
         case .agents: return "Agents"
         case .done: return "Done"
         }
@@ -146,7 +149,7 @@ public enum OnboardingStep: String, CaseIterable, Identifiable {
         case .voice: return "waveform.circle.fill"
         case .brain: return "brain.fill"
         case .permissions: return "lock.shield.fill"
-        case .wake: return "ear.fill"
+        case .wakeWord: return "ear.fill"
         case .agents: return "terminal.fill"
         case .done: return "checkmark.circle.fill"
         }
@@ -222,7 +225,7 @@ struct OnboardingModel: Equatable {
     var connected: Bool
     var daemonDetail: String
     var setup: SetupStatus
-    /// The voice id and accent the engine has (Settings.voice, Settings.accentKind: "american" from an older daemon).
+    /// The voice id and accent the engine has (Settings.voice, Settings.accent).
     var voice: String
     var accent: String
     var brain: BrainKind
@@ -244,14 +247,14 @@ struct OnboardingModel: Equatable {
         let snap = state.snapshot
         connected = state.connected
         daemonDetail = state.daemonDetail
-        setup = snap.setupStatus
+        setup = snap.setup
         voice = snap.settings.voice
-        accent = snap.settings.accentKind
+        accent = snap.settings.accent
         brain = snap.settings.brain
         brainModel = snap.settings.brainModel
         brainBaseUrl = snap.settings.brainBaseUrl
-        wake = snap.settings.wakeSettings
-        onboarded = snap.settings.isOnboarded
+        wake = snap.settings.wake
+        onboarded = snap.settings.onboarded
         agents = snap.agents
         connectors = snap.connectors
         wakeGate = state.wakeGate
@@ -383,13 +386,13 @@ struct OnboardingReport: Equatable {
         case .voice: return voice.mark
         case .brain: return brain.mark
         case .permissions: return permissions.mark
-        case .wake: return wake.mark
+        case .wakeWord: return wake.mark
         case .welcome, .agents, .done: return nil
         }
     }
 
     var firstProblem: OnboardingStep? {
-        [.voice, .brain, .permissions, .wake].first { mark($0) == .attention }
+        [.voice, .brain, .permissions, .wakeWord].first { mark($0) == .attention }
     }
 }
 

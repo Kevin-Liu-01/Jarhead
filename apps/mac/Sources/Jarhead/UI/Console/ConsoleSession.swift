@@ -213,9 +213,6 @@ final class ConsoleSession: ObservableObject {
         jarheadTruncated = false
     }
 
-    /// Scroll the open conversation to the row at `at` (JarheadConversationPane.scrollTo).
-    func scrollJarhead(to at: Double) { jarheadScrollTarget = at }
-
     // MARK: selection
 
     /// A click on a chain row. ⌘ toggles the row in the selection, ⇧ extends from the
@@ -354,7 +351,7 @@ final class ConsoleSession: ObservableObject {
         jarheadTruncated = false
         var rows: [LedgerRow] = []
         var truncated = false
-        // nil is no answer (an older daemon, a disconnect); empty rows for a chain that has
+        // nil is no answer (a disconnect, the request timeout); empty rows for a chain that has
         // members is a daemon whose ledger has no readChain (`{rows: [], truncated: false}`)
         // or a walk that missed the root — an empty conversation is not what Kevin opened.
         if let answer = await state.jarheadChainRows(chain.id), answer.covers(sessionCount: chain.sessions.count) {
@@ -640,15 +637,6 @@ extension CleanupAction {
         return a
     }
 
-    static func trashDay(_ day: String, what: String = "both") -> CleanupAction {
-        CleanupAction(label: "Move Day to Trash", toast: "Moved \(day) to Trash", symbol: "trash.fill",
-                      commands: [.ledgerTrashDay(day: day, what: what)], inverse: [.ledgerRestoreDay(day: day)])
-    }
-
-    static func restoreDay(_ day: String) -> CleanupAction {
-        CleanupAction(label: "Restore Day", toast: "Restored \(day)", symbol: "arrow.uturn.backward",
-                      commands: [.ledgerRestoreDay(day: day)], inverse: [.ledgerTrashDay(day: day, what: "both")])
-    }
 }
 
 private struct ConsoleActionsKey: EnvironmentKey {

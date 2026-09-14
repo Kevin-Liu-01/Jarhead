@@ -18,19 +18,11 @@ struct ConsoleRootView: View {
     /// Folded once per list, not per body — this body runs on every 20 Hz level tick.
     @State private var chains: [JarheadChain] = []
 
-    /// Now is ThreadPane("main") — the main conversation over its own seq-paged stream — rather
-    /// than the StreamPane over the snapshot's cards. False this pass (`Engine.SNAPSHOT_FULL_NOW`
-    /// is true and the snapshot still carries the cards); the flip is the integrator's one-line
-    /// follow-up. While false, main has no row of its own in the sidebar's Threads section (the
-    /// Now row IS the main conversation) and ⌘⇧] / ⌘⇧[ walk the spawned threads only; the right
-    /// rail still lists main (its status, and Stop for its turn) and that row opens its pane.
-    nonisolated static let nowIsThreadPane = false
-
-    /// The ids ⌘⇧] / ⌘⇧[ walk and the sidebar lists, from the rail's order: without main while Now is the stream.
-    nonisolated static func walkOrder(_ ids: [String]) -> [String] {
-        nowIsThreadPane ? ids : ids.filter { $0 != "main" }
-    }
-
+    /// The ids ⌘⇧] / ⌘⇧[ walk and the sidebar lists, from the rail's order: the spawned threads.
+    /// Main has no row of its own there — the Now row IS the main conversation (the StreamPane over
+    /// the snapshot's cards); the right rail still lists main (its status, Stop for its turn) and
+    /// that row opens its pane.
+    nonisolated static func walkOrder(_ ids: [String]) -> [String] { ids.filter { $0 != "main" } }
 
     /// The centre pane, type-erased on purpose: the five-way choice below sat inside `body`'s
     /// one expression and the compiler on a slower toolchain (CI's runner) gave up type-checking
@@ -59,27 +51,18 @@ struct ConsoleRootView: View {
             } else if let thread = openThread {
                 // One thread's conversation over its own stream (`thread.open` as this pane's
                 // viewer): its id is the pane's identity, so switching threads closes one stream
-                // and opens the next. "main" is Now seen as a thread — the same feed the Now
-                // stream will be once the snapshot stops carrying the cards (SNAPSHOT_FULL_NOW).
+                // and opens the next. "main" is Now seen as a thread, over its own seq-paged feed.
                 ThreadPane(thread: thread, store: state.threadStores[thread.id], phase: snap.phase,
-                           connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
+                           connected: state.connected, typedWakes: snap.settings.typedWakes)
                     .equatable()
                     .id(thread.id)
-                    .transition(.identity)
-            } else if ConsoleRootView.nowIsThreadPane, session.ledgerDay == nil, let main = state.threads["main"] {
-                // Now as the main thread's own pane (the flip; see `nowIsThreadPane`). A ledger
-                // day underneath, or a daemon without threads, still draws the StreamPane below.
-                ThreadPane(thread: main, store: state.threadStores["main"], phase: snap.phase,
-                           connected: state.connected, typedWakes: snap.settings.typedWakes ?? false)
-                    .equatable()
-                    .id("now:main")
                     .transition(.identity)
             } else {
                 StreamPane(transcript: snap.transcript, delegations: snap.delegations, phase: snap.phase,
                            hasSession: snap.session != nil, ledgerDay: session.ledgerDay,
                            ledgerEntries: session.ledgerEntries, ledgerLoading: session.ledgerLoading,
-                           clearedAt: state.nowClearedAt, workers: snap.allWorkers, connected: state.connected,
-                           threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes ?? false)
+                           clearedAt: state.nowClearedAt, connected: state.connected,
+                           threads: threads.filter { $0.id != "main" }, typedWakes: snap.settings.typedWakes)
                     .equatable()
                     .transition(.identity)
             }
@@ -124,11 +107,11 @@ struct ConsoleRootView: View {
         // kept five minutes and never pruned while open — `heldThreadIds`). Gone from a store the
         // daemon feeds: the pane closes, back to Now.
         let threads = state.orderedThreads
-        // The sidebar's rows: main only once Now is its pane (else the Now row above is main).
+        // The sidebar's rows: the spawned threads (the Now row above is main).
         let railIds = Set(ConsoleRootView.walkOrder(threads.map(\.id)))
         let railThreads = threads.filter { railIds.contains($0.id) }
         let openThread = session.openThreadId.flatMap { state.threads[$0] }
-        let threadGone = session.openThreadId != nil && openThread == nil && state.threadsKnown
+        let threadGone = session.openThreadId != nil && openThread == nil
         // Which pane holds the centre; a change happens behind the curtain (Motion.curtain): the
         // arriving pane renders plainly and a sheet of ground-coloured Bayer cells over it goes rank
         // by rank, so stepping into a conversation or back to Now never cuts and never masks.
@@ -159,7 +142,7 @@ struct ConsoleRootView: View {
             HStack(spacing: 0) {
                 AgentsRail(agents: snap.agents, connectors: snap.connectors, jarhead: past, now: JarheadNowInfo(snapshot: snap),
                            hiddenAgents: state.hiddenAgentIds(in: snap), trash: snap.trash,
-                           threads: railThreads, threadsKnown: state.threadsKnown)
+                           threads: railThreads)
                     .equatable()
                     .frame(width: ConsoleLayout.agentsRailWidth)
                 ConsoleHairline(vertical: true, thickness: ConsoleHairline.sidebarEdge)
@@ -185,7 +168,7 @@ struct ConsoleRootView: View {
                 RightRail(snapshot: snap, ledgerDays: session.ledgerDays, ledgerDay: session.ledgerDay,
                           ledgerLoading: session.ledgerLoading, ledgerStats: session.ledgerStats, tab: session.tab,
                           wake: WakeGateInputs(gate: state.wakeGate, heard: state.wakeHeard, passphraseSet: state.wakePassphraseSet),
-                          threads: state.threadsKnown ? threads : nil)
+                          threads: threads)
                     .equatable()
                     .frame(width: ConsoleLayout.rightRailWidth)
             }

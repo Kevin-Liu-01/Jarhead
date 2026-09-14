@@ -104,7 +104,7 @@ public final class BlobFleet: NSObject {
         orb.fleet = self
 
         // The records, from the snapshot until a richer source is handed in (`observe`).
-        observe(threads: state.$snapshot.map(\.allThreads).removeDuplicates().eraseToAnyPublisher())
+        observe(threads: state.$snapshot.map(\.threads).removeDuplicates().eraseToAnyPublisher())
 
         // Tagged flies and traces (the untagged ones are the main controller's).
         state.overlayCommands
@@ -191,7 +191,7 @@ public final class BlobFleet: NSObject {
                 if satellites.count < effectiveMax, let panel = takePanel() { spawn(t, panel: panel, now: now) }
             }
         }
-        // Gone from the list (an older engine, a rebuild after a restart): leave quietly.
+        // Gone from the list (a rebuild after an engine restart, a disconnect): leave quietly.
         for id in Array(satellites.keys) where !seen.contains(id) {
             satellites[id]?.retire()
         }

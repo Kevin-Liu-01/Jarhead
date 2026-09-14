@@ -4,8 +4,7 @@ import QuartzCore
 // The blob: an ASCII field whose silhouette is a sum of wandering harmonics, drawn
 // in one colour per phase, squished by spring-damped contacts, glowing.
 //
-// A faithful port of legacy/packages/overlay/src/renderer/overlay.js (the v1
-// Electron buddy) onto a plain NSView with CoreGraphics glyph drawing:
+// A plain NSView with CoreGraphics glyph drawing:
 //  * `BlobSim` owns every mutable animation value and turns (phase, levels,
 //    contacts, motion, lean, time) into a 27×15 grid of ramp indices, a matching
 //    halo coverage mask, per-cell flags (the wet patch), and two eyes (a blob with
@@ -25,7 +24,7 @@ import QuartzCore
 //    look a shift of the pair by up to a cell and a half (`renderEyes`). The same
 //    face is drawn in the notch (`NotchPanel`) from `BlobSim.face`.
 //  * `BlobFieldView` runs one CADisplayLink for the whole orb (physics ticks at
-//    display rate, the field re-renders at 10–24 fps like v1) and stops entirely
+//    display rate, the field re-renders at 10–24 fps) and stops entirely
 //    when nothing moves, when muted, when fast asleep, or when the panel is hidden.
 //  * Glyphs are drawn with CGContext.showGlyphs — one call per font per pass — and
 //    the glow is the halo mask, refined on the CPU to a 108×60 image and scaled the
@@ -56,7 +55,7 @@ struct RGB: Equatable {
     var cgColor: CGColor { cgColor(alpha: 1) }
 }
 
-/// The design-language phase palette (matches legacy/shell-electron-v2/src/renderer/shared/tokens.css).
+/// The design-language phase palette: one colour per phase on a near-black ground.
 enum OrbPalette {
     static let ground = RGB(hex: 0x0b0c10)
     static let text = RGB(hex: 0xe8eaf0)
@@ -121,7 +120,7 @@ enum BlobRamp: Int, CaseIterable {
     }
 }
 
-/// Per-phase character of the motion (v1's SHAPE table, mapped onto the app's phases).
+/// Per-phase character of the motion, one row per phase.
 ///
 ///  amp    how far the surface wanders from a circle
 ///  speed  how fast the wandering evolves
@@ -162,7 +161,7 @@ struct BlobPersonality {
 
     static func forPhase(_ p: Phase) -> BlobPersonality {
         switch p {
-        case .asleep:      // v1 idle: barely awake, wide, slow, settled.
+        case .asleep:      // barely awake: wide, slow, settled.
             return BlobPersonality(amp: 0.30, speed: 0.45, churn: 0.5, pull: 0.10, squash: 0.90, spin: 0.05, jitter: 0, glow: 0.30, ramp: .soft, fps: 10)
         case .connecting:  // waking up: a dimmer, calmer "listening".
             return BlobPersonality(amp: 0.36, speed: 1.0, churn: 1.0, pull: 0.12, squash: 1.05, spin: 0.10, jitter: 0, glow: 0.40, ramp: .soft, fps: 20)
@@ -172,7 +171,7 @@ struct BlobPersonality {
             return BlobPersonality(amp: 0.52, speed: 3.0, churn: 3.0, pull: 0.14, squash: 0.85, spin: 0.10, jitter: 0, glow: 0.65, ramp: .wave, fps: 24)
         case .thinking:    // churning: dense, agitated, mathematical.
             return BlobPersonality(amp: 0.36, speed: 2.4, churn: 2.8, pull: 0.12, squash: 1.00, spin: 0.55, jitter: 0, glow: 0.55, ramp: .dense, fps: 24)
-        case .acting:      // v1 alert/pointing: leaning hard toward free space, sharp.
+        case .acting:      // alert, pointing: leaning hard toward free space, sharp.
             return BlobPersonality(amp: 0.42, speed: 2.2, churn: 2.0, pull: 0.40, squash: 1.20, spin: 0.30, jitter: 0, glow: 0.60, ramp: .sharp, fps: 24)
         case .muted:       // a dim grey idle, nearly frozen.
             return BlobPersonality(amp: 0.22, speed: 0.30, churn: 0.3, pull: 0.08, squash: 0.88, spin: 0.02, jitter: 0, glow: 0.18, ramp: .soft, fps: 6)
@@ -1364,7 +1363,7 @@ final class BlobSim {
         // Pressed blobs slide their mass away from the wall — glued to it, the dome sags
         // onto the patch instead. The slosh mode moves the whole mass too.
         let slide = stuckAny ? 0.3 : 0.9
-        // Smaller than v1's 0.42: the lobes reach 1.5× the base and were hard-clipping
+        // 0.42 was too much: the lobes reach 1.5× the base and were hard-clipping
         // into flat edges at the field boundary. The calibration ripple adds at most
         // half a row (about one column) to the radius for a third of a second.
         let base = Double(rows) * 0.38 * breath() + rippleGain * ripple
@@ -2226,7 +2225,7 @@ final class BlobFieldView: NSView {
 
     /// One frame, from whoever owns the link — this view's own (`onFrame`) or the
     /// fleet's for a driven satellite: the physics hook every frame, then the field
-    /// re-rendered on its own clock (10–24 fps like v1; the body can move every display
+    /// re-rendered on its own clock (10–24 fps; the body can move every display
     /// frame in between so a throw is smooth). Returns true while frames are still
     /// wanted: the body moves, or the field is not static.
     @discardableResult
@@ -2348,7 +2347,7 @@ final class BlobFieldView: NSView {
                 cg.showGlyphs(r[f], at: p[f])
             }
         }
-        // One dark under-copy boxes each glyph in near-black (v1's text-stroke), then
+        // One dark under-copy boxes each glyph in near-black (a text-stroke), then
         // the colour; the wet patch a step brighter.
         cg.setFillColor(OrbPalette.ground.cgColor(alpha: 0.85))
         cg.textPosition = CGPoint(x: 0.6, y: 0.7)
@@ -2402,7 +2401,7 @@ final class BlobFieldView: NSView {
 
     /// Refine the sim's halo and hand it to the glow layer as one premultiplied image:
     /// the phase colour over a faint dark backing, both shaped by the mask. Legibility
-    /// on a bright desktop is the per-glyph under-copy's job (v1's text-stroke, in
+    /// on a bright desktop is the per-glyph under-copy's job (a text-stroke, in
     /// `draw`); the backing only gives the glow something to sit on, so it stays light
     /// and fades with the glow — a 58% disc turned the blob into a grey blot on paper.
     private func updateHalo() {

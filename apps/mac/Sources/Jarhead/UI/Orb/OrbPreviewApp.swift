@@ -443,7 +443,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             }
             // The fleet's safety count: a satellite's drop is one thread.stop, never a sleep, never a settings write.
             switch cmd.json["type"] as? String {
-            case "thread.stop", "worker.stop": self.fleetSends.stop += 1
+            case "thread.stop": self.fleetSends.stop += 1
             case "sleep": self.fleetSends.sleep += 1
             case "set-settings": self.fleetSends.settings += 1
             default: self.fleetSends.other += 1
