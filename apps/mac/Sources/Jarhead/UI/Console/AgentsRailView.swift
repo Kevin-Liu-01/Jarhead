@@ -800,6 +800,7 @@ struct AgentsRail: View, Equatable {
                                 figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.day(billedSeconds: billed)),
                                 folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
                                 tip: RailWords.dayTip(title: tipTitle, count: chains.count, billed: billed, newest: RailWords.newestTitle(chains)))
+            .id(id)
     }
 
     /// `› Older 31 … since Aug 2`: every day before yesterday behind one head; the figure is the oldest day inside.
@@ -812,6 +813,7 @@ struct AgentsRail: View, Equatable {
                                 figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.older(since: oldest)),
                                 folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
                                 tip: RailWords.olderTip(count: count, since: ConsoleFormat.shortDay(oldest)))
+            .id(id)
     }
 
     private func trashFolder(_ trash: TrashInfo) -> some View {
@@ -967,7 +969,7 @@ struct AgentsRail: View, Equatable {
                                   newConversation: { actions.cleanup(.newConversation) },
                                   clear: { actions.cleanup(.clearNow(at: ConsoleFormat.nowMs)) })
                 } else {
-                    ConsoleGroupHead(title: ConsoleFormat.day(group.day), figure: group.day)
+                    ConsoleGroupHead(title: ConsoleFormat.day(group.day))
                 }
                 ForEach(group.hits.prefix(hitsPerChain)) { hit in
                     SearchHitRow(hit: hit, focused: focus.ringOn(AgentsRailWords.hitId(hit.id)), hovered: hover(AgentsRailWords.hitId(hit.id))) { actions.openJarheadHit(hit) }

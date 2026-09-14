@@ -135,6 +135,11 @@ import SwiftUI
 //                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
 //     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
 //                    `[1 asks] · 1 done` as its head; two Claude Code rows open above it.
+//     rail · rail-expanded · rail-asleep · rail-agents · rail-search · rail-keys · rail-midnight
+//                  = the left rail (design10): the state ladder (bright · quiet 0.72 · back 0.48, the grey orb
+//                    for what is over), Today open, Yesterday and Older folded with figures, agents at 44 / 28
+//                    with the over rows under `Ended n`; `check-kit` prints the ladder's pins (checkKitLeftRail);
+//                    `probe-rail` prints the walk (`rail-probe:`), `left-rail-scroll:<pt>` scrolls the left rail.
 //     list-verbs   = the kit's ⌘↓ float (Builder E): `highlight:chain:<id>` rings yesterday's row and gives
 //                    the list the keys, `keyDown:cmd-down` floats its verbs (Rename · Pin · Archive · Move to
 //                    Trash) as ConsoleMenuRows under the row; `probe-floats:` names `rail.chain.<id>.verbs`.
@@ -442,7 +447,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // and says `complete: false`, so "Load earlier" offers the rest and a `load-earlier:` action
             // prepends into the same cap the app has (the view's own ceiling is the pure check).
             state.applyTranscript(fake.longTranscript(agentId: FakeData.endedId, count: 1_200), mode: "replace")
-        case "threads", "thread-pane", "thread-answer", "tip-thread", "tip-thumb":
+        case "threads", "thread-pane", "thread-answer", "tip-thread", "tip-thumb", "rail", "rail-expanded", "rail-asleep", "rail-agents", "rail-search", "rail-keys", "rail-midnight":
             // Jarhead's threads under one running delegation: the snapshot's summaries land the way
             // EngineClient publishes them (applySnapshotThreads), each thread's conversation the way
             // its `thread.open` page would (applyThreadTranscript replace).
@@ -454,6 +459,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             snap.delegations.append(split)
             snap.transcript += fake.threadsTranscript(from: split.createdAt)
             snap.threads = fake.threads()
+            // The left-rail scenarios (design10): the Trash head and one hidden agent on the rail too.
+            if scenario.hasPrefix("rail") {
+                snap.trash = fake.trash
+                snap.hiddenAgents = ["sessions:codex:thread-9"]
+            }
             state.snapshot = snap
             state.applySnapshotThreads(snap.threads)
             for t in fake.threads() { state.applyThreadTranscript(fake.threadTranscript(t.id), mode: "replace") }
@@ -478,10 +488,6 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.transcript += fake.typedTranscript()
-            if env["PREVIEW_PHASE"] == "asleep" {
-                state.snapshot.phase = .asleep
-                state.snapshot.session = nil
-            }
         case "agent-pending":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
@@ -489,6 +495,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         default:
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
+        }
+        // PREVIEW_PHASE=asleep, any scenario: nothing is live — the Now row says `asleep` and wears the grey orb.
+        if env["PREVIEW_PHASE"] == "asleep" {
+            state.snapshot.phase = .asleep
+            state.snapshot.session = nil
         }
 
         // PREVIEW_BRAIN=openai-compatible (or any BrainKind raw value) swaps the
@@ -681,6 +692,19 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
         case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
+        // The left rail (design10): the ladder's pins, then each state staged by its fold id. `rail` is the
+        // default state; `rail-expanded` opens Yesterday and Older and pins yesterday's card; `rail-agents`
+        // opens Claude Code's Ended sub-head (the ring on it), the dead Codex group and Hidden; `rail-search`
+        // is `codex` (Titles · Hits · the orphan day · Agents); `rail-keys` walks ↓ from the pinned row onto
+        // Yesterday's head and → opens it (`rail-probe:` before and after); `rail-asleep` is `rail` with
+        // PREVIEW_PHASE=asleep (the .sh sets it).
+        case "rail", "rail-asleep", "rail-midnight": defaultActions = "check-kit@0.3"
+        case "rail-expanded": defaultActions = "check-kit@0.3,fold:rail.day.\(fake.day(fake.ago(26 * 3600 + 12 * 60))):open@0.5,fold:rail.older:open@0.7,"
+            + "tipOpen:rail.chain.\(FakeData.yesterdayId)@1.2,probe-floats@1.6"
+        case "rail-agents": defaultActions = "check-kit@0.3,fold:agents.claude.ended:open@0.5,fold:agents.codex:open@0.7,hidden-open@0.9,"
+            + "highlight:agents.claude.ended@1.1,left-rail-scroll:300@1.3"
+        case "rail-search": defaultActions = "check-kit@0.3,search:codex@0.4,probe-rail@1.4"
+        case "rail-keys": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.pinnedId)@0.8,keyDown:down+down+down@1.0,probe-rail@1.4,keyDown:right@1.6,probe-rail@2.0"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -914,6 +938,17 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: max(0, clip.bounds.origin.y + points)))
                 scroll.reflectScrolledClipView(clip)
                 print(String(format: "action: rail-scroll %.0f at %@s → minY=%.1f content=%.1f", points, stamp, clip.bounds.minY, scroll.documentView?.frame.height ?? 0))
+            } else if action.hasPrefix("left-rail-scroll:") {
+                let points = Double(action.dropFirst("left-rail-scroll:".count)) ?? 0
+                guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
+                      let scroll = Self.leftRailScrollView(in: window.contentView) else {
+                    print("action: left-rail-scroll at \(stamp)s → no left rail scroll view")
+                    return
+                }
+                let clip = scroll.contentView
+                clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: max(0, clip.bounds.origin.y + points)))
+                scroll.reflectScrolledClipView(clip)
+                print(String(format: "action: left-rail-scroll %.0f at %@s → minY=%.1f content=%.1f", points, stamp, clip.bounds.minY, scroll.documentView?.frame.height ?? 0))
             } else if action == "probe-ground" {
                 probeGround(stamp: stamp)
             } else if action.hasPrefix("load-earlier:") || action == "history" {
@@ -1344,6 +1379,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         if action == "clear-now" { return ["clearNow": true] }
         if action == "hit-first" { return ["hitFirst": true] }
         if action == "probe" { return ["probe": true] }
+        if action == "probe-rail" { return ["probeRail": true] }
         if action == "pin-loading" { return ["pinLoading": true] }
         if action.hasPrefix("hit:") {
             // hit:<sessionId>:<atMs>
@@ -1943,6 +1979,18 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
         walk(view)
         return found.first { abs($0.frame.width - ConsoleLayout.rightRailWidth) < 2 }
+    }
+
+    /// The left rail's scroll view: the one as wide as `ConsoleLayout.agentsRailWidth`.
+    private static func leftRailScrollView(in view: NSView?) -> NSScrollView? {
+        guard let view = view else { return nil }
+        var found: [NSScrollView] = []
+        func walk(_ v: NSView) {
+            if let s = v as? NSScrollView { found.append(s) }
+            v.subviews.forEach(walk)
+        }
+        walk(view)
+        return found.first { abs($0.frame.width - ConsoleLayout.agentsRailWidth) < 2 }
     }
 
     /// The stream's scroll view: the widest one in the window (the rails are narrower).
@@ -2742,6 +2790,10 @@ struct FakeData {
     static let archivedBId = "live_u7_EMxa2archivedSlack001"
     static let trashedAId = "live_u7_EMwt1trashedTestRun01"
     static let trashedBId = "live_u7_EMwt2trashedRetention1"
+    /// Three active conversations from before yesterday, so the rail's `Older` head has days inside it.
+    static let olderAId = "live_u7_EMvo1olderPlayQuiet0001"
+    static let olderBId = "live_u7_EMvo2olderApiSuite00001"
+    static let olderCId = "live_u7_EMvo3olderGoodToSee0001"
 
     /// What the trash holds (Snapshot.trash): three day files, 129 MB of screenshots.
     var trash: TrashInfo { TrashInfo(path: "/Users/kevinliu/.jarhead/trash", days: 3, bytes: 129_400_000) }
@@ -2823,6 +2875,16 @@ struct FakeData {
         let s0 = ago(51 * 3600), sClosed = ago(51 * 3600 - 9 * 60)
         let t0 = ago(74 * 3600), tClosed = ago(74 * 3600 - 2 * 60)
         let r0 = ago(75 * 3600), rClosed = ago(75 * 3600 - 20 * 60)
+        // Before yesterday, still active: the `Older` head's days (two days ago, three, eight).
+        let o1 = ago(52 * 3600), o2 = ago(77 * 3600), o3 = ago(8 * 24 * 3600 + 2 * 3600)
+        let older = [
+            JarheadSessionSummary(id: Self.olderAId, day: day(o1), startedAt: o1, closedAt: o1 + 4 * 60_000, reason: "stopped", usageSeconds: 240,
+                                  heard: 3, said: 3, delegations: 1, title: "Play something quiet.", resumedFrom: nil),
+            JarheadSessionSummary(id: Self.olderBId, day: day(o2), startedAt: o2, closedAt: o2 + 5 * 60_000, reason: "stopped", usageSeconds: 300,
+                                  heard: 4, said: 4, delegations: 2, title: "Check the api suite on the hotfix branch.", resumedFrom: nil),
+            JarheadSessionSummary(id: Self.olderCId, day: day(o3), startedAt: o3, closedAt: o3 + 3 * 60_000, reason: "idle", usageSeconds: 180,
+                                  heard: 2, said: 2, delegations: 0, title: "Good to see you. What's first today?", resumedFrom: nil),
+        ]
         var pinned = JarheadSessionSummary(id: Self.pinnedId, day: day(p0), startedAt: p0, closedAt: pClosed, reason: "stopped", usageSeconds: 812,
                                            heard: 9, said: 8, delegations: 4, title: "What's blocking the auth branch? Walk me through the", resumedFrom: nil)
         pinned.name = "Auth branch triage"
@@ -2854,7 +2916,7 @@ struct FakeData {
                                   heard: 2, said: 2, delegations: 1, title: "Open the PR for the landing refresh and read me the diff summ", resumedFrom: nil),
             JarheadSessionSummary(id: Self.lostId, day: day(l0), startedAt: l0, closedAt: y0, reason: "lost", usageSeconds: 0,
                                   heard: 0, said: 0, delegations: 0, title: "", resumedFrom: nil),
-        ] + cleanup
+        ] + cleanup + older
     }
 
     /// One session's rows, its started row through its closed row, the transport rows included.
@@ -3405,6 +3467,57 @@ extension PreviewDelegate {
         let summary = fake.memorySummary()
         expect("rail: learned word", SettingsPanel.learnedWord(summary, now: fake.now), "learned 12m")
         expect("rail: learned card", SettingsPanel.lastRunCard(summary, now: fake.now).spoken, "Last run, learned 12m ago, extractor responses, added +3, updated ~1, same 4, refused 1, took 1.8 s")
+        failed += checkKitLeftRail(fake, expect)
+        return failed
+    }
+
+    /// The left rail's ladder (design10): the tones, the quiet LUT, the day places, the heights, the
+    /// summaries, the words, the fold defaults and the counts — pure, as `check:` lines.
+    func checkKitLeftRail(_ fake: FakeData, _ expect: (String, String, String) -> Void) -> Int {
+        let failed = 0
+        let now = fake.now
+        let liveId = fake.session().id
+        let chains = JarheadChain.build(fake.jarheadSessions()).filter { !$0.contains(liveId) }
+        func chain(_ id: String) -> JarheadChain? { chains.first { $0.id == id } }
+        func tone(_ id: String) -> String {
+            guard let c = chain(id) else { return "no chain \(id)" }
+            let t = RailTone.conversation(c, now: now)
+            return "\(t) \(t.alpha) \(Int(ConsoleListModel.height(lines: 1, meta: false, rail: .agents)))"
+        }
+        expect("tone: recent chain → bright 1.0 28", tone(FakeData.chainPausedId), "bright 1.0 28")
+        expect("tone: over chain → quiet 0.72 28", tone(FakeData.yesterdayId), "quiet 0.72 28")
+        expect("tone: empty chain → back 0.48", tone(FakeData.lostId), "back 0.48 28")
+        expect("tone: archived chain → back 0.48", tone(FakeData.archivedAId), "back 0.48 28")
+        let agentTones = [AgentStatus.blocked, .working, .idle, .ended].map { "\(RailTone.agent(status: $0, hidden: false))" } + ["\(RailTone.agent(status: .idle, hidden: true))"]
+        expect("tone: blocked agent → bright · working → bright · idle → quiet · ended → back · hidden → back", agentTones.joined(separator: " · "), "bright · bright · quiet · back · back")
+        expect("tone: finished thread → quiet", "\(RailTone.thread(.done)) · \(RailTone.thread(.acting))", "quiet · bright")
+        let lut = Dither.lut(stops: Dither.markQuietStops, bands: 5).map { c in String(format: "%02x%02x%02x", Int(c.x.rounded()), Int(c.y.rounded()), Int(c.z.rounded())) }
+        expect("quiet LUT", lut.joined(separator: " "), "a9adb5 8f949d 747881 595d64 40444b 2e3137")
+        let today = Date(timeIntervalSince1970: now / 1000)
+        func dayBack(_ n: Int) -> String { ConsoleFormat.dayString(now - Double(n) * 86_400_000) }
+        expect("day place", [0, 1, 2, 9].map { "\(RailDayPlace.of(day: dayBack($0), now: today))" }.joined(separator: " "), "today yesterday older older")
+        expect("billedShort", [450.0, 1560, 5040].map(ConsoleFormat.billedShort).joined(separator: " · "), "7.5 min · 26 min · 1.4 h")
+        expect("threads count", [ConsoleFormat.threadsCount(total: 3, busy: 2, asks: 1), ConsoleFormat.threadsCount(total: 3, busy: 2, asks: 0), ConsoleFormat.threadsCount(total: 3, busy: 0)].joined(separator: " / "),
+               "3 · 1 asks / 3 · 2 running / 3")
+        expect("resumed figure", [RailWords.resumedFigure(1), RailWords.resumedTip(1), RailWords.resumedTip(3)].joined(separator: " / "), "×1 / resumed once / resumed 3×")
+        expect("words: ids", [RailWords.dayId("2026-09-13"), RailWords.olderId, RailWords.endedId(.codex)].joined(separator: " / "), "rail.day.2026-09-13 / rail.older / agents.codex.ended")
+        let yesterday = [FakeData.lostId, FakeData.yesterdayId].compactMap(chain)
+        expect("words: newest title skips the empty one", RailWords.newestTitle(yesterday) ?? "nil", "Open the PR for the landing refresh and read me the diff summ")
+        expect("words: tips", RailWords.olderTip(count: 31, since: "Aug 2") + " / " + RailWords.jarheadTip(active: 7, archived: 2, trashed: 2) + " / " + RailWords.agentsTip(alive: 7, over: 6),
+               "Every day before yesterday · 31 · since Aug 2 / 7 conversations · 2 archived · 2 in the Trash / 7 alive · 6 over")
+        let dayKey = ConsoleFoldStore.key(RailWords.dayId("2026-09-13"))
+        ConsoleFoldStore.set(RailWords.dayId("2026-09-13"), true)
+        expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(RailWords.dayId("2026-09-13"), default: false)) \(UserDefaults.standard.object(forKey: dayKey) == nil)", "true true")
+        let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
+        let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
+                        ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]
+        expect("fold defaults", defaults.map { "\($0.1) \(RailFolds.defaultOpen($0.0, now: today, hotTools: hot) ? "open" : "closed")" }.joined(separator: " · "),
+               "today open · yesterday closed · older closed · claude open · codex closed · claude.ended closed")
+        expect("count: jarhead", "\(chains.filter(\.isActive).count)", "7")
+        expect("count: agents alive", "\(fake.agents().filter(AgentsRail.live).count)", "7")
+        let codex = fake.agents().filter { $0.resolvedTool == .codex }
+        expect("summary: the dead Codex group", ConsoleDisclosureSummary.text(AgentsRail.groupSummary(AgentsRail.ordered(codex), now: now)), "ended · 40m")
+        expect("agent meta short / card line", ConsoleFormat.agentMetaShort(fake.agents()[1], now: now) + " / " + ConsoleFormat.agentCardLine(fake.agents()[1], now: now), "kevin-wiki · 31m / 42 msgs · 31m · quiet")
         return failed
     }
 }
