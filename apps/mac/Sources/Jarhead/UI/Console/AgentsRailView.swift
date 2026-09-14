@@ -694,13 +694,15 @@ struct AgentsRail: View, Equatable {
     }
 
     /// One past conversation's row, wired: open on a plain click, select on ⌘ / ⇧, the menus' verbs, the inline rename.
-    private func chainRow(_ chain: JarheadChain, now: Double) -> some View {
+    /// `lifted` (a search result) brings a quiet or back row to full alpha; the open row lifts on its own.
+    private func chainRow(_ chain: JarheadChain, now: Double, lifted: Bool = false) -> some View {
         let open = session.openJarheadSessionId == chain.id
         let picked = session.selectedChainIds.contains(chain.id)
         // One of several picked: its menu acts on the whole selection (Finder's rule).
         let multi = picked && selectedChains.count > 1 ? selectionVerbs(selectedChains) : (ChainVerbs(), SelectionMenu())
         let id = AgentsRailWords.chainId(chain.id)
-        return JarheadChainRow(chain: chain, now: now, open: open, picked: picked, renaming: session.renamingChainId == chain.id,
+        return JarheadChainRow(chain: chain, now: now, open: open, tone: RailTone.conversation(chain, now: now), lifted: lifted || open,
+                               picked: picked, renaming: session.renamingChainId == chain.id,
                                focused: focus.ringOn(id), verbs: verbs(chain), selection: multi.1, selectionVerbs: multi.0,
                                hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                                pick: { flags in
@@ -1333,13 +1335,19 @@ struct SelectionMenu: Equatable {
     var active: Bool { count > 1 }
 }
 
-/// One past conversation — a session, or a resume chain folded into it. `picked` is the
-/// multi-selection (the mark becomes a check on the active ground); `renaming` swaps the
-/// title for a field. An archived or trashed row sits back (dimmed) and carries Restore.
+/// One past conversation at 28 — a session, or a resume chain folded into it: the mark (blue
+/// while it can still change, titanium's grey once it is over), the title, a `×n` figure when it
+/// was resumed, the started clock, the ⋯. The tone (`RailTone`) sets the mark and the row's alpha;
+/// `lifted` (stepped into, or a search result) brings the alpha to 1.0 and keeps the mark. `picked`
+/// is the multi-selection (the mark becomes a check on the active ground); `renaming` swaps the
+/// title for a field. An archived or trashed row carries Restore. The meta (`ran · billed · msgs`)
+/// is the card's now.
 struct JarheadChainRow: View {
     let chain: JarheadChain
     let now: Double
     let open: Bool
+    var tone: RailTone = .bright
+    var lifted = false
     var picked = false
     var renaming = false
     var focused = false
@@ -1357,18 +1365,22 @@ struct JarheadChainRow: View {
 
     private var title: String { chain.displayTitle.isEmpty ? "—" : chain.displayTitle }
 
-    /// `12:34 · 2.3 min · 8 msgs` — duration, billed, heard + said. The started clock
-    /// sits on the title row: four mono items and their dots do not fit the rail.
+    /// `12:34 · 2.3 min · 8 msgs` — duration, billed, heard + said: spoken (AX) and on the card, not drawn.
     private var metaLine: String {
         ConsoleFormat.jarheadMeta(chain)
     }
 
-    /// The story of a chain in one card: the name, the first line heard, `date · reason`, the
-    /// sessions a → b → c, and where it sits (the Trash since …, Archived).
+    /// The row's alpha: the tone's, lifted to 1.0 while Kevin reads it or found it.
+    private var alpha: CGFloat { lifted ? 1 : tone.alpha }
+
+    /// The story of a chain in one card: the name, the first line heard, `ran · billed · msgs`,
+    /// `date · reason`, the sessions a → b → c, and where it sits (Pinned, the Trash since …, Archived).
     static func card(_ chain: JarheadChain) -> ConsoleTipCard {
         var card = ConsoleTipCard(title: chain.name ?? (chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title))
         if chain.name != nil { card.lines.append(chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title) }
         if chain.resumes > 0 { card.badge = .word(AgentsRailWords.resumed(chain.resumes)) }
+        if chain.pinned && chain.isActive { card.status = RailWords.pinnedStatus }
+        card.foot.append(ConsoleTipCard.Row(key: RailWords.ran, value: ConsoleFormat.jarheadMeta(chain)))
         card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.started, value: ConsoleFormat.fullDate(chain.startedAt) + " · " + (chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason))))
         if chain.resumes > 0 {
             card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.sessions, value: "\(chain.sessions.count): " + chain.sessions.map { ConsoleFormat.shortId($0.id) }.joined(separator: " → ")))
@@ -1393,70 +1405,18 @@ struct JarheadChainRow: View {
     private var row: some View {
         Button(action: { pick(NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []) }) {
             HStack(alignment: .top, spacing: iconGap) {
-                // The mark, or a check while the row is one of several picked.
-                ZStack {
-                    if picked {
-                        ConsoleIcon(name: "checkmark.circle.fill", tint: ConsoleTheme.accent).transition(.opacity)
-                    } else {
-                        JarheadMark().transition(.opacity)
-                    }
-                }
-                .frame(width: 20, height: 20)
-                .animation(Motion.fade, value: picked)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text(title)
-                            .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
-                            .lineLimit(1).truncationMode(.tail)
-                            .contentTransition(.opacity)
-                            .animation(Motion.fade, value: title)
-                        Spacer(minLength: 4)
-                        if chain.pinned && chain.isActive {
-                            ConsoleIcon(name: "pin.fill", size: 10)
-                                .frame(width: 12, height: 20)
-                                .consoleHelp("Pinned")
-                                .accessibilityLabel("pinned")
-                                .layoutPriority(1)
-                                .transition(.opacity)
-                        }
-                        if chain.resumes > 0 {
-                            ConsoleBadge(word: .word(AgentsRailWords.resumed(chain.resumes)))
-                                .layoutPriority(1)
-                        } else if chain.isOpen && chain.isActive {
-                            ConsoleDot(color: ConsoleTheme.muted, live: false, size: 6)
-                                .frame(width: 20, height: 20)
-                                .consoleHelp("Never closed")
-                                .accessibilityLabel("open")
-                        }
-                        if !chain.isActive {
-                            // Room for the Restore in the overlay (its width, left of the trailing zone).
-                            Color.clear.frame(width: restoreWidth, height: 20)
-                        }
-                        // When it began, right-aligned as a stamp; the day head says which day.
-                        // The ⋯ sits after it at rest (the overlay, above the button).
-                        Text(ConsoleFormat.clock(chain.startedAt))
-                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                        Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
-                    }
-                    .frame(height: 20)
-                    Text(metaLine)
-                        .font(ConsoleTheme.mono(11)).monospacedDigit()
-                        .foregroundStyle(ConsoleTheme.fg3)
-                        .lineLimit(1).truncationMode(.tail)
-                        .contentTransition(ConsoleMotion.numeric)
-                        .animation(Motion.snappy, value: metaLine)
-                }
+                mark
+                titleRow
             }
-            .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(picked ? ConsoleTheme.active : (!open && hovering ? ConsoleTheme.hover : Color.clear))
+            .padding(EdgeInsets(top: 4, leading: railInset, bottom: 4, trailing: railInset))
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Archived and trashed rows sit back; the words stay legible.
-        .opacity(chain.isActive ? 1 : 0.62)
+        // The tone's alpha (over 0.72 · back 0.48), lifted while read; the grounds, the verbs and the ring stay at full.
+        .opacity(alpha)
+        .animation(Motion.fade, value: alpha)
+        .background(picked ? ConsoleTheme.active : (!open && hovering ? ConsoleTheme.hover : Color.clear))
         .overlay(alignment: .topTrailing) {
             // The same columns as the label's title row: Restore where the label left room, the
             // stamp (the label's own), then the ⋯ at rest.
@@ -1484,23 +1444,61 @@ struct JarheadChainRow: View {
         .accessibilityAddTraits(open || picked ? .isSelected : [])
     }
 
-    /// The title as a field, the meta line under it as before. Return commits, Esc cancels,
-    /// an empty field is back to the auto title; the focus leaving commits too.
-    private var renameRow: some View {
-        HStack(alignment: .top, spacing: iconGap) {
-            JarheadMark()
-            VStack(alignment: .leading, spacing: 2) {
-                RenameField(initial: chain.name ?? "", placeholder: chain.title.isEmpty ? "Name" : chain.title,
-                            commit: verbs.commitRename, cancel: verbs.cancelRename)
-                    .frame(height: 20)
-                Text(metaLine)
-                    .font(ConsoleTheme.mono(11)).monospacedDigit()
-                    .foregroundStyle(ConsoleTheme.fg3)
-                    .lineLimit(1).truncationMode(.tail)
+    /// The mark in the tone's ramp, or a check while the row is one of several picked; each swap crossfades.
+    private var mark: some View {
+        ZStack {
+            if picked {
+                ConsoleIcon(name: "checkmark.circle.fill", tint: ConsoleTheme.accent).transition(.opacity)
+            } else {
+                JarheadMark(quiet: tone.quietMark).id(tone.quietMark).transition(.opacity)
             }
         }
-        .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: picked)
+        .animation(Motion.fade, value: tone.quietMark)
+    }
+
+    /// The title, the `×n` figure, room for Restore, the started clock, room for the ⋯ — 20 tall.
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1).truncationMode(.tail)
+                .contentTransition(.opacity)
+                .animation(Motion.fade, value: title)
+            Spacer(minLength: 4)
+            if chain.resumes > 0 {
+                ConsoleBadge(word: .figure(RailWords.resumedFigure(chain.resumes)))
+                    .consoleHelp(RailWords.resumedTip(chain.resumes))
+                    .accessibilityLabel(RailWords.resumedTip(chain.resumes))
+                    .layoutPriority(1)
+            }
+            if !chain.isActive {
+                // Room for the Restore in the overlay (its width, left of the trailing zone).
+                Color.clear.frame(width: restoreWidth, height: 20)
+            }
+            // When it began, right-aligned as a stamp; the day head says which day.
+            // The ⋯ sits after it at rest (the overlay, above the button).
+            Text(ConsoleFormat.clock(chain.startedAt))
+                .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
+        }
+        .frame(height: 20)
+    }
+
+    /// The title as a field in the 28 row. Return commits, Esc cancels, an empty field is back
+    /// to the auto title; the focus leaving commits too.
+    private var renameRow: some View {
+        HStack(alignment: .top, spacing: iconGap) {
+            JarheadMark(quiet: tone.quietMark)
+            RenameField(initial: chain.name ?? "", placeholder: chain.title.isEmpty ? "Name" : chain.title,
+                        commit: verbs.commitRename, cancel: verbs.cancelRename)
+                .frame(height: 20)
+        }
+        .padding(EdgeInsets(top: 4, leading: railInset, bottom: 4, trailing: railInset))
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .background(ConsoleTheme.active)
         .transition(.opacity)
         .accessibilityLabel("Renaming \(title)")
