@@ -9,8 +9,8 @@ import { defaultRealpath, describeLaunchServices, jarheadRecords, parseLsBundleD
 
 /**
  * `lsregister -dump Bundle` parsing and the stale rule. `open -a Jarhead` resolves by
- * name through this table, so a Jarhead.app in the Trash (the retired Electron shell,
- * a different id, the same name) or a stage bundle counts as a second Jarhead.
+ * name through this table, so a Jarhead.app in the Trash (a foreign bundle named
+ * Jarhead.app: a different id, the same name) or a stage bundle counts as a second Jarhead.
  */
 
 const dump = readFileSync(fileURLToPath(new URL("./fixtures/ls-dump-bundle.txt", import.meta.url)), "utf8");

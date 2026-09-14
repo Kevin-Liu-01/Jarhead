@@ -36,7 +36,7 @@ import { THREAD_TERMINAL, type Delegation, type Snapshot } from "@jarhead/protoc
  *                            the round trip is still the real one. p95 to dispatch over 250 ms with the
  *                            real helper fails the bench (exit 1) unless --no-gate.
  *   browser                  the helper's Apple-event path to a running browser (url, tabs), reads only
- *   stop                     stopEverything() wall time with a delegation the brain is holding
+ *   stop                     the interrupt command's wall time with a delegation the brain is holding
  *   read during a type       a frontmost_app through the runner while the ACTING helper is held for 1.5 s
  *                            (a `wait` on it stands in for a long `type`): with the reads on their own
  *                            helper (SplitHands) it answers in milliseconds; on one serial helper it waits
@@ -197,7 +197,7 @@ interface BrainState {
   mode: "act" | "split" | "answer";
   /** Every handle() is one model generation. */
   generations: number;
-  /** What `thread_start` / `worker_start` answered, for the log. */
+  /** What `thread_start` answered, for the log. */
   splitResults: string[];
 }
 
@@ -368,8 +368,8 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
   // A spawned thread's brain: attaches its lane and holds until the thread is stopped, so two
   // threads stay live for the status and targeted-stop rows without a model.
   const threadBrains: { id: string; stopped: boolean }[] = [];
-  const makeWorkerBrain: NonNullable<EngineOptions["makeWorkerBrain"]> = (spec) => {
-    const rec = { id: spec.workerId, stopped: false };
+  const makeThreadBrain: NonNullable<EngineOptions["makeThreadBrain"]> = (spec) => {
+    const rec = { id: spec.threadId, stopped: false };
     threadBrains.push(rec);
     return {
       kind: "bench-thread",
@@ -390,7 +390,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
     };
   };
   // Two fake helpers, as the real pool has two processes: the acting one and the reading one.
-  engine = new Engine({ config, connectors: [], ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, ...(useFakeHands ? { hands: new FakeHands(), backgroundHands: new FakeHands() } : {}), ...(opts.codex ? {} : { makeWorkerBrain }) });
+  engine = new Engine({ config, connectors: [], ...(brain ? { brain } : {}), makeLive: () => live as unknown as LiveSession, ...(useFakeHands ? { hands: new FakeHands(), backgroundHands: new FakeHands() } : {}), ...(opts.codex ? {} : { makeThreadBrain }) });
   /** For the JSON: what the thread rows saw. */
   const extras: Record<string, unknown> = {};
   const samples: Sample[] = [];
@@ -663,12 +663,10 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
     // Threads: two stand-in threads live, then "what is spotify doing" as a delegation (the
     // table should answer with 0 brain generations, the running turn untouched) and a
     // thread.stop for one of them (only it stops). Skipped when the engine cannot start a
-    // thread here (an older engine, or thread_start refused).
+    // thread here (thread_start refused).
     if (!opts.codex) {
       const liveThreads = (snap: Snapshot): { id: string; name: string; status: string }[] =>
-        snap.threads
-          ? snap.threads.filter((t) => t.id !== "main" && !THREAD_TERMINAL.has(t.status)).map((t) => ({ id: t.id, name: t.name, status: t.status }))
-          : (snap.workers ?? []).filter((w) => !["done", "failed", "cancelled"].includes(w.status)).map((w) => ({ id: w.id, name: w.name, status: w.status }));
+        snap.threads.filter((t) => t.id !== "main" && !THREAD_TERMINAL.has(t.status)).map((t) => ({ id: t.id, name: t.name, status: t.status }));
       brainState.mode = "split";
       const splitAt = live.nextUtterance();
       live.emit("inputTranscript", " jarhead tell ben on slack i'm late and put on focus on spotify", splitAt - 1500, splitAt);
@@ -677,11 +675,11 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       while (Date.now() < deadline && liveThreads(engine.snapshot()).length < 2) await new Promise((r) => setTimeout(r, 20));
       const before = liveThreads(engine.snapshot());
       brainState.mode = "answer";
-      extras["threads"] = { live: before.length, names: before.map((t) => t.name), source: engine.snapshot().threads ? "snapshot.threads" : "snapshot.workers", splitResults: brainState.splitResults };
+      extras["threads"] = { live: before.length, names: before.map((t) => t.name), splitResults: brainState.splitResults };
       if (before.length < 2) {
         log(`  threads: could not get two live threads (${before.map((t) => `${t.name}:${t.status}`).join(", ") || "none"}); ${brainState.splitResults.join(" | ") || "no thread_start answer"} — status reflex and targeted stop not measured`);
       } else {
-        log(`  threads: ${before.map((t) => `${t.name} ${t.status} (${t.id})`).join(", ")} live${engine.snapshot().threads ? " (snapshot.threads)" : " (snapshot.workers — an older engine)"}`);
+        log(`  threads: ${before.map((t) => `${t.name} ${t.status} (${t.id})`).join(", ")} live`);
         // Status reflex: the spoken line's time and the generations it cost.
         const gensBefore = brainState.generations;
         const linesBefore = live.commentary.length;
@@ -699,11 +697,11 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
         extras["statusReflex"] = { generations, lineMs: line ? Math.round(line.at - asked) : null, line: line?.text ?? null, stillLive: liveThreads(engine.snapshot()).length };
         log(`  status reflex: ${generations} brain generation(s); ${line ? `"${line.text.slice(0, 80)}" after ${Math.round(line.at - asked)} ms` : "no Spotify line within 5 s"}; ${liveThreads(engine.snapshot()).length} thread(s) still live`);
         await new Promise((r) => setTimeout(r, 100));
-        // Targeted stop: one of the two, by id, through the thread command (the worker alias for an older engine).
+        // Targeted stop: one of the two, by id, through thread.stop.
         const target = liveThreads(engine.snapshot()).find((t) => /slack/i.test(t.name)) ?? liveThreads(engine.snapshot())[0];
         if (target) {
           const a = performance.now();
-          await engine.command(engine.snapshot().threads ? { type: "thread.stop", threadId: target.id } : { type: "worker.stop", workerId: target.id });
+          await engine.command({ type: "thread.stop", threadId: target.id });
           const stopBy = Date.now() + 2000;
           while (Date.now() < stopBy && liveThreads(engine.snapshot()).some((t) => t.id === target.id)) await new Promise((r) => setTimeout(r, 5));
           const after = liveThreads(engine.snapshot());

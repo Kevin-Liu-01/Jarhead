@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Thread, Worker } from "@jarhead/protocol";
-import { resolveThread, threadGlyph, threadsLines, workersFallbackLines } from "../threads-cli.ts";
+import type { Thread } from "@jarhead/protocol";
+import { resolveThread, threadGlyph, threadsLines } from "../threads-cli.ts";
 
 /**
  * `jarhead cmd thread.stop <id|name>` and the `threads N (M live)` block of `jarhead status`,
@@ -67,14 +67,4 @@ test("threadsLines: `threads N (M live)` then one row per thread — glyph, name
     "    ✔ slack            done           background 3 steps · t_0 · sent",
   ]);
   assert.deepEqual(threadsLines([]), ["  threads    0 (0 live)"]);
-});
-
-test("workersFallbackLines: an older daemon's workers list, said so", () => {
-  const w = (over: Partial<Worker> & Pick<Worker, "id" | "name" | "status">): Worker => ({ delegationId: "d_1", lane: "background", task: "", startedAt: 0, steps: 0, ...over });
-  assert.deepEqual(workersFallbackLines([]), ["  workers    0 (an older daemon: no thread table)"]);
-  assert.deepEqual(workersFallbackLines([w({ id: "w_1", name: "Slack", status: "working", steps: 1 }), w({ id: "w_0", name: "Spotify", status: "done", steps: 2, detail: "played" })]), [
-    "  workers    2 (1 running) (an older daemon: no thread table)",
-    "    ⟳ Slack            working                background 1 step · w_1",
-    "    ✔ Spotify          done                   background 2 steps · w_0 · played",
-  ]);
 });

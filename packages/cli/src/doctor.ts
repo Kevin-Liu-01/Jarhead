@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type MemorySummary, type PermissionInfo, type Problem, type WakeSettings } from "@jarhead/protocol";
+import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type MemorySummary, type PermissionInfo, type Permissions, type Problem, type WakeSettings } from "@jarhead/protocol";
 import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
 import { defaultConnectors } from "@jarhead/agents";
@@ -48,14 +48,14 @@ export function summarizePermissions(all: readonly PermissionInfo[] | undefined)
   return parts.join(" · ");
 }
 
-/** What the doctor reads from a running daemon's first snapshot: the app's permission list and the typed problems. */
+/** What the doctor reads from a running daemon's first snapshot: the permission rows, the problems and the memory summary. */
 interface DaemonRead {
   readonly permissions: readonly PermissionInfo[] | undefined;
-  /** `problemsTyped` when the engine sends it; the plain `problems` lines as kind `other` from an older one. */
+  /** `snapshot.problems`: each with its kind and the one remedy the Console offers. */
   readonly problems: readonly Problem[];
   /** Milliseconds from connect to the snapshot: a slow answer is itself a finding. */
   readonly ms: number;
-  /** `snapshot.memory` — the durable memory's counts and last run; absent from a daemon before the module. */
+  /** `snapshot.memory` — the durable memory's counts and last run. */
   readonly memory: MemorySummary | undefined;
 }
 
@@ -68,9 +68,8 @@ async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
     const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
-        const snap = m.snapshot as { permissions?: { all?: readonly PermissionInfo[] }; problems?: readonly string[]; problemsTyped?: readonly Problem[]; memory?: MemorySummary };
-        const problems = snap.problemsTyped ?? (snap.problems ?? []).map((text): Problem => ({ kind: "other", text, since: 0 }));
-        resolve({ permissions: snap.permissions?.all, problems, ms: Date.now() - t0, memory: snap.memory });
+        const snap = m.snapshot as { permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary };
+        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -397,7 +396,7 @@ export function agentsByStatus(agents: readonly Pick<AgentInfo, "status">[]): st
 
 /** One line for `jarhead status`: what the durable memory holds and when it last learned; the cost words are the caps, not a saving. */
 export function memoryLine(m: MemorySummary | undefined, now = Date.now()): string {
-  if (!m) return "(an older daemon: no summary)";
+  if (!m) return "(no summary in the snapshot)";
   if (!m.enabled) return "off — nothing is extracted, injected or embedded; the store stays as it is";
   const parts = [`${m.count} remembered`, `${m.forgotten} forgotten`, `${m.archived} archived`, `matching ${m.embeddings}`];
   if (m.pending) parts.push(`${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting`);

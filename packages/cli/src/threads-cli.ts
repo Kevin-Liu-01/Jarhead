@@ -1,4 +1,4 @@
-import { THREAD_TERMINAL, type Thread, type Worker } from "@jarhead/protocol";
+import { THREAD_TERMINAL, type Thread } from "@jarhead/protocol";
 
 /**
  * The CLI's view of the thread table — pure, so `jarhead status` and `jarhead cmd thread.*`
@@ -15,9 +15,9 @@ export interface ResolvedThread {
 /**
  * An id is sent as it is; a name is looked up case-insensitively, live threads first (a
  * finished "slack" still lingers in the snapshot for THREAD_LINGER_MS while a new one
- * runs). "main" and any `t_…` pass through even when the table does not list them (an
- * older daemon; a thread that just ended), so a stop is never refused for a stale
- * listing. Anything else unknown throws, naming what IS live.
+ * runs). "main" and any `t_…` pass through even when the table does not list them (a
+ * thread that just ended), so a stop is never refused for a stale listing. Anything
+ * else unknown throws, naming what IS live.
  */
 export function resolveThread(threads: readonly Thread[], arg: string): ResolvedThread {
   const wanted = arg.toLowerCase();
@@ -57,13 +57,5 @@ export function threadsLines(threads: readonly Thread[]): string[] {
   const live = threads.filter((t) => !THREAD_TERMINAL.has(t.status)).length;
   const lines = [`  threads    ${threads.length} (${live} live)`];
   for (const t of threads) lines.push(`    ${threadGlyph(t.status)} ${t.name.padEnd(16)} ${t.status.padEnd(14)} ${t.lane.padEnd(10)} ${t.steps} step${t.steps === 1 ? "" : "s"} · ${t.id}${t.question ? ` · asks: ${t.question}` : t.detail ? ` · ${t.detail}` : ""}`);
-  return lines;
-}
-
-/** An older daemon has no thread table: its workers list, said so. */
-export function workersFallbackLines(workers: readonly Worker[]): string[] {
-  const running = workers.filter((w) => !["done", "failed", "cancelled"].includes(w.status)).length;
-  const lines = [`  workers    ${workers.length}${workers.length ? ` (${running} running)` : ""} (an older daemon: no thread table)`];
-  for (const w of workers) lines.push(`    ${w.status === "done" ? "✔" : w.status === "failed" ? "✘" : w.status === "cancelled" ? "–" : "⟳"} ${w.name.padEnd(16)} ${w.status.padEnd(22)} ${w.lane.padEnd(10)} ${w.steps} step${w.steps === 1 ? "" : "s"} · ${w.id}${w.detail ? ` · ${w.detail}` : ""}`);
   return lines;
 }
