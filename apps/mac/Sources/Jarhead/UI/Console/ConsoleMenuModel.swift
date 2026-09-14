@@ -36,11 +36,23 @@ enum ConsoleMenuModel {
     /// the model stays pure (no main-actor call).
     static func key(_ query: String) -> String { query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 
-    /// The rows an option matches a query on: title and detail, `key`-normalised.
+    /// The query's letters appear in `text` in that order (`ma` finds Marin and Meridian) — the
+    /// way a list is looked through by typing, not searched.
+    static func lettersInOrder(_ q: String, in text: String) -> Bool {
+        var rest = Substring(text)
+        for ch in q {
+            guard let at = rest.firstIndex(of: ch) else { return false }
+            rest = rest[rest.index(after: at)...]
+        }
+        return true
+    }
+
+    /// The rows an option matches a query on: the title by letters in order, the detail by a plain
+    /// substring, both `key`-normalised.
     static func matches<V>(_ option: V, title: (V) -> String, detail: ((V) -> String)?, query: String) -> Bool {
         let q = key(query)
         if q.isEmpty { return true }
-        if key(title(option)).contains(q) { return true }
+        if lettersInOrder(q, in: key(title(option))) { return true }
         guard let detail else { return false }
         return key(detail(option)).contains(q)
     }
@@ -138,8 +150,10 @@ enum VoiceWords {
         return ConsoleTheme.voices.contains(id) ? [] : [.saved]
     }
 
-    /// The provenance line under a saved id the list does not carry.
+    /// The provenance of a saved id the list does not carry; nil for a listed voice.
     static func meta(_ id: String) -> String? { ConsoleTheme.voices.contains(id) ? nil : fromEnv }
+    /// The same as the row's detail column (empty for a listed voice, so the rows stay one line).
+    static func detail(_ id: String) -> String { meta(id) ?? "" }
 
     static func fieldBadge(_ id: String) -> ConsoleBadge.Word? {
         if id == defaultId { return .default }

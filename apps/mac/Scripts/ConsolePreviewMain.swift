@@ -116,12 +116,19 @@ import SwiftUI
 //     local-empty  = the Now tab with Ollama up but nothing on it that can call tools: the amber
 //                    `brain.local` row with Retry and Copy (`ollama pull qwen3.5:27b`, copied, never
 //                    run), the Ready row naming the fallback `openai-responses`. Runs `check-local`.
-//     kit-spike    = the component kit's day-0 spike: a temporary two-row popup (ConsoleFloatSpike) on
-//                    the ConsoleFloatLayer over the stream, driven by `menuOpen:kit.spike`, `keyDown:`,
-//                    `spike-scroll:` and `probe-floats`; `check-kit` prints the pure placement / tip /
-//                    badge / copy pins, `check-spike` the go/no-go lines (`check: spike focus ↑↓ Return
-//                    Esc OK`, `check: spike anchor under scroll OK`). Every `spike:` line is the popup
-//                    reporting a key it took. The kit's scenarios (menu-voice … agents-groups) are named
+//     menu-voice   = Settings › Audio › Voice open on the float layer (`menuOpen:settings.voice`): the
+//                    popup under the field, Default / Also / All voices, the 2 pt bar on the pick, the
+//                    filter strip `Filter 22 voices` with the count `22`. `menu-voice-filter` types `ma`
+//                    (`2 of 22`, Marin and Meridian), snaps, then ↓ Return: run.log's `send:` carries
+//                    Meridian. `menu-model` is the `local` fixture with `qwen3:8b` saved and unlisted:
+//                    the Model popup's `size · fit` columns, `tight` amber, `too big` red on a dim row,
+//                    `no tools` at 0.45, `Saved, not listed`, the foot following ↑. `menu-backend` opens
+//                    Backend (rows 40 with `needs` on line 2; ↓ moves the foot). `toggle` focuses the
+//                    Wake word `On | Off` (`focus:settings.wakeWord`) and presses Space: `send:` carries
+//                    wakeEnabled=false. The Settings sites answer once Builder D passes the ids
+//                    (`settings.voice` · `settings.backend` · `settings.wakeWord`); `settings.model` is
+//                    LocalModelMenu's own. `check-kit` prints the pure placement / menu model / words /
+//                    tip / badge / copy pins. The kit's other scenarios (tip-* … agents-groups) are named
 //                    in console-preview.sh and render today's UI until their builder lands.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
@@ -225,11 +232,9 @@ import SwiftUI
 //                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
 //                          is highlighted / the disclosure folds or opens
 //     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
-//     spike-scroll:<row>   scroll the spike's rail so that row sits at its top (48 pt for row 2)
 //     check-kit            the kit's pure pins as `check:` lines: placement (below · flips · clamps · trailing
 //                          · arrow ≥ r + 4 · max list height · size == .zero), ConsoleTip.delay, every badge
 //                          word and tone, check-copy over HelpCopy — ends `check: all ok (kit)`
-//     check-spike          the spike's go/no-go from its `spike:` trail and the two probe-floats around the scroll
 //     Every action may carry `@<seconds>` (from launch): "open-jarhead@1.2,shot:mid@1.36";
 //     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s). The list splits
 //     on commas outside parentheses, so `click:(300,300)` is one action.
@@ -258,9 +263,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     let launchedAt = Date()
     /// How many `append` actions have run (they alternate Kevin / Jarhead).
     var appended = 0
-    /// The spike popup's trail (`spike:` lines), read by `check-spike`.
-    var spikeLog: [String] = []
-    /// Every `probe-floats` result, in order, read by `check-spike`.
+    /// Every `probe-floats` result, in order.
     var floatProbes: [[String: CGRect]] = []
     /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
     lazy var trace = MainThreadTrace(launchedAt: launchedAt)
@@ -318,16 +321,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.ledgerSearchHandler = { query, limit in Array(fake.searchHits(query).prefix(limit)) }
 
         // The kit's floats: the tip delay pinned to 0 in every shot but `tip-warm`; floats held while
-        // the window is inactive (a shot behind the lock screen); the spike mounted for `kit-spike`.
+        // the window is inactive (a shot behind the lock screen).
         ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
         ConsoleFloatLayer.holdWhileInactive = true
-        if scenario == "kit-spike" {
-            ConsoleFloatSpike.enabled = true
-            ConsoleFloatSpike.report = { [weak self] line in
-                self?.spikeLog.append(line)
-                print("spike: \(line)")
-            }
-        }
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
@@ -353,7 +349,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.session = nil
             state.snapshot.problems = []
         case "confirm": state.snapshot = fake.confirm()
-        case "settings":
+        case "settings", "menu-voice", "menu-voice-filter", "menu-backend", "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index":
             state.snapshot = fake.asleep()
             // The gate is listening and has just heard the phrase: the "does it hear me?" readout.
             state.wakeGate = .listening
@@ -378,9 +374,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
-        case "local":
-            // Backend → Local model, Ollama up, the engine's best fit; the Settings tab.
+        case "local", "menu-model":
+            // Backend → Local model, Ollama up, the engine's best fit; the Settings tab. `menu-model`
+            // saves an id the server no longer lists, so the popup's `Saved, not listed` head shows.
             state.snapshot = fake.localSnapshot()
+            if scenario == "menu-model" { state.snapshot.settings.brainModel = "qwen3:8b" }
             state.wakeGate = .listening
             state.wakeHeard = "hey jarhead"
             state.wakePassphraseSet = true
@@ -495,7 +493,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked", "memory", "local": console.selectTab(.settings)
+        case "settings", "wake-locked", "memory", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
+             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "durability":
             pendingAgentOpen = FakeData.endedId
@@ -595,9 +594,21 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (No comma in the text: "," separates the actions.)
         case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
-        case "kit-spike": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,keyDown:down@0.9,keyDown:up@1.0,keyDown:down@1.1,keyDown:return@1.3,"
-            + "menuOpen:kit.spike@1.5,keyDown:escape@1.7,menuOpen:kit.spike@1.9,probe-floats@2.1,spike-scroll:2@2.2,probe-floats@2.5,"
-            + "check-spike@2.6,menuOpen:kit.spike@2.7,keyDown:down@2.8"
+        // The kit's dropdowns (Builder B): the pure pins, then the popup opened by its id on the layer.
+        case "menu-voice": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.4"
+        // `ma` typed into the filter (2 of 22: Marin, Meridian), a snap with the filter up, then ↓ Return
+        // picks Meridian — run.log's `send:` line must carry "meridian".
+        case "menu-voice-filter": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,keyDown:m+a@1.0,"
+            + "snap:preview-console-menu-voice-filter-typed@1.6,keyDown:down+return@2.0,probe-floats@2.6"
+        // The saved row is highlighted on open (the bottom); ↑↑ lands on gpt-oss:120b, whose foot says why it is tight.
+        case "menu-model": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,keyDown:up+up@1.2,probe-floats@2.0"
+        // ↓ moves the highlight and the foot to the next kind's `needs` sentence.
+        case "menu-backend": defaultActions = "check-kit@0.3,menuOpen:settings.backend@0.6,keyDown:down@1.2,probe-floats@2.0"
+        // Esc closes unchanged; an outside click closes and does not focus the composer.
+        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8"
+        case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8"
+        // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
+        case "toggle": defaultActions = "check-kit@0.3,rail-scroll:900@0.6,focus:settings.wakeWord@1.0,keyDown:space@1.6"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -847,8 +858,6 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeFloats(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
-            } else if action == "check-spike" {
-                checkSpike(stamp: stamp)
             } else if let info = memoryAction(action) {
                 // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
                 // `send:` line is the command, the `memory-rail:` line what the list holds after.
@@ -2922,7 +2931,6 @@ extension PreviewDelegate {
             guard parts.count == 2 else { return nil }
             return [ConsolePreviewKey.fold: parts[0], ConsolePreviewKey.foldOpen: parts[1] == "open"]
         }
-        if action.hasPrefix("spike-scroll:"), let row = Int(action.dropFirst("spike-scroll:".count)) { return [ConsoleFloatSpike.scrollKey: row] }
         return nil
     }
 
@@ -3001,28 +3009,6 @@ extension PreviewDelegate {
         print("probe-floats: \(line) at \(stamp)s")
     }
 
-    /// `check-spike`: the go/no-go for option (a) — focus and keys from the popup's own trail, the
-    /// anchor under a scroll from the two `probe-floats` around `spike-scroll:2` (48 pt).
-    func checkSpike(stamp: String) {
-        let want = ["focus in", "down → highlight 1", "up → highlight 0", "return → pick 1", "closed — picked Two", "escape", "closed — escape"]
-        let missing = want.filter { w in !spikeLog.contains(w) }
-        print(missing.isEmpty ? "check: spike focus ↑↓ Return Esc OK" : "check: FAIL spike focus ↑↓ Return Esc — missing \(missing) in \(spikeLog)")
-        let id = ConsoleFloatSpikeWords.id
-        guard floatProbes.count >= 2, let before = floatProbes[floatProbes.count - 2][id] else {
-            print("check: FAIL spike anchor under scroll — no popup rect before the scroll (\(floatProbes))")
-            return
-        }
-        let after = floatProbes[floatProbes.count - 1][id]
-        if let after, abs((before.minY - after.minY) - 48) < 2 {
-            print(String(format: "check: spike anchor under scroll OK (the popup followed its field: y %.1f → %.1f)", before.minY, after.minY))
-        } else if after == nil {
-            print("check: spike anchor under scroll OK (fallback: the float closed when its anchor moved)")
-        } else {
-            print(String(format: "check: FAIL spike anchor under scroll — y %.1f → %.1f, wanted −48 or closed", before.minY, after?.minY ?? -1))
-        }
-        print("check: \(missing.isEmpty ? "all ok" : "\(missing.count) FAILED") (spike) at \(stamp)s")
-    }
-
     /// `check-kit`: the kit's pure pins as `check: ok|FAIL` lines.
     func checkKit(stamp: String) {
         var failed = 0
@@ -3069,6 +3055,71 @@ extension PreviewDelegate {
         expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
         expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
         expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
+        checkKitMenu(expect)
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+
+    /// The dropdown's pure pins (Builder B): sections, steps, type-ahead, the words, the Local words.
+    func checkKitMenu(_ expect: (String, String, String) -> Void) {
+        let voices = ConsoleTheme.voices
+        let groups = ConsoleMenuModel.sections(voices, group: VoiceWords.group, title: VoiceWords.name, detail: nil, query: "")
+        expect("menu: sections voice groups", groups.map { "\($0.title ?? "-")[\($0.rows.count)]" }.joined(separator: " "), "Default[1] Also[2] All voices[19]")
+        let ma = ConsoleMenuModel.sections(voices, group: VoiceWords.group, title: VoiceWords.name, detail: nil, query: "ma")
+        expect("menu: sections query ma", ma.flatMap(\.rows).map(VoiceWords.name).joined(separator: ", "), "Marin, Meridian")
+        expect("menu: empty groups vanish while filtering", ma.map { $0.title ?? "-" }.joined(separator: " · "), "Also · All voices")
+        guard let up = fake?.ollamaUp() else { expect("menu: the local fixture", "none", "fixtures"); return }
+        expect("menu: model order fits → tight → too big → no tools", LocalBrainWords.modelRows(saved: "qwen3:8b", status: up).joined(separator: ","),
+               ",qwen3.5:27b,qwen3.5:9b,llama3.3:70b,gpt-oss:120b,deepseek-v3.1:671b,gemma4:31b,qwen3:8b")
+        let rows = ["a", "b", "c", "d"]
+        let off: (String) -> Bool = { $0 == "c" }
+        expect("menu: step clamps at the end", ConsoleMenuModel.step("d", by: 1, in: rows, disabled: { _ in false }) ?? "nil", "d")
+        expect("menu: step clamps at the top", ConsoleMenuModel.step("a", by: -1, in: rows, disabled: { _ in false }) ?? "nil", "a")
+        expect("menu: step skips disabled", ConsoleMenuModel.step("b", by: 1, in: rows, disabled: off) ?? "nil", "d")
+        expect("menu: step back skips disabled", ConsoleMenuModel.step("d", by: -1, in: rows, disabled: off) ?? "nil", "b")
+        expect("menu: step from nothing lands on the first", ConsoleMenuModel.step(nil, by: 1, in: rows, disabled: off) ?? "nil", "a")
+        expect("menu: ⌥↓ goes to the last enabled", ConsoleMenuModel.step("a", by: 4, in: rows, disabled: off) ?? "nil", "d")
+        expect("menu: typeAhead finds the next", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "s", after: "ripple") ?? "nil", "sage")
+        expect("menu: typeAhead wraps", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "b", after: "willow") ?? "nil", "ballad")
+        expect("menu: typeAhead passes the highlight", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "c", after: "cedar") ?? "nil", "cinder")
+        expect("menu: filterPlaceholder", ConsoleMenuModel.filterPlaceholder(count: 22, noun: "voices"), "Filter 22 voices")
+        expect("menu: countWord typing", ConsoleMenuModel.countWord(shown: 2, of: 22, typing: true), "2 of 22")
+        expect("menu: countWord at rest", ConsoleMenuModel.countWord(shown: 22, of: 22, typing: false), "22")
+        let w = ConsoleMenuModel.width(field: 182, minimum: 300, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), anchorMinX: 986)
+        expect("menu: width clamp", String(format: "x=%.0f w=%.0f", w.x, w.w), "x=872 w=300")
+        let narrow = ConsoleMenuModel.width(field: 400, minimum: 220, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), anchorMinX: 100)
+        expect("menu: width takes the field when wider", String(format: "x=%.0f w=%.0f", narrow.x, narrow.w), "x=100 w=400")
+        expect("menu: filter past eight rows", "\(ConsoleMenuModel.showsFilter(nil, count: 8)) \(ConsoleMenuModel.showsFilter(nil, count: 9)) \(ConsoleMenuModel.showsFilter(true, count: 2))", "false true true")
+        checkKitWords(expect, up: up)
+    }
+
+    /// The sites' words: the Local rows, the voices, the backends, the toggle, the Effort foot.
+    func checkKitWords(_ expect: (String, String, String) -> Void, up: LocalServerStatus) {
+        expect("local: size", LocalBrainWords.size("qwen3.5:27b", status: up) ?? "nil", "17 GB")
+        expect("local: badges", ["", "qwen3.5:27b", "gpt-oss:120b", "deepseek-v3.1:671b", "gemma4:31b", "qwen3:8b"]
+            .map { LocalBrainWords.badges($0, status: up).map(ConsoleBadge.text).joined(separator: "+") }.joined(separator: " / "),
+               "auto / fits / tight / too big / no tools / saved")
+        expect("local: meta", LocalBrainWords.meta("qwen3.5:27b", status: up) ?? "nil", "256k · tools · vision · thinking")
+        expect("local: meta of a saved id", LocalBrainWords.meta("qwen3:8b", status: up) ?? "nil", "not on Ollama 0.34.0")
+        expect("local: groups", ["", "qwen3.5:9b", "qwen3:8b"].map { LocalBrainWords.group($0, status: up) }.joined(separator: " / "), "Automatic / On Ollama 0.34.0 / Saved, not listed")
+        expect("local: group count and caption", "\(LocalBrainWords.groupCount("On Ollama 0.34.0", status: up) ?? "nil") · \(LocalBrainWords.groupCaption("On Ollama 0.34.0", status: up) ?? "nil")", "5 can call tools · size · fit")
+        expect("local: field", "\(LocalBrainWords.fieldTitle(saved: "", status: up)) [\(LocalBrainWords.fieldBadge(saved: "", status: up).map(ConsoleBadge.text) ?? "-")]", "qwen3.5:27b [auto]")
+        expect("local: field saved unlisted is quiet", "\(LocalBrainWords.fieldTitle(saved: "qwen3:8b", status: up)) \(LocalBrainWords.isQuiet(saved: "qwen3:8b", status: up))", "qwen3:8b true")
+        expect("local: disabled is the tool-less one", "\(LocalBrainWords.isDisabled("gemma4:31b", status: up)) \(LocalBrainWords.isDisabled("deepseek-v3.1:671b", status: up))", "true false")
+        expect("local: loaded", "\(LocalBrainWords.isLoaded("qwen3.5:27b", status: up)) \(LocalBrainWords.isLoaded("qwen3.5:9b", status: up))", "true false")
+        expect("local: foot tight", LocalBrainWords.foot("gpt-oss:120b", status: up) ?? "nil", "gpt-oss:120b · 65 GB on a 137 GB Mac — tight: slow first token, swaps under load.")
+        expect("local: foot too big", LocalBrainWords.foot("deepseek-v3.1:671b", status: up) ?? "nil", "deepseek-v3.1:671b · 404 GB on a 137 GB Mac — too big: it will not load.")
+        expect("local: foot no tools", LocalBrainWords.foot("gemma4:31b", status: up) ?? "nil", "gemma4:31b cannot call tools — the hands need them, so it is listed and greyed.")
+        expect("voice: default badge", VoiceWords.badges("ballad").map(ConsoleBadge.text).joined(), "default")
+        expect("voice: saved outside the list", "\(VoiceWords.group("nova")) · \(VoiceWords.badges("nova").map(ConsoleBadge.text).joined()) · \(VoiceWords.meta("nova") ?? "nil")", "Saved, not listed · saved · from env")
+        expect("voice: the field shows the name alone", VoiceWords.name("cedar"), "Cedar")
+        expect("brain: badges", BrainKind.allCases.map { BrainWords.badge($0).map(ConsoleBadge.text).joined() }.joined(separator: ","), ",no key,no key,,,,this Mac")
+        expect("brain: needs is the foot", BrainWords.needs(.local), "A model on this Mac through Ollama or LM Studio. Everything but the voice stays here.")
+        expect("toggle: word", "\(ConsoleToggle.word(true)) | \(ConsoleToggle.word(false))", "On | Off")
+        expect("segments: heights", "\(ConsoleSegments<Bool>.height(.rail)) \(ConsoleSegments<Bool>.height(.row)) \(ConsoleSegments<Bool>.height(.toggle))", "28.0 26.0 22.0")
+        expect("field: heights", "\(ConsoleField.height(.edit)) \(ConsoleField.height(.filter)) \(ConsoleField.height(.row)) \(ConsoleField.height(.composer))", "22.0 24.0 26.0 32.0")
+        for level in ConsoleTheme.efforts {
+            let hint = HelpCopy.effort(level) ?? ""
+            expect("copy: effort \(level)", HelpCopy.violations(HelpCopy.Entry(name: level, hint: hint)).joined(separator: ", ") + (hint.isEmpty ? "empty" : ""), "")
+        }
     }
 }

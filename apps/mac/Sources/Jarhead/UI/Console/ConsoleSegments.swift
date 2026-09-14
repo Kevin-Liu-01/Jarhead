@@ -101,7 +101,7 @@ struct ConsoleSegments<Value: Hashable>: View {
             }
         }
         .frame(height: height)
-        .fixedSize(horizontal: fixedSize, vertical: false)
+        .fixedSize(horizontal: fixedSize || cellWidth != nil, vertical: false)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(focused ? ConsoleTheme.accent : ConsoleTheme.hair, lineWidth: 1))
         .focusable()
@@ -157,7 +157,7 @@ struct ConsoleToggle: View {
     var body: some View {
         HStack(spacing: 10) {
             ConsoleSegments(value: on, options: [true, false], title: { $0 ? words.0 : words.1 }, pick: flip,
-                            accessibilityLabel: accessibilityLabel, size: .toggle, fixedSize: true, id: id, cellWidth: 30)
+                            accessibilityLabel: accessibilityLabel, size: .toggle, id: id, cellWidth: 30)
                 .accessibilityValue(Self.word(on))
                 .accessibilityAddTraits(.isToggle)
             if let hint {

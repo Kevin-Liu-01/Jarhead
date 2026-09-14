@@ -183,7 +183,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
     private var listMax: CGFloat {
         var room = ConsoleFloatPlacement.maxListHeight(anchor: frame, bounds: bounds, side: .below)
         if room < 200 { room = max(room, ConsoleFloatPlacement.maxListHeight(anchor: frame, bounds: bounds, side: .above)) }
-        return max(78, room - ConsoleMenuPopupLayout.chrome)
+        return max(78, room - ConsoleMenuPopupLayout.chrome(filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), foot: foot != nil))
     }
 }
 
@@ -247,8 +247,11 @@ struct ConsoleMenuFieldKeys: ViewModifier {
 // MARK: - The popup
 
 enum ConsoleMenuPopupLayout {
-    /// The filter strip (32) with its rule, the foot at its tallest (two lines), the list's air.
-    static let chrome: CGFloat = 32 + 1 + 40 + 1 + 8
+    /// What the popup spends outside its list: the filter strip (32) with its rule, the foot at its
+    /// tallest (two lines) with its rule, the list's air and the seam.
+    static func chrome(filter: Bool, foot: Bool) -> CGFloat {
+        (filter ? 33 : 0) + (foot ? 41 : 0) + 8 + 2 * ConsoleTheme.seam
+    }
     static let rowHeight: CGFloat = 26
     static let twoLineRowHeight: CGFloat = 40
     static let headHeight: CGFloat = 22
@@ -380,7 +383,7 @@ struct ConsoleMenuList<Value: Hashable>: View {
             .thinScrollers()
             .frame(height: min(natural, spec.listMax))
             .onChange(of: highlight) { if let h = highlight { proxy.scrollTo(h, anchor: nil) } }
-            .onAppear { if let h = highlight { proxy.scrollTo(h, anchor: .center) } }
+            .onAppear { if let h = highlight { proxy.scrollTo(h, anchor: nil) } }
         }
     }
 }
@@ -394,8 +397,11 @@ struct ConsoleMenuGroupHead: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(title).font(ConsoleTheme.sans(11, .medium)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
-            if let count { Text(count).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1) }
-            Spacer(minLength: 8)
+            if let count {
+                // A bare figure is mono; a phrase with a figure in it (`5 can call tools`) reads in sans.
+                Text(count).font(count.allSatisfy(\.isNumber) ? ConsoleTheme.mono(11) : ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
+            }
+            Spacer(minLength: 6)
             if let caption { Text(caption).font(ConsoleTheme.mono(10)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1) }
         }
         .padding(.horizontal, 12)
@@ -418,7 +424,7 @@ struct ConsoleMenuRow<Value: Hashable>: View {
     var body: some View {
         Button { spec.pick(value) } label: {
             HStack(spacing: 0) {
-                RoundedRectangle(cornerRadius: 1).fill(selected ? ConsoleTheme.accent : .clear).frame(width: 2).padding(.vertical, 4)
+                Rectangle().fill(selected ? ConsoleTheme.accent : .clear).frame(width: 2).padding(.vertical, 4)
                 VStack(alignment: .leading, spacing: 2) {
                     ConsoleMenuRowLine(spec: spec, value: value, selected: selected)
                     if let meta = spec.meta?(value), !meta.isEmpty {

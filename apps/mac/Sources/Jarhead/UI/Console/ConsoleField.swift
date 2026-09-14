@@ -275,19 +275,25 @@ struct ConsoleSecretRow: View {
     var error: String? = nil
     var id: String? = nil
     var accessibilityLabel: String? = nil
+    /// A site that registers the typed key as a draft (the wizard's Continue saves it) owns the text.
+    var draft: Binding<String>? = nil
+    /// A second verb on the on-file face (the passphrase's Clear).
+    var clear: (() -> Void)? = nil
     let save: (String) -> Void
 
     @State private var text = ""
     @State private var editing = false
+
+    private var typed: Binding<String> { draft ?? $text }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if saving {
                 ConsoleSecretSaving()
             } else if onFile, !editing {
-                ConsoleSecretOnFile(color: statusColor, text: statusText, envVar: envVar) { editing = true }
+                ConsoleSecretOnFile(color: statusColor, text: statusText, envVar: envVar, clear: clear) { editing = true }
             } else {
-                ConsoleField(text: $text, placeholder: placeholder, size: .row, mono: true, secure: true,
+                ConsoleField(text: typed, placeholder: placeholder, size: .row, mono: true, secure: true,
                              trailing: .verb(verb, primary: true, submit), error: error != nil, id: id,
                              accessibilityLabel: accessibilityLabel ?? placeholder, onCommit: submit, onCancel: { editing = false })
                 if let error {
@@ -302,10 +308,10 @@ struct ConsoleSecretRow: View {
     }
 
     private func submit() {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = typed.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
         save(value)
-        text = ""
+        if draft == nil { text = "" }
     }
 }
 
@@ -324,6 +330,7 @@ struct ConsoleSecretOnFile: View {
     let color: Color
     let text: String
     let envVar: String?
+    var clear: (() -> Void)? = nil
     let change: () -> Void
 
     var body: some View {
@@ -332,6 +339,9 @@ struct ConsoleSecretOnFile: View {
                 ConsoleDot(color: color, size: 6)
                 Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2).contentTransition(.opacity)
                 Spacer(minLength: 8)
+                if let clear {
+                    Button(ConsoleFieldWords.clear, action: clear).buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                }
                 Button(ConsoleFieldWords.change, action: change)
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .consoleHelp(ConsoleFieldWords.secretHint)

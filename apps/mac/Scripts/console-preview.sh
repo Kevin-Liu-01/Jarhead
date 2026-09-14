@@ -6,18 +6,20 @@
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
 #           search | search-hit | problems | cleared | loading | wipe | timing |
 #           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending |
-#           local | local-empty | kit-spike |
+#           local | local-empty |
 #           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
 #           problems-groups | ledger-months | memory-chips | list-keys | agents-groups (default live)
-#   The component kit (design9): `kit-spike` is day 0's spike — a temporary two-row popup on the
-#   ConsoleFloatLayer over the stream, opened by `menuOpen:kit.spike`, driven by `keyDown:` through the
-#   responder chain and scrolled under (`spike-scroll:2`); run.log ends with `check: spike focus ↑↓ Return
-#   Esc OK`, `check: spike anchor under scroll OK (…)`, the `probe-floats:` rects and `check: all ok (kit)`.
-#   The kit's other scenario names are reserved here and render today's UI until their builder lands:
-#   menu-* (the Voice / Model / Backend popups, Esc, an outside click), tip-* (a rail row's card, `?` on
-#   a focused control, the warm re-show, a thumb preview), toggle (On | Off), settings-index,
-#   permissions-groups, problems-groups, ledger-months, memory-chips, list-keys, agents-groups.
+#   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
+#   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
+#   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
+#   `menu-escape` / `menu-outside` the layer's contract, `toggle` the Wake word `On | Off` flipped by Space.
+#   run.log ends with the `probe-floats:` rects and `check: all ok (kit)` (placement, the menu model, the
+#   sites' words, tips, badges, copy). The Settings-tab fields answer their ids (`settings.voice`,
+#   `settings.backend`, `settings.wakeWord`) once RightRailView passes them (Builder D); `settings.model`
+#   is LocalModelMenu's own and renders today. The other kit names (tip-*, settings-index,
+#   permissions-groups, problems-groups, ledger-months, memory-chips, list-keys, agents-groups) are
+#   reserved here and render today's UI until their builder lands.
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
 #   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,
@@ -128,7 +130,7 @@ OUT="${2:-}"
 case "$SCENARIO" in
   live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
   # The component kit's scenarios (design9); each may render today's UI until its builder lands.
-  kit-spike|menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|agents-groups) ;;
+  menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|agents-groups) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -150,10 +152,12 @@ if [[ "$SCENARIO" == "switch" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; 
 if [[ "$SCENARIO" == "wipe" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-8}"; export PREVIEW_WIPE_SECONDS="${PREVIEW_WIPE_SECONDS:-2}"; fi
 if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; fi
 if [[ "$SCENARIO" == "durability" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
-# The kit's spike drives its popup to 2.8 s (keys, a scroll under it, the checks) and is shot open.
-if [[ "$SCENARIO" == "kit-spike" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
-# The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it).
-case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
+# The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it);
+# `menu-model` is shot tall so the Model popup's eight rows and its foot are whole (the 760 window scrolls them).
+case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
+if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
+# The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
+case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
 # The Threads pass's scenarios run their actions to 1.8 s (an `ended` event, an Allow, a landed turn).
 case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
 # `thread-history` (the paged main pane: scroll up, Load earlier, the page lands, geometry after) runs to 2.3 s.
