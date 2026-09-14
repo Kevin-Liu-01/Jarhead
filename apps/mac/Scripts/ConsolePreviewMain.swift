@@ -326,6 +326,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.memorySearchHandler = { query, limit in fake.memorySearch(query, limit: limit) }
         state.ledgerDaysHandler = { ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"] }
         state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : [] }
+        // `ledger-months` (Builder D): forty days from `Scripts/fixtures/ledger-days.json` (September 1–10,
+        // August 2–31), every one readable — the month heads sum the days the harness picks before the shot.
+        if scenario == "ledger-months", let days = Self.fixtureDays(state.stateDir) {
+            state.ledgerDaysHandler = { days }
+            state.ledgerReadHandler = { day in days.contains(day) ? fake.ledgerRows() : [] }
+        }
         // Jarhead's own sessions, as `ledger.sessions` / `ledger.session` would answer:
         // the list is set outright so the rail has it before the window opens.
         state.jarheadSessions = fake.jarheadSessions()
@@ -341,6 +347,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // The folds live in memory alone here (a previous run's UserDefaults never leak into a shot);
         // every list's focus move is a `list-focus:` line.
         ConsoleFoldStore.persists = false
+        // Settings is an index of seven closed heads (Builder D); every scenario but `settings-index`
+        // opens them all, so the shots that drive a control inside a section still see it.
+        if scenario != "settings-index" { for id in SettingsWords.folds { ConsoleFoldStore.set(id, true) } }
         ConsoleListFocus.report = { line in print("list-focus: \(line)") }
         ConsoleTip.report = { [weak self] line in
             self?.tipLog.append(line)
@@ -369,11 +378,15 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
                 state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
             }
-        case "problems":
+        case "problems", "problems-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.problems = fake.problems()
+        case "permissions-groups":
+            // Screen Recording not asked, Accessibility denied: `Senses 5 of 6` and `Hands 2 of 3 · [1 missing]`.
+            state.snapshot = fake.live()
+            state.snapshot.permissions = fake.permissions(microphone: .granted, screenRecording: .unknown, accessibility: .denied)
         case "paused":
             state.snapshot = fake.live()
             state.snapshot.phase = .paused
@@ -628,8 +641,19 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
         // The kit's tips (Builder A): a thread's card on the stream's chip (the same ConsoleTipCard.thread the rails
         // draw), `?` pinning the composer's Stop after `focus:`, the warm re-show timed from the trail, the pane
-        case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:chip.\(FakeData.slackId)@0.8,probe-floats@1.3"
-        case "tip-key": defaultActions = "check-kit@0.3,focus:stream.stop@0.8,keyDown:?@1.0,probe-floats@1.4"
+        // Retargeted (Builder D): the card beside the right rail's Slack row; `?` on the Brain section's Check.
+        case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:\(NowWords.threadTip(FakeData.slackId))@0.8,probe-floats@1.3"
+        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4"
+        // The right rail (Builder D): Settings as seven folded heads with Memory opened by its id; the Now rail's
+        // Permissions areas (Senses open) and Problems kinds (Engine folded); the Ledger's forty days by month —
+        // two August days read first so the folded head sums them, then Sep 10 picked, the list given the
+        // keyboard and ↓ ⏎ picking the next day (`list-focus:` lines say which).
+        case "settings-index": defaultActions = "check-kit@0.3,snap:preview-console-settings-index-closed@0.7,fold:\(SettingsWords.memoryFold):open@0.9"
+        case "permissions-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.permissionsFold):open@0.5,fold:\(NowWords.sensesFold):open@0.8,rail-scroll:460@1.2"
+        case "problems": defaultActions = "fold:\(NowWords.problemsFold):open@0.4,rail-scroll:520@0.8"
+        case "problems-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.problemsFold):open@0.5,fold:\(NowWords.engineFold):closed@0.8,rail-scroll:520@1.2"
+        case "ledger-months": defaultActions = "check-kit@0.3,pick-day:2026-08-31@0.4,pick-day:2026-08-28@0.6,pick-day:2026-09-10@0.9,"
+            + "focus:\(LedgerWords.listId)@1.4,keyDown:down+return@1.7,probe@2.4"
         case "tip-warm": defaultActions = "check-kit@0.3,hover:stream.go@0.5,leave:stream.go@1.2,hover:stream.mute@1.3,probe-floats@1.5,check-tips@1.6"
         case "tip-thumb": defaultActions = "check-kit@0.3,thread-open:\(FakeData.slackId)@0.3,tipOpen:thread.shot.\(FakeData.slackId)@1.0,probe-floats@1.6"
         // The kit's dropdowns (Builder B): the pure pins, then the popup opened by its id on the layer.
@@ -1899,6 +1923,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The right rail's scroll view: the one whose width is the rail's.
+    /// `Scripts/fixtures/ledger-days.json` (PREVIEW_STATE_DIR): the `ledger-months` days, newest first.
+    static func fixtureDays(_ dir: URL) -> [String]? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("ledger-days.json")),
+              let days = try? JSONDecoder().decode([String].self, from: data), !days.isEmpty else { return nil }
+        return days
+    }
+
     private static func railScrollView(in view: NSView?) -> NSScrollView? {
         guard let view = view else { return nil }
         var found: [NSScrollView] = []
@@ -3108,6 +3139,7 @@ extension PreviewDelegate {
         checkTipCards(expect)
         checkKitMenu(expect)
         failed += checkKitLists()
+        failed += checkKitRail()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3281,6 +3313,80 @@ extension PreviewDelegate {
         expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
         expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")
         expect("fold store: remembers in memory when not persisting", { ConsoleFoldStore.persists = false; ConsoleFoldStore.set("kit.check", false); return "\(ConsoleFoldStore.isOpen("kit.check", default: true))" }(), "false")
+        return failed
+    }
+}
+
+// MARK: - The right rail (Builder D): the folded heads, the areas and kinds, the rows' words — the pure pins
+
+extension PreviewDelegate {
+    /// `RightRailView`'s pure words (the Settings index, the Permissions areas, the Problems kinds, a
+    /// thread row's line, the ledger's figures and filter, the mic dropdown's groups and badges) as
+    /// `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitRail() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let text = ConsoleDisclosureSummary.text
+        expect("rail: the seven fold ids", SettingsWords.folds.joined(separator: ","),
+               "settings.audio,settings.brain,settings.leaves,settings.session,settings.memory,settings.retention,settings.wake")
+        expect("rail: toggle hints", [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint].joined(separator: " / "),
+               "wakes on launch / learns nothing while off / listens on-device")
+        expect("rail: filter days", "\(LedgerWords.filterDays) · \(LedgerWords.filterPast) · \(LedgerWords.unread)", "Filter days · 8 · —")
+        guard let fake else { expect("rail: fixtures", "none", "fixtures"); return failed }
+        // Permissions: the areas, their counts and the closed heads' words.
+        let all = fake.permissions(microphone: .granted, screenRecording: .unknown, accessibility: .denied).all
+        let senses = PermissionsRailList.rows(all, in: .senses), hands = PermissionsRailList.rows(all, in: .hands), files = PermissionsRailList.rows(all, in: .files)
+        expect("rail: permission areas", "\(senses.count) \(hands.count) \(files.count)", "6 3 7")
+        expect("rail: Senses head", text(PermissionsRailList.summary(senses)), "[1 missing] · screenRecording")
+        expect("rail: Hands head", text(PermissionsRailList.summary(hands)), "[1 missing] · accessibility")
+        expect("rail: Files head", text(PermissionsRailList.summary(files)), "fullDiskAccess · contacts · +5")
+        expect("rail: Problems kind head line", ProblemsRailList.headLine("Delegation failed: Codex session refused input") ?? "nil", "Delegation failed: Codex s…")
+        expect("rail: Permissions folded", text(PermissionsRailList.headSummary(all)), "[2 missing]")
+        expect("rail: a granted set is all ok", text(PermissionsRailList.headSummary(fake.permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted).all)), "[all ok]")
+        let denied = all.first { $0.kind == .accessibility }, notAsked = all.first { $0.kind == .screenRecording }
+        expect("rail: a denied grant opens Settings", "\(denied.map(PermissionRailRow.opensSettings) ?? false) \(notAsked.map(PermissionRailRow.opensSettings) ?? false)", "true true")
+        expect("rail: the why is the row's line 2", PermissionRailRow.meta(PermissionInfo(kind: .microphone, grant: .granted, ask: .prompt, required: true, label: "Microphone", why: "hears you")) ?? "nil", "hears you")
+        // Problems: Kevin's grants apart from the engine's; `since 10:08 · Retry` under the line.
+        let problems = fake.problems()
+        expect("rail: problem kinds", problems.map { ProblemsRailList.isGrant($0) ? "grant" : "engine" }.joined(separator: ","), "grant,engine,engine,engine")
+        expect("rail: Problems folded", text(ProblemsRailList.summary(problems)), "[1 missing] · 3 engine")
+        if let p = problems.last {
+            expect("rail: problem meta", ProblemsRailList.meta(p), "since \(ConsoleFormat.time(p.since)) · Reveal shots")
+            expect("rail: problem remedy tip opens", ProblemsRailList.remedyTip(p), "Opens \(ConsoleFormat.truncPath("/Users/kevinliu/.jarhead/shots", max: 40))")
+        }
+        expect("rail: problem remedy tip sends", ProblemsRailList.remedyTip(problems[0]), "Sends request-permission")
+        // Threads: the status word first, then the figures.
+        let t0: Double = 1_757_856_000_000
+        let slack = fake.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0)
+        expect("rail: thread word", "\(ThreadRailRow.word(slack) ?? "-") / \(ThreadRailRow.word(fake.thread(FakeData.slackId, status: .acting, startedAt: t0)) ?? "-")", "- / " + ConsoleTheme.thread(.acting).label)
+        expect("rail: thread line", ThreadRailRow.line(slack, now: t0 + 6_000), ConsoleFormat.threadMeta(slack, now: t0 + 6_000))
+        // Leaves the Mac: the destinations counted.
+        let paths = fake.cloudPaths(brain: "x")
+        expect("rail: leaves counts", "\(LeavesSection.counts(paths).cloud) \(LeavesSection.counts(paths).mac)", "4 0")
+        // Ledger: figures once read, `—` until then; the filter matches the date and the words.
+        let stats = StreamBuilder.stats(fake.ledgerRows())
+        expect("rail: day figures", LedgerPanel.figures("2026-09-10", in: ["2026-09-10": stats]) + " / " + LedgerPanel.figures("2026-09-09", in: [:]), ConsoleFormat.billed(stats.billedSeconds) + " / —")
+        let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
+        expect("rail: filter days by date and word", LedgerPanel.filtered(["2026-09-10", "2026-08-31"], query: "08", now: sept).joined() + " / " + LedgerPanel.filtered(["2026-09-10", "2026-08-31"], query: "thu", now: sept).joined(), "2026-08-31 / 2026-09-10")
+        // Mic: Auto / Ranked / Connected, the badges.
+        expect("rail: mic groups", [SettingsPanel.micGroup(id: "", ranked: false, connected: false), SettingsPanel.micGroup(id: "a", ranked: true, connected: true),
+                                    SettingsPanel.micGroup(id: "b", ranked: false, connected: true), SettingsPanel.micGroup(id: "c", ranked: false, connected: false)].joined(separator: " / "),
+               "Auto / Ranked / Connected / Saved, not listed")
+        expect("rail: mic badges", SettingsPanel.micBadges(id: "a", active: "a", virtual: true, connected: true).map(ConsoleBadge.text).joined(separator: "+") + " / "
+               + SettingsPanel.micBadges(id: "c", active: "a", virtual: false, connected: false).map(ConsoleBadge.text).joined(separator: "+"), "active+virtual / gone")
+        expect("rail: brain model word", "\(SettingsPanel.brainModelWord(kind: .local, model: "", local: fake.ollamaUp()) ?? "nil") / \(SettingsPanel.brainModelWord(kind: .claudeCode, model: "claude-opus-5", local: fake.noServer()) ?? "nil")",
+               "qwen3.5:27b / claude-opus-5")
+        expect("rail: Brain head", text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .local, model: "qwen3.5:27b"), model: "qwen3.5:27b", ready: true)) + " / "
+               + text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .claudeCode, model: "claude-opus-5"), model: "claude-opus-5", ready: true)) + " / "
+               + text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .auto, model: nil), model: nil, ready: nil)),
+               "Local · qwen3.5:27b · [Ready] / claude-opus-5 · [Ready] / Automatic")
+        let summary = fake.memorySummary()
+        expect("rail: learned word", SettingsPanel.learnedWord(summary, now: fake.now), "learned 12m")
+        expect("rail: learned card", SettingsPanel.lastRunCard(summary, now: fake.now).spoken, "Last run, learned 12m ago, extractor responses, added +3, updated ~1, same 4, refused 1, took 1.8 s")
         return failed
     }
 }

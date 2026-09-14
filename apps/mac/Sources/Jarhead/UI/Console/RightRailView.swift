@@ -1,22 +1,298 @@
 import SwiftUI
+import AVFoundation
 
-/// The Settings dropdowns' and toggles' ids (the harness opens and focuses them by name) and the
-/// toggles' hints — Builder B's lighting of the sites the kit scenarios drive; Builder D's
-/// `SettingsWords` absorbs these.
-enum SettingsMenuIds {
+// MARK: - Words (every literal the rail shows; `check-kit` pins the ones the mocks show)
+
+/// The Settings tab: the controls' ids (the harness opens and focuses them by name — `menuOpen:`,
+/// `focus:`, `fold:`), the seven heads' fold ids, the row keys, the hints and the tips.
+enum SettingsWords {
+    // ids
     static let voice = "settings.voice"
+    static let mic = "settings.mic"
     static let backend = "settings.backend"
     static let effort = "settings.effort"
-    static let effortLabel = "Effort"
     static let auth = "settings.auth"
     static let wakeWord = "settings.wakeWord"
     static let autoWake = "settings.autoWake"
     static let remember = "settings.remember"
+    static let check = "settings.check"
+    static let idle = "settings.idle"
+    static let modelField = "settings.modelField"
+    static let server = "settings.server"
+    static let phrases = "settings.phrases"
+    static let passphrase = "settings.passphrase"
+    static let voiceKey = "settings.voiceKey"
+    static let brainKey = "settings.brainKey"
+    static let ledgerRetention = "settings.ledgerRetention"
+    static let shotsRetention = "settings.shotsRetention"
+    static let learnedTip = "settings.learned"
+    static let heardTip = "settings.heard"
+    static func leavesRow(_ what: String) -> String { "settings.leaves.\(what)" }
+    // the seven heads (folds remembered per id)
+    static let audioFold = "settings.audio"
+    static let brainFold = "settings.brain"
+    static let leavesFold = "settings.leaves"
+    static let sessionFold = "settings.session"
+    static let memoryFold = "settings.memory"
+    static let retentionFold = "settings.retention"
+    static let wakeFold = "settings.wake"
+    static let folds = [audioFold, brainFold, leavesFold, sessionFold, memoryFold, retentionFold, wakeFold]
+    // row keys
+    static let voiceKeyLabel = "Voice"
+    static let language = "Language"
+    static let accent = "Accent"
+    static let micLabel = "Mic"
+    static let voiceKeyRow = "Voice key"
+    static let model = "Model"
+    static let serverRow = "Server"
+    static let key = "Key"
+    static let effortLabel = "Effort"
+    static let status = "Status"
+    static let idleSleep = "Idle sleep"
+    static let autoWakeRow = "Auto-wake"
+    static let home = "Home"
+    static let rememberRow = "Remember"
+    static let matching = "Matching"
+    static let known = "Known"
+    static let ledger = "Ledger"
+    static let screenshots = "Screenshots"
+    static let trash = "Trash"
+    static let wakeWordRow = "Wake word"
+    static let phrasesRow = "Phrases"
+    static let authRow = "Auth"
+    static let passphraseRow = "Passphrase"
+    // toggles' hints (≤ 4 words: the consequence, not the label)
     static let wakeHint = "listens on-device"
     static let autoWakeHint = "wakes on launch"
     static let rememberHint = "learns nothing while off"
+    // words on the rows
+    static let minutes = "min"
+    static let notch = "Notch"
+    static let free = "Free"
+    static let either = "Either"
+    static let keepForever = "keep forever"
+    static let forever = "forever"
+    static let onFile = "on file"
+    static let rejected = "rejected"
+    static let missing = "missing"
+    static let set = "Set"
+    static let phraseSet = "set"
+    static let aPhrase = "a phrase"
+    static let tooShort = "Two words or more."
+    static let openAIKey = "OPENAI_API_KEY"
+    static let skPlaceholder = "sk-…"
+    static let skAntPlaceholder = "sk-ant-…"
+    static let serverKeyPlaceholder = "server key"
+    static let serverPlaceholder = "http://localhost:11434/v1"
+    static let phrasesPlaceholder = "jarhead, jar head"
+    static let heard = "heard"
+    static let ellipsis = "…"
+    static let dash = "—"
+    static let period = "."
+    static let systemDefaultPrefix = "system default"
+    static let pickAModel = "pick a model"
+    static let backendDefault = "backend default"
+    static let gateRests = "Awake — the gate rests until the session ends"
+    static let switchNow = "Switch now"
+    static let learnNow = "Learn now"
+    static let sweepNow = "Sweep now"
+    static let sweepArmed = "Move older days to Trash"
+    static let revealInFinder = "Reveal in Finder"
+    static let setUpAgain = "Set up again…"
+    static let checkVerb = "Check"
+    static let ready = "Ready"
+    static let unavailable = "Unavailable"
+    static let checking = "Checking…"
+    static func readyWith(_ resolved: String) -> String { "\(resolved) ready" }
+    static let notLearned = "not learned yet"
+    static func learned(_ ago: String) -> String { "learned \(ago) ago" }
+    static func learnedShort(_ ago: String) -> String { "learned \(ago)" }
+    static func live(_ n: Int) -> String { "\(n) live" }
+    static func hiddenCounts(forgotten: Int, archived: Int) -> String { "\(forgotten) forgotten · \(archived) archived" }
+    static func waiting(_ n: Int) -> String { "\(n) waiting" }
+    static let lastRun = "Last run"
+    static let noRun = "No run yet"
+    static let extractor = "extractor"
+    static let added = "added"
+    static let updated = "updated"
+    static let same = "same"
+    static let refused = "refused"
+    static let took = "took"
+    static let notRead = "Not read yet."
+    // hints
+    static let memoryOff = "Off: nothing is learned or used. What was remembered stays."
+    static let retentionHint = "Older days move to the trash, never out of it. Pinned conversations keep their days."
+    static let trashHint = "Nothing is deleted here; the trash is emptied in Finder."
+    static let anyoneWakes = "Anyone who says the word wakes it."
+    static let phrasesHint = "Any of these wakes it; comma-separated"
+    static let notchHint = "Lives in the notch; floats free when the main display has none."
+    static let freeHint = "Floats free; stays where it last worked."
+    // tips (verb first, ≤ 60, no full stop)
+    static let languageTip = "Speaks English whatever language it hears"
+    static let accentTip = "How the English sounds — best-effort on the voice's side"
+    static let switchNowTip = "Pause, then resume on the new voice — refused while work runs"
+    static let notchTip = "The orb lives and sleeps in the notch"
+    static let freeTip = "The orb floats free and stays where it last worked"
+    static let learnNowTip = "Read what has not been read yet, now"
+    static let memoryIsOff = "Memory is off"
+    static let pendingTip = "Conversations that ended and are not read yet"
+    static let sweepTip = "Move the days past retention to the trash — asks first"
+    static let sweepNothing = "Both keep forever — nothing would move"
+    static let sweepGoTip = "Move them now — each comes back with Restore"
+    static let keepAll = "Keep everything where it is"
+    static let cancelSweep = "Cancel the sweep"
+    static let ledgerTip = "Days a day's conversations stay before the sweep"
+    static let shotsTip = "Days a day's screenshots stay before the sweep"
+    static let revealTrashTip = "Show the trash in Finder — emptying it happens there"
+    static let noTrash = "No trash folder yet"
+    static let setUpAgainTip = "Open the setup wizard"
+    static let noKeyTip = "No OpenAI key"
+    static let uncheckedTip = "Not checked yet"
+    static func keyWorks(_ model: String) -> String { "Works with \(model)" }
+    static let keyRejected = "Rejected by OpenAI — paste a fresh one"
+    static let nothingHeard = "Nothing heard yet"
+    // mic
+    static let micAuto = "Auto"
+    static let micAutoGroup = "Auto"
+    static let micRanked = "Ranked"
+    static let micConnected = "Connected"
+    static let micRankedBadge = "ranked"
+    static let micActive = "active"
+    static let micVirtual = "virtual"
+    static let micGone = "gone"
+    static let micUnavailable = "Unavailable"
+    static let micNoun = "microphones"
+    static let micFoot = "Ranks the connected microphones: the pick, the built-in, the one used last, the system default"
+    static func using(_ name: String) -> String { "Using \(name)" }
+    static let systemDefault = "system default (echo cancellation)"
+    static func echoFollows(active: String, wanted: String) -> String {
+        "Using \(active). Echo cancellation follows the system default; make \(wanted) the default in Sound settings to use it."
+    }
+    // matching
+    static let matchOpenAI = "Item text goes to OpenAI for matching (the voice key); nothing else leaves"
+    static func matchLocal(_ model: String) -> String { "Item text goes to \(model) on this Mac; nothing leaves for memory" }
+    static let matchLocalUnnamed = "Item text goes to a model on this Mac; nothing leaves for memory"
+    static let matchKeyword = "Keyword matching: nothing leaves the Mac. Add the OpenAI key or pull an embedding model for closer matches."
+    // a11y
+    static let modelId = "Model id"
+    static let serverURL = "Server base URL"
+    static let localServerRoot = "Local server root"
+    static let wakePhrasesLabel = "Wake phrases, comma separated"
+    static let wakePassphraseLabel = "Wake passphrase"
+    static let autoWakeLabel = "Auto-wake on launch"
+    static let rememberLabel = "Remember across sessions"
+    static let idleLabel = "Idle sleep, minutes"
+    static func orbHome(_ notch: Bool) -> String { "Orb home: \(notch ? SettingsWords.notch : SettingsWords.free)" }
+    static func accentLabel(_ accent: String) -> String { "Accent: \(accent)" }
+    static func languageLabel(_ language: String) -> String { "Language: \(language)" }
+    static func retentionLabel(_ what: String, _ title: String) -> String { "\(what) retention: \(title)" }
+    static func heardLabel(_ heard: String) -> String { "Heard: \(heard)" }
+    static let panel = "Panel"
 }
-import AVFoundation
+
+/// Builder B's name for the ids, kept as an alias so its lit sites read the same.
+typealias SettingsMenuIds = SettingsWords
+
+/// The Now tab and the rail's frame: the phase block, the sections, their fold ids, the rows' words.
+enum NowWords {
+    static let session = "Session"
+    static let billed = "Billed"
+    static let today = "Today"
+    static let expires = "Expires"
+    static let context = "Context"
+    static let expiresIn = "in "
+    static let noSession = "No session. Nothing billed."
+    static let elapsed = "Elapsed"
+    static let audio = "Audio"
+    static let input = "Input"
+    static let output = "Output"
+    static let circled = "Circled"
+    static let clear = "Clear"
+    static let clearAll = "Clear all"
+    static let circleSomething = "Circle something…"
+    static let forgetCircles = "Forget the circled regions"
+    static let forgetCircle = "Forget this circle"
+    static let threads = "Threads"
+    static func running(_ n: Int) -> String { "\(n) running" }
+    static let stop = "Stop"
+    static let memory = "Memory"
+    static let usedThisTurn = "used this turn"
+    static let usedTip = "The lines the brain was given for the last request"
+    static let brain = "Brain"
+    static let hands = "Hands"
+    static let handsReady = "see + click"
+    static let handsNeed = "needs permissions"
+    static let ready = "ready"
+    static let notReady = "not ready"
+    static let local = "local"
+    static let askAll = "Ask all"
+    static let askAllTip = "Ask for every permission — one dialog at a time"
+    static let request = "Request"
+    static let openSettings = "Open"
+    static let copy = "Copy"
+    static let copyTip = "Copy the command — it runs by hand, never here"
+    static func requestTip(_ label: String) -> String { "Ask for \(label.lowercased()) access" }
+    static let openSettingsTip = "Open the System Settings pane"
+    static let openSettingsDragTip = "Open the System Settings pane — drag Jarhead.app in"
+    static let none = "None."
+    static let retry = "Retry"
+    static func sends(_ type: String) -> String { "Sends \(type)" }
+    static func opens(_ target: String) -> String { "Opens \(target)" }
+    static let checkAgain = "Check this again"
+    static let since = "since"
+    /// A folded kind head shows this much of its first line.
+    static let headLineMax = 26
+    /// A granted area's head names this many; the rest is `+n`.
+    static let namesShown = 2
+    static func more(_ n: Int) -> String { "+\(n)" }
+    static func engine(_ n: Int) -> String { "\(n) engine" }
+    static let details = "Details"
+    static let detailsTip = "Show the crash report in Finder"
+    static let dismiss = "Dismiss the crash notice"
+    static let relaunched = "relaunched"
+    static let notRelaunched = "not relaunched — three crashes in ten minutes"
+    static let loading = "Loading…"
+    static let dot = " · "
+    // fold ids (remembered)
+    static let readyFold = "now.ready"
+    static let permissionsFold = "now.permissions"
+    static let sensesFold = "now.permissions.senses"
+    static let handsFold = "now.permissions.hands"
+    static let filesFold = "now.permissions.files"
+    static let problemsFold = "now.problems"
+    static let grantsFold = "now.problems.grants"
+    static let engineFold = "now.problems.engine"
+    // tip ids
+    static let crashTip = "now.crash"
+    static func threadTip(_ id: String) -> String { "now.thread.\(id)" }
+    static func markTip(_ id: String) -> String { "now.mark.\(id)" }
+    // a11y
+    static func thread(_ name: String, _ status: String) -> String { "Thread \(name), \(status)" }
+    static func openThread(_ name: String) -> String { "Open \(name)" }
+    static func stopThread(_ name: String) -> String { "Stop \(name)" }
+    static func problem(_ text: String, _ remedy: String) -> String { "Problem: \(text). \(remedy)" }
+    static func granted(_ n: Int, of total: Int) -> String { "\(n) of \(total) permissions granted" }
+}
+
+/// The Ledger tab: the filter, the month heads, the day rows, the day's figures.
+enum LedgerWords {
+    static let days = "Days"
+    static let filterDays = "Filter days"
+    static let listId = "ledger.days"
+    static func monthFold(_ id: String) -> String { "ledger.\(id)" }
+    static let openFolder = "Open the ledger folder"
+    static let openFolderLabel = "Open ledger folder"
+    static let noLedger = "No ledger yet."
+    static let reading = "Reading…"
+    static let sessions = "Sessions"
+    static let utterances = "Utterances"
+    static let delegations = "Delegations"
+    static let billed = "Billed"
+    static let unread = "—"
+    /// The filter appears past this many days.
+    static let filterPast = 8
+    static let filterLabel = "Filter the days"
+}
 
 // Right rail: a segmented Now / Settings / Ledger control in a 40pt row that
 // owns its bottom rule, then one scroll region. A section is a 28pt head, its
@@ -100,7 +376,7 @@ struct RightRail: View, Equatable {
 /// launch): one 28pt line under the tabs, on every tab, until dismissed — when, why,
 /// Details (the report in Finder), ×. Reads AppState itself, like AudioMeters, so the
 /// rail's Equatable inputs stay as they are; the row owns its bottom rule.
-private struct CrashNoticeRow: View {
+struct CrashNoticeRow: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
@@ -116,19 +392,19 @@ private struct CrashNoticeRow: View {
                                 .lineLimit(1).truncationMode(.tail)
                         }
                         Spacer(minLength: 4)
-                        Button("Details") { state.revealCrash() }
+                        Button(NowWords.details) { state.revealCrash() }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                            .consoleHelp("Show the crash report in Finder")
+                            .consoleHelp(NowWords.detailsTip)
                         Button { withAnimation(Motion.gentle) { state.dismissCrash() } } label: {
                             Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
-                        .consoleHelp("Dismiss")
-                        .accessibilityLabel("Dismiss the crash notice")
+                        .accessibilityLabel(NowWords.dismiss)
                     }
                     .padding(.horizontal, railInset)
                     .frame(height: 28)
-                    .consoleHelp("\(crash.reason)\n\(crash.fileURL.lastPathComponent)\(crash.relaunched ? "\nRelaunched by the crash guard." : "\nNot relaunched: three crashes in ten minutes.")")
+                    // The reason whole, the report's path and whether the guard relaunched: one card.
+                    .consoleHelp(id: NowWords.crashTip, card: CrashNoticeRow.card(crash))
                     ConsoleHairline()
                 }
                 .transition(Motion.appear)
@@ -136,6 +412,13 @@ private struct CrashNoticeRow: View {
         }
         .frame(maxWidth: .infinity)
         .animation(Motion.gentle, value: state.lastCrash == nil)
+    }
+
+    /// `Crashed · 2 min ago / the reason / report <path>` — the guard's word as the status when it relaunched.
+    static func card(_ crash: CrashNotice) -> ConsoleTipCard {
+        var card = ConsoleTipCard.crash(reason: crash.reason, at: CrashNotice.ago(crash.at), report: crash.fileURL.path)
+        card.lines.append(crash.relaunched ? NowWords.relaunched : NowWords.notRelaunched)
+        return card
     }
 }
 
@@ -162,7 +445,7 @@ private struct RailTabs: View {
         .frame(height: 40)
         .animation(Motion.snappy, value: selected)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Panel")
+        .accessibilityLabel(SettingsWords.panel)
     }
 }
 
@@ -328,222 +611,102 @@ struct NowPanel: View {
         return "asleep"
     }
 
-    var body: some View {
-        let meta = ConsoleTheme.phase(phase)
-        VStack(spacing: 0) {
-            // The phase block owns its bottom rule.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: iconGap) {
-                    ConsoleDot(color: meta.color, live: ConsoleTheme.livePhases.contains(phase), size: 8)
-                        .frame(width: 20, height: 20)
-                    Text(meta.label).font(ConsoleTheme.sans(15, .medium)).foregroundStyle(ConsoleTheme.fg)
-                        .contentTransition(.opacity)
-                        .animation(Motion.fade, value: phase)
-                    Spacer(minLength: 8)
-                    if let s = sessionInfo {
-                        // mm:ss, the seconds rolling.
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            let elapsed = ConsoleFormat.duration((ctx.date.timeIntervalSince1970 * 1000 - s.startedAt) / 1000)
-                            Text(elapsed)
-                                .font(ConsoleTheme.mono(13)).monospacedDigit().foregroundStyle(ConsoleTheme.fg2)
-                                .contentTransition(ConsoleMotion.numeric)
-                                .animation(Motion.snappy, value: elapsed)
-                        }
-                        .consoleHelp("Elapsed")
-                        .accessibilityLabel("Elapsed")
-                        .transition(.opacity)
-                    }
-                }
-                .frame(height: 28)
-                .consoleHelp(meta.hint)
-                .animation(Motion.fade, value: sessionInfo == nil)
+    /// How many of the two Ready rows are not ready (the folded head's badge; the fold opens itself on one).
+    private var notReady: Int { (brainReady ? 0 : 1) + (handsReady ? 0 : 1) }
 
-                // The meter. A session open: what this one has billed, and today's total.
-                // Paused: the session is closed (the meter stopped), the conversation is
-                // kept, and the pause decays to sleep — the line ticks. Asleep: today's
-                // total, when there is one. The three blocks crossfade; every figure rolls.
-                ZStack(alignment: .topLeading) {
-                    if let s = sessionInfo {
-                        VStack(alignment: .leading, spacing: 0) {
-                            KV("Session") { monoValue(ConsoleFormat.shortId(s.id, 12)).consoleHelp(s.id) }
-                            KV("Billed", ConsoleFormat.billed(s.usageSeconds))
-                            if let today = usageToday, today.seconds > 0 {
-                                KV("Today", ConsoleFormat.billed(today.seconds))
-                            }
-                            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                                KV("Expires", "in " + ConsoleFormat.duration(max(0, (s.expiresAt - ctx.date.timeIntervalSince1970 * 1000) / 1000)))
-                            }
-                            if let ratio = s.contextRatio {
-                                KV("Context") {
-                                    HStack(spacing: 8) {
-                                        ConsoleBar(fraction: ratio)
-                                            .animation(Motion.gentle, value: ratio)
-                                        Text("\(Int((ratio * 100).rounded()))%")
-                                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                                            .contentTransition(ConsoleMotion.numeric)
-                                            .animation(Motion.snappy, value: ratio)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.leading, 20 + iconGap)
-                        .transition(Motion.swap)
-                    } else if phase == .paused, let p = pause {
-                        VStack(alignment: .leading, spacing: 0) {
-                            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                                let line = ConsoleFormat.pausedLine(p, now: ctx.date)
-                                Text(line)
-                                    .font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
-                                    .lineLimit(3).truncationMode(.tail)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(minHeight: 22, alignment: .leading)
-                                    .padding(.bottom, 2)
-                                    .contentTransition(ConsoleMotion.numeric)
-                                    .animation(Motion.snappy, value: line)
-                            }
-                            KV("Session") { monoValue(ConsoleFormat.shortId(p.sessionId, 12)).consoleHelp(p.sessionId) }
-                            KV("Billed", ConsoleFormat.billed(p.usageSeconds))
-                            if let today = usageToday, today.seconds > 0 {
-                                KV("Today", ConsoleFormat.billed(today.seconds))
-                            }
-                        }
-                        .padding(.leading, 20 + iconGap)
-                        .transition(Motion.swap)
-                    } else {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text("No session. Nothing billed.").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                                .frame(height: 22)
-                            if let today = usageToday, today.seconds > 0 {
-                                KV("Today", ConsoleFormat.billed(today.seconds))
-                            }
-                        }
-                        .padding(.leading, 20 + iconGap)
-                        .transition(Motion.swap)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(Motion.gentle, value: meterKey)
-            }
-            .padding(EdgeInsets(top: 6, leading: railInset, bottom: 10, trailing: railInset))
-            .frame(maxWidth: .infinity, alignment: .leading)
+    var body: some View {
+        VStack(spacing: 0) {
+            NowPhaseBlock(phase: phase, sessionInfo: sessionInfo, pause: pause, usageToday: usageToday, meterKey: meterKey)
             ConsoleHairline()
 
-            RailSection("Audio") { AudioMeters() }
-
-            // What Kevin circled on screen, newest last, and the way to circle more. A mark
-            // arriving fades and rises in; the row reflows around it.
-            RailSection("Circled", count: marks.isEmpty ? nil : marks.count, trailing: {
-                if !marks.isEmpty {
-                    Button("Clear") { actions.send(.markClear) }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .consoleHelp("Forget the circled regions")
-                        .transition(.opacity)
-                }
-            }) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !marks.isEmpty {
-                        ConsoleFlow(hSpacing: 6, vSpacing: 6) {
-                            ForEach(marks) { mark in
-                                MarkThumb(mark: mark).transition(Motion.appear)
-                            }
-                        }
-                        .padding(.top, 2)
-                    }
-                    Button { actions.beginMarkMode() } label: { Label("Circle something…", systemImage: "pencil.and.outline") }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                        .consoleHelp("Circle a region of the screen for Jarhead (⌥⇧C)")
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .animation(Motion.gentle, value: marks.map(\.id))
-
-            // Jarhead's threads, one row each (the ProblemRow idiom): the status glyph, the name
-            // (a click opens its pane) and status word, `00:12 · background · 7 steps` in mono, the
-            // last line (or the question it waits on), and Stop while it is live. The section
-            // arrives with the first thread and keeps a finished one five minutes; a row rises
-            // in and drops out on its own ink.
-            if !threads.isEmpty {
-                RailSection("Threads", count: threads.count, trailing: {
-                    let busy = threads.filter { $0.status.isBusy }.count
-                    if busy > 0 {
-                        Text("\(busy) running").font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                            .contentTransition(ConsoleMotion.numeric)
-                            .transition(.opacity)
-                    }
-                }) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(threads) { t in
-                            ThreadRailRow(thread: t, open: { openThread(t.id) }, stop: { actions.send(.threadStop(threadId: t.id)) })
-                                .transition(Motion.appear)
-                        }
-                    }
-                    .animation(Motion.gentle, value: threads.map(\.id))
-                }
-                .transition(Motion.appear)
-            }
-
+            RailSection(NowWords.audio) { AudioMeters() }
+            circled
+            if !threads.isEmpty { threadsSection.transition(Motion.appear) }
             // What the last delegation was given from Jarhead's memory of Kevin — the rows, not
             // the counts — so a misheard "fact" steering the voice is seen the turn it happens.
             // The section arrives with the first turn that used memory and leaves with a fresh session.
             if !usedIds.isEmpty {
-                RailSection("Memory", count: usedIds.count, trailing: {
-                    Text("used this turn").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
-                        .consoleHelp("The memory lines the brain was given for the last request")
+                RailSection(NowWords.memory, count: usedIds.count, trailing: {
+                    Text(NowWords.usedThisTurn).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                        .consoleHelp(NowWords.usedTip)
                 }) {
                     MemoryUsedList(ids: usedIds)
                 }
                 .transition(Motion.appear)
             }
-
-            RailSection("Ready") {
-                VStack(spacing: 0) {
-                    readyRow("brain.fill", "Brain", brainReady, readyBrainDetail)
-                    readyRow("hand.raised.fill", "Hands", handsReady, handsReady ? "see + click" : "needs permissions")
-                }
-            }
-
-            // Every permission the app read (snapshot.permissions.all): the required rows,
-            // then the rest folded behind an "n of 16 granted" row. The sweep runs in the
-            // app (AppDelegate answers `request-permission all` itself).
-            RailSection("Permissions", trailing: {
-                Button("Ask for everything") { actions.send(.requestPermission("all")) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .consoleHelp("Ask for every permission Jarhead can use, one dialog at a time, then the System Settings panes")
-            }) {
-                PermissionsRailList(permissions: permissions)
-            }
-
-            RailSection("Problems", count: problems.isEmpty ? nil : problems.count, trailing: {
-                if !problems.isEmpty {
-                    Button("Clear") { actions.send(.clearProblems) }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .consoleHelp("Clear problems")
-                        .transition(.opacity)
-                }
-            }) {
-                // "None." and the list crossfade; a problem arriving rises in.
-                ZStack(alignment: .topLeading) {
-                    if problems.isEmpty {
-                        Text("None.").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22)
-                            .transition(.opacity)
-                    } else {
-                        // One solid symbol by kind, the line, and its one remedy as a small ghost
-                        // button — the fix is a click, not a hunt. Newest first.
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(problems.reversed()) { p in
-                                ProblemRow(problem: p) { remedy(p) }
-                                    .transition(Motion.appear)
-                            }
-                        }
-                        .transition(.opacity)
-                    }
-                }
-            }
-            .animation(Motion.gentle, value: problems.map(\.id))
+            ready
+            PermissionsRailList(permissions: permissions)
+            ProblemsRailList(problems: problems, remedy: remedy)
         }
         // The Threads and Memory sections arriving or leaving reflow the panel under them.
         .animation(Motion.gentle, value: showsThreads)
         .animation(Motion.gentle, value: usedIds.isEmpty)
+    }
+
+    // MARK: sections
+
+    /// What Kevin circled on screen, newest last, and the way to circle more. A mark
+    /// arriving fades and rises in; the row reflows around it.
+    private var circled: some View {
+        RailSection(NowWords.circled, count: marks.isEmpty ? nil : marks.count, trailing: {
+            if !marks.isEmpty {
+                Button(NowWords.clear) { actions.send(.markClear) }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .consoleHelp(NowWords.forgetCircles)
+                    .transition(.opacity)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !marks.isEmpty {
+                    ConsoleFlow(hSpacing: 6, vSpacing: 6) {
+                        ForEach(marks) { mark in
+                            MarkThumb(mark: mark).transition(Motion.appear)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                Button { actions.beginMarkMode() } label: { Label(NowWords.circleSomething, systemImage: "pencil.and.outline") }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
+                    .consoleHelp(HelpCopy.circle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .animation(Motion.gentle, value: marks.map(\.id))
+    }
+
+    /// Jarhead's threads, one 40 pt row each: the status glyph, the name (a click opens its
+    /// pane) with the `asks` badge, the status word and `00:12 · background · 7 steps` in mono
+    /// under it, Stop drawn at rest while it is live. The section arrives with the first thread
+    /// and keeps a finished one five minutes; a row rises in and drops out on its own ink.
+    private var threadsSection: some View {
+        RailSection(NowWords.threads, count: threads.count, inset: false, trailing: {
+            let busy = threads.filter { $0.status.isBusy }.count
+            if busy > 0 {
+                Text(NowWords.running(busy)).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                    .contentTransition(ConsoleMotion.numeric)
+                    .transition(.opacity)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(threads) { t in
+                    ThreadRailRow(thread: t, open: { openThread(t.id) }, stop: { actions.send(.threadStop(threadId: t.id)) })
+                        .transition(Motion.appear)
+                }
+            }
+            .animation(Motion.gentle, value: threads.map(\.id))
+        }
+    }
+
+    /// Ready, folded: `Ready 2 · [all ok]`; it opens itself when a part stops being ready.
+    private var ready: some View {
+        ConsoleDisclosure(id: NowWords.readyFold, title: ConsoleDisclosureWords.ready, count: "2",
+                          summary: ConsoleDisclosureSummary.ready(notReady: notReady), size: .section, defaultOpen: notReady > 0, inset: true) {
+            VStack(spacing: 0) {
+                readyRow("brain.fill", NowWords.brain, brainReady, readyBrainDetail)
+                readyRow("hand.raised.fill", NowWords.hands, handsReady, handsReady ? NowWords.handsReady : NowWords.handsNeed)
+            }
+        }
+        .onChange(of: notReady) { if notReady > 0 { ConsoleFoldStore.set(NowWords.readyFold, true) } }
     }
 
     /// The remedy button: its command when the engine gave one the Console can send, its
@@ -559,7 +722,8 @@ struct NowPanel: View {
         }
     }
 
-    /// The glyph swaps (ConsoleIcon) and the detail crossfades as a part comes ready.
+    /// The glyph swaps (ConsoleIcon) and the detail crossfades as a part comes ready; the state
+    /// word is the glyph's label, spoken — nothing hides in a hover.
     private func readyRow(_ symbol: String, _ name: String, _ ok: Bool, _ detail: String) -> some View {
         HStack(spacing: iconGap) {
             ConsoleIcon(name: symbol)
@@ -569,230 +733,371 @@ struct NowPanel: View {
                 .animation(Motion.fade, value: detail)
             Spacer(minLength: 4)
             ConsoleIcon(name: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill", tint: ok ? ConsoleTheme.acting : ConsoleTheme.speaking)
-                .consoleHelp(ok ? "ready" : "not ready")
-                .accessibilityLabel(ok ? "ready" : "not ready")
+                .accessibilityLabel(ok ? NowWords.ready : NowWords.notReady)
         }
         .frame(height: 28)
     }
-
 }
 
-/// One typed problem: the kind's solid symbol (a missing grant in the warning tint, the
-/// rest in red), the line, and the remedy as a small ghost button under it — "Open pane",
-/// "Request", "Retry", "Restart daemon" — or a plain "Retry" when the engine named none.
-/// When the remedy carries a command for Kevin to run (`remedy.copy`: `ollama pull …`), a
-/// second ghost button copies it — the app never runs it. The tooltip says when it was first seen.
-private struct ProblemRow: View {
-    let problem: Problem
-    let act: () -> Void
+/// The phase block: the dot and the word, the elapsed clock, and the meter — a session open:
+/// what this one has billed and today's total; paused: the session is closed, the conversation
+/// kept, the pause decaying to sleep (the line ticks); asleep: today's total, when there is one.
+/// The three blocks crossfade; every figure rolls. The session id is whole (182 pt holds it).
+private struct NowPhaseBlock: View {
+    let phase: Phase
+    let sessionInfo: SessionInfo?
+    let pause: PauseInfo?
+    let usageToday: UsageToday?
+    let meterKey: String
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: iconGap) {
-            let look = ConsoleTheme.problem(problem.kind)
-            ConsoleIcon(name: look.symbol, tint: look.tint)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(problem.text).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    Button(problem.remedy?.label ?? "Retry", action: act)
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .consoleHelp(remedyHelp)
-                    if let copy = NowPanel.problemCopy(problem) {
-                        CopyChip(text: copy)
+        let meta = ConsoleTheme.phase(phase)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: iconGap) {
+                ConsoleDot(color: meta.color, live: ConsoleTheme.livePhases.contains(phase), size: 8)
+                    .frame(width: 20, height: 20)
+                Text(meta.label).font(ConsoleTheme.sans(15, .medium)).foregroundStyle(ConsoleTheme.fg)
+                    .contentTransition(.opacity)
+                    .animation(Motion.fade, value: phase)
+                Spacer(minLength: 8)
+                if let s = sessionInfo { NowElapsed(startedAt: s.startedAt).transition(.opacity) }
+            }
+            .frame(height: 28)
+            .consoleHelp(meta.hint)
+            .animation(Motion.fade, value: sessionInfo == nil)
+            ZStack(alignment: .topLeading) {
+                if let s = sessionInfo {
+                    NowSessionMeter(session: s, usageToday: usageToday).transition(Motion.swap)
+                } else if phase == .paused, let p = pause {
+                    NowPausedMeter(pause: p, usageToday: usageToday).transition(Motion.swap)
+                } else {
+                    NowAsleepMeter(usageToday: usageToday).transition(Motion.swap)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(Motion.gentle, value: meterKey)
+        }
+        .padding(EdgeInsets(top: 6, leading: railInset, bottom: 10, trailing: railInset))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// mm:ss, the seconds rolling.
+private struct NowElapsed: View {
+    let startedAt: Double
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let elapsed = ConsoleFormat.duration((ctx.date.timeIntervalSince1970 * 1000 - startedAt) / 1000)
+            Text(elapsed)
+                .font(ConsoleTheme.mono(13)).monospacedDigit().foregroundStyle(ConsoleTheme.fg2)
+                .contentTransition(ConsoleMotion.numeric)
+                .animation(Motion.snappy, value: elapsed)
+        }
+        .consoleHelp(NowWords.elapsed)
+        .accessibilityLabel(NowWords.elapsed)
+    }
+}
+
+private struct NowSessionMeter: View {
+    let session: SessionInfo
+    let usageToday: UsageToday?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            KV(NowWords.session) { monoValue(session.id).lineLimit(1).truncationMode(.middle) }
+            KV(NowWords.billed, ConsoleFormat.billed(session.usageSeconds))
+            if let today = usageToday, today.seconds > 0 { KV(NowWords.today, ConsoleFormat.billed(today.seconds)) }
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                KV(NowWords.expires, NowWords.expiresIn + ConsoleFormat.duration(max(0, (session.expiresAt - ctx.date.timeIntervalSince1970 * 1000) / 1000)))
+            }
+            if let ratio = session.contextRatio {
+                KV(NowWords.context) {
+                    HStack(spacing: 8) {
+                        ConsoleBar(fraction: ratio).animation(Motion.gentle, value: ratio)
+                        Text("\(Int((ratio * 100).rounded()))%")
+                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                            .contentTransition(ConsoleMotion.numeric)
+                            .animation(Motion.snappy, value: ratio)
                     }
                 }
             }
-            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
-        .consoleHelp("\(problem.kind) · since \(ConsoleFormat.fullDate(problem.since))")
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Problem: \(problem.text). \(problem.remedy?.label ?? "Retry")")
-    }
-
-    private var remedyHelp: String {
-        if let json = problem.remedy?.command, case .string(let type)? = json["type"] { return "Sends \(type)" }
-        if let target = problem.remedy?.open, !target.isEmpty { return "Opens \(ConsoleFormat.truncPath(target, max: 48))" }
-        return "Check this again"
+        .padding(.leading, 20 + iconGap)
     }
 }
 
-/// One thread (the ProblemRow idiom): the status glyph on the icon column; the name — a button
-/// that opens its pane — and its status word, with a 22pt ghost Stop trailing while it is live;
-/// `00:03 · background · 2 steps` in mono under them, the seconds rolling until it settles; the
-/// question it waits on, else its last line, under that. Stop sends `thread.stop` for this
-/// thread alone — never `transportStop`: the other threads, the main brain and the meter carry
-/// on (for main it parks the turn). The tooltip has the brief.
-private struct ThreadRailRow: View {
+private struct NowPausedMeter: View {
+    let pause: PauseInfo
+    let usageToday: UsageToday?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                let line = ConsoleFormat.pausedLine(pause, now: ctx.date)
+                Text(line)
+                    .font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
+                    .lineLimit(3).truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 22, alignment: .leading)
+                    .padding(.bottom, 2)
+                    .contentTransition(ConsoleMotion.numeric)
+                    .animation(Motion.snappy, value: line)
+            }
+            KV(NowWords.session) { monoValue(pause.sessionId).lineLimit(1).truncationMode(.middle) }
+            KV(NowWords.billed, ConsoleFormat.billed(pause.usageSeconds))
+            if let today = usageToday, today.seconds > 0 { KV(NowWords.today, ConsoleFormat.billed(today.seconds)) }
+        }
+        .padding(.leading, 20 + iconGap)
+    }
+}
+
+private struct NowAsleepMeter: View {
+    let usageToday: UsageToday?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(NowWords.noSession).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22)
+            if let today = usageToday, today.seconds > 0 { KV(NowWords.today, ConsoleFormat.billed(today.seconds)) }
+        }
+        .padding(.leading, 20 + iconGap)
+    }
+}
+
+/// The Problems section, folded: `Problems 2 · [1 missing] 1 engine` — Kevin's grants apart from
+/// the engine's, each kind a group whose closed head carries its first line. A row is 40:
+/// the kind's solid symbol (a missing grant in the warning tint, the rest in red), the line on
+/// up to two lines, `since 10:08 · Request` in mono under it, and the remedy as the row's ghost
+/// verb — "Open pane", "Request", "Retry", "Restart daemon", or a plain "Retry" when the engine
+/// named none. A remedy that carries a command for Kevin to run (`remedy.copy`: `ollama pull …`)
+/// gets a Copy in the trailing zone — the app never runs it. Newest first.
+struct ProblemsRailList: View {
+    let problems: [Problem]
+    let remedy: (Problem) -> Void
+
+    @Environment(\.consoleActions) private var actions
+
+    /// A problem about one of Kevin's grants (`permission.*`); everything else is the engine's.
+    static func isGrant(_ p: Problem) -> Bool { p.kind.hasPrefix("permission.") }
+
+    /// The folded head's words: `[n missing]` for the grants (amber), `n engine` for the rest.
+    static func summary(_ problems: [Problem]) -> [ConsoleDisclosureSummaryItem] {
+        let grants = problems.filter(isGrant).count
+        let engine = problems.count - grants
+        var out: [ConsoleDisclosureSummaryItem] = []
+        if grants > 0 { out.append(.badge(.missing(grants))) }
+        if engine > 0 { out.append(.words(NowWords.engine(engine))) }
+        return out
+    }
+
+    /// `since 10:08 · Request` — when it was first seen and the remedy's word.
+    static func meta(_ p: Problem) -> String {
+        [NowWords.since + " " + ConsoleFormat.time(p.since), p.remedy?.label ?? NowWords.retry].joined(separator: NowWords.dot)
+    }
+
+    /// The remedy's tip: what it sends, what it opens, or the re-check.
+    static func remedyTip(_ p: Problem) -> String {
+        if let json = p.remedy?.command, case .string(let type)? = json["type"] { return NowWords.sends(type) }
+        if let target = p.remedy?.open, !target.isEmpty { return NowWords.opens(ConsoleFormat.truncPath(target, max: 40)) }
+        return NowWords.checkAgain
+    }
+
+    private var grants: [Problem] { problems.reversed().filter(Self.isGrant) }
+    private var engine: [Problem] { problems.reversed().filter { !Self.isGrant($0) } }
+
+    var body: some View {
+        ConsoleDisclosure(id: NowWords.problemsFold, title: ConsoleDisclosureWords.problems, count: problems.isEmpty ? nil : "\(problems.count)",
+                          summary: Self.summary(problems), size: .section, trailing: clearAll) {
+            if problems.isEmpty {
+                Text(NowWords.none).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22).padding(.horizontal, railInset)
+                    .transition(.opacity)
+            } else {
+                VStack(spacing: 0) {
+                    group(NowWords.grantsFold, ConsoleDisclosureWords.grants, grants)
+                    group(NowWords.engineFold, ConsoleDisclosureWords.engine, engine)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(Motion.gentle, value: problems.map(\.id))
+    }
+
+    private var clearAll: AnyView? {
+        guard !problems.isEmpty else { return nil }
+        return AnyView(Button(NowWords.clearAll) { actions.send(.clearProblems) }
+            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+            .consoleHelp(NowWords.clearAll))
+    }
+
+    /// The folded kind head's line: the first problem, capped so the head's title keeps its width
+    /// (`ConsoleDisclosureHead` gives the summary the priority; the row under it has the line whole).
+    static func headLine(_ first: String?) -> String? {
+        guard let first else { return nil }
+        return first.count > NowWords.headLineMax ? String(first.prefix(NowWords.headLineMax)) + SettingsWords.ellipsis : first
+    }
+
+    /// A kind's group, open by default (a problem is what is wrong); an empty kind draws nothing.
+    @ViewBuilder private func group(_ id: String, _ title: String, _ rows: [Problem]) -> some View {
+        if !rows.isEmpty {
+            ConsoleDisclosure(id: id, title: title, count: "\(rows.count)", summary: ConsoleDisclosureSummary.problemGroup(first: Self.headLine(rows.first?.text)),
+                              size: .group, defaultOpen: true) {
+                ForEach(rows) { p in ProblemRailRow(problem: p, act: { remedy(p) }).transition(Motion.appear) }
+            }
+        }
+    }
+}
+
+/// One problem as a `ConsoleRow` 40 (see `ProblemsRailList`).
+private struct ProblemRailRow: View {
+    let problem: Problem
+    let act: () -> Void
+
+    /// Copy as the row's small verb when the remedy carries a command for Kevin to run.
+    static func copyVerb(_ copy: String?) -> ConsoleRowVerb? {
+        guard let copy else { return nil }
+        return ConsoleRowVerb(title: NowWords.copy, help: NowWords.copyTip, run: { CopyChip.copy(copy) })
+    }
+
+    var body: some View {
+        let look = ConsoleTheme.problem(problem.kind)
+        // The remedy's word takes its own width in the trailing zone ("Reveal shots" is wider than the 58 pt verb slot).
+        ConsoleRow(title: problem.text, lines: 2, icon: .symbol(look.symbol, tint: look.tint), meta: ProblemsRailList.meta(problem),
+                   trailing: .verb(problem.remedy?.label ?? NowWords.retry, act), verb: Self.copyVerb(NowPanel.problemCopy(problem)),
+                   accessibilityHint: NowWords.problem(problem.text, problem.remedy?.label ?? NowWords.retry), primary: act)
+            .consoleHelp(ProblemsRailList.remedyTip(problem))
+    }
+}
+
+/// One thread as a `ConsoleRow` 40: the status glyph on the icon column; the name (the row opens
+/// its pane) with the `asks` badge while it waits on Kevin; the status word and `00:03 · background
+/// · 2 steps` in mono under them, the seconds rolling until it settles; Stop drawn at rest while
+/// it is live. Stop sends `thread.stop` for this thread alone — never `transportStop`: the other
+/// threads, the main brain and the meter carry on (for main it parks the turn). The brief is the
+/// row's card (`ConsoleTipCard.thread`, the same card wherever the thread is hovered).
+struct ThreadRailRow: View {
     let thread: WorkThread
     let open: () -> Void
     let stop: () -> Void
 
-    @State private var hovering = false
-
     private var meta: ConsoleTheme.ThreadMeta { ConsoleTheme.thread(thread.status) }
     private var isMain: Bool { thread.id == "main" }
+    private var asks: Bool { thread.status == .waitingKevin }
 
-    /// The line under the meta: the question while it waits on Kevin, else the last thing it did.
-    private var line: String? {
-        if thread.status == .waitingKevin, let q = thread.question?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty { return "asks: \(q)" }
-        if let d = thread.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty { return d }
-        return nil
-    }
+    /// Line 1's word beside the name: the status, unless the `asks` badge says it.
+    static func word(_ t: WorkThread) -> String? { t.status == .waitingKevin ? nil : ConsoleTheme.thread(t.status).label }
+
+    /// Line 2: `00:03 · background · 2 steps`.
+    static func line(_ t: WorkThread, now: Double) -> String { ConsoleFormat.threadMeta(t, now: now) }
 
     var body: some View {
-        HStack(alignment: .top, spacing: iconGap) {
-            ConsoleThreadGlyph(status: thread.status)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Button(action: open) {
-                        Text(thread.name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
-                            .lineLimit(1)
-                            .underline(hovering, color: ConsoleTheme.fg3)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .layoutPriority(1)
-                    .onHover { hovering = $0 }
-                    .consoleHelp("Open \(thread.name)'s pane")
-                    .accessibilityLabel("Open \(thread.name)")
-                    // The word turns as the thread works, waits and finishes; a crossfade, never a cut.
-                    Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.speaking : ConsoleTheme.fg2)
-                        .lineLimit(1).truncationMode(.tail)
-                        .contentTransition(.opacity)
-                        .animation(Motion.fade, value: meta.label)
-                    Spacer(minLength: 4)
-                    if thread.status.isLive, thread.canStop {
-                        Button("Stop", action: stop)
-                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                            .layoutPriority(1)
-                            .consoleHelp(isMain ? "Stop this turn — the threads carry on, the session stays open" : "Stop \(thread.name) — the others and the session carry on")
-                            .accessibilityLabel("Stop \(thread.name)")
-                            .transition(.opacity)
-                    }
-                }
-                .frame(minHeight: 22)
-                elapsed
-                if let line {
-                    Text(line).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.fg2 : ConsoleTheme.fg3)
-                        .lineLimit(2).truncationMode(.tail)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .contentTransition(.opacity)
-                        .animation(Motion.fade, value: line)
-                }
+        Group {
+            if thread.status.isLive {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in row(now: ctx.date.timeIntervalSince1970 * 1000) }
+            } else {
+                row(now: thread.doneAt ?? thread.updatedAt)
             }
         }
-        .padding(.vertical, 4)
-        .opacity(thread.status.isLive ? 1 : 0.62)
         .animation(Motion.gentle, value: thread.status.isLive)
-        .consoleHelp("\(thread.name) · \(ConsoleTheme.lane(thread.lane)) lane" + (thread.task.isEmpty ? "" : " · \(thread.task)") + "\nstarted \(ConsoleFormat.time(thread.startedAt)) · \(thread.steps) steps · \(thread.turns) turn\(thread.turns == 1 ? "" : "s")")
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Thread \(thread.name), \(meta.label)" + (line.map { ". \($0)" } ?? ""))
+        .consoleHelp(id: NowWords.threadTip(thread.id), card: ConsoleTipCard.thread(thread))
     }
 
-    /// "00:03 · background · 2 steps", the seconds rolling while the thread is live; frozen once it settles.
-    @ViewBuilder private var elapsed: some View {
-        if thread.status.isLive {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                metaLine(now: ctx.date.timeIntervalSince1970 * 1000)
-            }
-        } else {
-            metaLine(now: thread.doneAt ?? thread.updatedAt)
-        }
+    private func row(now: Double) -> some View {
+        ConsoleRow(title: thread.name, icon: .view(AnyView(ConsoleThreadGlyph(status: thread.status))), badge: asks ? .asks : nil,
+                   value: Self.word(thread), meta: Self.line(thread, now: now), verb: stopVerb, sitsBack: !thread.status.isLive,
+                   accessibilityHint: NowWords.thread(thread.name, meta.label), primary: open)
     }
 
-    private func metaLine(now: Double) -> some View {
-        let text = ConsoleFormat.threadMeta(thread, now: now)
-        return Text(text).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-            .lineLimit(1)
-            .contentTransition(ConsoleMotion.numeric)
-            .animation(Motion.snappy, value: text)
+    private var stopVerb: ConsoleRowVerb? {
+        guard thread.status.isLive, thread.canStop else { return nil }
+        let entry = isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name)
+        return ConsoleRowVerb(title: NowWords.stop, help: HelpCopy.spoken(entry), run: stop)
     }
 }
 
-/// The Permissions section's rows. With the full list: the required kinds, then a
-/// disclosure row "n of 16 granted" that unfolds the rest. A row that is not granted
-/// carries Request (its prompt) or Open Settings (System Settings only, or denied);
-/// both go through `request-permission <kind>`, which the app answers in-process.
-private struct PermissionsRailList: View {
+/// The Permissions section, folded: `Permissions 12 of 16 · [1 missing]` (or `[all ok]`); open,
+/// three areas — Senses / Hands / Files — each a group whose closed head says what is missing
+/// (`[1 missing] Input Monitoring`) or names what is granted. A row is 40: the kind's glyph, its
+/// label, the *why* under it, Request or Settings as the row's verb while not granted, the
+/// state glyph trailing. Both verbs go through `request-permission <kind>`, which the app answers
+/// in-process; the sweep runs in the app too (`request-permission all`).
+struct PermissionsRailList: View {
     let permissions: Permissions
 
     @Environment(\.consoleActions) private var actions
-    @State private var expanded = false
+
+    enum Area: String, CaseIterable {
+        case senses, hands, files
+
+        var id: String {
+            switch self {
+            case .senses: return NowWords.sensesFold
+            case .hands: return NowWords.handsFold
+            case .files: return NowWords.filesFold
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .senses: return ConsoleDisclosureWords.senses
+            case .hands: return ConsoleDisclosureWords.hands
+            case .files: return ConsoleDisclosureWords.files
+            }
+        }
+    }
+
+    /// Which area a kind lives in: what Jarhead senses with, what its hands use, what it may read.
+    static func area(_ kind: PermissionKind) -> Area {
+        switch kind {
+        case .microphone, .speechRecognition, .screenRecording, .camera, .notifications, .localNetwork: return .senses
+        case .accessibility, .inputMonitoring, .automation: return .hands
+        case .fullDiskAccess, .filesDesktop, .filesDocuments, .filesDownloads, .contacts, .calendars, .reminders: return .files
+        }
+    }
+
+    /// The area's rows, in the engine's order.
+    static func rows(_ all: [PermissionInfo], in area: Area) -> [PermissionInfo] { all.filter { Self.area($0.kind) == area } }
+
+    /// `[1 missing] Input Monitoring` · `Desktop · Documents +5` — two granted names, the rest a count,
+    /// so the head's title keeps its width.
+    static func summary(_ rows: [PermissionInfo]) -> [ConsoleDisclosureSummaryItem] {
+        let missing = rows.filter { $0.grant != .granted }.map(\.label)
+        let granted = rows.filter { $0.grant == .granted }.map(\.label)
+        var out = ConsoleDisclosureSummary.permissionGroup(missing: missing, granted: Array(granted.prefix(NowWords.namesShown)))
+        if missing.isEmpty, granted.count > NowWords.namesShown { out.append(.mono(NowWords.more(granted.count - NowWords.namesShown))) }
+        return out
+    }
+
+    /// The section's folded word: `[all ok]`, or `[n missing]`.
+    static func headSummary(_ all: [PermissionInfo]) -> [ConsoleDisclosureSummaryItem] {
+        let missing = all.filter { $0.grant != .granted }.count
+        return missing > 0 ? [.badge(.missing(missing))] : [.badge(.allOk)]
+    }
+
+    private var all: [PermissionInfo] { permissions.all }
+    private var granted: Int { all.filter { $0.grant == .granted }.count }
 
     var body: some View {
-        VStack(spacing: 0) {
-            let all = permissions.all
-            ForEach(all.filter(\.required)) { info in row(info) }
-            if !all.isEmpty { foldRow(all) }
-            if expanded {
-                ForEach(all.filter { !$0.required }) { info in
-                    row(info).transition(Motion.appear)
-                }
+        ConsoleDisclosure(id: NowWords.permissionsFold, title: ConsoleDisclosureWords.permissions,
+                          count: all.isEmpty ? nil : ConsoleDisclosureWords.ofTotal(granted, all.count),
+                          summary: Self.headSummary(all), size: .section, trailing: askAll) {
+            VStack(spacing: 0) {
+                ForEach(Area.allCases, id: \.rawValue) { area in group(area) }
             }
         }
-        .animation(Motion.gentle, value: expanded)
         .animation(Motion.gentle, value: permissions)
+        .accessibilityLabel(NowWords.granted(granted, of: all.count))
     }
 
-    /// "12 of 16 granted · 2 missing", a chevron; click unfolds the optional rows.
-    private func foldRow(_ all: [PermissionInfo]) -> some View {
-        let granted = all.filter { $0.grant == .granted }.count
-        let missing = all.count - granted
-        return Button { withAnimation(Motion.snappy) { expanded.toggle() } } label: {
-            HStack(spacing: iconGap) {
-                ConsoleIcon(name: expanded ? "chevron.down" : "chevron.right", size: 11)
-                Text("\(granted) of \(all.count) granted").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                    .contentTransition(ConsoleMotion.numeric)
-                Spacer(minLength: 4)
-                if missing > 0 {
-                    Text("\(missing) missing").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
-                        .contentTransition(ConsoleMotion.numeric)
-                        .transition(.opacity)
-                }
-            }
-            .frame(height: 28)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .consoleHelp(expanded ? "Fold the optional permissions" : "Show every permission")
-        .accessibilityLabel("\(granted) of \(all.count) permissions granted")
-        .accessibilityAddTraits(.isButton)
-        .animation(Motion.snappy, value: granted)
+    private var askAll: AnyView {
+        AnyView(Button(NowWords.askAll) { actions.send(.requestPermission("all")) }
+            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+            .consoleHelp(NowWords.askAllTip))
     }
 
-    /// One kind: icon, label, Request / Open Settings while not granted, the status glyph.
-    /// The tooltip carries the why line and the detail (Automation's targets, a folder).
-    private func row(_ info: PermissionInfo) -> some View {
-        let meta = ConsoleTheme.grant(info.grant)
-        let opensSettings = info.ask == .settings || (info.grant == .denied && info.kind != .automation)
-        let tip = [info.why, info.detail ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        return HStack(spacing: iconGap) {
-            ConsoleIcon(name: PermissionsRailList.symbol(info.kind))
-            Text(info.label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
-            Spacer(minLength: 4)
-            if info.grant != .granted {
-                Button { actions.send(.requestPermission(info.kind.rawValue)) } label: {
-                    if opensSettings {
-                        Label("Open Settings", systemImage: "gearshape.fill").lineLimit(1)
-                    } else {
-                        Text("Request")
-                    }
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                .layoutPriority(1)
-                .consoleHelp(opensSettings ? "Open the System Settings pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")" : "Ask for \(info.label.lowercased()) access")
-                .transition(ConsoleMotion.arriveLeave)
+    @ViewBuilder private func group(_ area: Area) -> some View {
+        let rows = Self.rows(all, in: area)
+        if !rows.isEmpty {
+            ConsoleDisclosure(id: area.id, title: area.title, count: ConsoleDisclosureWords.ofTotal(rows.filter { $0.grant == .granted }.count, rows.count),
+                              summary: Self.summary(rows), size: .group) {
+                ForEach(rows) { info in PermissionRailRow(info: info) { actions.send(.requestPermission(info.kind.rawValue)) } }
             }
-            ConsoleIcon(name: meta.symbol, tint: meta.color)
-                .consoleHelp(meta.label + (tip.isEmpty ? "" : " · " + tip))
-                .accessibilityLabel(meta.label)
         }
-        .frame(height: 28)
-        .consoleHelp(tip)
-        .animation(Motion.gentle, value: info.grant)
     }
 
     /// Solid SF Symbol per kind (the Setup step's table says the same; the Console preview
@@ -816,6 +1121,40 @@ private struct PermissionsRailList: View {
         case .filesDocuments: return "doc.fill"
         case .filesDownloads: return "arrow.down.circle.fill"
         }
+    }
+}
+
+/// One kind as a `ConsoleRow` 40: glyph · label / the why (and Automation's targets, a folder) ·
+/// the verb while not granted · the state glyph.
+struct PermissionRailRow: View {
+    let info: PermissionInfo
+    let request: () -> Void
+
+    /// System Settings is the only way for these (or a denied one, Automation apart).
+    static func opensSettings(_ info: PermissionInfo) -> Bool {
+        info.ask == .settings || (info.grant == .denied && info.kind != .automation)
+    }
+
+    /// The why, then the detail, on one line under the label.
+    static func meta(_ info: PermissionInfo) -> String? {
+        let line = [info.why, info.detail ?? ""].filter { !$0.isEmpty }.joined(separator: NowWords.dot)
+        return line.isEmpty ? nil : line
+    }
+
+    private var verb: ConsoleRowVerb? {
+        guard info.grant != .granted else { return nil }
+        if Self.opensSettings(info) {
+            return ConsoleRowVerb(title: NowWords.openSettings, help: info.kind == .fullDiskAccess ? NowWords.openSettingsDragTip : NowWords.openSettingsTip, run: request)
+        }
+        return ConsoleRowVerb(title: NowWords.request, help: NowWords.requestTip(info.label), run: request)
+    }
+
+    var body: some View {
+        let state = ConsoleTheme.grant(info.grant)
+        ConsoleRow(title: info.label, icon: .symbol(PermissionsRailList.symbol(info.kind)), meta: Self.meta(info),
+                   trailing: .glyph(state.symbol, state.color), verb: verb, accessibilityHint: state.label,
+                   primary: { if info.grant != .granted { request() } })
+            .animation(Motion.gentle, value: info.grant)
     }
 }
 
@@ -846,11 +1185,16 @@ private struct MarkThumb: View {
                 .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .consoleHelp("Forget this circle")
-        .accessibilityLabel("Forget this circle")
+        .consoleHelp(NowWords.forgetCircle)
+        .accessibilityLabel(NowWords.forgetCircle)
         .padding(2)
         .opacity(hovering ? 1 : 0)
         .animation(ConsoleMotion.hover, value: hovering)
+    }
+
+    /// The tier-3 preview: the crop whole under the caption, `time · size` from the file.
+    @ViewBuilder private func preview(_ url: URL) -> some View {
+        ConsoleTipPreview(title: caption, url: url, meta: ConsoleTipPreview.fileMeta(url))
     }
 
     var body: some View {
@@ -860,6 +1204,8 @@ private struct MarkThumb: View {
                 ScreenshotThumb(url: url, onTap: {
                     session.lightbox = ConsoleLightboxItem(url: url, caption: caption)
                 }, width: Self.width)
+                // The crop whole, the caption readable: a preview, not a hover line.
+                .consoleHelp(id: NowWords.markTip(mark.id), spoken: caption) { preview(url) }
             } else {
                 // No screenshot yet: the dithered skeleton (ground → raised) under the scope and the size.
                 ZStack {
@@ -874,13 +1220,13 @@ private struct MarkThumb: View {
                 .aspectRatio(max(0.6, min(2.2, mark.rect.h > 0 ? mark.rect.w / mark.rect.h : 1.6)), contentMode: .fit)
                 .frame(width: Self.width)
                 .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
+                .consoleHelp(caption)
             }
         }
         .opacity(mark.consumed ? 0.5 : 1)
         .animation(Motion.fade, value: mark.consumed)
         .overlay(alignment: .topTrailing) { forgetButton }
         .onHover { hovering = $0 }
-        .consoleHelp(caption)
         .accessibilityLabel(caption)
     }
 }
@@ -903,8 +1249,8 @@ struct AudioMeters: View {
     var body: some View {
         let l = state.levels
         VStack(spacing: 0) {
-            meter("mic.fill", "Input", l.input, ConsoleTheme.listening)
-            meter("speaker.wave.2.fill", "Output", l.output, ConsoleTheme.speaking)
+            meter("mic.fill", NowWords.input, l.input, ConsoleTheme.listening)
+            meter("speaker.wave.2.fill", NowWords.output, l.output, ConsoleTheme.speaking)
         }
     }
 
@@ -962,6 +1308,12 @@ struct MicRouteInfo: Equatable {
     }
 }
 
+/// Settings as an index: seven closed heads that carry their summary (`Audio  Cedar · British` ·
+/// `Brain  Local · qwen3.5:27b [Ready]` · `Leaves the Mac  2 cloud · 2 mac` · `Session  Notch ·
+/// 10 min` · `Memory 7 [learned 12m]` · `Retention  forever · 30 d` · `Wake [off]`), the folds
+/// remembered per id (`ConsoleFoldStore`), ⌥-click for one at a time. Every control is the kit's:
+/// dropdowns lit per site, `On | Off` toggles with a hint, one stepper, `ConsoleField(.row)` for
+/// the fields, `ConsoleSecretRow` for the keys and the passphrase.
 struct SettingsPanel: View {
     let settings: Settings
     let setup: SetupStatus
@@ -980,19 +1332,16 @@ struct SettingsPanel: View {
     /// The voice engine's ranking (empty until it has published once).
     @State private var route = MicRouteInfo()
 
-    private enum Field: Hashable { case model, server, phrases }
-    @FocusState private var focus: Field?
-
     // Brain: the three fields go out as one patch, so the drafts are kept together.
-    private struct BrainDraft: Equatable {
+    struct BrainDraft: Equatable {
         var kind: BrainKind
         var model: String
         var server: String
     }
     @State private var modelDraft = ""
     @State private var serverDraft = ""
-    /// The last patch sent and not yet echoed by the daemon; Return commits and then
-    /// drops focus, and the focus change must not send the same patch again.
+    /// The last patch sent and not yet echoed by the daemon; a field's commit and its blur
+    /// must not send the same patch twice.
     @State private var brainSent: BrainDraft?
 
     // Wake
@@ -1036,13 +1385,15 @@ struct SettingsPanel: View {
         ConsoleTheme.efforts + (ConsoleTheme.efforts.contains(settings.effort) ? [] : [settings.effort])
     }
 
+    // MARK: mic (the dropdown's closures: Auto / Ranked / Connected, `active · virtual · gone`, the ranking foot)
+
     private var micSelection: String {
         guard let id = settings.micDeviceId, !id.isEmpty else { return "" }
         return id
     }
 
-    /// "Auto (ranked)" first, then the microphones in the voice engine's ranked order (the
-    /// enumeration order until it has published), then a saved pick that is not connected.
+    /// Auto first, then the microphones in the voice engine's ranked order (the enumeration
+    /// order until it has published), then a saved pick that is not connected.
     private var micOptions: [String] {
         var ids = [""] + (route.ranked.isEmpty ? mics.map(\.id) : route.ranked)
         for m in mics where !ids.contains(m.id) { ids.append(m.id) }
@@ -1055,340 +1406,66 @@ struct SettingsPanel: View {
         route.names[id] ?? mics.first(where: { $0.id == id })?.name
     }
 
+    /// The row's title: `Auto`, the device's name, or `Unavailable · <id>` for a saved pick gone.
     private func micTitle(_ id: String) -> String {
-        if id.isEmpty { return "Auto (ranked)" }
-        guard let name = micName(id) else { return "Unavailable · \(ConsoleFormat.shortId(id, 10))" }
-        var tags: [String] = []
-        if id == route.active { tags.append("active") }
-        if route.virtual.contains(id) { tags.append("virtual") }
-        return tags.isEmpty ? name : "\(name) · \(tags.joined(separator: " · "))"
+        if id.isEmpty { return SettingsWords.micAuto }
+        return micName(id) ?? (SettingsWords.micUnavailable + NowWords.dot + ConsoleFormat.shortId(id, 10))
+    }
+
+    /// `active` on the one in use, `virtual` on an aggregate, `gone` on a saved pick not connected.
+    static func micBadges(id: String, active: String, virtual: Bool, connected: Bool) -> [ConsoleBadge.Word] {
+        guard !id.isEmpty else { return [] }
+        var out: [ConsoleBadge.Word] = []
+        if id == active { out.append(.word(SettingsWords.micActive)) }
+        if virtual { out.append(.word(SettingsWords.micVirtual)) }
+        if !connected { out.append(.word(SettingsWords.micGone)) }
+        return out
+    }
+
+    private func micBadges(_ id: String) -> [ConsoleBadge.Word] {
+        Self.micBadges(id: id, active: route.active, virtual: route.virtual.contains(id), connected: micName(id) != nil)
+    }
+
+    /// Auto / Ranked (the engine's order) / Connected (found, not ranked yet) / Saved, not listed.
+    static func micGroup(id: String, ranked: Bool, connected: Bool) -> String {
+        if id.isEmpty { return SettingsWords.micAutoGroup }
+        if ranked { return SettingsWords.micRanked }
+        return connected ? SettingsWords.micConnected : ConsoleMenuWords.savedHead
+    }
+
+    private func micGroup(_ id: String) -> String {
+        Self.micGroup(id: id, ranked: route.ranked.contains(id), connected: micName(id) != nil)
     }
 
     /// One line under the picker: the microphone in use, and why a pick is not (echo
     /// cancellation follows the system default; only Sound settings can move that).
     private var micHint: String {
         guard !route.active.isEmpty, let active = micName(route.active) else { return "" }
-        if route.follows.hasPrefix("system default") {
+        if route.follows.hasPrefix(SettingsWords.systemDefaultPrefix) {
             let pick = micSelection
             if !pick.isEmpty, pick != route.active, let wanted = micName(pick) {
-                return "Using \(active). Echo cancellation follows the system default; make \(wanted) the default in Sound settings to use it."
+                return SettingsWords.echoFollows(active: active, wanted: wanted)
             }
-            return "Using \(active) · system default (echo cancellation)."
+            return SettingsWords.using(active) + NowWords.dot + SettingsWords.systemDefault + SettingsWords.period
         }
-        return "Using \(active) · \(route.follows)."
+        return SettingsWords.using(active) + NowWords.dot + route.follows + SettingsWords.period
     }
+
+    // MARK: the index
 
     var body: some View {
         VStack(spacing: 0) {
-            // Section heads name the group, not the first row, so no word appears twice.
-            RailSection("Audio") {
-                VStack(spacing: 2) {
-                    // A voice is a timbre; every label says the language it will speak.
-                    formRow("Voice") {
-                        // The kit's dropdown: the name alone (Language is its own row), Default / Also / All
-                        // voices, `default` on Ballad, a filter over the 22, a saved id outside the list kept.
-                        ConsoleMenuField(value: settings.voice, options: voiceOptions, title: VoiceWords.name,
-                                         pick: { patch(SettingsPatch(voice: $0)) },
-                                         id: SettingsMenuIds.voice, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
-                                         detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
-                    }
-                    // One language today: a value, not a menu with one row. The menu appears
-                    // when a second language exists (ConsoleTheme.languages).
-                    formRow("Language") {
-                        Text(ConsoleTheme.languageLabel(settings.language))
-                            .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
-                            .frame(height: 26)
-                            .consoleHelp("Jarhead speaks English whatever language it hears")
-                            .accessibilityLabel("Language: \(ConsoleTheme.languageLabel(settings.language))")
-                    }
-                    formRow("Accent") {
-                        ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
-                                        pick: { patch(SettingsPatch(accent: $0)) },
-                                        accessibilityLabel: "Accent: \(ConsoleTheme.accentLabel(settings.accent))")
-                            .consoleHelp("How the English sounds; best-effort on the voice's side")
-                    }
-                    // The promise, and when a pick lands. Switch now closes the session and
-                    // reopens it on the new voice (one paid start); it rises in only while a
-                    // pick is waiting and a session is open.
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        hint(ConsoleTheme.languageHint)
-                        if needsSwitch {
-                            Button("Switch now") { actions.send(.voiceReopen) }
-                                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                                .layoutPriority(1)
-                                .consoleHelp("Pause, then resume on the new voice now (refused while work runs)")
-                                .transition(Motion.appear)
-                        }
-                    }
-                    .animation(Motion.gentle, value: needsSwitch)
-                    formRow("Mic") {
-                        ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
-                                         pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) })
-                            .consoleHelp("Auto ranks the connected microphones: your pick, the built-in, the one used last, the system default. Aggregate and virtual devices only when picked.")
-                    }
-                    if !micHint.isEmpty { hint(micHint) }
-                }
-            }
-            RailSection("Brain") {
-                VStack(spacing: 2) {
-                    // The OpenAI key that runs the GPT-Live-1 voice; the dot is the last probe.
-                    // The engine probes on its own after it saves a key, so Save sends one command.
-                    formRow("Voice key") {
-                        SecretField(placeholder: "sk-…", onFile: setup.secrets.openai, status: voiceKeyStatus,
-                                    save: { key in actions.send(.setSecrets(["OPENAI_API_KEY": key])) })
-                    }
-                    .consoleHelp("The OpenAI key for the voice (\(setup.liveModel))")
-                    formRow("Backend") {
-                        // The menu spells the long ones out with every kind's `needs` on line 2 and in the
-                        // foot; the field carries the short word and one badge (`this Mac` · `no key`).
-                        ConsoleMenuField(value: kind, options: ConsoleTheme.brains, title: { $0.label },
-                                         pick: { commitBrain(kind: $0) },
-                                         fieldTitle: { $0.shortLabel },
-                                         id: SettingsMenuIds.backend, label: BrainWords.label, fieldBadge: BrainWords.fieldBadge, badge: BrainWords.badge,
-                                         meta: BrainWords.needs, metaMono: false, foot: BrainWords.needs, width: 260)
-                    }
-                    hint(kind.needs)
-                    // Local: a menu over what the server lists (a pick commits at once, like every
-                    // menu here); every other kind types an id. The compatible kind refuses to start
-                    // without one, so its placeholder asks for it.
-                    formRow("Model") {
-                        if SettingsPanel.modelRowIsMenu(kind) {
-                            LocalModelMenu(status: setup.local, saved: modelDraft, pick: { id in modelDraft = id; commitBrain() })
-                        } else {
-                            TextField(SettingsPanel.modelPlaceholder(kind), text: $modelDraft)
-                                .consoleField(mono: true, height: 26, focused: focus == .model)
-                                .focused($focus, equals: .model)
-                                .onSubmit { commitBrain(); focus = nil }
-                                .accessibilityLabel("Model id")
-                        }
-                    }
-                    // The rows a backend wants arrive and leave with the pick (Motion.appear). The
-                    // Local server row is drawn only when discovery found nothing or a root is pinned.
-                    if kind == .openaiCompatible {
-                        formRow("Server") {
-                            TextField("http://localhost:11434/v1", text: $serverDraft)
-                                .consoleField(mono: true, height: 26, focused: focus == .server)
-                                .focused($focus, equals: .server)
-                                .onSubmit { commitBrain(); focus = nil }
-                                .accessibilityLabel("Server base URL")
-                        }
-                        .transition(Motion.appear)
-                    } else if SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft) {
-                        formRow("Server") {
-                            LocalServerRow(status: setup.local, text: $serverDraft, focused: focus == .server)
-                                .focused($focus, equals: .server)
-                                .onSubmit { commitBrain(); focus = nil }
-                        }
-                        .transition(Motion.appear)
-                    }
-                    // The OpenAI brain reuses the voice key above; logins and the local server need no key at all.
-                    if let secret = kind.secretKey, SettingsPanel.keyRowShown(kind) {
-                        formRow("Key") {
-                            SecretField(placeholder: kind == .openaiCompatible ? "server key" : "sk-ant-…",
-                                        onFile: kind == .anthropicApi ? setup.secrets.anthropic : setup.secrets.brainApiKey,
-                                        status: nil,
-                                        save: { key in actions.send(.setSecrets([secret: key])) })
-                                // One row for two secrets: the identity keeps a key typed for one
-                                // backend from being saved under the other's name after a switch.
-                                .id(secret)
-                        }
-                        .consoleHelp(secret)
-                        .transition(Motion.appear)
-                    }
-                    formRow("Effort") {
-                        ConsoleMenuField(value: settings.effort, options: effortOptions, title: { $0 },
-                                         pick: { patch(SettingsPatch(effort: $0)) }, mono: true,
-                                         id: SettingsMenuIds.effort, label: SettingsMenuIds.effortLabel, foot: HelpCopy.effort)
-                    }
-                    formRow("Status") { brainStatus }
-                }
-                .animation(Motion.gentle, value: kind)
-                .animation(Motion.gentle, value: SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft))
-            }
-            // Where words go right now: the engine's four rows, the same ones the doctor prints.
-            DataPathsSection(paths: setup.dataPaths)
-            RailSection("Session") {
-                VStack(spacing: 2) {
-                    formRow("Idle sleep") {
-                        HStack(spacing: 6) {
-                            Text("\(Int(settings.idleSleepMinutes.rounded())) min")
-                                .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
-                                .frame(width: 56, alignment: .leading)
-                            Button { step(-1) } label: { Image(systemName: "minus").font(.system(size: 11, weight: .semibold)) }
-                                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 24))
-                                .disabled(settings.idleSleepMinutes <= 1)
-                                .accessibilityLabel("Less idle time")
-                            Button { step(1) } label: { Image(systemName: "plus").font(.system(size: 11, weight: .semibold)) }
-                                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 24))
-                                .disabled(settings.idleSleepMinutes >= 240)
-                                .accessibilityLabel("More idle time")
-                            Spacer(minLength: 0)
-                        }
-                    }
-                    formRow("Auto-wake") {
-                        ConsoleToggle(on: settings.autoWake, hint: SettingsMenuIds.autoWakeHint, id: SettingsMenuIds.autoWake,
-                                      accessibilityLabel: "Auto-wake on launch") { patch(SettingsPatch(autoWake: $0)) }
-                    }
-                    // Where the orb lives: floating free (it stays where it last worked), or in
-                    // the MacBook notch (it drops out for the work and flies back up).
-                    formRow("Home") {
-                        ConsoleSegments(value: settings.livesInNotch, options: [false, true], title: { $0 ? "Notch" : "Free" },
-                                        pick: { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) },
-                                        accessibilityLabel: "Orb home: \(settings.livesInNotch ? "Notch" : "Free")")
-                            .consoleHelp(settings.livesInNotch ? "The orb lives and sleeps in the notch" : "The orb floats free and stays where it last worked")
-                    }
-                    hint(settings.livesInNotch ? "Lives in the notch; floats free when the main display has none." : "Floats free; stays where it last worked.")
-                }
-            }
-            // Memory: a durable record of Kevin, learned after a conversation ends (never while
-            // a paid session is open; never through Codex) and given back quietly per turn. The
-            // rows under the counts are the record itself — Edit, Forget, Restore; Forget hides,
-            // nothing deletes. The counts roll; "learned 12 min ago" ticks.
-            RailSection("Memory", count: (memory?.count ?? 0) > 0 ? memory?.count : nil, trailing: {
-                // "learned 12m ago" ticks beside Learn now; the tooltip has the last run's figures.
-                if let memory {
-                    TimelineView(.periodic(from: .now, by: 30)) { ctx in
-                        Text(SettingsPanel.learnedLine(memory, now: ctx.date.timeIntervalSince1970 * 1000))
-                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                            .lineLimit(1)
-                            .contentTransition(ConsoleMotion.numeric)
-                    }
-                    .consoleHelp(memory.lastRun.map { SettingsPanel.lastRunLine($0) } ?? "No run yet")
-                }
-                Button("Learn now") { actions.send(.memoryRun) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .disabled(!settings.memory || memory == nil)
-                    .consoleHelp(settings.memory ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
-            }) {
-                VStack(spacing: 2) {
-                    formRow("Remember") {
-                        ConsoleToggle(on: settings.memory, hint: SettingsMenuIds.rememberHint, id: SettingsMenuIds.remember,
-                                      accessibilityLabel: "Remember across sessions") { patch(SettingsPatch(memory: $0)) }
-                    }
-                    if !settings.memory {
-                        hint("Off: nothing is learned or used. What was remembered stays.").transition(Motion.appear)
-                    }
-                    formRow("Matching") {
-                        Text(ConsoleTheme.memoryMatching(memory))
-                            .font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
-                            .frame(height: 26)
-                            .contentTransition(.opacity)
-                            .animation(Motion.fade, value: ConsoleTheme.memoryMatching(memory))
-                            .consoleHelp(SettingsPanel.matchingHelp(memory))
-                    }
-                    formRow("Known") { memoryCounts }
-                    hint(ConsoleTheme.memoryBudgetHint)
-                    MemoryRailList(summary: memory, enabled: settings.memory)
-                        .padding(.top, 6)
-                }
-                .animation(Motion.gentle, value: settings.memory)
-            }
-            // Retention is a mover, not a deleter: older days MOVE to the trash by the sweep
-            // and come back with Restore; the trash is emptied in Finder, by Kevin, never here.
-            RailSection("Retention", trailing: {
-                // Two presses: the sweep moves whole day files and has no Undo of its own, so the
-                // head asks first, in place — the word becomes the deed, and × is the way out.
-                if sweepArmed {
-                    HStack(spacing: 4) {
-                        Button("Move older days to Trash") {
-                            withAnimation(Motion.snappy) { sweepArmed = false }
-                            actions.cleanup(.sweep)
-                        }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .consoleHelp("Days past retention move to the trash now; each comes back with Restore")
-                        Button { withAnimation(Motion.snappy) { sweepArmed = false } } label: {
-                            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
-                        }
-                        .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
-                        .consoleHelp("Keep everything where it is")
-                        .accessibilityLabel("Cancel the sweep")
-                    }
-                    .transition(.opacity)
-                    .task {
-                        // Left alone, the question goes away.
-                        try? await Task.sleep(nanoseconds: 8_000_000_000)
-                        withAnimation(Motion.snappy) { sweepArmed = false }
-                    }
-                } else {
-                    Button("Sweep now") { withAnimation(Motion.snappy) { sweepArmed = true } }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .disabled(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0)
-                        .consoleHelp(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0
-                              ? "Both keep forever; nothing would move"
-                              : "Move the days past retention to the trash now (each comes back with Restore); asks first")
-                        .transition(.opacity)
-                }
-            }) {
-                VStack(spacing: 2) {
-                    formRow("Ledger") {
-                        ConsoleMenuField(value: settings.ledgerRetentionDays, options: retentionOptions(ConsoleTheme.ledgerRetentionOptions, current: settings.ledgerRetentionDays),
-                                         title: { ConsoleTheme.retentionTitle($0, forever: "keep forever") },
-                                         pick: { days in var p = SettingsPatch(); p.ledgerRetentionDays = days; patch(p) })
-                            .accessibilityLabel("Ledger retention: \(ConsoleTheme.retentionTitle(settings.ledgerRetentionDays, forever: "keep forever"))")
-                    }
-                    .consoleHelp("Days a day's conversations stay on the rail before the sweep moves the day file to the trash")
-                    formRow("Screenshots") {
-                        ConsoleMenuField(value: settings.shotsRetentionDays, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays),
-                                         title: { ConsoleTheme.retentionTitle($0, forever: "forever") },
-                                         pick: { days in var p = SettingsPatch(); p.shotsRetentionDays = days; patch(p) })
-                            .accessibilityLabel("Screenshot retention: \(ConsoleTheme.retentionTitle(settings.shotsRetentionDays, forever: "forever"))")
-                    }
-                    .consoleHelp("Days a day's screenshots stay before the sweep moves the folder to the trash")
-                    hint("Older days move to the trash, never out of it. Pinned conversations keep their days.")
-                    formRow("Trash") {
-                        // The figures whole on their own line; the way to Finder under them.
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(trash.map { ConsoleFormat.trashLine($0) } ?? "—")
-                                .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
-                                .lineLimit(1)
-                                .frame(height: 26, alignment: .leading)
-                                .contentTransition(ConsoleMotion.numeric)
-                                .animation(Motion.snappy, value: trash)
-                                .consoleHelp(trash.map { ConsoleFormat.truncPath($0.path, max: 48) } ?? "No trash folder yet")
-                            if let trash {
-                                Button { actions.open(trash.path) } label: { Label("Reveal in Finder", systemImage: "folder.fill") }
-                                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                                    .consoleHelp("Show \(ConsoleFormat.truncPath(trash.path, max: 48)) in Finder — emptying it is yours, there")
-                            }
-                        }
-                    }
-                    hint("Nothing is deleted here; the trash is emptied in Finder.")
-                }
-            }
-            RailSection("Wake") {
-                VStack(spacing: 2) {
-                    formRow("Wake word") {
-                        ConsoleToggle(on: wake.enabled, hint: SettingsMenuIds.wakeHint, id: SettingsMenuIds.wakeWord, accessibilityLabel: "Wake word") { on in
-                            var w = wake; w.enabled = on; patch(SettingsPatch(wake: w))
-                        }
-                    }
-                    formRow("Phrases") {
-                        // The stock list is wider than the field, so it wraps (up to three lines) rather than clipping mid-word.
-                        TextField("jarhead, jar head", text: $phrasesDraft, axis: .vertical)
-                            .lineLimit(1...3)
-                            .consoleField(mono: true, height: 26, focused: focus == .phrases, grows: true)
-                            .focused($focus, equals: .phrases)
-                            .onSubmit { commitPhrases(); focus = nil }
-                            .consoleHelp("Any of these wakes it; comma-separated")
-                            .accessibilityLabel("Wake phrases, comma separated")
-                    }
-                    formRow("Auth") {
-                        // The menu spells every option out; the field is too narrow for "Touch ID or passphrase".
-                        ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
-                                         pick: { auth in var w = wake; w.auth = auth; patch(SettingsPatch(wake: w)) },
-                                         fieldTitle: { $0 == .either ? "Either" : $0.label },
-                                         id: SettingsMenuIds.auth, label: "Auth")
-                    }
-                    if wake.auth == .none { hint("Anyone who says the word wakes it.").transition(Motion.appear) }
-                    formRow("Passphrase") { WakePassphraseRow(set: gate.passphraseSet) }
-                    formRow("Status") { WakeGateReadout(phase: phase, wake: wake, gate: gate.gate, heard: gate.heard) }
-                }
-                .animation(Motion.gentle, value: wake.auth)
-            }
+            audio
+            brain
+            LeavesSection(paths: setup.dataPaths)
+            sessionSection
+            memorySection
+            retention
+            wakeSection
             // The words do the work; the gear means System Settings elsewhere in this window.
-            Button("Set up again…") { actions.openOnboarding() }
+            Button(SettingsWords.setUpAgain) { actions.openOnboarding() }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                .consoleHelp("Open the setup wizard")
+                .consoleHelp(SettingsWords.setUpAgainTip)
                 .padding(EdgeInsets(top: 12, leading: railInset, bottom: 20, trailing: railInset))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1400,27 +1477,15 @@ struct SettingsPanel: View {
             serverDraft = settings.brainBaseUrl ?? ""
             phrasesDraft = wake.phrases.joined(separator: ", ")
         }
-        .onChange(of: brainSaved) {
+        // The daemon's echo: a draft that still says the old value follows; one mid-edit stays.
+        .onChange(of: brainSaved) { old, new in
             brainSent = nil
-            if focus != .model { modelDraft = settings.brainModel }
-            if focus != .server { serverDraft = settings.brainBaseUrl ?? "" }
+            if modelDraft == old.model || modelDraft == brainSent?.model { modelDraft = new.model }
+            if serverDraft == old.server { serverDraft = new.server }
         }
-        .onChange(of: wake.phrases) {
+        .onChange(of: wake.phrases) { old, new in
             phrasesSent = nil
-            if focus != .phrases { phrasesDraft = wake.phrases.joined(separator: ", ") }
-        }
-        // Focus starts a new edit (a retry may resend); blur commits, once.
-        .onChange(of: focus) { old, new in
-            switch new {
-            case .model, .server: brainSent = nil
-            case .phrases: phrasesSent = nil
-            case nil: break
-            }
-            switch old {
-            case .model, .server: commitBrain()
-            case .phrases: commitPhrases()
-            case nil: break
-            }
+            if phrasesDraft == old.joined(separator: ", ") { phrasesDraft = new.joined(separator: ", ") }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AVCaptureDeviceWasConnectedNotification"))) { _ in mics = MicDevice.enumerate() }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("AVCaptureDeviceWasDisconnectedNotification"))) { _ in mics = MicDevice.enumerate() }
@@ -1429,9 +1494,341 @@ struct SettingsPanel: View {
         }
     }
 
-    private func step(_ delta: Int) {
-        let next = min(240, max(1, Int(settings.idleSleepMinutes.rounded()) + delta))
-        patch(SettingsPatch(idleSleepMinutes: Double(next)))
+    // MARK: Audio
+
+    private var audio: some View {
+        ConsoleDisclosure(id: SettingsWords.audioFold, title: ConsoleDisclosureWords.audio,
+                          summary: ConsoleDisclosureSummary.audio(voice: VoiceWords.name(settings.voice), accent: ConsoleTheme.accentLabel(settings.accent)),
+                          size: .section, siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                // The kit's dropdown: the name alone (Language is its own row), Default / Also / All
+                // voices, `default` on Ballad, a filter over the 22, a saved id outside the list kept.
+                ConsoleFormRow(SettingsWords.voiceKeyLabel) {
+                    ConsoleMenuField(value: settings.voice, options: voiceOptions, title: VoiceWords.name,
+                                     pick: { patch(SettingsPatch(voice: $0)) },
+                                     id: SettingsWords.voice, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
+                                     detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
+                }
+                // One language today: a value, not a menu with one row. The menu appears
+                // when a second language exists (ConsoleTheme.languages).
+                ConsoleFormRow(SettingsWords.language) {
+                    Text(ConsoleTheme.languageLabel(settings.language))
+                        .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
+                        .frame(height: 26)
+                        .consoleHelp(SettingsWords.languageTip)
+                        .accessibilityLabel(SettingsWords.languageLabel(ConsoleTheme.languageLabel(settings.language)))
+                }
+                ConsoleFormRow(SettingsWords.accent) {
+                    ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
+                                    pick: { patch(SettingsPatch(accent: $0)) },
+                                    accessibilityLabel: SettingsWords.accentLabel(ConsoleTheme.accentLabel(settings.accent)), size: .row)
+                        .consoleHelp(SettingsWords.accentTip)
+                }
+                switchNow
+                ConsoleFormRow(SettingsWords.micLabel) {
+                    ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
+                                     pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) },
+                                     id: SettingsWords.mic, label: SettingsWords.micLabel,
+                                     fieldBadge: { $0.isEmpty ? .word(SettingsWords.micRankedBadge) : nil }, badge: micBadges,
+                                     group: micGroup, foot: { $0.isEmpty ? SettingsWords.micFoot : nil }, filterNoun: SettingsWords.micNoun)
+                }
+                if !micHint.isEmpty { hint(micHint) }
+            }
+        }
+    }
+
+    /// The promise, and when a pick lands. Switch now closes the session and reopens it on the
+    /// new voice (one paid start); it rises in only while a pick is waiting and a session is open.
+    private var switchNow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            hint(ConsoleTheme.languageHint)
+            if needsSwitch {
+                Button(SettingsWords.switchNow) { actions.send(.voiceReopen) }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .layoutPriority(1)
+                    .consoleHelp(SettingsWords.switchNowTip)
+                    .transition(Motion.appear)
+            }
+        }
+        .animation(Motion.gentle, value: needsSwitch)
+    }
+
+    // MARK: Brain
+
+    /// The folded head's model word: under Local the id that runs (the saved id, else the engine's pick).
+    static func brainModelWord(kind: BrainKind, model: String, local: LocalServerStatus) -> String? {
+        if kind == .local, model.isEmpty { return local.picked.flatMap { $0.isEmpty ? nil : $0 } }
+        return model.isEmpty ? nil : model
+    }
+
+    /// The folded head's kind word: `Local` stays (the id alone does not say where it runs); a cloud
+    /// model's id names its vendor, so the kind is dropped and the head fits the rail's 182 pt.
+    static func brainKindWord(kind: BrainKind, model: String?) -> String {
+        kind == .local || model == nil ? kind.shortLabel : ""
+    }
+
+    private var brainModelWord: String? { Self.brainModelWord(kind: kind, model: settings.brainModel, local: setup.local) }
+
+    private var brainReadyWord: Bool? {
+        switch setup.brain {
+        case .ok: return true
+        case .unavailable: return false
+        case .unchecked: return nil
+        }
+    }
+
+    private var brain: some View {
+        ConsoleDisclosure(id: SettingsWords.brainFold, title: ConsoleDisclosureWords.brain,
+                          summary: ConsoleDisclosureSummary.brain(kind: Self.brainKindWord(kind: kind, model: brainModelWord), model: brainModelWord, ready: brainReadyWord),
+                          size: .section, siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                // The OpenAI key that runs the GPT-Live-1 voice; the dot is the last probe.
+                // The engine probes on its own after it saves a key, so Save sends one command.
+                ConsoleFormRow(SettingsWords.voiceKeyRow) {
+                    SettingsSecretRow(placeholder: SettingsWords.skPlaceholder, onFile: setup.secrets.openai, envVar: SettingsWords.openAIKey,
+                                      status: voiceKeyStatus, id: SettingsWords.voiceKey,
+                                      save: { key in actions.send(.setSecrets([SettingsWords.openAIKey: key])) })
+                }
+                ConsoleFormRow(BrainWords.label) {
+                    // The menu spells the long ones out with every kind's `needs` on line 2 and in the
+                    // foot; the field carries the short word and one badge (`this Mac` · `no key`).
+                    ConsoleMenuField(value: kind, options: ConsoleTheme.brains, title: { $0.label },
+                                     pick: { commitBrain(kind: $0) },
+                                     fieldTitle: { $0.shortLabel },
+                                     id: SettingsWords.backend, label: BrainWords.label, fieldBadge: BrainWords.fieldBadge, badge: BrainWords.badge,
+                                     meta: BrainWords.needs, metaMono: false, foot: BrainWords.needs, width: 260)
+                }
+                hint(kind.needs)
+                modelRow
+                serverRow
+                keyRow
+                ConsoleFormRow(SettingsWords.effortLabel) {
+                    ConsoleMenuField(value: settings.effort, options: effortOptions, title: { $0 },
+                                     pick: { patch(SettingsPatch(effort: $0)) }, mono: true,
+                                     id: SettingsWords.effort, label: SettingsWords.effortLabel, foot: HelpCopy.effort)
+                }
+                ConsoleFormRow(SettingsWords.status) { brainStatus }
+            }
+            .animation(Motion.gentle, value: kind)
+            .animation(Motion.gentle, value: SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft))
+        }
+    }
+
+    /// Local: a menu over what the server lists (a pick commits at once, like every menu here);
+    /// every other kind types an id. The compatible kind refuses to start without one, so its
+    /// placeholder asks for it. An empty id means the backend's default, so an empty commit clears.
+    private var modelRow: some View {
+        ConsoleFormRow(SettingsWords.model) {
+            if SettingsPanel.modelRowIsMenu(kind) {
+                LocalModelMenu(status: setup.local, saved: modelDraft, pick: { id in modelDraft = id; commitBrain() })
+            } else {
+                ConsoleField(text: $modelDraft, placeholder: SettingsPanel.modelPlaceholder(kind), size: .row, mono: true,
+                             commit: ConsoleField.Commit(emptyClears: true), id: SettingsWords.modelField, accessibilityLabel: SettingsWords.modelId,
+                             onCommit: { commitBrain() })
+            }
+        }
+    }
+
+    /// The rows a backend wants arrive and leave with the pick (Motion.appear). The Local server
+    /// row is drawn only when discovery found nothing or a root is pinned.
+    @ViewBuilder private var serverRow: some View {
+        if kind == .openaiCompatible {
+            ConsoleFormRow(SettingsWords.serverRow) {
+                ConsoleField(text: $serverDraft, placeholder: SettingsWords.serverPlaceholder, size: .row, mono: true,
+                             commit: ConsoleField.Commit(emptyClears: true), id: SettingsWords.server, accessibilityLabel: SettingsWords.serverURL,
+                             onCommit: { commitBrain() })
+            }
+            .transition(Motion.appear)
+        } else if SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft) {
+            ConsoleFormRow(SettingsWords.serverRow) {
+                ConsoleField(text: $serverDraft, placeholder: LocalBrainWords.serverPlaceholder(setup.local), size: .row, mono: true,
+                             commit: ConsoleField.Commit(emptyClears: true), id: SettingsWords.server, accessibilityLabel: SettingsWords.localServerRoot,
+                             onCommit: { commitBrain() })
+            }
+            .transition(Motion.appear)
+        }
+    }
+
+    /// The OpenAI brain reuses the voice key above; logins and the local server need no key at all.
+    @ViewBuilder private var keyRow: some View {
+        if let secret = kind.secretKey, SettingsPanel.keyRowShown(kind) {
+            ConsoleFormRow(SettingsWords.key) {
+                SettingsSecretRow(placeholder: kind == .openaiCompatible ? SettingsWords.serverKeyPlaceholder : SettingsWords.skAntPlaceholder,
+                                  onFile: kind == .anthropicApi ? setup.secrets.anthropic : setup.secrets.brainApiKey, envVar: secret,
+                                  status: nil, id: SettingsWords.brainKey,
+                                  save: { key in actions.send(.setSecrets([secret: key])) })
+                    // One row for two secrets: the identity keeps a key typed for one
+                    // backend from being saved under the other's name after a switch.
+                    .id(secret)
+            }
+            .transition(Motion.appear)
+        }
+    }
+
+    // MARK: Session
+
+    private var sessionSection: some View {
+        ConsoleDisclosure(id: SettingsWords.sessionFold, title: ConsoleDisclosureWords.session,
+                          summary: ConsoleDisclosureSummary.session(home: settings.livesInNotch ? SettingsWords.notch : SettingsWords.free, idleMinutes: Int(settings.idleSleepMinutes.rounded())),
+                          size: .section, siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                ConsoleFormRow(SettingsWords.idleSleep) {
+                    ConsoleStepper(value: Int(settings.idleSleepMinutes.rounded()), unit: SettingsWords.minutes, range: 1...240,
+                                   id: SettingsWords.idle, accessibilityLabel: SettingsWords.idleLabel) { patch(SettingsPatch(idleSleepMinutes: Double($0))) }
+                }
+                ConsoleFormRow(SettingsWords.autoWakeRow) {
+                    ConsoleToggle(on: settings.autoWake, hint: SettingsWords.autoWakeHint, id: SettingsWords.autoWake,
+                                  accessibilityLabel: SettingsWords.autoWakeLabel) { patch(SettingsPatch(autoWake: $0)) }
+                }
+                // Where the orb lives: floating free (it stays where it last worked), or in
+                // the MacBook notch (it drops out for the work and flies back up).
+                ConsoleFormRow(SettingsWords.home) {
+                    ConsoleSegments(value: settings.livesInNotch, options: [false, true], title: { $0 ? SettingsWords.notch : SettingsWords.free },
+                                    pick: { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) },
+                                    accessibilityLabel: SettingsWords.orbHome(settings.livesInNotch), size: .row)
+                        .consoleHelp(settings.livesInNotch ? SettingsWords.notchTip : SettingsWords.freeTip)
+                }
+                hint(settings.livesInNotch ? SettingsWords.notchHint : SettingsWords.freeHint)
+            }
+        }
+    }
+
+    // MARK: Memory
+
+    /// Memory: a durable record of Kevin, learned after a conversation ends (never while a paid
+    /// session is open; never through Codex) and given back quietly per turn. The rows under the
+    /// counts are the record itself — Edit, Forget, Restore; Forget hides, nothing deletes. The
+    /// folded head carries `learned 12m`; open, the learned word (its card has the run's figures)
+    /// and Learn now come back.
+    private var memorySection: some View {
+        ConsoleDisclosure(id: SettingsWords.memoryFold, title: ConsoleDisclosureWords.memory, count: (memory?.count ?? 0) > 0 ? "\(memory?.count ?? 0)" : nil,
+                          summary: ConsoleDisclosureSummary.memory(enabled: settings.memory, learnedAgo: memory?.lastRunAt.map { ConsoleFormat.relative($0) }),
+                          size: .section, trailing: memoryTrailing, siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                ConsoleFormRow(SettingsWords.rememberRow) {
+                    ConsoleToggle(on: settings.memory, hint: SettingsWords.rememberHint, id: SettingsWords.remember,
+                                  accessibilityLabel: SettingsWords.rememberLabel) { patch(SettingsPatch(memory: $0)) }
+                }
+                if !settings.memory { hint(SettingsWords.memoryOff).transition(Motion.appear) }
+                ConsoleFormRow(SettingsWords.matching) {
+                    Text(ConsoleTheme.memoryMatching(memory))
+                        .font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
+                        .frame(height: 26)
+                        .contentTransition(.opacity)
+                        .animation(Motion.fade, value: ConsoleTheme.memoryMatching(memory))
+                }
+                hint(SettingsPanel.matchingHelp(memory))
+                ConsoleFormRow(SettingsWords.known) { memoryCounts }
+                hint(ConsoleTheme.memoryBudgetHint)
+                MemoryRailList(summary: memory, enabled: settings.memory)
+                    .padding(.top, 6)
+            }
+            .animation(Motion.gentle, value: settings.memory)
+        }
+    }
+
+    private var memoryTrailing: AnyView {
+        AnyView(Button(SettingsWords.learnNow) { actions.send(.memoryRun) }
+            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+            .disabled(!settings.memory || memory == nil)
+            .consoleHelp(settings.memory ? SettingsWords.learnNowTip : SettingsWords.memoryIsOff))
+    }
+
+    // MARK: Retention
+
+    /// Retention is a mover, not a deleter: older days MOVE to the trash by the sweep and come
+    /// back with Restore; the trash is emptied in Finder, by Kevin, never here.
+    private var retention: some View {
+        ConsoleDisclosure(id: SettingsWords.retentionFold, title: ConsoleDisclosureWords.retention,
+                          summary: ConsoleDisclosureSummary.retention(ledgerDays: settings.ledgerRetentionDays > 0 ? settings.ledgerRetentionDays : nil, trashDays: settings.shotsRetentionDays),
+                          size: .section, trailing: AnyView(sweep), siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                ConsoleFormRow(SettingsWords.ledger) {
+                    ConsoleMenuField(value: settings.ledgerRetentionDays, options: retentionOptions(ConsoleTheme.ledgerRetentionOptions, current: settings.ledgerRetentionDays),
+                                     title: { ConsoleTheme.retentionTitle($0, forever: SettingsWords.keepForever) },
+                                     pick: { days in var p = SettingsPatch(); p.ledgerRetentionDays = days; patch(p) }, mono: true,
+                                     id: SettingsWords.ledgerRetention, label: SettingsWords.ledger)
+                        .consoleHelp(SettingsWords.ledgerTip)
+                }
+                ConsoleFormRow(SettingsWords.screenshots) {
+                    ConsoleMenuField(value: settings.shotsRetentionDays, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays),
+                                     title: { ConsoleTheme.retentionTitle($0, forever: SettingsWords.forever) },
+                                     pick: { days in var p = SettingsPatch(); p.shotsRetentionDays = days; patch(p) }, mono: true,
+                                     id: SettingsWords.shotsRetention, label: SettingsWords.screenshots)
+                        .consoleHelp(SettingsWords.shotsTip)
+                }
+                hint(SettingsWords.retentionHint)
+                ConsoleFormRow(SettingsWords.trash) { TrashRow(trash: trash) }
+                hint(SettingsWords.trashHint)
+            }
+        }
+    }
+
+    /// Two presses: the sweep moves whole day files and has no Undo of its own, so the head asks
+    /// first, in place — the word becomes the deed, and × is the way out.
+    @ViewBuilder private var sweep: some View {
+        let nothing = settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0
+        if sweepArmed {
+            HStack(spacing: 4) {
+                Button(SettingsWords.sweepArmed) {
+                    withAnimation(Motion.snappy) { sweepArmed = false }
+                    actions.cleanup(.sweep)
+                }
+                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                .consoleHelp(SettingsWords.sweepGoTip)
+                Button { withAnimation(Motion.snappy) { sweepArmed = false } } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
+                .consoleHelp(SettingsWords.keepAll)
+                .accessibilityLabel(SettingsWords.cancelSweep)
+            }
+            .transition(.opacity)
+            .task {
+                // Left alone, the question goes away.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                withAnimation(Motion.snappy) { sweepArmed = false }
+            }
+        } else {
+            Button(SettingsWords.sweepNow) { withAnimation(Motion.snappy) { sweepArmed = true } }
+                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                .disabled(nothing)
+                .consoleHelp(nothing ? SettingsWords.sweepNothing : SettingsWords.sweepTip)
+                .transition(.opacity)
+        }
+    }
+
+    // MARK: Wake
+
+    private var wakeSection: some View {
+        ConsoleDisclosure(id: SettingsWords.wakeFold, title: ConsoleDisclosureWords.wake,
+                          summary: ConsoleDisclosureSummary.wake(enabled: wake.enabled, phrases: wake.phrases.count),
+                          size: .section, siblings: SettingsWords.folds, inset: true) {
+            VStack(spacing: 2) {
+                ConsoleFormRow(SettingsWords.wakeWordRow) {
+                    ConsoleToggle(on: wake.enabled, hint: SettingsWords.wakeHint, id: SettingsWords.wakeWord, accessibilityLabel: SettingsWords.wakeWordRow) { on in
+                        var w = wake; w.enabled = on; patch(SettingsPatch(wake: w))
+                    }
+                }
+                ConsoleFormRow(SettingsWords.phrasesRow) {
+                    // The stock list is wider than the field, so it wraps rather than clipping mid-word.
+                    ConsoleField(text: $phrasesDraft, placeholder: SettingsWords.phrasesPlaceholder, size: .row, mono: true, grows: true,
+                                 id: SettingsWords.phrases, accessibilityLabel: SettingsWords.wakePhrasesLabel, onCommit: commitPhrases)
+                }
+                hint(SettingsWords.phrasesHint)
+                ConsoleFormRow(SettingsWords.authRow) {
+                    // The menu spells every option out; the field is too narrow for "Touch ID or passphrase".
+                    ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
+                                     pick: { auth in var w = wake; w.auth = auth; patch(SettingsPatch(wake: w)) },
+                                     fieldTitle: { $0 == .either ? SettingsWords.either : $0.label },
+                                     id: SettingsWords.auth, label: SettingsWords.authRow)
+                }
+                if wake.auth == .none { hint(SettingsWords.anyoneWakes).transition(Motion.appear) }
+                ConsoleFormRow(SettingsWords.passphraseRow) { WakePassphraseRow(set: gate.passphraseSet) }
+                ConsoleFormRow(SettingsWords.status) { WakeGateReadout(phase: phase, wake: wake, gate: gate.gate, heard: gate.heard) }
+            }
+            .animation(Motion.gentle, value: wake.auth)
+        }
     }
 
     /// The menu's options with the saved value added when it is not one of them (a hand-edited settings file).
@@ -1449,7 +1846,7 @@ struct SettingsPanel: View {
     static func modelPlaceholder(_ kind: BrainKind) -> String {
         let fallback = ConsoleTheme.defaultBrainModel(kind)
         if !fallback.isEmpty { return fallback }
-        return kind == .openaiCompatible ? "pick a model" : "backend default"
+        return kind == .openaiCompatible ? SettingsWords.pickAModel : SettingsWords.backendDefault
     }
 
     /// The Local Server row is drawn only when discovery found nothing or a root is pinned; the
@@ -1462,14 +1859,14 @@ struct SettingsPanel: View {
     /// The Key row: a kind with its own secret, except OpenAI (the voice key above). Logins and the local server have none.
     static func keyRowShown(_ kind: BrainKind) -> Bool { kind.secretKey != nil && kind != .openaiResponses }
 
-    /// The Matching row's tooltip: where item text goes for matching.
+    /// The Matching row's hint: where item text goes for matching.
     static func matchingHelp(_ memory: MemorySummary?) -> String {
         switch memory?.embeddings {
-        case "openai": return "Item text goes to OpenAI for matching (the voice key); nothing else leaves"
+        case "openai": return SettingsWords.matchOpenAI
         case "local":
-            if let model = memory?.embeddingModel, !model.isEmpty { return "Item text goes to \(model) on this Mac; nothing leaves for memory" }
-            return "Item text goes to a model on this Mac; nothing leaves for memory"
-        default: return "Keyword matching: nothing leaves the Mac. Add the OpenAI key or pull an embedding model for closer matches."
+            if let model = memory?.embeddingModel, !model.isEmpty { return SettingsWords.matchLocal(model) }
+            return SettingsWords.matchLocalUnnamed
+        default: return SettingsWords.matchKeyword
         }
     }
 
@@ -1492,73 +1889,34 @@ struct SettingsPanel: View {
         patch(SettingsPatch(brain: next, brainModel: model, brainBaseUrl: .some(server.isEmpty ? nil : server)))
     }
 
-    /// The last probe of the voice key, as the dot beside the field.
-    private var voiceKeyStatus: SecretField.Status {
+    /// The last probe of the voice key, as the dot and word beside the field.
+    private var voiceKeyStatus: SettingsSecretRow.Status {
         switch setup.openaiKey {
-        case .ok: return SecretField.Status(color: ConsoleTheme.acting, text: "on file", help: "Key works with \(setup.liveModel)")
-        case .invalid: return SecretField.Status(color: ConsoleTheme.error, text: "rejected", help: "OpenAI rejected the key — paste a fresh one")
-        case .missing: return SecretField.Status(color: ConsoleTheme.speaking, text: "missing", help: "No OpenAI key")
-        case .unchecked: return SecretField.Status(color: ConsoleTheme.titanium, text: "on file", help: "Not checked yet")
+        case .ok: return SettingsSecretRow.Status(color: ConsoleTheme.acting, text: SettingsWords.onFile, help: SettingsWords.keyWorks(setup.liveModel))
+        case .invalid: return SettingsSecretRow.Status(color: ConsoleTheme.error, text: SettingsWords.rejected, help: SettingsWords.keyRejected)
+        case .missing: return SettingsSecretRow.Status(color: ConsoleTheme.speaking, text: SettingsWords.missing, help: SettingsWords.noKeyTip)
+        case .unchecked: return SettingsSecretRow.Status(color: ConsoleTheme.titanium, text: SettingsWords.onFile, help: SettingsWords.uncheckedTip)
         }
     }
 
-    /// Dot + one line from the last probe; Check runs it again. The Backend row
-    /// already names the brain, so the line is the state — plus, for Automatic,
-    /// the brain it resolved to.
+    /// Dot + one line from the last probe; Check runs it again. The Backend row already names
+    /// the brain, so the line is the state — plus, for Automatic, the brain it resolved to.
     private var brainStatus: some View {
         let resolved: String? = kind == .auto ? setup.brainResolved.flatMap { $0 == .auto ? nil : $0.label } : nil
-        let color: Color
-        let live: Bool
-        let text: String
-        switch setup.brain {
-        case .ok: color = ConsoleTheme.acting; live = false; text = resolved.map { "\($0) ready" } ?? "Ready"
-        case .unavailable: color = ConsoleTheme.error; live = false; text = "Unavailable"
-        case .unchecked: color = ConsoleTheme.thinking; live = true; text = "Checking…"
-        }
         let detail = setup.brainDetail.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showDetail = !detail.isEmpty && detail != "ok"
-        let name = ConsoleTheme.brainName(kind, resolved: setup.brainResolved)
-        // A probe's answer fades in: the dot's colour, the word and the detail crossfade.
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                HStack(spacing: iconGap) {
-                    ConsoleDot(color: color, live: live).frame(width: 20, height: 20)
-                    Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg).lineLimit(1).truncationMode(.tail)
-                        .contentTransition(.opacity)
-                }
-                .consoleHelp(detail.isEmpty || detail == "ok" ? "\(name): \(text.lowercased())" : "\(name): \(detail)")
-                .accessibilityLabel("\(name) \(text)")
-                Spacer(minLength: 4)
-                Button("Check") { actions.send(.probeSetup) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .layoutPriority(1)
-                    .consoleHelp("Re-check the voice key and the brain")
-            }
-            .frame(height: 26)
-            if showDetail {
-                Text(detail).font(ConsoleTheme.mono(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.titanium)
-                    .lineLimit(2).truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 20 + iconGap)
-                    .padding(.bottom, 4)
-                    .consoleHelp(detail)
-                    .contentTransition(.opacity)
-                    .transition(Motion.appear)
-            }
-        }
-        .animation(Motion.fade, value: text)
-        .animation(Motion.gentle, value: detail)
+        return BrainStatusRow(state: setup.brain, resolved: resolved, detail: detail.isEmpty || detail == "ok" ? nil : detail,
+                              name: ConsoleTheme.brainName(kind, resolved: setup.brainResolved)) { actions.send(.probeSetup) }
     }
 
     // MARK: memory
 
     /// The counts, the digits rolling: "142 live" on the value line, "3 forgotten · 1 archived"
-    /// under it, and "2 waiting" when conversations wait for a quiet moment (the extractor runs
-    /// only while no paid session is open). Three short mono lines: the value column is 182 pt,
-    /// and the one-line spelling (ConsoleTheme.memoryCounts, the tooltip's) does not fit it.
+    /// under it, "2 waiting" when conversations wait for a quiet moment (the extractor runs only
+    /// while no paid session is open), and "learned 12m ago" ticking — its card has the run's
+    /// figures. Short mono lines: the value column is 182 pt.
     private var memoryCounts: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(memory.map { "\($0.count) live" } ?? "—")
+            Text(memory.map { SettingsWords.live($0.count) } ?? SettingsWords.dash)
                 .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
                 .lineLimit(1)
                 .frame(height: 26, alignment: .leading)
@@ -1575,31 +1933,45 @@ struct SettingsPanel: View {
                         .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                         .lineLimit(1)
                         .contentTransition(ConsoleMotion.numeric)
-                        .consoleHelp("Conversations that ended and have not been read yet; the run starts at a quiet moment")
+                        .consoleHelp(SettingsWords.pendingTip)
                         .transition(Motion.appear)
                 }
+                LearnedWord(memory: memory)
             }
         }
         .padding(.bottom, 4)
-        .consoleHelp(memory.map { ConsoleTheme.memoryCounts($0) } ?? "No memory yet")
         .animation(Motion.gentle, value: (memory?.pending ?? 0) > 0)
     }
 
     /// "learned 12m ago" (the head, beside Learn now) · "not learned yet".
     static func learnedLine(_ m: MemorySummary, now: Double) -> String {
-        guard let at = m.lastRunAt else { return "not learned yet" }
-        return "learned \(ConsoleFormat.relative(at, now: now)) ago"
+        guard let at = m.lastRunAt else { return SettingsWords.notLearned }
+        return SettingsWords.learned(ConsoleFormat.relative(at, now: now))
+    }
+
+    /// The open head's short form beside Learn now: "learned 12m" · "not learned yet" (the rail is 260 wide).
+    static func learnedWord(_ m: MemorySummary, now: Double) -> String {
+        guard let at = m.lastRunAt else { return SettingsWords.notLearned }
+        return SettingsWords.learnedShort(ConsoleFormat.relative(at, now: now))
     }
 
     /// "3 forgotten · 1 archived" — the items out of the prompts, restorable.
-    static func hiddenCountsLine(_ m: MemorySummary) -> String { "\(m.forgotten) forgotten · \(m.archived) archived" }
+    static func hiddenCountsLine(_ m: MemorySummary) -> String { SettingsWords.hiddenCounts(forgotten: m.forgotten, archived: m.archived) }
 
     /// "2 waiting" — conversations queued for extraction.
-    static func pendingLine(_ m: MemorySummary) -> String { "\(m.pending) waiting" }
+    static func pendingLine(_ m: MemorySummary) -> String { SettingsWords.waiting(m.pending) }
 
-    /// The last run as one mono tooltip: "responses · +3 · ~1 · 4 same · 1 refused · 1.8 s".
+    /// The last run as one mono line: "responses · +3 · ~1 · 4 same · 1 refused · 1.8 s".
     static func lastRunLine(_ r: MemorySummary.LastRun) -> String {
-        "\(r.extractor) · +\(r.added) · ~\(r.updated) · \(r.noop) same · \(r.refused) refused · \(ConsoleFormat.ms(r.ms))"
+        "\(r.extractor) · +\(r.added) · ~\(r.updated) · \(r.noop) \(SettingsWords.same) · \(r.refused) \(SettingsWords.refused) · \(ConsoleFormat.ms(r.ms))"
+    }
+
+    /// The learned word's card: the run's figures as foot rows, mono.
+    static func lastRunCard(_ m: MemorySummary, now: Double) -> ConsoleTipCard {
+        guard let r = m.lastRun else { return ConsoleTipCard(title: SettingsWords.lastRun, status: SettingsWords.noRun) }
+        return ConsoleTipCard(title: SettingsWords.lastRun, status: learnedLine(m, now: now),
+                              foot: [(SettingsWords.extractor, r.extractor), (SettingsWords.added, "+\(r.added)"), (SettingsWords.updated, "~\(r.updated)"),
+                                     (SettingsWords.same, "\(r.noop)"), (SettingsWords.refused, "\(r.refused)"), (SettingsWords.took, ConsoleFormat.ms(r.ms))])
     }
 
     // MARK: wake
@@ -1628,31 +2000,87 @@ struct SettingsPanel: View {
         patch(SettingsPatch(wake: w))
     }
 
-    // MARK: rows
+    /// One titanium line under a control, aligned to the control column (the kit's `ConsoleHint`).
+    private func hint(_ text: String) -> some View { ConsoleHint(text).padding(.bottom, 4) }
+}
 
-    private func formRow<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.titanium)
-                .frame(width: keyWidth, alignment: .leading)
-                .frame(height: 28)
-            control().frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: 28)
+/// "learned 12m ago" ticking under the counts; its card has the last run's figures.
+private struct LearnedWord: View {
+    let memory: MemorySummary
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { ctx in
+            let now = ctx.date.timeIntervalSince1970 * 1000
+            Text(SettingsPanel.learnedLine(memory, now: now))
+                .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                .lineLimit(1)
+                .contentTransition(ConsoleMotion.numeric)
+                .consoleHelp(id: SettingsWords.learnedTip, card: SettingsPanel.lastRunCard(memory, now: now))
         }
-    }
-
-    /// One titanium line under a control, aligned to the control column.
-    private func hint(_ text: String) -> some View {
-        Text(text).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.titanium)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.leading, keyWidth + 10)
-            .padding(.bottom, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// A secret that is written, never read back: a SecureField and Save until a key is
-/// on file (the empty field is the "none" state; no dot beside it), then a dot and
-/// "on file" with Change. The value is sent once and dropped.
-private struct SecretField: View {
+/// The Status row: the dot and the word (`Ready` · `Claude Code ready` · `Unavailable` ·
+/// `Checking…`), Check at the right, and the probe's detail whole on two mono lines under them —
+/// nothing truncates into a hover. A probe's answer fades in.
+private struct BrainStatusRow: View {
+    let state: SetupStatus.BrainState
+    let resolved: String?
+    let detail: String?
+    let name: String
+    let check: () -> Void
+
+    private var color: Color {
+        switch state {
+        case .ok: return ConsoleTheme.acting
+        case .unavailable: return ConsoleTheme.error
+        case .unchecked: return ConsoleTheme.thinking
+        }
+    }
+
+    private var text: String {
+        switch state {
+        case .ok: return resolved.map(SettingsWords.readyWith) ?? SettingsWords.ready
+        case .unavailable: return SettingsWords.unavailable
+        case .unchecked: return SettingsWords.checking
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                HStack(spacing: iconGap) {
+                    ConsoleDot(color: color, live: state == .unchecked).frame(width: 20, height: 20)
+                    Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg).lineLimit(1).truncationMode(.tail)
+                        .contentTransition(.opacity)
+                }
+                .accessibilityLabel("\(name) \(text)")
+                Spacer(minLength: 4)
+                Button(SettingsWords.checkVerb, action: check)
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .layoutPriority(1)
+                    .consoleHelp(HelpCopy.check, id: SettingsWords.check)
+            }
+            .frame(height: 26)
+            if let detail {
+                Text(detail).font(ConsoleTheme.mono(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.titanium)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 20 + iconGap)
+                    .padding(.bottom, 4)
+                    .contentTransition(.opacity)
+                    .transition(Motion.appear)
+            }
+        }
+        .animation(Motion.fade, value: text)
+        .animation(Motion.gentle, value: detail)
+    }
+}
+
+/// A secret that is written, never read back — the kit's `ConsoleSecretRow` (field + Save ·
+/// Saving… · `●` on file + Change, the env var printed under the on-file face) with the
+/// "sent, not yet echoed" state kept here: the snapshot normally flips `onFile` within a round
+/// trip; if it never does, the field comes back after eight seconds.
+private struct SettingsSecretRow: View {
     struct Status {
         let color: Color
         let text: String
@@ -1661,176 +2089,90 @@ private struct SecretField: View {
 
     let placeholder: String
     let onFile: Bool
+    let envVar: String
     /// The dot's meaning while on file; nil is plain presence.
     let status: Status?
+    var id: String? = nil
     let save: (String) -> Void
 
-    @State private var text = ""
-    @State private var editing = false
-    /// Sent, not yet reflected by the snapshot.
     @State private var pending = false
-    @FocusState private var focused: Bool
-
-    private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var meta: Status { status ?? Status(color: ConsoleTheme.acting, text: "on file", help: "A key is on file") }
-
-    /// Which of the three faces is up — saving, the field, on file — so they crossfade.
-    private var face: Int { pending && !onFile ? 0 : (editing || !onFile ? 1 : 2) }
 
     var body: some View {
-        HStack(spacing: 6) {
-            if pending && !onFile {
-                Group {
-                    ConsoleDot(color: ConsoleTheme.thinking, live: true).frame(width: 20, height: 20)
-                    Text("Saving…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                    Spacer(minLength: 0)
-                }
-                .transition(.opacity)
-            } else if editing || !onFile {
-                Group {
-                    SecureField(placeholder, text: $text)
-                        .consoleField(mono: true, height: 26, focused: focused)
-                        .focused($focused)
-                        .onSubmit(commit)
-                        .onExitCommand(perform: cancel)
-                        .onChange(of: focused) { if !focused, !hasText { cancel() } }
-                        .consoleHelp(editing ? "Paste the new key; Esc keeps the old one" : "Paste the key; it is written to ~/.jarhead/env and never shown again")
-                    Button("Save", action: commit)
-                        .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, height: 26, small: true))
-                        .disabled(!hasText)
-                }
-                .transition(.opacity)
-            } else {
-                Group {
-                    ConsoleDot(color: meta.color).frame(width: 20, height: 20)
-                    Text(meta.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .consoleHelp(meta.help)
-                        .accessibilityLabel(meta.help)
-                        .contentTransition(.opacity)
-                    Button("Change") { editing = true; focused = true }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .layoutPriority(1)
-                        .consoleHelp("Replace the key")
-                }
-                .transition(.opacity)
-            }
-        }
-        .frame(height: 26)
-        .animation(Motion.fade, value: face)
-        .animation(Motion.fade, value: meta.text)
-        .onChange(of: onFile) { pending = false }
+        ConsoleSecretRow(placeholder: placeholder, onFile: onFile, saving: pending && !onFile, envVar: envVar,
+                         statusColor: status?.color ?? ConsoleTheme.acting, statusText: status?.text ?? SettingsWords.onFile,
+                         id: id, accessibilityLabel: status?.help, save: commit)
+            .consoleHelp(status?.help ?? SettingsWords.onFile)
+            .onChange(of: onFile) { pending = false }
     }
 
-    private func commit() {
-        let k = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !k.isEmpty else { return }
-        save(k)
-        text = ""
-        editing = false
-        focused = false
+    private func commit(_ key: String) {
+        save(key)
         pending = true
-        // The snapshot normally flips `onFile` within a round trip; if it never does, fall back to the field.
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             pending = false
         }
     }
+}
 
-    private func cancel() {
-        text = ""
-        editing = false
-        focused = false
+/// The trash's figures whole, its path as the row's mono detail, and the way to Finder under them.
+private struct TrashRow: View {
+    let trash: TrashInfo?
+
+    @Environment(\.consoleActions) private var actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(trash.map { ConsoleFormat.trashLine($0) } ?? SettingsWords.dash)
+                .font(ConsoleTheme.mono(12)).monospacedDigit().foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1)
+                .frame(height: 26, alignment: .leading)
+                .contentTransition(ConsoleMotion.numeric)
+                .animation(Motion.snappy, value: trash)
+            if let trash {
+                Text(ConsoleFormat.truncPath(trash.path, max: 48)).font(ConsoleTheme.mono(10)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
+                Button { actions.open(trash.path) } label: { Label(SettingsWords.revealInFinder, systemImage: "folder.fill") }
+                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                    .consoleHelp(SettingsWords.revealTrashTip)
+            }
+        }
     }
 }
 
-/// The wake passphrase: a SecureField and Set until one is enrolled, then a masked
-/// mark with Change and Clear. Only the gate ever sees the text; a rejection (too
-/// short) shakes the field and tints its ring red, keeping focus.
+/// The wake passphrase as the kit's secret row: a field and Set until one is enrolled, then
+/// `● set` with Change and Clear. Only the gate ever sees the text; a rejection (too short)
+/// turns the ring red with the hint `Two words or more.` under it, the words kept for a second try.
 private struct WakePassphraseRow: View {
     /// A passphrase is enrolled (AppState.wakePassphraseSet, sliced by the root).
     let set: Bool
 
     @Environment(\.consoleActions) private var actions
-
-    @State private var text = ""
-    @State private var editing = false
+    @State private var draft = ""
     @State private var rejected = false
-    @State private var shakes: CGFloat = 0
-    @FocusState private var focused: Bool
-
-    private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Bumped on a successful Set so the row leaves its editing face.
+    @State private var generation = 0
 
     var body: some View {
-        HStack(spacing: 6) {
-            if editing || !set {
-                Group {
-                    SecureField("a phrase", text: $text)
-                        .consoleField(mono: true, height: 26, focused: focused, error: rejected)
-                        .modifier(ConsoleShake(shakes: shakes))
-                        .focused($focused)
-                        .onSubmit(submit)
-                        .onExitCommand(perform: cancel)
-                        .onChange(of: focused) { if !focused, !hasText, set { cancel() } }
-                        .consoleHelp("Two words or more; said or typed when asked" + (set ? ". Esc keeps the old one" : ""))
-                        .accessibilityLabel("Wake passphrase")
-                    Button("Set", action: submit)
-                        .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, height: 26, small: true))
-                        .disabled(!hasText)
-                }
-                .transition(.opacity)
-            } else {
-                Group {
-                    // No Spacer: its 6pt of stack spacing is what pushes "Change" into "Chan…" in the rail.
-                    Text("••••••").font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg2)
-                        .fixedSize()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .consoleHelp("A passphrase is set (kept as a hash; never shown)")
-                        .accessibilityLabel("Passphrase set")
-                    Button("Change") { editing = true; focused = true }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .layoutPriority(1)
-                        .consoleHelp("Replace the passphrase")
-                    Button("Clear") { actions.clearWakePassphrase(); cancel() }
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .layoutPriority(1)
-                        .consoleHelp("Forget the passphrase")
-                }
-                .transition(.opacity)
-            }
-        }
-        .frame(height: 26)
-        // The field and the masked mark crossfade as a passphrase is set or replaced.
-        .animation(Motion.fade, value: editing || !set)
-        .onChange(of: set) { if !set { editing = false } }
+        ConsoleSecretRow(placeholder: SettingsWords.aPhrase, onFile: set, statusText: SettingsWords.phraseSet, verb: SettingsWords.set,
+                         error: rejected ? SettingsWords.tooShort : nil, id: SettingsWords.passphrase, accessibilityLabel: SettingsWords.wakePassphraseLabel,
+                         draft: $draft, clear: { actions.clearWakePassphrase(); draft = "" }, save: submit)
+            .id(generation)
+            .onChange(of: set) { if !set { rejected = false } }
     }
 
-    private func submit() {
-        guard hasText else { return }
+    private func submit(_ text: String) {
         if actions.setWakePassphrase(text) {
-            text = ""
-            editing = false
+            draft = ""
             rejected = false
-            focused = false
+            generation += 1
         } else {
-            // Too short: the gate has toasted why. Shake, tint, keep the words and the focus.
-            // The shake is three cycles over Motion.slow; none under Reduce Motion (the ring still turns red).
+            // Too short: the gate has toasted why. The ring turns red, the words stay.
             rejected = true
-            focused = true
-            if !Motion.reduced { withAnimation(.linear(duration: Motion.slow)) { shakes += 1 } }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 rejected = false
             }
         }
-    }
-
-    private func cancel() {
-        text = ""
-        editing = false
-        rejected = false
-        focused = false
     }
 }
 
@@ -1864,7 +2206,7 @@ private struct WakeGateReadout: View {
         VStack(alignment: .leading, spacing: 2) {
             if ConsoleTheme.gateRests(phase) {
                 // The status menu's "not listening" glyph, dimmed: the ear is off duty, not asleep.
-                line(symbol: "ear.trianglebadge.exclamationmark", tint: ConsoleTheme.titanium, text: "Awake — the gate rests until the session ends", color: ConsoleTheme.titanium)
+                line(symbol: "ear.trianglebadge.exclamationmark", tint: ConsoleTheme.titanium, text: SettingsWords.gateRests, color: ConsoleTheme.titanium)
             } else {
                 switch gate {
                 case .lockedOut:
@@ -1889,7 +2231,7 @@ private struct WakeGateReadout: View {
     }
 
     /// The glyph swaps (ConsoleIcon) and the words crossfade as the gate's state turns;
-    /// a countdown's digits roll.
+    /// a countdown's digits roll. The line is whole (three lines), so it carries no tip.
     private func line(symbol: String, tint: Color, text: String, color: Color) -> some View {
         HStack(alignment: .top, spacing: iconGap) {
             ConsoleIcon(name: symbol, tint: tint).frame(height: 26)
@@ -1897,7 +2239,6 @@ private struct WakeGateReadout: View {
                 .lineLimit(3).truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(minHeight: 26, alignment: .leading)
-                .consoleHelp(text)
                 .contentTransition(ConsoleMotion.numeric)
                 .animation(Motion.snappy, value: text)
         }
@@ -1905,22 +2246,61 @@ private struct WakeGateReadout: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// `heard  hey jarhead` — the newest words win, so it truncates from the left.
+    /// `heard  hey jarhead` — the newest words win, so it truncates from the left; the card has them whole.
     private var heardLine: some View {
         HStack(spacing: 8) {
-            Text("heard").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.fg3)
-            Text(heard.isEmpty ? "…" : heard).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+            Text(SettingsWords.heard).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.fg3)
+            Text(heard.isEmpty ? SettingsWords.ellipsis : heard).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                 .lineLimit(1).truncationMode(.head)
-                .consoleHelp(heard.isEmpty ? "Nothing heard yet" : heard)
         }
         .padding(.leading, 20 + iconGap)
         .padding(.bottom, 4)
-        .accessibilityLabel(heard.isEmpty ? "Nothing heard yet" : "Heard: \(heard)")
+        .consoleHelp(id: SettingsWords.heardTip, card: ConsoleTipCard(title: SettingsWords.heard, lines: [heard.isEmpty ? SettingsWords.nothingHeard : heard]))
+        .accessibilityLabel(heard.isEmpty ? SettingsWords.nothingHeard : SettingsWords.heardLabel(heard))
+    }
+}
+
+/// The rail section "Leaves the Mac", folded to `2 cloud · 2 mac`: the four rows the engine
+/// computed (SetupStatus.dataPaths), so the Console and `pnpm jarhead doctor` say the same
+/// thing — each a `ConsoleRow` 40 with the destination as a badge (`cloud` · `mac`) and the
+/// detail in mono under the name; the card has the detail whole. A row whose destination
+/// moves (the brain going local) crossfades.
+struct LeavesSection: View {
+    let paths: [DataPath]
+
+    /// `2 cloud · 2 mac` — the rows by destination.
+    static func counts(_ paths: [DataPath]) -> (cloud: Int, mac: Int) {
+        (paths.filter { $0.where == "cloud" }.count, paths.filter { $0.where == "mac" }.count)
+    }
+
+    var body: some View {
+        let counts = Self.counts(paths)
+        ConsoleDisclosure(id: SettingsWords.leavesFold, title: ConsoleDisclosureWords.leaves,
+                          summary: ConsoleDisclosureSummary.leaves(cloud: counts.cloud, mac: counts.mac),
+                          size: .section, siblings: SettingsWords.folds) {
+            VStack(spacing: 0) {
+                if paths.isEmpty {
+                    Text(SettingsWords.notRead).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3).frame(height: 22).padding(.horizontal, railInset)
+                        .transition(.opacity)
+                }
+                ForEach(paths) { path in
+                    ConsoleRow(title: ConsoleTheme.dataPathName(path.what), icon: .symbol(ConsoleTheme.dataPathSymbol(path.what)),
+                               badge: .word(path.where), meta: path.detail, accessibilityHint: LocalBrainWords.whereWord(path.where), primary: {})
+                        .consoleHelp(id: SettingsWords.leavesRow(path.what), card: ConsoleTipCard.path(title: ConsoleTheme.dataPathName(path.what), path: path.detail))
+                        .transition(Motion.appear)
+                }
+            }
+            .animation(Motion.gentle, value: paths.map(\.what))
+        }
     }
 }
 
 // MARK: - Ledger
 
+/// The Ledger tab: `Filter days` past eight days, the days folded by month (`September 4 ·
+/// 62 min · $3.10` — the head sums the days read so far), one 28 pt row per day with `›` and
+/// its figures once that day has been read (`ConsoleSession.ledgerDayStats`; `—` until then),
+/// the picked day's bar gliding, ↑↓ ⏎ over the days and the month heads (`ConsoleListKeys`).
 struct LedgerPanel: View {
     let days: [String]?
     let picked: String?
@@ -1928,112 +2308,157 @@ struct LedgerPanel: View {
     let stats: LedgerStats?
 
     @Environment(\.consoleActions) private var actions
+    @EnvironmentObject private var session: ConsoleSession
     /// The picked day's highlight, one view for the list so it glides between rows.
     @Namespace private var selection
+    @StateObject private var focus = ConsoleListFocus()
+    @State private var query = ""
+    @FocusState private var filterFocused: Bool
+    /// Bumped when a month folds, so the keyboard's ids follow the folds.
+    @State private var folds = 0
+
+    /// The day's figures on its row: `17.0 min · $0.85` once read, `—` until then.
+    static func figures(_ day: String, in cache: [String: LedgerStats]) -> String {
+        cache[day].map { ConsoleFormat.billed($0.billedSeconds) } ?? LedgerWords.unread
+    }
+
+    /// The days whose words or date contain the query (`sep`, `thu`, `2026-08`).
+    static func filtered(_ days: [String], query: String, now: Date = Date()) -> [String] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return days }
+        return days.filter { $0.contains(q) || ConsoleFormat.day($0, now: now).lowercased().contains(q) }
+    }
+
+    private var shown: [String] { Self.filtered(days ?? [], query: query) }
+    private var months: [ConsoleListModel.Month] { ConsoleListModel.ledgerMonths(shown) }
+    private var showsFilter: Bool { (days?.count ?? 0) > LedgerWords.filterPast }
+
+    /// The keyboard's rows: every month head, and the days of the open months.
+    private var ids: [String] {
+        months.enumerated().flatMap { index, month -> [String] in
+            let id = LedgerWords.monthFold(month.id)
+            return [id] + (ConsoleFoldStore.isOpen(id, default: index == 0) ? month.days : [])
+        }
+    }
+
+    private var heads: Set<String> { Set(months.map { LedgerWords.monthFold($0.id) }) }
 
     var body: some View {
         VStack(spacing: 0) {
-            RailSection("Days", inset: false, trailing: {
-                Button { actions.send(.openLedger) } label: {
-                    Image(systemName: "folder.fill").font(.system(size: 12, weight: .medium))
+            RailSection(LedgerWords.days, count: days?.count, inset: false, trailing: { folder }) {
+                VStack(spacing: 0) {
+                    if showsFilter { filter }
+                    list
                 }
-                .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                .consoleHelp("Open the ledger folder")
-                .accessibilityLabel("Open ledger folder")
-            }) {
-                // "Loading…" and the days that answer it crossfade.
-                ZStack(alignment: .topLeading) {
-                    if let days = days {
-                        if days.isEmpty {
-                            Text("No ledger yet.").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                                .padding(.horizontal, railInset).frame(height: 22)
-                                .transition(.opacity)
-                        } else {
-                            VStack(spacing: 0) {
-                                ForEach(days, id: \.self) { day in
-                                    DayRow(day: day, on: day == picked, selection: selection) {
-                                        withAnimation(Motion.snappy) { actions.pickLedgerDay(day) }
-                                    }
-                                }
-                            }
-                            .transition(.opacity)
-                        }
-                    } else {
-                        Reading(text: "Loading…").padding(.horizontal, railInset)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Motion.fade, value: days == nil)
-                .animation(Motion.snappy, value: picked)
             }
-            // The day's figures arrive under their head once read; "Reading…" gives way to them.
-            if let picked = picked {
-                RailSection(ConsoleFormat.day(picked)) {
-                    ZStack(alignment: .topLeading) {
-                        if let stats = stats, !loading {
-                            VStack(alignment: .leading, spacing: 0) {
-                                KV("Sessions", "\(stats.sessions)")
-                                KV("Utterances", "\(stats.utterances)")
-                                KV("Delegations", "\(stats.delegations)")
-                                KV("Billed", ConsoleFormat.billed(stats.billedSeconds))
-                            }
-                            .transition(Motion.appear)
-                        } else {
-                            Reading(text: "Reading…")
-                                .transition(.opacity)
-                        }
-                    }
-                    .animation(Motion.gentle, value: stats == nil || loading)
-                }
-                .transition(Motion.appear)
-            }
+            if let picked { dayFigures(picked).transition(Motion.appear) }
         }
         .animation(Motion.gentle, value: picked)
         .onAppear { actions.loadLedgerDays() }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleFoldStore.changed)) { _ in folds += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: preview)
     }
-}
 
-/// 28pt: the day, its date, the accent bar while it is the one on screen. The
-/// highlight is one view on a matched geometry id (LedgerPanel's), so it glides.
-private struct DayRow: View {
-    let day: String
-    let on: Bool
-    let selection: Namespace.ID
-    let pick: () -> Void
+    private var folder: some View {
+        Button { actions.send(.openLedger) } label: {
+            Image(systemName: "folder.fill").font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
+        .consoleHelp(LedgerWords.openFolder)
+        .accessibilityLabel(LedgerWords.openFolderLabel)
+    }
 
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: pick) {
-            HStack(spacing: iconGap) {
-                ConsoleIcon(name: "calendar", tint: on ? ConsoleTheme.fg : ConsoleTheme.titanium)
-                Text(ConsoleFormat.day(day))
-                    .font(ConsoleTheme.sans(12, on ? .medium : .regular))
-                    .foregroundStyle(on ? ConsoleTheme.fg : ConsoleTheme.fg2)
-                Spacer(minLength: 4)
-                Text(day).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-            }
+    private var filter: some View {
+        ConsoleFilterField(text: $query, placeholder: LedgerWords.filterDays,
+                           count: ConsoleListModel.countWord(shown: shown.count, of: days?.count ?? 0, typing: !query.isEmpty),
+                           focus: $filterFocused, accessibilityLabel: LedgerWords.filterLabel,
+                           onMove: { if $0 == .down { move(to: ids.first(where: { !heads.contains($0) })) } },
+                           onSubmit: { if let first = shown.first { pick(first) } },
+                           onExit: { query = "" })
             .padding(.horizontal, railInset)
-            .frame(height: 28)
-            .frame(maxWidth: .infinity)
-            .background {
-                if on {
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(ConsoleTheme.active)
-                        Rectangle().fill(ConsoleTheme.accent).frame(width: 2).padding(.vertical, 4)
+            .padding(.bottom, 6)
+    }
+
+    /// "Loading…" and the months that answer it crossfade.
+    private var list: some View {
+        ZStack(alignment: .topLeading) {
+            if let days {
+                if days.isEmpty {
+                    Text(LedgerWords.noLedger).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                        .padding(.horizontal, railInset).frame(height: 22)
+                        .transition(.opacity)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(months.enumerated()), id: \.element.id) { index, month in monthGroup(month, first: index == 0) }
                     }
-                    .matchedGeometryEffect(id: "day-selection", in: selection)
-                } else if hovering {
-                    Rectangle().fill(ConsoleTheme.hover)
+                    .consoleListKeys(ConsoleListKeys(focus: focus, ids: ids, heads: heads, title: { ConsoleFormat.day($0) }, typeAhead: !showsFilter,
+                                                     primary: primary, fold: { ConsoleFoldStore.set($0, $1) }, escape: { query = "" }))
+                    .transition(.opacity)
+                }
+            } else {
+                Reading(text: NowWords.loading).padding(.horizontal, railInset)
+                    .transition(.opacity)
+            }
+        }
+        .animation(Motion.fade, value: days == nil)
+        .animation(Motion.snappy, value: picked)
+    }
+
+    /// A month: its head with the read days' figures, the days inside (the first month open).
+    private func monthGroup(_ month: ConsoleListModel.Month, first: Bool) -> some View {
+        let id = LedgerWords.monthFold(month.id)
+        let sum = ConsoleSession.monthStats(month.days, in: session.ledgerDayStats)
+        return ConsoleDisclosure(id: id, title: month.title, count: "\(month.days.count)",
+                                 summary: ConsoleDisclosureSummary.ledgerMonth(read: sum.read, billedSeconds: sum.billedSeconds),
+                                 size: .group, defaultOpen: first, focused: focus.ringOn(id)) {
+            ForEach(month.days, id: \.self) { day in
+                ConsoleRow(title: ConsoleFormat.day(day), value: Self.figures(day, in: session.ledgerDayStats), trailing: .chevron,
+                           selected: day == picked, focused: focus.ringOn(day), selection: selection, accessibilityHint: day,
+                           onHover: { if $0 { focus.hovered(day) } }, primary: { pick(day) })
+            }
+        }
+    }
+
+    /// The day's figures arrive under their head once read; "Reading…" gives way to them.
+    private func dayFigures(_ picked: String) -> some View {
+        RailSection(ConsoleFormat.day(picked)) {
+            ZStack(alignment: .topLeading) {
+                if let stats, !loading {
+                    VStack(alignment: .leading, spacing: 0) {
+                        KV(LedgerWords.sessions, "\(stats.sessions)")
+                        KV(LedgerWords.utterances, "\(stats.utterances)")
+                        KV(LedgerWords.delegations, "\(stats.delegations)")
+                        KV(LedgerWords.billed, ConsoleFormat.billed(stats.billedSeconds))
+                    }
+                    .transition(Motion.appear)
+                } else {
+                    Reading(text: LedgerWords.reading).transition(.opacity)
                 }
             }
-            .contentShape(Rectangle())
+            .animation(Motion.gentle, value: stats == nil || loading)
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-        .animation(Motion.snappy, value: on)
-        .accessibilityLabel(ConsoleFormat.day(day) + ", " + day)
-        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    private func pick(_ day: String) {
+        focus.set(day, keyboard: focus.keyboard, why: "pick")
+        withAnimation(Motion.snappy) { actions.pickLedgerDay(day) }
+    }
+
+    /// Return on a head folds or opens it; on a day, picks it.
+    private func primary(_ id: String) {
+        if heads.contains(id) { ConsoleFoldStore.set(id, !ConsoleFoldStore.isOpen(id, default: false)) } else { pick(id) }
+    }
+
+    private func move(to id: String?) {
+        guard let id else { return }
+        filterFocused = false
+        focus.set(id, keyboard: true, why: "filter ↓")
+        focus.claim()
+    }
+
+    /// `focus:ledger.days` gives the list the keyboard (on the picked day); `highlight:<day>` moves it.
+    private func preview(_ note: Notification) {
+        if note.userInfo?[ConsolePreviewKey.focus] as? String == LedgerWords.listId { move(to: picked ?? ids.first) }
+        if let id = note.userInfo?[ConsolePreviewKey.highlight] as? String, ids.contains(id) { move(to: id) }
     }
 }
