@@ -3095,6 +3095,7 @@ extension PreviewDelegate {
         expect("badge: too big error", badge(.tooBig), "too big · error")
         expect("badge: missing(1) speaking", badge(.missing(1)), "1 missing · speaking")
         expect("badge: asks speaking", badge(.asks), "asks · speaking")
+        expect("badge: asks(1) is one badge", badge(.asks(1)), "1 asks · speaking")
         expect("badge: off speaking", badge(.off), "off · speaking")
         expect("badge: failed error", badge(.failed), "failed · error")
         expect("badge: resting words", [ConsoleBadge.Word.noTools, .loaded, .saved, .auto, .default, .noKey, .thisMac, .ready, .allOk].map(badge).joined(separator: " / "),
@@ -3276,7 +3277,7 @@ extension PreviewDelegate {
         expect("disclosure: Permissions area granted", text(ConsoleDisclosureSummary.permissionGroup(missing: [], granted: ["Desktop", "Documents"])), "Desktop · Documents")
         expect("disclosure: Problems kind", text(ConsoleDisclosureSummary.problemGroup(first: "Delegation failed: Codex session refused input")), "Delegation failed: Codex session refused input")
         expect("disclosure: Ready", text(ConsoleDisclosureSummary.ready(notReady: 0)) + " / " + text(ConsoleDisclosureSummary.ready(notReady: 1)), "[all ok] / [1 missing]")
-        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "1 · [asks] · 2 working")
+        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "[1 asks] · 2 working")
         expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, done: 1)), "3 idle")
         expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
         expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")

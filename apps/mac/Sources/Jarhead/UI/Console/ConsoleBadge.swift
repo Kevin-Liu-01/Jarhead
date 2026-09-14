@@ -23,16 +23,23 @@ enum ConsoleBadgeWords {
     static let asks = "asks"
     static let failed = "failed"
     static func missing(_ n: Int) -> String { "\(n) missing" }
+    /// `1 asks` — a folded head's count of the sessions that ask.
+    static func asks(_ n: Int) -> String { "\(n) asks" }
 }
 
 struct ConsoleBadge: View {
     enum Word: Hashable {
         case fits, tight, tooBig, noTools, loaded, saved, auto, `default`, noKey, thisMac, ready, allOk, off, asks, failed
         case missing(Int)
+        /// `1 asks` — how many ask, in one amber badge (spelled `.asks(1)`).
+        case asking(Int)
         /// A figure in mono: `17 GB`, `12 of 16`, `$0.85`, `0.9`.
         case figure(String)
         /// Any other resting word (`working`, `idle`, `done`, `live`, `fact`, `pref`).
         case word(String)
+
+        /// `1 asks`: the count and the word in one badge (the case is `asking`; Swift keeps `asks` for the bare word).
+        static func asks(_ n: Int) -> Word { .asking(n) }
     }
 
     /// The two tones and rest, so the harness pins them by name.
@@ -60,13 +67,14 @@ struct ConsoleBadge: View {
         case .asks: return ConsoleBadgeWords.asks
         case .failed: return ConsoleBadgeWords.failed
         case .missing(let n): return ConsoleBadgeWords.missing(n)
+        case .asking(let n): return ConsoleBadgeWords.asks(n)
         case .figure(let s), .word(let s): return s
         }
     }
 
     static func toneKind(_ w: Word) -> Tone {
         switch w {
-        case .tight, .missing, .asks, .off: return .speaking
+        case .tight, .missing, .asks, .asking, .off: return .speaking
         case .tooBig, .failed: return .error
         default: return .rest
         }

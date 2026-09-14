@@ -535,9 +535,9 @@ enum ConsoleListModel {
         return order.first { title($0).lowercased().hasPrefix(p) }
     }
 
-    /// `22` at rest, `2 of 22` while typing.
+    /// `22` at rest, `2 of 22` while typing — the dropdown's spelling (`ConsoleMenuModel`), one rule for both lists.
     static func countWord(shown: Int, of total: Int, typing: Bool) -> String {
-        typing ? ConsoleRowWords.count(shown: shown, of: total) : "\(total)"
+        ConsoleMenuModel.countWord(shown: shown, of: total, typing: typing)
     }
 
     // MARK: memory kinds

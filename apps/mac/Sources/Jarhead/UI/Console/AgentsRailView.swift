@@ -24,7 +24,7 @@ import AppKit
 // what is inside; every list row takes `ConsoleListKeys` (↑↓ ⏎ → ← Esc, the keyboard's one ring).
 // Then **Agents**: sessions grouped by the tool that owns them (Claude Code, Codex,
 // Cursor…). A group is a `ConsoleDisclosure` (24pt head: the tool's name, a count, and while
-// folded the one exceptional word — `1 [asks]` — with the resting count) and 44pt rows: the
+// folded the one exceptional word — the `[1 asks]` badge — with the resting count) and 44pt rows: the
 // mark on the icon column, the name with its status as a word in the trailing zone (a badge
 // only when it asks), and one mono meta line — project · messages · age. Hide takes a row
 // out of its group into a folded "Hidden (n)" at the end (never a file operation —
@@ -697,7 +697,7 @@ struct AgentsRail: View, Equatable {
     // MARK: - Agents
 
     /// A tool's sessions under a fold whose closed head carries the count and the one exceptional
-    /// word — `1 [asks]` — then the resting count (`2 working`); open by default, remembered per tool.
+    /// word — the `[1 asks]` badge — then the resting count (`2 working`); open by default, remembered per tool.
     private func groupView(_ group: Group, now: Double) -> some View {
         let id = AgentsRailWords.groupId(group.tool)
         return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents),
