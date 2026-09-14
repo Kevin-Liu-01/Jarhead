@@ -129,28 +129,193 @@ enum LocalBrainWords {
         default: return `where`
         }
     }
+
+    // MARK: the rebuilt Model dropdown (design9 kit) — every word a static, pinned by check-kit
+
+    static let settingsMenuId = "settings.model"
+    static let setupMenuId = "setup.model"
+    static let modelLabel = "Model"
+    static let modelsNoun = "models"
+    static let menuWidth: CGFloat = 300
+    /// The fit badge's fixed column so `fits · tight · too big · no tools` align.
+    static let fitColumn: CGFloat = 62
+    static let automaticHead = "Automatic"
+    static let sizeFitCaption = "size · fit"
+    static let bestFitTitle = "best fit"
+    static let noServerHelp = "No local server answered"
+    static func menuHelp(_ status: LocalServerStatus) -> String { "Pick a model on \(serverName(status)); Automatic lets the engine choose" }
+    static func onServerHead(_ status: LocalServerStatus) -> String { "On \(serverName(status))" }
+    static func canCallTools(_ n: Int) -> String { n == 1 ? "1 can call tools" : "\(n) can call tools" }
+    static func bestFitMeta(_ status: LocalServerStatus) -> String { "the engine picks for this Mac · \(gigabytes(status.ramBytes))" }
+    static func notOn(_ status: LocalServerStatus) -> String { "not on \(serverName(status))" }
+    static let noToolsFoot = "cannot call tools — the hands need them, so it is listed and greyed"
+    static let bestFitFoot = "The engine picks the best model that fits this Mac and moves when a better one lands."
+    static let savedFoot = "Saved, but the server does not list it now — pull it again or pick another."
+
+    private static func model(_ id: String, _ status: LocalServerStatus) -> LocalModel? { status.models.first { $0.id == id } }
+
+    /// fits → tight → too big → unknown, the tool-less ones after (listed, greyed).
+    static func fitRank(_ m: LocalModel) -> Int {
+        if !m.hasTools { return 4 }
+        switch m.fit {
+        case .good: return 0
+        case .tight: return 1
+        case .no: return 2
+        case .unknown: return 3
+        }
+    }
+
+    /// The popup's rows: "" (best fit) first, every non-cloud model by fit rank, the saved id last
+    /// when the server does not list it.
+    static func modelRows(saved: String, status: LocalServerStatus) -> [String] {
+        let ranked = status.models.filter { !$0.cloud }.enumerated().sorted { a, b in
+            let (ra, rb) = (fitRank(a.element), fitRank(b.element))
+            return ra == rb ? a.offset < b.offset : ra < rb
+        }
+        var ids = [""] + ranked.map(\.element.id)
+        if !saved.isEmpty, !ids.contains(saved) { ids.append(saved) }
+        return ids
+    }
+
+    /// The row's title: the id alone (columns carry the rest); best fit names the pick.
+    static func rowTitle(_ id: String, status: LocalServerStatus) -> String {
+        guard id.isEmpty else { return id }
+        if let picked = status.picked, !picked.isEmpty { return "\(bestFitTitle) → \(picked)" }
+        return bestFitTitle
+    }
+
+    /// The field: the picked id while the engine picks (the badge says `auto`), the saved id, or `pick a model`.
+    static func fieldTitle(saved: String, status: LocalServerStatus) -> String {
+        if !saved.isEmpty { return saved }
+        if let picked = status.picked, !picked.isEmpty { return picked }
+        return "pick a model"
+    }
+
+    /// The field's value drawn fg3: nothing to pick, or a saved id the server no longer lists.
+    static func isQuiet(saved: String, status: LocalServerStatus) -> Bool {
+        if saved.isEmpty { return status.picked?.isEmpty ?? true }
+        return model(saved, status) == nil
+    }
+
+    static func fieldBadge(saved: String, status: LocalServerStatus) -> ConsoleBadge.Word? {
+        if saved.isEmpty { return (status.picked?.isEmpty ?? true) ? nil : .auto }
+        guard let m = model(saved, status) else { return .saved }
+        return fitBadge(m)
+    }
+
+    static func fitBadge(_ m: LocalModel) -> ConsoleBadge.Word? {
+        switch m.fit {
+        case .good: return .fits
+        case .tight: return .tight
+        case .no: return .tooBig
+        case .unknown: return nil
+        }
+    }
+
+    /// The row's badges: `auto` on best fit · the fit word · `no tools` · `saved`.
+    static func badges(_ id: String, status: LocalServerStatus) -> [ConsoleBadge.Word] {
+        if id.isEmpty { return [.auto] }
+        guard let m = model(id, status) else { return [.saved] }
+        if !m.hasTools { return [.noTools] }
+        return fitBadge(m).map { [$0] } ?? []
+    }
+
+    /// "17 GB" in the size column; nil when the server does not say.
+    static func size(_ id: String, status: LocalServerStatus) -> String? {
+        guard let m = model(id, status), let bytes = m.sizeBytes else { return nil }
+        return gigabytes(bytes)
+    }
+
+    /// "256k" from a context length.
+    static func context(_ length: Int) -> String { length >= 1024 ? "\(length / 1024)k" : "\(length)" }
+
+    /// Line 2: "256k · tools · vision · thinking"; best fit says how it picks; a saved id says where it went.
+    static func meta(_ id: String, status: LocalServerStatus) -> String? {
+        if id.isEmpty { return bestFitMeta(status) }
+        guard let m = model(id, status) else { return notOn(status) }
+        var parts: [String] = []
+        if let c = m.contextLength { parts.append(context(c)) }
+        if m.hasTools { parts.append("tools") }
+        if m.hasVision { parts.append("vision") }
+        if m.hasThinking { parts.append("thinking") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func group(_ id: String, status: LocalServerStatus) -> String {
+        if id.isEmpty { return automaticHead }
+        return model(id, status) == nil ? ConsoleMenuWords.savedHead : onServerHead(status)
+    }
+
+    static func groupCount(_ head: String, status: LocalServerStatus) -> String? {
+        head == onServerHead(status) ? canCallTools(status.pickable.count) : nil
+    }
+
+    static func groupCaption(_ head: String, status: LocalServerStatus) -> String? {
+        head == onServerHead(status) ? sizeFitCaption : nil
+    }
+
+    /// Listed, greyed, skipped: a model that cannot call tools.
+    static func isDisabled(_ id: String, status: LocalServerStatus) -> Bool {
+        guard let m = model(id, status) else { return false }
+        return !m.hasTools
+    }
+
+    static func isLoaded(_ id: String, status: LocalServerStatus) -> Bool { model(id, status)?.loaded ?? false }
+
+    /// The foot: why tight / too big, the tool-less rule, how best fit picks, where a saved id went.
+    static func foot(_ id: String, status: LocalServerStatus) -> String? {
+        if id.isEmpty { return bestFitFoot }
+        guard let m = model(id, status) else { return savedFoot }
+        let ram = gigabytes(status.ramBytes)
+        let size = m.sizeBytes.map(gigabytes) ?? "size unknown"
+        if !m.hasTools { return "\(id) \(noToolsFoot)." }
+        switch m.fit {
+        case .good: return "\(id) · \(size) on a \(ram) Mac — fits."
+        case .tight: return "\(id) · \(size) on a \(ram) Mac — tight: slow first token, swaps under load."
+        case .no: return "\(id) · \(size) on a \(ram) Mac — too big: it will not load."
+        case .unknown: return "\(id) · the server does not say its size."
+        }
+    }
 }
 
-/// The Model row for the Local brain: a menu over the tool-capable models the server lists
-/// (size and fit beside each; one that does not fit drawn quiet), the engine's best fit as the
-/// first row always — the way back from a pin — and the saved id even when the server no
-/// longer lists it.
+/// The Model row for the Local brain: the rebuilt dropdown over what the server lists — the
+/// engine's best fit first under `Automatic`, the models under `On <server>` with size and fit as
+/// columns (fits → tight → too big, then the tool-less ones listed but greyed and skipped), the
+/// saved id under `Saved, not listed` when the server no longer carries it. The field shows the
+/// id with one badge (`auto` · the fit word · `saved`) and never truncates it. Words are all
+/// `LocalBrainWords` statics (pinned by `check-local` / `check-kit`).
 struct LocalModelMenu: View {
     let status: LocalServerStatus
     /// Settings.brainModel (or the wizard's draft): "" = the best fit on this Mac.
     let saved: String
+    /// "settings.model" in the rail, "setup.model" in the wizard.
+    var id = LocalBrainWords.settingsMenuId
     let pick: (String) -> Void
 
-    private var options: [String] { LocalBrainWords.modelOptions(saved: saved, status: status) }
+    private var options: [String] { LocalBrainWords.modelRows(saved: saved, status: status) }
 
-    private func title(_ id: String) -> String { LocalBrainWords.modelTitle(id, status: status) }
-    private func fieldTitle(_ id: String) -> String { LocalBrainWords.collapsedTitle(saved: id, status: status) }
+    private func title(_ id: String) -> String { LocalBrainWords.rowTitle(id, status: status) }
+    private func fieldTitle(_ id: String) -> String { LocalBrainWords.fieldTitle(saved: id, status: status) }
     private func dim(_ id: String) -> Bool { LocalBrainWords.isDim(id, status: status) }
+    private func quiet(_ id: String) -> Bool { LocalBrainWords.isQuiet(saved: id, status: status) }
+    private func badges(_ id: String) -> [ConsoleBadge.Word] { LocalBrainWords.badges(id, status: status) }
+    private func fieldBadge(_ id: String) -> ConsoleBadge.Word? { LocalBrainWords.fieldBadge(saved: id, status: status) }
+    private func size(_ id: String) -> String { LocalBrainWords.size(id, status: status) ?? "" }
+    private func meta(_ id: String) -> String { LocalBrainWords.meta(id, status: status) ?? "" }
+    private func group(_ id: String) -> String { LocalBrainWords.group(id, status: status) }
+    private func groupCount(_ head: String) -> String? { LocalBrainWords.groupCount(head, status: status) }
+    private func groupCaption(_ head: String) -> String? { LocalBrainWords.groupCaption(head, status: status) }
+    private func disabled(_ id: String) -> Bool { LocalBrainWords.isDisabled(id, status: status) }
+    private func loaded(_ id: String) -> Bool { LocalBrainWords.isLoaded(id, status: status) }
+    private func foot(_ id: String) -> String? { LocalBrainWords.foot(id, status: status) }
 
     var body: some View {
-        ConsoleMenuField(value: saved, options: options, title: title, pick: pick, mono: true, fieldTitle: fieldTitle, dim: dim)
-            .consoleHelp(status.reachable ? "The models on \(LocalBrainWords.serverName(status)) that can call tools; best fit lets the engine choose" : "No local server answered")
-            .accessibilityLabel("Model: \(fieldTitle(saved))")
+        ConsoleMenuField(value: saved, options: options, title: title, pick: pick, mono: true, fieldTitle: fieldTitle, dim: dim,
+                         id: id, label: LocalBrainWords.modelLabel, fieldBadge: fieldBadge, fieldQuiet: quiet, badge: badges,
+                         badgeColumn: LocalBrainWords.fitColumn, size: size, meta: meta, group: group, groupCount: groupCount,
+                         groupCaption: groupCaption, disabled: disabled, loaded: loaded, foot: foot, filterNoun: LocalBrainWords.modelsNoun,
+                         width: LocalBrainWords.menuWidth)
+            .consoleHelp(status.reachable ? LocalBrainWords.menuHelp(status) : LocalBrainWords.noServerHelp)
     }
 }
 
