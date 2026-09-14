@@ -291,8 +291,8 @@ Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): fir
   turn spent — and without a signed-in Codex the bench refuses before anything
   starts unless `--allow-api-spend` is passed.
 - `ACTING_TOOLS` has one home, `packages/brain/src/timings.ts`, exported from
-  `@jarhead/brain`; the Delegator and `bench-brain.ts` import it, and the timings test
-  pins the list.
+  `@jarhead/brain`; the Delegator, the engine's observer, `bench-brain.ts` and
+  `ledger-speed.ts` import it; observe.test.ts checks the background subset against it.
 - `packages/live/src/__tests__/transcript.test.ts`: `finalizeOpen` emits `final`
   once for each item it closes; `settle` does not emit it again.
 - `packages/engine/src/__tests__/timings.test.ts` and

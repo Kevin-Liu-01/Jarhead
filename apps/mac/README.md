@@ -60,7 +60,8 @@ Go resumes it with that context.
 | `⌥⇧C` | circle something on screen for Jarhead |
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
-`jarhead://stop` — the three transport verbs, nothing else. While paused the mic is off
+`jarhead://stop` — the three transport verbs — plus `jarhead://orb` (summon the blob) and
+`jarhead://setup` (open Setup); any other path opens the Console. While paused the mic is off
 and the wake gate listens: the word resumes without Touch ID or the passphrase — the
 pause was authenticated when its session opened and decays to asleep on its own.
 

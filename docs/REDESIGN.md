@@ -2640,8 +2640,8 @@ promoted question as "<Name> asks: <question>", all through the parent's
 `queueCommentary` (600 ms coalescer: two threads finishing together are one
 sentence) via `ThreadVoice.threadSay`, which bypasses `say`'s running-id guard for a
 running OR draining parent. The Codex addendum carries one cheat-sheet line for the
-four tools (a named rail); the voice's `DEFAULT_CAPABILITIES` one line saying the
-backend can split independent work across threads and how each lane behaves.
+four tools (a named rail); the voice's `DEFAULT_CAPABILITIES` carries one line saying
+the backend can split independent work across threads and how each lane behaves.
 
 **Console.** The Threads section (§20) lists each live spawned thread under its
 parent's card with a 22 pt ghost Stop per row → `thread.stop {threadId}`, never the

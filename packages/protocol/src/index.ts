@@ -260,7 +260,7 @@ export interface Delegation {
   readonly timings: DelegationTimings;
   /** The thread that ran it; absent = "main". */
   readonly threadId?: string;
-  /** Steps in the ledger when `steps` is a cut window (the small snapshot). */
+  /** Step total of a thread's delegation (threads/turns.ts writes it); a thread page shows it before its steps are paged in. Absent on main's delegations, whose `steps` are complete. */
   readonly stepCount?: number;
 }
 

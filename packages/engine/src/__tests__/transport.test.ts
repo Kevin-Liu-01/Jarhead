@@ -434,7 +434,7 @@ test("go: asleep → wake; awake → nothing (no toast, one session); connecting
     await engine.command({ type: "sleep" });
     events.length = 0;
     await engine.command({ type: "resume" });
-    assert.ok(events.some((e) => e.type === "toast" && e.text === "asleep — wake it instead"));
+    assert.ok(events.some((e) => e.type === "toast" && e.text === "asleep — press Go"));
     assert.equal(lives.length, 2);
   } finally {
     await engine.stop();

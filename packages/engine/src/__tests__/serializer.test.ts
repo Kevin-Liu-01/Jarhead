@@ -39,7 +39,7 @@ test("haltReasonFor is batch.ts's haltReason, word for word", () => {
   for (const t of ["self_edit", "self_apply", "self_check", "self_discard", "left_click", "type", "applescript", "run_shell", "browser_navigate", "write_file"]) assert.ok(!SERIALIZER_BYPASS.has(t), `${t} takes the queue`);
 });
 
-test("a thread_start (and its alias, and an agent_start / agent_send) issued alongside a left_click that asks Kevin starts at once and answers its own text — never `not run:`", async () => {
+test("a thread_start / thread_stop / agent_start / agent_send issued alongside a left_click that asks Kevin starts at once and answers its own text — never `not run:`", async () => {
   for (const mgmt of ["thread_start", "thread_stop", "agent_start", "agent_send"]) {
     const s = new ActingSerializer();
     const click = deferred();

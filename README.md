@@ -88,12 +88,12 @@ The blob flew to its target and stays there. The perch is where it came from; th
 ### The Console
 
 <p align="center">
-  <img src="docs/media/console-threads.jpg" width="920" alt="The Console during a split: the Now stream with thread_start calls, [Notes] and [Slack] tags, a screenshot; the Threads rail with Notes done, Spotify working, Slack waiting for the screen, each with Stop">
+  <img src="docs/media/console-threads.jpg" width="920" alt="The Console during a split: the Now stream with three thread_start calls and the split line; a chip per thread under the parent card; the Threads rail with Slack waiting for Kevin (its Stop), Spotify and Notes done">
 </p>
 
-Two hands at once: Notes and Spotify on the background lane, Slack on the screen lane
-waiting because you are typing. The Threads rail lists each live thread under its
-parent, with a Stop per thread.
+Three threads at once: Notes and Spotify on the background lane finish on their own,
+Slack on the screen lane stops to ask before it sends. The Threads rail lists each
+thread under its parent with its question and a Stop per thread.
 
 <table>
   <tr>

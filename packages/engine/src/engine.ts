@@ -1471,7 +1471,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.live || this.connecting) return;
     if (!this.config.openaiApiKey) {
       this.endVoiceReconnect();
-      this.problemOf("voice.key", "OPENAI_API_KEY is missing; set it in ~/.jarhead/env or .env.local", Engine.SETUP_REMEDY);
+      this.problemOf("voice.key", "OPENAI_API_KEY is missing; set it in ~/.jarhead/env (Setup › Voice writes it)", Engine.SETUP_REMEDY);
       this.setPhase("error");
       return;
     }
@@ -3148,7 +3148,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   async resume(): Promise<void> {
     const pause = this.pauseInfo;
     if (!pause) {
-      this.toast(this.live ? "not paused" : "asleep — wake it instead", "info");
+      this.toast(this.live ? "not paused" : "asleep — press Go", "info");
       return;
     }
     if (this.connecting) return; // the resume is already opening its session

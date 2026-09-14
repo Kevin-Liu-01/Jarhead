@@ -150,7 +150,7 @@ test("Live errors are typed by the classifier: a limit is voice.limit with Retry
   assert.equal(classifyLiveError("response_input_buffer_full: Backend response input history is limited to 128 items and 32768 U…"), "limit");
   assert.equal(classifyLiveError("rate_limit_exceeded: Rate limit reached for gpt-live-1"), "limit");
   assert.equal(classifyLiveError("invalid_api_key: Incorrect API key provided"), "key");
-  assert.equal(classifyLiveError("OPENAI_API_KEY is missing; set it in ~/.jarhead/env or .env.local"), "key");
+  assert.equal(classifyLiveError("OPENAI_API_KEY is missing; set it in ~/.jarhead/env (Setup › Voice writes it)"), "key");
   assert.equal(classifyLiveError("live socket closed before start (code 1006)"), "connection");
   assert.equal(classifyLiveError("live session did not start within 15000ms"), "connection");
   assert.equal(classifyLiveError("unknown_parameter: nope"), "other");
