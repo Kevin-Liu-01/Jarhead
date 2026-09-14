@@ -99,6 +99,38 @@
 #                                                                                                     # park ½ and at work ½, measured off an offscreen render (the pre-fleet alpha; the transitions only)
 #   ORB_SELFTEST=1 Scripts/orb-preview.sh                                                             # the pure checks (FleetBudget ladder on a synthetic clock, landing(for:avoiding:)); exit 0 / 1
 #
+#   The dock as a control surface (ORB_NOTCH_* knobs, OrbPreviewApp.swift's header lists them): every rule of the
+#   island prints as `check: <the design's line> OK|FAIL`, and at exit `notch sends:` counts what the run sent by kind.
+#   Scripts/orb-preview.sh --notch-checks [name…]                                                     # every recipe below in turn (~3 min), logs under $OUT/notch-checks/<name>/,
+#                                                                                                     # then one summary of every check: line; exit 1 when any reads FAIL
+#   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY_AT=99 ORB_SHOT_DIR=… plus, per recipe:
+#     base       ORB_NOTCH_OPEN_TIMING=1 ORB_EXIT_AFTER=4.5                                            # island 360×132 rows / text limits / ink cache / a11y children / open timing
+#     marks      ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_NOTCH_PRESS="forget:0@3.9"
+#     marks-clear … the same marks, ORB_NOTCH_PRESS="clear@3.9"                                         # → notch-{tucked,peek,island}-marks.png
+#     ask-*      ORB_NOTCH_PRESS="ask@3.3" with a pending mark / a window mark / no marks + ORB_NOTCH_STROKE_AT=3.5 /
+#                ORB_NOTCH_PHASE=asleep (± ORB_NOTCH_TYPED_WAKES=1 with a pending mark)                 # → notch-island-asleep.png
+#     window     ORB_NOTCH_PRESS="window@3.0;window@4.0" ORB_NOTCH_ACTIVE=3.5
+#     circle     ORB_FLEET=… ORB_NOTCH_PHASE=acting ORB_NOTCH_REQUEST=… ORB_NOTCH_PIN_AT=2.9 ORB_NOTCH_CIRCLE_AT=3.2 ORB_EXIT_AFTER=11
+#                                                                                                     # → notch-peek-marking.png, notch-mark-return.png (acting: the
+#                                                                                                     # counter is on and the peek has no breath, so its width is exact)
+#     hotkey     ORB_NOTCH_HOTKEY_CIRCLE_AT=3.2 ORB_NOTCH_ESC_AT=3.9
+#     question   ORB_FLEET=… ORB_NOTCH_QUESTION="Slack:…" ORB_NOTCH_MARKS=… ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6
+#                ORB_NOTCH_SHOT_TAG=question                                                          # → notch-{peek,island}-question.png (two scenario knobs: the tag names the frames)
+#     threads    ORB_FLEET=… ORB_NOTCH_PRESS="threadStop:Slack@3.4;thread:Slack@3.8;console@4.1;sleep@4.5;sleep@5.3"
+#     meter      ORB_NOTCH_METER="252,138,738" ORB_PAUSE_AT=4.0 ORB_SLEEP_AT=5.2 ORB_EXIT_AFTER=7.5      # → notch-peek-meter.png
+#     request    ORB_NOTCH_REQUEST="opening the PR in Cursor"
+#     field      ORB_NOTCH_TYPE="scroll down@3.2"                                                      # → notch-island-say.png
+#     pill       ORB_NOTCH_PHASE=asleep ORB_NOTCH_PILL_TEST=1 ORB_EXIT_AFTER=9.5
+#     trace      ORB_NOTCH_TRACE_AT="2.0:mark;9.0:reflex circle" ORB_EXIT_AFTER=16
+#     screenrec  ORB_NOTCH_SCREEN_RECORDING=0 ORB_NOTCH_PROBLEM=permission.screenRecording ORB_NOTCH_PRESS="remedy@3.8"   # → notch-island-screenrec.png
+#     problem    ORB_NOTCH_PROBLEM=permission.screenRecording                                          # → notch-peek-problem.png, notch-island-problem-pill.png
+#     chips      ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_MARKS=… ORB_NOTCH_PROBLEM=… ORB_NOTCH_METER=… ORB_NOTCH_SHOT_TAG=chips
+#     lands      ORB_NOTCH_PHASE=asleep ORB_NOTCH_MARK_LANDS_AT=1.5 ORB_EXIT_AFTER=9                    # → notch-tucked-asleep.png with the lip chip
+#     sweep      ORB_NOTCH_PHASE_SWEEP=3.5 ORB_EXIT_AFTER=6.5
+#     strip      ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_STRIP_PROBE=2.5 ORB_EXIT_AFTER=3
+#     fleet      ORB_FLEET="…three…" ORB_EXIT_AFTER=4.5                                                # → fleet-notch-{peek,island}.png at 132
+#     reduce-*   marks / question / circle again with ORB_REDUCE_MOTION=1                              # + the reduce-motion check line
+#
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's
 # layers (ORB_SHOT_INPROCESS=1 forces that). The harness never talks to the daemon or
@@ -121,4 +153,63 @@ swiftc -parse-as-library -O -D JARHEAD_ORB_PREVIEW \
 
 echo "built $BIN"
 if [[ "${1:-}" == "--build-only" ]]; then exit 0; fi
+
+# --notch-checks [name…]: the recipes in the header, one run each, then a summary of every check: line.
+if [[ "${1:-}" == "--notch-checks" ]]; then
+  shift
+  ROOT="$OUT/notch-checks"
+  FLEET="Slack:screen:working;Spotify:background:working"
+  MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack"
+  # recipe <name> <exit-after> ENV=…
+  recipe() {
+    local name="$1" exit_after="$2"; shift 2
+    if [[ $# -ge 0 && -n "${ONLY[*]:-}" ]]; then
+      local pick=0; for o in "${ONLY[@]}"; do [[ "$o" == "$name" ]] && pick=1; done
+      [[ $pick == 1 ]] || return 0
+    fi
+    local dir="$ROOT/$name"; rm -rf "$dir"; mkdir -p "$dir"
+    echo "== $name"
+    env ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_SHOT_INPROCESS=1 ORB_FLY_AT=99 \
+      ORB_SHOT_DIR="$dir" ORB_EXIT_AFTER="$exit_after" "$@" "$BIN" > "$dir/run.log" 2>&1 || echo "  (exit $?)"
+    grep -E "check:|notch sends:|overlay sends:" "$dir/run.log" | sed 's/^/  /'
+  }
+  ONLY=("$@")
+  recipe base 4.5 ORB_NOTCH_OPEN_TIMING=1
+  recipe marks 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="forget:0@3.9"
+  recipe marks-clear 5 ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_PRESS="clear@3.9"
+  recipe ask-pending 4.5 ORB_NOTCH_MARKS="pending:640x400@-40@Slack" ORB_NOTCH_PRESS="ask@3.3"
+  recipe ask-window 4.5 ORB_NOTCH_MARKS="pending:640x400@-40@Slack;window:1280x800@-5@Safari" ORB_NOTCH_PRESS="ask@3.3"
+  recipe ask-none 9 ORB_NOTCH_PRESS="ask@3.0" ORB_NOTCH_STROKE_AT=3.5
+  recipe ask-asleep 4.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_PRESS="ask@3.3"
+  recipe ask-asleep-typed 4.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_TYPED_WAKES=1 ORB_NOTCH_MARKS="pending:640x400@-40@Slack" ORB_NOTCH_PRESS="ask@3.3"
+  recipe window 5.5 ORB_NOTCH_PRESS="window@3.0;window@4.0" ORB_NOTCH_ACTIVE=3.5
+  recipe circle 11 ORB_FLEET="$FLEET" ORB_NOTCH_PHASE=acting ORB_NOTCH_REQUEST="opening the PR in Cursor" ORB_NOTCH_PIN_AT=2.9 ORB_NOTCH_CIRCLE_AT=3.2
+  recipe hotkey 5.5 ORB_NOTCH_HOTKEY_CIRCLE_AT=3.2 ORB_NOTCH_ESC_AT=3.9
+  recipe question 6.5 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION='Slack:Send "shipping Friday" to #general?' ORB_NOTCH_MARKS="$MARKS" \
+    ORB_NOTCH_PRESS="allow@3.7;deny@4.1" ORB_NOTCH_RETURN_AT=4.6 ORB_NOTCH_SHOT_TAG=question
+  recipe threads 6.5 ORB_FLEET="$FLEET" ORB_NOTCH_PRESS="threadStop:Slack@3.4;thread:Slack@3.8;console@4.1;sleep@4.5;sleep@5.3"
+  recipe meter 7.5 ORB_NOTCH_METER="252,138,738" ORB_PAUSE_AT=4.0 ORB_SLEEP_AT=5.2
+  recipe request 4.8 ORB_NOTCH_REQUEST="opening the PR in Cursor"
+  recipe field 5.5 ORB_NOTCH_TYPE="scroll down@3.2"
+  recipe pill 9.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_PILL_TEST=1
+  recipe trace 16 ORB_NOTCH_TRACE_AT="2.0:mark;9.0:reflex circle"
+  recipe screenrec 5 ORB_NOTCH_SCREEN_RECORDING=0 ORB_NOTCH_PROBLEM=permission.screenRecording ORB_NOTCH_PRESS="remedy@3.8"
+  recipe problem 4.5 ORB_NOTCH_PROBLEM=permission.screenRecording
+  recipe chips 4.5 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" \
+    ORB_NOTCH_PROBLEM=permission.screenRecording ORB_NOTCH_METER="252,138,738" ORB_NOTCH_SHOT_TAG=chips
+  recipe lands 9 ORB_NOTCH_PHASE=asleep ORB_NOTCH_MARK_LANDS_AT=1.5
+  recipe sweep 6.5 ORB_NOTCH_PHASE_SWEEP=3.5
+  recipe strip 3 ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_STRIP_PROBE=2.5
+  recipe fleet 4.5 ORB_FLEET="Slack:screen:working@1000,300;Spotify:background:working;Mail:screen:working@1300,700"
+  recipe reduce-marks 5 ORB_REDUCE_MOTION=1 ORB_NOTCH_MARKS="$MARKS"
+  recipe reduce-question 4.5 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_SHOT_TAG=question
+  recipe reduce-circle 11 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_CIRCLE_AT=3.2   # no counter: the peek's 322 proves the dots gone
+  echo
+  echo "summary (every check: line, deduplicated by text):"
+  cat "$ROOT"/*/run.log | grep -E "check:" | sed -E 's/^ *[0-9.]+ s //' | sed -E 's/ (OK|FAIL)( \(.*| :.*)?$/ \1/' | sort -u
+  fails=$(cat "$ROOT"/*/run.log | grep -cE "check:.* FAIL" || true)
+  echo "check lines failing: $fails"
+  [[ "$fails" == "0" ]]
+  exit $?
+fi
 exec "$BIN"

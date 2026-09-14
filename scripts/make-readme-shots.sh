@@ -64,10 +64,16 @@
 #                     ORB_NOTCH=1: tucked asleep (`- -`), peeking awake, the island under the pointer,
 #                     then a fly and the blob staying where it worked with the notch empty.
 #                     The harness frames each notch shot as the panel plus 40 pt either side
-#                     under the menu-bar band (1152x494 @2x) with the island centred, ~720 px
-#                     wide, in the top 250 px; the four island-sized frames are cut to a centred
-#                     README_NOTCH_CROP (HxW, default 270x784) from the top so a 2-up table
-#                     shows the island, not the margin. notch-stay keeps its full frame.
+#                     under the menu-bar band (1152x574 @2x) with the 360x132 island centred, 720 px
+#                     wide, its bottom edge at 330 px and the pill slot under it to 382 px; the
+#                     island frames are cut to a centred README_NOTCH_CROP (HxW, default 400x800 —
+#                     the panel's 400 pt) from the top, the tucked and peek frames to
+#                     README_NOTCH_CROP_SMALL (default 270x800), so a 2-up table shows the island,
+#                     not the margin. notch-stay keeps its full frame.
+#     notch marks     notch-island-marks.png    ORB_NOTCH_MARKS + ORB_FLEET: three circled regions in the strip
+#                                               (a crop, a skeleton for the one still capturing, a used one at
+#                                               half alpha), Clear beside Ask, a chip per thread with its Stop;
+#                                               the harness names the frame notch-island-marks itself
 #     notch working   notch-island-working.png  ORB_NOTCH_PHASE=acting ORB_NOTCH_WORKING=1: the island while a
 #                                               delegation runs, "Acting · Working · 0:02". ORB_NOTCH_WORKING is
 #                                               read by NotchPanel.swift (`previewWorkingFollowsPhase`), not by
@@ -94,7 +100,8 @@ OUT="$ROOT/docs/media"
 TMP="${README_SHOTS_TMP:-$MAC/.build/readme-shots}"
 MAX_W="${README_SHOTS_MAX_W:-1600}"
 MAX_BYTES="${README_SHOTS_MAX_BYTES:-600000}"
-NOTCH_CROP="${README_NOTCH_CROP:-270x784}"
+NOTCH_CROP="${README_NOTCH_CROP:-400x800}"
+NOTCH_CROP_SMALL="${README_NOTCH_CROP_SMALL:-270x800}"
 
 ONLY=""
 SKIP_BUILD=0
@@ -187,11 +194,11 @@ place() {
   report "$dst" "$note"
 }
 
-# crop_notch <img>: cut a centred NOTCH_CROP (HxW) window from the top of a notch frame, in place.
+# crop_notch <img> [HxW]: cut a centred window (default NOTCH_CROP) from the top of a notch frame, in place.
 crop_notch() {
-  local img="$1" w h ch cw ox
+  local img="$1" spec="${2:-$NOTCH_CROP}" w h ch cw ox
   w=$(px_w "$img"); h=$(px_h "$img")
-  ch=${NOTCH_CROP%x*}; cw=${NOTCH_CROP#*x}
+  ch=${spec%x*}; cw=${spec#*x}
   (( cw > w )) && cw=$w
   (( ch > h )) && ch=$h
   ox=$(( (w - cw) / 2 ))
@@ -273,7 +280,8 @@ if want orb; then
   }
   # The notch home: tucked, peek, island, a fly, the blob staying where it worked.
   orb notch ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=12
-  for what in tucked peek island; do crop_notch "$TMP/orb-notch/preview-blob-notch-$what.png"; done
+  for what in tucked peek; do crop_notch "$TMP/orb-notch/preview-blob-notch-$what.png" "$NOTCH_CROP_SMALL"; done
+  crop_notch "$TMP/orb-notch/preview-blob-notch-island.png"
   place "$TMP/orb-notch/preview-blob-notch-tucked.png" notch-tucked
   place "$TMP/orb-notch/preview-blob-notch-peek.png"   notch-peek
   place "$TMP/orb-notch/preview-blob-notch-island.png" notch-island
@@ -283,6 +291,12 @@ if want orb; then
     ORB_NOTCH_SHOT_TAG=working ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=4.5
   crop_notch "$TMP/orb-notch-working/preview-blob-notch-island-working.png"
   place "$TMP/orb-notch-working/preview-blob-notch-island-working.png" notch-island-working
+  # The circled strip and the threads' chips: three marks (oldest first: used, capturing, pending) and two threads.
+  orb notch-marks ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full \
+    ORB_FLEET="Slack:screen:working;Spotify:background:working" \
+    ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_EXIT_AFTER=4.5
+  crop_notch "$TMP/orb-notch-marks/preview-blob-notch-island-marks.png"
+  place "$TMP/orb-notch-marks/preview-blob-notch-island-marks.png" notch-island-marks
   # Every face.
   orb eyes ORB_EYES=1 ORB_PHASES=listening ORB_PHASE_SECONDS=60 ORB_EXIT_AFTER=3
   place "$TMP/orb-eyes/preview-blob-eyes.png" blob-eyes jpg

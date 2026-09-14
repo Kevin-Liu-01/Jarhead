@@ -259,6 +259,45 @@ import SwiftUI
 //                          chosen spot occupied → the next side ≥ 92 pt away, "occupied →" in the note; every side
 //                          taken → the plain choice again, "(every side taken)")
 //   At exit with a fleet: `fleet sends:` counts every thread.stop / sleep / set-settings the run sent, and the counts.
+//
+//   The dock as a control surface (notch mode; the fake AppState prints every command as `send: {…}` and the
+//   fake engine answers the ones the dock can see — a mark lands after mark.add with its crop a beat later and
+//   the orb.trace echo (reason "mark"; ORB_NOTCH_TRACE_ECHO=0 keeps it), leaves on mark.remove / mark.clear, the
+//   front window lands on mark.window with its toast, a scripted Sleep box press puts the phase to sleep). Every
+//   rule prints as `check: <the design's line> OK|FAIL`; at exit `notch sends:` counts by kind.
+//   ORB_NOTCH_MARKS="pending:640x400@-40@Slack;used:320x180@-130;capturing:200x120@-2;window:1280x800@-5@Safari"
+//                          snapshot.marks (kind:WxH@-age s[@App]; ids mark_<kind>): `used` → consumed, `capturing` → no
+//                          screenshotPath yet (the skeleton), `window` → source "window" with a window element; pixel marks
+//                          get a dithered 2× PNG written under the shot dir (state.stateDir points there)
+//   ORB_NOTCH_MARK_LANDS_AT=t   a pending circle lands at t (as after a ⌥⇧C stroke): the lip chip, glow and the
+//                          "◎ 1 circled · Go to ask" pill are read 0.25 s and 6.4 s after
+//   ORB_NOTCH_QUESTION="Slack:Send it to #general?"   with ORB_FLEET: that thread waits on Kevin with the question
+//   ORB_NOTCH_PROBLEM=permission.screenRecording[:text]   one typed Problem with the engine's remedy for the kind
+//   ORB_NOTCH_SCREEN_RECORDING=0   permissions.all's Screen Recording row denied
+//   ORB_NOTCH_METER="252,138,738"   the open session's elapsed s, its usageSeconds, usageToday s
+//   ORB_NOTCH_REQUEST="opening the PR in Cursor"   the running delegation's request
+//   ORB_NOTCH_TYPED_WAKES=1   settings.typedWakes
+//   ORB_NOTCH_PRESS="what@t;…"   a press on that island control at t (the pointer approaches first): circle, window,
+//                          ask, clear, allow, deny, mark:0, forget:0, thread:Slack, threadStop:Slack, console, sleep,
+//                          remedy, field, face (a thread's name or id); each press prints what it sent and earns its check
+//   ORB_NOTCH_ACTIVE=t|1   NSApp.activate at t (1 = 3.0 s): the Window check's "app active" half
+//   ORB_NOTCH_TYPE="text@t"   ⌥⇧Return at t (OrbPanelController.sayLine), the words, Return; then again with Escape
+//   ORB_NOTCH_ESC_AT=t     Escape: the field lets go (text kept), or mark mode is cancelled (a posted key event)
+//   ORB_NOTCH_RETURN_AT=t  a bare Return to the panel with a question waiting
+//   ORB_NOTCH_CIRCLE_AT=t  the ◎ box at t, then Kevin's stroke through the overlay at t + 0.4 (ORB_NOTCH_STROKE_AT=t
+//                          is the stroke alone — after an Ask with nothing circled)
+//   ORB_NOTCH_HOTKEY_CIRCLE_AT=t   ⌥⇧C's dispatch (state.beginMarkMode) with the island open
+//   ORB_NOTCH_TRACE_AT="t[:reason];…"   an orb.trace while tucked (reason mark by default; "reflex circle" for the other rule)
+//   ORB_NOTCH_PIN_AT=t     a .face press (pins the island)
+//   ORB_NOTCH_PILL_TEST=1  asleep: gate + toast + a landed mark + a problem, the slot read as each expires, then the island opened
+//   ORB_NOTCH_PHASE_SWEEP=t   every phase 0.2 s apart: Mute in the hit list in a session's phases only, Stop always
+//   ORB_NOTCH_OPEN_TIMING=1   the open spring from the pointer's approach: 0.5 by 60 ms, 0.9 by 130 ms, hit rects at 0 ms
+//   ORB_NOTCH_HOVER=…      also circle|window|ask|clear|allow|deny|mark:0|forget:0|thread:Slack|threadStop:Slack|console|
+//                          sleep|remedy|meter (drawn hovered by NotchPanel; the tooltip is printed at 3.3 s)
+//   Shots (ORB_SHOT_DIR): a run with one scenario knob names its frames notch-{tucked,peek,island}-<marks|question|
+//   meter|screenrec|asleep>.png (a problem: notch-peek-problem / notch-island-problem-pill), plus notch-peek-marking
+//   (after the ◎ press), notch-mark-return (the blob home after outlining its circle), notch-island-say (the field
+//   with words). ORB_NOTCH_SHOT_TAG names them instead.
 
 @main
 struct OrbPreviewMain {
@@ -349,6 +388,60 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var fleetCommandsUntil = 0.0
     var fleetChecked = false
     var fleetSends = (stop: 0, sleep: 0, settings: 0, other: 0)
+
+    // The dock as a control surface (ORB_NOTCH_*): the fake engine's marks, every send by kind, the scripted checks.
+    var notchSends = NotchSends()
+    var notchChecksFailed = 0
+    var fakeMarks: [ScreenMark] = []
+    var fakeMarkCount = 0
+    var fakeMarkIds: Set<String> = []
+    var markPNGDir: URL?
+    var notchEchoTrace = true
+    var notchEngineSleeps = false
+    var beginMarkModeCalls = 0
+    var foldAtBeginMark: (pinned: Bool, mode: String, ignoresMouse: Bool)?
+    var openThreadCalls = 0
+    var openConsoleCalls = 0
+    var lastSayText = ""
+    var lastMarkRemoveId = ""
+    var lastThreadAnswerYes: Bool?
+    var lastSleepCause = ""
+    var lastRequestPermission = ""
+    var windowInactiveResult: [String]?
+    var windowActiveResult: (sent: [String], pill: String)?
+    var allowResult: (sent: [String], yes: Bool?)?
+    var denyResult: (sent: [String], yes: Bool?)?
+    var sleepAwakeResult: [String]?
+    var sleepAsleepResult: (sent: [String], dim: CGFloat)?
+    var remedyResult: (sent: [String], which: String)?
+    var screenRecordingSeen: (circleDim: Bool, windowDim: Bool, chipGlyph: Bool, pillRequest: Bool, circleDimValue: String, windowDimValue: String,
+                              tooltip: String, chip: String, pill: String, pillKind: String, remedyLabel: String)?
+    var screenRecordingChip: (ok: Bool, note: String)?
+    var askWaitsForStroke: (beginMarkMode: Int, sent: Int, total: Int)?
+    var askStrokeChecked = false
+    var pinnedBeforeCircle: Bool?
+    var lipAtLanding: (glow: String, chip: String, pill: String, kind: String) = ("", "", "", "")
+    var peekChips: [String] = []
+    /// The peek at 2.55 s: its width target, the chips' width, the dots' width (the counter is what remains).
+    var peekBefore: (target: CGFloat, chips: CGFloat, dots: CGFloat) = (0, 0, 0)
+    var meterPeekChip = ""
+    var notchScenarioSuffix = ""
+    var notchOpenTiming = false
+    var notchOpenHoverAt = -1.0
+    var notchOpenHalfAt = -1.0
+    var notchOpenNineAt = -1.0
+    var notchOpenHitAt0 = 0
+    var notchMaxIslandHeight = 0.0
+    var reduceSamples: [(alpha: [CGFloat], dy: [CGFloat])] = []
+    var traceProbe: TraceProbe?
+    var traceMarkResult: (ok: Bool, note: String)?
+    var traceOtherResult: (ok: Bool, note: String)?
+    var markTraceSentAt = -1.0
+    var markTraceTuckedBefore = false
+    var markTraceOut = false
+    var markTraceHomeSeen = false
+    /// The session a scripted Pause closed, for the resume (ORB_PAUSE_AT plays the engine).
+    var pausedSession: SessionInfo?
     /// Untagged `.stroke`s seen on state.overlayCommands (a tagged trace is re-stamped as exactly one), and the last one's point count.
     var strokesSeen = 0
     var lastStrokePoints = 0
@@ -448,8 +541,23 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             case "set-settings": self.fleetSends.settings += 1
             default: self.fleetSends.other += 1
             }
+            // The notch's count by kind, the last words of the commands its checks read, and the fake engine's reply.
+            self.notchSends.note(cmd.json)
+            switch cmd {
+            case .sayText(let text): self.lastSayText = text
+            case .markRemove(let id): self.lastMarkRemoveId = id
+            case .threadAnswer(_, let yes): self.lastThreadAnswerYes = yes
+            case .sleepCause(let cause): self.lastSleepCause = cause
+            case .sleep: self.lastSleepCause = ""
+            case .requestPermission(let which): self.lastRequestPermission = which
+            default: break
+            }
+            self.fakeEngine(cmd.json)
         }
-        state.openConsoleHandler = { print("openConsole()") }
+        state.openConsoleHandler = { [weak self] in
+            self?.openConsoleCalls += 1
+            print("openConsole()")
+        }
         // The fleet's trace proof: a tagged orb.trace becomes exactly one untagged `.stroke` here.
         overlaySubscription = state.overlayCommands
             .receive(on: DispatchQueue.main)
@@ -499,6 +607,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             snap.delegations = []
             snap.session = nil
         }
+        if notchMode { applyNotchSnapshotKnobs(&snap, env: env) }
         state.snapshot = snap
 
         let mainMaxY = NSScreen.screens.first?.frame.maxY ?? 0
@@ -570,7 +679,13 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                          orb.previewNotchMode, orb.previewNotchPanelCG.map { "\($0)" } ?? "nil", orb.previewNotchIslandCG.map { "\($0)" } ?? "nil",
                          orb.previewNotchDockCG.map { "\(Int($0.x)),\(Int($0.y))" } ?? "nil"))
             wasTucked = orb.previewIsTucked
-            if shotDir != nil { notchShotsOwed = ["tucked", "peek", "island", "drop", "tuck-staging", "tuck-slip-mid", "tuck-slip-late", "drop-early"] }
+            if shotDir != nil {
+                notchShotsOwed = ["tucked", "peek", "island", "drop", "tuck-staging", "tuck-slip-mid", "tuck-slip-late", "drop-early"]
+                // The control surface's own frames, taken by the scripts that earn them.
+                notchShotsOwed.formUnion(["peek-marking", "mark-return", "island-say"])
+                if env["ORB_NOTCH_TYPE"] != nil { notchShotsOwed.remove("island") }
+            }
+            setUpNotchSurface(env: env)
             // ORB_NOTCH_OPENING_SHOTS: the island mid-way through opening and closing, for
             // judging the content's fade and rise (the glyphs must fade with their boxes).
             // Shot from `watch()` off the mode flip itself (the script's clock drifts).
@@ -1029,6 +1144,16 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     guard let self else { return }
                     self.state.snapshot.phase = was == .paused ? .listening : .paused
                     self.phaseStart = Date()
+                    // The meter as the engine leaves it: a pause closes the session and holds its seconds; a resume opens a new one.
+                    let nowMs = Date().timeIntervalSince1970 * 1000
+                    if was == .paused {
+                        if let kept = self.pausedSession { self.state.snapshot.session = SessionInfo(id: kept.id + "_r", startedAt: nowMs, expiresAt: nowMs + 3_600_000, usageSeconds: 0, contextRatio: kept.contextRatio) }
+                        self.state.snapshot.pause = nil
+                    } else if let session = self.state.snapshot.session {
+                        self.pausedSession = session
+                        self.state.snapshot.pause = PauseInfo(at: nowMs, sessionId: session.id, usageSeconds: session.usageSeconds, sleepsAt: nowMs + 4 * 60_000)
+                        self.state.snapshot.session = nil
+                    }
                     // The pill is derived on the next turn of the run loop; read it then.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                         guard let self else { return }
@@ -1074,8 +1199,10 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         if let at = Double(env["ORB_NOTCH_STRIP_PROBE"] ?? "") {
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
                 guard let self else { return }
-                print(self.stamp, self.orb.previewNotchStripProbe ?? "notch strip probe: no dock (set ORB_NOTCH=1)")
+                let line = self.orb.previewNotchStripProbe ?? "notch strip probe: no dock (set ORB_NOTCH=1)"
+                print(self.stamp, line)
                 fflush(stdout)
+                self.check(line.hasSuffix("OK"), "strip probe (ORB_NOTCH_STRIP_PROBE) still OK at 132", line)
             }
         }
 
@@ -1089,6 +1216,11 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                 fflush(stdout)
                 self.state.snapshot.phase = self.sleepPhase
                 self.phaseStart = Date()
+                if self.notchMode {
+                    // The engine closes the session (and ends a pause) when it sleeps: the meter reads today's total.
+                    self.state.snapshot.session = nil
+                    self.state.snapshot.pause = nil
+                }
                 for delay in [0.1, 1.2] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                         guard let self else { return }
@@ -1163,6 +1295,11 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             if let self, self.fleetOn {
                 print(self.stamp, "fleet sends: thread.stop \(self.fleetSends.stop) sleep \(self.fleetSends.sleep) set-settings \(self.fleetSends.settings) other \(self.fleetSends.other);",
                       "satellites \(self.fleet.previewSatelliteCount) leaving \(self.fleet.previewLeavingCount) pool \(self.fleet.previewPanelPoolCount) made \(self.fleet.previewPanelsMade) rung \(self.fleet.previewRung) link paused \(self.fleet.previewLinkPaused ? 1 : 0)")
+            }
+            if let self, self.notchMode {
+                // The dock's safety count: nothing but Go (and a typed line under typedWakes) may open a session.
+                print(self.stamp, self.notchSends.line)
+                print(self.stamp, "overlay sends: mark.add \(self.notchSends.markAdd); other: \(self.notchSends.otherTypes.isEmpty ? "none" : self.notchSends.otherTypes.joined(separator: " ")); checks failed \(self.notchChecksFailed)")
             }
             print("preview: exiting")
             fflush(stdout)
@@ -1282,13 +1419,24 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     addFleetRing(CGPoint(x: p[0], y: p[1]))
                 }
             }
+            // The first listed is the newest (10 ms apart): the rail's order — startedAt descending — is the list's order.
             fleetThreads.append(WorkThread(id: id, name: name, lane: lane, status: status, parentId: "main", parentDelegationId: "d1", liveId: "live_1",
                                            task: "preview: \(name)", detail: nil, apps: app.map { [$0] } ?? [], app: app, at: at,
-                                           startedAt: nowMs - 3000, updatedAt: nowMs, doneAt: nil, turns: 1, steps: 3, waits: 0,
+                                           startedAt: nowMs - 3000 - Double(fleetThreads.count) * 10, updatedAt: nowMs, doneAt: nil, turns: 1, steps: 3, waits: 0,
                                            budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil, currentDelegationId: "d_\(name.lowercased())",
                                            lastScreenshotPath: nil, canSay: true, canStop: true))
         }
         guard !fleetThreads.isEmpty else { print("ORB_FLEET: nothing parsed from \(spec); want Name:lane:status[@x,y][:app]; …"); return }
+        // ORB_NOTCH_QUESTION="Slack:Send it to #general?": that thread waits on Kevin with the question.
+        if let q = env["ORB_NOTCH_QUESTION"] {
+            let parts = q.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, let i = fleetThreads.firstIndex(where: { $0.name.lowercased() == parts[0].lowercased() }) {
+                fleetThreads[i].status = .waitingKevin
+                fleetThreads[i].question = parts[1]
+            } else {
+                print("ORB_NOTCH_QUESTION: could not parse \(q) or no fleet thread named \(parts.first ?? "?"); want Name:question")
+            }
+        }
         // The check shot: the plain scenario's (fleet-three.png), or one ORB_FLEET_SHOT
         // names. A status, drag, click, hover, trace, late-thread, budget or notch run
         // has its own shots and must never land its frame (the main blob tucked, a
@@ -1301,6 +1449,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             print(self.stamp, "fleet: snapshot.threads <-", self.fleetThreads.map { "\($0.name):\($0.lane.rawValue):\($0.status.rawValue)\($0.at.map { "@\(Int($0.x)),\(Int($0.y))" } ?? "")\($0.app.map { ":\($0)" } ?? "")" }.joined(separator: " "))
             fflush(stdout)
             self.state.snapshot.threads = self.fleetThreads
+            // As EngineClient does on a snapshot: the event-fed table the dock's rows read.
+            self.state.applySnapshotThreads(self.fleetThreads)
             self.fleetLastCommandAt = CACurrentMediaTime()
         }
 
@@ -1319,12 +1469,13 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     let record = WorkThread(id: "t_" + name.lowercased(), name: name, lane: lane, status: status, parentId: "main", parentDelegationId: "d1", liveId: "live_1",
                                             task: "preview: \(name)", detail: nil, apps: [], app: nil, at: nil, startedAt: ms, updatedAt: ms, doneAt: nil, turns: 1, steps: 0, waits: 0,
                                             budget: WorkThread.Budget(steps: 25, seconds: 180), question: nil, currentDelegationId: nil, lastScreenshotPath: nil, canSay: true, canStop: true)
-                    var threads = self.state.snapshot.threads ?? []
+                    var threads = self.state.snapshot.threads
                     threads.append(record)
                     self.fleetThreads.append(record)
                     print(self.stamp, "fleet: late thread \(name) (\(status.rawValue)) joins; \(self.fleetCounts)")
                     fflush(stdout)
                     self.state.snapshot.threads = threads
+                    self.state.applySnapshotThreads(threads)
                     self.fleetLastCommandAt = CACurrentMediaTime()
                     for delay in [0.3, 1.5] {
                         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -1459,7 +1610,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                 let name = assign[0], status = Self.fleetStatus(assign[1])
                 let id = "t_" + name.lowercased()
                 DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                    guard let self, var threads = self.state.snapshot.threads, let i = threads.firstIndex(where: { $0.id == id }) else { return }
+                    guard let self else { return }
+                    var threads = self.state.snapshot.threads
+                    guard let i = threads.firstIndex(where: { $0.id == id }) else { return }
                     threads[i].status = status
                     threads[i].updatedAt = Date().timeIntervalSince1970 * 1000
                     if !status.isLive { threads[i].doneAt = threads[i].updatedAt }
@@ -1467,6 +1620,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                     print(self.stamp, "fleet: \(name) status -> \(status.rawValue)")
                     fflush(stdout)
                     self.state.snapshot.threads = threads
+                    self.state.applySnapshotThreads(threads)
                     self.fleetLastCommandAt = CACurrentMediaTime()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                         guard let self else { return }
@@ -1991,6 +2145,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             flightPhaseSince = now
         }
         if notchMode {
+            watchNotchSurface(now: now)
             let tucked = orb.previewIsTucked
             let mode = orb.previewNotchMode
             if tucked != wasTucked {
@@ -2250,7 +2405,16 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         guard let dir = shotDir, notchShotsOwed.contains(name), let panel = orb.previewNotchPanelCG else { return }
         notchShotsOwed.remove(name)
         let region = CGRect(x: panel.minX - 40, y: 0, width: panel.width + 80, height: panel.maxY + 30)
-        shoot("\(dir)/\(shotPrefix)notch-\(name)\(notchShotTag).png", note: note + ", island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), face [\(orb.previewFace)]", region: region, inProcess: true)
+        shoot("\(dir)/\(shotPrefix)notch-\(notchShotFileName(name))\(notchShotTag).png", note: note + ", island \(orb.previewNotchIslandCG.map { "\(Int($0.width))×\(Int($0.height))" } ?? "nil"), face [\(orb.previewFace)]", region: region, inProcess: true)
+    }
+
+    /// The scenario's own frame names: "island" → "island-marks" under ORB_NOTCH_MARKS, "island-problem-pill" and
+    /// "peek-problem" under ORB_NOTCH_PROBLEM, "-question" / "-meter" / "-screenrec" / "-asleep" likewise — one
+    /// scenario knob at a time, and only without ORB_NOTCH_SHOT_TAG, which names the frames itself.
+    func notchShotFileName(_ base: String) -> String {
+        guard !notchScenarioSuffix.isEmpty, ["tucked", "peek", "island"].contains(base) else { return base }
+        if notchScenarioSuffix == "problem" { return base == "island" ? "island-problem-pill" : base + "-problem" }
+        return base + "-" + notchScenarioSuffix
     }
 
     /// Freeze everything, capture the panel plus a margin of desktop, let go.
@@ -2438,6 +2602,1238 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             print("shot failed:", error)
         }
     }
+}
+
+// MARK: - The dock as a control surface (ORB_NOTCH_* knobs)
+
+/// Every command the run sent, by the kinds the notch can send, and every type in the
+/// order it went out (the Ask-then-stroke check reads `mark.add` before `say-text` here).
+struct NotchSends {
+    var sayText = 0, markRemove = 0, markWindow = 0, markClear = 0, threadStop = 0, threadAnswer = 0
+    var go = 0, pause = 0, stop = 0, mute = 0, sleep = 0, requestPermission = 0, other = 0
+    /// The overlay's own command, counted apart: the notch never sends it.
+    var markAdd = 0
+    var setSettings = 0
+    var all: [String] = []
+    /// What `other` counted, by type.
+    var otherTypes: [String] = []
+    var total: Int { all.count }
+
+    mutating func note(_ json: [String: Any]) {
+        let type = json["type"] as? String ?? "?"
+        all.append(type)
+        switch type {
+        case "say-text": sayText += 1
+        case "mark.add": markAdd += 1
+        case "mark.remove": markRemove += 1
+        case "mark.window": markWindow += 1
+        case "mark.clear": markClear += 1
+        case "thread.stop": threadStop += 1
+        case "thread.answer": threadAnswer += 1
+        case "go": go += 1
+        case "pause": pause += 1
+        case "stop": stop += 1
+        case "mute", "unmute": mute += 1
+        case "sleep": sleep += 1
+        case "request-permission": requestPermission += 1
+        case "set-settings": setSettings += 1; other += 1; otherTypes.append(type)
+        default: other += 1; otherTypes.append(type)
+        }
+    }
+
+    var line: String {
+        "notch sends: say-text \(sayText) mark.remove \(markRemove) mark.window \(markWindow) mark.clear \(markClear) thread.stop \(threadStop) thread.answer \(threadAnswer) go \(go) pause \(pause) stop \(stop) mute \(mute) sleep \(sleep) request-permission \(requestPermission) other \(other)"
+    }
+}
+
+/// One fake mark from ORB_NOTCH_MARKS ("kind:WxH@-age[@App]").
+struct FakeMarkSpec {
+    let kind: String
+    let size: CGSize
+    let ageSeconds: Double
+    let app: String?
+}
+
+extension OrbPreviewDelegate {
+    /// `check: <the design's line> OK` — or `FAIL: <what was seen>`. The line's text is the
+    /// design's, verbatim, so a grep for it finds the verdict.
+    func check(_ ok: Bool, _ line: String, _ seen: String = "") {
+        print(stamp, "check: \(line) \(ok ? "OK" : "FAIL")\(seen.isEmpty ? "" : (ok ? " (" : ": ") + seen + (ok ? ")" : ""))")
+        fflush(stdout)
+        if !ok { notchChecksFailed += 1 }
+    }
+
+    /// The notch view itself (for the tooltip at a point and the pixel probe): the controller's dock is private.
+    var notchView: NotchView? { NSApp.windows.first { $0.title == "Jarhead notch" }?.contentView as? NotchView }
+    var notchPanel: NSWindow? { NSApp.windows.first { $0.title == "Jarhead notch" } }
+
+    /// The thread named `name` in the fake fleet, by id or name ("Slack" → "t_slack").
+    func fleetThreadId(_ nameOrId: String) -> String {
+        if fleetThreads.contains(where: { $0.id == nameOrId }) { return nameOrId }
+        return fleetThreads.first { $0.name.lowercased() == nameOrId.lowercased() }?.id ?? nameOrId
+    }
+
+    /// The harness's press names with a thread name where the panel wants its id.
+    func pressName(_ raw: String) -> String {
+        let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2, ["thread", "threadstop"].contains(parts[0].lowercased()) else { return raw }
+        return parts[0] + ":" + fleetThreadId(parts[1])
+    }
+
+    // MARK: knobs → the fake snapshot
+
+    /// ORB_NOTCH_MARKS / QUESTION / PROBLEM / SCREEN_RECORDING / METER / REQUEST / TYPED_WAKES on the
+    /// snapshot the harness feeds, before AppState sees it.
+    func applyNotchSnapshotKnobs(_ snap: inout Snapshot, env: [String: String]) {
+        if let spec = env["ORB_NOTCH_MARKS"] {
+            fakeMarks = parseMarks(spec).map { makeFakeMark($0) }
+            snap.marks = fakeMarks
+        }
+        if let spec = env["ORB_NOTCH_PROBLEM"] {
+            let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
+            snap.problems = [Self.fakeProblem(kind: parts[0], text: parts.count > 1 ? parts[1] : nil)]
+        }
+        if env["ORB_NOTCH_SCREEN_RECORDING"] == "0" {
+            snap.permissions = Permissions(all: [PermissionInfo(kind: .screenRecording, grant: .denied, ask: .settings, required: true,
+                                                                 label: "Screen Recording", why: "The hands see the screen.", checkedAt: Date().timeIntervalSince1970 * 1000)])
+        }
+        if let spec = env["ORB_NOTCH_METER"] {
+            let v = spec.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            if v.count == 3 {
+                let nowMs = Date().timeIntervalSince1970 * 1000
+                snap.session = SessionInfo(id: "sess_preview", startedAt: nowMs - v[0] * 1000, expiresAt: nowMs + 3_600_000, usageSeconds: v[1], contextRatio: 0.2)
+                snap.usageToday = UsageToday(seconds: v[2], sessions: 3)
+            } else {
+                print("ORB_NOTCH_METER: could not parse \(spec); want elapsed,usage,today (seconds)")
+            }
+        }
+        if let text = env["ORB_NOTCH_REQUEST"], !snap.delegations.isEmpty {
+            // The delegation begins at 1.6 s, with the dock up and awake: a delegation already running when the
+            // dock is built does not reach its working state (OrbPanelController's setWorking sink deduplicates).
+            snap.delegations[0].request = text
+            snap.delegations[0].status = .done
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+                guard let self, !self.state.snapshot.delegations.isEmpty else { return }
+                let nowMs = Date().timeIntervalSince1970 * 1000
+                self.state.snapshot.delegations[0].status = .running
+                self.state.snapshot.delegations[0].timings.delegatedAt = nowMs
+                print(self.stamp, "engine: delegation running — \"\(text)\"")
+                fflush(stdout)
+            }
+        }
+        if env["ORB_NOTCH_TYPED_WAKES"] == "1" { snap.settings.typedWakes = true }
+    }
+
+    static func fakeProblem(kind: String, text: String?) -> Problem {
+        let now = Date().timeIntervalSince1970 * 1000
+        let words: String
+        let remedy: ProblemRemedy
+        if kind.hasPrefix("permission.") {
+            let which = String(kind.dropFirst("permission.".count))
+            words = text ?? (which == "screenRecording" ? "Screen Recording not granted: circles arrive without pixels" : "\(which) not granted")
+            remedy = ProblemRemedy(label: "Request", command: ["type": .string("request-permission"), "which": .string(which)], open: nil)
+        } else if kind == "dock" {
+            words = text ?? "Jarhead is in the Dock twice"
+            remedy = ProblemRemedy(label: "Fix the Dock", command: ["type": .string("problem.retry"), "kind": .string("dock")], open: nil)
+        } else {
+            words = text ?? "\(kind): something needs a look"
+            remedy = ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string(kind)], open: nil)
+        }
+        return Problem(kind: kind, text: words, remedy: remedy, since: now - 20_000)
+    }
+
+    func parseMarks(_ spec: String) -> [FakeMarkSpec] {
+        spec.split(separator: ";").compactMap { entry -> FakeMarkSpec? in
+            let raw = entry.trimmingCharacters(in: .whitespaces)
+            guard !raw.isEmpty else { return nil }
+            let at = raw.split(separator: "@", omittingEmptySubsequences: false).map(String.init)
+            let head = at[0].split(separator: ":").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard head.count == 2 else { print("ORB_NOTCH_MARKS: could not parse \(raw); want kind:WxH@-age[@App]"); return nil }
+            let wh = head[1].lowercased().split(separator: "x").compactMap { Double($0) }
+            guard wh.count == 2 else { print("ORB_NOTCH_MARKS: bad size in \(raw)"); return nil }
+            let age = at.count > 1 ? abs(Double(at[1]) ?? 0) : 0
+            let app = at.count > 2 && !at[2].isEmpty ? at[2] : nil
+            return FakeMarkSpec(kind: head[0].lowercased(), size: CGSize(width: wh[0], height: wh[1]), ageSeconds: age, app: app)
+        }
+    }
+
+    /// One `ScreenMark` as the engine would carry it: `used` is consumed, `capturing` has no crop
+    /// yet, `window` is the front window whole (source "window", element role window); the crop is
+    /// a dithered PNG written here, at 2×, so the thumbnail path decodes something real.
+    func makeFakeMark(_ s: FakeMarkSpec) -> ScreenMark {
+        fakeMarkCount += 1
+        let n = fakeMarkCount
+        let id = "mark_" + s.kind + (fakeMarkIds.contains("mark_" + s.kind) ? "\(n)" : "")
+        fakeMarkIds.insert(id)
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let rect = Rect(x: 400 + Double(n) * 24, y: 260 + Double(n) * 18, w: s.size.width, h: s.size.height)
+        let consumed = s.kind == "used"
+        let capturing = s.kind == "capturing"
+        let window = s.kind == "window"
+        var element: ScreenMark.MarkElement?
+        if window {
+            element = ScreenMark.MarkElement(role: "window", title: "\(s.app ?? "Safari") — Jarhead", app: s.app ?? "Safari")
+        } else if let app = s.app {
+            element = ScreenMark.MarkElement(role: "button", title: "Send", app: app)
+        }
+        var mark = ScreenMark(id: id, rect: rect, path: nil, at: nowMs - s.ageSeconds * 1000, screenshotPath: nil, consumed: consumed, element: element, source: window ? "window" : nil)
+        if !capturing { mark.screenshotPath = writeMarkPNG(id: id, size: s.size) }
+        return mark
+    }
+
+    /// The crop on disk: a dithered ramp, the mark's aspect, a quarter of its points at 2×.
+    func writeMarkPNG(id: String, size: CGSize) -> String? {
+        let base = markPNGDir ?? {
+            let dir = URL(fileURLWithPath: shotDir ?? (ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp")).appendingPathComponent("jarhead-orb-preview-marks", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir.appendingPathComponent("shots"), withIntermediateDirectories: true)
+            markPNGDir = dir
+            state.stateDir = dir
+            return dir
+        }()
+        let pts = CGSize(width: max(24, size.width / 4), height: max(16, size.height / 4))
+        guard let img = Dither.gradientImage(size: pts, scale: 2, stops: Dither.orbStops, direction: .diagonal) else { return nil }
+        let rep = NSBitmapImageRep(cgImage: img)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let rel = "shots/\(id).png"
+        do {
+            try png.write(to: base.appendingPathComponent(rel))
+        } catch {
+            print("mark png: write failed:", error)
+            return nil
+        }
+        return rel
+    }
+
+    /// The fake engine's marks list is the snapshot's: replace it and let AppState publish.
+    func publishFakeMarks() {
+        state.snapshot.marks = fakeMarks
+    }
+
+    /// A pending circle lands in the fake snapshot, as after a ⌥⇧C stroke (ORB_NOTCH_MARK_LANDS_AT and the `mark.add` reply).
+    @discardableResult
+    func landFakeMark(rect: Rect, source: String? = nil, element: ScreenMark.MarkElement? = nil, withCropAfter delay: Double?) -> String {
+        fakeMarkCount += 1
+        let id = "mark_new\(fakeMarkCount)"
+        fakeMarkIds.insert(id)
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let mark = ScreenMark(id: id, rect: rect, path: nil, at: nowMs, screenshotPath: nil, consumed: false, element: element, source: source)
+        fakeMarks.append(mark)
+        if fakeMarks.count > 6 { fakeMarks.removeFirst(fakeMarks.count - 6) }
+        publishFakeMarks()
+        if let delay {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, let i = self.fakeMarks.firstIndex(where: { $0.id == id }) else { return }
+                self.fakeMarks[i].screenshotPath = self.writeMarkPNG(id: id, size: CGSize(width: rect.w, height: rect.h))
+                self.publishFakeMarks()
+                print(self.stamp, "engine: crop landed for \(id)")
+                fflush(stdout)
+            }
+        }
+        return id
+    }
+
+    /// What the engine does with a command, as far as the dock can see it: a mark lands
+    /// after `mark.add` (its crop a beat later, and the `orb.trace` echo with reason "mark"),
+    /// leaves on `mark.remove` / `mark.clear`, the front window lands on `mark.window` with
+    /// its toast, a scripted Sleep box press puts the phase to sleep.
+    func fakeEngine(_ json: [String: Any]) {
+        guard notchMode else { return }
+        switch json["type"] as? String {
+        case "mark.add":
+            guard let r = json["rect"] as? [String: Any], let x = r["x"] as? Double, let y = r["y"] as? Double, let w = r["w"] as? Double, let h = r["h"] as? Double else { return }
+            let rect = Rect(x: x, y: y, w: w, h: h)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                let id = self.landFakeMark(rect: rect, withCropAfter: 1.0)
+                print(self.stamp, "engine: mark \(id) registered (\(Int(w))×\(Int(h))), crop on its way")
+                fflush(stdout)
+                guard self.notchEchoTrace else { return }
+                // The engine's echo: the blob outlines what was circled (reason "mark").
+                let pts = [Point2(x: x, y: y), Point2(x: x + w, y: y), Point2(x: x + w, y: y + h), Point2(x: x, y: y + h)]
+                self.markTraceSentAt = CACurrentMediaTime()
+                self.markTraceTuckedBefore = self.orb.previewIsTucked
+                self.state.overlayCommands.send(.orbTrace(points: pts, closed: true, label: nil, ttlMs: 2500, tone: .mark, reason: "mark", thread: nil))
+                print(self.stamp, "engine: orb.trace echo (reason mark) for \(id); tucked before \(self.orb.previewIsTucked ? 1 : 0), homeAfterTrace \(self.orb.previewHomeAfterTrace ? 1 : 0)")
+                fflush(stdout)
+            }
+        case "mark.remove":
+            let id = json["id"] as? String ?? ""
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.fakeMarks.removeAll { $0.id == id }
+                self.publishFakeMarks()
+            }
+        case "mark.clear":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.fakeMarks.removeAll()
+                self.publishFakeMarks()
+            }
+        case "mark.window":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                let id = self.landFakeMark(rect: Rect(x: 120, y: 60, w: 1280, h: 800), source: "window",
+                                           element: ScreenMark.MarkElement(role: "window", title: "Safari — Jarhead", app: "Safari"), withCropAfter: 0.4)
+                self.state.toast("Captured Safari · 1280×800")
+                print(self.stamp, "engine: window mark \(id) (Safari 1280×800), toast")
+                fflush(stdout)
+            }
+        case "sleep":
+            guard notchEngineSleeps else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.state.snapshot.phase = .asleep
+                self.phaseStart = Date()
+                print(self.stamp, "engine: phase -> asleep (the Sleep box)")
+                fflush(stdout)
+            }
+        default:
+            break
+        }
+    }
+
+    // MARK: the script
+
+    /// The scenario knobs, scheduled: presses, the field, the stroke, the trace, the landing,
+    /// the pill test, the phase sweep; the shot names the scenario earns.
+    func setUpNotchSurface(env: [String: String]) {
+        notchEchoTrace = env["ORB_NOTCH_TRACE_ECHO"] != "0"
+        // The hotkey's dispatch, as AppDelegate wires it — recording the dock's state the moment mark mode is asked for.
+        state.beginMarkModeHandler = { [weak self] in
+            guard let self else { return }
+            self.beginMarkModeCalls += 1
+            self.foldAtBeginMark = (self.orb.previewNotchPinned, self.orb.previewNotchMode, self.orb.previewNotchIgnoresMouse)
+            print(self.stamp, "beginMarkMode() #\(self.beginMarkModeCalls): dock pinned \(self.orb.previewNotchPinned ? 1 : 0) mode \(self.orb.previewNotchMode) ignoresMouse \(self.orb.previewNotchIgnoresMouse ? 1 : 0)")
+            fflush(stdout)
+            self.overlay.beginMarkMode()
+        }
+        state.openThreadHandler = { [weak self] id in
+            guard let self else { return }
+            self.openThreadCalls += 1
+            print(self.stamp, "openThread(\(id))")
+            fflush(stdout)
+        }
+
+        // Shots: the scenario names its own frames when no tag was given and one knob is on.
+        let scenarioKnobs: [(String, String)] = [("ORB_NOTCH_MARKS", "marks"), ("ORB_NOTCH_MARK_LANDS_AT", "marks"), ("ORB_NOTCH_QUESTION", "question"),
+                                                 ("ORB_NOTCH_PROBLEM", "problem"), ("ORB_NOTCH_METER", "meter"), ("ORB_NOTCH_SCREEN_RECORDING", "screenrec"),
+                                                 ("ORB_NOTCH_TYPE", "say")]
+        var suffixes = Set(scenarioKnobs.filter { env[$0.0] != nil }.map(\.1))
+        if env["ORB_NOTCH_SCREEN_RECORDING"] != nil { suffixes.remove("problem") }
+        if env["ORB_NOTCH_PHASE"] == "asleep" { suffixes = ["asleep"] }
+        if notchShotTag.isEmpty, suffixes.count == 1, let s = suffixes.first { notchScenarioSuffix = s }
+
+        let presses = (env["ORB_NOTCH_PRESS"] ?? "").split(separator: ";").compactMap { entry -> (String, Double)? in
+            let parts = entry.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, let t = Double(parts[1]), !parts[0].isEmpty else { if !entry.isEmpty { print("ORB_NOTCH_PRESS: could not parse \(entry); want what@t") }; return nil }
+            return (parts[0], t)
+        }
+        notchEngineSleeps = presses.contains { $0.0.lowercased() == "sleep" }
+        for (name, t) in presses {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPress(name) }
+        }
+        if let spec = env["ORB_NOTCH_ACTIVE"], let t = spec == "1" ? 3.0 : Double(spec) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                NSApp.activate(ignoringOtherApps: true)
+                print(self.stamp, "app: activate -> isActive \(NSApp.isActive ? 1 : 0) (pretending Jarhead's own window is frontmost)")
+                fflush(stdout)
+            }
+        }
+        if let spec = env["ORB_NOTCH_TYPE"] {
+            let parts = spec.split(separator: "@").map(String.init)
+            if let t = Double(parts.last ?? "") {
+                let text = parts.dropLast().joined(separator: "@")
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchFieldScript(text: text) }
+            } else {
+                print("ORB_NOTCH_TYPE: could not parse \(spec); want text@t")
+            }
+        }
+        if let t = Double(env["ORB_NOTCH_ESC_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchEscape() }
+        }
+        if let t = Double(env["ORB_NOTCH_RETURN_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchBareReturn() }
+        }
+        if let t = Double(env["ORB_NOTCH_PIN_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                self.ensureIslandOpen()
+                self.orb.previewNotchPress("face")
+                self.pinnedBeforeCircle = self.orb.previewNotchPinned
+                print(self.stamp, "notch: pin (a .face press) -> pinned \(self.orb.previewNotchPinned ? 1 : 0), mode \(self.orb.previewNotchMode)")
+                fflush(stdout)
+            }
+        }
+        if let t = Double(env["ORB_NOTCH_CIRCLE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPress("circle") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.4) { [weak self] in self?.notchStroke() }
+        }
+        if let t = Double(env["ORB_NOTCH_STROKE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchStroke() }
+        }
+        if let t = Double(env["ORB_NOTCH_HOTKEY_CIRCLE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                self.ensureIslandOpen()
+                let before = self.notchSends.total
+                print(self.stamp, "hotkey ⌥⇧C (state.beginMarkMode) with the island \(self.orb.previewNotchMode)")
+                self.state.beginMarkMode()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    guard let self else { return }
+                    let ok = self.orb.previewNotchMarking && !self.orb.previewNotchPinned && self.orb.previewNotchMode == "peek" && self.orb.previewNotchIgnoresMouse && self.notchSends.total == before
+                    self.check(ok, "⌥⇧C while island open → same fold (marking sink), 0 notch sends",
+                               "marking \(self.orb.previewNotchMarking ? 1 : 0) pinned \(self.orb.previewNotchPinned ? 1 : 0) mode \(self.orb.previewNotchMode) ignoresMouse \(self.orb.previewNotchIgnoresMouse ? 1 : 0) sends +\(self.notchSends.total - before)")
+                }
+            }
+        }
+        if let spec = env["ORB_NOTCH_TRACE_AT"] {
+            for entry in spec.split(separator: ";") {
+                let parts = entry.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
+                guard let t = Double(parts[0]) else { print("ORB_NOTCH_TRACE_AT: could not parse \(entry); want t[:reason]"); continue }
+                let reason = parts.count > 1 ? parts[1] : "mark"
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchTrace(reason: reason) }
+            }
+        }
+        if let t = Double(env["ORB_NOTCH_MARK_LANDS_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                let id = self.landFakeMark(rect: Rect(x: 500, y: 300, w: 320, h: 200), element: ScreenMark.MarkElement(role: "button", title: "Send", app: "Slack"), withCropAfter: 0.8)
+                print(self.stamp, "engine: \(id) landed while tucked \(self.orb.previewIsTucked ? 1 : 0) (mode \(self.orb.previewNotchMode))")
+                fflush(stdout)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    guard let self else { return }
+                    let glow = self.orb.previewNotchLipGlow, chip = self.orb.previewNotchLipChip
+                    let pill = self.orb.previewNotchPillText, kind = self.orb.previewNotchPillKind
+                    self.lipAtLanding = (glow, chip, pill, kind)
+                    print(self.stamp, "lip: glow \(glow) chip '\(chip)' pill '\(pill)' (\(kind))")
+                    fflush(stdout)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6.4) { [weak self] in
+                    guard let self else { return }
+                    let after = self.orb.previewNotchPillText
+                    let l = self.lipAtLanding
+                    let n = self.orb.previewDockContent.pendingMarks
+                    let ok = l.glow == "mark" && l.chip == "◎\(n)" && l.pill == "◎ \(n) circled · Go to ask" && l.kind == "mark-landed" && after.isEmpty
+                    self.check(ok, "tucked + pending marks → lip glow mark tone, lip chip ◎N; pill \"◎ 1 circled · Go to ask\" 6 s after landing, gone after",
+                               "glow \(l.glow) chip '\(l.chip)' pill '\(l.pill)' (\(l.kind)); +6.4 s pill '\(after)'")
+                }
+            }
+        }
+        if env["ORB_NOTCH_PILL_TEST"] == "1" { notchPillTest() }
+        if let t = Double(env["ORB_NOTCH_PHASE_SWEEP"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPhaseSweep() }
+        }
+        notchOpenTiming = env["ORB_NOTCH_OPEN_TIMING"] == "1"
+        if notchOpenTiming {
+            // Scheduled after the script's own hover at the same deadline (FIFO): the clock starts as the pointer arrives.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.7) { [weak self] in
+                guard let self else { return }
+                self.notchOpenHoverAt = CACurrentMediaTime()
+                self.notchOpenHitAt0 = self.orb.previewNotchHitList.count
+                let hover = self.notchOpenHoverAt
+                // The spring steps once per display frame: the crossing is placed between the last frame
+                // under the mark and the first at or over it (linear), not at the sampler's tick.
+                var last = (t: 0.0, open: 0.0)
+                let t = Timer.scheduledTimer(withTimeInterval: 0.001, repeats: true) { [weak self] timer in
+                    MainActor.assumeIsolated {
+                        guard let self else { timer.invalidate(); return }
+                        let now = CACurrentMediaTime() - hover
+                        let open = Self.openValue(self.orb.previewNotchSprings)
+                        func crossing(_ mark: Double) -> Double {
+                            guard open > last.open else { return now }
+                            return last.t + (now - last.t) * (mark - last.open) / (open - last.open)
+                        }
+                        if self.notchOpenHalfAt < 0, open >= 0.5 { self.notchOpenHalfAt = crossing(0.5) }
+                        if self.notchOpenNineAt < 0, open >= 0.9 { self.notchOpenNineAt = crossing(0.9) }
+                        if open != last.open { last = (now, open) }
+                        if now > 0.6 { timer.invalidate() }
+                    }
+                }
+                self.timers.append(t)
+            }
+        }
+        if let spec = env["ORB_NOTCH_HOVER"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.3) { [weak self] in
+                guard let self else { return }
+                let tip: String
+                if spec == "meter", let v = self.notchView {
+                    tip = v.previewTooltip(atIsland: NSPoint(x: 150, y: 116))
+                } else {
+                    tip = self.orb.previewNotchTooltip(self.pressName(spec))
+                }
+                print(self.stamp, "notch hover \(spec): tooltip \"\(tip)\"")
+                fflush(stdout)
+            }
+        }
+
+        // The island's fixed rules, read with it open at 3.4 s (the script's hover), and the scenario's own lines.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.55) { [weak self] in self?.notchPeekChecks(env: env) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.45) { [weak self] in self?.notchIslandChecks(env: env) }
+    }
+
+    /// The pointer's approach, when the island is not open already (the harness never moves the real pointer).
+    func ensureIslandOpen() {
+        if orb.previewNotchMode != "island" { orb.previewNotchHover(true) }
+    }
+
+    /// One scripted press on the island, with what it sent and what it shows afterwards; the
+    /// checks that hang off a press print 0.2 s later, once the fake engine has answered.
+    func notchPress(_ raw: String) {
+        let name = pressName(raw)
+        ensureIslandOpen()
+        let before = notchSends.total
+        let beginBefore = beginMarkModeCalls
+        let consoleBefore = openConsoleCalls
+        let threadBefore = openThreadCalls
+        let active = NSApp.isActive
+        let awake = orb.previewDockContent.awake
+        let content = orb.previewDockContent
+        let hittable = orb.previewNotchHitList.contains { $0.name == name }
+        let dim = orb.previewNotchBoxDim(name)
+        let tooltip = orb.previewNotchTooltip(name)
+        let pressed = orb.previewNotchPress(name)
+        print(stamp, "notch press \(raw)\(raw == name ? "" : " (\(name))"): hittable \(hittable ? 1 : 0) pressed \(pressed ? 1 : 0) dim \(String(format: "%.2f", dim)) awake \(awake ? 1 : 0) mode \(orb.previewNotchMode)")
+        if !hittable { print(stamp, "  hit list: \(orb.previewNotchHitList.map(\.name)); thread chips \(orb.previewNotchThreadChips); store \(state.threads.count) rows \(content.threads.map(\.id))") }
+        fflush(stdout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            let sent = Array(self.notchSends.all.dropFirst(before))
+            let pill = self.orb.previewNotchPillText
+            print(self.stamp, "  -> \(raw): sent \(sent.isEmpty ? "nothing" : sent.joined(separator: ", ")); pill '\(pill)' (\(self.orb.previewNotchPillKind)); beginMarkMode +\(self.beginMarkModeCalls - beginBefore) openConsole +\(self.openConsoleCalls - consoleBefore) openThread +\(self.openThreadCalls - threadBefore)")
+            fflush(stdout)
+            self.pressChecks(raw: raw, name: name, sent: sent, pill: pill, hittable: hittable, dim: dim, tooltip: tooltip, active: active, awake: awake, content: content,
+                             beginMarkMode: self.beginMarkModeCalls - beginBefore, openConsole: self.openConsoleCalls - consoleBefore, openThread: self.openThreadCalls - threadBefore)
+        }
+    }
+
+    /// The check lines a press earns, by what was pressed and the state it was pressed in.
+    private func pressChecks(raw: String, name: String, sent: [String], pill: String, hittable: Bool, dim: CGFloat, tooltip: String, active: Bool, awake: Bool, content: DockContent,
+                             beginMarkMode: Int, openConsole: Int, openThread: Int) {
+        let head = name.split(separator: ":").first.map(String.init) ?? name
+        let counted = notchSends
+        switch head {
+        case "circle":
+            let f = foldAtBeginMark
+            let ok = sent.isEmpty && f != nil && f?.pinned == false && f?.mode == "peek" && f?.ignoresMouse == true
+            check(ok, "circle press sent 0 commands; fold before beginMarkMode (pinned 0, mode peek, ignoresMouse 1)",
+                  "sent \(sent.count); at beginMarkMode: " + (f.map { "pinned \($0.pinned ? 1 : 0) mode \($0.mode) ignoresMouse \($0.ignoresMouse ? 1 : 0)" } ?? "never called"))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self else { return }
+                self.notchShot("peek-marking", note: "marking: island folded, mode \(self.orb.previewNotchMode), chips \(self.orb.previewNotchChips)")
+                let chips = self.orb.previewNotchChips
+                let n = NotchGeometry.current()?.notch.width ?? 185
+                let target = self.orb.previewNotchPeekWidthTarget
+                let extra = self.orb.previewNotchChipsExtraWidth
+                // The peek's width is notch + counter + dots + chips (no breath in an acting phase: the fake levels are
+                // silent). Before marking (2.55 s) that gives the counter's width; marking must keep it and drop the dots.
+                // The peek never grows past the island's width, so the expected target is that clamp of
+                // notch + counter + the marking chip: with the counter on it reads 360 (322 without it), and
+                // with the dots gone it reads 322 when no counter runs (343 with them).
+                let before = self.peekBefore
+                let counterBefore = max(0, before.target - n - before.dots - before.chips)
+                let expected = min(NotchGeometry.islandWidth, n + counterBefore + extra)
+                let ok = chips == ["marking:Circle something · Esc"] && self.orb.previewNotchMode == "peek" && self.orb.previewNotchMarking
+                    && abs(target - expected) < 1.5
+                self.check(ok, "marking → peek \"◎ Circle something · Esc\", dots and chips hidden, counter kept",
+                           "chips \(chips) mode \(self.orb.previewNotchMode); peek target \(Int(target)) (expected min(360, notch \(Int(n)) + counter \(Int(counterBefore)) + chip \(Int(extra))) = \(Int(expected)); before marking the peek was \(Int(before.target)) with dots \(Int(before.dots)) for [\(self.orb.previewNotchThreadDots)])")
+            }
+        case "window":
+            if active {
+                windowActiveResult = (sent, pill)
+            } else {
+                windowInactiveResult = sent
+            }
+            if let ia = windowInactiveResult, let ac = windowActiveResult {
+                let ok = ia == ["mark.window"] && ac.sent.isEmpty && ac.pill == "Bring a window forward first"
+                check(ok, "window press, app inactive → mark.window 1; app active → 0 sends, pill \"Bring a window forward first\"",
+                      "inactive sent \(ia); active sent \(ac.sent) pill '\(ac.pill)'")
+            } else if active {
+                print(stamp, "  (window pressed active only; the inactive half of its check needs a press before ORB_NOTCH_ACTIVE)")
+            } else {
+                print(stamp, "  (window pressed inactive only; the active half of its check needs ORB_NOTCH_ACTIVE=t and a later press)")
+            }
+        case "ask":
+            if !awake {
+                if content.typedWakes {
+                    let ok = tooltip.contains("wakes · billed") && sent == ["say-text"]
+                    check(ok, "ask, asleep, typedWakes 1 → tooltip contains \"wakes · billed\"; press → say-text 1", "tooltip '\(tooltip)' sent \(sent)")
+                } else {
+                    let ok = abs(dim - 0.35) < 0.01 && !hittable && sent.isEmpty
+                    check(ok, "ask, asleep, typedWakes 0 → α 0.35, not in hit list, sends 0", "dim \(String(format: "%.2f", dim)) hittable \(hittable ? 1 : 0) sent \(sent)")
+                }
+            } else if content.pendingMarks > 0 {
+                let newestWindow = content.marks.last(where: { !$0.consumed })?.isWindow ?? false
+                let said = lastSayText
+                if newestWindow {
+                    let ok = sent == ["say-text"] && said == "What's in this window?"
+                    check(ok, "ask, in session, newest pending is a window → say-text \"What's in this window?\" 1", "sent \(sent) text '\(said)'")
+                } else {
+                    let ok = sent == ["say-text"] && said == "What did I circle?" && beginMarkMode == 0
+                    check(ok, "ask, in session, marks pending → say-text \"What did I circle?\" 1, beginMarkMode 0", "sent \(sent) text '\(said)' beginMarkMode \(beginMarkMode)")
+                }
+            } else {
+                askWaitsForStroke = (beginMarkMode, sent.count, notchSends.total)
+                if askStrokeChecked { return }
+                print(stamp, "  ask with nothing circled: beginMarkMode \(beginMarkMode), sent \(sent.count) — the stroke (ORB_NOTCH_STROKE_AT) completes this check")
+            }
+        case "clear":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                let n = content.marks.count
+                let absent = !self.orb.previewNotchHitList.contains { $0.name == "clear" }
+                let ok = sent == ["mark.clear"] && pill == "Cleared · \(n)" && absent && self.orb.previewDockContent.marks.isEmpty
+                self.check(ok, "clear → mark.clear 1, pill \"Cleared · 3\"; Clear box absent when marks empty",
+                           "sent \(sent) pill '\(pill)' marks now \(self.orb.previewDockContent.marks.count) clear hittable \(absent ? 0 : 1)")
+            }
+        case "forget":
+            let id = lastMarkRemoveId
+            let ok = sent == ["mark.remove"] && id == "mark_pending" && counted.markClear == 0
+            check(ok, "forget:0 → mark.remove {\"id\":\"mark_pending\"} 1, mark.clear 0", "sent \(sent) id '\(id)' mark.clear \(counted.markClear)")
+        case "allow", "deny":
+            if head == "allow" { allowResult = (sent, lastThreadAnswerYes) } else { denyResult = (sent, lastThreadAnswerYes) }
+            if let a = allowResult, let d = denyResult {
+                let ok = a.sent == ["thread.answer"] && a.yes == true && d.sent == ["thread.answer"] && d.yes == false
+                check(ok, "allow → thread.answer yes 1; deny → thread.answer no 1; each exactly one send",
+                      "allow sent \(a.sent) yes \(a.yes.map { "\($0)" } ?? "nil"); deny sent \(d.sent) yes \(d.yes.map { "\($0)" } ?? "nil")")
+            }
+        case "threadStop", "threadstop":
+            let ok = sent == ["thread.stop"] && counted.stop == 0 && counted.sleep == 0 && counted.setSettings == 0
+            check(ok, "threadStop:Slack → thread.stop 1, stop 0, sleep 0, set-settings 0", "sent \(sent); run totals stop \(counted.stop) sleep \(counted.sleep) set-settings \(counted.setSettings)")
+        case "thread":
+            let ok = openThread == 1 && sent.isEmpty
+            check(ok, "thread chip click → openThread 1, sends 0", "openThread +\(openThread) sent \(sent)")
+        case "sleep":
+            if awake {
+                sleepAwakeResult = sent
+            } else {
+                sleepAsleepResult = (sent, dim)
+            }
+            if let a = sleepAwakeResult, let z = sleepAsleepResult {
+                let cause = lastSleepCause
+                let ok = a == ["sleep"] && cause == "dock" && z.sent.isEmpty && abs(z.dim - 0.35) < 0.01
+                check(ok, "sleep press awake → sleep {\"cause\":\"dock\"} 1; asleep → α 0.35, 0 sends", "awake sent \(a) cause '\(cause)'; asleep sent \(z.sent) dim \(String(format: "%.2f", z.dim))")
+            }
+        case "console":
+            let ok = openConsole == 1 && sent.isEmpty
+            check(ok, "console press → openConsole 1, 0 sends", "openConsole +\(openConsole) sent \(sent)")
+        case "remedy":
+            remedyResult = (sent, lastRequestPermission)
+            screenRecordingCheck()
+        default:
+            break
+        }
+    }
+
+    /// The Screen Recording line: read once the remedy was pressed (or at the island read, without the press).
+    func screenRecordingCheck() {
+        guard let sr = screenRecordingSeen else { return }
+        let r = remedyResult
+        let remedyOK = r.map { $0.sent == ["request-permission"] && $0.which == "screenRecording" } ?? false
+        let ok = sr.circleDim && sr.windowDim && sr.chipGlyph && sr.pillRequest && remedyOK
+        check(ok, "screen recording denied → Circle/Window α 0.45, hint \"Captures need Screen Recording\", peek chip glyph rectangle.inset.filled.badge.record amber, pill with [Request]; remedy → request-permission screenRecording 1",
+              "circle dim \(sr.circleDimValue) window dim \(sr.windowDimValue) tooltip '\(sr.tooltip)'; chip \(sr.chip); pill '\(sr.pill)' (\(sr.pillKind), remedy '\(sr.remedyLabel)'); remedy press " + (r.map { "sent \($0.sent) which '\($0.which)'" } ?? "not pressed (ORB_NOTCH_PRESS=remedy@t)"))
+        screenRecordingSeen = nil
+    }
+
+    /// ⌥⇧Return, the words, Return; then ⌥⇧Return, words, Escape — the field's whole contract in one script.
+    func notchFieldScript(text: String) {
+        let before = notchSends.total
+        var s1 = (pinned: false, focused: false, key: false, swallowed: false)
+        var s2 = (key: false, text: "?", sent: 0)
+        var s3 = (focused: true, text: "?", key: false)
+        orb.sayLine()
+        print(stamp, "⌥⇧Return (sayLine) -> pinned \(orb.previewNotchPinned ? 1 : 0) field focused \(orb.previewNotchFieldFocused ? 1 : 0) panel key \(orb.previewNotchIsKey ? 1 : 0) canBecomeKey \(orb.previewNotchCanBecomeKey ? 1 : 0) firstResponder \(notchPanel?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")")
+        fflush(stdout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            let q = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: ProcessInfo.processInfo.systemUptime,
+                                     windowNumber: self.notchPanel?.windowNumber ?? 0, context: nil, characters: "q", charactersIgnoringModifiers: "q", isARepeat: false, keyCode: 12)
+            let swallowed = q.map { self.orb.previewNotchKeyEquivalentSwallowed($0) } ?? false
+            s1 = (self.orb.previewNotchPinned, self.orb.previewNotchFieldFocused, self.orb.previewNotchIsKey, swallowed)
+            self.orb.previewNotchFieldText = text
+            print(self.stamp, "field: typed '\(text)'; ⌘q swallowed \(swallowed ? 1 : 0); line reads '\(self.orb.previewNotchLineText)'")
+            fflush(stdout)
+            self.notchShot("island-say", note: "the Say field has key: '\(text)'")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            self.orb.previewNotchFieldReturn()
+            // One frame later: key given back, the text gone.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
+                guard let self else { return }
+                s2 = (self.orb.previewNotchIsKey, self.orb.previewNotchFieldText, self.notchSends.total - before)
+                print(self.stamp, "field: Return -> say-text +\(self.notchSends.sayText) key \(s2.key ? 1 : 0) text '\(s2.text)' focused \(self.orb.previewNotchFieldFocused ? 1 : 0)")
+                fflush(stdout)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            guard let self else { return }
+            self.orb.sayLine()
+            self.orb.previewNotchFieldText = "kept words"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.orb.previewNotchFieldEscape()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
+                    guard let self else { return }
+                    s3 = (self.orb.previewNotchFieldFocused, self.orb.previewNotchFieldText, self.orb.previewNotchIsKey)
+                    let rest = self.orb.previewNotchCanBecomeKey
+                    print(self.stamp, "field: Escape -> focused \(s3.focused ? 1 : 0) text '\(s3.text)' key \(s3.key ? 1 : 0); canBecomeKey at rest \(rest ? 1 : 0)")
+                    fflush(stdout)
+                    let said = self.lastSayText == text
+                    let ok = s1.pinned && s1.focused && s1.swallowed && s2.sent == 1 && said && !s2.key && s2.text.isEmpty && !s3.focused && s3.text == "kept words" && !s3.key && !rest
+                    let keyNote = s1.key ? "key taken" : "key not granted by the window server to a background harness (field is first responder)"
+                    self.check(ok, "field: ⌥⇧Return → pinned 1, key taken; Return → say-text 1, key released ≤ 1 frame, text cleared; Escape → key released, text kept; canBecomeKey false at rest; ⌘q swallowed while key",
+                               "pinned \(s1.pinned ? 1 : 0) focused \(s1.focused ? 1 : 0) \(keyNote) ⌘q swallowed \(s1.swallowed ? 1 : 0); Return say-text \(s2.sent) ('\(self.lastSayText)') key \(s2.key ? 1 : 0) text '\(s2.text)'; Escape focused \(s3.focused ? 1 : 0) text '\(s3.text)' key \(s3.key ? 1 : 0); canBecomeKey \(rest ? 1 : 0)")
+                }
+            }
+        }
+    }
+
+    /// Escape: mark mode's monitor takes it (a posted key event); a focused field lets go, text kept.
+    func notchEscape() {
+        if orb.previewNotchFieldFocused {
+            orb.previewNotchFieldEscape()
+            print(stamp, "Escape -> field released, text '\(orb.previewNotchFieldText)'")
+        } else {
+            let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                       windowNumber: 0, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)
+            if let esc { NSApp.postEvent(esc, atStart: false) }
+            print(stamp, "Escape posted (marking \(state.marking ? 1 : 0))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                print(self.stamp, "  -> marking \(self.state.marking ? 1 : 0), dock marking \(self.orb.previewNotchMarking ? 1 : 0), mode \(self.orb.previewNotchMode), pinned \(self.orb.previewNotchPinned ? 1 : 0)")
+                fflush(stdout)
+            }
+        }
+        fflush(stdout)
+    }
+
+    /// A bare Return to the panel — no field, a question waiting: nothing may answer it.
+    func notchBareReturn() {
+        ensureIslandOpen()
+        let before = notchSends.total
+        let hadText = orb.previewNotchFieldFocused && !orb.previewNotchFieldText.isEmpty
+        if let panel = notchPanel, let ev = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                              windowNumber: panel.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) {
+            panel.sendEvent(ev)
+        }
+        if orb.previewNotchFieldFocused { orb.previewNotchFieldReturn() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            let sent = Array(self.notchSends.all.dropFirst(before))
+            let answers = sent.filter { $0 == "thread.answer" }.count
+            let says = sent.filter { $0 == "say-text" }.count
+            let ok = self.orb.previewDockContent.question != nil && answers == 0 && says == (hadText ? 1 : 0)
+            self.check(ok, "Return with a question waiting → thread.answer 0 (say-text 1 if the field had text, else 0)",
+                       "question \(self.orb.previewDockContent.question?.name ?? "none") waiting; field had text \(hadText ? 1 : 0); sent \(sent)")
+        }
+    }
+
+    /// Kevin's stroke through the overlay window, as OverlayPreviewDemo synthesises it (ORB_MARK): a
+    /// wobbly loop 300 pt right of the notch, 90 pt under the menu bar.
+    func notchStroke() {
+        guard overlay.isMarking, let g = NotchGeometry.current() else {
+            print(stamp, "notch stroke: not marking (\(overlay.isMarking ? 1 : 0)) — nothing drawn")
+            fflush(stdout)
+            return
+        }
+        let centre = CGPoint(x: g.notch.midX + 300, y: 200)
+        guard let w = overlay.windows.first(where: { $0.cgFrame.contains(centre) }) ?? overlay.windows.first else { return }
+        let pts: [CGPoint] = (0..<48).map { i in
+            let t = Double(i) / 47
+            let ang = -100.0 * .pi / 180 + t * (2 * .pi + 0.35)
+            let wob = 1 + 0.05 * sin(ang * 3 + 3) + 0.03 * cos(ang * 5 - 3)
+            let drift = CGFloat(t) * 6
+            return CGPoint(x: centre.x + 120 * CGFloat(cos(ang) * wob) + drift, y: centre.y + 70 * CGFloat(sin(ang) * wob) - drift * 0.5)
+        }
+        func send(_ type: NSEvent.EventType, _ p: CGPoint) {
+            guard let ev = NSEvent.mouseEvent(with: type, location: w.windowPoint(w.local(p)), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) else { return }
+            w.sendEvent(ev)
+        }
+        let step = 0.012
+        let sendsBefore = notchSends.total
+        let askArmed = orb.previewAskAfterMark
+        print(stamp, String(format: "notch stroke: %d samples around CG %.0f,%.0f (askAfterMark %d)", pts.count, centre.x, centre.y, askArmed ? 1 : 0))
+        fflush(stdout)
+        send(.leftMouseDown, pts[0])
+        for (i, p) in pts.enumerated().dropFirst() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(i)) { send(.leftMouseDragged, p) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(pts.count) + 0.1) { [weak self] in
+            send(.leftMouseUp, pts[pts.count - 1])
+            guard let self else { return }
+            print(self.stamp, "notch stroke: mouse-up; marking \(self.state.marking ? 1 : 0)")
+            fflush(stdout)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self else { return }
+                let sent = Array(self.notchSends.all.dropFirst(sendsBefore))
+                let pinned = self.orb.previewNotchPinned
+                let ignores = self.orb.previewNotchIgnoresMouse
+                // No real pointer near the island in the harness: the rule leaves the mouse ignored unless pinned.
+                let ruleOK = ignores == !pinned
+                let ok = sent.filter { $0 == "mark.add" }.count == 1 && !self.state.marking && !self.orb.previewNotchMarking && ruleOK
+                self.check(ok, "after stroke: mark.add 1 (overlay), marking 0, mouse acceptance back to the pointerNear rule",
+                           "sent \(sent) marking \(self.state.marking ? 1 : 0)/\(self.orb.previewNotchMarking ? 1 : 0) ignoresMouse \(ignores ? 1 : 0) pinned \(pinned ? 1 : 0) mode \(self.orb.previewNotchMode)")
+                if let armed = self.askWaitsForStroke, !self.askStrokeChecked {
+                    self.askStrokeChecked = true
+                    let order = Array(self.notchSends.all.dropFirst(armed.total))
+                    let ok = armed.beginMarkMode == 1 && armed.sent == 0 && order == ["mark.add", "say-text"] && self.lastSayText == "What did I circle?"
+                    self.check(ok, "ask, in session, no marks → beginMarkMode 1, sends 0; after stroke → mark.add then say-text, in that order",
+                               "at the press beginMarkMode \(armed.beginMarkMode) sent \(armed.sent); after the stroke \(order) text '\(self.lastSayText)'")
+                }
+            }
+        }
+    }
+
+    /// An `orb.trace` while tucked: reason "mark" brings the blob home, anything else stays out (`watch` times it).
+    func notchTrace(reason: String) {
+        guard let g = NotchGeometry.current() else { return }
+        let x0 = g.notch.midX - 60, y0: CGFloat = 150
+        let pts = [Point2(x: x0, y: y0), Point2(x: x0 + 120, y: y0), Point2(x: x0 + 120, y: y0 + 60), Point2(x: x0, y: y0 + 60)]
+        traceProbe = TraceProbe(reason: reason, sentAt: CACurrentMediaTime(), tuckedBefore: orb.previewIsTucked, doneAt: -1, parkedAt: -1, judged: false)
+        print(stamp, "orb.trace reason=\(reason) while tucked \(orb.previewIsTucked ? 1 : 0), flight \(orb.previewFlightPhase)")
+        fflush(stdout)
+        state.overlayCommands.send(.orbTrace(points: pts, closed: true, label: nil, ttlMs: 2500, tone: reason == "mark" ? .mark : .accent, reason: reason, thread: nil))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            print(self.stamp, "  -> flight \(self.orb.previewFlightPhase), homeAfterTrace \(self.orb.previewHomeAfterTrace ? 1 : 0), tucked \(self.orb.previewIsTucked ? 1 : 0)")
+            fflush(stdout)
+        }
+    }
+
+    /// From `watch()`: the trace's work ends (the flight leaves tracing / hovering), then the blob parks or not, 1.5 s later.
+    func watchTraceProbe(phase: String, tucked: Bool, now: Double) {
+        guard var p = traceProbe, !p.judged else { return }
+        if p.doneAt < 0, now - p.sentAt > 0.2, phase != "tracing", phase != "outbound", phase != "hovering", !(phase == "none" && tucked && now - p.sentAt < 0.6) {
+            p.doneAt = now
+            print(stamp, "trace probe (\(p.reason)): work done, flight \(phase), tucked \(tucked ? 1 : 0)")
+            fflush(stdout)
+        }
+        if p.doneAt >= 0, p.parkedAt < 0, tucked, phase == "none" || phase == "homing" || phase == "slip" {
+            if tucked { p.parkedAt = now }
+        }
+        if p.doneAt >= 0, now - p.doneAt >= 1.5 {
+            p.judged = true
+            let parked = tucked
+            let within = p.parkedAt >= 0 && p.parkedAt - p.doneAt <= 1.5
+            if p.reason == "mark" {
+                traceMarkResult = (parked && within, String(format: "parked %d, %.2f s after the line (%.2f s after the trace)", parked ? 1 : 0, p.parkedAt < 0 ? -1 : p.parkedAt - p.doneAt, p.parkedAt < 0 ? -1 : p.parkedAt - p.sentAt))
+            } else {
+                traceOtherResult = (!parked, String(format: "reason=%@ parked %d, flight %@", p.reason, parked ? 1 : 0, phase))
+            }
+            if let m = traceMarkResult, let o = traceOtherResult {
+                check(m.ok && o.ok, "trace reason=mark while tucked → parked 1 within trace + 1.5 s (blob home); reason=reflex circle → stays (parked 0)", "mark: \(m.note); \(o.note)")
+            } else if traceMarkResult != nil || traceOtherResult != nil {
+                print(stamp, "trace probe (\(p.reason)): \(traceMarkResult?.note ?? traceOtherResult?.note ?? "") — the other reason's trace completes the check")
+                fflush(stdout)
+            }
+        }
+        traceProbe = p
+    }
+
+    /// gate > toast > mark-landed > problem, and the problem pill only under an open island. Asleep, tucked.
+    func notchPillTest() {
+        // Before the script's hover at 2.7 s opens the island (where the problem pill would show).
+        let t0 = 0.5
+        var kinds: [String] = []
+        func at(_ dt: Double, _ body: @escaping (OrbPreviewDelegate) -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t0 + dt) { [weak self] in
+                guard let self else { return }
+                body(self)
+            }
+        }
+        at(0) { me in
+            me.state.wakeGate = .authenticating(method: me.gateMethod)
+            me.landFakeMark(rect: Rect(x: 500, y: 300, w: 320, h: 200), withCropAfter: nil)
+            me.state.toast("Stopped")
+            if me.state.snapshot.problems.isEmpty { me.state.snapshot.problems = [Self.fakeProblem(kind: "permission.screenRecording", text: nil)] }
+            print(me.stamp, "pill test: gate authenticating + a mark landed + a toast + a problem, tucked \(me.orb.previewIsTucked ? 1 : 0) awake \(me.orb.previewDockContent.awake ? 1 : 0)")
+        }
+        at(0.25) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: with the gate -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'") }
+        at(0.4) { me in me.state.wakeGate = .off(reason: "preview") }
+        at(0.55) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: gate off -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'") }
+        at(1.9) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: toast gone -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'") }
+        at(6.3) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: mark pill gone, tucked -> '\(me.orb.previewNotchPillKind)' (problem waits for the island)"); me.orb.previewNotchHover(true) }
+        at(6.9) { me in
+            kinds.append(me.orb.previewNotchPillKind)
+            print(me.stamp, "pill test: island open -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'")
+            let ok = kinds == ["gate", "toast", "mark-landed", "", "problem"]
+            me.check(ok, "pill priority gate > toast > mark-landed > problem; problem pill only while the island is open", "kinds in order \(kinds)")
+            me.orb.previewNotchHover(false)
+        }
+    }
+
+    /// Every phase, 0.2 s apart: Mute is in the hit list only in a session's phases; Stop always.
+    func notchPhaseSweep() {
+        let phases = Phase.allCases
+        let restore = state.snapshot.phase
+        var muteWrong: [String] = [], stopMissing: [String] = []
+        for (i, phase) in phases.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2 * Double(i)) { [weak self] in
+                guard let self else { return }
+                self.state.snapshot.phase = phase
+                self.phaseStart = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                    guard let self else { return }
+                    let names = self.orb.previewNotchHitList.map(\.name)
+                    let mute = names.contains("mute"), stop = names.contains("stop")
+                    let wantMute = AppState.inSessionPhases.contains(phase)
+                    if mute != wantMute { muteWrong.append(phase.rawValue) }
+                    if !stop { stopMissing.append(phase.rawValue) }
+                    print(self.stamp, "sweep \(phase.rawValue): mute \(mute ? 1 : 0) (want \(wantMute ? 1 : 0)) stop \(stop ? 1 : 0) mute dim \(String(format: "%.2f", self.orb.previewNotchBoxDim("mute")))")
+                    fflush(stdout)
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2 * Double(phases.count) + 0.1) { [weak self] in
+            guard let self else { return }
+            self.check(muteWrong.isEmpty && stopMissing.isEmpty, "mute in session only; stop hittable in every phase", "mute wrong in [\(muteWrong.joined(separator: ", "))], stop missing in [\(stopMissing.joined(separator: ", "))]")
+            self.state.snapshot.phase = restore
+            self.phaseStart = Date()
+        }
+    }
+
+    // MARK: the readings
+
+    /// The peek at 2.55 s: the chips and their order, the meter chip, the problem chip.
+    func notchPeekChecks(env: [String: String]) {
+        guard orb.previewNotchMode == "peek" else { return }
+        let chips = orb.previewNotchChips
+        let kinds = chips.map { String($0.split(separator: ":").first ?? "") }
+        print(stamp, "peek: chips \(chips) extra \(Int(orb.previewNotchChipsExtraWidth)) target width \(Int(orb.previewNotchPeekWidthTarget)) dots [\(orb.previewNotchThreadDots)]")
+        fflush(stdout)
+        peekChips = chips
+        let dotCount = orb.previewNotchThreadDots.split(separator: " ").count
+        let dotsExtra: CGFloat = dotCount > 0 ? CGFloat(dotCount) * 5 + CGFloat(dotCount - 1) * 3 + 8 : 0
+        peekBefore = (orb.previewNotchPeekWidthTarget, orb.previewNotchChipsExtraWidth, dotsExtra)
+        let wants = ["ORB_NOTCH_QUESTION", "ORB_NOTCH_MARKS", "ORB_NOTCH_PROBLEM", "ORB_NOTCH_METER"].filter { env[$0] != nil }.count
+        if wants >= 3 || env["ORB_NOTCH_CHIPS_CHECK"] == "1" {
+            let order = ["question", "marks", "problem", "meter"]
+            let ranks = kinds.compactMap { order.firstIndex(of: $0) }
+            let sorted = ranks == ranks.sorted() && ranks.count == kinds.count
+            let ok = chips.count <= 4 && sorted && orb.previewNotchPeekWidthTarget <= NotchGeometry.islandWidth + 0.5
+            check(ok, "chips ≤ 4; order question > marks > problem > meter; peek width ≤ 360", "chips \(chips) width target \(Int(orb.previewNotchPeekWidthTarget))")
+        }
+        if env["ORB_NOTCH_METER"] != nil {
+            meterPeekChip = chips.first { $0.hasPrefix("meter:") }.map { String($0.dropFirst("meter:".count)) } ?? ""
+        }
+        if env["ORB_NOTCH_SCREEN_RECORDING"] == "0" {
+            let p = orb.previewDockContent.problem
+            let glyphOK = p?.symbol == "rectangle.inset.filled.badge.record" && p?.warn == true && kinds.contains("problem")
+            screenRecordingChip = (glyphOK, "\(kinds.contains("problem") ? "problem chip" : "no problem chip") glyph \(p?.symbol ?? "none") warn \(p?.warn == true ? 1 : 0)")
+        }
+    }
+
+    /// The island at 3.45 s (open since 2.7): the geometry, the text limits, the ink cache, the
+    /// accessibility children — and the scenario's rows: marks, question, meter, request, screen recording.
+    func notchIslandChecks(env: [String: String]) {
+        guard orb.previewNotchMode == "island", orb.previewIsTucked else {
+            print(stamp, "island checks skipped: mode \(orb.previewNotchMode), tucked \(orb.previewIsTucked ? 1 : 0)")
+            fflush(stdout)
+            return
+        }
+        let layout = orb.previewNotchLayout
+        print(stamp, "layout:", layout)
+        fflush(stdout)
+        let rects = Self.parseLayout(layout)
+        func r(_ n: String) -> NSRect? { rects[n] }
+        func spans(_ n: String, _ x0: CGFloat, _ x1: CGFloat, _ y0: CGFloat, _ y1: CGFloat) -> Bool {
+            guard let q = r(n) else { return false }
+            return abs(q.minX - x0) < 0.5 && abs(q.maxX - x1) < 0.5 && abs(q.minY - y0) < 0.5 && abs(q.maxY - y1) < 0.5
+        }
+        func rows(_ n: String, _ y0: CGFloat, _ y1: CGFloat) -> Bool {
+            guard let q = r(n) else { return false }
+            return abs(q.minY - y0) < 0.5 && abs(q.maxY - y1) < 0.5
+        }
+        let island = layout.hasPrefix("island 360×132")
+        let rowsOK = rows("S1", 8, 30) && rows("S2", 34, 54) && rows("S3", 58, 86) && rows("S4", 90, 104) && rows("S5", 108, 124)
+        let colOK = spans("stop", 288, 314, 7, 31) && spans("mute", 320, 346, 7, 31) && spans("ask", 288, 314, 60, 84) && spans("clear", 320, 346, 60, 84)
+            && spans("console", 288, 314, 102, 126) && spans("sleep", 320, 346, 102, 126)
+        // No overlap: the left rows against the right column, and the rows against each other.
+        let rowNames = ["S1", "S2", "S3", "S4", "S5"], colNames = ["stop", "mute", "ask", "clear", "console", "sleep"]
+        var overlaps: [String] = []
+        for a in rowNames { for b in colNames { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
+        for (i, a) in rowNames.enumerated() { for b in rowNames[(i + 1)...] { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
+        check(island && rowsOK && colOK && overlaps.isEmpty,
+              "island 360×132; rows S1 8–30 S2 34–54 S3 58–86 S4 90–104 S5 108–124; right column y 7–31 / 60–84 / 102–126 at x 288–314 / 320–346; no overlap",
+              overlaps.isEmpty ? "" : "overlaps \(overlaps)")
+        let thumbsEnd = ["thumb0", "thumb1", "thumb2"].compactMap { r($0)?.maxX }.max() ?? 0
+        let limits = (r("S1")?.maxX ?? 999) <= 276.5 && (r("S4")?.maxX ?? 999) <= 276.5 && (r("S5")?.maxX ?? 999) <= 276.5 && (r("S2")?.maxX ?? 999) <= 346.5 && thumbsEnd <= 276.5
+        check(limits, "text limits S1/S4/S5 ≤ 276, S2 ≤ 346, thumbs ≤ 276",
+              String(format: "S1 %.0f S2 %.0f S4 %.0f S5 %.0f thumbs %.0f", r("S1")?.maxX ?? -1, r("S2")?.maxX ?? -1, r("S4")?.maxX ?? -1, r("S5")?.maxX ?? -1, thumbsEnd))
+
+        let n = NotchGeometry.current()?.notch.width ?? 185
+        let bytes = orb.previewNotchInkBytes, cap = orb.previewNotchInkCapacityBytes
+        let hasOpen = orb.previewNotchInkHas(width: NotchGeometry.islandWidth, height: NotchGeometry.islandHeight)
+        let hasPeek = orb.previewNotchInkHas(width: n, height: NotchGeometry.peekHeight) && orb.previewNotchInkHas(width: n + 30, height: NotchGeometry.peekHeight)
+        let stretched = orb.previewNotchStretchedFrames
+        check(bytes <= cap && cap == 32 << 20 && hasOpen && hasPeek && stretched == 0,
+              "ink cache ≤ 32 MB; 360×132 and the peek sizes prewarmed in makeDock; first open rendered 0 stretched frames",
+              "\(bytes / 1024) KB of \(cap >> 20) MB; 360×132 \(hasOpen ? "yes" : "NO") peek \(Int(n))×26 (+0…30) \(hasPeek ? "yes" : "NO"); stretched frames \(stretched); \(orb.previewNotchDrawReadout)")
+
+        let a = orb.previewNotchAccessibilityCounts
+        check(a.buttons == a.hitRects && a.children == a.hitRects + 1 && a.hitRects > 0, "accessibility children == hit rects; field is its own element",
+              "buttons \(a.buttons) children \(a.children) hit rects \(a.hitRects)")
+
+        if notchOpenTiming { openTimingCheck() }
+        if env["ORB_REDUCE_MOTION"] == "1" { reduceMotionCheck() }
+
+        let content = orb.previewDockContent
+        if env["ORB_NOTCH_MARKS"] != nil, content.marks.count >= 3, content.question == nil { marksRowCheck(layout: rects) }
+        if env["ORB_NOTCH_QUESTION"] != nil {
+            let line = orb.previewNotchLineText
+            let names = orb.previewNotchHitList
+            let allow = names.first { $0.name == "allow" }?.rect, deny = names.first { $0.name == "deny" }?.rect
+            let hidden = !names.contains { $0.name == "ask" || $0.name == "clear" }
+            let thumbs = orb.previewNotchThumbs.filter { !$0.hasPrefix("+") }
+            let chips = orb.previewNotchThreadChips
+            let lead = chips.first ?? ""
+            let q = content.question
+            let leadOK = q != nil && lead.hasPrefix((q?.threadId ?? "?") + ":") && lead.contains("· asks") && lead.hasSuffix(":nostop")
+            let ok = line.hasPrefix("✋ \(q?.name ?? "?") asks · ") && allow.map { abs($0.minX - 252) < 0.5 && abs($0.maxX - 296) < 0.5 } == true
+                && deny.map { abs($0.minX - 302) < 0.5 && abs($0.maxX - 346) < 0.5 } == true && thumbs.count <= 2 && hidden && leadOK
+            check(ok, "question waiting → S2 \"✋ Slack asks · …\", R2 = Allow 252–296 / Deny 302–346, thumbs ≤ 2, Ask/Clear hidden, asking chip leads with no ■",
+                  "S2 '\(line)'; allow \(allow.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none") deny \(deny.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"); thumbs \(thumbs.count); ask/clear hidden \(hidden ? 1 : 0); chips \(chips)")
+        }
+        if env["ORB_NOTCH_METER"] != nil { meterCheck(env: env) }
+        if let request = env["ORB_NOTCH_REQUEST"] {
+            let working = orb.previewNotchLineText
+            state.snapshot.delegations[0].status = .done
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                let after = self.orb.previewNotchLineText
+                let last = self.state.snapshot.transcript.last?.text ?? ""
+                self.check(working == request && after == last, "request line: S2 shows the delegation request while working, last line otherwise",
+                           "working '\(working)'; after the delegation ended '\(after)' (last line '\(last)')")
+            }
+        }
+        if env["ORB_NOTCH_SCREEN_RECORDING"] == "0" {
+            let c = orb.previewNotchBoxDim("circle"), w = orb.previewNotchBoxDim("window")
+            let tip = orb.previewNotchTooltip("circle")
+            let pill = orb.previewNotchPillText, kind = orb.previewNotchPillKind
+            let remedy = content.problem?.remedyLabel ?? ""
+            screenRecordingSeen = (abs(c - 0.45) < 0.01, abs(w - 0.45) < 0.01, screenRecordingChip?.ok ?? false, kind == "problem" && remedy == "Request",
+                                   String(format: "%.2f", c), String(format: "%.2f", w), tip, screenRecordingChip?.note ?? "peek not read", pill, kind, remedy)
+            if remedyResult != nil { screenRecordingCheck() }
+            else if !(env["ORB_NOTCH_PRESS"] ?? "").contains("remedy") { screenRecordingCheck() }
+        }
+    }
+
+    /// "S1 x110–276 y8–30 | …" → rects keyed by name.
+    static func parseLayout(_ s: String) -> [String: NSRect] {
+        var out: [String: NSRect] = [:]
+        for part in s.split(separator: "|") {
+            let words = part.trimmingCharacters(in: .whitespaces).split(separator: " ").map(String.init)
+            guard words.count == 3, words[1].hasPrefix("x"), words[2].hasPrefix("y") else { continue }
+            let xs = words[1].dropFirst().split(separator: "–").compactMap { Double($0) }
+            let ys = words[2].dropFirst().split(separator: "–").compactMap { Double($0) }
+            guard xs.count == 2, ys.count == 2 else { continue }
+            out[words[0]] = NSRect(x: xs[0], y: ys[0], width: xs[1] - xs[0], height: ys[1] - ys[0])
+        }
+        return out
+    }
+
+    /// The circled strip: the slots, the overflow (five marks for a beat), the frames by their pixels, the window caption.
+    private func marksRowCheck(layout: [String: NSRect]) {
+        let thumbs = orb.previewNotchThumbs
+        let slots = ["thumb0", "thumb1", "thumb2"].compactMap { layout[$0] }
+        let wantX: [CGFloat] = [174, 210, 246]
+        var slotsOK = slots.count == 3
+        for (slot, x) in zip(slots, wantX) {
+            let dx = abs(slot.minX - x), dw = abs(slot.width - 30), dh = abs(slot.height - 22)
+            if dx >= 0.5 || dw >= 0.5 || dh >= 0.5 { slotsOK = false }
+        }
+        let content = orb.previewDockContent
+        let shown = Array(content.marks.reversed())
+        let capturing = shown.firstIndex { !$0.hasPixels }
+        let used = shown.firstIndex { $0.consumed }
+        let pending = shown.firstIndex { !$0.consumed && $0.hasPixels }
+        let skeletonOK = capturing.map { i in thumbs.first { $0.hasPrefix("\(i):") }?.hasSuffix(":skeleton") ?? false } ?? false
+        // The frames, by pixel: the pending one amber, the used one grey and dimmer.
+        var frameNote = "frames not sampled"
+        var framesOK = false
+        // The frame's own colour is read against the ink 2 pt above it: for a white hairline the
+        // per-channel coverage a = Δ / (1 − ink) is one number — 0.55 for a pending mark's frame,
+        // 0.55 × 0.50 for a used one — while the amber frame lowers blue where the ink is bright.
+        // Nine columns each along the frame's top edge (y + 0.5) and the crop row just under it (y + 1.5):
+        // the dither's noise averages out, and the frame is what the first row adds over the second.
+        func row(_ slot: NSRect, _ dy: CGFloat) -> (r: Double, g: Double, b: Double, a: Double)? {
+            var sum = (r: 0.0, g: 0.0, b: 0.0, a: 0.0), n = 0.0
+            for i in 0..<9 {
+                let x = slot.minX + 3 + CGFloat(i) * 3
+                guard let px = notchPixel(island: NSPoint(x: x, y: slot.minY + dy)) else { continue }
+                sum.r += px.r; sum.g += px.g; sum.b += px.b; sum.a += px.a; n += 1
+            }
+            return n > 0 ? (sum.r / n, sum.g / n, sum.b / n, sum.a / n) : nil
+        }
+        if let u = used, let p = pending, u < slots.count, p < slots.count,
+           let pu = row(slots[u], 0.5), let bu = row(slots[u], 2.5),
+           let pp = row(slots[p], 0.5), let bp = row(slots[p], 2.5) {
+            func coverage(_ px: Double, _ bg: Double) -> Double { bg >= 0.98 ? 0 : (px - bg) / (1 - bg) }
+            let amber = (pp.r - bp.r) > 0.25 && (pp.r - bp.r) > (pp.b - bp.b) + 0.25
+            let cov = [coverage(pu.r, bu.r), coverage(pu.g, bu.g), coverage(pu.b, bu.b)]
+            let mean = cov.reduce(0, +) / 3
+            let white = cov.allSatisfy { abs($0 - mean) < 0.12 }
+            let half = mean > 0.15 && mean < 0.42   // 0.55 × 0.50 = 0.275; a full frame would read ≈ 0.55
+            framesOK = amber && white && half
+            frameNote = String(format: "pending frame Δrgb %+.2f/%+.2f/%+.2f (amber %d); used frame white coverage %.2f (want ≈ 0.55 × 0.50 = 0.28; neutral %d)", pp.r - bp.r, pp.g - bp.g, pp.b - bp.b, amber ? 1 : 0, mean, white ? 1 : 0)
+        }
+        // Five marks for a beat — a window (Safari, 1280×800) among them — two thumbs and "+3"; the window's caption read then.
+        let keep = fakeMarks
+        var five = fakeMarks
+        if !five.contains(where: { $0.isWindow }) { five.append(makeFakeMark(FakeMarkSpec(kind: "window", size: CGSize(width: 1280, height: 800), ageSeconds: 5, app: "Safari"))) }
+        while five.count < 5 { five.append(makeFakeMark(FakeMarkSpec(kind: "pending", size: CGSize(width: 200, height: 120), ageSeconds: 3, app: nil))) }
+        fakeMarks = five
+        publishFakeMarks()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+            let overflow = self.orb.previewNotchThumbs
+            let overflowOK = overflow.count == 3 && overflow.filter { !$0.hasPrefix("+") }.count == 2 && overflow.last == "+3"
+            let windowCaption = self.orb.previewDockContent.marks.first { $0.isWindow }?.caption ?? ""
+            let captionOK = windowCaption.hasPrefix("Captured · Safari · 1280×800")
+            self.fakeMarks = keep
+            self.publishFakeMarks()
+            let ok = slotsOK && overflowOK && framesOK && skeletonOK && captionOK
+            self.check(ok, "marks row: 3 thumbs 30×22 at x 174/210/246; 5 marks → 2 thumbs + \"+3\"; used α 0.50 no amber frame; capturing = skeleton; window caption \"Captured · Safari · 1280×800\"",
+                       "slots \(slots.map { "\(Int($0.minX))" }) thumbs \(thumbs); five → \(overflow); \(frameNote); window caption '\(windowCaption)'")
+        }
+    }
+
+    /// The meter: the peek chip (2.55 s), the foot now, paused after ORB_PAUSE_AT, asleep after ORB_SLEEP_AT.
+    private func meterCheck(env: [String: String]) {
+        let v = (env["ORB_NOTCH_METER"] ?? "").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard v.count == 3 else { return }
+        let footNow = orb.previewNotchFootText
+        let wantChip = TransportFormat.minutes(v[1])
+        let wantFoot = "\(OrbStyle.mmss(v[0] + (CACurrentMediaTime() - launchedAt))) · \(TransportFormat.minutes(v[1])) · \(TransportFormat.dollars(v[1])) · today \(TransportFormat.minutes(v[2]))"
+        let wantAsleep = "today \(TransportFormat.billed(v[2]))"
+        let pauseAt = Double(env["ORB_PAUSE_AT"] ?? "") ?? -1
+        let sleepAt = self.sleepAt ?? -1
+        let judgeAt = max(3.5, pauseAt + 0.7, sleepAt + 1.2) - (CACurrentMediaTime() - launchedAt)
+        var pausedNote = "paused: not exercised (ORB_PAUSE_AT)", pausedOK = pauseAt < 0
+        var asleepNote = "asleep: not exercised (ORB_SLEEP_AT)", asleepOK = sleepAt < 0
+        if pauseAt >= 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, pauseAt + 0.4 - (CACurrentMediaTime() - launchedAt))) { [weak self] in
+                guard let self else { return }
+                let a = self.orb.previewNotchFootText
+                let dim = self.orb.previewNotchFootDim
+                let chip = self.orb.previewNotchChips.first { $0.hasPrefix("meter:") } ?? ""
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    guard let self else { return }
+                    let b = self.orb.previewNotchFootText
+                    pausedOK = dim && a.hasPrefix(TransportFormat.minutes(v[1])) && chip == "meter:\(wantChip)" && a.split(separator: "·").first == b.split(separator: "·").first
+                    pausedNote = "paused foot '\(a)' dim \(dim ? 1 : 0) chip '\(chip)' frozen \(a.split(separator: "·").first == b.split(separator: "·").first ? 1 : 0)"
+                }
+            }
+        }
+        if sleepAt >= 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, sleepAt + 0.6 - (CACurrentMediaTime() - launchedAt))) { [weak self] in
+                guard let self else { return }
+                self.orb.previewNotchHover(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self else { return }
+                    let f = self.orb.previewNotchFootText
+                    asleepOK = f == wantAsleep
+                    asleepNote = "asleep foot '\(f)' (want '\(wantAsleep)')"
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.2, judgeAt)) { [weak self] in
+            guard let self else { return }
+            let chipOK = self.meterPeekChip == wantChip
+            let footOK = footNow == wantFoot
+            self.check(chipOK && footOK && pausedOK && asleepOK, "meter: peek chip \"2.3 min\" in session; paused α 0.48 frozen; foot \"4:12 · 2.3 min · $0.12 · today 12.3 min\"; asleep foot \"today 12.3 min · $0.62\"",
+                       "peek chip '\(self.meterPeekChip)' (want '\(wantChip)'); foot '\(footNow)' (want '\(wantFoot)'); \(pausedNote); \(asleepNote)")
+        }
+    }
+
+    /// ORB_NOTCH_OPEN_TIMING: the open spring's value from the hover, sampled in `watch`.
+    private func openTimingCheck() {
+        let half = notchOpenHalfAt, nine = notchOpenNineAt
+        let ok = half >= 0 && half <= 0.060 && nine >= 0 && nine <= 0.130 && notchOpenHitAt0 > 0
+        check(ok, "open ≥ 0.5 by 60 ms, ≥ 0.9 by 130 ms; controls hit-testable at 0 ms",
+              String(format: "0.5 at %.0f ms, 0.9 at %.0f ms (crossings interpolated between 60 Hz frames), %d hit rects at 0 ms", half * 1000, nine * 1000, notchOpenHitAt0))
+    }
+
+    /// ORB_REDUCE_MOTION: the content samples taken through the open, the pulse, the spring's overshoot.
+    private func reduceMotionCheck() {
+        let noRise = reduceSamples.allSatisfy { $0.dy.allSatisfy { abs($0) < 0.01 } }
+        let noStagger = reduceSamples.allSatisfy { s in s.alpha.allSatisfy { abs($0 - s.alpha[0]) < 0.001 } }
+        let pulse = orb.previewNotchPulse
+        let noOvershoot = notchMaxIslandHeight <= NotchGeometry.islandHeight + 0.5
+        check(noRise && noStagger && abs(pulse - 0.5) < 0.001 && noOvershoot && reduceSamples.count > 0, "reduce motion → no rise, no stagger, spring ratio 1.0, pulse held 0.5",
+              String(format: "%d samples, rise %@, stagger %@, pulse %.2f, island height peak %.1f (no overshoot = ratio 1.0)", reduceSamples.count, noRise ? "none" : "seen", noStagger ? "none" : "seen", pulse, notchMaxIslandHeight))
+    }
+
+    /// From `watch()`: the open's timing, the island's peak height, the reduce-motion samples.
+    func watchNotchSurface(now: Double) {
+        if let raw = orb.previewNotchIslandRaw { notchMaxIslandHeight = max(notchMaxIslandHeight, raw.height) }
+        if orb.previewNotchMode == "island", reduceSamples.count < 40, orb.previewNotchContentClock.contains("reduced 1") {
+            var alphas: [CGFloat] = [], dys: [CGFloat] = []
+            for i in 0..<6 {
+                guard let a = orb.previewNotchContentAppearance(i) else { break }
+                alphas.append(a.alpha); dys.append(a.dy)
+            }
+            if alphas.count == 6, alphas[0] < 0.999 { reduceSamples.append((alphas, dys)) }
+        }
+        if traceProbe != nil { watchTraceProbe(phase: orb.previewFlightPhase, tucked: orb.previewIsTucked, now: now) }
+        // The mark's own echo brought the blob home: the return shot, and the restored pin.
+        if markTraceSentAt >= 0, !markTraceOut, !orb.previewIsTucked { markTraceOut = true }
+        if markTraceSentAt >= 0, markTraceOut, orb.previewIsTucked, !markTraceHomeSeen {
+            markTraceHomeSeen = true
+            print(stamp, String(format: "mark echo: blob home %.2f s after the trace; pinned %d (before Circle %@)", now - markTraceSentAt, orb.previewNotchPinned ? 1 : 0, pinnedBeforeCircle.map { "\($0 ? 1 : 0)" } ?? "n/a"))
+            fflush(stdout)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self else { return }
+                self.notchShot("mark-return", note: "home after outlining the circle; pinned \(self.orb.previewNotchPinned ? 1 : 0), mode \(self.orb.previewNotchMode)")
+                if self.pinnedBeforeCircle == true {
+                    self.check(self.orb.previewNotchPinned && self.orb.previewIsTucked, "pinned before Circle → pinned again after the mark (parked)",
+                               "pinned \(self.orb.previewNotchPinned ? 1 : 0) tucked \(self.orb.previewIsTucked ? 1 : 0) mode \(self.orb.previewNotchMode)")
+                }
+            }
+        }
+    }
+
+    /// "… | open 0.412→1" → 0.412.
+    static func openValue(_ springs: String) -> Double {
+        guard let range = springs.range(of: "open ") else { return 0 }
+        let tail = springs[range.upperBound...]
+        let value = tail.prefix { $0 != "→" }
+        return Double(value.trimmingCharacters(in: .whitespaces)) ?? 0
+    }
+
+    /// One pixel of the notch panel as drawn (rgb 0…1, alpha), at a point in the open island's
+    /// coordinates (x/y from its top-left): the panel's layer rendered at 2×, flipped as the view is.
+    func notchPixel(island p: NSPoint) -> (r: Double, g: Double, b: Double, a: Double)? {
+        guard let np = orb.previewNotchPanelCG, let ic = orb.previewNotchIslandCG else { return nil }
+        let scale: CGFloat = 2
+        let w = Int(np.width * scale), h = Int(np.height * scale)
+        guard w > 0, h > 0, let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                                       hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let gctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let cg = gctx.cgContext
+        cg.scaleBy(x: scale, y: scale)
+        cg.translateBy(x: 0, y: np.height)
+        cg.scaleBy(x: 1, y: -1)
+        orb.previewFreeze(true)
+        orb.previewRenderNotch(in: cg)
+        orb.previewFreeze(false)
+        let x = Int(((ic.minX - np.minX) + p.x) * scale), y = Int(((ic.minY - np.minY) + p.y) * scale)
+        guard x >= 0, y >= 0, x < w, y < h, let c = rep.colorAt(x: x, y: y) else { return nil }
+        return (Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent), Double(c.alphaComponent))
+    }
+}
+
+/// An `orb.trace` under the harness's eye: when it went, when its work ended, when the blob parked.
+struct TraceProbe {
+    let reason: String
+    let sentAt: Double
+    let tuckedBefore: Bool
+    var doneAt: Double
+    var parkedAt: Double
+    var judged: Bool
 }
 
 /// A flight target for the eye: a ring in the acting colour with a dot at the point.

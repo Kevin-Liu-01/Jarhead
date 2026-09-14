@@ -3015,6 +3015,53 @@ thread — never sleep, never an `orbPosition` write. The notch peek shows one 5
 live spawned thread and the island a third line ("Slack · working · 0:03 | Spotify ·
 working · 0:03"). Reduce Motion → fades. The main blob's untagged path is unchanged.
 
+### The dock as a control surface
+
+The dock — Kevin's word for the notch home: the blob tucked in the MacBook notch and the
+island that drops out of it, never the macOS Dock — is a control surface. The island is
+360×132 (`NotchGeometry.islandHeight`; `drop` 176, the panel 400×209), fixed rows, nothing
+reflows as chips come and go; AppKit and CoreGraphics only; one ink shape, its cache capped
+at 32 MB by bytes and prewarmed for the open and peek sizes. One value in
+(`DockContent`: awake, in session, typedWakes, the request, the last line, the gate's words,
+marks, the question, the thread rows, the problem, the meter, marking, screen recording),
+action closures out (`NotchDock.circle / window / ask / clear / allow / deny / forgetMark /
+openMark / openThread / stopThread / console / sleep / remedy / say`).
+
+| Row | y | Content, in priority order |
+|---|---|---|
+| S1 head | 8–30 | phase word · `Working · m:ss` while a delegation runs |
+| S2 line | 34–54 | the Say field while it has key · `✋ <name> asks · <question>` · the running delegation's request · the last line · asleep: the gate's words · `—` |
+| S3 context | 58–86 | `[◎ Circle] [▭ Window]`, then ≤ 3 thumbnails 30×22 at x 174/210/246 (> 3: the two newest and `+n`); no marks → `Circle something · ⌥⇧C`; Screen Recording missing → `Captures need Screen Recording`, Circle/Window at 0.45 |
+| S4 threads | 90–104 | one chip per live thread, `Name · word · m:ss` with its own Stop; the asking thread leads and has no Stop |
+| S5 foot | 108–124 | in session `2.3 min · $0.12 · today 12.3 min` · paused `2.3 min · $0.12 · sleeps in 4 min` dimmed · asleep `today 12.3 min · $0.62` or `No session. Nothing billed.` |
+| R1 | 7–31 | Stop · Mute (in a session's phases only) |
+| R2 | 60–84 | Ask `?` · Clear `⌫` (while marks exist) — or, while a question waits, `[ Allow ] [ Deny ]` at x 252–296 / 302–346, clicks only: Return never answers |
+| R3 | 102–126 | Console · Sleep (awake only) |
+
+Text ends at 276 on S1/S4/S5 and at 346 on S2; the right column sits at x 288–314 / 320–346.
+The peek carries glance chips right of the dots — question `✋ <name> asks`, marks `◎N`,
+the problem's glyph, the meter `2.3 min` — at most four, in that order, and never past 360 pt
+(the meter drops first, then the problem). Marking replaces them with `◎ Circle something ·
+Esc`. Tucked, the only chip is the marks chip, the lip glows the mark tone while marks wait,
+and a mark that lands puts `◎ 1 circled · Go to ask` in the pill slot for six seconds. The slot
+ranks gate > toast > mark-landed > problem, and the problem pill shows only under the open
+island with its remedy as an inset box.
+
+Two engine commands are the dock's own: `mark.remove {id}` (the `×` on a thumbnail; an
+unknown or malformed id changes nothing) and `mark.window` (the front window whole as a mark,
+`ScreenMark.source` "window", its rect the window's frame, `element` `{role: "window", title,
+app}`; works asleep; no front window → a warn toast). Everything else rides commands the
+Console already sends: `say-text` from Ask and the Say field, `thread.answer` from Allow /
+Deny, `thread.stop` from a chip's Stop, `sleep {cause: "dock"}` from Sleep, the problem's
+remedy through `EngineCommand(remedyJSON:)`, `mark.clear` from Clear; `mark.add` stays the
+overlay's. Pressing Circle folds the island before the overlay takes the mouse
+(`NotchDock.foldForMark`), and a mark trace started from the dock brings the blob home
+(`OrbPanelController.homeAfterTrace`) with Kevin's pin restored once it is parked. Nothing on
+the dock but Go (and a typed line under `typedWakes`) opens a paid session; the Say field's
+placeholder says which. The harness pins every rule (`Scripts/orb-preview.sh --notch-checks`:
+`check:` lines and the `notch sends:` count by kind; `Scripts/protocol-probe.sh`: the two
+commands' JSON, the three fixture marks, the remedy decode).
+
 ### Messages
 
 Typed lines land on the record FIRST: `Transcript.pushTyped(text, nowMs)` closes any open
