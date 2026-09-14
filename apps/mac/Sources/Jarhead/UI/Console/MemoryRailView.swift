@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 // The Memory rail: what Jarhead durably knows about Kevin, as rows he can read, correct and
-// hide. Under Settings › Memory: a filter field with `k of n`, the segments Live | Forgotten |
+// hide. Under Settings › Memory: a `ConsoleFilterField` with `k of n`, the segments Live | Forgotten |
 // Archived, the kind chips with counts (`All 7 · fact 2 · pref 2 …`), at most thirty `ConsoleRow`s
 // (kind glyph · the sentence on two lines · the kind badge · `seen 4× · 3d` · the importance
 // meter · ⋯ at rest; the scores, subjects and sources as the row's card), ↑↓ ⏎ over the rows
@@ -76,6 +76,9 @@ enum MemoryWords {
     static let source = "source"
     static let origin = "origin"
     static let mergedInto = "merged into"
+    /// A row's card on the float layer: `memory.<id>` under Settings, `memory.used.<id>` in the Now rail.
+    static func cardId(_ id: String) -> String { "memory.\(id)" }
+    static func usedCardId(_ id: String) -> String { "memory.used.\(id)" }
 }
 
 // MARK: - Formatting (pure)
@@ -104,14 +107,14 @@ enum MemoryFormat {
 
     /// The row's card (tier 2): the kind with its state as the badge, the sentence and its
     /// subjects, then the scores, how often it was met, every source and its origin as foot rows.
-    static func card(_ item: MemoryItem, now: Double) -> ConsoleRowCard {
-        var card = ConsoleRowCard(title: MemoryWords.kindChip(item.kind), badge: .word(item.state.rawValue), lines: [item.text])
+    static func card(_ item: MemoryItem, now: Double) -> ConsoleTipCard {
+        var card = ConsoleTipCard(title: MemoryWords.kindChip(item.kind), badge: .word(item.state.rawValue), lines: [item.text])
         if !item.subjects.isEmpty { card.lines.append("\(MemoryWords.subjects): \(item.subjects.joined(separator: ", "))") }
-        card.foot = [ConsoleRowCard.Foot(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
-                     ConsoleRowCard.Foot(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
-        for s in item.sources.suffix(4) { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
-        card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
-        if let into = item.mergedInto { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
+        card.foot = [ConsoleTipCard.Row(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
+                     ConsoleTipCard.Row(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
+        for s in item.sources.suffix(4) { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
+        card.foot.append(ConsoleTipCard.Row(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
+        if let into = item.mergedInto { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
         return card
     }
 
@@ -184,6 +187,7 @@ struct MemoryRailList: View {
     @State private var editingId: String?
     @State private var task: Task<Void, Never>?
     @StateObject private var focus = ConsoleListFocus()
+    @FocusState private var filterFocused: Bool
 
     /// At most this many rows; the search narrows what does not fit.
     static let maxRows = 30
@@ -215,9 +219,10 @@ struct MemoryRailList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MemoryFilterField(query: $query, placeholder: MemoryWords.filterPlaceholder(total),
-                              count: ConsoleListModel.countWord(shown: shown.count, of: total, typing: filtering),
-                              clear: { query = ""; kindFilter = nil }, move: { step($0) }, submit: { if let id = focus.id { edit(id) } })
+            ConsoleFilterField(text: $query, placeholder: MemoryWords.filterPlaceholder(total),
+                               count: ConsoleListModel.countWord(shown: shown.count, of: total, typing: filtering),
+                               focus: $filterFocused, accessibilityLabel: MemoryWords.searchPlaceholder,
+                               onMove: move, onSubmit: { if let id = focus.id { edit(id) } }, onExit: clearFilter)
             ConsoleSegments(value: segment, options: segments, title: ConsoleTheme.memoryStateLabel,
                             pick: { segment = $0 }, accessibilityLabel: "Memory state: \(ConsoleTheme.memoryStateLabel(segment))")
             if let items, !items.isEmpty {
@@ -244,9 +249,17 @@ struct MemoryRailList: View {
     }
 
     /// ↑↓ from the filter field: the highlight moves over the rows (the ring shows; the caret stays).
-    private func step(_ delta: Int) {
-        guard let next = ConsoleListModel.step(focus.id, by: delta, in: shown.map(\.id)) else { return }
+    private func move(_ direction: MoveCommandDirection) {
+        let delta = direction == .down ? 1 : (direction == .up ? -1 : 0)
+        guard delta != 0, let next = ConsoleListModel.step(focus.id, by: delta, in: shown.map(\.id)) else { return }
         focus.set(next, keyboard: true, why: delta > 0 ? "down" : "up")
+    }
+
+    /// Esc in the field: the words and the kind chip both let go; the caret leaves.
+    private func clearFilter() {
+        query = ""
+        kindFilter = nil
+        filterFocused = false
     }
 
     /// Return on a row: the inline edit.
@@ -378,7 +391,8 @@ private struct MemoryRailBody: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(shown) { item in
                             MemoryRow(item: item, now: ctx.date.timeIntervalSince1970 * 1000, editing: editingId == item.id,
-                                      focused: focus.ringOn(item.id), verbs: verbs(item), hovered: { if $0 { focus.hovered(item.id) } })
+                                      focused: focus.ringOn(item.id), verbs: verbs(item), hovered: { if $0 { focus.hovered(item.id) } },
+                                      verbsOpen: focus.verbsOpen == item.id, closeVerbs: focus.closeVerbs)
                                 .transition(Motion.appear)
                         }
                     }
@@ -404,47 +418,6 @@ private struct MemoryRailBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Motion.gentle, value: shown.map(\.id))
         .animation(Motion.fade, value: loading && items == nil)
-    }
-}
-
-/// The rail's filter: the magnifier inside the box, the placeholder with the count, `k of n`
-/// in the trailing slot, × while there is text. ↑↓ step the rows' highlight, Return runs the
-/// focused row, Esc clears. (Folds into Builder B's `ConsoleFilterField` when it lands.)
-private struct MemoryFilterField: View {
-    @Binding var query: String
-    let placeholder: String
-    let count: String
-    let clear: () -> Void
-    let move: (Int) -> Void
-    let submit: () -> Void
-
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(ConsoleTheme.fg3).frame(width: 12)
-            TextField(placeholder, text: $query)
-                .focused($focused)
-                .onSubmit(submit)
-                .onExitCommand { clear(); focused = false }
-                // ↑↓ before the field editor sees them (a single-line field swallows moveDown:).
-                .onKeyPress(.downArrow) { move(1); return .handled }
-                .onKeyPress(.upArrow) { move(-1); return .handled }
-                .accessibilityLabel(MemoryWords.searchPlaceholder)
-            Text(count).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
-                .contentTransition(ConsoleMotion.numeric)
-                .animation(Motion.snappy, value: count)
-            if !query.isEmpty {
-                Button(action: clear) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 18))
-                    .consoleHelp(MemoryWords.clearSearch)
-                    .accessibilityLabel(MemoryWords.clearSearch)
-                    .transition(.opacity)
-            }
-        }
-        .consoleField(height: 24, focused: focused)
-        .font(ConsoleTheme.sans(12))
-        .animation(Motion.fade, value: query.isEmpty)
     }
 }
 
@@ -492,6 +465,8 @@ struct MemoryRow: View {
     var focused = false
     var verbs = MemoryVerbs()
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
 
     private var live: Bool { item.state == .live }
 
@@ -506,9 +481,9 @@ struct MemoryRow: View {
                        badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: Self.badgeWidth,
                        meta: MemoryFormat.meta(item, now: now), meter: item.importance,
                        trailing: .ellipsis(menuVerbs), verb: live ? nil : ConsoleRowVerb(title: MemoryWords.restore, help: restoreHelp, run: verbs.restore),
-                       focused: focused, sitsBack: !live, card: MemoryFormat.card(item, now: now),
+                       focused: focused, sitsBack: !live, id: MemoryWords.cardId(item.id), card: MemoryFormat.card(item, now: now),
                        accessibilityHint: "\(item.kind.rawValue), \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"),
-                       onHover: hovered, primary: verbs.edit)
+                       onHover: hovered, verbsOpen: verbsOpen, closeVerbs: closeVerbs, primary: verbs.edit)
                 .transition(.opacity)
         }
     }
@@ -660,7 +635,7 @@ private struct MemoryUsedRow: View {
         let now = ConsoleFormat.nowMs
         ConsoleRow(title: item.text, lines: 2, icon: .symbol(ConsoleTheme.memorySymbol(item.kind)),
                    badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: MemoryRow.badgeWidth,
-                   meta: MemoryFormat.meta(item, now: now), focused: focused, card: MemoryFormat.card(item, now: now),
+                   meta: MemoryFormat.meta(item, now: now), focused: focused, id: MemoryWords.usedCardId(item.id), card: MemoryFormat.card(item, now: now),
                    accessibilityHint: MemoryWords.opensSettings, onHover: hovered, primary: open)
     }
 }

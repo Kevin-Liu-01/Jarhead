@@ -249,6 +249,10 @@ struct ConsoleFilterField: View {
                     .onSubmit(onSubmit)
                     .onExitCommand(perform: onExit)
                     .onMoveCommand(perform: onMove)
+                    // ↑↓ before the field editor sees them: a single-line field swallows moveDown: / moveUp:
+                    // (the memory rail's first shots), so `onMoveCommand` alone never moved the highlight.
+                    .onKeyPress(.downArrow) { onMove(.down); return .handled }
+                    .onKeyPress(.upArrow) { onMove(.up); return .handled }
                     .accessibilityLabel(accessibilityLabel ?? placeholder)
                 if let count { ConsoleFieldTrailing(trailing: .count(count), hasText: !text.isEmpty, clear: {}) }
                 ConsoleFieldTrailing(trailing: .clear, hasText: !text.isEmpty, clear: { text = "" })

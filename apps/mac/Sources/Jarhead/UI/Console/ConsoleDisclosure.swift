@@ -303,10 +303,10 @@ enum ConsoleDisclosureSummary {
     /// `Ready 2 · [all ok]` · `[1 missing]`
     static func ready(notReady: Int) -> [Summary] { notReady > 0 ? [.badge(.missing(notReady))] : [.badge(.allOk)] }
 
-    /// A tool's agents: the count of asks as `n [asks]` (amber), then the resting word that says most.
+    /// A tool's agents: how many ask as one `[1 asks]` badge (amber), then the resting word that says most.
     static func agents(asks: Int, working: Int, idle: Int, done: Int) -> [Summary] {
         var out: [Summary] = []
-        if asks > 0 { out += [.mono("\(asks)"), .badge(.asks)] }
+        if asks > 0 { out.append(.badge(.asks(asks))) }
         if working > 0 { out.append(.words(ConsoleDisclosureWords.working(working))) }
         else if idle > 0 { out.append(.words(ConsoleDisclosureWords.idle(idle))) }
         else if done > 0 { out.append(.words(ConsoleDisclosureWords.done(done))) }
