@@ -28,7 +28,7 @@ BUILD=".build/onboarding-preview"
 mkdir -p "$BUILD"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
   -o "$BUILD/onboarding-preview" \
-  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift \
+  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift Sources/Jarhead/UI/Thumbnails.swift \
   Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift \
   Scripts/OnboardingPreviewMain.swift
 export PREVIEW_SCENARIO="${PREVIEW_SCENARIO:-ready}"

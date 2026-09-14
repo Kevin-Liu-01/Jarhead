@@ -322,7 +322,7 @@ the menu-bar icon › *Set Up…*.
 pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), threads N (M live), memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
 pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model; the local group: server · model · embeddings; the privacy group: the four "where words go" rows)
-pnpm jarhead models [--json]        # the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use; no daemon needed; nothing is pulled
+pnpm jarhead models [--json] [--server URL]   # the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use; no daemon needed; nothing is pulled
 pnpm jarhead brain                  # the brain setting, what runs now, and where words go (the four data-path rows)
 pnpm jarhead brain local [<model>] [--server URL]   # pick a local model as the brain through the running daemon (memory follows); empty model = best fit
 pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
