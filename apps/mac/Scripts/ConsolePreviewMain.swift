@@ -3183,7 +3183,7 @@ extension PreviewDelegate {
         }
         guard shown.count >= 2 else { print("check: FAIL tips — wanted two `shown` lines, got \(tipLog)"); return }
         let cold = shown[0], warm = shown[1]
-        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 120   // a run-loop hop under load, never the cold delay
+        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 16   // shown on the hover's own pass: a frame at most, never a hop
         print(String(format: "check: %@ tip cold waits 350 ms → %@ after %.0f ms", coldOk ? "ok  " : "FAIL", cold.0, cold.1))
         print(String(format: "check: %@ tip warm shows at once → %@ after %.0f ms", warmOk ? "ok  " : "FAIL", warm.0, warm.1))
         print("check: \(coldOk && warmOk ? "all ok" : "FAILED") (tips) at \(stamp)s")

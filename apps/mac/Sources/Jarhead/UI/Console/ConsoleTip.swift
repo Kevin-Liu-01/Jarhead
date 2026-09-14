@@ -5,8 +5,8 @@ import SwiftUI
 // a preview (a thumb's picture). One rule of timing: the pointer rests 350 ms; within 400 ms of
 // the last hide a tip shows at once and a warm re-anchor is a jump, not a re-appear. `?` on a
 // focused control pins its tip. Every trigger keeps what `.help` gave VoiceOver: the spoken form
-// goes on `.accessibilityHint`; the bubble itself is hidden and never hit-tested. This is the
-// only file in UI/Console or UI/Onboarding allowed to say `.help(` (the tier-1 fallback).
+// goes on `.accessibilityHint`; the bubble itself is hidden and never hit-tested. No file in
+// UI/Console or UI/Onboarding says `.help(`.
 
 enum ConsoleTipWords {
     static let opensPane = "Opens its pane"
@@ -55,8 +55,6 @@ enum ConsoleTip {
     @MainActor static var lastHiddenAt: Double = -1
     /// The harness pins the delay (0 in every shot but `tip-warm`); nil in the app.
     @MainActor static var delayOverride: Double?
-    /// The tier-1 fallback: the system tooltip instead of the bubble (never on in the app).
-    @MainActor static var useSystemTips = false
     /// The harness's ear: `armed <id> <delay>` · `shown <id> after <ms> ms` · `hidden <id>` · `pinned <id>`.
     @MainActor static var report: ((String) -> Void)?
 
@@ -196,18 +194,14 @@ struct ConsoleTipModifier<Card: View>: ViewModifier {
     @State private var waiting: Task<Void, Never>?
 
     func body(content: Content) -> some View {
-        if ConsoleTip.useSystemTips {
-            content.help(spoken)
-        } else {
-            keyed(content)
-                .onHover(perform: hover)
-                .consoleFloat(id, kind: .tip, edge: edge, on: shown || pinned, dismiss: hide) {
-                    ConsoleTipBubble(warm: warm, content: card)
-                }
-                .accessibilityHint(spoken)
-                .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: receive)
-                .onDisappear { cancel(); if shown || pinned { hide() } }
-        }
+        keyed(content)
+            .onHover(perform: hover)
+            .consoleFloat(id, kind: .tip, edge: edge, on: shown || pinned, dismiss: hide) {
+                ConsoleTipBubble(warm: warm, content: card)
+            }
+            .accessibilityHint(spoken)
+            .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: receive)
+            .onDisappear { cancel(); if shown || pinned { hide() } }
     }
 
     @ViewBuilder private func keyed(_ content: Content) -> some View {
@@ -218,22 +212,28 @@ struct ConsoleTipModifier<Card: View>: ViewModifier {
         if inside { arm() } else { cancel(); if shown { hide() } }
     }
 
-    /// The pointer rests: wait the delay (none when warm), then show. Warm is read from the
-    /// clock, not the override, so the harness's pinned 0 still tells a jump from an arrival.
+    /// The pointer rests: wait the delay, then show; no delay (warm, or the harness's 0) shows
+    /// at once, on this very pass — never a run-loop hop later. Warm is read from the clock, not
+    /// the override, so the harness's pinned 0 still tells a jump from an arrival.
     private func arm() {
         guard !shown, !pinned, waiting == nil else { return }
         let since = ConsoleTip.lastHiddenAt < 0 ? -1 : ConsoleTip.now() - ConsoleTip.lastHiddenAt
         let wait = ConsoleTip.delayOverride ?? ConsoleTip.delay(sinceLastHide: since)
         warm = ConsoleTip.delay(sinceLastHide: since) == 0
-        let armedAt = ConsoleTip.now()
         ConsoleTip.report?("armed \(id) \(wait)")
+        guard wait > 0 else { show(armedAt: ConsoleTip.now()); return }
+        let armedAt = ConsoleTip.now()
         waiting = Task { @MainActor in
-            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            shown = true
             waiting = nil
-            ConsoleTip.report?(String(format: "shown %@ after %.0f ms", id, (ConsoleTip.now() - armedAt) * 1000))
+            show(armedAt: armedAt)
         }
+    }
+
+    private func show(armedAt: Double) {
+        shown = true
+        ConsoleTip.report?(String(format: "shown %@ after %.0f ms", id, (ConsoleTip.now() - armedAt) * 1000))
     }
 
     private func cancel() {
