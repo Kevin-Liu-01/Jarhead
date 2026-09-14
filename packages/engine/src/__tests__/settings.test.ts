@@ -75,7 +75,7 @@ const OLD_THREADS_FLAG = "workers"; // before 2026-09-13
 test("a settings.json from before 2026-09-13: the old threads flag becomes `threads`, a retired key is dropped, and the file is rewritten once without them; a file holding only known keys is never rewritten", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-migrate-"));
   const path = join(stateDir, "settings.json");
-  writeFileSync(path, JSON.stringify({ [OLD_THREADS_FLAG]: false, replayFinish: true, voice: "marin" }));
+  writeFileSync(path, JSON.stringify({ [OLD_THREADS_FLAG]: false, replayFinish: true, voice: "marin" })); // a file from before 2026-09-13: the old flag and a retired key
   const engine = bare(stateDir);
   const s = engine.snapshot().settings as unknown as Record<string, unknown>;
   assert.equal(s["threads"], false, "the old flag's value carries over");
