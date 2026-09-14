@@ -13,7 +13,34 @@ export { ClaudeBrain, zodShape } from "./claude.ts";
 export { Delegator, STOP_NAME_WAIT_MS, NAMED_STOP_FRAGMENT_ECHO_MS } from "./delegator.ts";
 export type { DelegatorOptions, DelegatorThreads, ThreadFloor, DelegationTimingsExtra } from "./delegator.ts";
 export { AnthropicBrain, anthropicReasoning, claudeGeneration, delegationPrompt, historyPrompt, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
-export { OpenAICompatibleBrain, detectCapabilities, isLoopbackHost, isPrivateHost, normalizeBaseUrl, resolveCompatibleApiKey, toChatTool } from "./compatible.ts";
+export { OpenAICompatibleBrain, OpenAIChatTransport, detectCapabilities, isLoopbackHost, isPrivateHost, normalizeBaseUrl, resolveCompatibleApiKey, stripReasoning, toChatTool } from "./compatible.ts";
+export type { ChatTransport, ChatTransportRequest, ChatTurn, RawToolCall } from "./compatible.ts";
+export {
+  LocalBrain,
+  OllamaChatTransport,
+  discoverLocalServer,
+  resolveLocalModel,
+  bestFit,
+  fitFor,
+  fitTools,
+  suggestedPull,
+  thinkFor,
+  serverLabel,
+  LOCAL_PORTS,
+  LOCAL_NUM_CTX_MIN,
+  LOCAL_NUM_CTX_MAX,
+  LOCAL_NUM_PREDICT,
+  LOCAL_KEEP_ALIVE,
+  LOCAL_TEMPERATURE,
+  LOCAL_STALL_MS,
+  LOCAL_FIRST_CHUNK_COLD_MS,
+  LOCAL_FIRST_CHUNK_WARM_MS,
+  LOCAL_TOOL_SHARE,
+  EMBED_PREFERENCE,
+  LOCAL_TOOLS,
+  LOCAL_DROP_ORDER,
+} from "./local.ts";
+export type { LocalBrainOptions } from "./local.ts";
 export { CodexBrain, CODEX_MCP_SERVER, codexAddendum, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "./codex.ts";
 export type { CodexProbe } from "./codex.ts";
 export { CodexAppServer, appServerArgs } from "./codex-app-server.ts";
