@@ -369,7 +369,7 @@ struct CopyChip: View {
     var body: some View {
         Button("Copy") { CopyChip.copy(text) }
             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-            .consoleHelp("Copies the command — you run it: \(text)")
+            .consoleHelp(NowWords.copyTip)
             .accessibilityLabel("Copy \(text)")
     }
 

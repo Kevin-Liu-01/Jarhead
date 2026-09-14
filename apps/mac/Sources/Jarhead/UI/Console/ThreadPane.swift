@@ -350,7 +350,7 @@ private struct ThreadComposer: View {
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
                         .disabled(!hasText)
-                        .consoleHelp(isMain && asleep && !typedWakes ? "Send (Return) — asleep: the engine refuses and keeps the words; press Go" : "Send (Return)")
+                        .consoleHelp(isMain && asleep && !typedWakes ? HelpCopy.sendAsleep : HelpCopy.send)
                         .accessibilityLabel("Send")
                     }
                     .transition(.opacity)
