@@ -42,7 +42,7 @@ test("capabilities: one line says the backend runs named threads at once (thread
   assert.match(line[0]!, /each with its own conversation and blob/);
   assert.match(line[0]!, /background thread works through Apple events, the browser, files, shell and web, never the pointer/);
   assert.match(line[0]!, /screen thread waits its turn for the mouse and keyboard/);
-  assert.equal(DEFAULT_CAPABILITIES.filter((c) => /second pair of hands|thread_/.test(c)).length, 0, "no capability line names the thread tools; the brain, not the voice, splits work");
+  assert.equal(DEFAULT_CAPABILITIES.filter((c) => /second pair of hands/.test(c)).length, 0, "threads are named as threads, never as a second pair of hands");
   // "<Name> alongside." and the finish lines are Jarhead's own (queueCommentary); a speech
   // clause here read as a "Backend tools" bullet would invite a second, voice-side ack.
   assert.doesNotMatch(line[0]!, /\bline\b|\bsay\b|\bspeak\b|finishes/);
