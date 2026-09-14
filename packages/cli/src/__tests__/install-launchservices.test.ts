@@ -75,13 +75,13 @@ test("launchservices: the build's rollback snapshots are stale wherever LaunchSe
   const records = [
     ...parseLsBundleDump(dump),
     { path: "/Users/kevinliu/jarvis/build/previous/Jarhead.app", identifier: "com.kevinliu.jarhead", executable: "Contents/MacOS/Jarhead" },
-    { path: "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous", identifier: "com.kevinliu.jarhead", executable: "Contents/MacOS/Jarhead" },
+    { path: "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous", identifier: "com.kevinliu.jarhead", executable: "Contents/MacOS/Jarhead" }, // a record an install from before 2026-09-13 left behind
   ];
-  // Present on disk (the build has not retired it yet) or gone (it has): stale either way — Jarhead's id anywhere but /Applications.
+  // Present on disk or gone: stale either way — Jarhead's id anywhere but /Applications.
   for (const exists of [() => true, () => false]) {
     const stale = staleJarheadRecords(records, { installed: INSTALLED, bundleId: "com.kevinliu.jarhead", staleRoots: ROOTS, exists, realpath: (p) => p });
     assert.ok(stale.some((r) => r.path === "/Users/kevinliu/jarvis/build/previous/Jarhead.app"), `exists=${exists()}`);
-    assert.ok(stale.some((r) => r.path === "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous"), `exists=${exists()}`);
+    assert.ok(stale.some((r) => r.path === "/Users/kevinliu/jarvis/build/previous/Jarhead.app.previous"), `exists=${exists()} (a path from before 2026-09-13)`);
     assert.ok(!stale.some((r) => r.path === INSTALLED));
   }
 });
