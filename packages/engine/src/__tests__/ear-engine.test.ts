@@ -26,9 +26,9 @@ test("ear → hands: a partial scrolls after the stability window through the ga
 
     const heardAt = clock.t - 150; // the app heard it 150 ms ago (transcription lag)
     engine.ear("scroll down", false, 1, heardAt);
-    await settle(10);
+    // Checked before any await: a partial never acts on arrival, only after its stability window.
     assert.equal(hands.named("scroll").length, 0, "a partial waits for the stability window");
-    await settle(60);
+    await until(() => hands.named("scroll").length === 1 && rows.length === 1, 3000); // the fired row lands a tick after the op
     assert.equal(hands.named("scroll").length, 1, "then the scroll was issued to the helper");
     assert.deepEqual(hands.named("scroll")[0]!.params, { dx: 0, dy: -300, modifiers: [] });
     assert.equal(rows.length, 1);
