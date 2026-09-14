@@ -126,7 +126,7 @@
 #   scripts clicks and feed changes, each with an optional `@seconds` — see ConsolePreviewMain.
 #   PREVIEW_REDUCE_MOTION=1 pins Motion.reduced on (plain fades, halved durations, no
 #   rise/slide), so the Reduce Motion path can be shot without touching the Mac's setting.
-# Compiles Model + UI/Console + Scripts/ConsolePreviewMain.swift into its own
+# Compiles Model + Permissions (the kinds' words) + UI + UI/Console + Scripts/ConsolePreviewMain.swift into its own
 # output directory (never the shared .build products), shows the window,
 # screenshots it (if out.png given) and exits; without out.png it stays open.
 # Shots taken while the Mac is locked (loginwindow frontmost) render the window
@@ -147,7 +147,7 @@ mkdir -p "$BUILD"
 if [[ "${PREVIEW_SKIP_BUILD:-}" != "1" || ! -x "$BUILD/console-preview" ]]; then
   swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
     -o "$BUILD/console-preview" \
-    Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
+    Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
 fi
 export PREVIEW_SCENARIO="$SCENARIO"
 export PREVIEW_STATE_DIR="${PREVIEW_STATE_DIR:-$(cd Scripts/fixtures && pwd)}"

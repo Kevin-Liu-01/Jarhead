@@ -2079,14 +2079,16 @@ struct FakeData {
     }
 
     /// Every permission row (Snapshot.permissions.all) with the three the hands and the voice need
-    /// set as given and the rest granted; the harness compiles without Permissions/, so the rows
-    /// carry their own short labels.
+    /// set as given and the rest granted; the label and the why are the app's own table
+    /// (`PermissionsKit.meta`, compiled in beside the Console), so the rail reads `Screen Recording
+    /// / so the hands can see the screen`, never a kind's raw id.
     func permissions(microphone: Grant, screenRecording: Grant, accessibility: Grant) -> Permissions {
         let required: [PermissionKind: Grant] = [.microphone: microphone, .speechRecognition: .granted, .screenRecording: screenRecording, .accessibility: accessibility]
         let settingsOnly: Set<PermissionKind> = [.screenRecording, .accessibility, .inputMonitoring, .fullDiskAccess]
         return Permissions(all: PermissionKind.allCases.map { kind in
-            PermissionInfo(kind: kind, grant: required[kind] ?? .granted, ask: kind == .automation ? .perApp : (settingsOnly.contains(kind) ? .settings : .prompt),
-                           required: required[kind] != nil, label: kind.rawValue, why: "", checkedAt: ago(90))
+            let m = PermissionsKit.meta(kind)
+            return PermissionInfo(kind: kind, grant: required[kind] ?? .granted, ask: kind == .automation ? .perApp : (settingsOnly.contains(kind) ? .settings : .prompt),
+                                  required: required[kind] != nil, label: m.label, why: m.why, checkedAt: ago(90))
         })
     }
 
@@ -3364,9 +3366,12 @@ extension PreviewDelegate {
         let all = fake.permissions(microphone: .granted, screenRecording: .unknown, accessibility: .denied).all
         let senses = PermissionsRailList.rows(all, in: .senses), hands = PermissionsRailList.rows(all, in: .hands), files = PermissionsRailList.rows(all, in: .files)
         expect("rail: permission areas", "\(senses.count) \(hands.count) \(files.count)", "6 3 7")
-        expect("rail: Senses head", text(PermissionsRailList.summary(senses)), "[1 missing] · screenRecording")
-        expect("rail: Hands head", text(PermissionsRailList.summary(hands)), "[1 missing] · accessibility")
-        expect("rail: Files head", text(PermissionsRailList.summary(files)), "fullDiskAccess · contacts · +5")
+        expect("rail: Senses head", text(PermissionsRailList.summary(senses)), "[1 missing] · Screen Recording")
+        expect("rail: Hands head", text(PermissionsRailList.summary(hands)), "[1 missing] · Accessibility")
+        expect("rail: Files head", text(PermissionsRailList.summary(files)), "Full Disk Access · Contacts · +5")
+        // Never a kind's raw id on a row: every title is capitalised words and every row has its why.
+        let rawIds = all.filter { $0.label == $0.kind.rawValue || $0.label.first?.isUppercase != true || $0.why.isEmpty }.map(\.label)
+        expect("rail: permission title is a word, the why on line 2", rawIds.isEmpty ? "words" : rawIds.joined(separator: ","), "words")
         expect("rail: Problems kind head line", ProblemsRailList.headLine("Delegation failed: Codex session refused input") ?? "nil", "Delegation failed: Codex s…")
         expect("rail: Permissions folded", text(PermissionsRailList.headSummary(all)), "[2 missing]")
         expect("rail: a granted set is all ok", text(PermissionsRailList.headSummary(fake.permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted).all)), "[all ok]")
