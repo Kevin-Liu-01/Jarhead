@@ -474,7 +474,6 @@ struct ConsoleListKeys: ViewModifier {
             .focused($focused)
             .onKeyPress(phases: .down) { press in handle(press) }
             .onChange(of: focus.claims) { focused = true }
-            .onChange(of: focused) { if !focused { focus.keyboard = false } }
     }
 
     private func handle(_ press: KeyPress) -> KeyPress.Result {

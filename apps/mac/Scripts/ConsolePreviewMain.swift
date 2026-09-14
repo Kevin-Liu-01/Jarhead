@@ -116,6 +116,12 @@ import SwiftUI
 //     local-empty  = the Now tab with Ollama up but nothing on it that can call tools: the amber
 //                    `brain.local` row with Retry and Copy (`ollama pull qwen3.5:27b`, copied, never
 //                    run), the Ready row naming the fallback `openai-responses`. Runs `check-local`.
+//     memory-chips = the kit's memory rail (Builder C): the filter with `2 of 7`, the kind chips with
+//                    counts, `chip:fact` → the two fact rows (badge · meter · ⋯ at rest); Settings tab, tall.
+//     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
+//                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
+//     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
+//                    `1 [asks] · 1 done` as its head; two Claude Code rows open above it.
 //     kit-spike    = the component kit's day-0 spike: a temporary two-row popup (ConsoleFloatSpike) on
 //                    the ConsoleFloatLayer over the stream, driven by `menuOpen:kit.spike`, `keyDown:`,
 //                    `spike-scroll:` and `probe-floats`; `check-kit` prints the pure placement / tip /
@@ -321,6 +327,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // the window is inactive (a shot behind the lock screen); the spike mounted for `kit-spike`.
         ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
         ConsoleFloatLayer.holdWhileInactive = true
+        // The folds live in memory alone here (a previous run's UserDefaults never leak into a shot);
+        // every list's focus move is a `list-focus:` line.
+        ConsoleFoldStore.persists = false
+        ConsoleListFocus.report = { line in print("list-focus: \(line)") }
         if scenario == "kit-spike" {
             ConsoleFloatSpike.enabled = true
             ConsoleFloatSpike.report = { [weak self] line in
@@ -331,11 +341,21 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
-        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared":
+        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
+            // The kit's `agents-groups`: two Claude Code rows and the Codex group, one of whose sessions
+            // asks — so the folded Codex head reads `1 [asks] · 1 done` above the fold.
+            if scenario == "agents-groups" {
+                let keep: Set<String> = ["sessions:cc:1", "sessions:claude:w1p2", "sessions:codex:1", FakeData.endedId, "sessions:codex:w2p2", "sessions:codex:thread-9"]
+                state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
+                if let i = state.snapshot.agents.firstIndex(where: { $0.id == "sessions:codex:w2p2" }) {
+                    state.snapshot.agents[i].status = .blocked
+                    state.snapshot.agents[i].hint = "blocked"
+                }
+            }
             // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen.
             if scenario == "cleanup" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
@@ -374,7 +394,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
             state.transcripts = fake.transcripts()
-        case "memory":
+        case "memory", "memory-chips":
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
@@ -495,7 +515,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked", "memory", "local": console.selectTab(.settings)
+        case "settings", "wake-locked", "memory", "memory-chips", "local": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "durability":
             pendingAgentOpen = FakeData.endedId
@@ -556,7 +576,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             + "trace:tab-now@7.8,tab:now@8.0,trace-stop@8.8,"
             + "trace:pick-day@9.0,pick-day:2026-09-10@9.2,trace-stop@10.2,"
             + "trace:show-now-3@10.4,show-now@10.6,trace-stop@11.4"
-        case "cleanup": defaultActions = "trash-open@0.4,hidden-open@0.4"
+        case "cleanup": defaultActions = "check-kit@0.3,trash-open@0.4,hidden-open@0.4"
         // A chain's id is its root session's (the paused one), not the resumed session's.
         case "cleanup-select": defaultActions = "trash-open@0.4,select:\(FakeData.chainPausedId)+\(FakeData.yesterdayId)@0.6"
         case "cleanup-rename": defaultActions = "rename:\(FakeData.pinnedId)@0.5"
@@ -595,6 +615,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (No comma in the text: "," separates the actions.)
         case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
+        // The kit (Builder C): the memory rail's kind chips (`chip:fact` → 2 rows) and a row's card;
+        // the left rail's search with ↑↓ (the third hit takes the ring, Return opens it — `probe` says
+        // which); the agents grouped per tool with Codex folded (`1 asks`); `cleanup` re-shot with the folds.
+        case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
+        case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
+        case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
         case "kit-spike": defaultActions = "check-kit@0.3,menuOpen:kit.spike@0.6,keyDown:down@0.9,keyDown:up@1.0,keyDown:down@1.1,keyDown:return@1.3,"
             + "menuOpen:kit.spike@1.5,keyDown:escape@1.7,menuOpen:kit.spike@1.9,probe-floats@2.1,spike-scroll:2@2.2,probe-floats@2.5,"
             + "check-spike@2.6,menuOpen:kit.spike@2.7,keyDown:down@2.8"
