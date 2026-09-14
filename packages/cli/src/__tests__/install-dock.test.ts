@@ -138,7 +138,7 @@ test("dock: a pin at a stale URL is rebuilt to the installed bundle and gets fil
   const data = dictGet(tileNodes(a.doc, "persistent-apps")[0]!, "tile-data")!;
   assert.equal(stringAt(dictGet(data, "file-data")!, "_CFURLString"), INSTALLED_URL);
   assert.equal(integerAt(data, "file-type"), DEFAULT_FILE_TYPE);
-  assert.match(describeDock(a), /pin points at file:\/\/\/Users\/kevinliu\/jarvis\/build\/Jarhead\.app\//);
+  assert.ok(describeDock(a).includes("pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/"), describeDock(a));
 });
 
 test("dock: a tile is Jarhead by exact bundle id or by a URL named Jarhead.app (any case); a sub-id probe bundle is not", () => {
