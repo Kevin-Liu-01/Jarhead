@@ -12,8 +12,14 @@ import { runToolBatch } from "./batch.ts";
 /**
  * The OpenAI-compatible brain: Chat Completions with function tools over plain
  * fetch, against whatever server Kevin points it at — OpenAI, OpenRouter,
- * Ollama, LM Studio, vLLM. No SDK, because the servers differ in small ways
+ * vLLM, a hosted gateway. No SDK, because the servers differ in small ways
  * and a thin client is easier to keep honest than a thick one.
+ *
+ * The loop here (history, tool batching, caps, cancel, images) is the one
+ * implementation; the wire is a `ChatTransport`. `OpenAIChatTransport` is the
+ * plain POST /v1/chat/completions; the local brain (local.ts) plugs in Ollama's
+ * native streaming endpoint through the same seam, so there is one history,
+ * one tool-call normaliser and one image plumbing whichever server answers.
  *
  * Screenshots are the one place servers diverge: OpenAI and OpenRouter accept
  * `image_url` data URLs, most local servers do not. Images are therefore behind
@@ -55,10 +61,18 @@ export interface OpenAICompatibleBrainOptions {
   readonly maxRetryAfterMs?: number | undefined;
   /** Request/answer pairs carried into the next delegation (default 3). */
   readonly historyTurns?: number | undefined;
+  /** The wire: default OpenAIChatTransport over baseUrl/apiKey/fetch (today's behaviour). */
+  readonly transport?: ChatTransport | undefined;
+  /** The tool table sent (default ALL_TOOL_SPECS, so the 67-count pins hold); a subset changes bytes and count for this instance only. */
+  readonly tools?: readonly ToolSpec[] | undefined;
+  /** "all" keeps every screenshot in messages (default); "newest" replaces older image turns with "[screenshot from <tool>, superseded]" so a small window is not filled with pixels. */
+  readonly imageHistory?: "all" | "newest" | undefined;
+  /** The ready detail's first word (default "OpenAI-compatible"). */
+  readonly label?: string | undefined;
 }
 
 // Chat Completions wire shapes: only what this brain sends and reads.
-type ChatContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "high" | "low" | "auto" } };
+export type ChatContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string; detail?: "high" | "low" | "auto" } };
 export interface ChatToolCall {
   id: string;
   type: "function";
@@ -73,15 +87,191 @@ export interface ChatTool {
   type: "function";
   function: { name: string; description: string; parameters: ToolSpec["parameters"] };
 }
-/** A tool call as servers actually send it: ids can be missing, arguments may already be parsed. */
-type RawToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: unknown } };
+/** A tool call as servers actually send it: ids can be missing, arguments may already be parsed (Ollama's native API sends an object). */
+export type RawToolCall = { id?: string; type?: string; function?: { name?: string; arguments?: unknown } };
 interface ChatCompletion {
   choices?: Array<{
-    message?: { role?: string; content?: string | null | Array<{ type?: string; text?: string }>; tool_calls?: RawToolCall[] | null };
+    message?: {
+      role?: string;
+      content?: string | null | Array<{ type?: string; text?: string }>;
+      tool_calls?: RawToolCall[] | null;
+      /** Ollama and LM Studio put separated reasoning here over /v1; llama.cpp calls it reasoning_content. */
+      reasoning?: string | null;
+      reasoning_content?: string | null;
+    };
     finish_reason?: string | null;
   }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string } | string;
 }
+
+// ---- the transport seam ---------------------------------------------------------------------
+
+export interface ChatTransportRequest {
+  readonly model: string;
+  readonly messages: readonly ChatMessage[];
+  readonly tools: readonly ChatTool[];
+}
+
+export interface ChatTurn {
+  /** Spoken/recorded text with any reasoning removed (<think>…</think>, message.reasoning, message.thinking). */
+  readonly content: string;
+  /** The reasoning, when the server separated it or the transport stripped it; goes to sink.thinking only. */
+  readonly reasoning?: string;
+  readonly toolCalls: readonly RawToolCall[];
+  readonly finish: "stop" | "tool_calls" | "length" | "content_filter" | "error";
+  /** For finish === "error": the sentence the delegator speaks ("server error 400: …", "the model went quiet for 60 s"). */
+  readonly error?: string;
+  /** For finish === "error" on 401/403: the brain flips not-ready with this detail. */
+  readonly unready?: string;
+  /** Ollama's final chunk / LM Studio usage, for the delegation's cost note. */
+  readonly usage?: { readonly promptTokens?: number; readonly outputTokens?: number; readonly ms: number; readonly loadMs?: number };
+}
+
+export interface ChatTransport {
+  /** One model turn. Throws only when `signal` aborts; every HTTP/JSON/stall failure is a returned `finish: "error"`. Owns its own timeouts within `deadline`. */
+  complete(req: ChatTransportRequest, signal: AbortSignal, deadline: number, sink: Pick<BrainSink, "thinking">): Promise<ChatTurn>;
+}
+
+/**
+ * Reasoning a server left inside the text: `<think>…</think>` and
+ * `<thinking>…</thinking>` blocks, a `<think>` that opens the answer and never
+ * closes (everything up to the first `{` or the end is the trace), and the
+ * harmony `<|channel|>analysis…<|message|>` header with the analysis that follows
+ * it. The trace is returned separately so it reaches sink.thinking and never the voice.
+ */
+export function stripReasoning(content: string): { content: string; reasoning?: string } {
+  const traces: string[] = [];
+  const take = (_match: string, trace: string): string => {
+    traces.push(trace);
+    return "";
+  };
+  let out = content;
+  out = out.replace(/<think>([\s\S]*?)<\/think>/g, take);
+  out = out.replace(/<thinking>([\s\S]*?)<\/thinking>/g, take);
+  out = out.replace(/<\|channel\|>analysis[\s\S]*?<\|message\|>([\s\S]*?)(?=<\|end\|>|<\|start\|>|<\|channel\|>|$)/g, take);
+  out = out.replace(/<\|start\|>assistant/g, "").replace(/<\|channel\|>final<\|message\|>/g, "").replace(/<\|end\|>|<\|return\|>/g, "");
+  const lead = /^\s*<think>/.exec(out);
+  if (lead) {
+    const rest = out.slice(lead[0].length);
+    const brace = rest.indexOf("{");
+    const cut = brace < 0 ? rest.length : brace;
+    traces.push(rest.slice(0, cut));
+    out = rest.slice(cut);
+  }
+  const reasoning = traces.map((t) => t.trim()).filter(Boolean).join("\n");
+  return reasoning ? { content: out.trim(), reasoning } : { content: out.trim() };
+}
+
+export interface OpenAIChatTransportOptions {
+  /** Server root without /v1 (normalizeBaseUrl). */
+  readonly baseUrl: string;
+  readonly headers: () => Record<string, string>;
+  readonly fetch: typeof fetch;
+  /** Per request (default 2 min). */
+  readonly requestTimeoutMs?: number | undefined;
+  /** Retries per request on 429/502/503/529, honouring Retry-After (default 2). */
+  readonly requestRetries?: number | undefined;
+  /** Longest Retry-After honoured before giving up (default 8 s). */
+  readonly maxRetryAfterMs?: number | undefined;
+}
+
+/**
+ * Plain POST {base}/v1/chat/completions, non-streaming: `{model, messages, tools,
+ * tool_choice: "auto"}`, retried on 429/502/503/529 (a burst limit or a gateway
+ * blip is not a reason to fail the task) as long as Retry-After and the wall
+ * budget allow. Each attempt is bounded by the request timeout and the time left
+ * before `deadline`. Reasoning the server separated (`message.reasoning`) or left
+ * in the text (`<think>`) comes back as `reasoning`, never as `content`.
+ */
+export class OpenAIChatTransport implements ChatTransport {
+  constructor(private readonly o: OpenAIChatTransportOptions) {}
+
+  async complete(req: ChatTransportRequest, signal: AbortSignal, deadline: number, _sink: Pick<BrainSink, "thinking">): Promise<ChatTurn> {
+    const retries = Math.max(0, this.o.requestRetries ?? 2);
+    const maxRetryAfter = this.o.maxRetryAfterMs ?? 8000;
+    const fail = (error: string, unready?: string): ChatTurn => ({ content: "", toolCalls: [], finish: "error", error, ...(unready ? { unready } : {}) });
+    for (let attempt = 0; ; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return fail("I ran out of time");
+      const timeoutMs = Math.max(1000, Math.min(this.o.requestTimeoutMs ?? 120_000, remaining));
+      const started = Date.now();
+      let res: Response;
+      try {
+        res = await this.o.fetch(`${this.o.baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: this.o.headers(),
+          body: JSON.stringify({ model: req.model, messages: req.messages, tools: req.tools, tool_choice: "auto" }),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+        });
+      } catch (e) {
+        if (signal.aborted) throw e;
+        const err = e as Error;
+        if (err.name === "TimeoutError") return fail(`the server did not answer within ${Math.round(timeoutMs / 1000)} seconds`);
+        return fail(`could not reach the server: ${err.message}`);
+      }
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch (e) {
+        if (signal.aborted) throw e;
+        body = undefined;
+        if (res.ok) return fail(`the server sent a non-JSON reply (${(e as Error).message})`);
+      }
+      if (res.status === 401 || res.status === 403) {
+        const detail = `the server rejected the API key (${res.status})`;
+        return fail(detail, detail);
+      }
+      const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 529;
+      if (transient && attempt < retries) {
+        const wait = retryAfterMs(res.headers, attempt);
+        if (wait <= maxRetryAfter && Date.now() + wait < deadline) {
+          log.info(`${res.status} from ${this.o.baseUrl}; retrying in ${wait}ms (${retries - attempt} left)`);
+          const aborted = await sleep(wait, signal);
+          if (aborted) throw new DOMException("The operation was aborted.", "AbortError");
+          continue;
+        }
+      }
+      if (res.status === 429) return fail("the server is rate limiting us; try again in a moment");
+      if (!res.ok) return fail(`server error ${res.status}: ${errorMessage(body, res.status)}`);
+      return completionTurn((body ?? {}) as ChatCompletion, Date.now() - started);
+    }
+  }
+}
+
+/** choices[0] of a Chat Completions body as one turn; reasoning separated whether the server or the text carried it. */
+function completionTurn(body: ChatCompletion, ms: number): ChatTurn {
+  const choice = body.choices?.[0];
+  const message = choice?.message;
+  if (!message) return { content: "", toolCalls: [], finish: "error", error: "the server returned no choices" };
+  const stripped = stripReasoning(contentText(message.content));
+  const separated = [message.reasoning, message.reasoning_content].filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim());
+  const reasoning = [...separated, ...(stripped.reasoning ? [stripped.reasoning] : [])].join("\n") || undefined;
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const usage = body.usage
+    ? { ...(typeof body.usage.prompt_tokens === "number" ? { promptTokens: body.usage.prompt_tokens } : {}), ...(typeof body.usage.completion_tokens === "number" ? { outputTokens: body.usage.completion_tokens } : {}), ms }
+    : undefined;
+  return {
+    content: stripped.content,
+    ...(reasoning ? { reasoning } : {}),
+    toolCalls,
+    finish: finishOf(choice.finish_reason, toolCalls.length),
+    ...(usage ? { usage } : {}),
+  };
+}
+
+export function finishOf(reason: string | null | undefined, toolCalls: number): ChatTurn["finish"] {
+  if (reason === "length" || reason === "content_filter" || reason === "tool_calls" || reason === "stop") return reason;
+  return toolCalls > 0 ? "tool_calls" : "stop";
+}
+
+/** "12.4k prompt · 310 out · 9.8 s" — the delegation's cost note, once per model turn. */
+export function usageNote(u: NonNullable<ChatTurn["usage"]>): string {
+  const k = (n: number | undefined): string => (n === undefined ? "?" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  return `${k(u.promptTokens)} prompt · ${k(u.outputTokens)} out · ${(u.ms / 1000).toFixed(1)} s`;
+}
+
+// ---- URLs, hosts, keys ----------------------------------------------------------------------
 
 /** `https://host/`, `https://host/v1`, `https://host/v1/` → `https://host` (endpoints add /v1 themselves). */
 export function normalizeBaseUrl(url: string): string {
@@ -165,8 +355,13 @@ export function toChatTool(spec: ToolSpec): ChatTool {
   return { type: "function", function: { name: spec.name, description: spec.description, parameters: spec.parameters } };
 }
 
-/** Make every call addressable, whatever the server left out. */
-function normalizeToolCalls(raw: RawToolCall[] | null | undefined): Array<ChatToolCall & { args: unknown }> {
+/**
+ * Make every call addressable, whatever the server left out. A string
+ * `arguments` that is not JSON is not silently `{}`: the call comes back with
+ * `bad` set and the raw text, and the loop answers it with an error tool result
+ * so the model can repair its own call instead of running a tool on nothing.
+ */
+function normalizeToolCalls(raw: readonly RawToolCall[] | null | undefined): Array<ChatToolCall & { args: unknown; bad?: true; rawArgs: string }> {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((call, i) => {
     const name = call.function?.name;
@@ -174,18 +369,20 @@ function normalizeToolCalls(raw: RawToolCall[] | null | undefined): Array<ChatTo
     const rawArgs = call.function?.arguments;
     let args: unknown = {};
     let argumentsText = "{}";
+    let bad = false;
     if (typeof rawArgs === "string") {
       argumentsText = rawArgs || "{}";
       try {
-        args = rawArgs ? JSON.parse(rawArgs) : {};
+        args = rawArgs.trim() ? JSON.parse(rawArgs) : {};
       } catch {
-        args = {};
+        args = { invalid: rawArgs };
+        bad = true;
       }
     } else if (rawArgs && typeof rawArgs === "object") {
       args = rawArgs;
       argumentsText = JSON.stringify(rawArgs);
     }
-    return [{ id: call.id || `call_${i + 1}`, type: "function" as const, function: { name, arguments: argumentsText }, args }];
+    return [{ id: call.id || `call_${i + 1}`, type: "function" as const, function: { name, arguments: argumentsText }, args, rawArgs: argumentsText, ...(bad ? { bad: true as const } : {}) }];
   });
 }
 
@@ -195,7 +392,7 @@ function contentText(content: unknown): string {
   return "";
 }
 
-function errorMessage(body: unknown, status: number): string {
+export function errorMessage(body: unknown, status: number): string {
   const b = body as ChatCompletion | undefined;
   const e = b?.error;
   if (typeof e === "string") return e;
@@ -213,14 +410,26 @@ export class OpenAICompatibleBrain implements Brain {
   private started = false;
   private current: { task: BrainTask; abort: AbortController } | undefined;
   private history: ChatMessage[] = [];
-  private readonly tools: ChatTool[] = ALL_TOOL_SPECS.map(toChatTool);
+  private readonly tools: ChatTool[];
   private readonly fetchImpl: typeof fetch;
+  private readonly transport: ChatTransport | undefined;
 
   constructor(private readonly opts: OpenAICompatibleBrainOptions) {
     this.baseUrl = opts.baseUrl?.trim() ? normalizeBaseUrl(opts.baseUrl) : undefined;
     this.model = opts.model?.trim() || undefined;
     this.capabilities = { ...(this.baseUrl ? detectCapabilities(this.baseUrl) : { images: false }), ...(opts.capabilities ?? {}) };
     this.fetchImpl = opts.fetch ?? fetch;
+    this.tools = (opts.tools ?? ALL_TOOL_SPECS).map(toChatTool);
+    this.transport =
+      opts.transport ??
+      (this.baseUrl
+        ? new OpenAIChatTransport({ baseUrl: this.baseUrl, headers: () => this.headers(), fetch: this.fetchImpl, requestTimeoutMs: opts.requestTimeoutMs, requestRetries: opts.requestRetries, maxRetryAfterMs: opts.maxRetryAfterMs })
+        : undefined);
+  }
+
+  /** The current one-line status: the probe's verdict, or why a mid-task failure took the brain down. */
+  get detail(): string {
+    return this.readyDetail;
   }
 
   private headers(): Record<string, string> {
@@ -301,7 +510,8 @@ export class OpenAICompatibleBrain implements Brain {
         const shown = ids.slice(0, 8).join(", ");
         return { kind: "final", detail: `${host} does not offer ${this.model}; it lists ${shown}${ids.length > 8 ? ` and ${ids.length - 8} more` : ""}` };
       }
-      return { kind: "ready", detail: `OpenAI-compatible ${host} (${this.model}, ${mode}${ids === undefined ? ", models not listed" : ids.length === 0 ? ", empty model list" : ""})` };
+      const label = this.opts.label ?? "OpenAI-compatible";
+      return { kind: "ready", detail: `${label} ${host} (${this.model}, ${mode}${ids === undefined ? ", models not listed" : ids.length === 0 ? ", empty model list" : ""})` };
     } catch (e) {
       const err = e as Error;
       return { kind: "transient", detail: err.name === "TimeoutError" ? `${host} did not answer /v1/models within ${Math.round(timeoutMs / 1000)}s` : `could not reach ${host}: ${err.message}` };
@@ -309,7 +519,7 @@ export class OpenAICompatibleBrain implements Brain {
   }
 
   async handle(task: BrainTask, sink: BrainSink): Promise<BrainResult> {
-    if (!this.ready || !this.baseUrl || !this.model) return { status: "failed", error: this.readyDetail };
+    if (!this.ready || !this.baseUrl || !this.model || !this.transport) return { status: "failed", error: this.readyDetail };
     if (this.current) return { status: "failed", error: "already handling a task" };
     const abort = new AbortController();
     const onAbort = (): void => abort.abort();
@@ -318,7 +528,7 @@ export class OpenAICompatibleBrain implements Brain {
     this.current = { task, abort };
     this.opts.runner.attach(sink, task);
     try {
-      return await this.loop(task, sink, abort.signal, this.model);
+      return await this.loop(task, sink, abort.signal, this.model, this.transport);
     } finally {
       task.signal.removeEventListener("abort", onAbort);
       if (this.current?.task === task) {
@@ -330,30 +540,43 @@ export class OpenAICompatibleBrain implements Brain {
     }
   }
 
-  private async loop(task: BrainTask, sink: BrainSink, signal: AbortSignal, model: string): Promise<BrainResult> {
+  private async loop(task: BrainTask, sink: BrainSink, signal: AbortSignal, model: string, transport: ChatTransport): Promise<BrainResult> {
     const messages: ChatMessage[] = [{ role: "system", content: brainSystemPrompt(this.opts.userName) }, ...this.history, { role: "user", content: this.userContent(task) }];
     const started = Date.now();
     const maxSteps = this.opts.maxSteps ?? 40;
     const maxWallMs = this.opts.maxWallMs ?? 5 * 60_000;
     let steps = 0;
+    /** Screenshot turns this loop pushed, for `imageHistory: "newest"`. */
+    const imageTurns: Array<{ index: number; name: string }> = [];
 
     for (;;) {
       if (signal.aborted) return { status: "cancelled" };
       if (Date.now() - started > maxWallMs) return { status: "failed", error: `I ran out of time after ${Math.round(maxWallMs / 1000)} seconds` };
 
-      const completion = await this.complete(model, messages, signal, started + maxWallMs);
-      if ("failure" in completion) return completion.failure;
-      const choice = completion.body.choices?.[0];
-      const message = choice?.message;
-      if (!message) return { status: "failed", error: "the server returned no choices" };
+      let turn: ChatTurn;
+      try {
+        turn = await transport.complete({ model, messages, tools: this.tools }, signal, started + maxWallMs, sink);
+      } catch (e) {
+        if (signal.aborted) return { status: "cancelled" };
+        return { status: "failed", error: `could not reach the server: ${(e as Error).message}` };
+      }
+      if (turn.finish === "error") {
+        if (turn.unready) {
+          this.ready = false;
+          this.readyDetail = turn.unready;
+        }
+        return { status: "failed", error: turn.error ?? "the server failed" };
+      }
+      if (turn.reasoning) sink.thinking(turn.reasoning.slice(0, 200));
+      if (turn.usage) sink.step({ kind: "note", text: usageNote(turn.usage) });
 
-      const calls = normalizeToolCalls(message.tool_calls);
-      const text = contentText(message.content);
-      messages.push({ role: "assistant", content: typeof message.content === "string" ? message.content : text || null, ...(calls.length ? { tool_calls: calls.map(({ id, type, function: fn }) => ({ id, type, function: fn })) } : {}) });
+      const calls = normalizeToolCalls(turn.toolCalls);
+      const text = turn.content;
+      messages.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls.map(({ id, type, function: fn }) => ({ id, type, function: fn })) } : {}) });
 
       if (calls.length === 0) {
-        if (choice.finish_reason === "length" && !text) return { status: "failed", error: "the answer was cut off by the token limit" };
-        if (choice.finish_reason === "content_filter") return { status: "failed", error: "the server's content filter declined" };
+        if (turn.finish === "length" && !text) return { status: "failed", error: "the answer was cut off by the token limit" };
+        if (turn.finish === "content_filter") return { status: "failed", error: "the server's content filter declined" };
         const summary = text || "done.";
         // History keeps the words and the regions, not the pixels — so it must not say "attached image".
         this.remember(historyPrompt(task, this.opts.userName), summary);
@@ -366,15 +589,28 @@ export class OpenAICompatibleBrain implements Brain {
       if (signal.aborted) return { status: "cancelled" };
       steps += calls.length;
       if (steps > maxSteps) return { status: "failed", error: `I stopped after ${maxSteps} tool calls without finishing` };
-      // Look-only calls run together, anything that acts runs in order (batch.ts).
-      const outcomes = await runToolBatch(this.opts.runner, calls.map((c) => ({ name: c.function.name, input: c.args })), { signal, before: (c) => sink.thinking(progressLine(c.name, c.input)) });
+      // Look-only calls run together, anything that acts runs in order (batch.ts). A call
+      // whose arguments were not JSON never reaches the runner: it gets an error result.
+      const runnable = calls.filter((c) => !c.bad);
+      const outcomes = await runToolBatch(this.opts.runner, runnable.map((c) => ({ name: c.function.name, input: c.args })), { signal, before: (c) => sink.thinking(progressLine(c.name, c.input)) });
       if (signal.aborted) return { status: "cancelled" };
-      for (const [i, call] of calls.entries()) {
-        const r = outcomes[i]?.result ?? { kind: "error" as const, message: "cancelled before it ran" };
+      let ran = 0;
+      for (const call of calls) {
+        if (call.bad) {
+          messages.push({ role: "tool", tool_call_id: call.id, content: `arguments were not valid JSON: ${call.rawArgs.slice(0, 200)}` });
+          continue;
+        }
+        const r = outcomes[ran++]?.result ?? { kind: "error" as const, message: "cancelled before it ran" };
         messages.push({ role: "tool", tool_call_id: call.id, content: this.toolText(call.function.name, r) });
         if (r.kind === "image" && this.capabilities.images) images.push({ name: call.function.name, result: r });
       }
       if (images.length > 0) {
+        if (this.opts.imageHistory === "newest") {
+          // A small window is not filled with old pixels: earlier screenshot turns become one line each.
+          for (const old of imageTurns) messages[old.index] = { role: "user", content: `[screenshot from ${old.name}, superseded]` };
+          imageTurns.length = 0;
+        }
+        imageTurns.push({ index: messages.length, name: images[images.length - 1]!.name });
         // Tool messages are text-only in Chat Completions; the pixels ride in the next user turn.
         messages.push({
           role: "user",
@@ -412,62 +648,6 @@ export class OpenAICompatibleBrain implements Brain {
       return `${name} took a ${r.width}x${r.height} px screenshot${r.note ? ` (${r.note})` : ""}, but this server cannot receive images. Use list_windows, frontmost_app, read_focused_text and element_at to learn what is on screen instead.`;
     }
     return resultText(r);
-  }
-
-  /**
-   * One Chat Completions request, retried on 429/502/503/529 (a burst limit or a
-   * gateway blip is not a reason to fail the task) as long as Retry-After and the
-   * wall budget allow. Each attempt is bounded by the request timeout and the
-   * time left before `deadline`.
-   */
-  private async complete(model: string, messages: ChatMessage[], signal: AbortSignal, deadline: number): Promise<{ body: ChatCompletion } | { failure: BrainResult }> {
-    const retries = Math.max(0, this.opts.requestRetries ?? 2);
-    const maxRetryAfter = this.opts.maxRetryAfterMs ?? 8000;
-    for (let attempt = 0; ; attempt++) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return { failure: { status: "failed", error: "I ran out of time" } };
-      const timeoutMs = Math.max(1000, Math.min(this.opts.requestTimeoutMs ?? 120_000, remaining));
-      let res: Response;
-      try {
-        res = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
-          method: "POST",
-          headers: this.headers(),
-          body: JSON.stringify({ model, messages, tools: this.tools, tool_choice: "auto" }),
-          signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
-        });
-      } catch (e) {
-        if (signal.aborted) return { failure: { status: "cancelled" } };
-        const err = e as Error;
-        if (err.name === "TimeoutError") return { failure: { status: "failed", error: `the server did not answer within ${Math.round(timeoutMs / 1000)} seconds` } };
-        return { failure: { status: "failed", error: `could not reach the server: ${err.message}` } };
-      }
-      let body: unknown;
-      try {
-        body = await res.json();
-      } catch (e) {
-        if (signal.aborted) return { failure: { status: "cancelled" } };
-        body = undefined;
-        if (res.ok) return { failure: { status: "failed", error: `the server sent a non-JSON reply (${(e as Error).message})` } };
-      }
-      if (res.status === 401 || res.status === 403) {
-        this.ready = false;
-        this.readyDetail = `the server rejected the API key (${res.status})`;
-        return { failure: { status: "failed", error: this.readyDetail } };
-      }
-      const transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 529;
-      if (transient && attempt < retries) {
-        const wait = retryAfterMs(res.headers, attempt);
-        if (wait <= maxRetryAfter && Date.now() + wait < deadline) {
-          log.info(`${res.status} from ${this.baseUrl}; retrying in ${wait}ms (${retries - attempt} left)`);
-          const aborted = await sleep(wait, signal);
-          if (aborted) return { failure: { status: "cancelled" } };
-          continue;
-        }
-      }
-      if (res.status === 429) return { failure: { status: "failed", error: "the server is rate limiting us; try again in a moment" } };
-      if (!res.ok) return { failure: { status: "failed", error: `server error ${res.status}: ${errorMessage(body, res.status)}` } };
-      return { body: (body ?? {}) as ChatCompletion };
-    }
   }
 
   private remember(prompt: string, answer: string): void {
@@ -508,7 +688,7 @@ function retryAfterMs(headers: Headers, attempt: number): number {
 }
 
 /** Resolves true if the signal fired first. */
-function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+export function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve(true);
     const timer = setTimeout(() => {

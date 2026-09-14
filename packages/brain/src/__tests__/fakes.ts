@@ -73,12 +73,34 @@ export interface FakeServer {
   close(): Promise<void>;
 }
 
+/** A JSON answer, after `delayMs` when set. */
+export interface FakeJson {
+  status: number;
+  json: unknown;
+  delayMs?: number;
+}
+/**
+ * A streamed answer: each item is one line of `application/x-ndjson`, written
+ * `delayMs` apart (default 5 ms; an array gives the wait before each item). With
+ * `hang` the stream stays open after the last item until the client goes away —
+ * a model that went quiet.
+ */
+export interface FakeNdjson {
+  status: number;
+  ndjson: unknown[];
+  delayMs?: number | number[];
+  hang?: boolean;
+}
+export type FakeAnswer = FakeJson | FakeNdjson | "hang";
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 /**
  * An in-process HTTP server whose behaviour is a function of the request. Return
- * `{ status, json }` to answer, or `"hang"` to hold the response open until the
- * client goes away (for cancel tests).
+ * `{ status, json }` to answer, `{ status, ndjson }` to stream lines, or `"hang"`
+ * to hold the response open until the client goes away (for cancel tests).
  */
-export async function fakeServer(route: (req: Seen, res: ServerResponse) => { status: number; json: unknown } | "hang"): Promise<FakeServer> {
+export async function fakeServer(route: (req: Seen, res: ServerResponse) => FakeAnswer): Promise<FakeServer> {
   const seen: Seen[] = [];
   const waiters: Array<{ n: number; resolve: (s: Seen) => void }> = [];
   const server: Server = createServer((req, res) => {
@@ -106,8 +128,26 @@ export async function fakeServer(route: (req: Seen, res: ServerResponse) => { st
         req.socket.once("close", () => res.destroy());
         return;
       }
-      res.writeHead(out.status, { "content-type": "application/json" });
-      res.end(JSON.stringify(out.json));
+      if ("ndjson" in out) {
+        req.socket.once("close", () => res.destroy());
+        void (async () => {
+          res.writeHead(out.status, { "content-type": "application/x-ndjson" });
+          for (const [i, item] of out.ndjson.entries()) {
+            const ms = Array.isArray(out.delayMs) ? out.delayMs[i] ?? 5 : out.delayMs ?? 5;
+            if (ms > 0) await wait(ms);
+            if (res.destroyed || req.socket.destroyed) return;
+            res.write(`${JSON.stringify(item)}\n`);
+          }
+          if (!out.hang && !res.destroyed) res.end();
+        })();
+        return;
+      }
+      void (async () => {
+        if (out.delayMs) await wait(out.delayMs);
+        if (res.destroyed || req.socket.destroyed) return;
+        res.writeHead(out.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(out.json));
+      })();
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

@@ -90,6 +90,10 @@ export interface Brain {
    * one-line detail. Optional; a brain without one is warm by construction or per task.
    */
   warmUp?(): Promise<{ readonly warm: boolean; readonly detail: string }>;
+  /** False when this brain cannot take pixels (a text-only local model): the engine skips the pre-warm screenshot. Absent = true. */
+  readonly acceptsImages?: boolean;
+  /** Jarhead is going to sleep: let the weights go (Ollama keep_alive 0). Optional; never throws. */
+  cool?(): Promise<void>;
 }
 
 /**
