@@ -41,7 +41,8 @@ export type { DelegationTimingsExtra, ReflexSource } from "./delegator.ts";
 // Threads pass (2026-09-13): the timings helper both the Delegator and the engine's threads stamp with, the tail/thread reflex grammar, the thread tool table.
 export { stampStep, ACTING_TOOLS, MAX_ROUND_TRIP_SAMPLES } from "./timings.ts";
 export type { TimingsExtra, StampOptions } from "./timings.ts";
-export { parseReflexTail, TAIL_KINDS, FILLER_HEAD } from "./reflex.ts";
+export { parseReflexTail, TAIL_KINDS, FILLER_HEAD, FOCUS_APPLESCRIPT } from "./reflex.ts";
+export { foreignModel, codexModel } from "./models.ts";
 export type { ReflexContext } from "./reflex.ts";
 export { THREAD_SPECS, WORKER_TOOL_ALIASES, THREAD_TOOL_NAMES, threadToolName, OBSERVATION_CLAUSE } from "./tools.ts";
 export { STOP_NAME_WAIT_MS, NAMED_STOP_FRAGMENT_ECHO_MS } from "./delegator.ts";

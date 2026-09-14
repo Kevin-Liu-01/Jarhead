@@ -6,6 +6,7 @@ import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
 import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
+import { foreignModel } from "./models.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { attachmentsPreamble, attachmentsRecap, loadAttachments } from "./attachments.ts";
 import { runToolBatch } from "./batch.ts";
@@ -54,13 +55,12 @@ export interface AnthropicBrainOptions {
 
 /**
  * Settings.brainModel can still hold another brain's model after a switch in
- * Settings; an OpenAI id would only 404 here, so those fall back to the default.
- * Anything else (a Claude id, a gateway's alias) goes through untouched.
+ * Settings; an OpenAI id would only 404 here, so those fall back to the default
+ * (`foreignModel`). Anything else (a Claude id, a gateway's alias) goes through untouched.
  */
 export function resolveAnthropicModel(model: string | undefined): string {
   const m = model?.trim();
-  if (!m) return DEFAULT_ANTHROPIC_MODEL;
-  if (/^(gpt-|o\d|chatgpt|gemini|llama|mistral|qwen|deepseek)/i.test(m)) return DEFAULT_ANTHROPIC_MODEL;
+  if (!m || foreignModel("anthropic-api", m)) return DEFAULT_ANTHROPIC_MODEL;
   return m;
 }
 

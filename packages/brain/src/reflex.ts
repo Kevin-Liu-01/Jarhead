@@ -133,7 +133,13 @@ const POLITE_TAIL = /(?:[,\s]+(?:please|now|for me|thanks|thank you|jarhead|jar 
  * this list is also what may precede a stop word: "oh stop", "actually, cancel" cut
  * (pinned in reflex-grammar.test.ts as a decision, not a side effect).
  */
-export const FILLER_HEAD = /^(?:(?:um+|uh+|erm|hmm+|so|like|okay|ok|alright|all right|hey|yeah|yes|yep|oh|awesome|great|nice|cool|well|basically|actually|anyway)[,.!\s]+)+(?=\S)/i;
+export const FILLER_HEAD = /^(?:(?:um+|uh+|erm|hmm+|so|like|okay|ok|alright|all right|hey|yeah|yes|yep|oh|awesome|great|nice|cool|well|basically|actually|anyway|and|then|now)[,.!\s]+)+(?=\S)/i;
+/**
+ * An AppleScript that drives the screen rather than an app's dictionary: keystrokes,
+ * clicks, activation. The lane runner routes such a script through the screen lease;
+ * the speed reader counts it as an acting step.
+ */
+export const FOCUS_APPLESCRIPT = /\b(keystroke|key code|click|set value|set the value|perform action|activate|open location|reopen|set frontmost)\b/i;
 /** Transcriber tags in the words ("[chuckle]", "(laughs)"): never part of a command. */
 const TAGS = /\s*[[(](?:chuckles?|laughs?|laughter|sighs?|coughs?|inaudible|pause|music|noise|clears throat|crosstalk)[\])]\s*/gi;
 

@@ -10,7 +10,12 @@ import {
   THREAD_SPAWN_DEPTH,
   THREAD_STATUSES,
   THREAD_TERMINAL,
+  SETTINGS_KEYS,
+  DEFAULT_SETTINGS,
+  grantOf,
   isEngineCommand,
+  type Permissions,
+  type Settings,
   type Thread,
   type ThreadEvent,
   type ThreadStatus,
@@ -24,15 +29,40 @@ import {
 
 const THREAD_COMMANDS = ["thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say"] as const;
 
-test("isEngineCommand accepts exactly the eight thread.* commands (and worker.stop for one release); a brain tool name or a stray thread.* verb is not a command", () => {
+test("isEngineCommand accepts exactly the eight thread.* commands; worker.stop and wake are not commands; a brain tool name or a stray thread.* verb is not a command", () => {
   for (const type of THREAD_COMMANDS) assert.ok(isEngineCommand({ type, threadId: "t_1" }), `${type} is a surface command`);
   assert.equal(THREAD_COMMANDS.length, 8);
-  assert.ok(isEngineCommand({ type: "worker.stop", workerId: "w_1" }), "the alias stays a release");
+  assert.equal(isEngineCommand({ type: "worker.stop", workerId: "w_1" }), false, "threads are the vocabulary; there is no worker verb");
+  assert.equal(isEngineCommand({ type: "wake" }), false, "`go` is the verb that wakes");
+  assert.ok(isEngineCommand({ type: "go" }));
+  assert.ok(isEngineCommand({ type: "sleep", cause: "command" }));
   for (const type of ["thread_start", "thread_stop", "thread_wait", "thread_read", "thread.nonsense", "thread", "threads.open"]) {
     assert.equal(isEngineCommand({ type }), false, `${type} is refused`);
   }
   assert.equal(isEngineCommand("thread.stop"), false, "a bare string is not a command");
   assert.equal(isEngineCommand(null), false);
+});
+
+test("SETTINGS_KEYS names every key of Settings once, DEFAULT_SETTINGS has a value for each, and nothing else", () => {
+  const defaults = DEFAULT_SETTINGS as Settings;
+  assert.equal(new Set(SETTINGS_KEYS).size, SETTINGS_KEYS.length, "no key twice");
+  const inDefaults = Object.keys(defaults).sort();
+  const required = SETTINGS_KEYS.filter((k) => defaults[k] !== undefined).sort();
+  assert.deepEqual(inDefaults, required, "every key with a default is listed and every listed key with a value has a default");
+  for (const k of inDefaults) assert.ok((SETTINGS_KEYS as readonly string[]).includes(k), `${k} is a listed key`);
+  for (const retired of ["workers", "replayFinish"]) assert.equal((SETTINGS_KEYS as readonly string[]).includes(retired), false, `${retired} is not a setting`);
+});
+
+test("grantOf reads the row for a kind and answers unknown when the app has not read it yet", () => {
+  const none: Permissions = { all: [] };
+  assert.equal(grantOf(none, "microphone"), "unknown");
+  const some: Permissions = { all: [
+    { kind: "microphone", grant: "granted", ask: "prompt", required: true, label: "Microphone", why: "" },
+    { kind: "screenRecording", grant: "denied", ask: "settings", required: true, label: "Screen Recording", why: "" },
+  ] };
+  assert.equal(grantOf(some, "microphone"), "granted");
+  assert.equal(grantOf(some, "screenRecording"), "denied");
+  assert.equal(grantOf(some, "accessibility"), "unknown");
 });
 
 test("THREAD_TERMINAL is exactly done / failed / stopped; every status is either terminal or live; idle is a status (main between turns)", () => {

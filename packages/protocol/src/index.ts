@@ -63,57 +63,21 @@ export interface DelegationStep {
   readonly tool?: ToolStep;
   /** Path under the state dir; the Console loads it as an image. */
   readonly screenshotPath?: string;
-  /** The worker's name when one of the delegation's workers ran this step (absent: the main brain). */
-  readonly worker?: string;
+  /** The spawned thread's name when it ran this step on its parent's timeline; absent: main's. */
+  readonly thread?: string;
 }
-
-// ---- workers: a second pair of hands inside one delegation -----------------
-//
-// A Worker is not an Agent (agents are Kevin's coding sessions). The main brain spawns a
-// worker with `worker_start` when Kevin asks for two independent things at once ("tell
-// Ben on Slack I'm late and play Focus on Spotify"). A worker is its own brain over the
-// same tools and policy, in one of two lanes: `background` never touches the pointer,
-// keyboard or frontmost app (Apple events, browser, files, shell, web only); `screen`
-// waits its turn for the one screen lease. Workers never narrate: the voice speaks one
-// short line when the split happens and one when each worker finishes. Every stop verb
-// (interrupt, Stop, Pause, sleep) cancels every worker. At most WORKER_MAX at once.
-export type WorkerLane = "background" | "screen";
-export type WorkerStatus = "starting" | "working" | "waiting-screen" | "awaiting-confirmation" | "done" | "failed" | "cancelled";
-export interface Worker {
-  /** Unguessable ("w_…"); also the lane id a worker's tool calls carry on the wire. */
-  readonly id: string;
-  /** Spoken as-is ("Spotify"); ≤ 16 chars, unique within its delegation. */
-  readonly name: string;
-  /** The parent delegation. */
-  readonly delegationId: string;
-  /** The main brain's brief, redacted. */
-  readonly task: string;
-  readonly lane: WorkerLane;
-  readonly status: WorkerStatus;
-  /** Last line or failure reason, ≤ 200 chars. */
-  readonly detail?: string;
-  readonly startedAt: number;
-  readonly doneAt?: number;
-  readonly steps: number;
-  /** The app it is working in, for the blob (one release; `Thread.app` is the record). */
-  readonly app?: string;
-}
-/** Workers alive at once, per delegation and in total. */
-export const WORKER_MAX = 2;
-/** How long a finished worker stays in the snapshot for the Console before it is dropped. */
-export const WORKER_LINGER_MS = 30_000;
 
 // ---- threads: independent lines of work, each as capable as the main conversation ----
 //
-// Kevin (2026-09-13): "we should be able to see independent workers or threads and convos …
-// multiple blobs doing their own work … just as feature rich as if it were the main thread
-// … keep track of those using extremely performant data structure representations".
+// Kevin (2026-09-13) asked to see independent threads and conversations: "multiple blobs
+// doing their own work … just as feature rich as if it were the main thread … keep track of
+// those using extremely performant data structure representations".
 // A Thread has its own brain (a warm codex app-server process), its own conversation
 // (Delegation records tagged with `threadId`, streamed to the Console per viewer), its
 // own lane, budget and blob. `main` is the voice's own thread. The engine keeps one
 // table (Maps by id, name and app; an event ring) that answers "what is Spotify doing"
-// and "stop the Slack one" without a model call. Workers (above) are threads spawned by
-// a thread; the `Worker` shapes stay one release as aliases.
+// and "stop the Slack one" without a model call. A thread may spawn threads of its own
+// (depth THREAD_SPAWN_DEPTH); every spawned thread is a Thread like main.
 export const MAIN_THREAD_ID = "main";
 export type ThreadLane = "voice" | "screen" | "background";
 export const THREAD_STATUSES = ["idle", "queued", "starting", "thinking", "acting", "waiting-screen", "waiting-kevin", "paused", "done", "failed", "stopped"] as const;
@@ -134,7 +98,7 @@ export const THREAD_STEPS_MAX = 40;
 export const THREAD_SECONDS_DEFAULT = 180;
 export const THREAD_SECONDS_MAX = 300;
 export interface Thread {
-  /** "main" or "t_…" — also the `worker` field a tool.run frame carries. */
+  /** "main" or "t_…" — also the `thread` field a tool.run frame carries. */
   readonly id: string;
   /** ≤ 16 chars, unique among live threads (case-insensitive), spoken as-is. */
   readonly name: string;
@@ -470,8 +434,8 @@ export interface Settings {
   readonly ledgerRetentionDays: number;
   /** Days a day's screenshots stay live before the sweep moves them to the trash (0 = never). */
   readonly shotsRetentionDays: number;
-  /** Let the brain split independent work across workers (a second pair of hands). */
-  readonly workers: boolean;
+  /** Let the brain split independent work across threads. */
+  readonly threads: boolean;
   /** The language the voice speaks, whatever it hears (BCP-47; "en"). */
   readonly language: string;
   /** How the English is spoken; rendered as one line of the session's instructions. */
@@ -480,8 +444,6 @@ export interface Settings {
   readonly memory: boolean;
   /** Every acting tool answers with what is now in front (the observation line); off for the A/B. */
   readonly observe: boolean;
-  /** Let Jarhead re-run an armed action itself on Kevin's yes (rail-adjacent; unwired until named). */
-  readonly replayFinish: boolean;
   /** A typed line while asleep wakes Jarhead (opens a paid session). Off: refuse with a toast, keep the text. */
   readonly typedWakes: boolean;
   /** A new request naming an unclaimed app while main has acted: supersede (today) or spawn a thread. */
@@ -509,16 +471,29 @@ export const DEFAULT_SETTINGS: Settings = {
   orbHome: "notch",
   ledgerRetentionDays: 0,
   shotsRetentionDays: 14,
-  workers: true,
+  threads: true,
   language: "en",
   accent: "british",
   memory: true,
   observe: true,
-  replayFinish: false,
   typedWakes: false,
   threadOverflow: "supersede",
   warmThreads: 2,
 };
+
+/**
+ * Every key of Settings, in one place: what the engine reads from settings.json (any
+ * other key in the file is dropped and the file rewritten once) and what a patch may
+ * carry. The `satisfies` and the pin below keep it exhaustive: add a field to Settings
+ * and both fail to compile until the key is listed.
+ */
+export const SETTINGS_KEYS = [
+  "voice", "brain", "brainModel", "brainBaseUrl", "effort", "onboarded", "micDeviceId", "idleSleepMinutes", "autoWake", "orbPosition", "wake", "reflexes", "orbHome",
+  "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads",
+] as const satisfies readonly (keyof Settings)[];
+type SettingsKeysCover = Record<(typeof SETTINGS_KEYS)[number], 0>;
+const settingsKeysCoverEverything: Record<keyof Settings, 0> = {} as SettingsKeysCover;
+void settingsKeysCoverEverything;
 
 /**
  * What onboarding and the doctor need to know about the configuration, without
@@ -583,12 +558,14 @@ export interface PermissionInfo {
   readonly checkedAt?: number;
 }
 
+/** Every permission as the app last read it (the process TCC keys on); one row per kind. */
 export interface Permissions {
-  readonly microphone: Grant;
-  readonly screenRecording: Grant;
-  readonly accessibility: Grant;
-  /** The whole list, as the app last read it (the process TCC keys on); absent from older apps. */
-  readonly all?: readonly PermissionInfo[];
+  readonly all: readonly PermissionInfo[];
+}
+
+/** The grant a row records for `kind`; "unknown" when no row has been read yet. */
+export function grantOf(p: Permissions, kind: PermissionKind): Grant {
+  return p.all.find((row) => row.kind === kind)?.grant ?? "unknown";
 }
 
 // --------------------------------------------------------------- snapshot ---
@@ -630,8 +607,8 @@ export interface Snapshot {
   readonly connectors: readonly ConnectorHealth[];
   readonly settings: Settings;
   readonly permissions: Permissions;
-  /** Most recent problems, newest last. Cleared by the user. */
-  readonly problems: readonly string[];
+  /** Most recent problems, newest last: what kind, one line, and the one action that fixes it. Cleared by the user. */
+  readonly problems: readonly Problem[];
   readonly brainReady: boolean;
   readonly handsReady: boolean;
   readonly setup: SetupStatus;
@@ -644,21 +621,14 @@ export interface Snapshot {
   readonly pause?: PauseInfo;
   /** Live seconds billed today — closed sessions from the ledger plus the open one — for the meter. */
   readonly usageToday?: UsageToday;
-  /**
-   * The problems, typed: what kind, one line, and the one action that fixes it. `problems`
-   * (plain text) stays for older surfaces; this list is the same problems with their remedy.
-   */
-  readonly problemsTyped?: readonly Problem[];
   /** What the trash holds, for the Console ("3 days · 129 MB"; Reveal in Finder). */
   readonly trash?: TrashInfo;
   /** Agents Kevin hid from the rail (agent.hidden rows). */
   readonly hiddenAgents?: readonly string[];
-  /** The delegation's workers: running ones and those finished within WORKER_LINGER_MS. */
-  readonly workers?: readonly Worker[];
   /** What Jarhead remembers about Kevin: counts, mode, the last run, what the last turn used. */
   readonly memory?: MemorySummary;
   /** Every live thread (main first) and those finished within THREAD_LINGER_MS; ≤ THREADS_MAX. */
-  readonly threads?: readonly Thread[];
+  readonly threads: readonly Thread[];
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
@@ -700,9 +670,6 @@ export interface UsageToday {
   readonly seconds: number;
   readonly sessions: number;
 }
-
-/** GPT-Live-1 list price (docs/REDESIGN.md §1), for the meter. Billed per second. */
-export const LIVE_PRICE_PER_MINUTE_USD = 0.05;
 
 /**
  * One of Jarhead's own Live sessions as the ledger recorded it — the Console's
@@ -758,7 +725,6 @@ export type SettingsPatch = { readonly [K in keyof Settings]?: Settings[K] | nul
 
 /** Surface → engine. */
 export type EngineCommand =
-  | { readonly type: "wake" }
   /** Sleep: return to the notch and close the session. `cause` says why (absent = `command`); `phrase` is the cue Kevin said. */
   | { readonly type: "sleep"; readonly cause?: SleepCause; readonly phrase?: string }
   | { readonly type: "mute" }
@@ -796,8 +762,6 @@ export type EngineCommand =
   /** Run the retention sweep now (what it would move is logged first). */
   | { readonly type: "ledger.sweep" }
   | { readonly type: "agent.hide"; readonly agentId: string; readonly hidden: boolean }
-  /** Stop one worker (the Console's Stop on its row); the others and the session carry on. */
-  | { readonly type: "worker.stop"; readonly workerId: string }
   /** A remedy button pressed on a typed problem; the engine re-checks and clears it when fixed. */
   | { readonly type: "problem.retry"; readonly kind: ProblemKind }
   | { readonly type: "say-text"; readonly text: string }
@@ -897,6 +861,10 @@ export type OverlayCommand =
 /**
  * One line of ~/.jarhead/ledger/<date>.jsonl. Append-only; the Console is a view
  * over this. `at` is wall-clock ms.
+ *
+ * Day files written before 2026-09-13 also hold `worker` rows and `delegation.step`
+ * rows whose step says `worker`, not `thread`: readers fall through on a type or key
+ * they do not know and never check `row.type` exhaustively.
  */
 export type LedgerRow =
   | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }
@@ -914,8 +882,6 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "delegation.finished"; readonly delegationId: string; readonly status: DelegationStatus; readonly timings: DelegationTimings; readonly summary?: string }
   | { readonly at: number; readonly type: "problem"; readonly text: string }
   | { readonly at: number; readonly type: "agent"; readonly agent: AgentInfo }
-  /** A worker started or changed status (one row per change; `worker` is the whole record at that moment). */
-  | { readonly at: number; readonly type: "worker"; readonly worker: Worker }
   /** Jarhead went to sleep: why, the cue if spoken, the session it closed, whether the voice said its one-word farewell. Written before the close. */
   | { readonly at: number; readonly type: "sleep"; readonly cause: SleepCause; readonly phrase?: string; readonly sessionId?: string; readonly farewell?: boolean }
   // ---- memory audit rows: ids only (an item's text lives in the memory store, so a forgotten item's words never sit in a day file).
@@ -951,15 +917,10 @@ export type LedgerRow =
 
 // ------------------------------------------------------------ type guards ---
 
-export function isPhase(value: unknown): value is Phase {
-  return typeof value === "string" && (PHASES as readonly string[]).includes(value);
-}
-
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
-  "wake", "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
+  "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
   "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
-  "worker.stop",
   "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
   "thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say",
 ]);
