@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 // The Memory rail: what Jarhead durably knows about Kevin, as rows he can read, correct and
-// hide. Under Settings › Memory: a filter field with `k of n`, the segments Live | Forgotten |
+// hide. Under Settings › Memory: a `ConsoleFilterField` with `k of n`, the segments Live | Forgotten |
 // Archived, the kind chips with counts (`All 7 · fact 2 · pref 2 …`), at most thirty `ConsoleRow`s
 // (kind glyph · the sentence on two lines · the kind badge · `seen 4× · 3d` · the importance
 // meter · ⋯ at rest; the scores, subjects and sources as the row's card), ↑↓ ⏎ over the rows
@@ -187,6 +187,7 @@ struct MemoryRailList: View {
     @State private var editingId: String?
     @State private var task: Task<Void, Never>?
     @StateObject private var focus = ConsoleListFocus()
+    @FocusState private var filterFocused: Bool
 
     /// At most this many rows; the search narrows what does not fit.
     static let maxRows = 30
@@ -218,9 +219,10 @@ struct MemoryRailList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MemoryFilterField(query: $query, placeholder: MemoryWords.filterPlaceholder(total),
-                              count: ConsoleListModel.countWord(shown: shown.count, of: total, typing: filtering),
-                              clear: { query = ""; kindFilter = nil }, move: { step($0) }, submit: { if let id = focus.id { edit(id) } })
+            ConsoleFilterField(text: $query, placeholder: MemoryWords.filterPlaceholder(total),
+                               count: ConsoleListModel.countWord(shown: shown.count, of: total, typing: filtering),
+                               focus: $filterFocused, accessibilityLabel: MemoryWords.searchPlaceholder,
+                               onMove: move, onSubmit: { if let id = focus.id { edit(id) } }, onExit: clearFilter)
             ConsoleSegments(value: segment, options: segments, title: ConsoleTheme.memoryStateLabel,
                             pick: { segment = $0 }, accessibilityLabel: "Memory state: \(ConsoleTheme.memoryStateLabel(segment))")
             if let items, !items.isEmpty {
@@ -247,9 +249,17 @@ struct MemoryRailList: View {
     }
 
     /// ↑↓ from the filter field: the highlight moves over the rows (the ring shows; the caret stays).
-    private func step(_ delta: Int) {
-        guard let next = ConsoleListModel.step(focus.id, by: delta, in: shown.map(\.id)) else { return }
+    private func move(_ direction: MoveCommandDirection) {
+        let delta = direction == .down ? 1 : (direction == .up ? -1 : 0)
+        guard delta != 0, let next = ConsoleListModel.step(focus.id, by: delta, in: shown.map(\.id)) else { return }
         focus.set(next, keyboard: true, why: delta > 0 ? "down" : "up")
+    }
+
+    /// Esc in the field: the words and the kind chip both let go; the caret leaves.
+    private func clearFilter() {
+        query = ""
+        kindFilter = nil
+        filterFocused = false
     }
 
     /// Return on a row: the inline edit.
@@ -407,47 +417,6 @@ private struct MemoryRailBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Motion.gentle, value: shown.map(\.id))
         .animation(Motion.fade, value: loading && items == nil)
-    }
-}
-
-/// The rail's filter: the magnifier inside the box, the placeholder with the count, `k of n`
-/// in the trailing slot, × while there is text. ↑↓ step the rows' highlight, Return runs the
-/// focused row, Esc clears. (Folds into Builder B's `ConsoleFilterField` when it lands.)
-private struct MemoryFilterField: View {
-    @Binding var query: String
-    let placeholder: String
-    let count: String
-    let clear: () -> Void
-    let move: (Int) -> Void
-    let submit: () -> Void
-
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(ConsoleTheme.fg3).frame(width: 12)
-            TextField(placeholder, text: $query)
-                .focused($focused)
-                .onSubmit(submit)
-                .onExitCommand { clear(); focused = false }
-                // ↑↓ before the field editor sees them (a single-line field swallows moveDown:).
-                .onKeyPress(.downArrow) { move(1); return .handled }
-                .onKeyPress(.upArrow) { move(-1); return .handled }
-                .accessibilityLabel(MemoryWords.searchPlaceholder)
-            Text(count).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
-                .contentTransition(ConsoleMotion.numeric)
-                .animation(Motion.snappy, value: count)
-            if !query.isEmpty {
-                Button(action: clear) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 18))
-                    .consoleHelp(MemoryWords.clearSearch)
-                    .accessibilityLabel(MemoryWords.clearSearch)
-                    .transition(.opacity)
-            }
-        }
-        .consoleField(height: 24, focused: focused)
-        .font(ConsoleTheme.sans(12))
-        .animation(Motion.fade, value: query.isEmpty)
     }
 }
 

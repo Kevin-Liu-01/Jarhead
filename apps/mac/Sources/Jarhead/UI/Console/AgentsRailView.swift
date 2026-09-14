@@ -762,9 +762,10 @@ struct AgentsRail: View, Equatable {
 // MARK: - The head: the title, or the search box
 
 /// 40pt. At rest the section head — "Jarhead", the count, a magnifier; while searching the
-/// field with its × in the same row. The two crossfade (Motion.swap); ⌘F (the root's key
-/// equivalent) and the magnifier open it and put the caret in the field, Esc closes it, and
-/// Return opens the first hit.
+/// `ConsoleFilterField` (the magnifier inside, `k of n`, × while text) with the closing × in the
+/// same row. The two crossfade (Motion.swap); ⌘F (the root's key equivalent) and the magnifier
+/// open it and put the caret in the field, Esc closes it, ↑↓ walk the hits and Return opens the
+/// focused one.
 private struct JarheadRailHead: View {
     let count: Int?
     /// `k of n` while the search has answered.
@@ -781,8 +782,11 @@ private struct JarheadRailHead: View {
         ZStack {
             if session.searchOpen {
                 HStack(spacing: iconGap) {
-                    ConsoleIcon(name: "magnifyingglass")
-                    field
+                    ConsoleFilterField(text: Binding(get: { session.searchQuery }, set: { actions.search($0) }), placeholder: AgentsRailWords.searchPlaceholder,
+                                       count: hitCount, focus: $focused, accessibilityLabel: AgentsRailWords.searchPlaceholder,
+                                       onMove: { if $0 == .down { move(1) } else if $0 == .up { move(-1) } }, onSubmit: openFocused,
+                                       onExit: { withAnimation(Motion.gentle) { session.closeSearch() } })
+                        .animation(Motion.snappy, value: hitCount)
                     Button { withAnimation(Motion.gentle) { session.closeSearch() } } label: {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                     }
@@ -809,28 +813,6 @@ private struct JarheadRailHead: View {
         .frame(height: 40)
         .animation(Motion.gentle, value: session.searchOpen)
         .onChange(of: session.searchFocusRequest) { DispatchQueue.main.async { focused = true } }
-    }
-
-    /// The box: the query, `k of n` at its end; ↑↓ walk the hits before the field editor sees them
-    /// (a single-line field swallows moveDown:), Return opens the focused row, Esc closes.
-    private var field: some View {
-        HStack(spacing: 6) {
-            TextField(AgentsRailWords.searchPlaceholder, text: Binding(get: { session.searchQuery }, set: { actions.search($0) }))
-                .focused($focused)
-                .onSubmit(openFocused)
-                .onExitCommand { withAnimation(Motion.gentle) { session.closeSearch() } }
-                .onKeyPress(.downArrow) { move(1); return .handled }
-                .onKeyPress(.upArrow) { move(-1); return .handled }
-                .accessibilityLabel(AgentsRailWords.searchPlaceholder)
-            if let hitCount {
-                Text(hitCount).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
-                    .contentTransition(ConsoleMotion.numeric)
-                    .transition(.opacity)
-            }
-        }
-        .consoleField(height: 24, focused: focused)
-        .font(ConsoleTheme.sans(12))
-        .animation(Motion.snappy, value: hitCount)
     }
 }
 
