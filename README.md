@@ -23,7 +23,7 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 🎙️ **Talks like a person.** GPT-Live-1 listens and speaks at the same time; a spoken "stop" is the interrupt, not the end. About a second to the first word back, interruptible mid-sentence.
 - 🔒 **Wakes on a word, behind Touch ID.** Asleep, the app runs Apple's on-device recogniser for "jarhead" — nothing billed, nothing leaves the Mac. Then Touch ID, Apple Watch, your Mac password or a passphrase (PBKDF2). Three misses lock the gate for a minute.
 - ⏯️ **One transport: Go · Pause · Stop.** Pause and Stop both close the paid session, so the meter stops the moment you press. Pause holds the conversation; Go (or the wake word, no auth asked twice) resumes it in a new session with the transcript as continuity.
-- 🧠 **The brain is a setting.** `codex` (your ChatGPT login, a resident `codex app-server` thread), `claude-code` (headless Agent SDK), `anthropic-api`, `openai-compatible` (OpenAI, OpenRouter, Ollama, LM Studio, vLLM…), `openai-responses`, or `auto`. Same tools, same policy, same constitution.
+- 🧠 **The brain is a setting.** `codex` (your ChatGPT login, a resident `codex app-server` thread), `claude-code` (headless Agent SDK), `anthropic-api`, `openai-compatible` (OpenAI, OpenRouter, vLLM, a hosted server…), `openai-responses`, `local` (a model on this Mac through Ollama, LM Studio or llama.cpp — pick it in Settings; memory follows; Jarhead never pulls or installs; see `docs/LOCAL.md`), or `auto`. Same tools, same policy, same constitution.
 - 🖱️ **Uses the Mac.** 67 tools in nine families — computer (screen, mouse, keyboard) · desktop (apps, windows, controls) · browser · agents · threads · shell, progress and memory · system (files, web, AppleScript, clipboard) · self-edit · drawing. The hands are AX-first: find a control by label, read the focused text, click the element, screenshot only to verify.
 - ⚡ **Reflexes under the model.** An on-device ear runs beside the voice; unambiguous commands (scroll, page, keys, tabs, "open Safari", "click Save", "search the wiki for design", dictation) go straight through the policy-gated hands in milliseconds. The model is told afterwards.
 - 🧵 **Threads: several things at once, each a full Jarhead.** "Tell Ben on Slack I'm late and put on Focus on Spotify" splits into named threads — Spotify on a background lane by Apple events, Slack on the screen lane — each with its own brain, conversation, budget and blob (up to three beside the main one). Ask "what is Spotify doing" or say "stop the Slack one" and the engine's table answers with no model call and without ending what you were saying; every thread gets the same prompt, memory, screenshots and confirmation handshake as the main one.
@@ -203,7 +203,7 @@ flowchart LR
     E["Engine"]
     L["Live client"]
     DEL["Delegator + Reflexes"]
-    B["Brain<br/>codex · claude-code · anthropic-api<br/>openai-compatible · openai-responses"]
+    B["Brain<br/>codex · claude-code · anthropic-api<br/>openai-compatible · openai-responses · local"]
     TR["ToolRunner + policy"]
     W["Threads<br/>table · scheduler · brain pool"]
     LED["Ledger<br/>~/.jarhead/ledger"]
@@ -308,7 +308,11 @@ the menu-bar icon › *Set Up…*.
 ```bash
 pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), threads N (M live), memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
-pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model)
+pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model; the local group: server · model · embeddings; the privacy group: the four "where words go" rows)
+pnpm jarhead models [--json]        # the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use; no daemon needed; nothing is pulled
+pnpm jarhead brain                  # the brain setting, what runs now, and where words go (the four data-path rows)
+pnpm jarhead brain local [<model>] [--server URL]   # pick a local model as the brain through the running daemon (memory follows); empty model = best fit
+pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
 pnpm jarhead cmd go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop|thread.pause|thread.resume   # thread.* take <id|name>
 pnpm jarhead ledger [YYYY-MM-DD]    # a day, no daemon needed
 pnpm jarhead ledger search "<words>" [--limit N]
@@ -375,7 +379,7 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 |---|---|
 | `OPENAI_API_KEY` | the voice; the `openai-responses` brain |
 | `ANTHROPIC_API_KEY` | the `anthropic-api` brain |
-| `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain |
+| `JARHEAD_BRAIN_BASE_URL`, `JARHEAD_BRAIN_API_KEY` | the `openai-compatible` brain; under `local`, the URL pins the server instead of discovering it and the key is an LM Studio token — Ollama needs neither |
 | `JARHEAD_BRAIN`, `JARHEAD_BRAIN_MODEL`, `JARHEAD_BRAIN_EFFORT` | defaults for what Setup also sets |
 | `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` (English; the accent is a setting) |
 | `JARHEAD_MEMORY_MODEL` | the Responses model that reads closed conversations for memory; unset, the memory module's default mini-class id runs (`jarhead doctor` checks it against your key's list and names the best `*-mini` to pin) |
@@ -435,8 +439,8 @@ Working rules for anyone — or anything — editing this repo: [`AGENTS.md`](AG
 ## Costs
 
 - **The voice** is GPT-Live-1 at **$0.05 per minute, billed per second** of open session, muted or not — $3 an hour of talking. Asleep costs nothing: the wake word runs on-device. Pause and Stop close the session; Mute does not. The meter is on the capsule, the island and the Console.
-- **The brain**: `codex` runs on your ChatGPT plan through Codex Desktop or `codex login` — no API dollars; `claude-code` on your Claude login; `anthropic-api`, `openai-compatible` and `openai-responses` bill their own APIs.
-- **Memory** is a cap, not a saving: at most 250 tokens ride each delegation (about 20k a day at 80 delegations, on the brain's plan) and at most 120 each session start (free — the voice bills per second). Reading a closed conversation costs a mini-class model call on your OpenAI key, at most a few times a day; embeddings are fractions of a cent. Nothing existing shrinks; what you save is explaining yourself again. With no key: rules and keywords, nothing leaves the Mac.
+- **The brain**: `codex` runs on your ChatGPT plan through Codex Desktop or `codex login` — no API dollars; `claude-code` on your Claude login; `anthropic-api`, `openai-compatible` and `openai-responses` bill their own APIs; `local` bills nothing; the voice still does.
+- **Memory** is a cap, not a saving: at most 250 tokens ride each delegation (about 20k a day at 80 delegations, on the brain's plan) and at most 120 each session start (free — the voice bills per second). Reading a closed conversation costs a mini-class model call on your OpenAI key, at most a few times a day; embeddings are fractions of a cent. Nothing existing shrinks; what you save is explaining yourself again. With no key: rules and keywords, nothing leaves the Mac. With a local brain: the brain model reads closed conversations and a local embedding model matches items when one is pulled (`ollama pull embeddinggemma`), else keywords — nothing leaves for memory.
 - **The benchmarks** spend nothing by default: `pnpm jarhead bench` redirects the acting op to a harmless read, and `bench --brain` runs on Codex (your plan) and refuses when Codex is not signed in unless you pass `--allow-api-spend`.
 
 ## Docs

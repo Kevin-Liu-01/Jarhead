@@ -429,6 +429,8 @@ const DESTRUCTIVE_SHELL: ReadonlyArray<{ readonly re: RegExp; readonly why: stri
   { re: /\bgit\s+branch\s+(-\w*D\b|--delete\s+--force)/, why: "that deletes an unmerged branch" },
   { re: /\b(npm|pnpm|yarn|cargo|gem|twine|poetry)\s+(publish|unpublish|push|upload)\b/, why: "publishing leaves this machine and cannot be taken back" },
   { re: /\bbrew\s+(uninstall|remove|rm|autoremove|zap)\b/, why: "uninstalls software" },
+  { re: /\bollama\s+(pull|rm|create|push|cp)\b/, why: "fetches, changes or removes local model weights (gigabytes) — ask first" },
+  { re: /\blms\s+(get|import|rm)\b/, why: "fetches or removes local model weights — ask first" },
   { re: /\bdefaults\s+(write|delete|import)\b/, why: "changes app or system preferences" },
   { re: /\blaunchctl\b/, why: "launchctl changes what runs at login" },
   { re: /(^|[\s;&|(])killall\b/, why: "killall stops processes Jarhead did not start" },

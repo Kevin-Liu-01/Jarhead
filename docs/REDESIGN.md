@@ -49,7 +49,7 @@ own computer-use toolset is mounted beside them.
                  ┌──────────── jarheadd (node, packages/daemon) ────────────┐
                  │ Engine: Live session ─ Brain ─ Hands ─ Agents ─ Policy ─ Ledger │
                  └───────┬───────────────┬──────────────────────┬─────────────────┘
-                         │ wss           │ brain: auto → codex · claude-code · anthropic-api · openai-compatible · openai-responses
+                         │ wss           │ brain: auto → codex · claude-code · anthropic-api · openai-compatible · openai-responses; local (explicit)
                     GPT-Live-1        (Codex CLI / Agent SDK / HTTP APIs, all over ToolRunner)   │ ~/.claude · ~/.codex · ps → agent sessions on this Mac
 ```
 
@@ -65,10 +65,14 @@ over MCP), `claude-code` (the Agent SDK with his Claude login; inherits his skil
 and CLAUDE.md), `anthropic-api` (the Messages API with `ANTHROPIC_API_KEY`, the
 67 tools as plain tool definitions), `openai-compatible` (Chat Completions at
 `Settings.brainBaseUrl` / `JARHEAD_BRAIN_BASE_URL` with `JARHEAD_BRAIN_API_KEY`:
-OpenAI, OpenRouter, Ollama, LM Studio, vLLM…) and `openai-responses` (Live's own
-Responses delegation, same tools as function tools). `auto`, the default, walks
-that order (`AUTO_BRAIN_ORDER`) and takes the first that is configured *and*
-starts; the winner is `snapshot.setup.brainResolved`. What is skipped quietly,
+OpenAI, OpenRouter, vLLM, a hosted server…), `openai-responses` (Live's own
+Responses delegation, same tools as function tools) and `local` (a model on this
+Mac: Ollama's native `/api/chat`, LM Studio or llama.cpp over Chat Completions, at
+a root the engine discovers on 127.0.0.1:11434 / :1234 / :8080 or `brainBaseUrl`
+pins; explicit only). `auto`, the default, walks the cloud kinds in
+`AUTO_BRAIN_ORDER` and takes the first that is configured *and* starts — never
+`local`, because a server left running is not a choice Kevin made; the winner is
+`snapshot.setup.brainResolved`. What is skipped quietly,
 what earns a `problem()` line and which explicit kinds fall back to Responses is
 §6c's rule. Each `session.delegation.created` becomes one
 turn for whichever brain runs: the transcript window since the last delegation,
@@ -258,7 +262,7 @@ first snapshot) and the menu-bar item *Set Up…* open a wizard
 
 Kevin: "why isnt it connecting to our codex? i have one locally. be vendor
 agnostic, dont just enforce claude code". The brain is a setting, not a vendor.
-`Settings.brain` is one of six `BrainKind`s; every one drives the same 67 tools
+`Settings.brain` is one of seven `BrainKind`s; every one drives the same 67 tools
 through `ToolRunner`, so policy, ledger, screenshots and the confirmation
 handshake are identical whichever model is thinking.
 
@@ -267,9 +271,10 @@ handshake are identical whichever model is thinking.
 | `codex` | a resident `codex app-server` thread (one warm process, `codex exec` only as the fallback) from the CLI bundled in ChatGPT.app (Codex Desktop) or on PATH, with Jarhead's tools mounted as the `jarhead` MCP server (`packages/brain/src/mcp-bridge.ts`) | Codex signed in — the ChatGPT login in `~/.codex/auth.json`; no key |
 | `claude-code` | headless Claude Code through the Agent SDK, tools as an in-process MCP server | the `claude` login (or a valid `ANTHROPIC_API_KEY`) |
 | `anthropic-api` | the Messages API tool loop | `ANTHROPIC_API_KEY` |
-| `openai-compatible` | Chat Completions with function tools at `brainBaseUrl` (OpenAI, OpenRouter, Ollama, LM Studio, vLLM…) | the URL and a model; `JARHEAD_BRAIN_API_KEY` where the server wants one |
+| `openai-compatible` | Chat Completions with function tools at `brainBaseUrl` (OpenAI, OpenRouter, vLLM, a hosted server…) | the URL and a model; `JARHEAD_BRAIN_API_KEY` where the server wants one |
 | `openai-responses` | the Live session's own Responses delegation (gpt-5.6-terra) | only `OPENAI_API_KEY`, which the voice already has |
-| `auto` (default) | the first of the above that is configured *and* starts, in `AUTO_BRAIN_ORDER`: codex → claude-code → anthropic-api → openai-compatible → openai-responses | — |
+| `local` | Ollama's native /api/chat, LM Studio / llama.cpp over Chat Completions, at a discovered or pinned root | a running server and a pulled model with tools; explicit only |
+| `auto` (default) | the first of the above that is configured *and* starts, in `AUTO_BRAIN_ORDER`: codex → claude-code → anthropic-api → openai-compatible → openai-responses. `local` is never picked by `auto`. | — |
 
 `auto`'s rule: a backend that is not configured (no binary or login, no key, no
 URL) is skipped with a log line; one that is configured but cannot start gets a
@@ -277,8 +282,13 @@ URL) is skipped with a log line; one that is configured but cannot start gets a
 winner is `snapshot.setup.brainResolved`; `pnpm jarhead doctor` shows it (from
 the running daemon when there is one, otherwise what this Mac would resolve to).
 An explicit `codex` that cannot start walks on down the same order; the other
-explicit kinds fall back to `openai-responses`. `brainModel` empty means the
-backend's own default everywhere (for Codex: the `model` in `~/.codex/config.toml`).
+explicit kinds fall back to `openai-responses` — for `local` loudly: the problem
+row says the brain's work goes to OpenAI and memory stays local, the Ready row
+shows the resolved kind, and a 60 s heal timer restarts the local brain the moment
+its server answers again. `brainModel` empty means the backend's own default
+everywhere (for Codex: the `model` in `~/.codex/config.toml`); under `local` it
+means the best fit on this Mac, reported as `setup.local.picked` and never written
+into `settings.json` by the engine — only Kevin's click in the Model menu pins an id.
 
 **How Codex acts.** The resident `codex app-server` thread (§11 "Warm Codex", §15) is
 the path: one `thread/start` per brain start with the standing orders as developer
@@ -2783,7 +2793,18 @@ no key or a non-JSON reply → one warning and the `RulesExtractor` (regexes ove
 Kevin's lines: "call me Kev" → fact, "from now on …" → procedure, "speak in
 English" → preference). An embedding failure DEFERS the run (≤ 3 tries) rather than
 mixing vector spaces; with no key the `KeywordEmbedder` is text-based at query
-time and items without a vector are scored by keyword similarity only.
+time and items without a vector are scored by keyword similarity only. With
+`Settings.brain === "local"` memory follows the setting, not the running brain:
+the extractor and decider are `ChatExtractor` — the brain model over Chat
+Completions JSON mode at the local server — and matching is `LocalEmbedder` over
+the first of `EMBED_PREFERENCE` (embeddinggemma → nomic-embed-text →
+mxbai-embed-large → qwen3-embedding → all-minilm) the server lists as `embedding`
+(`POST /api/embed` on Ollama, `/v1/embeddings` on LM Studio and llama.cpp), else
+`KeywordEmbedder`; the OpenAI branch is skipped even with a key, so item text and
+closed conversations never leave for memory. A brain change `relink()`s the
+service and a `reembed()` sweep at quiet ticks moves the store into the new vector
+space in minutes; `MemorySummary.embeddings` reads `local`, `embeddingModel` and
+`embeddingDims` say which, and the `memory.run` row's `extractor` reads `local`.
 
 Merge: candidates → embed (one call per run) → the three nearest live items. With
 per-embedder thresholds `{update, band, dup}` — openai 0.90 / 0.75 / 0.93, keyword

@@ -10,3 +10,5 @@ export { Trash } from "./trash.ts";
 export type { SweepResult } from "./trash.ts";
 export { classifyAction, classifyPath, classifyAppleScript, classifyUrl, riskyUrlReason, expandPath, namedPaths, secretPathReason, secretEnvReason, shellCwdReason, isLoopbackHost, isPrivateHost, HANDS_OFF_APPS, grantClassOf, presenceGated, presenceReason, PRESENCE_WINDOW_MS, PRESENCE_ABSENT, TRASH_REASON } from "./policy.ts";
 export type { ActionContext, Decision, Presence, Verdict } from "./policy.ts";
+export { dataPaths } from "./privacy.ts";
+export type { DataPathsInput } from "./privacy.ts";

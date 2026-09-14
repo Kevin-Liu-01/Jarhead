@@ -12,10 +12,15 @@ import {
   THREAD_TERMINAL,
   SETTINGS_KEYS,
   DEFAULT_SETTINGS,
+  BRAIN_KINDS,
+  AUTO_BRAIN_ORDER,
+  LOCAL_NONE,
   grantOf,
   isEngineCommand,
+  type LedgerRow,
   type Permissions,
   type Settings,
+  type SetupStatus,
   type Thread,
   type ThreadEvent,
   type ThreadStatus,
@@ -199,4 +204,46 @@ test("every thread.event kind but `started` fits 200 B when the event caps its t
   assert.ok(bytes(started) > 200 && bytes(started) < 1024, `started is one record: ${bytes(started)} B`);
   // A step event as the daemon frames it: header included, well inside the budget.
   assert.ok(5 + bytes({ type: "thread.event", event: capped[1] }) <= 200, "a step frame with its 5-byte header fits");
+});
+
+// ----------------------------------------------------------------- the local brain
+
+test("BRAIN_KINDS ends in local and auto never walks to it: AUTO_BRAIN_ORDER is the five cloud kinds of before, nothing else", () => {
+  assert.equal(BRAIN_KINDS.at(-1), "local", "local is the last kind");
+  assert.equal(BRAIN_KINDS.length, 7);
+  assert.equal(new Set(BRAIN_KINDS).size, BRAIN_KINDS.length, "no kind twice");
+  assert.equal((AUTO_BRAIN_ORDER as readonly string[]).includes("local"), false, "a running server is not a choice Kevin made");
+  assert.equal((AUTO_BRAIN_ORDER as readonly string[]).includes("auto"), false);
+  assert.deepEqual([...AUTO_BRAIN_ORDER], ["codex", "claude-code", "anthropic-api", "openai-compatible", "openai-responses"], "the walk is unchanged");
+  for (const k of AUTO_BRAIN_ORDER) assert.ok((BRAIN_KINDS as readonly string[]).includes(k), `${k} is a kind`);
+  const picked: Settings = { ...(DEFAULT_SETTINGS as Settings), brain: "local", brainModel: "" };
+  assert.equal(picked.brain, "local", "local is a Settings.brain value; an empty brainModel means the best fit on this Mac");
+});
+
+test("SetupStatus carries local and dataPaths as required members; LOCAL_NONE is the value before any look", () => {
+  const status: SetupStatus = { openaiKey: "unchecked", brain: "unchecked", brainDetail: "", liveModel: "gpt-live-1", secrets: { openai: false, anthropic: false, brainApiKey: false }, local: LOCAL_NONE, dataPaths: [] };
+  assert.equal(status.local.reachable, false);
+  assert.deepEqual(status.dataPaths, []);
+  assert.equal(LOCAL_NONE.reachable, false);
+  assert.equal(LOCAL_NONE.baseUrl, "", "no root until one answers");
+  assert.deepEqual(LOCAL_NONE.models, []);
+  assert.equal(LOCAL_NONE.ramBytes, 0);
+  assert.equal(LOCAL_NONE.checkedAt, 0, "0 = never looked");
+  assert.equal(LOCAL_NONE.picked, undefined);
+  assert.equal(LOCAL_NONE.flavor, undefined);
+});
+
+test("a memory.run ledger row takes extractor local beside responses and rules", () => {
+  const rows: LedgerRow[] = [
+    { at: 1, type: "memory.run", extractor: "local", added: 1, updated: 0, noop: 2, refused: 0, ms: 4200 },
+    { at: 2, type: "memory.run", extractor: "responses", added: 0, updated: 1, noop: 0, refused: 0, ms: 900 },
+    { at: 3, type: "memory.run", extractor: "rules", added: 0, updated: 0, noop: 0, refused: 0, ms: 3 },
+  ];
+  assert.deepEqual(rows.map((r) => (r.type === "memory.run" ? r.extractor : "")), ["local", "responses", "rules"]);
+});
+
+test("isEngineCommand accepts mark.remove and mark.window (the notch panel's verbs) and still refuses mark.delete", () => {
+  assert.ok(isEngineCommand({ type: "mark.remove", id: "mark_x" }));
+  assert.ok(isEngineCommand({ type: "mark.window" }));
+  assert.equal(isEngineCommand({ type: "mark.delete", id: "mark_x" }), false, "remove is the verb; delete is not a command");
 });
