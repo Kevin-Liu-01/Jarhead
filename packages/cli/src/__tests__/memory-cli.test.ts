@@ -137,7 +137,7 @@ test("status words: agentsByStatus lists ended and unknown apart in AGENT_STATUS
   assert.equal(agoWords(NOW - 3 * 3_600_000, NOW), "3 h ago");
   assert.equal(agoWords(NOW - 4 * 86_400_000, NOW), "4 d ago");
 
-  assert.equal(memoryLine(undefined), "(an older daemon: no summary)");
+  assert.equal(memoryLine(undefined), "(no summary in the snapshot)");
   assert.equal(memoryLine({ ...summary, enabled: false }), "off — nothing is extracted, injected or embedded; the store stays as it is");
   assert.equal(memoryLine(summary, NOW), "142 remembered · 3 forgotten · 7 archived · matching openai · 1 conversation waiting · learned 12 min ago (+3 · ~1 · responses) · last prompts 143 brain / 96 voice tokens (caps 250 / 120) · 2 used this turn");
   const { lastRun: _lastRun, budgetUsed: _budget, lastUsedIds: _ids, ...bare } = summary;

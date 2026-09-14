@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { readConfig, replaceDefaultSink, setLogLevel, type JarheadConfig, type LogLevel } from "@jarhead/core";
 import type { LiveSession } from "@jarhead/live";
-import { CodexBrain, parseReflex, probeCodex, type Brain, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegationTimingsExtra, type RunOutcome, type ToolRunner } from "@jarhead/brain";
-import { ACTING_MEMBERS, type NativeHands } from "@jarhead/hands";
+import { ACTING_TOOLS, CodexBrain, parseReflex, probeCodex, type Brain, type BrainResult, type BrainSink, type BrainTask, type CodexProbe, type DelegationTimingsExtra, type RunOutcome, type ToolRunner } from "@jarhead/brain";
+import type { NativeHands } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import type { Delegation, DelegationStep, Effort } from "@jarhead/protocol";
 
@@ -114,17 +114,6 @@ export const BRAIN_BENCH_COMMANDS: readonly BenchCommand[] = [
 
 /** Tools that could act outside the canned hands: answered with an error at the runner. */
 export const BLOCKED_TOOLS: ReadonlySet<string> = new Set(["run_shell", "applescript", "write_file", "edit_file", "open_url", "clipboard_write", "clipboard_read", "agent_send", "agent_start", "self_edit", "self_check", "self_review", "self_apply", "self_discard"]);
-
-/**
- * What counts as a visible action for "delegation → first action": the hands'
- * acting members, the tools that act on the Mac without the hands, and the
- * overlays Kevin sees drawn on his screen (the analysts' "first visible action",
- * which the BEFORE numbers in docs/LATENCY.md use, counted show_* the same way;
- * `show_clear` removes, it does not show). The same set the Delegator stamps
- * `firstActionAt` with (packages/brain/src/delegator.ts) — a copy, because the
- * brain's index does not export it; both tests pin the two to this list.
- */
-export const ACTING_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"]);
 
 /**
  * Kevin's global ~/.codex/AGENTS.md bootstrap, as it shows up in tool inputs and

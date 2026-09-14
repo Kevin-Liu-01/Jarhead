@@ -1,8 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Brain, CodexProbe, ToolRunner } from "@jarhead/brain";
-import { ACTING_MEMBERS } from "@jarhead/hands";
-import { ACTING_TOOLS, BLOCKED_TOOLS, BRAIN_BENCH_COMMANDS, ROLLOVER_LOG_RE, WikiHands, analyzeRun, benchScreenPng, compareReports, parseWireLine, percentile, pngSize, renderReport, runBrainBench, stat, summarize, syntheticScreenPng, type AnalyzeInput, type RunnerCall, type WireRow } from "../bench-brain.ts";
+import { BLOCKED_TOOLS, BRAIN_BENCH_COMMANDS, ROLLOVER_LOG_RE, WikiHands, analyzeRun, benchScreenPng, compareReports, parseWireLine, percentile, pngSize, renderReport, runBrainBench, stat, summarize, syntheticScreenPng, type AnalyzeInput, type RunnerCall, type WireRow } from "../bench-brain.ts";
 
 /**
  * The brain bench without Codex: the canned screen is a real PNG, the canned
@@ -162,17 +161,12 @@ test("bench --brain: a run's record — the eyes' shot is not the first model to
   assert.ok(renderReport({ meta: { effort: "medium" }, records: [rec], summary: s }).some((l) => /click-search-type/.test(l)));
 });
 
-test("bench --brain: percentiles and the acting/blocked sets", () => {
+test("bench --brain: percentiles and the blocked set", () => {
   assert.equal(percentile([5, 1, 3], 50), 3);
   assert.equal(percentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 95), 10);
   assert.ok(Number.isNaN(percentile([], 50)));
   const s = stat([4, 2, Number.NaN, 8]);
   assert.deepEqual([s.n, s.median, s.min, s.max], [3, 4, 2, 8]);
-  // The bench's copy of the delegator's ACTING_TOOLS: pinned to the same list packages/brain/src/__tests__/delegator-timings.test.ts pins.
-  const BEYOND_THE_HANDS = ["applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke"];
-  assert.deepEqual([...ACTING_TOOLS].sort(), [...ACTING_MEMBERS, ...BEYOND_THE_HANDS].sort());
-  for (const t of ["left_click", "click_element", "type", "key", "scroll", "open_app", "focus_app", "applescript", "run_shell", "write_file", "edit_file", "browser_navigate", "browser_click", "browser_type", "show_circle"]) assert.ok(ACTING_TOOLS.has(t), `${t} is an action`);
-  for (const t of ["screenshot", "read_file", "search_files", "frontmost_app", "find_element", "read_focused_text", "show_clear"]) assert.ok(!ACTING_TOOLS.has(t), `${t} only looks (or clears)`);
   for (const t of ["run_shell", "applescript", "write_file", "edit_file", "open_url", "agent_start", "self_apply"]) assert.ok(BLOCKED_TOOLS.has(t));
 });
 

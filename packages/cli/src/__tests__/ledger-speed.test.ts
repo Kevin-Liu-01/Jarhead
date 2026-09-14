@@ -106,7 +106,7 @@ test("ledger --speed: an empty day renders dashes and no thread line noise; the 
   assert.deepEqual(["left_click", "type", "applescript", "browser_navigate", "run_shell"].map(toolClass), ["acting", "acting", "acting", "acting", "acting"]);
   assert.equal(toolClass("show_circle"), "readOnly", "the overlays are read-only to the toolset (no hands) though they stamp firstActionAt — the toolset's class wins for round trips");
   assert.equal(toolClass("web_fetch"), "readOnly", "reads of the web are read-only to the toolset");
-  assert.deepEqual(["agent_send", "speak_progress", "worker_start"].map(toolClass), ["other", "other", "other"]);
+  assert.deepEqual(["agent_send", "speak_progress", "thread_start"].map(toolClass), ["other", "other", "other"]);
 });
 
 test("ledger --speed --days N reads the last N day files of a ledger, oldest first", () => {

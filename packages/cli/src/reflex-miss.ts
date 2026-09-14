@@ -1,5 +1,5 @@
 import type { Ledger } from "@jarhead/core";
-import { normalizeUtterance, parseReflex } from "@jarhead/brain";
+import { FILLER_HEAD, normalizeUtterance, parseReflex } from "@jarhead/brain";
 import type { LedgerRow } from "@jarhead/protocol";
 import { recentDays } from "./ledger-speed.ts";
 
@@ -17,8 +17,7 @@ import { recentDays } from "./ledger-speed.ts";
  * idempotent or reversible and never a destructive verb (packages/brain/src/reflex.ts).
  */
 
-/** Words the recogniser hears at the start of a command that are not part of it (the ear's set plus the speed reader's finds), and bracketed tags. Not "right": "right click save" is a command. */
-const FILLER_HEAD = /^(?:(?:um+|uh+|erm|hmm+|so|like|okay|ok|alright|all right|hey|yeah|yes|yep|oh|awesome|great|nice|cool|well|basically|actually|and|then|now)[,.!\s]+)+/i;
+/** Bracketed recogniser tags ("[chuckle]"); the filler words are the ear's own FILLER_HEAD. */
 const TAGS = /\[[^\]]{1,24}\]/g;
 
 /** The utterance without its fillers and tags, whitespace collapsed. */

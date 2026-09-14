@@ -1,7 +1,8 @@
 import type { Ledger } from "@jarhead/core";
+import { ACTING_TOOLS } from "@jarhead/brain";
 import { READ_ONLY_TOOLS, YES_PATTERN } from "@jarhead/hands";
 import type { Delegation, DelegationStep, LedgerRow } from "@jarhead/protocol";
-import { ACTING_TOOLS, percentile, stat, type Stat } from "./bench-brain.ts";
+import { percentile, stat, type Stat } from "./bench-brain.ts";
 
 /**
  * `pnpm jarhead ledger --speed [--days N]` — where a day's time went, from the ledger.
