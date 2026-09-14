@@ -199,12 +199,15 @@ export interface MemorySummary {
   readonly count: number;
   readonly forgotten: number;
   readonly archived: number;
-  /** How items are matched: OpenAI embeddings (a key is present) or keywords. */
-  readonly embeddings: "openai" | "keyword";
+  /** How items are matched: OpenAI embeddings, a local embedding model, or keywords. */
+  readonly embeddings: "openai" | "local" | "keyword";
+  /** "text-embedding-3-small" or the local model's id; absent for keyword matching. */
+  readonly embeddingModel?: string;
+  readonly embeddingDims?: number;
   /** Conversations waiting for a quiet moment to be read. */
   readonly pending: number;
   readonly lastRunAt?: number;
-  readonly lastRun?: { readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number };
+  readonly lastRun?: { readonly extractor: "responses" | "local" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number };
   /** Tokens the last prompts spent on memory. */
   readonly budgetUsed?: { readonly brain: number; readonly voice: number };
   /** Items the last delegation was given (the Now rail's "used this turn"). */
@@ -360,6 +363,8 @@ export interface ScreenMark {
   readonly consumed: boolean;
   /** What the stroke surrounded, when the accessibility tree or window list could say. `rect` is snapped to it. */
   readonly element?: { readonly role?: string; readonly title?: string; readonly app?: string };
+  /** How it was made. Absent or "circle": Kevin's stroke. "window": the front window captured whole (`mark.window`); its rect is the window's frame, no snap. */
+  readonly source?: "circle" | "window";
 }
 
 export interface ConnectorHealth {
@@ -381,10 +386,16 @@ export interface ConnectorHealth {
  * = any Chat Completions server (OpenAI, OpenRouter, Ollama, LM Studio, vLLM…) at
  * `Settings.brainBaseUrl` with JARHEAD_BRAIN_API_KEY.
  */
-export type BrainKind = "auto" | "codex" | "claude-code" | "anthropic-api" | "openai-responses" | "openai-compatible";
-export const BRAIN_KINDS: readonly BrainKind[] = ["auto", "codex", "claude-code", "anthropic-api", "openai-responses", "openai-compatible"];
-/** The order `auto` tries backends in. */
-export const AUTO_BRAIN_ORDER: readonly Exclude<BrainKind, "auto">[] = ["codex", "claude-code", "anthropic-api", "openai-compatible", "openai-responses"];
+/**
+ * `local` = a model on this Mac served by Ollama (127.0.0.1:11434), LM Studio (:1234) or
+ * llama.cpp (:8080), discovered by the engine or pinned by `Settings.brainBaseUrl`; explicit
+ * only — `auto` never picks it. `Settings.brainModel` is the server's own id (`qwen3.5:27b`),
+ * or empty for the best fit on this Mac (`setup.local.picked`).
+ */
+export type BrainKind = "auto" | "codex" | "claude-code" | "anthropic-api" | "openai-responses" | "openai-compatible" | "local";
+export const BRAIN_KINDS: readonly BrainKind[] = ["auto", "codex", "claude-code", "anthropic-api", "openai-responses", "openai-compatible", "local"];
+/** The order `auto` tries backends in. `local` is not here: a running server is not a choice Kevin made. */
+export const AUTO_BRAIN_ORDER: readonly Exclude<BrainKind, "auto" | "local">[] = ["codex", "claude-code", "anthropic-api", "openai-compatible", "openai-responses"];
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -411,9 +422,9 @@ export interface WakeSettings {
 export interface Settings {
   readonly voice: string;
   readonly brain: BrainKind;
-  /** Model override for the chosen backend; empty = that backend's default. */
+  /** Model override for the chosen backend; empty = that backend's default. Under `local`: the server's listed id, verbatim; empty = the best fit on this Mac (see `LocalServerStatus.picked`). */
   readonly brainModel: string;
-  /** openai-compatible only: base URL of the Chat Completions server (no trailing /v1 needed). */
+  /** openai-compatible: base URL of the Chat Completions server. local: pin the server root instead of discovering it (a second Ollama on another port, a LAN box). No trailing /v1 needed. */
   readonly brainBaseUrl?: string;
   readonly effort: Effort;
   /** First-run onboarding finished (keys, brain, permissions, wake word). */
@@ -509,6 +520,76 @@ export interface SetupStatus {
   readonly liveModel: string;
   /** Which secrets are present in ~/.jarhead/env or the environment (never the values). */
   readonly secrets: { readonly openai: boolean; readonly anthropic: boolean; readonly brainApiKey: boolean };
+  /** The local model server, whatever `brain` is: refreshed by config.probe, restartBrain and the local heal timer. */
+  readonly local: LocalServerStatus;
+  /** Where words go right now, computed by @jarhead/core `dataPaths()`; the doctor computes the same rows. */
+  readonly dataPaths: readonly DataPath[];
+}
+
+// ---- local model servers: discovery data the engine puts on the snapshot -------------------
+
+/** Which local server answered. `ollama`: GET /api/version; `lmstudio`: GET /api/v0/models; `llamacpp`: GET /health. */
+export type LocalFlavor = "ollama" | "lmstudio" | "llamacpp";
+export const LOCAL_FLAVORS: readonly LocalFlavor[] = ["ollama", "lmstudio", "llamacpp"];
+/** Ollama's /api/show capabilities the brain reads; other flavours infer `completion`+`tools` (assumed) and `vision`/`embedding` from the model type. */
+export type LocalCapability = "completion" | "tools" | "vision" | "thinking" | "embedding";
+/**
+ * Weights against this Mac's memory — display data the engine computes, a rule of thumb, not a
+ * measurement: usable = 0.75 × RAM; `good` ≤ 50 % of usable, `tight` ≤ 85 %, else `no`;
+ * `unknown` when the server reports no size (LM Studio, llama.cpp).
+ */
+export type LocalFit = "good" | "tight" | "no" | "unknown";
+export interface LocalModel {
+  /** Verbatim as the server lists it ("qwen3.5:27b", "qwen3.5:27b-mlx"); always sent as-is. */
+  readonly id: string;
+  readonly capabilities: readonly LocalCapability[];
+  /** Bytes on disk (Ollama /api/tags `size`); absent when the server does not say. */
+  readonly sizeBytes?: number;
+  /** Trained maximum (Ollama model_info "<arch>.context_length"; LM Studio max_context_length; llama.cpp n_ctx). */
+  readonly contextLength?: number;
+  readonly family?: string;
+  readonly parameterSize?: string;
+  /** Ollama `modified_at`, wall-clock ms; the newest pull is the best intent signal for `bestFit`. */
+  readonly modifiedAt?: number;
+  readonly fit: LocalFit;
+  /** Loaded in memory right now (Ollama /api/ps; LM Studio state === "loaded"; llama.cpp always). */
+  readonly loaded: boolean;
+  /** Ollama `remote_host` set: runs on ollama.com, not this Mac. Never offered as a brain or an embedder. */
+  readonly cloud: boolean;
+}
+/** Tool-capable models the picker may show, per server; more are cut newest-first. */
+export const LOCAL_MODELS_MAX = 32;
+export interface LocalServerStatus {
+  readonly reachable: boolean;
+  readonly flavor?: LocalFlavor;
+  /** Ollama /api/version; others when they say. */
+  readonly version?: string;
+  /** The root in use (discovered or pinned), "" when none answered. */
+  readonly baseUrl: string;
+  /** Every non-cloud model with `completion` (tools-less ones included, so the picker can grey them), best fit first, ≤ LOCAL_MODELS_MAX. */
+  readonly models: readonly LocalModel[];
+  /** The id the engine chose when `Settings.brainModel` is empty under `local`; absent when a model is picked or nothing fits. */
+  readonly picked?: string;
+  /** The embedding model memory uses (first of EMBED_PREFERENCE present on the server); absent = keyword matching. */
+  readonly embedModel?: string;
+  /** What to suggest pulling for this Mac when nothing tool-capable is listed, e.g. { id: "qwen3.5:27b", sizeBytes: 17e9, command: "ollama pull qwen3.5:27b" }. Never run by Jarhead. */
+  readonly suggested?: { readonly id: string; readonly sizeBytes: number; readonly command: string };
+  /** Total memory of this Mac, so a surface can say "17 GB of 128 GB". */
+  readonly ramBytes: number;
+  /** Wall-clock ms of the last look; 0 = never. */
+  readonly checkedAt: number;
+}
+/** The value before any look, and the empty value when nothing answers. */
+export const LOCAL_NONE: LocalServerStatus = { reachable: false, baseUrl: "", models: [], ramBytes: 0, checkedAt: 0 };
+
+/** One row of "where words go". The voice is always `cloud`; the brain and memory move with the settings; the web is the sites Kevin asks for. */
+export type DataPathWhat = "voice" | "brain" | "memory" | "web";
+export type DataPathWhere = "cloud" | "mac" | "lan" | "off";
+export interface DataPath {
+  readonly what: DataPathWhat;
+  readonly where: DataPathWhere;
+  /** One mono line: "OpenAI gpt-live-1 — every word heard and said; billed per second", "qwen3.5:27b on Ollama 0.34.0 — nothing leaves". */
+  readonly detail: string;
 }
 
 /** Secret keys the surface may write through `config.set-secrets`. Nothing else goes in the env file. */
@@ -632,9 +713,10 @@ export interface Snapshot {
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
+/** `brain.local`: the local server or model needs Kevin — not running, nothing pulled that can call tools, the picked id is gone, a cloud tag, a window too small. Amber, with the command to run in `remedy.copy`. */
 export type ProblemKind =
   | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
-  | "brain.unavailable" | "brain.probe" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other";
+  | "brain.unavailable" | "brain.probe" | "brain.local" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other";
 
 export interface ProblemRemedy {
   /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock". */
@@ -642,6 +724,8 @@ export interface ProblemRemedy {
   /** What the button does: an EngineCommand the surface sends, or a URL/path the surface opens. */
   readonly command?: EngineCommand;
   readonly open?: string;
+  /** Text the surface offers to copy (a shell command Kevin runs himself: `ollama pull qwen3.5:27b`). Never executed by any surface. */
+  readonly copy?: string;
 }
 
 export interface Problem {
@@ -807,6 +891,11 @@ export type EngineCommand =
   | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
   /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
   | { readonly type: "mark.add"; readonly rect: Rect; readonly path?: readonly Point[] }
+  /** Forget one circled region — the × on a thumbnail on the notch or in the Console. An unknown or malformed id changes nothing. The PNG stays a day's shot. */
+  | { readonly type: "mark.remove"; readonly id: string }
+  /** Capture the frontmost window as a mark — the notch's Window box. The window's frame is the rect (no snap), `element` is {role:"window", title, app}, `source` is "window". Works asleep. No front window: a warn toast, no mark. */
+  | { readonly type: "mark.window" }
+  /** Forget every circled region. */
   | { readonly type: "mark.clear" }
   /** Exit the daemon with code 75 so the app respawns it on the new code (after a self-edit passed its checks). */
   | { readonly type: "daemon.restart" }
@@ -888,7 +977,7 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "memory.updated"; readonly id: string }
   | { readonly at: number; readonly type: "memory.forgotten"; readonly id: string; readonly by: "kevin" | "reflex" | "cli" }
   | { readonly at: number; readonly type: "memory.restored"; readonly id: string }
-  | { readonly at: number; readonly type: "memory.run"; readonly sessionId?: string; readonly extractor: "responses" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number }
+  | { readonly at: number; readonly type: "memory.run"; readonly sessionId?: string; readonly extractor: "responses" | "local" | "rules"; readonly added: number; readonly updated: number; readonly noop: number; readonly refused: number; readonly ms: number }
   // ---- threads: the table rebuilds from these at daemon start. Status rows only for starting / waiting-* / paused, never thinking↔acting.
   | { readonly at: number; readonly type: "thread.started"; readonly thread: Thread }
   | { readonly at: number; readonly type: "thread.status"; readonly threadId: string; readonly status: ThreadStatus; readonly threadStatus?: ThreadStatus; readonly detail?: string }
@@ -918,7 +1007,7 @@ export type LedgerRow =
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "sleep", "mute", "unmute", "stop", "go", "interrupt", "say-text", "set-settings", "clear-problems",
-  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.clear", "daemon.restart", "pause", "resume",
+  "agent.send", "agent.refresh", "open-console", "open-ledger", "request-permission", "config.set-secrets", "config.probe", "agent.open", "agent.close", "agent.history", "mark.add", "mark.remove", "mark.window", "mark.clear", "daemon.restart", "pause", "resume",
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
   "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
   "thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say",
