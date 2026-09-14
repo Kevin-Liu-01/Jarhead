@@ -37,8 +37,6 @@ private let railInset: CGFloat = 12
 private let iconGap: CGFloat = 8
 /// Where text starts: the inset, the 20pt icon column and its gap.
 private let textInset: CGFloat = railInset + 20 + iconGap
-/// The title row's right-hand zone: the clock stamp at rest, the ⋯ while hovering.
-private let trailingZone: CGFloat = 40
 /// The Restore / Unhide button on an archived, trashed or hidden row, left of that zone.
 private let restoreWidth: CGFloat = 58
 /// How many hits a conversation shows under search before "+n more".
@@ -94,6 +92,114 @@ enum AgentsRailWords {
     /// The Threads head's tip and the rename field's — ≤ 60 characters, no "you", no "Kevin".
     static let threadsHelp = "Threads asking first, then busy, then finished (5 min kept)"
     static let renameHelp = "Return keeps the name; Esc cancels; empty is the auto title"
+}
+
+/// What a rail row wears: bright (it can still change), quiet (over — 0.72, the text ladder's fg2),
+/// back (empty, archived, trashed, hidden, an agent whose process is gone — 0.48, fg3). Placement
+/// (Pinned, a day, Older, Archived, Trash, Ended, Hidden) is where a row sits; the tone is its own.
+/// The open (stepped-into) row and a search result lift their alpha to 1.0 and keep the tone's mark.
+enum RailTone: Equatable {
+    case bright, quiet, back
+
+    /// The row's alpha: the text ladder's own figures (fg · fg2 · fg3), never a new colour.
+    var alpha: CGFloat {
+        switch self {
+        case .bright: return 1
+        case .quiet: return 0.72
+        case .back: return 0.48
+        }
+    }
+
+    /// The mark in titanium's ramp (`Dither.markQuietStops`) for every tone but bright.
+    var quietMark: Bool { self != .bright }
+
+    /// A past conversation: archived / trashed → back; the crash litter → back; ended today or never
+    /// closed → bright; ended before today → quiet. Judged by the END day (the start day groups it).
+    static func conversation(_ chain: JarheadChain, now: Double) -> RailTone {
+        if !chain.isActive || chain.isEmptyConversation { return .back }
+        if chain.isOpen { return .bright }
+        if let ended = chain.endedAt, ConsoleFormat.dayString(ended) == ConsoleFormat.dayString(now) { return .bright }
+        return .quiet
+    }
+
+    /// An agent: hidden → back; asks / working → bright; idle (a process, quiet) → quiet; over → back.
+    static func agent(status: AgentStatus, hidden: Bool) -> RailTone {
+        if hidden { return .back }
+        switch status {
+        case .blocked, .working: return .bright
+        case .idle: return .quiet
+        case .done, .ended, .unknown, .offline: return .back
+        }
+    }
+
+    /// A thread: live → bright; finished (≤ 5 min on the rail) → quiet. Never back: it is recent by construction.
+    static func thread(_ status: ThreadStatus) -> RailTone { status.isLive ? .bright : .quiet }
+}
+
+/// Where a day's head sits: Today (open), Yesterday (closed), or inside the one closed `Older` head.
+enum RailDayPlace: Equatable {
+    case today, yesterday, older
+
+    static func of(day: String, now: Date) -> RailDayPlace {
+        let ago = ConsoleFormat.daysAgo(day, now: now)
+        if ago <= 0 { return .today }
+        return ago == 1 ? .yesterday : .older
+    }
+}
+
+/// The rail's fold ids, figures and tips (pinned by check-kit).
+enum RailWords {
+    static let olderId = "rail.older"
+    /// The card's key for what the row lost: `ran  34:00 · 7.5 min · 10 msgs`.
+    static let ran = "ran"
+    static let hits = "Hits"
+    static let agents = "Agents"
+    /// The card's status while the conversation is pinned (the row carries no pin glyph).
+    static let pinnedStatus = "Pinned"
+    static let dayPrefix = "rail.day."
+    static let endedSuffix = ".ended"
+    static let olderTipLead = "Every day before yesterday"
+    static func dayId(_ day: String) -> String { dayPrefix + day }
+    static func endedId(_ tool: AgentTool) -> String { AgentsRailWords.groupId(tool) + endedSuffix }
+    /// `rail.day.2026-09-13` → `2026-09-13`; nil for any other id.
+    static func day(ofId id: String) -> String? { id.hasPrefix(dayPrefix) ? String(id.dropFirst(dayPrefix.count)) : nil }
+    /// `×1` — the chain row's mono figure badge.
+    static func resumedFigure(_ n: Int) -> String { "×\(n)" }
+    /// `resumed once` · `resumed 3×` — the badge's tip.
+    static func resumedTip(_ n: Int) -> String { n == 1 ? "resumed once" : "resumed \(n)×" }
+    /// A folded day's tip: `Yesterday · 5 · 26 min · newest "Hello"`; a day inside Older leads with its full date.
+    static func dayTip(title: String, count: Int, billed: Double, newest: String?) -> String {
+        var parts = [title, "\(count)", ConsoleFormat.billedShort(billed)]
+        if let newest, !newest.isEmpty { parts.append("newest “\(ConversationFormat.oneLine(newest, max: 24))”") }
+        return parts.joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `Every day before yesterday · 31 · since Aug 2`
+    static func olderTip(count: Int, since: String) -> String {
+        [olderTipLead, "\(count)", ConsoleDisclosureWords.since(since)].joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `7 conversations · 2 archived · 2 in the Trash`
+    static func jarheadTip(active: Int, archived: Int, trashed: Int) -> String {
+        var parts = [active == 1 ? "1 conversation" : "\(active) conversations"]
+        if archived > 0 { parts.append("\(archived) archived") }
+        if trashed > 0 { parts.append("\(trashed) in the Trash") }
+        return parts.joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `7 alive · 6 over`
+    static func agentsTip(alive: Int, over: Int) -> String { "\(alive) alive · \(over) over" }
+    /// The newest conversation's title in a day (the list is newest first), skipping the crash litter.
+    static func newestTitle(_ chains: [JarheadChain]) -> String? { chains.first { !$0.isEmptyConversation }?.displayTitle }
+}
+
+/// The folds' defaults, pure: Today and every day inside Older open, Yesterday closed, Older closed,
+/// a tool open iff a process of its asks or works, its Ended sub-head closed. Read only when the
+/// store holds nothing for the id (`ConsoleFoldStore.isOpen(_:default:)`).
+enum RailFolds {
+    static func defaultOpen(_ id: String, now: Date, hotTools: Set<String>) -> Bool {
+        if let day = RailWords.day(ofId: id) { return RailDayPlace.of(day: day, now: now) != .yesterday }
+        if id == RailWords.olderId || id.hasSuffix(RailWords.endedSuffix) { return false }
+        if id.hasPrefix("agents.") { return hotTools.contains(String(id.dropFirst("agents.".count))) }
+        return true
+    }
 }
 
 /// What the Now row says, sliced from the snapshot by the root so the rail stays a plain value.
@@ -213,12 +319,20 @@ struct AgentsRail: View, Equatable {
         }
     }
 
-    private static func rank(_ s: AgentStatus) -> Int {
+    /// The ladder's order inside a group: asks (0) → working (1) → idle (2) → over (3).
+    static func rank(_ s: AgentStatus) -> Int {
         switch s {
-        case .working, .blocked, .idle: return 0
-        case .done, .ended, .unknown, .offline: return 1
+        case .blocked: return 0
+        case .working: return 1
+        case .idle: return 2
+        case .done, .ended, .unknown, .offline: return 3
         }
     }
+
+    /// A row a process owns and that can still change: it asks or works. A tool group opens by default for one.
+    static func hot(_ agent: AgentInfo) -> Bool { agent.status == .blocked || agent.status == .working }
+    /// A row a process still owns (asks · working · idle).
+    static func live(_ agent: AgentInfo) -> Bool { rank(agent.status) < 3 }
 
     private var pinnedChains: [JarheadChain] { jarhead.filter { $0.isActive && $0.pinned } }
     private var archived: [JarheadChain] { jarhead.filter(\.isArchived) }
@@ -705,16 +819,18 @@ struct AgentsRail: View, Equatable {
     /// word — the `[1 asks]` badge — then the resting count (`2 working`); open by default, remembered per tool.
     private func groupView(_ group: Group, now: Double) -> some View {
         let id = AgentsRailWords.groupId(group.tool)
-        return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents),
+        return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents, now: now),
                                  defaultOpen: true, siblings: groups.map { AgentsRailWords.groupId($0.tool) }, focused: focus.ringOn(id)) {
             ForEach(group.agents) { agent in agentRow(agent, now: now, hidden: false) }
         }
     }
 
-    /// The folded head's words: how many ask, then how many work (else idle, else done).
-    static func groupSummary(_ agents: [AgentInfo]) -> [ConsoleDisclosureSummaryItem] {
-        ConsoleDisclosureSummary.agents(asks: agents.filter { $0.status == .blocked }.count, working: agents.filter { $0.status == .working }.count,
-                                        idle: agents.filter { $0.status == .idle }.count, done: agents.filter { $0.status == .done }.count)
+    /// The folded head's words: how many ask, then how many work (else idle); nothing alive → `ended` and the newest over row's age.
+    static func groupSummary(_ agents: [AgentInfo], now: Double) -> [ConsoleDisclosureSummaryItem] {
+        let over = agents.filter { rank($0.status) == 3 }
+        return ConsoleDisclosureSummary.agents(asks: agents.filter { $0.status == .blocked }.count, working: agents.filter { $0.status == .working }.count,
+                                               idle: agents.filter { $0.status == .idle }.count, ended: over.count,
+                                               newestEndedAge: over.first.map { ConsoleFormat.relative($0.updatedAt, now: now) })
     }
 
     /// "Hidden (n)", folded: the rows Kevin took off the rail, each with Unhide.
@@ -1677,6 +1793,31 @@ extension ConsoleFormat {
         if hint == "running", agent.status == .working { return nil }
         if hint == "quiet", agent.status == .idle { return nil }
         return hint
+    }
+
+    /// The 28 row's meta: `project · age` — the count and the hint moved to the card.
+    static func agentMetaShort(_ agent: AgentInfo, now: Double) -> String {
+        var parts: [String] = []
+        if let project = projectName(agent.cwd) { parts.append(project) }
+        parts.append(relative(agent.updatedAt, now: now))
+        return parts.joined(separator: " · ")
+    }
+
+    /// What the row lost, as one card line: `42 msgs · 31m · quiet` (the hint whole, even when it repeats the word).
+    static func agentCardLine(_ agent: AgentInfo, now: Double) -> String {
+        var parts: [String] = []
+        if let n = agent.messageCount { parts.append(messageCount(n)) }
+        parts.append(relative(agent.updatedAt, now: now))
+        if let hint = agent.hint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hint.isEmpty { parts.append(hint) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// A folded head's billed figure: `7.5 min` under ten, `26 min` under an hour, `1.4 h` past it.
+    static func billedShort(_ seconds: Double) -> String {
+        let m = max(0, seconds.isFinite ? seconds : 0) / 60
+        if m < 10 { return String(format: "%.1f min", m) }
+        if m < 60 { return "\(Int(m.rounded())) min" }
+        return String(format: "%.1f h", m / 60)
     }
 
     /// A Jarhead conversation's meta line: `12:34 · 2.3 min · 8 msgs` — how long it ran

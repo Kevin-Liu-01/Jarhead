@@ -41,6 +41,16 @@ enum ConsoleDisclosureWords {
     static func working(_ n: Int) -> String { "\(n) working" }
     static func idle(_ n: Int) -> String { "\(n) idle" }
     static func done(_ n: Int) -> String { "\(n) done" }
+    /// The rail's one head for every day before yesterday.
+    static let older = "Older"
+    /// The sub-head inside a tool group holding its over rows (a place, capitalised).
+    static let ended = "Ended"
+    /// The all-over summary's word on a folded tool head (a state, lowercase): `ended · 40m`.
+    static let endedWord = "ended"
+    /// `4 ended` — the tip's and AX's spelling.
+    static func ended(_ n: Int) -> String { "\(n) ended" }
+    /// `since Aug 2` — the Older head's figure.
+    static func since(_ shortDay: String) -> String { "since \(shortDay)" }
     static func phrases(_ n: Int) -> String { n == 1 ? "1 phrase" : "\(n) phrases" }
     static let joiner = " · "
 }
@@ -53,6 +63,9 @@ enum ConsoleDisclosureWords {
 /// mounted disclosure.
 enum ConsoleFoldStore {
     nonisolated(unsafe) static var persists = true
+    /// Ids remembered in memory alone (this window, this launch): a day head's `rail.day.<date>` —
+    /// "Yesterday open" remembered today is a different day tomorrow, and a key per day would litter.
+    nonisolated(unsafe) static var transientPrefixes: [String] = ["rail.day."]
     nonisolated(unsafe) private static var memory: [String: Bool] = [:]
     static let changed = Notification.Name("jarhead.console.fold.changed")
     static let idKey = "id", openKey = "open"
@@ -67,7 +80,7 @@ enum ConsoleFoldStore {
 
     static func set(_ id: String, _ open: Bool) {
         memory[id] = open
-        if persists { UserDefaults.standard.set(open, forKey: key(id)) }
+        if persists && !transientPrefixes.contains(where: { id.hasPrefix($0) }) { UserDefaults.standard.set(open, forKey: key(id)) }
         NotificationCenter.default.post(name: changed, object: nil, userInfo: [idKey: id, openKey: open])
     }
 
@@ -303,15 +316,30 @@ enum ConsoleDisclosureSummary {
     /// `Ready 2 · [all ok]` · `[1 missing]`
     static func ready(notReady: Int) -> [Summary] { notReady > 0 ? [.badge(.missing(notReady))] : [.badge(.allOk)] }
 
-    /// A tool's agents: how many ask as one `[1 asks]` badge (amber), then the resting word that says most.
-    static func agents(asks: Int, working: Int, idle: Int, done: Int) -> [Summary] {
+    /// A tool's agents: how many ask as one `[1 asks]` badge (amber), then ONE resting item — `2 working`,
+    /// else `3 idle`, else (nothing alive) the word `ended` with the newest over row's age: `ended · 40m`.
+    static func agents(asks: Int, working: Int, idle: Int, ended: Int, newestEndedAge: String?) -> [Summary] {
         var out: [Summary] = []
         if asks > 0 { out.append(.badge(.asks(asks))) }
         if working > 0 { out.append(.words(ConsoleDisclosureWords.working(working))) }
         else if idle > 0 { out.append(.words(ConsoleDisclosureWords.idle(idle))) }
-        else if done > 0 { out.append(.words(ConsoleDisclosureWords.done(done))) }
+        else if ended > 0 {
+            out.append(.words(ConsoleDisclosureWords.endedWord))
+            if let newestEndedAge { out.append(.mono(newestEndedAge)) }
+        }
         return out
     }
+
+    /// Archived: the count and what those conversations billed — `2 · 15 min`.
+    static func chains(count: Int, billedSeconds: Double) -> [Summary] {
+        [.mono([String(count), ConsoleFormat.billedShort(billedSeconds)].joined(separator: ConsoleDisclosureWords.joiner))]
+    }
+
+    /// A folded day: what it billed — `26 min`.
+    static func day(billedSeconds: Double) -> [Summary] { [.mono(ConsoleFormat.billedShort(billedSeconds))] }
+
+    /// The folded Older head: the oldest day inside — `since Aug 2`.
+    static func older(since day: String) -> [Summary] { [.mono(ConsoleDisclosureWords.since(ConsoleFormat.shortDay(day)))] }
 
     /// A ledger month: the read days' figures summed (`62 min · $3.10`), nothing until one is read.
     static func ledgerMonth(read: Int, billedSeconds: Double) -> [Summary] {

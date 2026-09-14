@@ -1480,7 +1480,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("long transcript ends interrupted", long.messages.last?.tool?.status.rawValue ?? "nil", "interrupted")
         // The rail: live sessions first, then the rest, each by when they last wrote; the hint word.
         let rows = [agent(.ended, hint: "ended", at: 900), agent(.idle, hint: "quiet", at: 100), agent(.working, hint: "running", at: 500), agent(.done, hint: "archived", at: 950), agent(.blocked, hint: "blocked", at: 300)]
-        expect("rail order: live (working, blocked, idle by time) then over (done, ended by time)", AgentsRail.ordered(rows).map { "\($0.status.rawValue)@\(Int($0.updatedAt))" }.joined(separator: ","), "working@500,blocked@300,idle@100,done@950,ended@900")
+        expect("rail order: asks, working, idle, then over (done, ended by time)", AgentsRail.ordered(rows).map { "\($0.status.rawValue)@\(Int($0.updatedAt))" }.joined(separator: ","), "blocked@300,working@500,idle@100,done@950,ended@900")
         expect("hint word: ended on ended says nothing", ConsoleFormat.hintWord(agent(.ended, hint: "ended")) ?? "nil", "nil")
         expect("hint word: running on working says nothing", ConsoleFormat.hintWord(agent(.working, hint: "running")) ?? "nil", "nil")
         expect("hint word: quiet on idle says nothing (the dot does)", ConsoleFormat.hintWord(agent(.idle, hint: "quiet")) ?? "nil", "nil")
@@ -3281,6 +3281,7 @@ extension PreviewDelegate {
         expect("row height: title + meta", "\(Int(ConsoleListModel.height(lines: 1, meta: true)))", "40")
         expect("row height: two lines + meta", "\(Int(ConsoleListModel.height(lines: 2, meta: true)))", "56")
         expect("row height: agents rail", "\(Int(ConsoleListModel.height(lines: 1, meta: true, rail: .agents)))", "44")
+        expect("row height: agents rail, one line", "\(Int(ConsoleListModel.height(lines: 1, meta: false, rail: .agents)))", "28")
         let ids = ["a", "b", "c"]
         expect("list step: clamps at the end", ConsoleListModel.step("c", by: 1, in: ids) ?? "nil", "c")
         expect("list step: clamps at the top", ConsoleListModel.step("a", by: -1, in: ids) ?? "nil", "a")
@@ -3320,8 +3321,12 @@ extension PreviewDelegate {
         expect("disclosure: Permissions area granted", text(ConsoleDisclosureSummary.permissionGroup(missing: [], granted: ["Desktop", "Documents"])), "Desktop · Documents")
         expect("disclosure: Problems kind", text(ConsoleDisclosureSummary.problemGroup(first: "Delegation failed: Codex session refused input")), "Delegation failed: Codex session refused input")
         expect("disclosure: Ready", text(ConsoleDisclosureSummary.ready(notReady: 0)) + " / " + text(ConsoleDisclosureSummary.ready(notReady: 1)), "[all ok] / [1 missing]")
-        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "[1 asks] · 2 working")
-        expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, done: 1)), "3 idle")
+        expect("disclosure: Claude agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, ended: 1, newestEndedAge: "7m")), "[1 asks] · 2 working")
+        expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, ended: 1, newestEndedAge: "3h")), "3 idle")
+        expect("disclosure: dead group", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 0, ended: 4, newestEndedAge: "40m")), "ended · 40m")
+        expect("disclosure: Archived", text(ConsoleDisclosureSummary.chains(count: 2, billedSeconds: 900)), "2 · 15 min")
+        expect("disclosure: a day", text(ConsoleDisclosureSummary.day(billedSeconds: 1560)), "26 min")
+        expect("disclosure: Older", text(ConsoleDisclosureSummary.older(since: "2026-08-02")), "since Aug 2")
         expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
         expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")
         expect("fold store: remembers in memory when not persisting", { ConsoleFoldStore.persists = false; ConsoleFoldStore.set("kit.check", false); return "\(ConsoleFoldStore.isOpen("kit.check", default: true))" }(), "false")
