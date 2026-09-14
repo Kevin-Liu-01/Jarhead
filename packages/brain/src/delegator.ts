@@ -1423,7 +1423,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     for (const m of pending) {
       if (!m.screenshotPath) continue;
       const what = m.element?.title || m.element?.app ? ` — ${[m.element?.role, m.element?.title ? `"${m.element.title}"` : undefined, m.element?.app ? `in ${m.element.app}` : undefined].filter(Boolean).join(" ")}` : "";
-      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: `${markNote(m.rect, now - m.at)}${what}`, kind: "mark" });
+      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: `${markNote(m.rect, now - m.at, m.source)}${what}`, kind: "mark" });
     }
     const ids = pending.map((m) => m.id);
     source.consume(ids);
