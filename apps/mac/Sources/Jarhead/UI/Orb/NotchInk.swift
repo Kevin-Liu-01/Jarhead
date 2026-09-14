@@ -218,8 +218,8 @@ enum NotchInk {
     /// the sizes the spring has already left behind), then backfills. `prewarm` queues
     /// the sizes the dock knows it will show (the open island, the lip, the peek and its
     /// breath) behind the live requests, so the first open is drawn exact, never
-    /// stretched. Main-actor state; the worker only ever calls the pure `render` and
-    /// hops back.
+    /// stretched. Main-actor state; the render queue only ever calls the pure `render`
+    /// and hops back.
     @MainActor
     final class Cache {
         static let shared = Cache()

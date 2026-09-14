@@ -18,7 +18,7 @@ final class Hotkeys {
         case stop = 3
         case transportToggle = 4
         case markScreen = 5
-        /// 6 was ⌥⇧P, the old pause alias, deleted with the no-legacy contract; never reused.
+        /// 6 is retired and never reused (ids are stable across builds).
         case sayLine = 7
 
         var keyCode: UInt32 {

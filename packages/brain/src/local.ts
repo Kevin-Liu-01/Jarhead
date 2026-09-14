@@ -314,7 +314,7 @@ async function listOllama(baseUrl: string, fetchImpl: typeof fetch, headers: Rec
   const infos = new Map<string, ShowInfo>();
   // ≤ 8 /api/show in flight; a digest seen before in this process is not asked again.
   const queue = [...local];
-  const worker = async (): Promise<void> => {
+  const fetcher = async (): Promise<void> => {
     for (let row = queue.shift(); row; row = queue.shift()) {
       const id = (row.model ?? row.name)!;
       const cached = row.digest ? showCache.get(row.digest) : undefined;
@@ -329,7 +329,7 @@ async function listOllama(baseUrl: string, fetchImpl: typeof fetch, headers: Rec
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(8, queue.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(8, queue.length) }, fetcher));
   const models = rows.map((row): LocalModel => {
     const id = (row.model ?? row.name)!;
     const info = infos.get(id);
