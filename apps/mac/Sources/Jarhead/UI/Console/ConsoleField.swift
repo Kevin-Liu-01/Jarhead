@@ -151,16 +151,16 @@ struct ConsoleField: View {
     private func submit() {
         if text.isEmpty, !commit.emptyClears { text = last; focused = false; return }
         onCommit()
+        last = text
         focused = false
     }
-        last = text
 
     private func cancel() {
         text = last
         onCancel()
+        last = text
         focused = false
     }
-        last = text
 
     /// Focus arriving remembers the value; focus leaving commits (or reverts an empty field).
     private func blur(was: Bool, now: Bool) {
@@ -337,6 +337,7 @@ struct ConsoleSecretSaving: View {
     }
 }
 
+/// The dot and the status word are one AX element; Clear and Change stay controls of their own.
 struct ConsoleSecretOnFile: View {
     let color: Color
     let text: String
@@ -347,8 +348,11 @@ struct ConsoleSecretOnFile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                ConsoleDot(color: color, size: 6)
-                Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2).contentTransition(.opacity)
+                HStack(spacing: 8) {
+                    ConsoleDot(color: color, size: 6)
+                    Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2).contentTransition(.opacity)
+                }
+                .accessibilityElement(children: .combine)
                 Spacer(minLength: 8)
                 if let clear {
                     Button(ConsoleFieldWords.clear, action: clear).buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
@@ -363,7 +367,7 @@ struct ConsoleSecretOnFile: View {
             }
         }
         .transition(.opacity)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
 
