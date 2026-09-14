@@ -69,8 +69,8 @@
 #                                                                                                     # landing line names the side it fell to ("up-left occupied → up")
 #   … ORB_REDUCE_MOTION=1 ORB_FLEET_SHOT=reduce …                                                    # fleet-reduce: satellites appear and move as fades (no "flies" lines, body speed 0), faces still blink
 #   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_SHOT_DIR=Resources ORB_FLEET="…three…" ORB_EXIT_AFTER=10 Scripts/orb-preview.sh
-#                                                                                                     # fleet-notch-peek (three 5 pt squares right of "Working · 0:12"), fleet-notch-island (third row
-#                                                                                                     # "Slack · working · 0:03 | Spotify · working · 0:03 | Mail · working · 0:03"), fleet-notch-strip
+#                                                                                                     # fleet-notch-peek (three 5 pt squares right of "Working · 0:12"), fleet-notch-island (the chip line
+#                                                                                                     # under the hero: "Slack · working · 0:03 | Spotify · working · 0:03 | Mail · working · 0:03"), fleet-notch-strip
 #                                                                                                     # (the main blob out at its fly; counter + dots on the strip); the dots → 0 after a done + 1.2 s
 #   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_FLY_AT=99 ORB_FLEET="Slack:screen:working@1000,300" ORB_FLEET_DRAG="Slack->dock@3" ORB_EXIT_AFTER=6 Scripts/orb-preview.sh
 #                                                                                                     # fleet-drag-stop: the satellite dragged into NotchGeometry.catchZoneCG → exactly one
@@ -104,7 +104,7 @@
 #   Scripts/orb-preview.sh --notch-checks [name…]                                                     # every recipe below in turn (~3 min), logs under $OUT/notch-checks/<name>/,
 #                                                                                                     # then one summary of every check: line; exit 1 when any reads FAIL
 #   ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_FLY_AT=99 ORB_SHOT_DIR=… plus, per recipe:
-#     base       ORB_NOTCH_OPEN_TIMING=1 ORB_EXIT_AFTER=4.5                                            # island 360×132 rows / text limits / ink cache / a11y children / open timing
+#     base       ORB_NOTCH_OPEN_TIMING=1 ORB_EXIT_AFTER=4.5                                            # island 420×184 zones / text limits / ink cache / a11y children / open timing / the foot's tooltip
 #     marks      ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_NOTCH_PRESS="forget:0@3.9"
 #     marks-clear … the same marks, ORB_NOTCH_PRESS="clear@3.9"                                         # → notch-{tucked,peek,island}-marks.png
 #     ask-*      ORB_NOTCH_PRESS="ask@3.3" with a pending mark / a window mark / no marks + ORB_NOTCH_STROKE_AT=3.5 /
@@ -123,13 +123,15 @@
 #     pill       ORB_NOTCH_PHASE=asleep ORB_NOTCH_PILL_TEST=1 ORB_EXIT_AFTER=9.5
 #     trace      ORB_NOTCH_TRACE_AT="2.0:mark;9.0:reflex circle" ORB_EXIT_AFTER=16
 #     screenrec  ORB_NOTCH_SCREEN_RECORDING=0 ORB_NOTCH_PROBLEM=permission.screenRecording ORB_NOTCH_PRESS="remedy@3.8"   # → notch-island-screenrec.png
-#     problem    ORB_NOTCH_PROBLEM=permission.screenRecording                                          # → notch-peek-problem.png, notch-island-problem-pill.png
+#     problem    ORB_NOTCH_PROBLEM=permission.screenRecording                                          # → notch-peek-problem.png, notch-island-problem.png (the foot row)
 #     chips      ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_MARKS=… ORB_NOTCH_PROBLEM=… ORB_NOTCH_METER=… ORB_NOTCH_SHOT_TAG=chips
 #     lands      ORB_NOTCH_PHASE=asleep ORB_NOTCH_MARK_LANDS_AT=1.5 ORB_EXIT_AFTER=9                    # → notch-tucked-asleep.png with the lip chip
 #     sweep      ORB_NOTCH_PHASE_SWEEP=3.5 ORB_EXIT_AFTER=6.5
 #     strip      ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_STRIP_PROBE=2.5 ORB_EXIT_AFTER=3
-#     fleet      ORB_FLEET="…three…" ORB_EXIT_AFTER=4.5                                                # → fleet-notch-{peek,island}.png at 132
+#     fleet      ORB_FLEET="…three…" ORB_EXIT_AFTER=4.5                                                # → fleet-notch-{peek,island}.png at 184 (three threads: the chip line)
 #     reduce-*   marks / question / circle again with ORB_REDUCE_MOTION=1                              # + the reduce-motion check line
+#     kind-*     ORB_NOTCH_KIND=plain|question|marks forces the display's kind, ORB_NOTCH_KIND_AT="kind@4.2" swaps it with the
+#                island open: the tooltip lines (the foot, the hero's question, the film caption) and the kind-change beats
 #
 # Screenshots land as <ORB_SHOT_DIR>/preview-blob-<what>.png, via screencapture when the
 # launching app has the Screen Recording grant, else drawn in-process from the panel's
@@ -204,6 +206,10 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe reduce-marks 5 ORB_REDUCE_MOTION=1 ORB_NOTCH_MARKS="$MARKS"
   recipe reduce-question 4.5 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_SHOT_TAG=question
   recipe reduce-circle 11 ORB_REDUCE_MOTION=1 ORB_FLEET="$FLEET" ORB_NOTCH_CIRCLE_AT=3.2   # no counter: the peek's 322 proves the dots gone
+  recipe kind-plain 5.5 ORB_NOTCH_KIND=plain ORB_NOTCH_METER="252,138,738" ORB_NOTCH_KIND_AT="question@4.2" ORB_NOTCH_SHOT_TAG=kind-plain
+  recipe kind-question 5.5 ORB_NOTCH_KIND=question ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION='Slack:Send "shipping Friday" to #general?' \
+    ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-question
+  recipe kind-marks 5.5 ORB_NOTCH_KIND=marks ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-marks
   echo
   echo "summary (every check: line, deduplicated by text):"
   cat "$ROOT"/*/run.log | grep -E "check:" | sed -E 's/^ *[0-9.]+ s //' | sed -E 's/ (OK|FAIL)( \(.*| :.*)?$/ \1/' | sort -u

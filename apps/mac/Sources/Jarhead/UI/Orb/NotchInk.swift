@@ -18,8 +18,10 @@ import AppKit
 // palette), then blended into pure black toward the notch — longest under
 // the notch, a short rim at the outer corners — so the island reads as the orb's
 // colour pooling out of the black. Rendered once per (size, scale) into a CGImage and
-// cached (an LRU capped at 32 MB by bytes, the open and peek sizes prewarmed); the mode's intensity is the alpha it is drawn with, so a static
-// island allocates nothing per frame.
+// cached (an LRU capped at 32 MB by bytes — the 420×184 island at 2× is ≈ 1.24 MB, so
+// about 25 fit; the open and peek sizes are prewarmed, and the peek never grows past
+// `NotchGeometry.peekWidthCap`); the mode's intensity is the alpha it is drawn with, so
+// a static island allocates nothing per frame.
 //
 // Nothing here blocks a frame: the tile and every image are rendered on
 // `Dither.renderQueue` (a few ms optimised, hundreds of ms in a -Onone build — `swift
@@ -145,7 +147,7 @@ enum NotchInk {
     private static let rampSpan: Float = 0.78
     /// The glassy highlight (the icon's top-left spot): a pale cyan spot hugging the
     /// island's left end just under the black rim, in points so it is the same size
-    /// whatever the island's — small enough that the eyes, 30 pt in, sit on the blue.
+    /// whatever the island's — small enough that the eyes, 57 pt in, sit on the blue.
     private static let highlightSigma: Float = 18
 
     // MARK: gradient image
@@ -235,9 +237,10 @@ enum NotchInk {
         private var warm: [Key] = []
         private var rendering = false
         private let observers = NSHashTable<AnyObject>.weakObjects()
-        /// 32 MB holds about 42 open-island images (360×132 at 2× is ≈ 760 kB); one
+        /// 32 MB holds about 25 open-island images (420×184 at 2× is ≈ 1.24 MB); one
         /// open+close spring is ~25 distinct sizes and the peek's breath up to 16 more,
-        /// most of them a fraction of that.
+        /// most of them a fraction of that — stretched neighbours mid-spring are the
+        /// design; the resting sizes are prewarmed and exact.
         let capacityBytes = 32 << 20
         /// Sizes the spring has left behind are the least useful to render.
         private let pendingCap = 8

@@ -181,7 +181,7 @@ public final class OrbPanelController {
     /// fleet's dots — built whole from the snapshot, the thread store, the mark state
     /// and the gate (`buildDockContent`); kept for a dock built later.
     private var dockContent = DockContent.empty
-    /// Decoded thumbnails by mark id (`Thumbnails.shared`, 2× the 30×22 frame), dropped with their marks.
+    /// Decoded thumbnails by mark id (`Thumbnails.shared`, 2× the 84×60 film), dropped with their marks.
     private var markThumbs: [String: CGImage] = [:]
     private var markThumbsRequested: Set<String> = []
     /// A thumbnail landed: the content is rebuilt.
@@ -1000,7 +1000,7 @@ public final class OrbPanelController {
         notch?.showPill("Cleared · \(n)", symbol: "eraser.fill", tone: .info, seconds: 1.5)
     }
 
-    /// The problem pill's box: the remedy's command when the engine gave one this app can
+    /// The foot's remedy box: the remedy's command when the engine gave one this app can
     /// send, its place when it named one (`jarhead://setup` in-process), else
     /// `problem.retry` for the kind — the Console's dispatch.
     private func remedyFromDock(_ row: DockContent.ProblemRow) {
@@ -1093,7 +1093,8 @@ public final class OrbPanelController {
     }
 
     /// Decode each mark's crop once its path appears, off the main thread, at twice the
-    /// 30×22 frame; drop what the snapshot no longer lists.
+    /// 84×60 film (the minis downsample from the same decode); drop what the snapshot no
+    /// longer lists.
     private func requestThumbnails(for marks: [ScreenMark]) {
         let ids = Set(marks.map(\.id))
         markThumbs = markThumbs.filter { ids.contains($0.key) }
@@ -1102,7 +1103,7 @@ public final class OrbPanelController {
             guard let path = m.screenshotPath, !path.isEmpty else { continue }
             markThumbsRequested.insert(m.id)
             let id = m.id
-            Thumbnails.shared.thumbnail(for: state.screenshotURL(path), maxPixel: 60) { [weak self] img in
+            Thumbnails.shared.thumbnail(for: state.screenshotURL(path), maxPixel: 170) { [weak self] img in
                 guard let self, let img, self.markThumbsRequested.contains(id) else { return }
                 self.markThumbs[id] = img
                 self.thumbsChanged.send(self.thumbsChanged.value + 1)
@@ -2769,6 +2770,15 @@ extension OrbPanelController {
     public func previewNotchBoxDim(_ name: String) -> CGFloat { notch?.view.previewBoxDim(name) ?? 0 }
     public var previewNotchThumbs: [String] { notch?.view.previewThumbs ?? [] }
     public var previewNotchThreadChips: [String] { notch?.view.previewThreadChips ?? [] }
+    public var previewNotchCanvasKind: String { notch?.view.previewCanvasKind ?? "" }
+    public var previewNotchHeroLines: [String] { notch?.view.previewHeroLines ?? [] }
+    public var previewNotchMeterFill: CGFloat { notch?.view.previewMeterFill ?? 0 }
+    public var previewNotchTraceLevel: CGFloat { notch?.view.previewTraceLevel ?? 0 }
+    public var previewNotchFootProblem: Bool { notch?.view.previewFootProblem ?? false }
+    public var previewNotchFieldPlaceholder: String { notch?.view.previewFieldPlaceholder ?? "" }
+    public var previewNotchFieldPlaceholderWidth: CGFloat { notch?.view.previewFieldPlaceholderWidth ?? 0 }
+    public func previewNotchTooltipAt(_ p: NSPoint) -> String { notch?.view.previewTooltip(atIsland: p) ?? "" }
+    public func previewNotchSetKind(_ name: String?) { notch?.view.previewSetKind(name) }
     public var previewNotchPinned: Bool { notch?.previewPinned ?? false }
     public var previewNotchPinAfterMark: Bool { notch?.previewPinAfterMark ?? false }
     public var previewNotchMarking: Bool { notch?.previewMarking ?? false }
