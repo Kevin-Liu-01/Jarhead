@@ -13,8 +13,35 @@ let onboardingIconGap: CGFloat = 8
 let onboardingKeyWidth: CGFloat = 88
 /// Content pane padding.
 let onboardingInset: CGFloat = 24
-/// A form control's row: fields and buttons are this tall; labels centre on it.
-let onboardingRowHeight: CGFloat = 28
+/// A form control's row: fields and menus are this tall (the Console's `.row` 26); labels centre on it.
+let onboardingRowHeight: CGFloat = 26
+
+/// Every literal the kit's Setup migration added (ids the harness opens, hints, badge words).
+enum OnboardingWords {
+    static let voiceMenu = "setup.voice"
+    static let brainMenu = "setup.brain"
+    static let authMenu = "setup.auth"
+    static let wakeToggle = "setup.wakeWord"
+    static let accentLabel = "Accent"
+    static let authLabel = "Prove it's you"
+    static let brainLabel = "Brain"
+    static let wakeLabel = "Wake word"
+    static let wakeHint = "listens on-device"
+    static let required = "required"
+    static let saveAndCheck = "Save & check"
+    static let apply = "Apply"
+    static let set = "Set"
+    static let keyOnFile = "on file"
+    static let passphraseSet = "set"
+    static let openAIKey = "OPENAI_API_KEY"
+    static let passphraseHint = "Set. Say it or type it when asked."
+}
+
+/// A key on the left, a control on the right, at the wizard's key width — `ConsoleFormRow` with
+/// the Setup measures, so no second struct.
+func setupRow<C: View>(_ label: String, @ViewBuilder control: () -> C) -> ConsoleFormRow<C> {
+    ConsoleFormRow(label, keyWidth: onboardingKeyWidth, height: onboardingRowHeight, control: control)
+}
 
 struct OnboardingRootView: View {
     @EnvironmentObject private var state: AppState
@@ -286,27 +313,6 @@ extension OnboardingHead where Trailing == EmptyView {
     }
 }
 
-/// A key on the left, a control on the right. The label centres on the first
-/// 28pt of the control, so a field with a note under it keeps its label on the
-/// field, not on the gap.
-struct OnboardingFormRow<C: View>: View {
-    let label: String
-    let control: C
-
-    init(_ label: String, @ViewBuilder control: () -> C) {
-        self.label = label
-        self.control = control()
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(label).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.titanium)
-                .frame(width: onboardingKeyWidth, height: onboardingRowHeight, alignment: .leading)
-            control.frame(maxWidth: .infinity, minHeight: onboardingRowHeight, alignment: .leading)
-        }
-    }
-}
-
 /// One status line as a single wrapping Text: `text` in sans, then " · id" in
 /// mono (a model id), then " · detail" quieter. Ids are mono everywhere, like
 /// the Console.
@@ -350,77 +356,6 @@ struct OnboardingStatusLine: View {
         .frame(minHeight: 20)
         .animation(Motion.fade, value: said)
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// A quiet 12pt note under a control.
-struct OnboardingNote: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// A segmented control drawn like the Console's tabs: hairline box, the chosen
-/// segment inverted. Segments size to their titles; the filled thumb is one view on
-/// a matched geometry id, so it glides between them (Motion.snappy).
-struct OnboardingSegments<Value: Hashable>: View {
-    let value: Value
-    let options: [Value]
-    let title: (Value) -> String
-    let pick: (Value) -> Void
-
-    @Namespace private var thumb
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(options.enumerated()), id: \.element) { index, option in
-                if index > 0 { Rectangle().fill(ConsoleTheme.hair).frame(width: 1) }
-                OnboardingSegment(title: title(option), on: option == value, thumb: thumb) {
-                    withAnimation(Motion.snappy) { pick(option) }
-                }
-            }
-        }
-        .frame(height: 26)
-        .fixedSize()
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-        .animation(Motion.snappy, value: value)
-        .accessibilityElement(children: .contain)
-    }
-}
-
-private struct OnboardingSegment: View {
-    let title: String
-    let on: Bool
-    let thumb: Namespace.ID
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(ConsoleTheme.sans(12, .medium))
-                .foregroundStyle(on ? ConsoleTheme.ground : ConsoleTheme.fg2)
-                .padding(.horizontal, 10)
-                .frame(height: 26)
-                .background {
-                    if on {
-                        Rectangle().fill(ConsoleTheme.fg).matchedGeometryEffect(id: "thumb", in: thumb)
-                    } else if hovering {
-                        Rectangle().fill(ConsoleTheme.hover)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-        .animation(Motion.snappy, value: on)
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 

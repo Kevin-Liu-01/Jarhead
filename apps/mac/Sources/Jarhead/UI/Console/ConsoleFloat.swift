@@ -5,7 +5,7 @@ import AppKit
 // triggers publish. Nothing here opens a window. One `ConsoleFloatLayer` per window root
 // (`ConsoleRootView.chromeA`, `OnboardingRootView`) reads the anchors through a preference and
 // places each float with `ConsoleFloatPlacement`. Option (a) of the mechanics; the spike of kit
-// step 0 proved focus, keys and anchors on this Swift (see `ConsoleFloatSpike`).
+// step 0's spike proved focus, keys and anchors on this Swift; `ConsoleMenuField` is the first real trigger.
 
 /// One floating surface a view asked for: who (a stable id), what kind, where (an anchor the root
 /// resolves in its own space) and how to draw it. `AnyView` is taken exactly once, here, at the

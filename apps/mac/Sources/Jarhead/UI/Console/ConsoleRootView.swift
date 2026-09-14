@@ -204,9 +204,8 @@ struct ConsoleRootView: View {
             .animation(Motion.gentle, value: state.cleanupToast?.id)
             .padding(.top, 53)
         }
-        // Kit step 0's spike field (harness only; empty in the app) and the one float layer:
-        // every tip and menu draws here, over the columns, from the anchors the triggers publish.
-        .overlay(alignment: .topLeading) { ConsoleFloatSpike.mount() }
+        // The one float layer: every tip and menu draws here, over the columns, from the anchors
+        // the triggers publish.
         .consoleFloatLayer()
         // ⌘F while the Console is key: the rail's search (the window handles ⌘W ⌘. ⌘K ⌘P itself).
         .background {

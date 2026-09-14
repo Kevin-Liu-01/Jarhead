@@ -45,9 +45,9 @@ struct OnboardingPermissionsStep: View, Equatable {
             group("more it can use · \(optional.filter { $0.grant == .granted }.count) of \(optional.count) granted", optional)
             // Grants are re-read from a fresh process every few seconds and the hands
             // helper restarts itself when one appears, so nothing here needs a relaunch.
-            OnboardingNote("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.")
+            ConsoleHint("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
             if permissions.contains(where: { ($0.kind == .accessibility || $0.kind == .screenRecording) && $0.grant != .granted }) {
-                OnboardingNote("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.")
+                ConsoleHint("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.", indent: 0)
                     .transition(Motion.appear)
             }
         }
@@ -154,12 +154,7 @@ struct OnboardingPermissionsStep: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(info.label).font(ConsoleTheme.sans(13)).foregroundStyle(ConsoleTheme.fg)
-                    if info.required {
-                        Text("required").font(ConsoleTheme.mono(9)).foregroundStyle(ConsoleTheme.fg3)
-                            .padding(.horizontal, 5).frame(height: 15)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-                            .accessibilityLabel("required")
-                    }
+                    if info.required { ConsoleBadge(word: .word(OnboardingWords.required)) }
                 }
                 .frame(height: 20)
                 Text(info.why).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
@@ -238,66 +233,41 @@ struct OnboardingWakeStep: View, Equatable {
     @State private var phrasesDraft = ""
     @State private var passphrase = ""
     @State private var passphraseError: String?
-    @FocusState private var focus: Field?
-
-    private enum Field: Hashable { case phrases, passphrase }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             OnboardingHead("Wake",
                            "A phrase wakes Jarhead without a click. It then asks you to prove it's you before the paid session opens.")
             VStack(alignment: .leading, spacing: 6) {
-                OnboardingFormRow("Wake word") {
-                    HStack(spacing: 10) {
-                        Toggle("", isOn: Binding(get: { wake.enabled }, set: { on in patch { $0.enabled = on } }))
-                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
-                            .tint(ConsoleTheme.accent)
-                            .accessibilityLabel("Wake word")
-                        Text(wake.enabled ? "On" : "Off").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                    }
+                // `On | Off` as a word, with the consequence beside it — never a blue switch.
+                setupRow(OnboardingWords.wakeLabel) {
+                    ConsoleToggle(on: wake.enabled, hint: OnboardingWords.wakeHint, id: OnboardingWords.wakeToggle,
+                                  accessibilityLabel: OnboardingWords.wakeLabel) { on in patch { $0.enabled = on } }
                 }
-                OnboardingFormRow("Phrases") {
-                    TextField("jarhead, hey jarhead", text: $phrasesDraft)
-                        .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .phrases)
-                        .focused($focus, equals: .phrases)
-                        .onSubmit { commitPhrases(); focus = nil }
-                        .onChange(of: focus) { if focus != .phrases { commitPhrases() } }
-                        .accessibilityLabel("Wake phrases, comma separated")
+                setupRow("Phrases") {
+                    ConsoleField(text: $phrasesDraft, placeholder: "jarhead, hey jarhead", size: .row, mono: true,
+                                 accessibilityLabel: "Wake phrases, comma separated", onCommit: commitPhrases)
                 }
-                OnboardingFormRow("Prove it's you") {
-                    // Segments when they fit the row; the Console's menu field when the window is narrow.
+                setupRow(OnboardingWords.authLabel) {
+                    // Segments when they fit the row; the Console's dropdown when the window is narrow.
                     ViewThatFits(in: .horizontal) {
-                        OnboardingSegments(value: wake.auth, options: WakeAuth.allCases, title: OnboardingWakeStep.shortAuth,
-                                           pick: { auth in patch { $0.auth = auth } })
+                        ConsoleSegments(value: wake.auth, options: WakeAuth.allCases, title: OnboardingWakeStep.shortAuth,
+                                        pick: { auth in patch { $0.auth = auth } }, accessibilityLabel: OnboardingWords.authLabel, size: .row, fixedSize: true)
                         ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
-                                         pick: { auth in patch { $0.auth = auth } })
+                                         pick: { auth in patch { $0.auth = auth } }, id: OnboardingWords.authMenu, label: OnboardingWords.authLabel)
                     }
-                    .accessibilityLabel("Authentication: \(wake.auth.label)")
                 }
-                OnboardingFormRow("Passphrase") {
+                setupRow("Passphrase") {
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 8) {
-                            SecureField(passphraseSet ? "set · replace" : "words you can say", text: $passphrase)
-                                .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .passphrase)
-                                .focused($focus, equals: .passphrase)
-                                .onSubmit(setPassphrase)
-                                .accessibilityLabel("Wake passphrase")
-                            Button("Set", action: setPassphrase)
-                                .buttonStyle(ConsoleButtonStyle(kind: .ghost))
-                                .disabled(passphraseDraft.isEmpty)
-                            if passphraseSet {
-                                Button("Clear") { actions.clearPassphrase(); passphraseError = nil }
-                                    .buttonStyle(ConsoleButtonStyle(kind: .ghost))
-                                    .transition(.opacity)
-                            }
-                        }
-                        // The verdict under the field fades in and rises; a rejection reads in red.
-                        if let e = passphraseError {
-                            Text(e).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.error)
-                                .transition(Motion.appear)
-                        } else if passphraseSet {
-                            Text("Set. Say it or type it when asked.").font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
-                                .transition(Motion.appear)
+                        // Field + Set until one is set, then `● set · Clear · Change`; a rejection is the red
+                        // ring, the shake and the red line under — the typed words stay for a second try.
+                        ConsoleSecretRow(placeholder: passphraseSet ? "set · replace" : "words you can say", onFile: passphraseSet,
+                                         statusText: OnboardingWords.passphraseSet, verb: OnboardingWords.set, error: passphraseError,
+                                         accessibilityLabel: "Wake passphrase", draft: $passphrase,
+                                         clear: passphraseSet ? { actions.clearPassphrase(); passphraseError = nil } : nil,
+                                         save: { _ in setPassphrase() })
+                        if passphraseSet, passphraseError == nil {
+                            ConsoleHint(OnboardingWords.passphraseHint, indent: 0).transition(Motion.appear)
                         }
                     }
                     .animation(Motion.gentle, value: passphraseError)
@@ -307,7 +277,7 @@ struct OnboardingWakeStep: View, Equatable {
             heardBox
         }
         .onAppear { phrasesDraft = wake.phrases.joined(separator: ", ") }
-        .onChange(of: wake.phrases) { if focus != .phrases { phrasesDraft = wake.phrases.joined(separator: ", ") } }
+        .onChange(of: wake.phrases) { phrasesDraft = wake.phrases.joined(separator: ", ") }
         // Half-typed phrases or a passphrase not yet set go out with Continue instead of vanishing.
         .onChange(of: dirty) { actions.draft(dirty, dirty ? commitAll : nil) }
     }
@@ -362,7 +332,7 @@ struct OnboardingWakeStep: View, Equatable {
                     .accessibilityLabel(heard.isEmpty ? "Nothing heard yet" : "Heard: \(heard)")
                 Spacer(minLength: 0)
             }
-            OnboardingNote("Listening happens only while Jarhead is asleep, on this Mac; nothing it hears is sent anywhere.")
+            ConsoleHint("Listening happens only while Jarhead is asleep, on this Mac; nothing it hears is sent anywhere.", indent: 0)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
@@ -420,7 +390,6 @@ struct OnboardingWakeStep: View, Equatable {
         if actions.setPassphrase(p) {
             passphrase = ""
             passphraseError = nil
-            focus = nil
         } else {
             passphraseError = "Too short. Use a few words you can say out loud."
         }
