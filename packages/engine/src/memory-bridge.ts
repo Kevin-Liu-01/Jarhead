@@ -112,6 +112,8 @@ export interface LocalMemoryTarget {
   readonly chatModel: string;
   /** The model's trained window, when discovery knows it; sizes the extractor's slice. */
   readonly chatContext?: number;
+  /** The model carries Ollama's `thinking` capability: the extractor asks for no reasoning and leaves the JSON room to finish. */
+  readonly thinking?: boolean;
   /** First of EMBED_PREFERENCE on the server; absent = keyword matching. */
   readonly embedModel?: string;
 }
@@ -133,6 +135,8 @@ export interface MemoryBridgeOptions extends MemoryBridgeSeams {
   readonly redact: (s: string) => string;
   /** Kevin's OpenAI key, read live (a `config.set-secrets` changes it). */
   readonly apiKey: () => string | undefined;
+  /** The token Kevin set for the brain (JARHEAD_BRAIN_API_KEY, an LM Studio bearer), read live; it rides on every call to the local server, as the brain's own do. */
+  readonly brainApiKey: () => string | undefined;
   /** `JARHEAD_MEMORY_MODEL`, read live; undefined = the package's default (a mini-class Responses id the doctor picks). */
   readonly model: () => string | undefined;
   /** `Settings.memory !== false`, read live: off means no extraction, no injection, no embedding call, no memory.* row. */
@@ -238,15 +242,17 @@ export class MemoryBridge {
   /** The providers a target names, as one string: what `relink()` compares. */
   private identityOf(target: LocalMemoryTarget | "offline" | undefined): string {
     if (target === "offline") return "keyword";
-    if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}`;
+    // The token's presence is part of the identity: a `config.set-secrets` that adds one relinks onto a server that wanted it.
+    if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}|${this.opts.brainApiKey() ? "token" : ""}`;
     return this.opts.apiKey() ? `openai|${this.opts.model() ?? ""}` : "keyword";
   }
 
   /**
    * The store over the providers the settings name. Under `local` with a reachable server: the
    * discovered embedding model (probed once for its dims; a probe that fails is keywords with a
-   * warning) and the brain's model as extractor and decider in Chat Completions JSON mode — the
-   * OpenAI branch is skipped even with a key. Under `local` with nothing answering: keywords and
+   * warning) and the brain's model as extractor and decider in Chat Completions JSON mode, both
+   * carrying the brain's token when Kevin set one (an LM Studio bearer) — the OpenAI branch is
+   * skipped even with a key. Under `local` with nothing answering: keywords and
    * rules. Otherwise Kevin's OpenAI key when there is one (embeddings and the Responses extractor,
    * which is also the decider — the key's model list is asked once when no model is pinned),
    * rules and keywords when there is not.
@@ -263,16 +269,29 @@ export class MemoryBridge {
       extractor = this.opts.extractor ?? new RulesExtractor();
       decider = this.opts.decider ?? new RulesDecider();
     } else if (target) {
+      // The brain's token (an LM Studio bearer) goes with every call, or a token-protected server would give the brain and refuse memory.
+      const key = this.opts.brainApiKey();
+      const auth = key ? { apiKey: key } : {};
       if (this.opts.embedder) embedder = this.opts.embedder;
       else if (target.embedModel) {
         try {
-          embedder = await LocalEmbedder.probe({ flavor: target.flavor, baseUrl: target.baseUrl, model: target.embedModel, ...(fetchImpl ? { fetchImpl } : {}) });
+          embedder = await LocalEmbedder.probe({ flavor: target.flavor, baseUrl: target.baseUrl, model: target.embedModel, ...auth, ...(fetchImpl ? { fetchImpl } : {}) });
         } catch (e) {
           log.warn(`local embeddings (${target.embedModel}) did not answer the probe: ${(e as Error).message.split("\n")[0]}; matching by keywords until they do`);
           embedder = new KeywordEmbedder();
         }
       } else embedder = new KeywordEmbedder();
-      const chat = target.chatModel && !this.opts.extractor ? new ChatExtractor({ baseUrl: target.baseUrl, model: target.chatModel, ...(target.chatContext !== undefined ? { contextLength: target.chatContext } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
+      const chat =
+        target.chatModel && !this.opts.extractor
+          ? new ChatExtractor({
+              baseUrl: target.baseUrl,
+              model: target.chatModel,
+              ...(target.chatContext !== undefined ? { contextLength: target.chatContext } : {}),
+              ...(target.thinking !== undefined ? { thinking: target.thinking } : {}),
+              ...auth,
+              ...(fetchImpl ? { fetchImpl } : {}),
+            })
+          : undefined;
       extractor = this.opts.extractor ?? chat ?? new RulesExtractor();
       decider = this.opts.decider ?? chat ?? new RulesDecider();
       maxChars = chat?.maxChars;

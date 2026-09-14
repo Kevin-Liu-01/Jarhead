@@ -519,8 +519,8 @@ export class FakeMemoryService implements MemoryServiceLike {
 // `EngineOptions.discoverLocal` answers discovery from a scripted status; the brain and memory
 // still talk to a server, so a tiny HTTP stand-in answers the reads the daemon makes of Ollama
 // (/v1/models for the compatible probe, /api/generate for warm-up and cool, /api/chat is never
-// reached in these tests, /api/embed and /v1/chat/completions for memory). Anything else is
-// recorded as a violation — the never-writes pin, as the brain's own tests keep it.
+// reached in these tests, /api/embed or /v1/embeddings and /v1/chat/completions for memory). Anything
+// else is recorded as a violation — the never-writes pin, as the brain's own tests keep it.
 
 const GIB = 1024 ** 3;
 
@@ -543,6 +543,8 @@ export interface FakeLocalRequest {
   method: string;
   path: string;
   body: unknown;
+  /** The request headers, lower-cased names (`authorization` is what the bearer tests read). */
+  headers: Record<string, string>;
 }
 
 export interface FakeLocalServer {
@@ -557,6 +559,10 @@ export interface FakeLocalServer {
   embedDims: number;
   /** What POST /v1/chat/completions answers as `choices[0].message.content` (an extractor's JSON), or a status. */
   chat: { status: number; content: string };
+  /** What GET /v1/models answers when not 200 (401: a server that wants a token it was not given) — the compatible probe's refusal. */
+  modelsStatus: number;
+  /** Runs on every request before it is answered: a test's hook into the moment a probe is in flight. */
+  before: ((r: FakeLocalRequest) => void) | undefined;
   close(): Promise<void>;
 }
 
@@ -577,7 +583,7 @@ const LOCAL_READS: ReadonlyArray<{ method: string; path: string }> = [
 ];
 
 export async function fakeLocalServer(models: readonly string[] = ["qwen3.5:27b"]): Promise<FakeLocalServer> {
-  const fake: FakeLocalServer = { url: "", seen: [], violations: [], models: [...models], embedDims: 768, chat: { status: 200, content: JSON.stringify({ items: [] }) }, close: async () => undefined };
+  const fake: FakeLocalServer = { url: "", seen: [], violations: [], models: [...models], embedDims: 768, chat: { status: 200, content: JSON.stringify({ items: [] }) }, modelsStatus: 200, before: undefined, close: async () => undefined };
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
@@ -591,7 +597,10 @@ export async function fakeLocalServer(models: readonly string[] = ["qwen3.5:27b"
       }
       const method = req.method ?? "";
       const path = (req.url ?? "").split("?")[0] ?? "";
-      fake.seen.push({ method, path, body });
+      const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), Array.isArray(v) ? v.join(", ") : (v ?? "")]));
+      const seen: FakeLocalRequest = { method, path, body, headers };
+      fake.seen.push(seen);
+      fake.before?.(seen);
       const answer = (status: number, json: unknown): void => {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(json));
@@ -601,12 +610,20 @@ export async function fakeLocalServer(models: readonly string[] = ["qwen3.5:27b"
         return answer(500, { error: `never-writes: ${method} ${path}` });
       }
       if (path === "/api/version") return answer(200, { version: "0.34.0" });
-      if (path === "/v1/models") return answer(200, { object: "list", data: fake.models.map((id) => ({ id, object: "model", owned_by: "library" })) });
+      if (path === "/v1/models") {
+        if (fake.modelsStatus !== 200) return answer(fake.modelsStatus, { error: { message: fake.modelsStatus === 401 ? "Invalid API key" : "no" } });
+        return answer(200, { object: "list", data: fake.models.map((id) => ({ id, object: "model", owned_by: "library" })) });
+      }
       if (path === "/api/generate") return answer(200, { model: (body as { model?: string }).model, done: true, done_reason: (body as { keep_alive?: unknown }).keep_alive === 0 ? "unload" : "load" });
       if (path === "/api/embed") {
         if (fake.embedDims === 0) return answer(404, { error: `model '${(body as { model?: string }).model}' not found` });
         const input = (body as { input: string[] }).input;
         return answer(200, { model: (body as { model?: string }).model, embeddings: input.map((_, i) => Array.from({ length: fake.embedDims }, (_x, k) => (k === i % fake.embedDims ? 1 : 0.0001 * (i + 1)))) });
+      }
+      if (path === "/v1/embeddings") {
+        // LM Studio and llama.cpp speak the OpenAI shape: one vector per input, `embedDims` wide.
+        const input = (body as { input: string[] }).input;
+        return answer(200, { object: "list", model: (body as { model?: string }).model, data: input.map((_, i) => ({ object: "embedding", index: i, embedding: Array.from({ length: fake.embedDims }, (_x, k) => (k === i % fake.embedDims ? 1 : 0.0001 * (i + 1))) })) });
       }
       if (path === "/v1/chat/completions") {
         if (fake.chat.status !== 200) return answer(fake.chat.status, { error: { message: "no" } });

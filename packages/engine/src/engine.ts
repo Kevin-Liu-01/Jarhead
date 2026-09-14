@@ -6,7 +6,7 @@ import { HANDS_OFF_APPS, classifyAction, dataPaths, isLoopbackHost, writeEnvSecr
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, bestFit, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
@@ -255,6 +255,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   private localStatus: LocalServerStatus = LOCAL_NONE;
   /** The local heal timer: when the next look falls due while `brain === "local"` and no local brain is ready; 0 = disarmed. */
   private localHealAt = 0;
+  /** The local server (`localServerIdentity`) that resolved the pick and still refused the start; the heal timer waits for it to change. */
+  private localRefusedOn: string | undefined;
+  /** The settings (`brainIdentity`) the last selection pass read; a patch that lands after that read runs one more pass. */
+  private selectedAgainst: string | undefined;
   private setupProbe: { openaiKey: SetupStatus["openaiKey"]; brain: SetupStatus["brain"] } = { openaiKey: "unchecked", brain: "unchecked" };
   /** Regions Kevin circled for Jarhead; the delegator hands the unconsumed ones to the brain. */
   protected marks: ScreenMark[] = [];
@@ -507,6 +511,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       now: this.now,
       redact: (s) => this.runner.redactor.redact(s),
       apiKey: () => this.config.openaiApiKey,
+      // Only a key Kevin set for the brain (an LM Studio token) goes to the local server, never OPENAI_API_KEY — as the brain itself sends it.
+      brainApiKey: () => (secretsPresent().brainApiKey ? this.config.brainApiKey : undefined),
       model: () => this.config.memoryModel,
       enabled: () => this.settings.memory !== false,
       // Memory follows the SETTING: under `local` it runs on the server on this Mac, and while
@@ -802,7 +808,14 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.localHealAt = this.settings.brain === "local" && !this.localBrainUp() ? this.now() + Engine.LOCAL_HEAL_MS : 0;
   }
 
-  /** From tick(): the heal timer fell due — look again, and when the server can run the pick (or a best fit) restart the brain onto it. */
+  /**
+   * From tick(): the heal timer fell due — look again, and when the start would succeed restart the
+   * brain onto the server. "Would succeed" is the start's own question, `resolveLocalModel` (the exact
+   * id, `<id>:latest`, a unique name, the best fit — and never a listed model without tools or a cloud
+   * tag), so the timer neither restarts every minute onto a pin the server cannot run nor sits out a
+   * name the resolver takes. A server that resolved the pick and still refused the start is tried
+   * again only once its listing, root or version moved; Kevin's Retry and a settings change try it now.
+   */
   private async healLocal(): Promise<void> {
     if (this.brainRestart) return;
     const status = await this.lookLocal();
@@ -810,10 +823,14 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.armLocalHeal();
       return;
     }
-    const wanted = this.settings.brainModel.trim();
-    const fits = status.reachable && (wanted ? status.models.some((m) => m.id === wanted || m.id === `${wanted}:latest`) : bestFit(status.models) !== undefined);
-    if (fits) await this.restartBrain("local server appeared");
+    const fits = !("error" in resolveLocalModel(this.settings.brainModel.trim(), status));
+    if (fits && this.localRefusedOn !== Engine.localServerIdentity(status)) await this.restartBrain("local server appeared");
     else this.armLocalHeal();
+  }
+
+  /** The local server as the heal compares it: root, flavour, version and the ids listed (a model loading or unloading is not a change). */
+  private static localServerIdentity(status: LocalServerStatus): string {
+    return `${status.baseUrl}|${status.flavor ?? ""}|${status.version ?? ""}|${status.models.map((m) => m.id).sort().join(",")}`;
   }
 
   /**
@@ -826,8 +843,16 @@ export class Engine extends EventEmitter<EngineEvents> {
     const s = this.localStatus;
     if (!s.reachable || !s.flavor) return "offline";
     const chatModel = (this.brain instanceof LocalBrain ? this.brain.status.picked : undefined) ?? this.settings.brainModel.trim();
-    const chatContext = s.models.find((m) => m.id === chatModel)?.contextLength;
-    return { flavor: s.flavor, baseUrl: s.baseUrl, chatModel, ...(chatContext !== undefined ? { chatContext } : {}), ...(s.embedModel ? { embedModel: s.embedModel } : {}) };
+    const model = s.models.find((m) => m.id === chatModel);
+    return {
+      flavor: s.flavor,
+      baseUrl: s.baseUrl,
+      chatModel,
+      ...(model?.contextLength !== undefined ? { chatContext: model.contextLength } : {}),
+      // A thinking model reasons before its JSON unless told not to: the extractor turns it off (or down, for gpt-oss) and leaves room.
+      ...(model ? { thinking: model.capabilities.includes("thinking") } : {}),
+      ...(s.embedModel ? { embedModel: s.embedModel } : {}),
+    };
   }
 
   /** Resolves once the brain has been chosen (ready or fallen back). */
@@ -1216,51 +1241,71 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (regained) void this.restartHandsAfterGrant();
   }
 
-  /** Stop the current brain (cancelling any running task) and start the configured one. */
+  /** The settings a selection reads: kind, model, server root, effort — what `updateSettings` restarts the brain for. */
+  private brainIdentity(): string {
+    const s = this.settings;
+    return `${s.brain}|${s.brainModel}|${s.brainBaseUrl ?? ""}|${s.effort}`;
+  }
+
+  /**
+   * Stop the current brain (cancelling any running task) and start the configured one. A restart asked
+   * for while one runs joins it — and when the running pass had already read the settings that
+   * request changed (a click during the heal timer's own restart), the pass runs once more on what
+   * stands now, so the brain never ends on settings Kevin has since moved away from.
+   */
   async restartBrain(reason: string): Promise<void> {
     if (this.brainRestart) return this.brainRestart;
     this.brainRestart = (async () => {
-      log.info(`restarting brain: ${reason}`);
-      await this.delegator?.cancel("brain restarting");
-      // Threads run brains of the old kind: they go with it.
-      await this.bounded(this.threads.stopAll());
-      const old = this.brain;
-      this.brain = undefined;
-      this.threadFactoryOfKind = undefined;
-      this.brainReady = false;
-      this.brainDetail = "restarting";
-      this.setupProbe = { ...this.setupProbe, brain: "unchecked" };
-      this.scheduleSnapshot();
-      try {
-        await old?.stop();
-      } catch (e) {
-        log.warn(`old brain did not stop cleanly: ${(e as Error).message}`);
-      }
-      const wasResponses = old instanceof ResponsesBrain;
-      await this.lookLocal();
-      await this.startBrain();
-      this.setupProbe = { ...this.setupProbe, brain: this.brainReady ? "ok" : "unavailable" };
-      this.armLocalHeal();
-      if (this.live && this.brain) {
-        // Live fixes the delegation target (client vs Responses) when the session
-        // starts, so a swap across that line needs a fresh session; within a kind the
-        // proxy carries on and a Responses brain is simply re-bound.
-        const isResponses = (this.brain as Brain | undefined) instanceof ResponsesBrain;
-        if (isResponses !== wasResponses) {
-          this.toast("brain changed; reconnecting the voice session", "info");
-          await this.fallAsleep("brain-changed");
-          void this.wake("brain changed");
-        } else {
-          this.rebindBrain();
-        }
-      }
-      this.scheduleSnapshot();
-      // The brain setting may have moved memory's providers (local ↔ OpenAI ↔ keywords).
-      await this.memory.relink();
+      let why = reason;
+      do {
+        await this.selectionPass(why);
+        why = "settings changed during the restart";
+      } while (this.selectedAgainst !== this.brainIdentity());
     })().finally(() => {
       this.brainRestart = undefined;
     });
     return this.brainRestart;
+  }
+
+  /** One restart: the old brain and its threads stop, the local server is looked at, the kind is selected, Live is re-bound, memory follows. */
+  private async selectionPass(reason: string): Promise<void> {
+    log.info(`restarting brain: ${reason}`);
+    await this.delegator?.cancel("brain restarting");
+    // Threads run brains of the old kind: they go with it.
+    await this.bounded(this.threads.stopAll());
+    const old = this.brain;
+    this.brain = undefined;
+    this.threadFactoryOfKind = undefined;
+    this.brainReady = false;
+    this.brainDetail = "restarting";
+    this.setupProbe = { ...this.setupProbe, brain: "unchecked" };
+    this.scheduleSnapshot();
+    try {
+      await old?.stop();
+    } catch (e) {
+      log.warn(`old brain did not stop cleanly: ${(e as Error).message}`);
+    }
+    const wasResponses = old instanceof ResponsesBrain;
+    await this.lookLocal();
+    await this.startBrain();
+    this.setupProbe = { ...this.setupProbe, brain: this.brainReady ? "ok" : "unavailable" };
+    this.armLocalHeal();
+    if (this.live && this.brain) {
+      // Live fixes the delegation target (client vs Responses) when the session
+      // starts, so a swap across that line needs a fresh session; within a kind the
+      // proxy carries on and a Responses brain is simply re-bound.
+      const isResponses = (this.brain as Brain | undefined) instanceof ResponsesBrain;
+      if (isResponses !== wasResponses) {
+        this.toast("brain changed; reconnecting the voice session", "info");
+        await this.fallAsleep("brain-changed");
+        void this.wake("brain changed");
+      } else {
+        this.rebindBrain();
+      }
+    }
+    this.scheduleSnapshot();
+    // The brain setting may have moved memory's providers (local ↔ OpenAI ↔ keywords).
+    await this.memory.relink();
   }
 
   /** Secrets go to ~/.jarhead/env; the config is re-read and the brain restarted. */
@@ -1337,6 +1382,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   private async startBrain(): Promise<void> {
+    // The settings this pass selects against; a patch landing after this read is a pass of its own (restartBrain).
+    this.selectedAgainst = this.brainIdentity();
     if (this.opts.brain) {
       this.brain = this.opts.brain;
       // A test brain has no second thread of its own; the `makeThreadBrain` seam stands in.
@@ -1346,6 +1393,12 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.brainDetail = r.detail;
       return;
     }
+    // The rows the last selection raised go first — the amber local row, the fallback lines, the probe
+    // lines (the local LAN line, the compatible key warning; nothing else raises brain.probe) — so a switch
+    // of kind leaves nothing about the old one standing; what still holds is raised again below.
+    this.clearProblems("brain.local");
+    this.clearProblems("brain.unavailable");
+    this.clearProblems("brain.probe");
     const wanted = this.settings.brain;
     // Settings.brainModel is "" for "that backend's default"; only a real id is an override.
     const model = this.settings.brainModel.trim() || undefined;
@@ -1508,6 +1561,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       // was free, and until the server is back the work bills OpenAI; memory stays on the Mac.
       if (kind === "local") {
         const problem = this.localProblem(r.detail);
+        // The pick resolved and the server still refused: the heal timer waits for the server to change; Retry and a settings change do not.
+        this.localRefusedOn = problem.refused ? Engine.localServerIdentity(this.localStatus) : undefined;
         this.problemOf("brain.local", problem.text, problem.remedy);
         this.problemOf("brain.unavailable", `Local brain unavailable (${r.detail}); using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.`, Engine.BRAIN_REMEDY);
         continue;
@@ -1545,9 +1600,10 @@ export class Engine extends EventEmitter<EngineEvents> {
    * The amber row for a local brain that did not start, from what the last look found: the text
    * table of docs/LOCAL.md §10 — nothing answering, nothing that can call tools (with the pull to
    * run), the picked id gone (with its pull), else the resolver's own sentence. `copy` is the
-   * command Kevin runs himself; no surface ever runs it.
+   * command Kevin runs himself; no surface ever runs it. `refused`: the pick resolved and the
+   * server itself turned the start down — the heal timer holds off until that server changes.
    */
-  private localProblem(detail: string): { text: string; remedy: ProblemRemedy } {
+  private localProblem(detail: string): { text: string; remedy: ProblemRemedy; refused?: true } {
     const status = this.localStatus;
     const pinned = this.settings.brainBaseUrl?.trim();
     if (!status.reachable) {
@@ -1572,7 +1628,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       return { text: resolved.error, remedy: Engine.SETUP_REMEDY };
     }
     // The model resolved and the server still refused the start (a token, a 5xx): the brain's own sentence, with Retry.
-    return { text: `Local brain: ${detail}`, remedy: Engine.LOCAL_REMEDY };
+    return { text: `Local brain: ${detail}`, remedy: Engine.LOCAL_REMEDY, refused: true };
   }
 
   /** Called by the shell when the brain fails to authenticate mid-run. */
