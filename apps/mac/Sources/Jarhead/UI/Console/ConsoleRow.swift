@@ -20,6 +20,13 @@ enum ConsoleRowWords {
     static let returnKey = "⏎"
     /// `2 of 7` in a filter field's trailing slot.
     static func count(shown: Int, of total: Int) -> String { "\(shown) of \(total)" }
+    /// The ⌘↓ float's id after the row's; a child verb's title under its parent (`Kind › fact`).
+    static let verbsSuffix = ".verbs"
+    static let childJoin = " › "
+    static let childIdJoin = "/"
+    /// The ⌘↓ float's width (the popup's floor).
+    static let verbsWidth: CGFloat = 220
+    static let verbsListMax: CGFloat = 400
 }
 
 // MARK: - Verbs
@@ -27,8 +34,8 @@ enum ConsoleRowWords {
 /// One verb a row offers, rendered to `.contextMenu` and to the ⋯ from the same array (and to the
 /// ⌘↓ float when it lands). `children` makes a submenu (Memory › Kind); `checked` marks the current pick.
 struct ConsoleVerb: Identifiable {
-    let id: String
-    let title: String
+    var id: String
+    var title: String
     var destructive = false
     var disabled = false
     var checked = false
@@ -54,6 +61,53 @@ struct ConsoleVerbMenu: View {
                 Menu(verb.title) { ConsoleVerbMenu(verbs: verb.children) }
             }
         }
+    }
+}
+
+/// The ⌘↓ float: the row's verbs as `ConsoleMenuRow`s in a `.menu` float under the row — the same
+/// array the ⋯ and the context menu render, so right-click, ⋯ and ⌘↓ always agree. ↑↓ ⏎ Esc are
+/// the popup's (`ConsoleMenuKeys`); a child verb lists as `Kind › fact`, the checked one wearing the bar.
+struct ConsoleVerbFloat: ViewModifier {
+    let id: String
+    let verbs: [ConsoleVerb]
+    let open: Bool
+    let close: () -> Void
+
+    func body(content: Content) -> some View {
+        // Published from a background the row's size: `anchorPreference` replaces the subtree's value,
+        // so a second publisher on the row itself would wipe the card's float (seen: `probe-floats: none`).
+        content.background {
+            Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, dismiss: close) {
+                ConsoleMenuPopup(spec: ConsoleVerbFloatModel.spec(id: id, verbs: verbs, close: close))
+            }
+        }
+    }
+}
+
+/// The verbs as a dropdown's spec (pure but for the closures; `flat` is pinned by check-kit).
+enum ConsoleVerbFloatModel {
+    /// Children under their parent's title, separators dropped: `Edit · Kind › pref · … · Forget`.
+    static func flat(_ verbs: [ConsoleVerb]) -> [ConsoleVerb] {
+        verbs.flatMap { verb -> [ConsoleVerb] in
+            if verb.children.isEmpty { return [verb] }
+            return verb.children.map { child in
+                var c = child
+                c.id = verb.id + ConsoleRowWords.childIdJoin + child.id
+                c.title = verb.title + ConsoleRowWords.childJoin + child.title
+                return c
+            }
+        }
+    }
+
+    static func spec(id: String, verbs: [ConsoleVerb], close: @escaping () -> Void) -> ConsoleMenuSpec<String> {
+        let rows = flat(verbs)
+        let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return ConsoleMenuSpec(id: id + ConsoleRowWords.verbsSuffix, label: ConsoleRowWords.more, current: rows.first { $0.checked }?.id ?? "",
+                               options: rows.map(\.id), title: { byId[$0]?.title ?? $0 }, mono: false,
+                               badge: nil, badgeColumn: nil, size: nil, detail: nil, meta: nil, metaMono: false,
+                               group: nil, groupCount: nil, groupCaption: nil, dim: nil, disabled: { byId[$0]?.disabled ?? false }, loaded: nil, foot: nil,
+                               filter: false, filterNoun: "", width: ConsoleRowWords.verbsWidth, listMax: ConsoleRowWords.verbsListMax,
+                               pick: { close(); byId[$0]?.run() }, close: close)
     }
 }
 
@@ -112,9 +166,17 @@ struct ConsoleRow: View {
     var selection: Namespace.ID? = nil
     var accessibilityHint: String? = nil
     var onHover: (Bool) -> Void = { _ in }
+    /// The ⌘↓ float is open on this row (the list's `ConsoleListFocus.verbsOpen`); `closeVerbs` lets it go.
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
     let primary: () -> Void
 
     @State private var hovering = false
+
+    private var verbs: [ConsoleVerb] {
+        if case .ellipsis(let verbs) = trailing { return verbs }
+        return []
+    }
 
     /// The 20 pt zone the ⋯ or the verb overlay takes; the ghost verb's width beside it.
     static let overflowWidth: CGFloat = 20
@@ -145,6 +207,7 @@ struct ConsoleRow: View {
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: selected)
         .modifier(ConsoleRowCardTip(id: id, card: card))
+        .modifier(ConsoleVerbFloat(id: id ?? title, verbs: verbs, open: verbsOpen, close: closeVerbs))
     }
 }
 
@@ -397,6 +460,8 @@ final class ConsoleListFocus: ObservableObject {
     @Published var keyboard = false
     /// Bumped to hand the container keyboard focus (a row was clicked, the first arrow key).
     @Published private(set) var claims = 0
+    /// The row whose verbs are open as the ⌘↓ float; nil at rest.
+    @Published var verbsOpen: String?
     private var buffer = ""
     private var typedAt: Double = 0
 
@@ -420,6 +485,18 @@ final class ConsoleListFocus: ObservableObject {
 
     func claim() { claims += 1 }
 
+    /// ⌘↓ on the focused row: its verbs float; the float closing hands the keys back to the list.
+    func openVerbs(_ rowId: String) {
+        verbsOpen = rowId
+        Self.report?("verbs → \(rowId)")
+    }
+
+    func closeVerbs() {
+        guard verbsOpen != nil else { return }
+        verbsOpen = nil
+        claim()
+    }
+
     /// The buffer after `ch`, restarted when the last letter is older than the window.
     func typed(_ ch: Character, now: Double) -> String {
         if now - typedAt > Self.typeAheadWindow { buffer = "" }
@@ -431,8 +508,8 @@ final class ConsoleListFocus: ObservableObject {
 
 /// On a list container: `.focusable()` (its own ring off), ↑↓ move the focus over `ids` (folded
 /// groups already left out), ⌥↑↓ / Home / End jump, Return runs the row's primary, → / ← open
-/// and fold a head, letters type ahead on titles when no filter owns them, Esc clears the filter
-/// (else drops focus), Space does nothing — never a yes.
+/// and fold a head, ⌘↓ opens the focused row's verbs as a float, letters type ahead on titles when
+/// no filter owns them, Esc clears the filter (else drops focus), Space does nothing — never a yes.
 struct ConsoleListKeys: ViewModifier {
     @ObservedObject var focus: ConsoleListFocus
     let ids: [String]
@@ -452,6 +529,14 @@ struct ConsoleListKeys: ViewModifier {
             .focused($focused)
             .onKeyPress(phases: .down) { press in handle(press) }
             .onChange(of: focus.claims) { focused = true }
+            .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: highlight)
+    }
+
+    /// `highlight:<id>` (the harness): the ring lands on that row and the list takes the keys.
+    private func highlight(_ note: Notification) {
+        guard let id = note.userInfo?[ConsolePreviewKey.highlight] as? String, ids.contains(id) else { return }
+        focus.set(id, keyboard: true, why: "highlight")
+        focused = true
     }
 
     private func handle(_ press: KeyPress) -> KeyPress.Result {
@@ -464,6 +549,7 @@ struct ConsoleListKeys: ViewModifier {
         case .jump(let toEnd): move(to: toEnd ? ids.last : ids.first, why: toEnd ? "end" : "home")
         case .primary: if let id = focus.id { primary(id) }
         case .fold(let open): if let id = focus.id, heads.contains(id) { fold(id, open) }
+        case .verbs: if let id = focus.id { focus.openVerbs(id) }
         case .escape: escape()
         case .type(let ch):
             let prefix = focus.typed(ch, now: ConsoleFormat.nowMs / 1000)
@@ -584,6 +670,8 @@ enum ConsoleListModel {
         case jump(toEnd: Bool)
         case primary
         case fold(open: Bool)
+        /// ⌘↓: the focused row's verbs as a float.
+        case verbs
         case escape
         case type(Character)
     }
@@ -606,9 +694,9 @@ enum ConsoleListModel {
         }
     }
 
-    /// The list's answer to a key: ⌘ leaves everything to the window; ⌥↑↓ jump; Space never says yes.
+    /// The list's answer to a key: ⌘↓ opens the row's verbs, every other ⌘ is the window's; ⌥↑↓ jump; Space never says yes.
     static func command(_ key: Key, option: Bool, command: Bool, typeAhead: Bool) -> Command {
-        if command { return .ignore }
+        if command { return key == .down ? .verbs : .ignore }
         switch key {
         case .up: return option ? .jump(toEnd: false) : .step(-1)
         case .down: return option ? .jump(toEnd: true) : .step(1)

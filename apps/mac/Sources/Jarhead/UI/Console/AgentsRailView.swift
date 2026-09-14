@@ -474,6 +474,8 @@ struct AgentsRail: View, Equatable {
         // The elapsed time ticks by the second while a session runs; otherwise the row is still.
         TimelineView(.periodic(from: .now, by: self.now.ticks ? 1 : 3600)) { tick in
             JarheadNowRow(info: self.now, now: tick.date.timeIntervalSince1970 * 1000, on: nowOn,
+                          focused: focus.ringOn(AgentsRailWords.nowId), hovered: hover(AgentsRailWords.nowId),
+                          verbsOpen: focus.verbsOpen == AgentsRailWords.nowId, closeVerbs: focus.closeVerbs,
                           select: { withAnimation(Motion.snappy) { actions.showNow() } },
                           newConversation: { actions.cleanup(.newConversation) },
                           clear: { actions.cleanup(.clearNow(at: ConsoleFormat.nowMs)) })
@@ -543,7 +545,8 @@ struct AgentsRail: View, Equatable {
     /// menu's Stop / Pause / Resume act on that thread alone. No ⌘-click selection: nothing to trash.
     private func threadRow(_ thread: WorkThread, now: Double) -> some View {
         let open = session.openThreadId == thread.id
-        return ThreadRow(thread: thread, now: now, open: open, focused: focus.ringOn(AgentsRailWords.threadId(thread.id)), hovered: hover(AgentsRailWords.threadId(thread.id)),
+        let id = AgentsRailWords.threadId(thread.id)
+        return ThreadRow(thread: thread, now: now, open: open, focused: focus.ringOn(id), hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                          toggle: {
                              withAnimation(Motion.wipeAnimation) {
                                  if open { actions.showNow() } else { session.openThread(thread.id) }
@@ -582,9 +585,10 @@ struct AgentsRail: View, Equatable {
         let picked = session.selectedChainIds.contains(chain.id)
         // One of several picked: its menu acts on the whole selection (Finder's rule).
         let multi = picked && selectedChains.count > 1 ? selectionVerbs(selectedChains) : (ChainVerbs(), SelectionMenu())
+        let id = AgentsRailWords.chainId(chain.id)
         return JarheadChainRow(chain: chain, now: now, open: open, picked: picked, renaming: session.renamingChainId == chain.id,
-                               focused: focus.ringOn(AgentsRailWords.chainId(chain.id)), verbs: verbs(chain), selection: multi.1, selectionVerbs: multi.0,
-                               hovered: hover(AgentsRailWords.chainId(chain.id)),
+                               focused: focus.ringOn(id), verbs: verbs(chain), selection: multi.1, selectionVerbs: multi.0,
+                               hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                                pick: { flags in
                                    if session.pickChain(chain.id, modifiers: flags, visible: visibleOrder) { return }
                                    withAnimation(Motion.snappy) {
@@ -666,6 +670,8 @@ struct AgentsRail: View, Equatable {
                     chainRow(chain, now: now)
                 } else if group.isNow {
                     JarheadNowRow(info: self.now, now: now, on: session.showsNow,
+                                  focused: focus.ringOn(AgentsRailWords.nowId), hovered: hover(AgentsRailWords.nowId),
+                                  verbsOpen: focus.verbsOpen == AgentsRailWords.nowId, closeVerbs: focus.closeVerbs,
                                   select: { withAnimation(Motion.snappy) { actions.showNow() } },
                                   newConversation: { actions.cleanup(.newConversation) },
                                   clear: { actions.cleanup(.clearNow(at: ConsoleFormat.nowMs)) })
@@ -721,8 +727,9 @@ struct AgentsRail: View, Equatable {
 
     private func agentRow(_ agent: AgentInfo, now: Double, hidden: Bool) -> some View {
         let open = session.openAgentId == agent.id
-        return AgentRowView(agent: agent, now: now, open: open, hidden: hidden, focused: focus.ringOn(AgentsRailWords.agentId(agent.id)),
-                            hovered: hover(AgentsRailWords.agentId(agent.id)),
+        let id = AgentsRailWords.agentId(agent.id)
+        return AgentRowView(agent: agent, now: now, open: open, hidden: hidden, focused: focus.ringOn(id),
+                            hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                             toggle: {
                                 // The pane switch in the wipe's own animation (Motion.wipeAnimation): the
                                 // curtain over the arriving pane runs exactly that long.
@@ -999,6 +1006,8 @@ struct JarheadNowRow: View {
     let on: Bool
     var focused = false
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
     let select: () -> Void
     var newConversation: () -> Void = {}
     var clear: () -> Void = {}
@@ -1022,6 +1031,7 @@ struct JarheadNowRow: View {
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
         .consoleHelp(AgentsRailWords.liveConversation)
+        .modifier(ConsoleVerbFloat(id: AgentsRailWords.nowId, verbs: verbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("Now, \(info.meta(now: now))")
         .accessibilityHint(on ? "On screen" : "Shows the live stream")
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -1098,6 +1108,8 @@ struct ThreadRow: View {
     let open: Bool
     var focused = false
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
     let toggle: () -> Void
     var stop: () -> Void = {}
     var pause: () -> Void = {}
@@ -1144,6 +1156,7 @@ struct ThreadRow: View {
         .animation(Motion.fade, value: thread.status.isLive)
         // The one thread card (ConsoleTipCard.thread): the stream's chip and the right rail draw the same.
         .consoleHelp(id: AgentsRailWords.threadTip(thread.id), card: .thread(thread), edge: .trailing)
+        .modifier(ConsoleVerbFloat(id: AgentsRailWords.threadTip(thread.id), verbs: verbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("Thread \(thread.name), \(meta.label)")
         .accessibilityHint(open ? "Open in the centre" : "Opens the thread")
         .accessibilityAddTraits(open ? .isSelected : [])
@@ -1219,6 +1232,8 @@ struct JarheadChainRow: View {
     var selection = SelectionMenu()
     var selectionVerbs = ChainVerbs()
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
     /// The click, with the modifier flags held (⌘ / ⇧ select; a plain click opens).
     var pick: (NSEvent.ModifierFlags) -> Void = { _ in }
 
@@ -1347,6 +1362,7 @@ struct JarheadChainRow: View {
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.fade, value: picked)
         .consoleHelp(id: AgentsRailWords.chainTip(chain.id), card: Self.card(chain), edge: .trailing)
+        .modifier(ConsoleVerbFloat(id: AgentsRailWords.chainTip(chain.id), verbs: menuVerbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("Jarhead conversation, \(title), \(metaLine)" + (chain.isTrashed ? ", in the Trash" : chain.isArchived ? ", archived" : "") + (picked ? ", selected" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation; ⌘-click selects")
         .accessibilityAddTraits(open || picked ? .isSelected : [])
@@ -1542,6 +1558,8 @@ struct AgentRowView: View {
     var hidden = false
     var focused = false
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
     let toggle: () -> Void
     /// Hide (or, in the Hidden group, unhide) this row. Never touches the tool's files.
     var hide: () -> Void = {}
@@ -1581,6 +1599,7 @@ struct AgentRowView: View {
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
         .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent), edge: .trailing)
+        .modifier(ConsoleVerbFloat(id: AgentsRailWords.agentTip(agent.id), verbs: verbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)" + (hidden ? ", hidden" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])

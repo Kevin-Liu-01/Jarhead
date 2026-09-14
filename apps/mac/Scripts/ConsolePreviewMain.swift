@@ -134,7 +134,10 @@ import SwiftUI
 //     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
 //                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
 //     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
-//                    `1 [asks] · 1 done` as its head; two Claude Code rows open above it.
+//                    `[1 asks] · 1 done` as its head; two Claude Code rows open above it.
+//     list-verbs   = the kit's ⌘↓ float (Builder E): `highlight:chain:<id>` rings yesterday's row and gives
+//                    the list the keys, `keyDown:cmd-down` floats its verbs (Rename · Pin · Archive · Move to
+//                    Trash) as ConsoleMenuRows under the row; `probe-floats:` names `rail.chain.<id>.verbs`.
 //                    in console-preview.sh and render today's UI until their builder lands.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
@@ -349,13 +352,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
-        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "agents-groups":
+        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "list-verbs", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
             // The kit's `agents-groups`: two Claude Code rows and the Codex group, one of whose sessions
-            // asks — so the folded Codex head reads `1 [asks] · 1 done` above the fold.
+            // asks — so the folded Codex head reads `[1 asks] · 1 done` above the fold.
             if scenario == "agents-groups" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:claude:w1p2", "sessions:codex:1", FakeData.endedId, "sessions:codex:w2p2", "sessions:codex:thread-9"]
                 state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
@@ -653,6 +656,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
         case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
+        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -2995,6 +2999,8 @@ extension PreviewDelegate {
         case "left": return (123, "\u{F702}", .function)
         case "right": return (124, "\u{F703}", .function)
         case "?": return (44, "?", .shift)
+        /// ⌘↓ — the list's verbs float (`ConsoleListModel.command`).
+        case "cmd-down": return (125, "\u{F701}", [.function, .command])
         default: break
         }
         let letters: [Character: UInt16] = ["a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13,
@@ -3258,7 +3264,12 @@ extension PreviewDelegate {
         let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
         let months = ConsoleListModel.ledgerMonths(["2026-09-10", "2026-09-09", "2026-08-31", "2025-12-01"], now: sept)
         expect("ledger months: first-seen, the year only when not this one", months.map { "\($0.title)[\($0.days.count)]" }.joined(separator: " "), "September[2] August[1] December 2025[1]")
-        expect("list keys: ⌘ leaves the key to the window", "\(ConsoleListModel.command(.down, option: false, command: true, typeAhead: true))", "ignore")
+        expect("list keys: ⌘↓ floats the row's verbs", "\(ConsoleListModel.command(.down, option: false, command: true, typeAhead: true))", "verbs")
+        expect("list keys: any other ⌘ is the window's", "\(ConsoleListModel.command(.up, option: false, command: true, typeAhead: true))", "ignore")
+        let nested = [ConsoleVerb(id: "edit", title: "Edit"), ConsoleVerb(id: "kind", title: "Kind", children: [ConsoleVerb(id: "kind.pref", title: "pref", checked: true), ConsoleVerb(id: "kind.fact", title: "fact")]),
+                      ConsoleVerb(id: "forget", title: "Forget", separatorBefore: true)]
+        expect("verb float: children under their parent, the checked one current", ConsoleVerbFloatModel.flat(nested).map { "\($0.id) \($0.title)\($0.checked ? " ✓" : "")" }.joined(separator: " · ") + " → " + ConsoleVerbFloatModel.spec(id: "row", verbs: nested, close: {}).current,
+               "edit Edit · kind/kind.pref Kind › pref ✓ · kind/kind.fact Kind › fact · forget Forget → kind/kind.pref")
         expect("list keys: ⌥↓ jumps to the end", "\(ConsoleListModel.command(.down, option: true, command: false, typeAhead: true))", "jump(toEnd: true)")
         expect("list keys: Space is never a yes", "\(ConsoleListModel.command(.space, option: false, command: false, typeAhead: true))", "swallow")
         expect("list keys: a letter types ahead only without a filter", "\(ConsoleListModel.command(.char("m"), option: false, command: false, typeAhead: false))", "ignore")

@@ -9,7 +9,7 @@
 #           local | local-empty |
 #           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
-#           problems-groups | ledger-months | memory-chips | list-keys | agents-groups (default live)
+#           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups (default live)
 #   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
 #   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
 #   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
@@ -19,7 +19,8 @@
 #   `settings.backend`, `settings.wakeWord`) once RightRailView passes them (Builder D); `settings.model`
 #   is LocalModelMenu's own and renders today. The other kit names (tip-*, settings-index,
 #   permissions-groups, problems-groups, ledger-months, memory-chips, list-keys, agents-groups) are
-#   reserved here and render today's UI until their builder lands.
+#   reserved here and render today's UI until their builder lands. `list-verbs` (Builder E) rings yesterday's
+#   conversation row and presses ⌘↓: its verbs float under the row (`probe-floats:` names `rail.chain.<id>.verbs`).
 #   The kit's tips (Builder A): `tip-thread` pins the thread card on the stream's Slack chip (`tipOpen:chip.<id>`
 #   — the same ConsoleTipCard.thread the rails draw; retarget to a rail row once one carries the card),
 #   `tip-key` gives the composer's Stop focus and presses `?` (the pinned bubble with its ⌘. keycap and the one
@@ -137,7 +138,7 @@ OUT="${2:-}"
 case "$SCENARIO" in
   live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
   # The component kit's scenarios (design9); each may render today's UI until its builder lands.
-  menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|agents-groups) ;;
+  menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|list-verbs|agents-groups) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -180,6 +181,7 @@ if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WIN
 # The kit's memory rail (the chips, a row's card) sits in the same tall window; `list-keys` runs its keys to 2.4 s.
 if [[ "$SCENARIO" == "memory-chips" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
 if [[ "$SCENARIO" == "list-keys" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+if [[ "$SCENARIO" == "list-verbs" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac

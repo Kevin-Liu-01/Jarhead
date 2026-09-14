@@ -391,7 +391,8 @@ private struct MemoryRailBody: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(shown) { item in
                             MemoryRow(item: item, now: ctx.date.timeIntervalSince1970 * 1000, editing: editingId == item.id,
-                                      focused: focus.ringOn(item.id), verbs: verbs(item), hovered: { if $0 { focus.hovered(item.id) } })
+                                      focused: focus.ringOn(item.id), verbs: verbs(item), hovered: { if $0 { focus.hovered(item.id) } },
+                                      verbsOpen: focus.verbsOpen == item.id, closeVerbs: focus.closeVerbs)
                                 .transition(Motion.appear)
                         }
                     }
@@ -464,6 +465,8 @@ struct MemoryRow: View {
     var focused = false
     var verbs = MemoryVerbs()
     var hovered: (Bool) -> Void = { _ in }
+    var verbsOpen = false
+    var closeVerbs: () -> Void = {}
 
     private var live: Bool { item.state == .live }
 
@@ -480,7 +483,7 @@ struct MemoryRow: View {
                        trailing: .ellipsis(menuVerbs), verb: live ? nil : ConsoleRowVerb(title: MemoryWords.restore, help: restoreHelp, run: verbs.restore),
                        focused: focused, sitsBack: !live, id: MemoryWords.cardId(item.id), card: MemoryFormat.card(item, now: now),
                        accessibilityHint: "\(item.kind.rawValue), \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"),
-                       onHover: hovered, primary: verbs.edit)
+                       onHover: hovered, verbsOpen: verbsOpen, closeVerbs: closeVerbs, primary: verbs.edit)
                 .transition(.opacity)
         }
     }
