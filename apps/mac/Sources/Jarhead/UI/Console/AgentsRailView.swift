@@ -89,6 +89,9 @@ enum AgentsRailWords {
     static let archivedWord = "Archived"
     static let cwd = "cwd"
     static let nothingHeard = "Nothing heard"
+    /// The Threads head's tip and the rename field's — ≤ 60 characters, no "you", no "Kevin".
+    static let threadsHelp = "Threads asking first, then busy, then finished (5 min kept)"
+    static let renameHelp = "Return keeps the name; Esc cancels; empty is the auto title"
     static let mainThread = "the main conversation, as a thread"
     static func turns(_ n: Int) -> String { n == 1 ? "1 turn" : "\(n) turns" }
     static func budgetLine(steps: Int, seconds: Int) -> String { "\(steps) steps / \(seconds) s" }
@@ -569,7 +572,7 @@ struct AgentsRail: View, Equatable {
         .padding(.horizontal, railInset)
         .frame(height: 24)
         .animation(Motion.snappy, value: count)
-        .consoleHelp("Jarhead's lines of work: waiting on you first, then the busy ones, then the finished (kept five minutes)")
+        .consoleHelp(AgentsRailWords.threadsHelp)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Threads, \(count)")
     }
@@ -1454,7 +1457,7 @@ private struct RenameField: View {
                 text = initial
                 DispatchQueue.main.async { focused = true }
             }
-            .consoleHelp("Return keeps the name; Esc cancels; empty is back to what Kevin first said")
+            .consoleHelp(AgentsRailWords.renameHelp)
             .accessibilityLabel("Conversation name")
     }
 
