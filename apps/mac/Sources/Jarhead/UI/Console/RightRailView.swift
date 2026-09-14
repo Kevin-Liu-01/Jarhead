@@ -61,7 +61,8 @@ enum SettingsWords {
     static let phrasesRow = "Phrases"
     static let authRow = "Auth"
     static let passphraseRow = "Passphrase"
-    // toggles' hints (≤ 4 words: the consequence, not the label)
+    // toggles' hints (≤ 4 words: the consequence, not the label; ≤ 112 pt at sans 11 — the room
+    // beside a 60 pt toggle in the 182 pt control column; check-kit measures them)
     static let wakeHint = "listens on-device"
     static let autoWakeHint = "wakes on launch"
     static let rememberHint = "learns while on"
