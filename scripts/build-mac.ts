@@ -139,17 +139,16 @@ run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
 // rsync renames each changed file over the old name (never --inplace: the running app
 // keeps its mapped, signed Mach-O), --delete-after drops what the stage no longer has,
 // and it is the INSTALLED copy that is verified. build/Jarhead.app stays a symlink to it.
-// The rollback snapshot is NOT named .app: LaunchServices registers any *.app directory
-// it meets as a bundle, and build/previous/Jarhead.app showed up in `lsregister -dump`
-// as a second Jarhead, and so did Jarhead.app.previous (Spotlight finds the Info.plist inside any
-// directory) — so the snapshot is a zip archive, and both directory names are retired.
-// The order (plan → retire → snapshot → rsync → verify → parity → inode → unstage →
-// relink) and every fail path live in performInstall, pinned by install-bundle.test.ts
-// with a scripted exec; this file only supplies the real commands and filesystem.
-const PREVIOUS = join(OUT, "previous", "Jarhead.app.zip");
-/** The snapshot's old name (a full bundle LaunchServices kept registering); removed before the snapshot. */
-const LEGACY_PREVIOUS = join(OUT, "previous", "Jarhead.app");
-const LEGACY_PREVIOUS_DIR = join(OUT, "previous", "Jarhead.app.previous");
+// A rollback snapshot is opt-in: JARHEAD_INSTALL_SNAPSHOT=1 archives the installed bundle
+// to build/previous/Jarhead.app.zip before the rsync and prints the ditto/rsync line that
+// puts it back. It is a zip, never a directory — LaunchServices registers any directory
+// holding an Info.plist as a bundle, a second Jarhead. Without the flag nothing is
+// snapshotted: the install is in place and keeps the inode, so the rollback is
+// `git checkout <previous> && pnpm build:mac`.
+// The order (plan → snapshot → rsync → verify → parity → inode → unstage → relink) and
+// every fail path live in performInstall, pinned by install-bundle.test.ts with a
+// scripted exec; this file only supplies the real commands and filesystem.
+const PREVIOUS = process.env["JARHEAD_INSTALL_SNAPSHOT"] === "1" ? join(OUT, "previous", "Jarhead.app.zip") : undefined;
 const io: InstallIO = {
   exec: (cmd, args) => {
     console.log(`[build-mac] ${cmd} ${args.join(" ")}`);
@@ -170,7 +169,7 @@ const io: InstallIO = {
   compare: compareTrees,
   warn: (line) => console.warn(`[build-mac] ${line}`),
 };
-const outcome = performInstall({ stage: APP, installed: INSTALLED, previous: PREVIOUS, retire: [LEGACY_PREVIOUS, LEGACY_PREVIOUS_DIR], link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
+const outcome = performInstall({ stage: APP, installed: INSTALLED, ...(PREVIOUS !== undefined ? { previous: PREVIOUS } : {}), link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
 if (!outcome.ok) {
   console.error(`[build-mac] ${outcome.what}`);
   for (const l of outcome.lines) console.error(`           ${l}`);
@@ -178,7 +177,6 @@ if (!outcome.ok) {
   process.exit(1);
 }
 const installNote = outcome.line;
-const retiredNote = outcome.retired.length ? `\n  retired    ${outcome.retired.join(", ")} (a directory snapshot LaunchServices took for a second Jarhead; the record is unregistered below)` : "";
 
 // 6. One Jarhead: refresh the LaunchServices record, unregister stale Jarhead bundle
 // paths (the database only — nothing in the Trash is touched), and READ the Dock. The
@@ -195,7 +193,7 @@ console.log(`
   daemon     ${manifest.node} ${manifest.tsx} ${manifest.daemon}
   signed     ${identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)"}
 
-  ${installNote}${retiredNote}
+  ${installNote}
   ${oneJarhead}
   link:      build/Jarhead.app → ${INSTALLED}${outcome.rollback ? `\n  ${outcome.rollback}` : ""}
   run:       open -a Jarhead

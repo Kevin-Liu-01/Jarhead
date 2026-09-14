@@ -5,11 +5,10 @@
  */
 export { parsePlistXml, serializePlistXml, PlistSyntaxError, dictGet, dictSet, dictOnly, stringAt, integerAt, str, int, dict, array } from "./plist.ts";
 export type { PlistNode } from "./plist.ts";
-export { DOCK_DOMAIN, JARHEAD_BUNDLE_ID, INSTALLED_APP, INSTALLED_URL, DEFAULT_FILE_TYPE, PIN_KEYS, findJarheadTiles, isJarheadTile, auditDock, modCountOf, describeDock, describeDockChanges } from "./dock.ts";
-export type { DockTile, DockChange, DockAudit, DockList, DockOptions } from "./dock.ts";
+export { JARHEAD_BUNDLE_ID, INSTALLED_APP, INSTALLED_URL, DEFAULT_FILE_TYPE, PIN_KEYS, findJarheadTiles, isJarheadTile, auditDock, modCountOf, describeDock, describeDockChanges } from "./dock.ts";
+export type { DockTile, DockAudit } from "./dock.ts";
 export { LSREGISTER, parseLsBundleDump, staleJarheadRecords, jarheadRecords, describeLaunchServices, defaultRealpath } from "./launchservices.ts";
-export type { LsRecord, StaleRule } from "./launchservices.ts";
 export { probeTarget, planInstall, RSYNC, rsyncArgs, snapshotArgs, snapshotNameOk, parseItemized, compareTrees, parityOk, CODESIGN, CODESIGN_VERIFY_ARGS, CODESIGN_REQUIREMENT_ARGS, requirementHasIdentifier, installLine, rollbackLine, performInstall } from "./bundle.ts";
-export type { TargetProbe, InstallPlan, RsyncSummary, ParityReport, InstallSpec, InstallIO, InstallOutcome } from "./bundle.ts";
-export { runHygiene, hygieneLine, readDock, repairDock, restartDock, installedUrlOf, defaultExec, defaultStaleRoots, lsregisterRefreshArgs, LSREGISTER_TIMEOUT_MS } from "./hygiene.ts";
-export type { Exec, ExecResult, HygieneMode, HygieneOptions, HygieneReport, DockOnlyOptions } from "./hygiene.ts";
+export type { TargetProbe, ParityReport, InstallIO } from "./bundle.ts";
+export { runHygiene, readDock, repairDock, restartDock, installedUrlOf, defaultExec, LSREGISTER_TIMEOUT_MS } from "./hygiene.ts";
+export type { Exec, ExecResult, HygieneReport } from "./hygiene.ts";

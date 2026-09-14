@@ -21,7 +21,7 @@ test("planInstall: absent → create; a directory Kevin owns → update with its
   const link = planInstall({ exists: true, isSymlink: true, isDirectory: false, uid: 501, inode: 7, linkTarget: "/Users/kevinliu/jarvis/build/stage/Jarhead.app" }, 501);
   assert.equal(link.kind, "refuse");
   if (link.kind === "refuse") {
-    assert.match(link.reason, /symlink to \/Users\/kevinliu\/jarvis\/build\/stage\/Jarhead\.app; rsync would write into the target/);
+    assert.equal(link.reason, "/Applications/Jarhead.app is a symlink to /Users/kevinliu/jarvis/build/stage/Jarhead.app; rsync would write into the target");
     assert.match(link.hint, /move it to the Trash/);
   }
   const file = planInstall({ exists: true, isSymlink: false, isDirectory: false, uid: 501, inode: 8, writable: true }, 501);
@@ -48,7 +48,7 @@ test("rsyncArgs is one pinned argv: -rlptD -c --delay-updates --delete-after --i
   assert.deepEqual([...CODESIGN_VERIFY_ARGS], ["--verify", "--strict", "--deep", "--verbose=1"]);
   // The snapshot's name: LaunchServices registers any *.app directory as a bundle (build/previous/Jarhead.app was a second Jarhead in `lsregister -dump`).
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.zip"), true);
-  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.previous"), false, "a directory snapshot is registered by Spotlight whatever it is called");
+  assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app.old"), false, "a directory snapshot is registered by Spotlight whatever it is called");
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.app"), false);
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.APP/"), false, "any case, trailing slash trimmed");
   assert.equal(snapshotNameOk("/r/build/previous/Jarhead.previous"), false, "a directory of any name is registered once Spotlight finds the Info.plist inside; only an archive is safe");
@@ -173,15 +173,16 @@ test("openrsync in place: the destination directory keeps its inode, changed fil
 
 // ---- performInstall: step 5 of build:mac over scripted seams — the order and every fail path.
 
-const LEGACY = "/r/build/previous/Jarhead.app";
-const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app.zip", retire: [LEGACY], link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
+/** A spec that asked for the rollback snapshot (JARHEAD_INSTALL_SNAPSHOT=1); `NO_SNAPSHOT` is the default build. */
+const SPEC = { stage: "/r/build/stage/Jarhead.app", installed: "/Applications/Jarhead.app", previous: "/r/build/previous/Jarhead.app.zip", link: "/r/build/Jarhead.app", cleanup: "/r/build/stage", bundleId: "com.kevinliu.jarhead", uid: 501 };
+const { previous: _previous, ...NO_SNAPSHOT } = SPEC;
 const ABSENT: TargetProbe = { exists: false, isSymlink: false, isDirectory: false };
 const DIR: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true };
 const OK_REQ = 'designated => identifier "com.kevinliu.jarhead" and certificate leaf = H"8b79555ca54ff1c95d3e044805f34d5adac36055"\n';
 const ITEMIZED = ">fc...... Contents/MacOS/Jarhead\n>fc...... Contents/MacOS/jarhead-hands\n>f+++++++ Contents/Resources/new\n*deleting Contents/Resources/stale\n";
 
 /** Records every seam call as one line so the whole order can be asserted at once. */
-function scripted(o: { probes?: TargetProbe[]; legacy?: boolean; snapshotCode?: number; rsyncCode?: number; rsyncOut?: string; cpCode?: number; verifyCode?: number; requirement?: string; parity?: ParityReport } = {}): { io: InstallIO; trace: string[]; warnings: string[] } {
+function scripted(o: { probes?: TargetProbe[]; snapshotCode?: number; rsyncCode?: number; rsyncOut?: string; cpCode?: number; verifyCode?: number; requirement?: string; parity?: ParityReport } = {}): { io: InstallIO; trace: string[]; warnings: string[] } {
   const trace: string[] = [];
   const warnings: string[] = [];
   const probes = [...(o.probes ?? [DIR, DIR])];
@@ -197,8 +198,6 @@ function scripted(o: { probes?: TargetProbe[]; legacy?: boolean; snapshotCode?: 
     },
     probe: (path) => {
       trace.push(`probe ${path}`);
-      // The old .app-named snapshot: present only when the case says so; the installed bundle's probes are the scripted list.
-      if (path === LEGACY) return o.legacy ? { ...DIR, inode: 42 } : ABSENT;
       return probes.shift() ?? DIR;
     },
     mkdirp: (path) => void trace.push(`mkdirp ${path}`),
@@ -213,12 +212,11 @@ function scripted(o: { probes?: TargetProbe[]; legacy?: boolean; snapshotCode?: 
   return { io, trace, warnings };
 }
 
-test("performInstall, update: plan → mkdir previous → snapshot → rsync in place → strict+deep verify of the INSTALLED copy → designated requirement → parity walk → inode → unstage → relink, in that order, and the line", () => {
+test("performInstall, update with a snapshot asked for: plan → mkdir previous → ditto snapshot → rsync in place → strict+deep verify of the INSTALLED copy → designated requirement → parity walk → inode → unstage → relink, in that order, then the rollback line", () => {
   const { io, trace, warnings } = scripted();
   const r = performInstall(SPEC, io);
   assert.deepEqual(trace, [
     "probe /Applications/Jarhead.app",
-    `probe ${LEGACY}`,
     "mkdirp /r/build/previous",
     `exec ${DITTO} ${snapshotArgs(SPEC.installed, SPEC.previous).join(" ")}`,
     `exec ${RSYNC} ${rsyncArgs(SPEC.stage, SPEC.installed).join(" ")}`,
@@ -236,39 +234,65 @@ test("performInstall, update: plan → mkdir previous → snapshot → rsync in 
     assert.equal(r.rollback, rollbackLine(SPEC.previous, SPEC.installed));
     assert.equal(r.rollback, `rollback:  ${DITTO} -x -k /r/build/previous/Jarhead.app.zip /tmp/jarhead-rollback && ${RSYNC} -rlptD -c --delete-after /tmp/jarhead-rollback/Jarhead.app/ /Applications/Jarhead.app/`);
     assert.equal(r.line, "install    /Applications/Jarhead.app kept (inode 103261417) · 2 files replaced, 1 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
-    assert.deepEqual(r.retired, [], "no old snapshot to retire");
   }
   assert.deepEqual(warnings, []);
 });
 
-test("performInstall retires the old .app-named snapshot (build/previous/Jarhead.app) before the new one is taken — LaunchServices registered it as a second Jarhead — and refuses a snapshot path that itself ends in .app before anything runs", () => {
-  const { io, trace } = scripted({ legacy: true });
-  const r = performInstall(SPEC, io);
-  assert.deepEqual(trace.slice(0, 4), ["probe /Applications/Jarhead.app", `probe ${LEGACY}`, `rmTree ${LEGACY}`, "mkdirp /r/build/previous"], "gone before the snapshot, so step 6 sees a stale record at a path that is gone");
+test("performInstall, update without a snapshot (the default build): no mkdirp, no ditto, no rollback line — plan → rsync in place → verify → parity → inode → unstage → relink; every fail path names no rollback", () => {
+  const { io, trace, warnings } = scripted();
+  const r = performInstall(NO_SNAPSHOT, io);
+  assert.deepEqual(trace, [
+    "probe /Applications/Jarhead.app",
+    `exec ${RSYNC} ${rsyncArgs(SPEC.stage, SPEC.installed).join(" ")}`,
+    `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`,
+    `exec ${CODESIGN} ${CODESIGN_REQUIREMENT_ARGS.join(" ")} /Applications/Jarhead.app`,
+    "compare /r/build/stage/Jarhead.app /Applications/Jarhead.app",
+    "probe /Applications/Jarhead.app",
+    "rmTree /r/build/stage",
+    "relink /r/build/Jarhead.app -> /Applications/Jarhead.app",
+  ]);
+  assert.ok(!trace.some((t) => t.startsWith("mkdirp") || t.startsWith(`exec ${DITTO}`)), "nothing archived, no directory made");
   assert.ok(r.ok);
-  if (r.ok) assert.deepEqual(r.retired, [LEGACY]);
-  assert.ok(!trace.some((t) => /\.Trash|\/Applications\/Jarhead\.app$/.test(t) && t.startsWith("rmTree")), "only the build's own artifact is removed");
-  // Nothing under `retire` that is absent is touched; a spec without `retire` probes nothing extra.
-  const none = scripted();
-  const { retire: _retire, ...noRetire } = SPEC;
-  performInstall(noRetire, none.io);
-  assert.ok(!none.trace.some((t) => t === `probe ${LEGACY}` || t === `rmTree ${LEGACY}`), JSON.stringify(none.trace));
-  // The guard: a `previous` named .app would recreate the bug on the next build.
-  const bad = scripted({ legacy: true });
-  const refused = performInstall({ ...SPEC, previous: LEGACY }, bad.io);
+  if (r.ok) {
+    assert.equal(r.rollback, undefined, "no snapshot → no rollback line to print");
+    assert.deepEqual(r.plan, { kind: "update", inode: 103261417 });
+    assert.equal(r.line, "install    /Applications/Jarhead.app kept (inode 103261417) · 2 files replaced, 1 added, 1 removed · strict ok · requirement identifier com.kevinliu.jarhead");
+  }
+  assert.deepEqual(warnings, []);
+  // A failure after the rsync keeps the stage and offers no rollback: there is none to offer.
+  const failed = performInstall(NO_SNAPSHOT, scripted({ verifyCode: 1 }).io);
+  assert.ok(!failed.ok);
+  if (!failed.ok) {
+    assert.match(failed.what, /^the installed bundle does not verify/);
+    assert.deepEqual(failed.lines, []);
+  }
+});
+
+test("performInstall, update with a snapshot asked for: the ditto archive is taken before the rsync, the outcome carries the rollback line, and a `previous` that itself ends in .app is refused before anything runs", () => {
+  const { io, trace } = scripted();
+  const r = performInstall(SPEC, io);
+  const ditto = trace.indexOf(`exec ${DITTO} ${snapshotArgs(SPEC.installed, SPEC.previous).join(" ")}`);
+  const rsync = trace.findIndex((t) => t.startsWith(`exec ${RSYNC}`));
+  assert.ok(ditto > 0 && rsync > ditto, `snapshot, then rsync: ${JSON.stringify(trace)}`);
+  assert.equal(trace[ditto - 1], "mkdirp /r/build/previous");
+  assert.ok(r.ok);
+  if (r.ok) assert.equal(r.rollback, rollbackLine(SPEC.previous, SPEC.installed));
+  // The guard: a `previous` named .app would be a second Jarhead to LaunchServices on the next scan.
+  const bad = scripted();
+  const refused = performInstall({ ...SPEC, previous: "/r/build/previous/Jarhead.app" }, bad.io);
   assert.ok(!refused.ok);
   if (!refused.ok) {
-    assert.equal(refused.what, `refusing to install: the snapshot path ${LEGACY} is not a .zip archive`);
+    assert.equal(refused.what, "refusing to install: the snapshot path /r/build/previous/Jarhead.app is not a .zip archive");
     assert.match(refused.lines[0] ?? "", /second Jarhead; snapshot to a \.zip archive/);
   }
-  assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the retire, the snapshot or any write");
+  assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the snapshot or any write");
 });
 
 test("performInstall, first install: cp -R of the stage into the parent directory, no snapshot, no inode check, the line says created", () => {
   const created: TargetProbe = { ...DIR, inode: 555 };
   const { io, trace, warnings } = scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }, created] });
   const r = performInstall(SPEC, io);
-  assert.deepEqual(trace.slice(0, 4), ["probe /Applications/Jarhead.app", `probe ${LEGACY}`, "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
+  assert.deepEqual(trace.slice(0, 3), ["probe /Applications/Jarhead.app", "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
   assert.ok(!trace.some((t) => t.startsWith(`exec ${RSYNC}`)), "nothing to snapshot or sync into");
   assert.ok(trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"));
   assert.ok(r.ok);
