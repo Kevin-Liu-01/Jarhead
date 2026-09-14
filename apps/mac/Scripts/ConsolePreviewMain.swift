@@ -3266,7 +3266,7 @@ extension PreviewDelegate {
         expect("brain: needs is the foot", BrainWords.needs(.local), "A model on this Mac through Ollama or LM Studio. Everything but the voice stays here.")
         expect("toggle: word", "\(ConsoleToggle.word(true)) | \(ConsoleToggle.word(false))", "On | Off")
         expect("segments: heights", "\(ConsoleSegments<Bool>.height(.rail)) \(ConsoleSegments<Bool>.height(.row)) \(ConsoleSegments<Bool>.height(.toggle))", "28.0 26.0 22.0")
-        expect("field: heights", "\(ConsoleField.height(.edit)) \(ConsoleField.height(.filter)) \(ConsoleField.height(.row)) \(ConsoleField.height(.composer))", "22.0 24.0 26.0 32.0")
+        expect("field: heights", "\(ConsoleField.height(.edit)) \(ConsoleField.height(.filter)) \(ConsoleField.height(.row))", "22.0 24.0 26.0")
         for level in ConsoleTheme.efforts {
             let hint = HelpCopy.effort(level) ?? ""
             expect("copy: effort \(level)", HelpCopy.violations(HelpCopy.Entry(name: level, hint: hint)).joined(separator: ", ") + (hint.isEmpty ? "empty" : ""), "")

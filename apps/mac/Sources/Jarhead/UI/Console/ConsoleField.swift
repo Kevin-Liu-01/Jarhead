@@ -22,8 +22,10 @@ enum ConsoleFieldWords {
     static let cross = "xmark"
 }
 
-/// Text field chrome as a modifier — the old spelling, kept for the sites the other builders
-/// migrate in their own wave (`.consoleField(mono:height:focused:error:grows:)`).
+/// Text field chrome as a modifier (`.consoleField(mono:height:focused:error:grows:)`): the kit's
+/// box on a `TextField` a site owns — the three composers (32, their strips own focus and
+/// submit) and the inline editors that grow or sit in a bespoke row (the memory edit, the rail's
+/// rename, the Local server field). Everything else is a `ConsoleField`.
 struct ConsoleFieldModifier: ViewModifier {
     var mono = false
     var height: CGFloat = 32
@@ -54,10 +56,11 @@ extension View {
     }
 }
 
-/// One field, four heights. Owns its focus so the blur rule lives here; a site that must move
-/// focus itself passes `focus:` (a `FocusState<Bool>.Binding`) and the field follows it.
+/// One field, three heights (the composers keep the modifier). Owns its focus so the blur rule
+/// lives here; a site that must move focus itself passes `focus:` (a `FocusState<Bool>.Binding`)
+/// and the field follows it.
 struct ConsoleField: View {
-    enum Size { case edit, filter, row, composer }
+    enum Size { case edit, filter, row }
     struct Commit { var emptyClears = false }
     enum Trailing {
         case none
@@ -96,13 +99,12 @@ struct ConsoleField: View {
         case .edit: return 22
         case .filter: return 24
         case .row: return 26
-        case .composer: return 32
         }
     }
 
     static func font(_ size: Size, mono: Bool) -> Font {
         if mono { return ConsoleTheme.mono(12) }
-        return size == .composer || size == .row ? ConsoleTheme.sans(13) : ConsoleTheme.sans(12)
+        return size == .row ? ConsoleTheme.sans(13) : ConsoleTheme.sans(12)
     }
 
     var body: some View {
