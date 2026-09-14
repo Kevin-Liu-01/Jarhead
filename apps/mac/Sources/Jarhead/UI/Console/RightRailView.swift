@@ -2431,9 +2431,12 @@ struct LedgerPanel: View {
         withAnimation(Motion.snappy) { actions.pickLedgerDay(day) }
     }
 
-    /// Return on a head folds or opens it; on a day, picks it.
+    /// Return on a head folds or opens it (the first month is open by default, as `ids` and the
+    /// disclosure seed it — so the first Return on a never-toggled first head folds it); on a day, picks it.
     private func primary(_ id: String) {
-        if heads.contains(id) { ConsoleFoldStore.set(id, !ConsoleFoldStore.isOpen(id, default: false)) } else { pick(id) }
+        guard heads.contains(id) else { pick(id); return }
+        let first = months.first.map { LedgerWords.monthFold($0.id) } == id
+        ConsoleFoldStore.set(id, !ConsoleFoldStore.isOpen(id, default: first))
     }
 
     private func move(to id: String?) {
