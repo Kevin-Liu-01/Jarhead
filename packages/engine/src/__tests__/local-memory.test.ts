@@ -90,6 +90,10 @@ test("brain local with OPENAI_API_KEY set: the store is built over LocalEmbedder
     assert.ok(await until(() => server.seen.some((r) => r.path === "/v1/chat/completions"), 5000), "the extractor asked the local server");
     const extract = server.seen.find((r) => r.path === "/v1/chat/completions")!;
     assert.equal((extract.body as { model: string }).model, "qwen3.5:27b", "memory uses the brain model");
+    assert.equal(probe!.headers["authorization"], undefined, "no token set: Ollama gets no bearer");
+    assert.equal(extract.headers["authorization"], undefined);
+    // The target the bridge builds over: the brain's model carries Ollama's thinking capability, and the extractor is told so.
+    assert.equal((engine as unknown as { localMemoryTarget(): { thinking?: boolean } }).localMemoryTarget().thinking, true, "qwen3.5:27b thinks: the extractor turns it off for its JSON");
     assert.ok(await until(() => rows<LedgerRow>(w, "memory.run").length === 1, 5000), "the run landed");
     assert.equal((rows<Extract<LedgerRow, { type: "memory.run" }>>(w, "memory.run")[0] as { extractor: string }).extractor, "local");
     assert.equal(rf.openai(), 0, "still nothing to api.openai.com");
@@ -224,5 +228,52 @@ test("brain local while nothing answers: memory runs on keywords and rules — n
     assert.deepEqual(engine.snapshot().setup.dataPaths.find((p) => p.what === "memory"), { what: "memory", where: "mac", detail: "keywords · rules — nothing leaves" });
   } finally {
     await engine.stop();
+  }
+});
+
+test("LM Studio with a token (JARHEAD_BRAIN_API_KEY): the bearer the brain sends rides on memory's calls too — the /v1/embeddings probe and the /v1/chat/completions read — and a token set later relinks onto the server", async () => {
+  const server = await fakeLocalServer(["qwen3.5-27b", "text-embedding-nomic-embed-text-v1.5"]);
+  const rf = recordingFetch();
+  const status = localStatus(server.url, [localModel("qwen3.5-27b", { capabilities: ["completion", "tools"] }), localModel("text-embedding-nomic-embed-text-v1.5", { capabilities: ["embedding"] })], { flavor: "lmstudio", version: "0.4.2", embedModel: "text-embedding-nomic-embed-text-v1.5" });
+  const saved = process.env["JARHEAD_BRAIN_API_KEY"];
+  delete process.env["JARHEAD_BRAIN_API_KEY"];
+  const w = world({ memory: { fetchImpl: rf.fetch }, discoverLocal: async () => ({ ...status, checkedAt: Date.now() }) }, { dir: localSettingsDir("qwen3.5-27b") });
+  const { engine, clock } = w;
+  const probes = (): readonly { headers: Record<string, string> }[] => server.seen.filter((r) => r.path === "/v1/embeddings" && (r.body as { input: string[] }).input[0] === "probe");
+  try {
+    await engine.start();
+    await engine.ready();
+    await engine.memory.ready();
+    assert.equal(engine.snapshot().memory?.embeddings, "local");
+    assert.equal(probes().length, 1, "LM Studio's flavour probes /v1/embeddings");
+    assert.equal(probes()[0]!.headers["authorization"], undefined, "no token set: no bearer");
+    assert.equal((engine as unknown as { localMemoryTarget(): { thinking?: boolean } }).localMemoryTarget().thinking, false, "a model without the thinking capability: the extractor is told so");
+    // Kevin puts the token in ~/.jarhead/env (here: the process env the config reads); the next brain restart relinks memory onto it, though nothing else about the server moved.
+    process.env["JARHEAD_BRAIN_API_KEY"] = "lm-token";
+    engine.config = { ...engine.config, brainApiKey: "lm-token" };
+    engine.updateSettings({ effort: "high" });
+    assert.ok(await until(() => probes().length === 2, 5000), "the token's presence is part of memory's identity: the store was rebuilt");
+    await engine.memory.ready();
+    assert.equal(probes()[1]!.headers["authorization"], "Bearer lm-token", "the second probe carries the brain's token");
+    assert.equal(engine.snapshot().memory?.embeddings, "local");
+    // A conversation closes; the extractor reads it on the server with the same bearer.
+    await engine.wake("test");
+    for (const line of ["call me Kev", "I prefer dark mode", "from now on read the diff first", "my sister is called Anna", "what time is it"]) await heard(w, line);
+    await engine.command({ type: "stop" });
+    clock.t += 1000;
+    tick(w);
+    assert.ok(await until(() => server.seen.some((r) => r.path === "/v1/chat/completions"), 5000), "the extractor asked the local server");
+    const extract = server.seen.find((r) => r.path === "/v1/chat/completions")!;
+    assert.equal(extract.headers["authorization"], "Bearer lm-token");
+    assert.equal((extract.body as { model: string }).model, "qwen3.5-27b");
+    assert.ok(await until(() => rows<LedgerRow>(w, "memory.run").length === 1, 5000), "the run landed");
+    assert.equal((rows<Extract<LedgerRow, { type: "memory.run" }>>(w, "memory.run")[0] as { extractor: string }).extractor, "local", "read by the model, not by rules");
+    assert.equal(rf.openai(), 0);
+    assert.deepEqual(server.violations, []);
+  } finally {
+    await engine.stop();
+    await server.close();
+    if (saved === undefined) delete process.env["JARHEAD_BRAIN_API_KEY"];
+    else process.env["JARHEAD_BRAIN_API_KEY"] = saved;
   }
 });

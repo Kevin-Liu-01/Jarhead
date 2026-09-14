@@ -390,6 +390,187 @@ test("the heal timer: under local with nothing answering, a server that appears 
   }
 });
 
+/** Counts the restarts the engine runs (the heal timer's, a Retry's, a settings change's) without changing what they do. */
+function countRestarts(engine: Engine): { n: number } {
+  const c = { n: 0 };
+  const orig = engine.restartBrain.bind(engine);
+  engine.restartBrain = (reason: string) => {
+    c.n++;
+    return orig(reason);
+  };
+  return c;
+}
+
+test("the heal timer decides with the start's own resolver: a pinned model the server lists but that cannot call tools is never restarted onto (no restart a minute, forever), while the look itself goes on", async () => {
+  const server = await fakeLocalServer(["gemma3:27b"]);
+  const d = scriptedDiscovery(localStatus(server.url, [localModel("gemma3:27b", { capabilities: ["completion", "vision"] })]));
+  const clock = { t: 1_757_500_000_000 };
+  const w = world("local", false, { brainModel: "gemma3:27b" });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell, now: () => clock.t, ...fakeMemory(), discoverLocal: d.discoverLocal });
+  const tick = (): void => (engine as unknown as { tick(): void }).tick();
+  const restarts = countRestarts(engine);
+  try {
+    await engine.start();
+    await engine.ready();
+    await settle(50);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    const row = ofKind(engine, "brain.local");
+    assert.equal(row.length, 1);
+    assert.equal(row[0]!.text, "gemma3:27b cannot call tools; pick a model with the tools badge (pnpm jarhead models)");
+    const looksAtStart = d.looks;
+    for (let minute = 1; minute <= 3; minute++) {
+      clock.t += Engine.LOCAL_HEAL_MS + 500;
+      tick();
+      await settle(60);
+      assert.equal(d.looks, looksAtStart + minute, `minute ${minute}: the timer still looks (a pull would be seen)`);
+      assert.equal(restarts.n, 0, `minute ${minute}: no restart onto a pin the start would refuse`);
+    }
+    assert.equal(engine.brainInfo.kind, "openai-responses", "the fallback brain was never cut");
+    assert.deepEqual(ofKind(engine, "brain.local"), row, "the row stands as it was");
+  } finally {
+    await engine.stop();
+    await server.close();
+    w.restore();
+  }
+});
+
+test("the heal timer takes the unique-name shortcut the resolver takes: brainModel `qwen3.5` with the server listing qwen3.5:27b heals onto it within LOCAL_HEAL_MS, no click", async () => {
+  const server = await fakeLocalServer(["qwen3.5:27b"]);
+  const d = scriptedDiscovery(localNone());
+  const clock = { t: 1_757_500_000_000 };
+  const w = world("local", false, { brainModel: "qwen3.5" });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell, now: () => clock.t, ...fakeMemory(), discoverLocal: d.discoverLocal });
+  const tick = (): void => (engine as unknown as { tick(): void }).tick();
+  try {
+    await engine.start();
+    await engine.ready();
+    await settle(50);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    d.answer = localStatus(server.url, [localModel("qwen3.5:27b")]);
+    clock.t += Engine.LOCAL_HEAL_MS + 500;
+    tick();
+    assert.ok(await until(() => engine.brainInfo.kind === "local", 5000), `healed onto the name match: ${engine.brainInfo.kind} (${engine.brainInfo.detail})`);
+    assert.match(engine.brainInfo.detail, /^Local · qwen3\.5:27b on Ollama 0\.34\.0/);
+    assert.deepEqual(ofKind(engine, "brain.local"), []);
+    assert.deepEqual(ofKind(engine, "brain.unavailable"), []);
+    assert.equal(engine.snapshot().setup.local.picked, undefined, "a name match is Kevin's pick, not the engine's");
+  } finally {
+    await engine.stop();
+    await server.close();
+    w.restore();
+  }
+});
+
+test("a server that resolved the pick and still refused the start (a token it was not given) is not restarted onto every minute: the heal waits for the server to change, Retry tries at once, and a changed listing is tried at the next minute", async () => {
+  const server = await fakeLocalServer(["qwen3.5:27b"]);
+  server.modelsStatus = 401;
+  const d = scriptedDiscovery(localStatus(server.url, [localModel("qwen3.5:27b")]));
+  const clock = { t: 1_757_500_000_000 };
+  const w = world("local", false, { brainModel: "qwen3.5:27b" });
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell, now: () => clock.t, ...fakeMemory(), discoverLocal: d.discoverLocal });
+  const tick = (): void => (engine as unknown as { tick(): void }).tick();
+  const restarts = countRestarts(engine);
+  try {
+    await engine.start();
+    await engine.ready();
+    await settle(50);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    const row = ofKind(engine, "brain.local");
+    assert.equal(row.length, 1);
+    assert.match(row[0]!.text, /^Local brain: .*requires an API key \(401\); set JARHEAD_BRAIN_API_KEY$/);
+    assert.deepEqual(row[0]!.remedy, LOCAL_REMEDY);
+    // Two minutes on the same server: it looks, it does not restart.
+    const looksAtStart = d.looks;
+    for (let minute = 1; minute <= 2; minute++) {
+      clock.t += Engine.LOCAL_HEAL_MS + 500;
+      tick();
+      await settle(60);
+    }
+    assert.equal(d.looks, looksAtStart + 2, "the timer looked each minute");
+    assert.equal(restarts.n, 0, "an unchanged server that refused is not tried again by the timer");
+    // Kevin's Retry is his click: it tries now, and the refusal stands.
+    await engine.retryProblem("brain.local");
+    assert.equal(restarts.n, 1);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    assert.match(ofKind(engine, "brain.local")[0]!.text, /\(401\)/);
+    // The server changes (a second model pulled, the token now accepted): the next minute tries it and lands.
+    server.modelsStatus = 200;
+    d.answer = localStatus(server.url, [localModel("qwen3.5:27b"), localModel("gemma4:26b")]);
+    clock.t += Engine.LOCAL_HEAL_MS + 500;
+    tick();
+    assert.ok(await until(() => engine.brainInfo.kind === "local", 5000), `a changed server is tried: ${engine.brainInfo.kind}`);
+    assert.equal(restarts.n, 2);
+    assert.deepEqual(ofKind(engine, "brain.local"), []);
+  } finally {
+    await engine.stop();
+    await server.close();
+    w.restore();
+  }
+});
+
+test("switching the kind away from local clears the amber brain.local row and the loud fallback line: under auto nothing about the old kind stands", async () => {
+  const w = world("auto", false);
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell, ...fakeMemory(), discoverLocal: async () => localNone() });
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ brain: "local" });
+    assert.ok(await until(() => ofKind(engine, "brain.local").length === 1, 5000), "local with nothing answering raises the amber row");
+    assert.equal(ofKind(engine, "brain.unavailable").filter((p) => p.text.startsWith("Local brain unavailable")).length, 1);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    // Back to Automatic: Codex is not signed in here, so the walk lands on Responses again — under auto, not as a fallback from local.
+    engine.updateSettings({ brain: "auto" });
+    assert.ok(await until(() => engine.snapshot().setup.brainResolved === "openai-responses" && engine.snapshot().setup.brain === "ok", 5000));
+    await settle(50);
+    assert.deepEqual(ofKind(engine, "brain.local"), [], "the amber row went with the kind");
+    assert.deepEqual(ofKind(engine, "brain.unavailable"), [], "and the 'work goes to OpenAI' line with it");
+    assert.equal(engine.snapshot().setup.dataPaths.find((p) => p.what === "brain")!.where, "cloud");
+  } finally {
+    await engine.stop();
+    w.restore();
+  }
+});
+
+test("a settings change that lands while the heal timer's own restart is past its read of the setting is not swallowed: one more pass selects the new kind", async () => {
+  const server = await fakeLocalServer(["qwen3.5:27b"]);
+  const d = scriptedDiscovery(localNone());
+  const clock = { t: 1_757_500_000_000 };
+  const w = world("local", false);
+  const engine = new Engine({ config: w.config, connectors: [], exec: noShell, now: () => clock.t, ...fakeMemory(), discoverLocal: d.discoverLocal });
+  const inner = engine as unknown as { tick(): void; brainRestart: Promise<void> | undefined; localHealAt: number };
+  let hooked = 0;
+  let restartInFlightAtHook: boolean | undefined;
+  // The compatible probe (GET /v1/models) runs inside LocalBrain.start — after startBrain read `settings.brain`. Kevin clicks Backend → Automatic at that instant.
+  server.before = (r) => {
+    if (r.path !== "/v1/models" || hooked++ > 0) return;
+    restartInFlightAtHook = inner.brainRestart !== undefined;
+    engine.updateSettings({ brain: "auto" });
+  };
+  try {
+    await engine.start();
+    await engine.ready();
+    await settle(50);
+    assert.equal(engine.brainInfo.kind, "openai-responses");
+    assert.notEqual(inner.localHealAt, 0, "the heal is armed under local");
+    d.answer = localStatus(server.url, [localModel("qwen3.5:27b")]);
+    clock.t += Engine.LOCAL_HEAL_MS + 500;
+    inner.tick();
+    assert.ok(await until(() => hooked > 0, 5000), "the heal restart reached the probe");
+    assert.equal(restartInFlightAtHook, true, "the click landed while the heal restart was in flight");
+    assert.ok(await until(() => inner.brainRestart === undefined && engine.brainInfo.ready, 5000), "the restart finished");
+    await settle(50);
+    assert.equal(engine.currentSettings.brain, "auto");
+    assert.equal(engine.brainInfo.kind, "openai-responses", "the brain follows the setting Kevin ended on, not the one the pass started with");
+    assert.equal(engine.snapshot().setup.brainResolved, "openai-responses");
+    assert.equal(inner.localHealAt, 0, "under auto the heal is disarmed");
+    assert.deepEqual(ofKind(engine, "brain.local"), []);
+  } finally {
+    await engine.stop();
+    await server.close();
+    w.restore();
+  }
+});
+
 test("the pre-warm screenshot is skipped for a brain that cannot take pixels (acceptsImages false): its task carries no screen attachment and no screenshot step; a brain that says nothing gets the eyes' shot as before", async () => {
   const tasks: { screen: boolean }[] = [];
   const fake = (acceptsImages: boolean | undefined): Brain => ({
