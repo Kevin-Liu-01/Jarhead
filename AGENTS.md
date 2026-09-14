@@ -68,6 +68,21 @@ happens, a Swift helper owns the Mac.
   recursive reader or archiver naming it) whether or not the secret's name
   appears. Egress (a network client carrying a file, `$(…)`, a body or a pipe)
   and environment dumps (`env`, `set`, `ps -E`) confirm.
+- **Local brain: read, chat, embed — never pull.** The daemon's requests to a
+  local model server (Ollama, LM Studio, llama.cpp) are exactly: `GET /api/version`,
+  `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /v1/models`,
+  `POST /api/chat`, `POST /api/generate` (body has `keep_alive` and no `prompt`),
+  `POST /api/embed`, `POST /v1/chat/completions`, `POST /v1/embeddings`,
+  `GET /api/v0/models`, `GET /health`, `GET /props`. Any other path fails the
+  `never-writes` test in `packages/brain`. Never `/api/pull`, `/api/create`,
+  `/api/delete`, `brew`, `ollama launch`, or starting a server. The row prints the
+  command; Kevin runs it (`ProblemRemedy.copy` is text a surface offers to copy,
+  never something it executes). The brain itself meets the same gate: in
+  `classifyAction`'s destructive-shell table `ollama (pull|rm|create|push|cp)` and
+  `lms (get|import|rm)` are `confirm` — the model must pass the confirmation
+  handshake before it fetches or deletes weights. `auto` never resolves to `local`;
+  Kevin picks it. Everything Ollama-side is pinned by fake-server tests, since no
+  Ollama is installed on this Mac; see `docs/LOCAL.md`.
 - **"Kevin named it" means Kevin's words.** Every gate that asks whether he
   named a folder, a host, a rail or said "apply anyway" reads
   `BrainTask.request` + `BrainTask.kevinDialogue` (his utterances, filled by the
@@ -580,9 +595,12 @@ to his microphone and bills per second.
   place), extracted from CLOSED conversations only — the quiet tick, `!live &&
   !connecting && !pauseInfo`, ≥ 4 new Kevin lines since the watermark, one run
   per closed conversation — by a mini-class Responses model on Kevin's OpenAI key
-  (dollars, never the ChatGPT plan; never Codex), or by regex rules with no key.
+  (dollars, never the ChatGPT plan; never Codex), by regex rules with no key, or,
+  with a local brain, by the brain model over Chat Completions JSON mode and a
+  local embedding model when one is pulled (memory follows `Settings.brain`, not
+  the running brain: a fallback to OpenAI never re-routes memory text).
   Items are matched by embedding (text-embedding-3-small, 512 dims, cached by
-  sha) or keywords, ADD/UPDATE/NOOP with a contradiction superseding the older
+  sha; a local model's own dims under a local brain) or keywords, ADD/UPDATE/NOOP with a contradiction superseding the older
   item, scored by recency half-life · importance · confidence · use, picked by
   MMR. Forget / Restore / Archive are STATES (Console verbs never say "Delete");
   `memory.*` ledger rows carry ids only; a line the redactor changed, a Luhn card,

@@ -390,6 +390,14 @@ App → daemon:
 
 Requests carrying an `id` resolve through it with a 5 s timeout.
 
+The local brain adds no message types: `setup.local` (a `LocalServerStatus` — the
+server found, its tool-capable models with fit and capabilities, the engine's pick),
+`setup.dataPaths` (the four "where words go" rows) and `remedy.copy` on a problem
+(a shell command Kevin runs himself; the app offers Copy, never runs it) are new
+fields on the snapshot, mirrored in `Protocol.swift`. Picking the local brain is the
+same `set-settings` patch as every other kind: `{ brain: "local", brainModel: "" }`
+means the best fit on this Mac.
+
 ## Audio
 
 `AVAudioEngine` with **voice processing enabled on the input node** before start,
