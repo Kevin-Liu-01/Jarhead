@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
 import { REPO_ROOT } from "./env.ts";
 
 /**
@@ -16,6 +17,7 @@ import { REPO_ROOT } from "./env.ts";
  *   classifyPath        the file tools: which paths are secrets, where writes ask
  *   classifyAppleScript osascript, with `do shell script` sent through the shell gate
  *   classifyUrl         web_fetch / open_url
+ *   classifyAutomation  an automation at set-up (never at fire: nobody is there to ask)
  *
  * Pure: callers pass what they know (the app, the visible label, the command, the
  * request Kevin made, the resolved real path) and get a verdict with a reason the
@@ -1209,4 +1211,358 @@ function classifyActionCore(ctx: ActionContext): Decision {
 
   // Unknown kinds fail closed to a question, never to silence and never to action.
   return confirm(`unknown action kind "${ctx.kind}"; ask before running it`);
+}
+
+// ------------------------------------------------------------ automations ---
+//
+// The set-up gate (design11, 2026-09-14). An automation is judged ONCE, awake, when it is
+// armed; at fire time nobody is there to answer, so anything that would be confirm-tier at
+// fire is refused now — not asked now. `confirm` here is the one set-up question (a recipe
+// running unattended, a key pressed unattended, the brain woken at a cost); Kevin's yes to
+// this exact set-up (`ctx.confirmed`, the runner's consume()) turns it into `run`. Pure.
+
+export interface AutomationContext {
+  readonly when: AutomationWhen;
+  readonly then: readonly AutomationAction[];
+  readonly clauses: AutomationClauses;
+  readonly settings: Pick<AutomationSettings, "enabled" | "unattended" | "wakeBudgetMinutesPerDay" | "recipes">;
+  /** A recipe text arriving with the row (the engine writes it to Settings after the yes). */
+  readonly recipeCommand?: string | undefined;
+  /** Kevin said yes to this exact set-up (the runner's consume()). */
+  readonly confirmed?: boolean | undefined;
+  /** folder.file / download.done rows already armed. */
+  readonly folderWatchers: number;
+  /** A spawned thread is arming it (depth one: it may arm free kinds, never a brain wake). */
+  readonly fromThread?: boolean | undefined;
+  /** The brain is a local model (the cost line says warm-up, not plan). */
+  readonly localBrain?: boolean | undefined;
+  /** Kevin's own words for the row, when known; a folder he named is one `file` may move into. */
+  readonly request?: string | undefined;
+  readonly home?: string | undefined;
+  readonly repoRoot?: string | undefined;
+}
+
+/** Trigger kinds typed for a later pass: never armed in pass 1, refused by name. */
+export const AUTOMATION_RESERVED_TRIGGERS: ReadonlySet<string> = new Set(["clipboard.match", "network.changed", "automation.fired"]);
+const AUTOMATION_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "download.done", "app.launch", "app.quit", "mac.wake", "screen.unlock", "display.connected", "display.disconnected", "recipe.red", "agent.status"]);
+const FOLDER_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "download.done"]);
+/** A key or chord a `press` may name: letters, digits, `+` and spaces ("cmd+s", "space", "cmd+shift+r"). */
+const PRESS_KEY = /^[a-z0-9+ ]{1,32}$/i;
+const WAKE_PROMPT_CHARS = 400;
+const UNATTENDED_HINT = "a notify or a chime is";
+
+/**
+ * A shell head that brings something to the front: `open` (unless a flag cluster carries g or
+ * j, or `--background` / `--hide`) or `osascript`. The engine's background lane refuses these
+ * (threads/runner.ts `shellSteals`); a recipe that fronts an app is told to use the `open`
+ * action instead. The two regexes are copies of the runner's and a test pins them equal.
+ */
+export const BACKGROUND_SHELL_REFUSE = /^(?:open|osascript)$/;
+export const OPEN_BACKGROUND_FLAG = /^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/;
+const SHELL_PREFIXES: ReadonlySet<string> = new Set(["sudo", "env", "nohup", "exec", "command", "time", "nice", "caffeinate", "builtin", "doas"]);
+
+/** Does any command in this line front an app? Every segment of `a; b && c | d` is judged past its wrappers and the head's directory. */
+export function shellSteals(command: string): boolean {
+  return shellSegments(command).some((segment) => {
+    const words = shellWords(segment);
+    const head = words[0];
+    if (!head || !BACKGROUND_SHELL_REFUSE.test(head)) return false;
+    if (head === "osascript") return true;
+    return !words.slice(1).some((w) => OPEN_BACKGROUND_FLAG.test(w));
+  });
+}
+
+/** The line split at `;`, `&`, `&&`, `|`, `||` and newlines outside quotes. */
+function shellSegments(command: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: string | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = undefined;
+      else if (ch === "\\" && quote === '"') {
+        cur += command[i + 1] ?? "";
+        i++;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      cur += ch + (command[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** A segment's words with the command's wrappers and leading assignments gone, the head reduced to its lower-cased basename. */
+function shellWords(segment: string): string[] {
+  const words = segment.split(/\s+/).filter(Boolean);
+  let i = 0;
+  let afterPrefix = false;
+  while (i < words.length) {
+    const w = words[i]!;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      i++;
+      continue;
+    }
+    if (SHELL_PREFIXES.has(shellBasename(w))) {
+      afterPrefix = true;
+      i++;
+      continue;
+    }
+    if (afterPrefix && w.startsWith("-")) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  const rest = words.slice(i);
+  if (rest[0] !== undefined) rest[0] = shellBasename(rest[0]).toLowerCase();
+  return rest;
+}
+
+function shellBasename(word: string): string {
+  const bare = word.replace(/^["']|["']$/g, "");
+  return bare.slice(bare.lastIndexOf("/") + 1);
+}
+
+/** An `mv` or `cp` in the line that could overwrite: no `-n` / `--no-clobber` on it. */
+function clobberReason(command: string): string | undefined {
+  for (const segment of shellSegments(command)) {
+    const words = shellWords(segment);
+    const head = words[0];
+    if (head !== "mv" && head !== "cp") continue;
+    const safe = words.slice(1).some((w) => w === "--no-clobber" || /^-[A-Za-z]*n[A-Za-z]*$/.test(w));
+    if (!safe) return `${head} needs -n so it never overwrites`;
+  }
+  return undefined;
+}
+
+/**
+ * The cost line for `wake-brain`, said word for word before the yes and recorded as
+ * `confirmed.heard`: N = ceil(budget.seconds / 60), M = Settings.wakeBudgetMinutesPerDay;
+ * a local brain warms a model on this Mac instead of spending Kevin's plan.
+ */
+export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean): string {
+  const n = Math.max(1, Math.ceil(budget.seconds / 60));
+  const minutes = n === 1 ? "brain minute" : "brain minutes";
+  const where = local ? "a model warm-up on this Mac" : "on Kevin's plan";
+  return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
+}
+
+/** The recipe a row names, or the text that arrived with it. */
+function recipeCommandOf(name: string, ctx: AutomationContext): string | undefined {
+  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
+  return known?.command ?? ctx.recipeCommand;
+}
+
+/** Why a recipe may not run unattended, if it may not: the shell gate must say `run` on its own, with nobody to ask. */
+function recipeReason(name: string, ctx: AutomationContext, home: string): string | undefined {
+  const command = recipeCommandOf(name, ctx);
+  if (!command || !command.trim()) return `no recipe named "${name}"; add it in Settings › Automations › Recipes, or give its command`;
+  if (shellSteals(command)) return `the recipe fronts an app (open / osascript); use the open action instead`;
+  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
+  if (known?.cwd) {
+    const cwd = shellCwdReason(known.cwd, home);
+    if (cwd) return cwd;
+    if (isUnder(expandPath(known.cwd, home), resolve(home, ".jarhead"))) return "a recipe never runs from inside ~/.jarhead (the ledger, the trash, the wake gate live there)";
+  }
+  const clobber = clobberReason(command);
+  if (clobber) return clobber;
+  const d = classifyAction({ kind: "run_shell", text: command, confirmed: false, home, ...(known?.cwd ? { cwd: known.cwd } : {}), ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
+  if (d.verdict === "refuse") return d.reason;
+  if (d.verdict === "confirm") return `${d.reason.replace(/; ask first$/, "")} — that would need a yes when it runs; nobody is there then — notify instead, or make it non-destructive`;
+  return undefined;
+}
+
+/**
+ * Why the trigger cannot be armed, if it cannot: a reserved or unknown kind, a secret or
+ * guarded folder, the folder cap, the poll floor, a recipe the gate would question, `file`
+ * without a folder trigger, a watcher that wakes the brain without a ten-minute cooldown,
+ * a recurrence from a later pass.
+ */
+export function triggerReason(ctx: AutomationContext): string | undefined {
+  const home = ctx.home ?? homedir();
+  const w = ctx.when;
+  const hasFile = ctx.then.some((a) => a.kind === "file");
+  if (w.kind === "on") {
+    const kind = String((w.on as { readonly kind?: unknown }).kind ?? "");
+    if (AUTOMATION_RESERVED_TRIGGERS.has(kind)) return `${kind} is a later pass; nothing listens for it yet`;
+    if (!AUTOMATION_TRIGGERS.has(kind)) return `unknown trigger kind "${kind}"; not armed`;
+    if (w.on.kind === "folder.file") {
+      const p = expandPath(w.on.path, home);
+      const secret = secretPathReason(p);
+      if (secret) return `${secret} holds secrets; Jarhead never watches it`;
+      if (isUnder(p, resolve(home, ".jarhead"))) return "~/.jarhead is Jarhead's own; it is not watched";
+      if (!isUnder(p, home)) return `${w.on.path} is outside Kevin's home; folders are watched inside ~ only`;
+    }
+    if (FOLDER_TRIGGERS.has(kind) && ctx.folderWatchers >= AUTOMATION_FOLDER_WATCHERS_MAX) return `${AUTOMATION_FOLDER_WATCHERS_MAX} folder watchers are already armed; trash one first`;
+    if (w.on.kind === "recipe.red") {
+      if (!(w.on.everySeconds >= AUTOMATION_POLL_MIN_S)) return `a recipe is checked at most every ${AUTOMATION_POLL_MIN_S} s`;
+      const recipe = recipeReason(w.on.recipe, ctx, home);
+      if (recipe) return recipe;
+    }
+    if (ctx.then.some((a) => a.kind === "wake-brain") && !((ctx.clauses.cooldown ?? 0) >= AUTOMATION_WAKE_COOLDOWN_MIN_S)) {
+      return `a watcher that wakes the brain needs a cooldown of at least ${AUTOMATION_WAKE_COOLDOWN_MIN_S} s between fires`;
+    }
+    if (hasFile && !FOLDER_TRIGGERS.has(kind)) return "file moves the triggering file; only a folder.file or download.done watcher has one";
+    return undefined;
+  }
+  if (hasFile) return "file moves the triggering file; only a folder.file or download.done watcher has one";
+  if (w.kind === "every") {
+    const r = w.every;
+    if (r.kind === "monthly" || r.kind === "monthday") return "not yet — say the date";
+    if (r.kind === "interval" && !(r.everyMs >= 60_000)) return "an interval needs at least a minute";
+    if (r.kind === "weekly" && r.days.length === 0) return "a weekly needs at least one day";
+    return undefined;
+  }
+  if (w.kind === "in") return w.ms >= 1_000 ? undefined : "a timer needs at least a second";
+  if (w.kind === "at") return Number.isFinite(w.at) && w.at > 0 ? undefined : "an alarm needs a time";
+  return `unknown trigger "${String((w as { readonly kind?: unknown }).kind)}"; not armed`;
+}
+
+/** A fixed line the local speaker reads or a banner shows: 1–AUTOMATION_LINE_CHARS chars, naming no secret. */
+function lineReason(line: string, what: string): string | undefined {
+  const t = line.trim();
+  if (!t) return `say what the ${what} should say`;
+  if (t.length > AUTOMATION_LINE_CHARS) return `the local speaker reads a sentence, not a briefing (${t.length} chars, ${AUTOMATION_LINE_CHARS} at most) — use wake-brain for a briefing`;
+  const secret = secretEnvReason(t) ?? secretPathReason(t);
+  if (secret) return `the ${what} names a secret (${secret}); Kevin handles those himself`;
+  return undefined;
+}
+
+/** An `open` target judged lexically, as the executor will judge it again at fire. */
+function openReason(a: { readonly app?: string; readonly url?: string; readonly path?: string }, ctx: AutomationContext, home: string): string | undefined {
+  if (a.app) {
+    if (HANDS_OFF_APPS.test(a.app)) return `${a.app} is hands-off; Kevin opens it himself`;
+    return undefined;
+  }
+  if (a.url) {
+    const d = classifyUrl({ url: a.url, ...(ctx.request ? { request: ctx.request } : {}) });
+    if (d.verdict !== "run") return d.reason;
+    const risky = riskyUrlReason(a.url);
+    if (risky) return `${risky}; Kevin opens those himself`;
+    return undefined;
+  }
+  if (a.path) {
+    const d = classifyPath({ path: a.path, access: "read", home });
+    return d.verdict === "run" ? undefined : d.reason;
+  }
+  return "open needs an app, an https URL or a path";
+}
+
+/** Where `file` moves the triggering file: inside ~, never ~/.jarhead, never a secret store, a write the path gate rates run. */
+function fileReason(into: string, ctx: AutomationContext, home: string): string | undefined {
+  if (!into.trim()) return "file needs a folder to move into";
+  const p = expandPath(into, home);
+  const secret = secretPathReason(p);
+  if (secret) return `${secret} holds secrets; nothing is filed there`;
+  if (isUnder(p, resolve(home, ".jarhead"))) return "~/.jarhead is Jarhead's own; nothing is filed there";
+  if (!isUnder(p, home)) return `${into} is outside Kevin's home; files move inside ~ only`;
+  const d = classifyPath({ path: p, access: "write", home, request: ctx.request ?? into, ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
+  return d.verdict === "run" ? undefined : d.reason;
+}
+
+/**
+ * One action's verdict at set-up. `run`: a fixed line, a reversible open, a file move inside ~.
+ * `confirm`: a recipe the gate rates run, a press in an ordinary app, a brain wake with budget —
+ * the reason is the question (for wake-brain, the cost line). `refuse`: everything else, with
+ * the nearest safe kind named. An unknown kind refuses (fail closed).
+ */
+export function actionReason(action: AutomationAction, ctx: AutomationContext): Decision {
+  const home = ctx.home ?? homedir();
+  const kind = String((action as { readonly kind?: unknown }).kind ?? "");
+  switch (action.kind) {
+    case "chime":
+    case "say": {
+      const why = lineReason(action.line, action.kind);
+      return why ? refuse(why) : run(`a ${action.kind} with a fixed line`);
+    }
+    case "notify": {
+      const why = lineReason(action.title, "banner") ?? (action.body ? lineReason(action.body, "banner's body") : undefined);
+      if (why) return refuse(why);
+      if (action.open) {
+        const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(action.open) ? { url: action.open } : action.open.startsWith("/") || action.open.startsWith("~") ? { path: action.open } : { app: action.open };
+        const open = openReason(target, ctx, home);
+        if (open) return refuse(open);
+      }
+      return run("a banner with a fixed title");
+    }
+    case "open": {
+      const why = openReason(action, ctx, home);
+      return why ? refuse(why) : run("open is reversible on Kevin's own machine");
+    }
+    case "file": {
+      const why = fileReason(action.into, ctx, home);
+      return why ? refuse(why) : run(`filing into ${action.into} never overwrites or deletes`);
+    }
+    case "run-recipe": {
+      const why = recipeReason(action.recipe, ctx, home);
+      if (why) return refuse(why);
+      const command = recipeCommandOf(action.recipe, ctx) ?? "";
+      return confirm(`recipe ${action.recipe} (${command.length > 80 ? `${command.slice(0, 77)}…` : command}) will run unattended, without a yes each time`);
+    }
+    case "press": {
+      if (!action.app.trim()) return refuse("press needs the app it lands in");
+      if (HANDS_OFF_APPS.test(action.app)) return refuse(`${action.app} is hands-off; nothing is pressed there unattended`);
+      if (!PRESS_KEY.test(action.key)) return refuse(`"${action.key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`);
+      return confirm(`\`${action.key}\` will be pressed in ${action.app} unattended, only while it is in front and no password field has focus`);
+    }
+    case "wake-brain": {
+      if (!(ctx.settings.wakeBudgetMinutesPerDay > 0)) return refuse("Settings › Automations › Brain minutes is 0; the brain is not woken by an automation");
+      const prompt = action.prompt.trim();
+      if (!prompt) return refuse("wake-brain needs a prompt");
+      if (prompt.length > WAKE_PROMPT_CHARS) return refuse(`the prompt is ${prompt.length} chars; ${WAKE_PROMPT_CHARS} at most`);
+      if (ctx.fromThread) return refuse("a spawned thread cannot arm a brain wake (depth one); the main conversation can");
+      return confirm(costLine(action.budget, ctx.settings.wakeBudgetMinutesPerDay, ctx.localBrain === true));
+    }
+    default:
+      return refuse(`unknown action kind "${kind}"; not armed`);
+  }
+}
+
+/**
+ * Whether an automation may be ARMED. Asked here, once, awake; at fire nobody is asked, so
+ * anything confirm-tier at fire is refused now, not asked now. Order: the master switch → the
+ * action count and one acting kind → the trigger → per action its unattended chip, then its
+ * own reason. `confirm` reasons are joined into the one question; `ctx.confirmed` makes the
+ * whole thing `run`. Pure. Fails closed: an unknown action or trigger kind refuses.
+ */
+export function classifyAutomation(ctx: AutomationContext): Decision {
+  if (!ctx.settings.enabled) return refuse("automations are off (Settings › Automations); nothing is armed while the switch is off");
+  if (ctx.then.length === 0) return refuse("an automation needs at least one action");
+  if (ctx.then.length > AUTOMATION_ACTIONS_MAX) return refuse(`an automation runs at most ${AUTOMATION_ACTIONS_MAX} actions; this one has ${ctx.then.length}`);
+  const acting = ctx.then.filter((a) => AUTOMATION_ACTING_KINDS.has(a.kind as AutomationActionKind));
+  if (acting.length > 1) return refuse(`one acting kind per automation (${acting.map((a) => a.kind).join(", ")} act); split it or keep one`);
+  const trigger = triggerReason(ctx);
+  if (trigger) return refuse(trigger);
+  const asks: string[] = [];
+  for (const action of ctx.then) {
+    const kind = String((action as { readonly kind?: unknown }).kind ?? "");
+    if (!(AUTOMATION_ACTION_KINDS as readonly string[]).includes(kind)) return refuse(`unknown action kind "${kind}"; not armed`);
+    if (!ctx.settings.unattended.includes(kind as AutomationActionKind)) {
+      return refuse(`${kind} is not allowed while Jarhead is asleep (Settings › Automations › While asleep); ${UNATTENDED_HINT}`);
+    }
+    const d = actionReason(action, ctx);
+    if (d.verdict === "refuse") return d;
+    if (d.verdict === "confirm") asks.push(d.reason);
+  }
+  if (asks.length === 0) return run("nothing here needs a yes: fixed lines, reversible opens, moves inside ~");
+  const question = asks.join("; ");
+  return ctx.confirmed ? run(`Kevin confirmed: ${question}`) : confirm(question);
 }
