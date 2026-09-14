@@ -819,7 +819,7 @@ struct ConsoleStatusGlyph: View {
         }
         .frame(width: 20, height: 20)
         .animation(Motion.fade, value: status)
-        .help(status.rawValue)
+        .consoleHelp(status.rawValue)
         .accessibilityLabel(status.rawValue)
     }
 }
@@ -840,7 +840,7 @@ struct ConsoleDelegationGlyph: View {
         }
         .frame(width: 20, height: 20)
         .animation(Motion.fade, value: status)
-        .help(meta.label)
+        .consoleHelp(meta.label)
         .accessibilityLabel(meta.label)
     }
 }
@@ -863,7 +863,7 @@ struct ConsoleThreadGlyph: View {
         }
         .frame(width: 20, height: 20)
         .animation(Motion.fade, value: status)
-        .help(meta.label)
+        .consoleHelp(meta.label)
         .accessibilityLabel(meta.label)
     }
 }

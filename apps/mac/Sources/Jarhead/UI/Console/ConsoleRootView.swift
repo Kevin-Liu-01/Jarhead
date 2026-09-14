@@ -407,7 +407,7 @@ struct CleanupToastView: View {
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .fixedSize()
                     .layoutPriority(1)
-                    .help("Undo (⌘Z)")
+                    .consoleHelp("Undo (⌘Z)")
             }
             Button(action: dismiss) {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
@@ -415,7 +415,7 @@ struct CleanupToastView: View {
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
             .fixedSize()
             .layoutPriority(1)
-            .help("Dismiss")
+            .consoleHelp("Dismiss")
             .accessibilityLabel("Dismiss")
         }
         .padding(EdgeInsets(top: 5, leading: 8, bottom: 5, trailing: 6))
@@ -454,14 +454,14 @@ struct ConsoleHeader: View, Equatable {
                         .contentTransition(.opacity)
                         .animation(Motion.fade, value: phase)
                 }
-                .help(meta.hint)
+                .consoleHelp(meta.hint)
                 .accessibilityElement(children: .combine)
                 Spacer()
                 Circle()
                     .fill(connected ? ConsoleTheme.acting : ConsoleTheme.muted)
                     .frame(width: 6, height: 6)
                     .animation(Motion.fade, value: connected)
-                    .help(connected ? "Connected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)") : "Disconnected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)"))
+                    .consoleHelp(connected ? "Connected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)") : "Disconnected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)"))
                     .accessibilityLabel(connected ? "Connected" : "Disconnected")
             }
             .padding(.leading, 84) // room for the traffic lights in the transparent titlebar

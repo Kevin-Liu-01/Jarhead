@@ -245,7 +245,7 @@ struct MemoryRailList: View {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                .help("Clear the search")
+                .consoleHelp("Clear the search")
                 .accessibilityLabel("Clear the search")
                 .transition(.opacity)
             }
@@ -355,7 +355,7 @@ struct MemoryRow: View {
         HStack(alignment: .top, spacing: iconGap) {
             ConsoleIcon(name: ConsoleTheme.memorySymbol(item.kind), tint: live ? ConsoleTheme.titanium : ConsoleTheme.fg3)
                 .padding(.top, 1)
-                .help(item.kind.rawValue)
+                .consoleHelp(item.kind.rawValue)
                 .accessibilityLabel(item.kind.rawValue)
             VStack(alignment: .leading, spacing: 3) {
                 if editing {
@@ -375,7 +375,7 @@ struct MemoryRow: View {
                             if !live {
                                 Button("Restore", action: verbs.restore)
                                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
-                                    .help(item.state == .archived ? "Back from Archived; Jarhead uses it again" : "Back from Forgotten; Jarhead uses it again")
+                                    .consoleHelp(item.state == .archived ? "Back from Archived; Jarhead uses it again" : "Back from Forgotten; Jarhead uses it again")
                             }
                             ZStack(alignment: .trailing) {
                                 if hovering {
@@ -405,7 +405,7 @@ struct MemoryRow: View {
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: editing)
-        .help(MemoryFormat.tooltip(item))
+        .consoleHelp(MemoryFormat.tooltip(item))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(item.kind.rawValue): \(item.text). \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"))
     }
@@ -450,7 +450,7 @@ private struct MemoryRowOverflow<Items: View>: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .help("More")
+        .consoleHelp("More")
         .accessibilityLabel("More")
     }
 }
@@ -480,7 +480,7 @@ private struct MemoryEditField: View {
                 text = initial
                 DispatchQueue.main.async { focused = true }
             }
-            .help("Return keeps the change; Esc cancels")
+            .consoleHelp("Return keeps the change; Esc cancels")
             .accessibilityLabel("Memory text")
     }
 
@@ -513,7 +513,7 @@ struct MemoryUsedList: View {
                     ForEach(items.prefix(Self.maxRows)) { item in
                         HStack(alignment: .top, spacing: iconGap) {
                             ConsoleIcon(name: ConsoleTheme.memorySymbol(item.kind))
-                                .help(item.kind.rawValue)
+                                .consoleHelp(item.kind.rawValue)
                                 .accessibilityLabel(item.kind.rawValue)
                             Text(item.text)
                                 .font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
@@ -522,7 +522,7 @@ struct MemoryUsedList: View {
                             Spacer(minLength: 0)
                         }
                         .padding(.vertical, 3)
-                        .help(MemoryFormat.tooltip(item))
+                        .consoleHelp(MemoryFormat.tooltip(item))
                         .transition(Motion.appear)
                     }
                 }

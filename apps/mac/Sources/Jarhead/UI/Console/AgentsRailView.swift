@@ -230,7 +230,7 @@ struct AgentsRail: View, Equatable {
                                         .rotationEffect(.degrees(refreshSpin))
                                 }
                                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                                .help("Refresh")
+                                .consoleHelp("Refresh")
                                 .accessibilityLabel("Refresh agents")
                             }
                             .padding(.trailing, -4)
@@ -348,7 +348,7 @@ struct AgentsRail: View, Equatable {
                         Image(systemName: "folder.fill").font(.system(size: 11, weight: .medium))
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 20))
-                    .help("Reveal in Finder · \(ConsoleFormat.trashLine(trash)) · \(ConsoleFormat.truncPath(trash.path, max: 40))")
+                    .consoleHelp("Reveal in Finder · \(ConsoleFormat.trashLine(trash)) · \(ConsoleFormat.truncPath(trash.path, max: 40))")
                     .accessibilityLabel("Reveal the trash in Finder")
                 }
             })
@@ -391,7 +391,7 @@ struct AgentsRail: View, Equatable {
         .padding(.horizontal, railInset)
         .frame(height: 24)
         .animation(Motion.snappy, value: count)
-        .help("Jarhead's lines of work: waiting on you first, then the busy ones, then the finished (kept five minutes)")
+        .consoleHelp("Jarhead's lines of work: waiting on you first, then the busy ones, then the finished (kept five minutes)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Threads, \(count)")
     }
@@ -543,7 +543,7 @@ struct AgentsRail: View, Equatable {
                             .padding(.leading, textInset).frame(height: 20)
                     }
                     .buttonStyle(.plain)
-                    .help("Open the conversation")
+                    .consoleHelp("Open the conversation")
                 }
             }
             .padding(.top, 8)
@@ -626,7 +626,7 @@ struct AgentsRail: View, Equatable {
                 .lineLimit(2).truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, textInset).padding(.trailing, railInset).padding(.bottom, 4)
-                .help(connector.detail)
+                .consoleHelp(connector.detail)
         }
     }
 }
@@ -660,7 +660,7 @@ private struct JarheadRailHead: View {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                    .help("Close the search (Esc)")
+                    .consoleHelp("Close the search (Esc)")
                     .accessibilityLabel("Close the search")
                 }
                 .padding(.leading, railInset).padding(.trailing, 8)
@@ -672,7 +672,7 @@ private struct JarheadRailHead: View {
                         Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                    .help("Search conversations (⌘F)")
+                    .consoleHelp("Search conversations (⌘F)")
                     .accessibilityLabel("Search conversations")
                 }
                 .padding(.trailing, -4)
@@ -735,7 +735,7 @@ private struct SelectionStrip: View {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
             }
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
-            .help("Clear the selection")
+            .consoleHelp("Clear the selection")
             .accessibilityLabel("Clear the selection")
         }
     }
@@ -770,7 +770,7 @@ private struct SelectionStrip: View {
             if words { Text(title) } else { Image(systemName: symbol).font(.system(size: 11, weight: .medium)) }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: !words, height: 22, small: true))
-        .help(help)
+        .consoleHelp(help)
         .accessibilityLabel(title)
     }
 }
@@ -818,7 +818,7 @@ private struct FoldHead<Trailing: View>: View {
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: open)
         .animation(Motion.snappy, value: count)
-        .help(open ? "Fold" : "Show \(count)")
+        .consoleHelp(open ? "Fold" : "Show \(count)")
     }
 }
 
@@ -862,7 +862,7 @@ private struct RowOverflow<Items: View>: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .help(help)
+        .consoleHelp(help)
         .accessibilityLabel(help)
     }
 }
@@ -897,13 +897,13 @@ struct JarheadNowRow: View {
                         ZStack {
                             if info.paused {
                                 ConsoleIcon(name: "pause.fill", tint: ConsoleTheme.titanium)
-                                    .help(phaseMeta.hint)
+                                    .consoleHelp(phaseMeta.hint)
                                     .accessibilityLabel("Paused")
                                     .transition(.opacity)
                             } else if info.sessionId != nil {
                                 ConsoleDot(color: phaseMeta.color, live: ConsoleTheme.livePhases.contains(info.phase), size: 6)
                                     .frame(width: 20, height: 20)
-                                    .help(phaseMeta.hint)
+                                    .consoleHelp(phaseMeta.hint)
                                     .accessibilityLabel(phaseMeta.label)
                                     .transition(.opacity)
                             }
@@ -937,7 +937,7 @@ struct JarheadNowRow: View {
         .contextMenu { menuItems }
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
-        .help(info.sessionId.map { "The live conversation · \(ConsoleFormat.shortId($0))" } ?? "The live conversation")
+        .consoleHelp(info.sessionId.map { "The live conversation · \(ConsoleFormat.shortId($0))" } ?? "The live conversation")
         .accessibilityLabel("Now, \(meta)")
         .accessibilityHint(on ? "On screen" : "Shows the live stream")
         .accessibilityAddTraits(on ? .isSelected : [])
@@ -1023,7 +1023,7 @@ struct ThreadRow: View {
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.fade, value: thread.status.isLive)
-        .help(tooltip)
+        .consoleHelp(tooltip)
         .accessibilityLabel("Thread \(thread.name), \(meta.label)")
         .accessibilityHint(open ? "Open in the centre" : "Opens the thread")
         .accessibilityAddTraits(open ? .isSelected : [])
@@ -1159,7 +1159,7 @@ struct JarheadChainRow: View {
                         if chain.pinned && chain.isActive {
                             ConsoleIcon(name: "pin.fill", size: 10)
                                 .frame(width: 12, height: 20)
-                                .help("Pinned")
+                                .consoleHelp("Pinned")
                                 .accessibilityLabel("pinned")
                                 .layoutPriority(1)
                                 .transition(.opacity)
@@ -1172,7 +1172,7 @@ struct JarheadChainRow: View {
                         } else if chain.isOpen && chain.isActive {
                             ConsoleDot(color: ConsoleTheme.muted, live: false, size: 6)
                                 .frame(width: 20, height: 20)
-                                .help("Never closed")
+                                .consoleHelp("Never closed")
                                 .accessibilityLabel("open")
                         }
                         if !chain.isActive {
@@ -1213,7 +1213,7 @@ struct JarheadChainRow: View {
                     Button("Restore", action: verbs.restore)
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
                         .frame(width: restoreWidth)
-                        .help(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
+                        .consoleHelp(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
                 }
                 ZStack(alignment: .trailing) {
                     if hovering {
@@ -1228,7 +1228,7 @@ struct JarheadChainRow: View {
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.fade, value: picked)
-        .help(tooltip)
+        .consoleHelp(tooltip)
         .accessibilityLabel("Jarhead conversation, \(title), \(metaLine)" + (chain.isTrashed ? ", in the Trash" : chain.isArchived ? ", archived" : "") + (picked ? ", selected" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation; ⌘-click selects")
         .accessibilityAddTraits(open || picked ? .isSelected : [])
@@ -1308,7 +1308,7 @@ private struct RenameField: View {
                 text = initial
                 DispatchQueue.main.async { focused = true }
             }
-            .help("Return keeps the name; Esc cancels; empty is back to what Kevin first said")
+            .consoleHelp("Return keeps the name; Esc cancels; empty is back to what Kevin first said")
             .accessibilityLabel("Conversation name")
     }
 
@@ -1370,7 +1370,7 @@ private struct SearchHitRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
-        .help(ConsoleFormat.fullDate(hit.at) + (hit.day.map { " · \($0)" } ?? "") + "\n" + hit.text)
+        .consoleHelp(ConsoleFormat.fullDate(hit.at) + (hit.day.map { " · \($0)" } ?? "") + "\n" + hit.text)
         .accessibilityLabel("Hit at \(ConsoleFormat.time(hit.at)): \(hit.text)")
         .accessibilityHint("Opens the conversation at this row")
     }
@@ -1468,7 +1468,7 @@ struct AgentRowView: View {
                     Button("Unhide", action: hide)
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
                         .frame(width: restoreWidth)
-                        .help("Back on the rail")
+                        .consoleHelp("Back on the rail")
                 }
                 ZStack(alignment: .trailing) {
                     if hovering {
@@ -1483,7 +1483,7 @@ struct AgentRowView: View {
         .contextMenu { menuItems }
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
-        .help(tooltip.isEmpty ? agent.name : tooltip)
+        .consoleHelp(tooltip.isEmpty ? agent.name : tooltip)
         .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)" + (hidden ? ", hidden" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])

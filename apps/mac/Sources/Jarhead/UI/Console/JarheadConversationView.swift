@@ -147,12 +147,12 @@ private struct JarheadConversationHeader: View {
                     .font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(2)
-                    .help(chain.name.map { "\($0)\n\(chain.title.isEmpty ? "Nothing heard" : chain.title)" } ?? (chain.title.isEmpty ? "Nothing heard in this conversation" : chain.title))
+                    .consoleHelp(chain.name.map { "\($0)\n\(chain.title.isEmpty ? "Nothing heard" : chain.title)" } ?? (chain.title.isEmpty ? "Nothing heard in this conversation" : chain.title))
                     .contentTransition(.opacity)
                     .animation(Motion.fade, value: title)
                 if chain.pinned {
                     ConsoleIcon(name: "pin.fill", size: 11)
-                        .help("Pinned")
+                        .consoleHelp("Pinned")
                         .accessibilityLabel("Pinned")
                         .transition(.opacity)
                 }
@@ -163,7 +163,7 @@ private struct JarheadConversationHeader: View {
                 Button(action: close) { Label("Stream", systemImage: "chevron.left") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
-                    .help("Back to the live stream")
+                    .consoleHelp("Back to the live stream")
                     .accessibilityLabel("Back to the live stream")
             }
             .padding(.horizontal, 12)
@@ -176,7 +176,7 @@ private struct JarheadConversationHeader: View {
                     .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(1)
-                    .help(metaHelp)
+                    .consoleHelp(metaHelp)
                     .contentTransition(ConsoleMotion.numeric)
                     .animation(Motion.snappy, value: meta)
                 Spacer(minLength: 0)
@@ -190,7 +190,7 @@ private struct JarheadConversationHeader: View {
                             .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                             .lineLimit(1)
                     }
-                    .help(chainHelp)
+                    .consoleHelp(chainHelp)
                 }
                 // Where it sits, and the way back: never a Delete here or anywhere.
                 if let placed {
@@ -199,7 +199,7 @@ private struct JarheadConversationHeader: View {
                         Text(placed.word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
                         Button("Restore", action: restore)
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
-                            .help(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
+                            .consoleHelp(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
                     }
                     .layoutPriority(1)
                     .transition(Motion.appear)
@@ -270,7 +270,7 @@ private struct JarheadSegOption: View {
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: on)
-        .help(title == "Log" ? "Every ledger row of this conversation" : "The conversation as the stream showed it")
+        .consoleHelp(title == "Log" ? "Every ledger row of this conversation" : "The conversation as the stream showed it")
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
@@ -495,7 +495,7 @@ private struct JarheadLogRow: View {
             Text(ConsoleFormat.time(line.at))
                 .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
                 .frame(width: stampWidth, alignment: .trailing)
-                .help(ConsoleFormat.fullDate(line.at))
+                .consoleHelp(ConsoleFormat.fullDate(line.at))
             Text(line.kind)
                 .font(ConsoleTheme.mono(11)).foregroundStyle(line.tone == .problem ? ConsoleTheme.error : ConsoleTheme.titanium)
                 .lineLimit(1)

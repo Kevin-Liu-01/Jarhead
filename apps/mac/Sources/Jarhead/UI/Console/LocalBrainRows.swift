@@ -149,7 +149,7 @@ struct LocalModelMenu: View {
 
     var body: some View {
         ConsoleMenuField(value: saved, options: options, title: title, pick: pick, mono: true, fieldTitle: fieldTitle, dim: dim)
-            .help(status.reachable ? "The models on \(LocalBrainWords.serverName(status)) that can call tools; best fit lets the engine choose" : "No local server answered")
+            .consoleHelp(status.reachable ? "The models on \(LocalBrainWords.serverName(status)) that can call tools; best fit lets the engine choose" : "No local server answered")
             .accessibilityLabel("Model: \(fieldTitle(saved))")
     }
 }
@@ -166,7 +166,7 @@ struct LocalServerRow: View {
     var body: some View {
         TextField(LocalBrainWords.serverPlaceholder(status), text: $text)
             .consoleField(mono: true, height: height, focused: focused)
-            .help("Leave empty to find Ollama, LM Studio or llama.cpp on this Mac; paste a root to pin one")
+            .consoleHelp("Leave empty to find Ollama, LM Studio or llama.cpp on this Mac; paste a root to pin one")
             .accessibilityLabel("Local server root")
     }
 }
@@ -204,7 +204,7 @@ struct CopyChip: View {
     var body: some View {
         Button("Copy") { CopyChip.copy(text) }
             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-            .help("Copies the command — you run it: \(text)")
+            .consoleHelp("Copies the command — you run it: \(text)")
             .accessibilityLabel("Copy \(text)")
     }
 
@@ -231,11 +231,11 @@ struct DataPathRow: View {
                 .animation(Motion.fade, value: path.detail)
             Spacer(minLength: 4)
             ConsoleIcon(name: ConsoleTheme.dataPathWhereSymbol(path.where), tint: ConsoleTheme.dataPathTint(path.where))
-                .help(whereWord)
+                .consoleHelp(whereWord)
                 .accessibilityLabel(whereWord)
         }
         .frame(height: 28)
-        .help(path.detail)
+        .consoleHelp(path.detail)
         .accessibilityElement(children: .combine)
     }
 }

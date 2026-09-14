@@ -100,7 +100,7 @@ struct OnboardingVoiceStep: View, Equatable {
                             }
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, height: 22, small: true))
-                        .help("platform.openai.com/api-keys")
+                        .consoleHelp("platform.openai.com/api-keys")
                     }
                 }
                 // The same rows as Settings › Audio: "<Name> · English" (no invented character
@@ -369,7 +369,7 @@ struct OnboardingBrainStep: View, Equatable {
             }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-        .help("ollama.com/download — install and open it yourself, then Check")
+        .consoleHelp("ollama.com/download — install and open it yourself, then Check")
     }
 
     private func secretRow(_ label: String, placeholder: String) -> some View {

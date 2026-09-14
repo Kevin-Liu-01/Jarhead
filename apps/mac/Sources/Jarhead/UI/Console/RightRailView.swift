@@ -101,17 +101,17 @@ private struct CrashNoticeRow: View {
                         Spacer(minLength: 4)
                         Button("Details") { state.revealCrash() }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                            .help("Show the crash report in Finder")
+                            .consoleHelp("Show the crash report in Finder")
                         Button { withAnimation(Motion.gentle) { state.dismissCrash() } } label: {
                             Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
-                        .help("Dismiss")
+                        .consoleHelp("Dismiss")
                         .accessibilityLabel("Dismiss the crash notice")
                     }
                     .padding(.horizontal, railInset)
                     .frame(height: 28)
-                    .help("\(crash.reason)\n\(crash.fileURL.lastPathComponent)\(crash.relaunched ? "\nRelaunched by the crash guard." : "\nNot relaunched: three crashes in ten minutes.")")
+                    .consoleHelp("\(crash.reason)\n\(crash.fileURL.lastPathComponent)\(crash.relaunched ? "\nRelaunched by the crash guard." : "\nNot relaunched: three crashes in ten minutes.")")
                     ConsoleHairline()
                 }
                 .transition(Motion.appear)
@@ -332,13 +332,13 @@ struct NowPanel: View {
                                 .contentTransition(ConsoleMotion.numeric)
                                 .animation(Motion.snappy, value: elapsed)
                         }
-                        .help("Elapsed")
+                        .consoleHelp("Elapsed")
                         .accessibilityLabel("Elapsed")
                         .transition(.opacity)
                     }
                 }
                 .frame(height: 28)
-                .help(meta.hint)
+                .consoleHelp(meta.hint)
                 .animation(Motion.fade, value: sessionInfo == nil)
 
                 // The meter. A session open: what this one has billed, and today's total.
@@ -348,7 +348,7 @@ struct NowPanel: View {
                 ZStack(alignment: .topLeading) {
                     if let s = sessionInfo {
                         VStack(alignment: .leading, spacing: 0) {
-                            KV("Session") { monoValue(ConsoleFormat.shortId(s.id, 12)).help(s.id) }
+                            KV("Session") { monoValue(ConsoleFormat.shortId(s.id, 12)).consoleHelp(s.id) }
                             KV("Billed", ConsoleFormat.billed(s.usageSeconds))
                             if let today = usageToday, today.seconds > 0 {
                                 KV("Today", ConsoleFormat.billed(today.seconds))
@@ -384,7 +384,7 @@ struct NowPanel: View {
                                     .contentTransition(ConsoleMotion.numeric)
                                     .animation(Motion.snappy, value: line)
                             }
-                            KV("Session") { monoValue(ConsoleFormat.shortId(p.sessionId, 12)).help(p.sessionId) }
+                            KV("Session") { monoValue(ConsoleFormat.shortId(p.sessionId, 12)).consoleHelp(p.sessionId) }
                             KV("Billed", ConsoleFormat.billed(p.usageSeconds))
                             if let today = usageToday, today.seconds > 0 {
                                 KV("Today", ConsoleFormat.billed(today.seconds))
@@ -419,7 +419,7 @@ struct NowPanel: View {
                 if !marks.isEmpty {
                     Button("Clear") { actions.send(.markClear) }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help("Forget the circled regions")
+                        .consoleHelp("Forget the circled regions")
                         .transition(.opacity)
                 }
             }) {
@@ -434,7 +434,7 @@ struct NowPanel: View {
                     }
                     Button { actions.beginMarkMode() } label: { Label("Circle something…", systemImage: "pencil.and.outline") }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                        .help("Circle a region of the screen for Jarhead (⌥⇧C)")
+                        .consoleHelp("Circle a region of the screen for Jarhead (⌥⇧C)")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -471,7 +471,7 @@ struct NowPanel: View {
             if !usedIds.isEmpty {
                 RailSection("Memory", count: usedIds.count, trailing: {
                     Text("used this turn").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
-                        .help("The memory lines the brain was given for the last request")
+                        .consoleHelp("The memory lines the brain was given for the last request")
                 }) {
                     MemoryUsedList(ids: usedIds)
                 }
@@ -491,7 +491,7 @@ struct NowPanel: View {
             RailSection("Permissions", trailing: {
                 Button("Ask for everything") { actions.send(.requestPermission("all")) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .help("Ask for every permission Jarhead can use, one dialog at a time, then the System Settings panes")
+                    .consoleHelp("Ask for every permission Jarhead can use, one dialog at a time, then the System Settings panes")
             }) {
                 PermissionsRailList(permissions: permissions)
             }
@@ -500,7 +500,7 @@ struct NowPanel: View {
                 if !problems.isEmpty {
                     Button("Clear") { actions.send(.clearProblems) }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help("Clear problems")
+                        .consoleHelp("Clear problems")
                         .transition(.opacity)
                 }
             }) {
@@ -552,7 +552,7 @@ struct NowPanel: View {
                 .animation(Motion.fade, value: detail)
             Spacer(minLength: 4)
             ConsoleIcon(name: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill", tint: ok ? ConsoleTheme.acting : ConsoleTheme.speaking)
-                .help(ok ? "ready" : "not ready")
+                .consoleHelp(ok ? "ready" : "not ready")
                 .accessibilityLabel(ok ? "ready" : "not ready")
         }
         .frame(height: 28)
@@ -580,7 +580,7 @@ private struct ProblemRow: View {
                 HStack(spacing: 6) {
                     Button(problem.remedy?.label ?? "Retry", action: act)
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help(remedyHelp)
+                        .consoleHelp(remedyHelp)
                     if let copy = NowPanel.problemCopy(problem) {
                         CopyChip(text: copy)
                     }
@@ -589,7 +589,7 @@ private struct ProblemRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
-        .help("\(problem.kind) · since \(ConsoleFormat.fullDate(problem.since))")
+        .consoleHelp("\(problem.kind) · since \(ConsoleFormat.fullDate(problem.since))")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Problem: \(problem.text). \(problem.remedy?.label ?? "Retry")")
     }
@@ -639,7 +639,7 @@ private struct ThreadRailRow: View {
                     .buttonStyle(.plain)
                     .layoutPriority(1)
                     .onHover { hovering = $0 }
-                    .help("Open \(thread.name)'s pane")
+                    .consoleHelp("Open \(thread.name)'s pane")
                     .accessibilityLabel("Open \(thread.name)")
                     // The word turns as the thread works, waits and finishes; a crossfade, never a cut.
                     Text(meta.label).font(ConsoleTheme.sans(12)).foregroundStyle(thread.status == .waitingKevin ? ConsoleTheme.speaking : ConsoleTheme.fg2)
@@ -651,7 +651,7 @@ private struct ThreadRailRow: View {
                         Button("Stop", action: stop)
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                             .layoutPriority(1)
-                            .help(isMain ? "Stop this turn — the threads carry on, the session stays open" : "Stop \(thread.name) — the others and the session carry on")
+                            .consoleHelp(isMain ? "Stop this turn — the threads carry on, the session stays open" : "Stop \(thread.name) — the others and the session carry on")
                             .accessibilityLabel("Stop \(thread.name)")
                             .transition(.opacity)
                     }
@@ -670,7 +670,7 @@ private struct ThreadRailRow: View {
         .padding(.vertical, 4)
         .opacity(thread.status.isLive ? 1 : 0.62)
         .animation(Motion.gentle, value: thread.status.isLive)
-        .help("\(thread.name) · \(ConsoleTheme.lane(thread.lane)) lane" + (thread.task.isEmpty ? "" : " · \(thread.task)") + "\nstarted \(ConsoleFormat.time(thread.startedAt)) · \(thread.steps) steps · \(thread.turns) turn\(thread.turns == 1 ? "" : "s")")
+        .consoleHelp("\(thread.name) · \(ConsoleTheme.lane(thread.lane)) lane" + (thread.task.isEmpty ? "" : " · \(thread.task)") + "\nstarted \(ConsoleFormat.time(thread.startedAt)) · \(thread.steps) steps · \(thread.turns) turn\(thread.turns == 1 ? "" : "s")")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Thread \(thread.name), \(meta.label)" + (line.map { ". \($0)" } ?? ""))
     }
@@ -740,7 +740,7 @@ private struct PermissionsRailList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(expanded ? "Fold the optional permissions" : "Show every permission")
+        .consoleHelp(expanded ? "Fold the optional permissions" : "Show every permission")
         .accessibilityLabel("\(granted) of \(all.count) permissions granted")
         .accessibilityAddTraits(.isButton)
         .animation(Motion.snappy, value: granted)
@@ -766,15 +766,15 @@ private struct PermissionsRailList: View {
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                 .layoutPriority(1)
-                .help(opensSettings ? "Open the System Settings pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")" : "Ask for \(info.label.lowercased()) access")
+                .consoleHelp(opensSettings ? "Open the System Settings pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")" : "Ask for \(info.label.lowercased()) access")
                 .transition(ConsoleMotion.arriveLeave)
             }
             ConsoleIcon(name: meta.symbol, tint: meta.color)
-                .help(meta.label + (tip.isEmpty ? "" : " · " + tip))
+                .consoleHelp(meta.label + (tip.isEmpty ? "" : " · " + tip))
                 .accessibilityLabel(meta.label)
         }
         .frame(height: 28)
-        .help(tip)
+        .consoleHelp(tip)
         .animation(Motion.gentle, value: info.grant)
     }
 
@@ -829,7 +829,7 @@ private struct MarkThumb: View {
                 .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .help("Forget this circle")
+        .consoleHelp("Forget this circle")
         .accessibilityLabel("Forget this circle")
         .padding(2)
         .opacity(hovering ? 1 : 0)
@@ -863,7 +863,7 @@ private struct MarkThumb: View {
         .animation(Motion.fade, value: mark.consumed)
         .overlay(alignment: .topTrailing) { forgetButton }
         .onHover { hovering = $0 }
-        .help(caption)
+        .consoleHelp(caption)
         .accessibilityLabel(caption)
     }
 }
@@ -893,7 +893,7 @@ struct AudioMeters: View {
 
     private func meter(_ symbol: String, _ label: String, _ value: Double, _ tint: Color) -> some View {
         HStack(spacing: iconGap) {
-            ConsoleIcon(name: symbol, tint: tint).help(label).accessibilityLabel(label)
+            ConsoleIcon(name: symbol, tint: tint).consoleHelp(label).accessibilityLabel(label)
             // One 20 Hz tick to the next (the fill steps per cell); still under reduce motion.
             ConsoleBar(fraction: value).animation(reduceMotion ? nil : .linear(duration: Motion.meter), value: value)
             Text(String(format: "%.2f", value)).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
@@ -1078,14 +1078,14 @@ struct SettingsPanel: View {
                         Text(ConsoleTheme.languageLabel(settings.language))
                             .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
                             .frame(height: 26)
-                            .help("Jarhead speaks English whatever language it hears")
+                            .consoleHelp("Jarhead speaks English whatever language it hears")
                             .accessibilityLabel("Language: \(ConsoleTheme.languageLabel(settings.language))")
                     }
                     formRow("Accent") {
                         ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
                                         pick: { patch(SettingsPatch(accent: $0)) },
                                         accessibilityLabel: "Accent: \(ConsoleTheme.accentLabel(settings.accent))")
-                            .help("How the English sounds; best-effort on the voice's side")
+                            .consoleHelp("How the English sounds; best-effort on the voice's side")
                     }
                     // The promise, and when a pick lands. Switch now closes the session and
                     // reopens it on the new voice (one paid start); it rises in only while a
@@ -1096,7 +1096,7 @@ struct SettingsPanel: View {
                             Button("Switch now") { actions.send(.voiceReopen) }
                                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                                 .layoutPriority(1)
-                                .help("Pause, then resume on the new voice now (refused while work runs)")
+                                .consoleHelp("Pause, then resume on the new voice now (refused while work runs)")
                                 .transition(Motion.appear)
                         }
                     }
@@ -1104,7 +1104,7 @@ struct SettingsPanel: View {
                     formRow("Mic") {
                         ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
                                          pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) })
-                            .help("Auto ranks the connected microphones: your pick, the built-in, the one used last, the system default. Aggregate and virtual devices only when picked.")
+                            .consoleHelp("Auto ranks the connected microphones: your pick, the built-in, the one used last, the system default. Aggregate and virtual devices only when picked.")
                     }
                     if !micHint.isEmpty { hint(micHint) }
                 }
@@ -1117,7 +1117,7 @@ struct SettingsPanel: View {
                         SecretField(placeholder: "sk-…", onFile: setup.secrets.openai, status: voiceKeyStatus,
                                     save: { key in actions.send(.setSecrets(["OPENAI_API_KEY": key])) })
                     }
-                    .help("The OpenAI key for the voice (\(setup.liveModel))")
+                    .consoleHelp("The OpenAI key for the voice (\(setup.liveModel))")
                     formRow("Backend") {
                         // The menu spells the long ones out; the field carries the short word.
                         ConsoleMenuField(value: kind, options: ConsoleTheme.brains, title: { $0.label },
@@ -1125,7 +1125,7 @@ struct SettingsPanel: View {
                                          fieldTitle: { $0.shortLabel })
                             .accessibilityLabel("Backend: \(kind.label)")
                     }
-                    .help(kind.label)
+                    .consoleHelp(kind.label)
                     hint(kind.needs)
                     // Local: a menu over what the server lists (a pick commits at once, like every
                     // menu here); every other kind types an id. The compatible kind refuses to start
@@ -1171,7 +1171,7 @@ struct SettingsPanel: View {
                                 // backend from being saved under the other's name after a switch.
                                 .id(secret)
                         }
-                        .help(secret)
+                        .consoleHelp(secret)
                         .transition(Motion.appear)
                     }
                     formRow("Effort") {
@@ -1207,7 +1207,7 @@ struct SettingsPanel: View {
                         Toggle("", isOn: Binding(get: { settings.autoWake }, set: { patch(SettingsPatch(autoWake: $0)) }))
                             .toggleStyle(.switch).controlSize(.small).labelsHidden()
                             .tint(ConsoleTheme.accent)
-                            .help(wake.enabled ? "Wake on launch (the wake word gate owns waking while it is on)" : "Wake on launch")
+                            .consoleHelp(wake.enabled ? "Wake on launch (the wake word gate owns waking while it is on)" : "Wake on launch")
                             .accessibilityLabel("Auto-wake on launch")
                     }
                     // Where the orb lives: floating free (it stays where it last worked), or in
@@ -1216,7 +1216,7 @@ struct SettingsPanel: View {
                         ConsoleSegments(value: settings.livesInNotch, options: [false, true], title: { $0 ? "Notch" : "Free" },
                                         pick: { notch in patch(SettingsPatch(orbHome: notch ? "notch" : "free")) },
                                         accessibilityLabel: "Orb home: \(settings.livesInNotch ? "Notch" : "Free")")
-                            .help(settings.livesInNotch ? "The orb lives and sleeps in the notch" : "The orb floats free and stays where it last worked")
+                            .consoleHelp(settings.livesInNotch ? "The orb lives and sleeps in the notch" : "The orb floats free and stays where it last worked")
                     }
                     hint(settings.livesInNotch ? "Lives in the notch; floats free when the main display has none." : "Floats free; stays where it last worked.")
                 }
@@ -1234,19 +1234,19 @@ struct SettingsPanel: View {
                             .lineLimit(1)
                             .contentTransition(ConsoleMotion.numeric)
                     }
-                    .help(memory.lastRun.map { SettingsPanel.lastRunLine($0) } ?? "No run yet")
+                    .consoleHelp(memory.lastRun.map { SettingsPanel.lastRunLine($0) } ?? "No run yet")
                 }
                 Button("Learn now") { actions.send(.memoryRun) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .disabled(!settings.memory || memory == nil)
-                    .help(settings.memory ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
+                    .consoleHelp(settings.memory ? "Read what has not been read yet, now (it runs on its own after a conversation ends)" : "Memory is off")
             }) {
                 VStack(spacing: 2) {
                     formRow("Remember") {
                         Toggle("", isOn: Binding(get: { settings.memory }, set: { patch(SettingsPatch(memory: $0)) }))
                             .toggleStyle(.switch).controlSize(.small).labelsHidden()
                             .tint(ConsoleTheme.accent)
-                            .help("Learn durable things about Kevin from each conversation and use them quietly next time")
+                            .consoleHelp("Learn durable things about Kevin from each conversation and use them quietly next time")
                             .accessibilityLabel("Remember across sessions")
                     }
                     if !settings.memory {
@@ -1258,7 +1258,7 @@ struct SettingsPanel: View {
                             .frame(height: 26)
                             .contentTransition(.opacity)
                             .animation(Motion.fade, value: ConsoleTheme.memoryMatching(memory))
-                            .help(SettingsPanel.matchingHelp(memory))
+                            .consoleHelp(SettingsPanel.matchingHelp(memory))
                     }
                     formRow("Known") { memoryCounts }
                     hint(ConsoleTheme.memoryBudgetHint)
@@ -1279,12 +1279,12 @@ struct SettingsPanel: View {
                             actions.cleanup(.sweep)
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help("Days past retention move to the trash now; each comes back with Restore")
+                        .consoleHelp("Days past retention move to the trash now; each comes back with Restore")
                         Button { withAnimation(Motion.snappy) { sweepArmed = false } } label: {
                             Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
-                        .help("Keep everything where it is")
+                        .consoleHelp("Keep everything where it is")
                         .accessibilityLabel("Cancel the sweep")
                     }
                     .transition(.opacity)
@@ -1297,7 +1297,7 @@ struct SettingsPanel: View {
                     Button("Sweep now") { withAnimation(Motion.snappy) { sweepArmed = true } }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                         .disabled(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0)
-                        .help(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0
+                        .consoleHelp(settings.ledgerRetentionDays == 0 && settings.shotsRetentionDays == 0
                               ? "Both keep forever; nothing would move"
                               : "Move the days past retention to the trash now (each comes back with Restore); asks first")
                         .transition(.opacity)
@@ -1310,14 +1310,14 @@ struct SettingsPanel: View {
                                          pick: { days in var p = SettingsPatch(); p.ledgerRetentionDays = days; patch(p) })
                             .accessibilityLabel("Ledger retention: \(ConsoleTheme.retentionTitle(settings.ledgerRetentionDays, forever: "keep forever"))")
                     }
-                    .help("Days a day's conversations stay on the rail before the sweep moves the day file to the trash")
+                    .consoleHelp("Days a day's conversations stay on the rail before the sweep moves the day file to the trash")
                     formRow("Screenshots") {
                         ConsoleMenuField(value: settings.shotsRetentionDays, options: retentionOptions(ConsoleTheme.shotsRetentionOptions, current: settings.shotsRetentionDays),
                                          title: { ConsoleTheme.retentionTitle($0, forever: "forever") },
                                          pick: { days in var p = SettingsPatch(); p.shotsRetentionDays = days; patch(p) })
                             .accessibilityLabel("Screenshot retention: \(ConsoleTheme.retentionTitle(settings.shotsRetentionDays, forever: "forever"))")
                     }
-                    .help("Days a day's screenshots stay before the sweep moves the folder to the trash")
+                    .consoleHelp("Days a day's screenshots stay before the sweep moves the folder to the trash")
                     hint("Older days move to the trash, never out of it. Pinned conversations keep their days.")
                     formRow("Trash") {
                         // The figures whole on their own line; the way to Finder under them.
@@ -1328,11 +1328,11 @@ struct SettingsPanel: View {
                                 .frame(height: 26, alignment: .leading)
                                 .contentTransition(ConsoleMotion.numeric)
                                 .animation(Motion.snappy, value: trash)
-                                .help(trash.map { ConsoleFormat.truncPath($0.path, max: 48) } ?? "No trash folder yet")
+                                .consoleHelp(trash.map { ConsoleFormat.truncPath($0.path, max: 48) } ?? "No trash folder yet")
                             if let trash {
                                 Button { actions.open(trash.path) } label: { Label("Reveal in Finder", systemImage: "folder.fill") }
                                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                                    .help("Show \(ConsoleFormat.truncPath(trash.path, max: 48)) in Finder — emptying it is yours, there")
+                                    .consoleHelp("Show \(ConsoleFormat.truncPath(trash.path, max: 48)) in Finder — emptying it is yours, there")
                             }
                         }
                     }
@@ -1345,7 +1345,7 @@ struct SettingsPanel: View {
                         Toggle("", isOn: Binding(get: { wake.enabled }, set: { on in var w = wake; w.enabled = on; patch(SettingsPatch(wake: w)) }))
                             .toggleStyle(.switch).controlSize(.small).labelsHidden()
                             .tint(ConsoleTheme.accent)
-                            .help("Listen on-device for the wake word while asleep")
+                            .consoleHelp("Listen on-device for the wake word while asleep")
                             .accessibilityLabel("Wake word")
                     }
                     formRow("Phrases") {
@@ -1355,7 +1355,7 @@ struct SettingsPanel: View {
                             .consoleField(mono: true, height: 26, focused: focus == .phrases, grows: true)
                             .focused($focus, equals: .phrases)
                             .onSubmit { commitPhrases(); focus = nil }
-                            .help("Any of these wakes it; comma-separated")
+                            .consoleHelp("Any of these wakes it; comma-separated")
                             .accessibilityLabel("Wake phrases, comma separated")
                     }
                     formRow("Auth") {
@@ -1363,7 +1363,7 @@ struct SettingsPanel: View {
                         ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
                                          pick: { auth in var w = wake; w.auth = auth; patch(SettingsPatch(wake: w)) },
                                          fieldTitle: { $0 == .either ? "Either" : $0.label })
-                            .help(wake.auth.label)
+                            .consoleHelp(wake.auth.label)
                             .accessibilityLabel("Authentication: \(wake.auth.label)")
                     }
                     if wake.auth == .none { hint("Anyone who says the word wakes it.").transition(Motion.appear) }
@@ -1375,7 +1375,7 @@ struct SettingsPanel: View {
             // The words do the work; the gear means System Settings elsewhere in this window.
             Button("Set up again…") { actions.openOnboarding() }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                .help("Open the setup wizard")
+                .consoleHelp("Open the setup wizard")
                 .padding(EdgeInsets(top: 12, leading: railInset, bottom: 20, trailing: railInset))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1513,13 +1513,13 @@ struct SettingsPanel: View {
                     Text(text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg).lineLimit(1).truncationMode(.tail)
                         .contentTransition(.opacity)
                 }
-                .help(detail.isEmpty || detail == "ok" ? "\(name): \(text.lowercased())" : "\(name): \(detail)")
+                .consoleHelp(detail.isEmpty || detail == "ok" ? "\(name): \(text.lowercased())" : "\(name): \(detail)")
                 .accessibilityLabel("\(name) \(text)")
                 Spacer(minLength: 4)
                 Button("Check") { actions.send(.probeSetup) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .layoutPriority(1)
-                    .help("Re-check the voice key and the brain")
+                    .consoleHelp("Re-check the voice key and the brain")
             }
             .frame(height: 26)
             if showDetail {
@@ -1528,7 +1528,7 @@ struct SettingsPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 20 + iconGap)
                     .padding(.bottom, 4)
-                    .help(detail)
+                    .consoleHelp(detail)
                     .contentTransition(.opacity)
                     .transition(Motion.appear)
             }
@@ -1562,13 +1562,13 @@ struct SettingsPanel: View {
                         .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                         .lineLimit(1)
                         .contentTransition(ConsoleMotion.numeric)
-                        .help("Conversations that ended and have not been read yet; the run starts at a quiet moment")
+                        .consoleHelp("Conversations that ended and have not been read yet; the run starts at a quiet moment")
                         .transition(Motion.appear)
                 }
             }
         }
         .padding(.bottom, 4)
-        .help(memory.map { ConsoleTheme.memoryCounts($0) } ?? "No memory yet")
+        .consoleHelp(memory.map { ConsoleTheme.memoryCounts($0) } ?? "No memory yet")
         .animation(Motion.gentle, value: (memory?.pending ?? 0) > 0)
     }
 
@@ -1681,7 +1681,7 @@ private struct SecretField: View {
                         .onSubmit(commit)
                         .onExitCommand(perform: cancel)
                         .onChange(of: focused) { if !focused, !hasText { cancel() } }
-                        .help(editing ? "Paste the new key; Esc keeps the old one" : "Paste the key; it is written to ~/.jarhead/env and never shown again")
+                        .consoleHelp(editing ? "Paste the new key; Esc keeps the old one" : "Paste the key; it is written to ~/.jarhead/env and never shown again")
                     Button("Save", action: commit)
                         .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, height: 26, small: true))
                         .disabled(!hasText)
@@ -1693,13 +1693,13 @@ private struct SecretField: View {
                     Text(meta.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .help(meta.help)
+                        .consoleHelp(meta.help)
                         .accessibilityLabel(meta.help)
                         .contentTransition(.opacity)
                     Button("Change") { editing = true; focused = true }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                         .layoutPriority(1)
-                        .help("Replace the key")
+                        .consoleHelp("Replace the key")
                 }
                 .transition(.opacity)
             }
@@ -1760,7 +1760,7 @@ private struct WakePassphraseRow: View {
                         .onSubmit(submit)
                         .onExitCommand(perform: cancel)
                         .onChange(of: focused) { if !focused, !hasText, set { cancel() } }
-                        .help("Two words or more; said or typed when asked" + (set ? ". Esc keeps the old one" : ""))
+                        .consoleHelp("Two words or more; said or typed when asked" + (set ? ". Esc keeps the old one" : ""))
                         .accessibilityLabel("Wake passphrase")
                     Button("Set", action: submit)
                         .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, height: 26, small: true))
@@ -1773,16 +1773,16 @@ private struct WakePassphraseRow: View {
                     Text("••••••").font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg2)
                         .fixedSize()
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .help("A passphrase is set (kept as a hash; never shown)")
+                        .consoleHelp("A passphrase is set (kept as a hash; never shown)")
                         .accessibilityLabel("Passphrase set")
                     Button("Change") { editing = true; focused = true }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                         .layoutPriority(1)
-                        .help("Replace the passphrase")
+                        .consoleHelp("Replace the passphrase")
                     Button("Clear") { actions.clearWakePassphrase(); cancel() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                         .layoutPriority(1)
-                        .help("Forget the passphrase")
+                        .consoleHelp("Forget the passphrase")
                 }
                 .transition(.opacity)
             }
@@ -1884,7 +1884,7 @@ private struct WakeGateReadout: View {
                 .lineLimit(3).truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(minHeight: 26, alignment: .leading)
-                .help(text)
+                .consoleHelp(text)
                 .contentTransition(ConsoleMotion.numeric)
                 .animation(Motion.snappy, value: text)
         }
@@ -1898,7 +1898,7 @@ private struct WakeGateReadout: View {
             Text("heard").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.fg3)
             Text(heard.isEmpty ? "…" : heard).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                 .lineLimit(1).truncationMode(.head)
-                .help(heard.isEmpty ? "Nothing heard yet" : heard)
+                .consoleHelp(heard.isEmpty ? "Nothing heard yet" : heard)
         }
         .padding(.leading, 20 + iconGap)
         .padding(.bottom, 4)
@@ -1925,7 +1925,7 @@ struct LedgerPanel: View {
                     Image(systemName: "folder.fill").font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                .help("Open the ledger folder")
+                .consoleHelp("Open the ledger folder")
                 .accessibilityLabel("Open ledger folder")
             }) {
                 // "Loading…" and the days that answer it crossfade.

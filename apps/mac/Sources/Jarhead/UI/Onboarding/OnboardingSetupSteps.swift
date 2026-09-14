@@ -33,7 +33,7 @@ struct OnboardingPermissionsStep: View, Equatable {
                 if !running {
                     Button("Ask for everything") { actions.permissions.requestAll() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                        .help("Required kinds first, then the rest; each dialog is awaited before the next")
+                        .consoleHelp("Required kinds first, then the rest; each dialog is awaited before the next")
                         .disabled(permissions.isEmpty)
                         .transition(.opacity)
                 }
@@ -109,10 +109,10 @@ struct OnboardingPermissionsStep: View, Equatable {
                     Spacer(minLength: 8)
                     Button { actions.permissions.openSettings(kind) } label: { Label(waiting ? "Open Settings" : "Open again", systemImage: "gearshape.fill") }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help(waiting ? "Open the System Settings pane" : "Open that System Settings pane again")
+                        .consoleHelp(waiting ? "Open the System Settings pane" : "Open that System Settings pane again")
                     Button("Next") { actions.permissions.sweepNext() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help(waiting ? "Skip it for now" : "On to the next pane")
+                        .consoleHelp(waiting ? "Skip it for now" : "On to the next pane")
                 }
             }
             if sweep.dryRun {
@@ -183,14 +183,14 @@ struct OnboardingPermissionsStep: View, Equatable {
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                 .disabled(running)
-                .help(opensSettings ? "Open System Settings on the pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")"
+                .consoleHelp(opensSettings ? "Open System Settings on the pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")"
                       : "Ask for \(info.label.lowercased()) access")
                 .frame(height: 20)
                 .transition(ConsoleMotion.arriveLeave)
             }
             ConsoleDot(color: meta.color, live: asking, size: 6)
                 .frame(width: 20, height: 20)
-                .help(asking ? "asking…" : meta.label)
+                .consoleHelp(asking ? "asking…" : meta.label)
                 .accessibilityLabel(asking ? "asking" : meta.label)
         }
         .padding(.horizontal, 10)

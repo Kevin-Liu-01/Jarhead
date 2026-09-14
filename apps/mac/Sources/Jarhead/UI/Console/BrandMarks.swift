@@ -479,7 +479,7 @@ struct BrandStatusGlyph: View {
         }
         .frame(width: 20, height: 20)
         .animation(Motion.fade, value: status)
-        .help(status.rawValue)
+        .consoleHelp(status.rawValue)
         .accessibilityLabel(status.rawValue)
     }
 }
