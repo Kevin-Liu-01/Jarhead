@@ -15,9 +15,13 @@
 #   everything" sweep on the Permissions step (waiting: a dialog that returned at once; folders:
 #   three kinds sharing one pane). Permissions are canned per scenario (all sixteen kinds, mixed
 #   statuses) and every ask prints — nothing here touches TCC. See OnboardingPreviewMain.swift.
+#   PREVIEW_TIP=<id> pins a trigger's tip on the Setup root's float layer at 0.6 s (tipOpen:<id>).
+#   PREVIEW_OPEN=<field> (voice | accent | brain | model | auth …) opens that step's menu field on the
+#   Setup window's float layer at 0.6 s (`menuOpen:setup.<field>` — the field answers once it is on
+#   the layer; until then the log says it was asked).
 #   `all` also shoots the Permissions step at 620x1500 (preview-onboarding-permissions-all.png)
 #   so every one of the sixteen rows is in a committed picture.
-# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Motion + UI/Dither + UI/Onboarding +
+# Compiles Model + Permissions + UI/Console (for ConsoleTheme) + UI/Motion + UI/Dither + UI/HelpCopy + UI/Onboarding +
 # Scripts/OnboardingPreviewMain.swift into its own output directory (never the
 # shared .build products), shows the window, screenshots it and exits.
 set -euo pipefail
@@ -28,12 +32,14 @@ BUILD=".build/onboarding-preview"
 mkdir -p "$BUILD"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
   -o "$BUILD/onboarding-preview" \
-  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift Sources/Jarhead/UI/Thumbnails.swift \
+  Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/Motion.swift Sources/Jarhead/UI/Dither.swift Sources/Jarhead/UI/Thumbnails.swift Sources/Jarhead/UI/HelpCopy.swift \
   Sources/Jarhead/UI/Console/*.swift Sources/Jarhead/UI/Onboarding/*.swift \
   Scripts/OnboardingPreviewMain.swift
 export PREVIEW_SCENARIO="${PREVIEW_SCENARIO:-ready}"
 if [[ -n "${PREVIEW_APPEARANCE:-}" ]]; then export PREVIEW_APPEARANCE; fi
 if [[ -n "${PREVIEW_SIZE:-}" ]]; then export PREVIEW_SIZE; fi
+if [[ -n "${PREVIEW_OPEN:-}" ]]; then export PREVIEW_OPEN; fi
+if [[ -n "${PREVIEW_TIP:-}" ]]; then export PREVIEW_TIP; fi
 
 # shoot <step> <out.png>: run the harness on one step, screenshot its window, kill it.
 shoot() {

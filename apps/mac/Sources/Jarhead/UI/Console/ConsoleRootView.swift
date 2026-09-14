@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// The header's tip ids.
+enum ConsoleRootWords {
+    static let connectionTip = "connection"
+}
+
 /// The Console's root. This is the only view (besides the audio meters) that
 /// observes `AppState`; it slices the snapshot — and the wake gate's three
 /// published values, the one open conversation, and Jarhead's own sessions from
@@ -199,6 +204,9 @@ struct ConsoleRootView: View {
             .animation(Motion.gentle, value: state.cleanupToast?.id)
             .padding(.top, 53)
         }
+        // The one float layer: every tip and menu draws here, over the columns, from the anchors
+        // the triggers publish.
+        .consoleFloatLayer()
         // ⌘F while the Console is key: the rail's search (the window handles ⌘W ⌘. ⌘K ⌘P itself).
         .background {
             Button("") { withAnimation(Motion.gentle) { session.openSearch() } }
@@ -403,7 +411,7 @@ struct CleanupToastView: View {
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .fixedSize()
                     .layoutPriority(1)
-                    .help("Undo (⌘Z)")
+                    .consoleHelp(HelpCopy.undoMove)
             }
             Button(action: dismiss) {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
@@ -411,7 +419,6 @@ struct CleanupToastView: View {
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
             .fixedSize()
             .layoutPriority(1)
-            .help("Dismiss")
             .accessibilityLabel("Dismiss")
         }
         .padding(EdgeInsets(top: 5, leading: 8, bottom: 5, trailing: 6))
@@ -450,14 +457,14 @@ struct ConsoleHeader: View, Equatable {
                         .contentTransition(.opacity)
                         .animation(Motion.fade, value: phase)
                 }
-                .help(meta.hint)
+                .consoleHelp(meta.hint)
                 .accessibilityElement(children: .combine)
                 Spacer()
                 Circle()
                     .fill(connected ? ConsoleTheme.acting : ConsoleTheme.muted)
                     .frame(width: 6, height: 6)
                     .animation(Motion.fade, value: connected)
-                    .help(connected ? "Connected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)") : "Disconnected" + (daemonDetail.isEmpty ? "" : " · \(daemonDetail)"))
+                    .consoleHelp(id: ConsoleRootWords.connectionTip, card: .connection(connected: connected, detail: daemonDetail), edge: .below)
                     .accessibilityLabel(connected ? "Connected" : "Disconnected")
             }
             .padding(.leading, 84) // room for the traffic lights in the transparent titlebar

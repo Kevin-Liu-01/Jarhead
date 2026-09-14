@@ -22,7 +22,7 @@ struct OnboardingWelcomeStep: View, Equatable {
             OnboardingStatusLine(color: connected ? ConsoleTheme.acting : ConsoleTheme.muted,
                                  text: connected ? "Daemon connected" : "Daemon not connected",
                                  detail: daemonDetail)
-            OnboardingNote("Seven short steps. Everything here is also in the status menu under Set Up…")
+            ConsoleHint("Seven short steps. Everything here is also in the status menu under Set Up…", indent: 0)
         }
     }
 }
@@ -49,7 +49,6 @@ struct OnboardingVoiceStep: View, Equatable {
     @State private var key = ""
     @State private var pending = false
     @State private var pendingToken = 0
-    @FocusState private var keyFocused: Bool
 
     private var draft: String { key.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSave: Bool { !draft.isEmpty }
@@ -73,24 +72,16 @@ struct OnboardingVoiceStep: View, Equatable {
             OnboardingHead("Voice",
                            "GPT-Live-1 does the listening and talking, in English. It needs an OpenAI key; you pay only while Jarhead is awake.")
             VStack(alignment: .leading, spacing: 10) {
-                OnboardingFormRow("OpenAI key") {
-                    HStack(spacing: 8) {
-                        SecureField("sk-…", text: $key)
-                            .consoleField(mono: true, height: onboardingRowHeight, focused: keyFocused)
-                            .focused($keyFocused)
-                            .onSubmit(save)
-                            .accessibilityLabel("OpenAI API key")
-                        Button("Save & check", action: save)
-                            .buttonStyle(ConsoleButtonStyle(kind: .ghost))
-                            .disabled(!canSave)
-                    }
+                // The key row's three faces (field + Save & check · Saving… · on file + Change) and the
+                // env var it went to are the kit's `ConsoleSecretRow`; the typed key stays this step's
+                // draft so Continue saves it.
+                setupRow("OpenAI key") {
+                    ConsoleSecretRow(placeholder: "sk-…", onFile: setup.secrets.openai, saving: pending, envVar: OnboardingWords.openAIKey,
+                                     statusColor: statusMeta.color, statusText: keyStatusText, verb: OnboardingWords.saveAndCheck,
+                                     accessibilityLabel: "OpenAI API key", draft: $key, save: save)
                 }
-                OnboardingFormRow("") {
+                setupRow("") {
                     HStack(spacing: 14) {
-                        if setup.secrets.openai {
-                            OnboardingNote("A key is on file.")
-                                .transition(Motion.appear)
-                        }
                         Button {
                             actions.openURL(URL(string: "https://platform.openai.com/api-keys")!)
                         } label: {
@@ -100,24 +91,24 @@ struct OnboardingVoiceStep: View, Equatable {
                             }
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, height: 22, small: true))
-                        .help("platform.openai.com/api-keys")
+                        .consoleHelp("platform.openai.com/api-keys")
                     }
                 }
                 // The same rows as Settings › Audio: "<Name> · English" (no invented character
                 // notes — none can be verified without a paid session), the accent segments, and
                 // the promise. Language shows nowhere as a menu: English is the only one offered.
-                OnboardingFormRow("Voice") {
-                    ConsoleMenuField(value: voice, options: voiceOptions, title: ConsoleTheme.voiceLabel,
-                                     pick: { actions.send(.setSettings(SettingsPatch(voice: $0))) })
-                        .frame(height: onboardingRowHeight)
-                        .accessibilityLabel("Voice: \(ConsoleTheme.voiceLabel(voice))")
+                setupRow("Voice") {
+                    ConsoleMenuField(value: voice, options: voiceOptions, title: VoiceWords.name,
+                                     pick: { actions.send(.setSettings(SettingsPatch(voice: $0))) },
+                                     id: OnboardingWords.voiceMenu, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
+                                     detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
                 }
-                OnboardingFormRow("Accent") {
+                setupRow("Accent") {
                     VStack(alignment: .leading, spacing: 5) {
-                        OnboardingSegments(value: accent, options: accentOptions, title: ConsoleTheme.accentLabel,
-                                           pick: { actions.send(.setSettings(SettingsPatch(accent: $0))) })
-                            .accessibilityLabel("Accent: \(ConsoleTheme.accentLabel(accent))")
-                        OnboardingNote("Always English; a change is heard at the next wake.")
+                        ConsoleSegments(value: accent, options: accentOptions, title: ConsoleTheme.accentLabel,
+                                        pick: { actions.send(.setSettings(SettingsPatch(accent: $0))) },
+                                        accessibilityLabel: OnboardingWords.accentLabel, size: .row, fixedSize: true)
+                        ConsoleHint("Always English; a change is heard at the next wake.", indent: 0)
                     }
                 }
             }
@@ -127,13 +118,22 @@ struct OnboardingVoiceStep: View, Equatable {
         .animation(Motion.gentle, value: setup.secrets.openai)
         .onChange(of: setup) { pending = false }
         // A typed key is a draft: Continue saves it rather than dropping it.
-        .onChange(of: canSave) { actions.draft(canSave, canSave ? save : nil) }
+        .onChange(of: canSave) { actions.draft(canSave, canSave ? { save(draft) } : nil) }
         .task(id: pendingToken) { await OnboardingPending.expire($pending) }
     }
 
     private var status: some View {
         let s = statusMeta
         return OnboardingStatusLine(color: s.color, live: s.live, text: s.text, id: s.id, detail: s.detail)
+    }
+
+    /// The on-file face's word: `on file` while the key works or waits, `rejected` / `missing` otherwise.
+    private var keyStatusText: String {
+        switch setup.openaiKey {
+        case .invalid: return "rejected"
+        case .missing: return "missing"
+        case .ok, .unchecked: return OnboardingWords.keyOnFile
+        }
     }
 
     private struct Meta { let color: Color; let live: Bool; let text: String; var id: String? = nil; var detail: String? = nil }
@@ -151,14 +151,13 @@ struct OnboardingVoiceStep: View, Equatable {
         }
     }
 
-    private func save() {
-        let k = draft
+    private func save(_ typed: String) {
+        let k = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !k.isEmpty else { return }
-        actions.send(.setSecrets(["OPENAI_API_KEY": k]))
+        actions.send(.setSecrets([OnboardingWords.openAIKey: k]))
         key = ""
         pending = true
         pendingToken += 1
-        keyFocused = false
     }
 }
 
@@ -201,7 +200,8 @@ struct OnboardingBrainStep: View, Equatable {
     @State private var pendingToken = 0
     @FocusState private var focus: Field?
 
-    private enum Field: Hashable { case model, baseUrl, secret }
+    /// The Server row still binds focus from outside (`LocalServerRow`); the other fields own theirs.
+    private enum Field: Hashable { case baseUrl }
 
     /// The model to suggest when a kind is picked; "" leaves it to the engine.
     static func defaultModel(_ kind: BrainKind) -> String {
@@ -220,22 +220,22 @@ struct OnboardingBrainStep: View, Equatable {
         VStack(alignment: .leading, spacing: 16) {
             OnboardingHead("Brain", "The brain thinks and acts. Pick whatever you have; swap any time.")
             VStack(alignment: .leading, spacing: 6) {
-                OnboardingFormRow("Brain") {
+                setupRow("Brain") {
                     VStack(alignment: .leading, spacing: 5) {
-                        ConsoleMenuField(value: kind, options: BrainKind.allCases, title: { $0.label }, pick: choose)
-                            .frame(height: onboardingRowHeight)
-                            .accessibilityLabel("Brain: \(kind.label)")
-                        OnboardingNote(kind.needs)
-                            .contentTransition(.opacity)
+                        // Every kind's requirement on its row and in the foot; the pick's own line under the field.
+                        ConsoleMenuField(value: kind, options: BrainKind.allCases, title: { $0.label }, pick: choose,
+                                         id: OnboardingWords.brainMenu, label: OnboardingWords.brainLabel, fieldBadge: BrainWords.fieldBadge,
+                                         badge: BrainWords.badge, meta: BrainWords.needs, metaMono: false, foot: BrainWords.needs)
+                        ConsoleHint(kind.needs, indent: 0)
                     }
                 }
                 // The fields a kind wants arrive and leave with the pick (Motion.appear); the
                 // Apply row below them moves to make room.
                 fields
                     .transition(Motion.appear)
-                OnboardingFormRow("") {
-                    Button("Apply", action: apply)
-                        .buttonStyle(ConsoleButtonStyle(kind: .ghost))
+                setupRow("") {
+                    Button(OnboardingWords.apply, action: apply)
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: onboardingRowHeight))
                 }
             }
             .animation(Motion.gentle, value: kind)
@@ -295,34 +295,33 @@ struct OnboardingBrainStep: View, Equatable {
             // A server with fitting models is up: say so once, under the login line. Automatic never
             // picks it on its own — a running server is not a choice Kevin made.
             if let nudge = LocalBrainWords.autoNudge(setup.local) {
-                OnboardingFormRow("") { OnboardingNote(nudge) }
+                setupRow("") { ConsoleHint(nudge, indent: 0) }
                     .transition(Motion.appear)
             }
         case .local:
             // The server as discovery found it, the models it lists as a menu (a plain id field
             // while nothing answers), the Server row only for a pin or when nothing was found, and
             // the way to ollama.com — a page the app opens; it installs nothing.
-            OnboardingFormRow("") {
+            setupRow("") {
                 VStack(alignment: .leading, spacing: 6) {
                     LocalStatusNote(status: setup.local)
                     if !setup.local.reachable { openOllamaRow }
                 }
             }
             if setup.local.reachable {
-                OnboardingFormRow("Model") {
-                    LocalModelMenu(status: setup.local, saved: trimmed(model), pick: { model = $0 })
-                        .frame(height: onboardingRowHeight)
+                setupRow("Model") {
+                    LocalModelMenu(status: setup.local, saved: trimmed(model), id: LocalBrainWords.setupMenuId, pick: { model = $0 })
                 }
             } else {
                 modelRow
             }
             if LocalBrainWords.serverRowShown(status: setup.local, pin: baseUrl) {
-                OnboardingFormRow("Server") {
+                setupRow("Server") {
                     VStack(alignment: .leading, spacing: 5) {
                         LocalServerRow(status: setup.local, text: $baseUrl, focused: focus == .baseUrl, height: onboardingRowHeight)
                             .focused($focus, equals: .baseUrl)
                             .onSubmit(apply)
-                        OnboardingNote("Empty finds Ollama, LM Studio or llama.cpp on this Mac; a root pins one.")
+                        ConsoleHint("Empty finds Ollama, LM Studio or llama.cpp on this Mac; a root pins one.", indent: 0)
                     }
                 }
             }
@@ -335,18 +334,15 @@ struct OnboardingBrainStep: View, Equatable {
             modelRow
         case .openaiResponses:
             modelRow
-            OnboardingFormRow("Key") {
-                OnboardingNote(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key — set one in the Voice step.")
+            setupRow("Key") {
+                ConsoleHint(setup.secrets.openai ? "Uses the voice key from the previous step." : "Uses the voice key — set one in the Voice step.", indent: 0)
             }
         case .openaiCompatible:
-            OnboardingFormRow("Base URL") {
+            setupRow("Base URL") {
                 VStack(alignment: .leading, spacing: 5) {
-                    TextField("http://localhost:11434", text: $baseUrl)
-                        .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .baseUrl)
-                        .focused($focus, equals: .baseUrl)
-                        .onSubmit(apply)
-                        .accessibilityLabel("Base URL")
-                    OnboardingNote("The server root, with or without /v1. OpenRouter: https://openrouter.ai/api")
+                    ConsoleField(text: $baseUrl, placeholder: "http://localhost:11434", size: .row, mono: true,
+                                 accessibilityLabel: "Base URL", onCommit: apply)
+                    ConsoleHint("The server root, with or without /v1. OpenRouter: https://openrouter.ai/api", indent: 0)
                 }
             }
             modelRow
@@ -355,7 +351,7 @@ struct OnboardingBrainStep: View, Equatable {
     }
 
     private func loginRow(_ text: String) -> some View {
-        OnboardingFormRow("Login") { OnboardingNote(text) }
+        setupRow("Login") { ConsoleHint(text, indent: 0) }
     }
 
     /// Ghost "Open ollama.com": the download page in the browser. The app never installs.
@@ -369,26 +365,21 @@ struct OnboardingBrainStep: View, Equatable {
             }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-        .help("ollama.com/download — install and open it yourself, then Check")
+        .consoleHelp("ollama.com/download — install and open it yourself, then Check")
     }
 
+    /// The key's three faces; the env var it goes to under the on-file face; the typed key stays
+    /// this step's draft so Apply (and Continue) send it.
     private func secretRow(_ label: String, placeholder: String) -> some View {
-        OnboardingFormRow(label) {
-            SecureField(secretOnFile ? "a key is on file · paste to replace" : placeholder, text: $secret)
-                .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .secret)
-                .focused($focus, equals: .secret)
-                .onSubmit(apply)
-                .accessibilityLabel("\(label) (secret)")
+        setupRow(label) {
+            ConsoleSecretRow(placeholder: placeholder, onFile: secretOnFile, envVar: secretKey, verb: OnboardingWords.apply,
+                             accessibilityLabel: "\(label) (secret)", draft: $secret, save: { _ in apply() })
         }
     }
 
     private var modelRow: some View {
-        OnboardingFormRow("Model") {
-            TextField("model id", text: $model)
-                .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .model)
-                .focused($focus, equals: .model)
-                .onSubmit(apply)
-                .accessibilityLabel("Model id")
+        setupRow("Model") {
+            ConsoleField(text: $model, placeholder: "model id", size: .row, mono: true, accessibilityLabel: "Model id", onCommit: apply)
         }
     }
 
@@ -512,7 +503,7 @@ struct OnboardingAgentsStep: View, Equatable {
             }
             if agents.isEmpty {
                 // The connectors are there; the sessions are not. Say what to do, once.
-                OnboardingNote("No sessions on this Mac right now. Start one in a terminal and refresh.")
+                ConsoleHint("No sessions on this Mac right now. Start one in a terminal and refresh.", indent: 0)
                     .transition(Motion.appear)
             } else {
                 HStack(spacing: 6) {
@@ -573,7 +564,7 @@ struct OnboardingDoneStep: View, Equatable {
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-            OnboardingNote("Say the wake word, or click the orb, and Jarhead is listening.")
+            ConsoleHint("Say the wake word, or click the orb, and Jarhead is listening.", indent: 0)
         }
     }
 

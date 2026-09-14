@@ -13,6 +13,14 @@ import SwiftUI
 // mono log: time · type · text.
 
 private let iconGap: CGFloat = 8
+
+enum JarheadConversationWords {
+    static let nothingHeard = "Nothing heard"
+    static let metaTip = "chain.meta."
+    static let chainTip = "chain.sessions."
+    static let heardHeight: CGFloat = 20
+}
+
 private let stampWidth: CGFloat = 56
 private let stampGap: CGFloat = 10
 private let kindWidth: CGFloat = 68
@@ -123,19 +131,19 @@ private struct JarheadConversationHeader: View {
             .joined(separator: " · ")
     }
 
-    private var metaHelp: String {
-        var lines = ["Started \(ConsoleFormat.fullDate(chain.startedAt))"]
-        if let end = chain.endedAt { lines.append("Closed \(ConsoleFormat.fullDate(end)) · \(ended)") } else { lines.append("Never closed") }
-        lines.append("\(TransportFormat.minutes(chain.usageSeconds)) billed · \(ConsoleFormat.messageCount(chain.messages)) · \(chain.delegations) delegation\(chain.delegations == 1 ? "" : "s")")
-        return lines.joined(separator: "\n")
+    /// The strip's figures whole, as a card: every date entire, the counts in mono.
+    private var metaCard: ConsoleTipCard {
+        let closed = chain.endedAt.map { ConsoleFormat.fullDate($0) + ConsoleTipWords.dot + ended } ?? ConsoleTipWords.neverClosed
+        return ConsoleTipCard(title: title, status: ended,
+                              foot: [(ConsoleTipWords.started, ConsoleFormat.fullDate(chain.startedAt)), (ConsoleTipWords.closed, closed),
+                                     (ConsoleTipWords.billed, TransportFormat.minutes(chain.usageSeconds)),
+                                     (ConsoleTipWords.messages, "\(chain.messages)"), (ConsoleTipWords.delegations, "\(chain.delegations)")])
     }
 
     private var resumed: String? {
         guard chain.resumes > 0, let root = chain.root else { return nil }
         return "resumed ×\(chain.resumes) from \(ConsoleFormat.shortId(root.id))"
     }
-
-    private var chainHelp: String { chain.sessions.map { ConsoleFormat.shortId($0.id) }.joined(separator: " → ") }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,12 +155,11 @@ private struct JarheadConversationHeader: View {
                     .font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(2)
-                    .help(chain.name.map { "\($0)\n\(chain.title.isEmpty ? "Nothing heard" : chain.title)" } ?? (chain.title.isEmpty ? "Nothing heard in this conversation" : chain.title))
                     .contentTransition(.opacity)
                     .animation(Motion.fade, value: title)
                 if chain.pinned {
                     ConsoleIcon(name: "pin.fill", size: 11)
-                        .help("Pinned")
+                        .consoleHelp(HelpCopy.pinned)
                         .accessibilityLabel("Pinned")
                         .transition(.opacity)
                 }
@@ -163,11 +170,20 @@ private struct JarheadConversationHeader: View {
                 Button(action: close) { Label("Stream", systemImage: "chevron.left") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
-                    .help("Back to the live stream")
+                    .consoleHelp(HelpCopy.backStream)
                     .accessibilityLabel("Back to the live stream")
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
+            // A named conversation keeps what was heard as its second line (it was the title's tooltip).
+            if chain.name?.isEmpty == false {
+                Text(chain.title.isEmpty ? JarheadConversationWords.nothingHeard : chain.title)
+                    .font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+                    .frame(height: JarheadConversationWords.heardHeight)
+            }
             ConsoleHairline()
 
             HStack(spacing: 12) {
@@ -176,7 +192,7 @@ private struct JarheadConversationHeader: View {
                     .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(1)
-                    .help(metaHelp)
+                    .consoleHelp(id: JarheadConversationWords.metaTip + chain.id, card: metaCard, edge: .below)
                     .contentTransition(ConsoleMotion.numeric)
                     .animation(Motion.snappy, value: meta)
                 Spacer(minLength: 0)
@@ -190,7 +206,7 @@ private struct JarheadConversationHeader: View {
                             .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                             .lineLimit(1)
                     }
-                    .help(chainHelp)
+                    .consoleHelp(id: JarheadConversationWords.chainTip + chain.id, card: .chain(sessionIds: chain.sessions.map(\.id)), edge: .below)
                 }
                 // Where it sits, and the way back: never a Delete here or anywhere.
                 if let placed {
@@ -199,7 +215,7 @@ private struct JarheadConversationHeader: View {
                         Text(placed.word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
                         Button("Restore", action: restore)
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
-                            .help(chain.isTrashed ? "Back from the Trash" : "Back from Archived")
+                            .consoleHelp(chain.isTrashed ? HelpCopy.restoreTrash : HelpCopy.restoreArchive)
                     }
                     .layoutPriority(1)
                     .transition(Motion.appear)
@@ -270,7 +286,7 @@ private struct JarheadSegOption: View {
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: on)
-        .help(title == "Log" ? "Every ledger row of this conversation" : "The conversation as the stream showed it")
+        .consoleHelp(title == "Log" ? HelpCopy.logView : HelpCopy.conversationView)
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
@@ -495,7 +511,7 @@ private struct JarheadLogRow: View {
             Text(ConsoleFormat.time(line.at))
                 .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
                 .frame(width: stampWidth, alignment: .trailing)
-                .help(ConsoleFormat.fullDate(line.at))
+                .consoleHelp(ConsoleFormat.fullDate(line.at))
             Text(line.kind)
                 .font(ConsoleTheme.mono(11)).foregroundStyle(line.tone == .problem ? ConsoleTheme.error : ConsoleTheme.titanium)
                 .lineLimit(1)

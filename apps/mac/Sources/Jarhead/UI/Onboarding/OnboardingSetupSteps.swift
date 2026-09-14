@@ -33,7 +33,7 @@ struct OnboardingPermissionsStep: View, Equatable {
                 if !running {
                     Button("Ask for everything") { actions.permissions.requestAll() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
-                        .help("Required kinds first, then the rest; each dialog is awaited before the next")
+                        .consoleHelp("Required kinds first, then the rest; each dialog is awaited before the next")
                         .disabled(permissions.isEmpty)
                         .transition(.opacity)
                 }
@@ -41,13 +41,13 @@ struct OnboardingPermissionsStep: View, Equatable {
             if let sweep {
                 sweepBox(sweep).transition(Motion.appear)
             }
-            group("required · \(required.filter { $0.grant == .granted }.count) of \(required.count) granted", required)
-            group("more it can use · \(optional.filter { $0.grant == .granted }.count) of \(optional.count) granted", optional)
+            group(OnboardingWords.requiredFold, OnboardingWords.requiredHead, required, defaultOpen: true)
+            group(OnboardingWords.moreFold, OnboardingWords.moreHead, optional, defaultOpen: false)
             // Grants are re-read from a fresh process every few seconds and the hands
             // helper restarts itself when one appears, so nothing here needs a relaunch.
-            OnboardingNote("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.")
+            ConsoleHint("Switches take effect here within a few seconds — no relaunch. \(granted) of \(max(permissions.count, 1)) granted.", indent: 0)
             if permissions.contains(where: { ($0.kind == .accessibility || $0.kind == .screenRecording) && $0.grant != .granted }) {
-                OnboardingNote("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.")
+                ConsoleHint("Already switched on in System Settings but still not ready here? That row was made by an earlier build: remove Jarhead from the list with the − button, press Request, and switch the new row on.", indent: 0)
                     .transition(Motion.appear)
             }
         }
@@ -57,22 +57,24 @@ struct OnboardingPermissionsStep: View, Equatable {
         .animation(Motion.gentle, value: sweep)
     }
 
-    /// A titled box of rows.
-    private func group(_ title: String, _ rows: [PermissionInfo]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(ConsoleTheme.sans(11, .medium)).foregroundStyle(ConsoleTheme.titanium)
-                .padding(.leading, 2)
-                .contentTransition(.opacity)
+    /// A fold of rows: `required 3 of 7` open, `more it can use 3 of 9` folded with its count and
+    /// the missing ones as one badge — so 620 × 520 holds the required set (the design's Setup row).
+    private func group(_ id: String, _ title: String, _ rows: [PermissionInfo], defaultOpen: Bool) -> some View {
+        let granted = rows.filter { $0.grant == .granted }.count
+        return ConsoleDisclosure(id: id, title: title, count: ConsoleDisclosureWords.ofTotal(granted, rows.count),
+                                 summary: Self.summary(missing: rows.count - granted), size: .group, defaultOpen: defaultOpen,
+                                 siblings: [OnboardingWords.requiredFold, OnboardingWords.moreFold]) {
             VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.kind) { i, info in
                     if i > 0 { ConsoleHairline(weight: .row) }
                     row(info)
                 }
             }
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
         }
     }
+
+    /// The folded head's one badge: `[4 missing]`, or nothing when every row is granted.
+    static func summary(missing: Int) -> [ConsoleDisclosureSummaryItem] { missing > 0 ? [.badge(.missing(missing))] : [.badge(.allOk)] }
 
     /// The sweep's one line and its controls; while a step waits on the user (a dialog
     /// that returned at once, a System Settings pane), what to do and the Open Settings /
@@ -109,10 +111,10 @@ struct OnboardingPermissionsStep: View, Equatable {
                     Spacer(minLength: 8)
                     Button { actions.permissions.openSettings(kind) } label: { Label(waiting ? "Open Settings" : "Open again", systemImage: "gearshape.fill") }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help(waiting ? "Open the System Settings pane" : "Open that System Settings pane again")
+                        .consoleHelp(waiting ? "Open the System Settings pane" : "Open that System Settings pane again")
                     Button("Next") { actions.permissions.sweepNext() }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                        .help(waiting ? "Skip it for now" : "On to the next pane")
+                        .consoleHelp(waiting ? "Skip it for now" : "On to the next pane")
                 }
             }
             if sweep.dryRun {
@@ -154,12 +156,7 @@ struct OnboardingPermissionsStep: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(info.label).font(ConsoleTheme.sans(13)).foregroundStyle(ConsoleTheme.fg)
-                    if info.required {
-                        Text("required").font(ConsoleTheme.mono(9)).foregroundStyle(ConsoleTheme.fg3)
-                            .padding(.horizontal, 5).frame(height: 15)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
-                            .accessibilityLabel("required")
-                    }
+                    if info.required { ConsoleBadge(word: .word(OnboardingWords.required)) }
                 }
                 .frame(height: 20)
                 Text(info.why).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
@@ -183,14 +180,14 @@ struct OnboardingPermissionsStep: View, Equatable {
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                 .disabled(running)
-                .help(opensSettings ? "Open System Settings on the pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")"
+                .consoleHelp(opensSettings ? "Open System Settings on the pane\(info.kind == .fullDiskAccess ? " and reveal Jarhead.app for dragging in" : "")"
                       : "Ask for \(info.label.lowercased()) access")
                 .frame(height: 20)
                 .transition(ConsoleMotion.arriveLeave)
             }
             ConsoleDot(color: meta.color, live: asking, size: 6)
                 .frame(width: 20, height: 20)
-                .help(asking ? "asking…" : meta.label)
+                .consoleHelp(asking ? "asking…" : meta.label)
                 .accessibilityLabel(asking ? "asking" : meta.label)
         }
         .padding(.horizontal, 10)
@@ -238,66 +235,41 @@ struct OnboardingWakeStep: View, Equatable {
     @State private var phrasesDraft = ""
     @State private var passphrase = ""
     @State private var passphraseError: String?
-    @FocusState private var focus: Field?
-
-    private enum Field: Hashable { case phrases, passphrase }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             OnboardingHead("Wake",
                            "A phrase wakes Jarhead without a click. It then asks you to prove it's you before the paid session opens.")
             VStack(alignment: .leading, spacing: 6) {
-                OnboardingFormRow("Wake word") {
-                    HStack(spacing: 10) {
-                        Toggle("", isOn: Binding(get: { wake.enabled }, set: { on in patch { $0.enabled = on } }))
-                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
-                            .tint(ConsoleTheme.accent)
-                            .accessibilityLabel("Wake word")
-                        Text(wake.enabled ? "On" : "Off").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
-                    }
+                // `On | Off` as a word, with the consequence beside it — never a blue switch.
+                setupRow(OnboardingWords.wakeLabel) {
+                    ConsoleToggle(on: wake.enabled, hint: OnboardingWords.wakeHint, id: OnboardingWords.wakeToggle,
+                                  accessibilityLabel: OnboardingWords.wakeLabel) { on in patch { $0.enabled = on } }
                 }
-                OnboardingFormRow("Phrases") {
-                    TextField("jarhead, hey jarhead", text: $phrasesDraft)
-                        .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .phrases)
-                        .focused($focus, equals: .phrases)
-                        .onSubmit { commitPhrases(); focus = nil }
-                        .onChange(of: focus) { if focus != .phrases { commitPhrases() } }
-                        .accessibilityLabel("Wake phrases, comma separated")
+                setupRow("Phrases") {
+                    ConsoleField(text: $phrasesDraft, placeholder: "jarhead, hey jarhead", size: .row, mono: true,
+                                 accessibilityLabel: "Wake phrases, comma separated", onCommit: commitPhrases)
                 }
-                OnboardingFormRow("Prove it's you") {
-                    // Segments when they fit the row; the Console's menu field when the window is narrow.
+                setupRow(OnboardingWords.authLabel) {
+                    // Segments when they fit the row; the Console's dropdown when the window is narrow.
                     ViewThatFits(in: .horizontal) {
-                        OnboardingSegments(value: wake.auth, options: WakeAuth.allCases, title: OnboardingWakeStep.shortAuth,
-                                           pick: { auth in patch { $0.auth = auth } })
+                        ConsoleSegments(value: wake.auth, options: WakeAuth.allCases, title: OnboardingWakeStep.shortAuth,
+                                        pick: { auth in patch { $0.auth = auth } }, accessibilityLabel: OnboardingWords.authLabel, size: .row, fixedSize: true)
                         ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
-                                         pick: { auth in patch { $0.auth = auth } })
+                                         pick: { auth in patch { $0.auth = auth } }, id: OnboardingWords.authMenu, label: OnboardingWords.authLabel)
                     }
-                    .accessibilityLabel("Authentication: \(wake.auth.label)")
                 }
-                OnboardingFormRow("Passphrase") {
+                setupRow("Passphrase") {
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 8) {
-                            SecureField(passphraseSet ? "set · replace" : "words you can say", text: $passphrase)
-                                .consoleField(mono: true, height: onboardingRowHeight, focused: focus == .passphrase)
-                                .focused($focus, equals: .passphrase)
-                                .onSubmit(setPassphrase)
-                                .accessibilityLabel("Wake passphrase")
-                            Button("Set", action: setPassphrase)
-                                .buttonStyle(ConsoleButtonStyle(kind: .ghost))
-                                .disabled(passphraseDraft.isEmpty)
-                            if passphraseSet {
-                                Button("Clear") { actions.clearPassphrase(); passphraseError = nil }
-                                    .buttonStyle(ConsoleButtonStyle(kind: .ghost))
-                                    .transition(.opacity)
-                            }
-                        }
-                        // The verdict under the field fades in and rises; a rejection reads in red.
-                        if let e = passphraseError {
-                            Text(e).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.error)
-                                .transition(Motion.appear)
-                        } else if passphraseSet {
-                            Text("Set. Say it or type it when asked.").font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
-                                .transition(Motion.appear)
+                        // Field + Set until one is set, then `● set · Clear · Change`; a rejection is the red
+                        // ring, the shake and the red line under — the typed words stay for a second try.
+                        ConsoleSecretRow(placeholder: passphraseSet ? "set · replace" : "words you can say", onFile: passphraseSet,
+                                         statusText: OnboardingWords.passphraseSet, verb: OnboardingWords.set, error: passphraseError,
+                                         accessibilityLabel: "Wake passphrase", draft: $passphrase,
+                                         clear: passphraseSet ? { actions.clearPassphrase(); passphraseError = nil } : nil,
+                                         save: { _ in setPassphrase() })
+                        if passphraseSet, passphraseError == nil {
+                            ConsoleHint(OnboardingWords.passphraseHint, indent: 0).transition(Motion.appear)
                         }
                     }
                     .animation(Motion.gentle, value: passphraseError)
@@ -307,7 +279,7 @@ struct OnboardingWakeStep: View, Equatable {
             heardBox
         }
         .onAppear { phrasesDraft = wake.phrases.joined(separator: ", ") }
-        .onChange(of: wake.phrases) { if focus != .phrases { phrasesDraft = wake.phrases.joined(separator: ", ") } }
+        .onChange(of: wake.phrases) { phrasesDraft = wake.phrases.joined(separator: ", ") }
         // Half-typed phrases or a passphrase not yet set go out with Continue instead of vanishing.
         .onChange(of: dirty) { actions.draft(dirty, dirty ? commitAll : nil) }
     }
@@ -362,7 +334,7 @@ struct OnboardingWakeStep: View, Equatable {
                     .accessibilityLabel(heard.isEmpty ? "Nothing heard yet" : "Heard: \(heard)")
                 Spacer(minLength: 0)
             }
-            OnboardingNote("Listening happens only while Jarhead is asleep, on this Mac; nothing it hears is sent anywhere.")
+            ConsoleHint("Listening happens only while Jarhead is asleep, on this Mac; nothing it hears is sent anywhere.", indent: 0)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
@@ -420,7 +392,6 @@ struct OnboardingWakeStep: View, Equatable {
         if actions.setPassphrase(p) {
             passphrase = ""
             passphraseError = nil
-            focus = nil
         } else {
             passphraseError = "Too short. Use a few words you can say out loud."
         }

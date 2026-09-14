@@ -11,6 +11,16 @@ import ImageIO
 private let stampWidth: CGFloat = 56
 private let stampGap: CGFloat = 10
 private let iconGap: CGFloat = 8
+
+/// The stream's tip ids (`focus:` / `tipOpen:` / `hover:` in the harness; `?` pins on the composer's buttons).
+enum StreamTipWords {
+    static let goId = "stream.go"
+    static let muteId = "stream.mute"
+    static let sendId = "stream.send"
+    static let stopId = "stream.stop"
+    static let delegation = "delegation."
+    static let chip = "chip."
+}
 private let deltaWidth: CGFloat = 60
 
 struct StreamPane: View, Equatable {
@@ -138,7 +148,7 @@ private struct LedgerBanner: View {
                 Spacer()
                 Button(action: back) { Label("Live", systemImage: "bolt.fill") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                    .help("Back to the live stream")
+                    .consoleHelp(HelpCopy.backStream)
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
@@ -495,7 +505,7 @@ struct StreamFeed: View {
                     .buttonStyle(JumpPillStyle())
                     .padding(.bottom, 12)
                     .transition(ConsoleMotion.arriveLeave)
-                    .help("Jump to the latest")
+                    .consoleHelp(HelpCopy.latest)
                 }
             }
             .animation(Motion.gentle, value: tracker.showJump)
@@ -573,7 +583,7 @@ struct StreamFeed: View {
                         Label("Load earlier", systemImage: "arrow.up")
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                    .help(earlier.remaining > 0 ? "\(earlier.remaining) earlier entr\(earlier.remaining == 1 ? "y" : "ies")" : "Earlier entries")
+                    .consoleHelp(earlier.remaining > 0 ? "\(earlier.remaining) earlier entr\(earlier.remaining == 1 ? "y" : "ies")" : "Earlier entries")
                     .transition(.opacity)
                 }
             }
@@ -616,15 +626,15 @@ struct StreamFeed: View {
             } else if emptyState.go {
                 Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
-                    .help("Go (⌘P)")
+                    .consoleHelp(HelpCopy.go)
             } else if emptyState.undo {
                 Button(action: undo) { Label("Undo", systemImage: "arrow.uturn.backward") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 28))
-                    .help("Bring the cleared items back")
+                    .consoleHelp(HelpCopy.undoCleared)
             } else if let retry {
                 Button(action: retry) { Label("Try again", systemImage: "arrow.clockwise") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                    .help("Ask the engine for the page again")
+                    .consoleHelp(HelpCopy.retryPage)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -683,7 +693,7 @@ private struct Stamp: View {
         Text(ConsoleFormat.time(at))
             .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
             .frame(width: stampWidth, alignment: .trailing)
-            .help(ConsoleFormat.fullDate(at))
+            .consoleHelp(ConsoleFormat.fullDate(at))
     }
 }
 
@@ -712,7 +722,7 @@ struct UtteranceRow: View {
             Stamp(at: item.at)
             ConsoleIcon(name: Self.symbol(for: item), tint: kevin ? ConsoleTheme.titanium : ConsoleTheme.speaking)
                 .padding(.leading, stampGap)
-                .help(typed ? "Typed in the Console" : (kevin ? "Said" : "Jarhead"))
+                .consoleHelp(typed ? "Typed in the Console" : (kevin ? "Said" : "Jarhead"))
                 .accessibilityLabel(typed ? "Kevin, typed" : (kevin ? "Kevin" : "Jarhead"))
             HStack(alignment: .lastTextBaseline, spacing: 3) {
                 Text(item.text.isEmpty ? "…" : item.text)
@@ -794,14 +804,14 @@ struct DelegationCard: View {
                 Text(d.request)
                     .font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
-                    .help(d.request)
                 Spacer(minLength: 8)
-                Text(ConsoleFormat.shortId(d.id)).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).help(d.liveId)
+                Text(ConsoleFormat.shortId(d.id)).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                 Text(ConsoleFormat.time(d.createdAt)).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                    .help(ConsoleFormat.fullDate(d.createdAt))
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
+            // One card for the head: the request whole, then `id · live · created` in mono.
+            .consoleHelp(id: StreamTipWords.delegation + d.id, card: .delegation(d), edge: .below)
             ConsoleHairline(weight: .row)
 
             DelegationTimeline(timings: d.timings, status: d.status, tone: meta.color)
@@ -900,10 +910,10 @@ private struct ThreadChip: View {
         .fixedSize()
         .onHover { hovering = $0 }
         .animation(ConsoleMotion.hover, value: hovering)
-        .help([thread.name, ConsoleTheme.lane(thread.lane), thread.task, thread.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") + "\nOpens its pane")
+        // The same card the rails draw for this thread (ConsoleTipCard.thread); its spoken form is the hint.
+        .consoleHelp(id: StreamTipWords.chip + thread.id, card: .thread(thread), edge: .below)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(thread.name), \(meta.label), \(ConsoleTheme.lane(thread.lane)) lane")
-        .accessibilityHint("Opens the thread")
     }
 }
 
@@ -914,7 +924,7 @@ private struct ThreadTag: View {
     var body: some View {
         Text("[\(name)]").font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
             .lineLimit(1).fixedSize()
-            .help("\(name)'s step")
+            .consoleHelp("\(name)'s step")
             .accessibilityLabel("by \(name)")
     }
 }
@@ -1001,7 +1011,7 @@ private struct StepDelta: View {
         Text(ConsoleFormat.delta(ms))
             .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
             .frame(width: deltaWidth, alignment: .trailing)
-            .help(ConsoleFormat.time(at))
+            .consoleHelp(ConsoleFormat.time(at))
     }
 }
 
@@ -1108,10 +1118,10 @@ private struct ConfirmButtons: View {
         HStack(spacing: 6) {
             Button("Allow") { actions.send(.threadAnswer(threadId: threadId, yes: true)) }
                 .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 22, small: true))
-                .help("Yes — a click, never Return")
+                .consoleHelp(HelpCopy.allow)
             Button("Deny") { actions.send(.threadAnswer(threadId: threadId, yes: false)) }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                .help("No — the question is dropped")
+                .consoleHelp(HelpCopy.deny)
         }
         .fixedSize()
         .layoutPriority(1)
@@ -1142,7 +1152,7 @@ struct ToolStepRow: View {
                         Text(tool.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
                             .lineLimit(1).truncationMode(.tail).layoutPriority(1)
                         Circle().fill(tool.ok ? ConsoleTheme.acting : ConsoleTheme.error).frame(width: 5, height: 5)
-                            .help(tool.ok ? "ok" : "failed")
+                            .consoleHelp(tool.ok ? "ok" : "failed")
                             .accessibilityLabel(tool.ok ? "ok" : "failed")
                         Text(ConsoleFormat.ms(tool.ms)).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                             .lineLimit(1).layoutPriority(1)
@@ -1361,7 +1371,7 @@ struct ComposerBar: View {
                         .animation(Motion.fade, value: connecting)
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: AppState.transportFilled(for: phase) ? .primary : .ghost, iconOnly: true, height: 32))
-                .help(look.help + " (⌘P)")
+                .consoleHelp(look.help, key: HelpCopy.go.key, id: StreamTipWords.goId)
                 .accessibilityLabel(transportWord)
 
                 Button { actions.send(muted ? .unmute : .mute) } label: {
@@ -1371,7 +1381,7 @@ struct ComposerBar: View {
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
                 .disabled(!inSession)
-                .help(muted ? "Unmute" : "Mute")
+                .consoleHelp(muted ? HelpCopy.unmute : HelpCopy.mute, id: StreamTipWords.muteId)
                 .accessibilityLabel(muted ? "Unmute" : "Mute")
 
                 TextField(placeholder, text: $text)
@@ -1385,7 +1395,7 @@ struct ComposerBar: View {
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, iconOnly: true, height: 32))
                 .disabled(!hasText)
-                .help("Send (Return)")
+                .consoleHelp(HelpCopy.send, id: StreamTipWords.sendId)
                 .accessibilityLabel("Send")
 
                 Button(action: actions.stop) {
@@ -1395,7 +1405,7 @@ struct ComposerBar: View {
                     }
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: stopHot || stopFlashing ? .danger : .ghost, height: 32))
-                .help("Stop everything — close the session, sleep (⌘.)")
+                .consoleHelp(HelpCopy.stopAll, id: StreamTipWords.stopId)
                 .accessibilityLabel("Stop")
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))

@@ -83,6 +83,10 @@ final class ConsoleSession: ObservableObject {
     @Published var ledgerDay: String?
     @Published var ledgerEntries: [StreamEntry] = []
     @Published var ledgerStats: LedgerStats?
+    /// Every day the ledger has read this session, by day: the Ledger rail prints a day's figures
+    /// on its row once they are known and the month head sums them (the wire returns no per-day
+    /// totals; a `ledger.days` totals message is a follow-up). Filled by `pick(day:)`.
+    @Published private(set) var ledgerDayStats: [String: LedgerStats] = [:]
 
     @Published var lightbox: ConsoleLightboxItem?
 
@@ -397,8 +401,16 @@ final class ConsoleSession: ObservableObject {
         // already reset the flag, or a newer pick owns it now.
         guard ledgerDay == day else { return }
         ledgerEntries = StreamBuilder.fromLedger(rows)
-        ledgerStats = StreamBuilder.stats(rows)
+        let stats = StreamBuilder.stats(rows)
+        ledgerStats = stats
+        ledgerDayStats[day] = stats
         ledgerLoading = false
+    }
+
+    /// The figures a month head sums: the read days' stats, and how many of the month's days are read.
+    static func monthStats(_ days: [String], in cache: [String: LedgerStats]) -> (read: Int, billedSeconds: Double) {
+        let read = days.compactMap { cache[$0] }
+        return (read.count, read.reduce(0) { $0 + $1.billedSeconds })
     }
 }
 
