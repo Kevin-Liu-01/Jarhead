@@ -288,7 +288,8 @@ accessibility and screen recording, which are TCC checks on the responsible proc
   traces drags and frames regions being read. Brains have `show_circle`,
   `show_arrow`, `show_rect`, `show_text`, `show_stroke` and `show_clear` to
   teach on the click-through layer; shapes fade after a few seconds.
-- **The dock is a control surface** (`UI/Orb/NotchPanel.swift`: the 360×132 island,
+- **The dock is a control surface** (`UI/Orb/NotchPanel.swift`: the 420×184 island in
+  four bands — anchor, display, control row, foot —
   one `DockContent` value in, action closures out; `OrbPanelController` builds the
   content from the snapshot and the thread store). Press `◎` on the island: the dock
   folds to the peek (`NotchDock.foldForMark`, before the overlay takes the mouse), the
@@ -297,16 +298,18 @@ accessibility and screen recording, which are TCC checks on the responsible proc
   was started from the dock, **the blob comes home** to the notch instead of loitering by
   the line (`homeAfterTrace`), and a pinned island is pinned again once it is parked.
   `▭` sends `mark.window` (the front window whole; with Jarhead's own window frontmost, a
-  toast and nothing sent). The strip shows the marks as 30×22 thumbnails — a dithered
+  toast and nothing sent). The display shows pending marks as 84×60 films — a dithered
   skeleton while the crop is on its way, half alpha once used — with a `×` (`mark.remove
-  {id}`), Clear (`mark.clear`) and Ask, which sends "What did I circle?" (or "What's in
-  this window?"), or circles first when nothing is pending. Each live thread is a chip with
-  its own Stop (`thread.stop`), and the asking one's question sits on the line with Allow /
-  Deny (`thread.answer`; Return never answers). `⌥⇧Return` opens the Say field (`say-text`;
-  asleep, the engine's `typedWakes` rule decides). Sleep sends `sleep {cause:"dock"}`. The
-  peek carries at most four glance chips — question, marks, problem, meter — and the pill
-  slot under the island ranks gate > toast > mark-landed > problem. Nothing on the dock but
-  Go (and a typed line under `typedWakes`) opens a paid session.
+  {id}`), Clear (`mark.clear`) and Ask in the control row's strip; Ask sends "What did I
+  circle?" (or "What's in this window?"), or circles first when nothing is pending. Each
+  live thread is a tile with its own Stop (`thread.stop`; a chip line at three or more),
+  and the asking one's question is the hero with Allow / Deny under it (`thread.answer`;
+  Return never answers). `⌥⇧Return` gives the Say box key (`say-text`; asleep, the
+  engine's `typedWakes` rule decides). Sleep sends `sleep {cause:"dock"}`. The peek
+  carries at most four glance chips — question, marks, problem, meter — and the pill slot
+  under the island ranks gate > toast > mark-landed; a problem is the foot row with its
+  remedy while the island is open, never a pill. Nothing on the dock but Go (and a typed
+  line under `typedWakes`) opens a paid session.
 
 The contract for all of it is in `docs/REDESIGN.md` §9.
 

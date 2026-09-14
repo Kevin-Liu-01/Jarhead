@@ -472,9 +472,11 @@ is the row's icon; the colour is the status dot's ring and the conversation head
 - **The notch island is one ink shape** — the notch's column through the menu bar,
   concave fillets flaring onto the island's top edge, convex 18 pt top corners,
   12 pt bottom corners — carrying the app icon's dithered orb gradient pooling out
-  of the black notch (`UI/Orb/NotchInk.swift` over `UI/Dither.swift`). The dot
-  left of the phase word is the transport: a 22 pt circle, play while asleep or
-  paused, pause while awake, ellipsis while connecting; Stop and Mute sit right.
+  of the black notch (`UI/Orb/NotchInk.swift` over `UI/Dither.swift`). Open, the
+  420×184 island is four bands — anchor, display, control row, foot — never stacked
+  rows. Go at the anchor's foot is the transport: a 22 pt ring in the phase colour,
+  play while asleep or paused, pause while awake, ellipsis while connecting; Stop
+  and Mute sit beside it.
 - **Every shaded surface is dithered.** One renderer, `UI/Dither.swift`
   (`Dither.gradientImage` / `coverageImage`, `Dither.Cache`, `Dither.Tiles`;
   `DitheredGradient`, `DitherWipe`, `DitherCurtain` (the pane switch: ground-coloured tiles over a plainly rendered pane, never a mask), `DitheredBar`, `DitherGlyphs`, `DitheredShadow`),

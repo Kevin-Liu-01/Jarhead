@@ -64,18 +64,23 @@
 #                     ORB_NOTCH=1: tucked asleep (`- -`), peeking awake, the island under the pointer,
 #                     then a fly and the blob staying where it worked with the notch empty.
 #                     The harness frames each notch shot as the panel plus 40 pt either side
-#                     under the menu-bar band (1152x574 @2x) with the 360x132 island centred, 720 px
-#                     wide, its bottom edge at 330 px and the pill slot under it to 382 px; the
-#                     island frames are cut to a centred README_NOTCH_CROP (HxW, default 400x800 —
-#                     the panel's 400 pt) from the top, the tucked and peek frames to
-#                     README_NOTCH_CROP_SMALL (default 270x800), so a 2-up table shows the island,
-#                     not the margin. notch-stay keeps its full frame.
-#     notch marks     notch-island-marks.png    ORB_NOTCH_MARKS + ORB_FLEET: three circled regions in the strip
-#                                               (a crop, a skeleton for the one still capturing, a used one at
-#                                               half alpha), Clear beside Ask, a chip per thread with its Stop;
-#                                               the harness names the frame notch-island-marks itself
-#     notch working   notch-island-working.png  ORB_NOTCH_PHASE=acting ORB_NOTCH_WORKING=1: the island while a
-#                                               delegation runs, "Acting · Working · 0:02". ORB_NOTCH_WORKING is
+#                     under the menu-bar band (1272x678 @2x) with the 420x184 island centred, 840 px
+#                     wide, its bottom edge at 434 px and the pill slot under it to 486 px; the
+#                     island frames are cut to a centred README_NOTCH_CROP (HxW, default 500x920 —
+#                     the panel's 460 pt) from the top, the tucked and peek frames to
+#                     README_NOTCH_CROP_SMALL (default 270x920), so a 2-up table shows the island,
+#                     not the margin. notch-stay keeps its full frame. The island is four bands:
+#                     the anchor (face, phase word, Go · Stop · Mute), the display (head, 18 pt hero,
+#                     the middle by kind), the control row (Say box, the circling strip), the foot
+#                     (meter or problem row, Console · Sleep).
+#     notch marks     notch-island-marks.png    ORB_NOTCH_MARKS + ORB_FLEET: three 84x60 films across the display
+#                                               (a crop with the amber frame, a skeleton for the one still
+#                                               capturing, a used one at half alpha), the caption at the head's
+#                                               right end, Clear joining the strip; the harness names the frame
+#                                               notch-island-marks itself
+#     notch working   notch-island-working.png  ORB_NOTCH_PHASE=acting ORB_NOTCH_WORKING=1 + ORB_NOTCH_REQUEST +
+#                                               ORB_FLEET: "Working · 0:02" in the head, the request as the hero,
+#                                               two thread tiles with their Stops. ORB_NOTCH_WORKING is
 #                                               read by NotchPanel.swift (`previewWorkingFollowsPhase`), not by
 #                                               OrbPreviewApp.swift — without it the counter is not drawn;
 #                                               ORB_NOTCH_SHOT_TAG=working names the file
@@ -100,8 +105,8 @@ OUT="$ROOT/docs/media"
 TMP="${README_SHOTS_TMP:-$MAC/.build/readme-shots}"
 MAX_W="${README_SHOTS_MAX_W:-1600}"
 MAX_BYTES="${README_SHOTS_MAX_BYTES:-600000}"
-NOTCH_CROP="${README_NOTCH_CROP:-400x800}"
-NOTCH_CROP_SMALL="${README_NOTCH_CROP_SMALL:-270x800}"
+NOTCH_CROP="${README_NOTCH_CROP:-500x920}"
+NOTCH_CROP_SMALL="${README_NOTCH_CROP_SMALL:-270x920}"
 
 ONLY=""
 SKIP_BUILD=0
@@ -286,12 +291,13 @@ if want orb; then
   place "$TMP/orb-notch/preview-blob-notch-peek.png"   notch-peek
   place "$TMP/orb-notch/preview-blob-notch-island.png" notch-island
   place "$TMP/orb-notch/preview-blob-notch-stay.png"   notch-stay
-  # The island while a delegation runs: "Acting · Working · 0:02".
+  # The island while a delegation runs: "Working · 0:02" in the head, the request as the hero, two thread tiles.
   orb notch-working ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_WORKING=1 \
+    ORB_NOTCH_REQUEST="opening the PR in Cursor" ORB_FLEET="Slack:screen:working;Spotify:background:working" \
     ORB_NOTCH_SHOT_TAG=working ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=4.5
   crop_notch "$TMP/orb-notch-working/preview-blob-notch-island-working.png"
   place "$TMP/orb-notch-working/preview-blob-notch-island-working.png" notch-island-working
-  # The circled strip and the threads' chips: three marks (oldest first: used, capturing, pending) and two threads.
+  # The films: three marks (oldest first: used, capturing, pending) as 84x60 films, the caption in the head, Clear in the strip.
   orb notch-marks ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full \
     ORB_FLEET="Slack:screen:working;Spotify:background:working" \
     ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_EXIT_AFTER=4.5

@@ -32,7 +32,7 @@ ASCII blob in the notch shows the work, and every step lands in an append-only l
 - 🗂️ **Knows your agents.** The Console lists every Claude Code, Codex and other coding-agent session on the Mac with its own mark. Step into one, watch it grow live, answer its Allow / Deny, talk to it.
 - 🖍️ **Sees what you circle.** `⌥⇧C`, draw around anything. The mark snaps to the largest control under it and every brain gets the image with the task.
 - 👾 **Shows its work.** The blob flies to where the hands act and stays where it worked. Brains draw by hand: the blob becomes the pen and drags the line. Jelly drag, sticky walls, momentum, a face per state (`- -` `O O` `^ ^` `u u` `x x`).
-- 📍 **Lives in the notch.** Tucked asleep, peeking awake, a Dynamic-Island-style island under the pointer. The island is a control surface: the transport, Stop and Mute; Circle (`◎`) and Window (`▭`) to mark the screen from the notch; the circled strip with a `×` per thumbnail, Clear and Ask; a chip per live thread with its own Stop, and Allow / Deny when one asks; a Say field (`⌥⇧Return`); the meter; Console and Sleep. The peek carries glance chips (`✋ Slack asks`, `◎2`, a problem's glyph, `2.3 min`), never sentences. Drag the blob into the notch and it goes to sleep.
+- 📍 **Lives in the notch.** Tucked asleep, peeking awake, a Dynamic-Island-style island under the pointer. The island is a composed control surface in four bands: the anchor (the face, the phase word, Go · Stop · Mute), the display (one 18 pt line — what Jarhead is doing, what a thread asks, what you last said — with thread tiles, Allow / Deny, or films of what you circled under it), the control row (a Say box, `⌥⇧Return`; Clear · Circle `◎` · Window `▭` · Ask as one strip), and the foot (the meter as a bar with mono figures, or a problem with its remedy; Console and Sleep). The peek carries glance chips (`✋ Slack asks`, `◎2`, a problem's glyph, `2.3 min`), never sentences. Drag the blob into the notch and it goes to sleep.
 - 🌙 **Sleeps when you say so.** "Go to sleep", "that's all for now", "power down", "good night" — it says exactly "night.", closes the session, tucks in. Ten idle minutes do the same. "Shut down my Mac" is a task, not a cue.
 - 🗣️ **Narrates intent, not keystrokes.** One clause per state change — "found the invoice", "typing the amount" — never per click, never a tool's name. Per-click lines stay on the Console's timeline.
 - 🧾 **Append-only ledger.** Every utterance, delegation, tool call, screenshot path, thread, grant, problem and sleep is a row in `~/.jarhead/ledger/<day>.jsonl`. The Console shows only what was recorded. Search it from the rail or `pnpm jarhead ledger search`.
@@ -70,18 +70,18 @@ The Console shots are JPEGs: a dithered ground does not compress as PNG.
     <td>Peeking, awake. <code>O O</code></td>
   </tr>
   <tr>
-    <td><img src="docs/media/notch-island.png" alt="The island: Listening, the transport, Stop and Mute, the last line, Circle and Window, Ask, the meter, Console and Sleep"></td>
-    <td><img src="docs/media/notch-island-working.png" alt="The island while acting: Working · 0:02"></td>
+    <td><img src="docs/media/notch-island.png" alt="The island: the face and Listening as the anchor, the level trace and the last line as the 18 pt hero on the black pool, Go · Stop · Mute, the Say box, the Circle · Window · Ask strip, the meter as a bar with figures, Console · Sleep"></td>
+    <td><img src="docs/media/notch-island-working.png" alt="The island while acting: Working · 0:02 in the head, the request as the hero, two thread tiles with their Stops"></td>
   </tr>
   <tr>
-    <td>The island under the pointer: transport, Stop, Mute; Circle and Window; Ask; the meter; Console and Sleep.</td>
-    <td>Acting, with the elapsed counter.</td>
+    <td>The island under the pointer: anchor, display, control row, foot.</td>
+    <td>Acting: the counter in the head, the request as the hero, a tile per thread.</td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/media/notch-island-marks.png" alt="The island with three circled regions in its strip — a crop, a skeleton for one still capturing, a used one at half alpha — Clear beside Ask, and two threads' chips with their Stops"></td>
+    <td colspan="2"><img src="docs/media/notch-island-marks.png" alt="The island with three circled regions as films across the display — a crop with the amber frame, a skeleton for one still capturing, a used one at half alpha — the caption at the head's right end, Clear joining the strip"></td>
   </tr>
   <tr>
-    <td colspan="2">Three marks in the strip — a crop, a skeleton while its crop is on its way, a used one dimmed — Clear beside Ask, and a chip per thread with its own Stop.</td>
+    <td colspan="2">Three marks as films — a crop, a skeleton while its crop is on its way, a used one dimmed — the caption in the head, Clear joining the strip.</td>
   </tr>
 </table>
 
@@ -89,7 +89,7 @@ Press `◎` and the island folds out of the way while you draw; the peek reads
 `◎ Circle something · Esc`. The blob outlines what you circled and comes back to the notch.
 Asleep, a landed mark glows the lip amber and says `◎ 1 circled · Go to ask` for six seconds.
 `▭` captures the front window whole, no drawing, awake or asleep. Two engine commands carry the
-strip: `mark.remove {id}` (the `×` on a thumbnail) and `mark.window` (the front window as a mark);
+films: `mark.remove {id}` (the `×` on a film) and `mark.window` (the front window as a mark);
 everything else rides the commands the Console already sends.
 
 <p align="center">

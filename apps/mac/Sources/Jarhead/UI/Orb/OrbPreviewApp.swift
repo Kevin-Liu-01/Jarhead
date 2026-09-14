@@ -289,13 +289,17 @@ import SwiftUI
 //   ORB_NOTCH_HOTKEY_CIRCLE_AT=t   ⌥⇧C's dispatch (state.beginMarkMode) with the island open
 //   ORB_NOTCH_TRACE_AT="t[:reason];…"   an orb.trace while tucked (reason mark by default; "reflex circle" for the other rule)
 //   ORB_NOTCH_PIN_AT=t     a .face press (pins the island)
+//   ORB_NOTCH_KIND=plain|question|marks   the display's kind forced (NotchPanel.swift reads it): the zones and the hit
+//                          list of that kind whatever the content, for the tooltip lines and the shots
+//   ORB_NOTCH_KIND_AT="kind@t"   the forced kind changes at t with the island open: beats 1–4 are sampled for 0.5 s and
+//                          must dip within `Motion.quick` then rise while beats 0 and 5 hold (the kind-change line)
 //   ORB_NOTCH_PILL_TEST=1  asleep: gate + toast + a landed mark + a problem, the slot read as each expires, then the island opened
 //   ORB_NOTCH_PHASE_SWEEP=t   every phase 0.2 s apart: Mute in the hit list in a session's phases only, Stop always
 //   ORB_NOTCH_OPEN_TIMING=1   the open spring from the pointer's approach: 0.5 by 60 ms, 0.9 by 130 ms, hit rects at 0 ms
 //   ORB_NOTCH_HOVER=…      also circle|window|ask|clear|allow|deny|mark:0|forget:0|thread:Slack|threadStop:Slack|console|
 //                          sleep|remedy|meter (drawn hovered by NotchPanel; the tooltip is printed at 3.3 s)
 //   Shots (ORB_SHOT_DIR): a run with one scenario knob names its frames notch-{tucked,peek,island}-<marks|question|
-//   meter|screenrec|asleep>.png (a problem: notch-peek-problem / notch-island-problem-pill), plus notch-peek-marking
+//   meter|screenrec|asleep>.png (a problem: notch-peek-problem / notch-island-problem — the foot row), plus notch-peek-marking
 //   (after the ◎ press), notch-mark-return (the blob home after outlining its circle), notch-island-say (the field
 //   with words). ORB_NOTCH_SHOT_TAG names them instead.
 
@@ -433,6 +437,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var notchOpenHitAt0 = 0
     var notchMaxIslandHeight = 0.0
     var reduceSamples: [(alpha: [CGFloat], dy: [CGFloat])] = []
+    /// ORB_NOTCH_KIND_AT: when the forced kind changed and the six beats' alphas sampled since (from `watch`).
+    var kindSwapAt = -1.0
+    var kindSwapSamples: [(t: Double, alpha: [CGFloat])] = []
+    var kindSwapJudged = false
+    /// The Say box's placeholder per phase from the sweep: the words and their width.
+    var placeholderWidths: [(phase: String, words: String, width: CGFloat)] = []
     var traceProbe: TraceProbe?
     var traceMarkResult: (ok: Bool, note: String)?
     var traceOtherResult: (ok: Bool, note: String)?
@@ -1202,7 +1212,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
                 let line = self.orb.previewNotchStripProbe ?? "notch strip probe: no dock (set ORB_NOTCH=1)"
                 print(self.stamp, line)
                 fflush(stdout)
-                self.check(line.hasSuffix("OK"), "strip probe (ORB_NOTCH_STRIP_PROBE) still OK at 132", line)
+                self.check(line.hasSuffix("OK"), "strip probe (ORB_NOTCH_STRIP_PROBE) still OK at 184", line)
             }
         }
 
@@ -2413,7 +2423,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     /// scenario knob at a time, and only without ORB_NOTCH_SHOT_TAG, which names the frames itself.
     func notchShotFileName(_ base: String) -> String {
         guard !notchScenarioSuffix.isEmpty, ["tucked", "peek", "island"].contains(base) else { return base }
-        if notchScenarioSuffix == "problem" { return base == "island" ? "island-problem-pill" : base + "-problem" }
+        if notchScenarioSuffix == "problem" { return base + "-problem" }
         return base + "-" + notchScenarioSuffix
     }
 
@@ -2936,6 +2946,8 @@ extension OrbPreviewDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
                 guard let self else { return }
                 NSApp.activate(ignoringOtherApps: true)
+                // macOS 14+ may ignore the deprecated call while another app is frontmost: the running-application route once more.
+                if !NSApp.isActive { NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps]) }
                 print(self.stamp, "app: activate -> isActive \(NSApp.isActive ? 1 : 0) (pretending Jarhead's own window is frontmost)")
                 fflush(stdout)
             }
@@ -2963,6 +2975,25 @@ extension OrbPreviewDelegate {
                 self.pinnedBeforeCircle = self.orb.previewNotchPinned
                 print(self.stamp, "notch: pin (a .face press) -> pinned \(self.orb.previewNotchPinned ? 1 : 0), mode \(self.orb.previewNotchMode)")
                 fflush(stdout)
+            }
+        }
+        // ORB_NOTCH_KIND_AT="question@3.6": the forced kind changes with the island open; `watch` samples the beats.
+        if let spec = env["ORB_NOTCH_KIND_AT"] {
+            let parts = spec.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, let t = Double(parts[1]) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                    guard let self else { return }
+                    // The pointer is back on the island (the script's leaves at ~3.9 s; this cancels the 600 ms contraction).
+                    self.orb.previewNotchHover(true)
+                    let before = self.orb.previewNotchCanvasKind
+                    self.orb.previewNotchSetKind(parts[0])
+                    self.kindSwapAt = CACurrentMediaTime()
+                    self.kindSwapSamples = []
+                    print(self.stamp, "notch: kind \(before) -> \(self.orb.previewNotchCanvasKind) with the island \(self.orb.previewNotchMode)")
+                    fflush(stdout)
+                }
+            } else {
+                print("ORB_NOTCH_KIND_AT: could not parse \(spec); want kind@t")
             }
         }
         if let t = Double(env["ORB_NOTCH_CIRCLE_AT"] ?? "") {
@@ -3058,7 +3089,7 @@ extension OrbPreviewDelegate {
                 guard let self else { return }
                 let tip: String
                 if spec == "meter", let v = self.notchView {
-                    tip = v.previewTooltip(atIsland: NSPoint(x: 150, y: 116))
+                    tip = v.previewTooltip(atIsland: NSPoint(x: 200, y: 168))
                 } else {
                     tip = self.orb.previewNotchTooltip(self.pressName(spec))
                 }
@@ -3132,7 +3163,7 @@ extension OrbPreviewDelegate {
                 // with the dots gone it reads 322 when no counter runs (343 with them).
                 let before = self.peekBefore
                 let counterBefore = max(0, before.target - n - before.dots - before.chips)
-                let expected = min(NotchGeometry.islandWidth, n + counterBefore + extra)
+                let expected = min(NotchGeometry.peekWidthCap, n + counterBefore + extra)
                 let ok = chips == ["marking:Circle something · Esc"] && self.orb.previewNotchMode == "peek" && self.orb.previewNotchMarking
                     && abs(target - expected) < 1.5
                 self.check(ok, "marking → peek \"◎ Circle something · Esc\", dots and chips hidden, counter kept",
@@ -3230,9 +3261,10 @@ extension OrbPreviewDelegate {
         guard let sr = screenRecordingSeen else { return }
         let r = remedyResult
         let remedyOK = r.map { $0.sent == ["request-permission"] && $0.which == "screenRecording" } ?? false
-        let ok = sr.circleDim && sr.windowDim && sr.chipGlyph && sr.pillRequest && remedyOK
-        check(ok, "screen recording denied → Circle/Window α 0.45, hint \"Captures need Screen Recording\", peek chip glyph rectangle.inset.filled.badge.record amber, pill with [Request]; remedy → request-permission screenRecording 1",
-              "circle dim \(sr.circleDimValue) window dim \(sr.windowDimValue) tooltip '\(sr.tooltip)'; chip \(sr.chip); pill '\(sr.pill)' (\(sr.pillKind), remedy '\(sr.remedyLabel)'); remedy press " + (r.map { "sent \($0.sent) which '\($0.which)'" } ?? "not pressed (ORB_NOTCH_PRESS=remedy@t)"))
+        let tipOK = sr.tooltip.contains("needs Screen Recording")
+        let ok = sr.circleDim && sr.windowDim && tipOK && sr.chipGlyph && sr.pillRequest && remedyOK
+        check(ok, "screen recording denied → Circle/Window α 0.45, Circle tooltip contains \"needs Screen Recording\", peek chip glyph rectangle.inset.filled.badge.record amber, foot row with [Request]; remedy → request-permission screenRecording 1",
+              "circle dim \(sr.circleDimValue) window dim \(sr.windowDimValue) tooltip '\(sr.tooltip)'; chip \(sr.chip); pill '\(sr.pill)' (\(sr.pillKind)), foot row remedy '\(sr.remedyLabel)'; remedy press " + (r.map { "sent \($0.sent) which '\($0.which)'" } ?? "not pressed (ORB_NOTCH_PRESS=remedy@t)"))
         screenRecordingSeen = nil
     }
 
@@ -3433,9 +3465,9 @@ extension OrbPreviewDelegate {
         traceProbe = p
     }
 
-    /// gate > toast > mark-landed > problem, and the problem pill only under an open island. Asleep, tucked.
+    /// gate > toast > mark-landed; a problem is never a pill — it is the foot row once the island opens. Asleep, tucked.
     func notchPillTest() {
-        // Before the script's hover at 2.7 s opens the island (where the problem pill would show).
+        // Before the script's hover at 2.7 s opens the island (where the problem becomes the foot row).
         let t0 = 0.5
         var kinds: [String] = []
         func at(_ dt: Double, _ body: @escaping (OrbPreviewDelegate) -> Void) {
@@ -3455,12 +3487,15 @@ extension OrbPreviewDelegate {
         at(0.4) { me in me.state.wakeGate = .off(reason: "preview") }
         at(0.55) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: gate off -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'") }
         at(1.9) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: toast gone -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'") }
-        at(6.3) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: mark pill gone, tucked -> '\(me.orb.previewNotchPillKind)' (problem waits for the island)"); me.orb.previewNotchHover(true) }
+        at(6.3) { me in kinds.append(me.orb.previewNotchPillKind); print(me.stamp, "pill test: mark pill gone, tucked -> '\(me.orb.previewNotchPillKind)' (the problem waits for the island's foot)"); me.orb.previewNotchHover(true) }
         at(6.9) { me in
             kinds.append(me.orb.previewNotchPillKind)
-            print(me.stamp, "pill test: island open -> \(me.orb.previewNotchPillKind) '\(me.orb.previewNotchPillText)'")
-            let ok = kinds == ["gate", "toast", "mark-landed", "", "problem"]
-            me.check(ok, "pill priority gate > toast > mark-landed > problem; problem pill only while the island is open", "kinds in order \(kinds)")
+            let footProblem = me.orb.previewNotchFootProblem
+            let remedyHit = me.orb.previewNotchHitList.contains { $0.name == "remedy" }
+            print(me.stamp, "pill test: island open -> pill '\(me.orb.previewNotchPillKind)' foot problem \(footProblem ? 1 : 0) remedy hittable \(remedyHit ? 1 : 0)")
+            let ok = kinds == ["gate", "toast", "mark-landed", "", ""] && footProblem && remedyHit
+            me.check(ok, "pill priority gate > toast > mark-landed; a problem is the foot row while the island is open (remedy in the hit list), never a pill",
+                     "kinds in order \(kinds); foot problem \(footProblem ? 1 : 0) remedy hittable \(remedyHit ? 1 : 0)")
             me.orb.previewNotchHover(false)
         }
     }
@@ -3482,7 +3517,9 @@ extension OrbPreviewDelegate {
                     let wantMute = AppState.inSessionPhases.contains(phase)
                     if mute != wantMute { muteWrong.append(phase.rawValue) }
                     if !stop { stopMissing.append(phase.rawValue) }
-                    print(self.stamp, "sweep \(phase.rawValue): mute \(mute ? 1 : 0) (want \(wantMute ? 1 : 0)) stop \(stop ? 1 : 0) mute dim \(String(format: "%.2f", self.orb.previewNotchBoxDim("mute")))")
+                    let words = self.orb.previewNotchFieldPlaceholder, width = self.orb.previewNotchFieldPlaceholderWidth
+                    self.placeholderWidths.append((phase.rawValue, words, width))
+                    print(self.stamp, "sweep \(phase.rawValue): mute \(mute ? 1 : 0) (want \(wantMute ? 1 : 0)) stop \(stop ? 1 : 0) mute dim \(String(format: "%.2f", self.orb.previewNotchBoxDim("mute"))) placeholder '\(words)' \(Int(width)) pt")
                     fflush(stdout)
                 }
             }
@@ -3490,6 +3527,9 @@ extension OrbPreviewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2 * Double(phases.count) + 0.1) { [weak self] in
             guard let self else { return }
             self.check(muteWrong.isEmpty && stopMissing.isEmpty, "mute in session only; stop hittable in every phase", "mute wrong in [\(muteWrong.joined(separator: ", "))], stop missing in [\(stopMissing.joined(separator: ", "))]")
+            let wide = self.placeholderWidths.filter { $0.width > 160 || $0.words.isEmpty }
+            self.check(wide.isEmpty && self.placeholderWidths.count == phases.count, "field placeholder fits: width(placeholder) ≤ 160 in every phase",
+                       self.placeholderWidths.map { "\($0.phase) '\($0.words)' \(Int($0.width))" }.joined(separator: "; "))
             self.state.snapshot.phase = restore
             self.phaseStart = Date()
         }
@@ -3513,7 +3553,7 @@ extension OrbPreviewDelegate {
             let order = ["question", "marks", "problem", "meter"]
             let ranks = kinds.compactMap { order.firstIndex(of: $0) }
             let sorted = ranks == ranks.sorted() && ranks.count == kinds.count
-            let ok = chips.count <= 4 && sorted && orb.previewNotchPeekWidthTarget <= NotchGeometry.islandWidth + 0.5
+            let ok = chips.count <= 4 && sorted && orb.previewNotchPeekWidthTarget <= NotchGeometry.peekWidthCap + 0.5
             check(ok, "chips ≤ 4; order question > marks > problem > meter; peek width ≤ 360", "chips \(chips) width target \(Int(orb.previewNotchPeekWidthTarget))")
         }
         if env["ORB_NOTCH_METER"] != nil {
@@ -3547,22 +3587,41 @@ extension OrbPreviewDelegate {
             guard let q = r(n) else { return false }
             return abs(q.minY - y0) < 0.5 && abs(q.maxY - y1) < 0.5
         }
-        let island = layout.hasPrefix("island 360×132")
-        let rowsOK = rows("S1", 8, 30) && rows("S2", 34, 54) && rows("S3", 58, 86) && rows("S4", 90, 104) && rows("S5", 108, 124)
-        let colOK = spans("stop", 288, 314, 7, 31) && spans("mute", 320, 346, 7, 31) && spans("ask", 288, 314, 60, 84) && spans("clear", 320, 346, 60, 84)
-            && spans("console", 288, 314, 102, 126) && spans("sleep", 320, 346, 102, 126)
-        // No overlap: the left rows against the right column, and the rows against each other.
-        let rowNames = ["S1", "S2", "S3", "S4", "S5"], colNames = ["stop", "mute", "ask", "clear", "console", "sleep"]
+        let island = layout.hasPrefix("island 420×184")
+        let kind = orb.previewNotchCanvasKind
+        let anchorOK = spans("face", 57, 57, 40, 40) && rows("word", 60, 76) && spans("go", 14, 36, 123, 145) && spans("stop", 42, 68, 122, 146) && spans("mute", 74, 100, 122, 146)
+        let displayOK = rows("head", 12, 30) && rows("hero", 30, 96) && spans("field", 114, 290, 122, 146)
+        let stripOK = spans("clear", 302, 328, 122, 146) && spans("circle", 328, 354, 122, 146) && spans("window", 354, 380, 122, 146) && spans("ask", 380, 406, 122, 146)
+        let footOK = spans("console", 354, 380, 156, 180) && spans("sleep", 380, 406, 156, 180) && rows("foot", 154, 184)
+        // No rect overlaps another within the kind: the anchor, the head, the hero's used lines (the 66 pt slot is fixed; the
+        // text takes heroLines × 22), the middle of this kind, the control row, the foot's boxes — the meter's figures, or the
+        // remedy in their place while the problem row shows.
+        var names = ["word", "go", "stop", "mute", "head", "heroUsed", "field", "clear", "circle", "window", "ask", "console", "sleep"]
+        switch kind {
+        case "question": names += ["allow", "deny", "mini0", "mini1"]
+        case "marks": names += ["film0", "film1", "film2"]
+        default:
+            let threads = orb.previewDockContent.threads.count
+            if threads >= 3 { names += ["chips"] } else if threads > 0 { names += ["tile0", "tile1"] }
+        }
+        if let rem = r("remedy"), rem.width > 0 { names += ["remedy"] } else { names += ["footLeft", "bar", "footRight"] }
         var overlaps: [String] = []
-        for a in rowNames { for b in colNames { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
-        for (i, a) in rowNames.enumerated() { for b in rowNames[(i + 1)...] { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
-        check(island && rowsOK && colOK && overlaps.isEmpty,
-              "island 360×132; rows S1 8–30 S2 34–54 S3 58–86 S4 90–104 S5 108–124; right column y 7–31 / 60–84 / 102–126 at x 288–314 / 320–346; no overlap",
-              overlaps.isEmpty ? "" : "overlaps \(overlaps)")
-        let thumbsEnd = ["thumb0", "thumb1", "thumb2"].compactMap { r($0)?.maxX }.max() ?? 0
-        let limits = (r("S1")?.maxX ?? 999) <= 276.5 && (r("S4")?.maxX ?? 999) <= 276.5 && (r("S5")?.maxX ?? 999) <= 276.5 && (r("S2")?.maxX ?? 999) <= 346.5 && thumbsEnd <= 276.5
-        check(limits, "text limits S1/S4/S5 ≤ 276, S2 ≤ 346, thumbs ≤ 276",
-              String(format: "S1 %.0f S2 %.0f S4 %.0f S5 %.0f thumbs %.0f", r("S1")?.maxX ?? -1, r("S2")?.maxX ?? -1, r("S4")?.maxX ?? -1, r("S5")?.maxX ?? -1, thumbsEnd))
+        for (i, a) in names.enumerated() { for b in names[(i + 1)...] { if let ra = r(a), let rb = r(b), ra.intersects(rb) { overlaps.append("\(a)/\(b)") } } }
+        // Every hit rect ≥ 20 pt on both sides, but for the inherited mini × (12×12) and the chip-line Stop (16×14).
+        let hits = orb.previewNotchHitList
+        let small = hits.filter { $0.rect.width < 19.5 || $0.rect.height < 19.5 }.filter { !($0.name.hasPrefix("forget:") || $0.name.hasPrefix("threadStop:")) }
+        check(island && anchorOK && displayOK && stripOK && footOK && overlaps.isEmpty && small.isEmpty,
+              "island 420×184; anchor face 57,40 word y 60–76 go 14–36 y 123–145 stop 42–68 mute 74–100 y 122–146; head y 12–30 hero y 30–96 field x 114–290 y 122–146; strip clear 302–328 circle 328–354 window 354–380 ask 380–406 y 122–146; foot seam 153.5 console 354–380 sleep 380–406 y 156–180; hairline 183.5; no rect overlaps within a kind; every hit rect ≥ 20 pt (inherited mini × and chip Stop excepted)",
+              "kind \(kind)" + (overlaps.isEmpty ? "" : "; overlaps \(overlaps)") + (small.isEmpty ? "" : "; small \(small.map { "\($0.name) \(Int($0.rect.width))×\(Int($0.rect.height))" })"))
+        let filmsEnd = ["film0", "film1", "film2"].compactMap { r($0)?.maxX }.max() ?? 0
+        let tilesEnd = ["tile0", "tile1"].compactMap { r($0)?.maxX }.max() ?? 0
+        let minisEnd = ["mini0", "mini1"].compactMap { r($0)?.maxX }.max() ?? 0
+        let remedyMin = r("remedy").map { $0.width > 0 ? $0.minX : 342 } ?? 342
+        let limits = (r("head")?.maxX ?? 999) <= 406.5 && (r("hero")?.maxX ?? 999) <= 406.5 && (r("chips")?.maxX ?? 999) <= 406.5 && (r("field")?.maxX ?? 999) <= 290.5
+            && (r("footRight")?.maxX ?? 999) <= 342.5 && remedyMin >= 100 && filmsEnd <= 382.5 && tilesEnd <= 406.5 && minisEnd <= 406.5
+        check(limits, "text limits head/hero/chips ≤ 406, field ≤ 290, footRight ≤ 342 (problem text ≤ remedy.minX − 8), films ≤ 382, tiles ≤ 406, minis ≤ 406",
+              String(format: "head %.0f hero %.0f chips %.0f field %.0f footRight %.0f remedy.minX %.0f films %.0f tiles %.0f minis %.0f", r("head")?.maxX ?? -1, r("hero")?.maxX ?? -1,
+                     r("chips")?.maxX ?? -1, r("field")?.maxX ?? -1, r("footRight")?.maxX ?? -1, remedyMin, filmsEnd, tilesEnd, minisEnd))
 
         let n = NotchGeometry.current()?.notch.width ?? 185
         let bytes = orb.previewNotchInkBytes, cap = orb.previewNotchInkCapacityBytes
@@ -3570,8 +3629,21 @@ extension OrbPreviewDelegate {
         let hasPeek = orb.previewNotchInkHas(width: n, height: NotchGeometry.peekHeight) && orb.previewNotchInkHas(width: n + 30, height: NotchGeometry.peekHeight)
         let stretched = orb.previewNotchStretchedFrames
         check(bytes <= cap && cap == 32 << 20 && hasOpen && hasPeek && stretched == 0,
-              "ink cache ≤ 32 MB; 360×132 and the peek sizes prewarmed in makeDock; first open rendered 0 stretched frames",
-              "\(bytes / 1024) KB of \(cap >> 20) MB; 360×132 \(hasOpen ? "yes" : "NO") peek \(Int(n))×26 (+0…30) \(hasPeek ? "yes" : "NO"); stretched frames \(stretched); \(orb.previewNotchDrawReadout)")
+              "ink cache ≤ 32 MB; 420×184 and the peek sizes prewarmed in makeDock; first open rendered 0 stretched frames",
+              "\(bytes / 1024) KB of \(cap >> 20) MB; 420×184 \(hasOpen ? "yes" : "NO") peek \(Int(n))×26 (+0…30) \(hasPeek ? "yes" : "NO"); stretched frames \(stretched); \(orb.previewNotchDrawReadout)")
+
+        // The tooltips off the press rects: the foot (the meter's line), the hero while a question shows, the head caption while films show.
+        let footTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 168))
+        let footText = orb.previewNotchFootText
+        check(footTip.contains(footText) && !footText.isEmpty, "tooltip at (200,168) contains footText", "tooltip '\(footTip)' foot '\(footText)'")
+        if let q = orb.previewDockContent.question {
+            let heroTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 40))
+            check(heroTip == q.text, "tooltip at (200,40) == question (question set)", "tooltip '\(heroTip)' question '\(q.text)'")
+        }
+        if kind == "marks", let newest = orb.previewDockContent.marks.last {
+            let capTip = orb.previewNotchTooltipAt(NSPoint(x: 300, y: 21))
+            check(capTip == newest.caption, "tooltip at (300,21) == film caption (marks set)", "tooltip '\(capTip)' caption '\(newest.caption)'")
+        }
 
         let a = orb.previewNotchAccessibilityCounts
         check(a.buttons == a.hitRects && a.children == a.hitRects + 1 && a.hitRects > 0, "accessibility children == hit rects; field is its own element",
@@ -3584,18 +3656,24 @@ extension OrbPreviewDelegate {
         if env["ORB_NOTCH_MARKS"] != nil, content.marks.count >= 3, content.question == nil { marksRowCheck(layout: rects) }
         if env["ORB_NOTCH_QUESTION"] != nil {
             let line = orb.previewNotchLineText
+            let heroLines = orb.previewNotchHeroLines
             let names = orb.previewNotchHitList
             let allow = names.first { $0.name == "allow" }?.rect, deny = names.first { $0.name == "deny" }?.rect
             let hidden = !names.contains { $0.name == "ask" || $0.name == "clear" }
             let thumbs = orb.previewNotchThumbs.filter { !$0.hasPrefix("+") }
-            let chips = orb.previewNotchThreadChips
-            let lead = chips.first ?? ""
+            let minis = names.filter { $0.name.hasPrefix("mark:") }.map { $0.rect }
+            let tiles = orb.previewNotchThreadChips
             let q = content.question
-            let leadOK = q != nil && lead.hasPrefix((q?.threadId ?? "?") + ":") && lead.contains("· asks") && lead.hasSuffix(":nostop")
-            let ok = line.hasPrefix("✋ \(q?.name ?? "?") asks · ") && allow.map { abs($0.minX - 252) < 0.5 && abs($0.maxX - 296) < 0.5 } == true
-                && deny.map { abs($0.minX - 302) < 0.5 && abs($0.maxX - 346) < 0.5 } == true && thumbs.count <= 2 && hidden && leadOK
-            check(ok, "question waiting → S2 \"✋ Slack asks · …\", R2 = Allow 252–296 / Deny 302–346, thumbs ≤ 2, Ask/Clear hidden, asking chip leads with no ■",
-                  "S2 '\(line)'; allow \(allow.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none") deny \(deny.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"); thumbs \(thumbs.count); ask/clear hidden \(hidden ? 1 : 0); chips \(chips)")
+            let source = q.flatMap { qq in names.first { $0.name == "thread:\(qq.threadId)" } }?.rect
+            // The head row draws at y 12–30; its hit rect takes a point more each way (≥ 20 pt).
+            let sourceOK = source.map { abs($0.minY - 11) < 0.5 && abs($0.maxY - 31) < 0.5 && abs($0.minX - 114) < 0.5 } == true
+            let heroOK = q != nil && line == q?.text && heroLines.count >= 1 && heroLines.count <= 2
+            let minisOK = minis.count <= 2 && zip(minis, [340.0, 376.0]).allSatisfy { abs($0.minX - CGFloat($1)) < 0.5 && abs($0.width - 30) < 0.5 }
+            let ok = kind == "question" && sourceOK && heroOK && allow.map { abs($0.minX - 114) < 0.5 && abs($0.maxX - 198) < 0.5 && abs($0.minY - 82) < 0.5 && abs($0.maxY - 110) < 0.5 } == true
+                && deny.map { abs($0.minX - 206) < 0.5 && abs($0.maxX - 290) < 0.5 && abs($0.minY - 82) < 0.5 && abs($0.maxY - 110) < 0.5 } == true
+                && thumbs.count <= 2 && minisOK && hidden && tiles.isEmpty
+            check(ok, "question waiting → kind question; head \"✋ Slack asks\" hittable thread:ID; hero = the question ≤ 2 lines; Allow 114–198 / Deny 206–290 y 82–110; minis ≤ 2 at x 340/376; Ask/Clear absent; tiles absent (dots on the peek)",
+                  "kind \(kind); source \(source.map { "x\(Int($0.minX))–\(Int($0.maxX)) y\(Int($0.minY))–\(Int($0.maxY))" } ?? "none"); hero '\(line)' lines \(heroLines.count); allow \(allow.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none") deny \(deny.map { "\(Int($0.minX))–\(Int($0.maxX))" } ?? "none"); minis \(minis.map { Int($0.minX) }); ask/clear hidden \(hidden ? 1 : 0); tiles \(tiles)")
         }
         if env["ORB_NOTCH_METER"] != nil { meterCheck(env: env) }
         if let request = env["ORB_NOTCH_REQUEST"] {
@@ -3605,28 +3683,30 @@ extension OrbPreviewDelegate {
                 guard let self else { return }
                 let after = self.orb.previewNotchLineText
                 let last = self.state.snapshot.transcript.last?.text ?? ""
-                self.check(working == request && after == last, "request line: S2 shows the delegation request while working, last line otherwise",
+                self.check(working == request && after == last, "hero shows the delegation request while working, last line otherwise",
                            "working '\(working)'; after the delegation ended '\(after)' (last line '\(last)')")
             }
         }
         if env["ORB_NOTCH_SCREEN_RECORDING"] == "0" {
             let c = orb.previewNotchBoxDim("circle"), w = orb.previewNotchBoxDim("window")
             let tip = orb.previewNotchTooltip("circle")
-            let pill = orb.previewNotchPillText, kind = orb.previewNotchPillKind
+            let pill = orb.previewNotchPillText, pillKind = orb.previewNotchPillKind
             let remedy = content.problem?.remedyLabel ?? ""
-            screenRecordingSeen = (abs(c - 0.45) < 0.01, abs(w - 0.45) < 0.01, screenRecordingChip?.ok ?? false, kind == "problem" && remedy == "Request",
-                                   String(format: "%.2f", c), String(format: "%.2f", w), tip, screenRecordingChip?.note ?? "peek not read", pill, kind, remedy)
+            let footRow = orb.previewNotchFootProblem && orb.previewNotchHitList.contains { $0.name == "remedy" }
+            screenRecordingSeen = (abs(c - 0.45) < 0.01, abs(w - 0.45) < 0.01, screenRecordingChip?.ok ?? false, footRow && pill.isEmpty && remedy == "Request",
+                                   String(format: "%.2f", c), String(format: "%.2f", w), tip, screenRecordingChip?.note ?? "peek not read", pill, pillKind, remedy)
             if remedyResult != nil { screenRecordingCheck() }
             else if !(env["ORB_NOTCH_PRESS"] ?? "").contains("remedy") { screenRecordingCheck() }
         }
     }
 
-    /// "S1 x110–276 y8–30 | …" → rects keyed by name.
+    /// "island 420×184 | face x57–57 y40–40 | word x14–100 y60–76 | … | kind:plain" → rects keyed by name
+    /// (the `island` head and the trailing `kind:` token are skipped: neither is three words).
     static func parseLayout(_ s: String) -> [String: NSRect] {
         var out: [String: NSRect] = [:]
         for part in s.split(separator: "|") {
             let words = part.trimmingCharacters(in: .whitespaces).split(separator: " ").map(String.init)
-            guard words.count == 3, words[1].hasPrefix("x"), words[2].hasPrefix("y") else { continue }
+            guard words.count == 3, words[1].hasPrefix("x"), words[2].hasPrefix("y"), !words[0].hasPrefix("kind:") else { continue }
             let xs = words[1].dropFirst().split(separator: "–").compactMap { Double($0) }
             let ys = words[2].dropFirst().split(separator: "–").compactMap { Double($0) }
             guard xs.count == 2, ys.count == 2 else { continue }
@@ -3635,16 +3715,21 @@ extension OrbPreviewDelegate {
         return out
     }
 
-    /// The circled strip: the slots, the overflow (five marks for a beat), the frames by their pixels, the window caption.
+    /// The films: the slots, the overflow (five marks for a beat), the frames by their pixels, the hero's one line, the head caption, the window caption.
     private func marksRowCheck(layout: [String: NSRect]) {
         let thumbs = orb.previewNotchThumbs
-        let slots = ["thumb0", "thumb1", "thumb2"].compactMap { layout[$0] }
-        let wantX: [CGFloat] = [174, 210, 246]
-        var slotsOK = slots.count == 3
+        let slots = ["film0", "film1", "film2"].compactMap { layout[$0] }
+        let wantX: [CGFloat] = [114, 206, 298]
+        var slotsOK = slots.count == 3 && orb.previewNotchCanvasKind == "marks"
         for (slot, x) in zip(slots, wantX) {
-            let dx = abs(slot.minX - x), dw = abs(slot.width - 30), dh = abs(slot.height - 22)
-            if dx >= 0.5 || dw >= 0.5 || dh >= 0.5 { slotsOK = false }
+            let dx = abs(slot.minX - x), dw = abs(slot.width - 84), dh = abs(slot.height - 60), dy = abs(slot.minY - 56)
+            if dx >= 0.5 || dw >= 0.5 || dh >= 0.5 || dy >= 0.5 { slotsOK = false }
         }
+        let heroLines = orb.previewNotchHeroLines
+        let heroOK = heroLines.count <= 1
+        let newestCaption = orb.previewDockContent.marks.last?.caption ?? ""
+        let headTip = orb.previewNotchTooltipAt(NSPoint(x: 300, y: 21))
+        let captionHeadOK = !newestCaption.isEmpty && headTip == newestCaption
         let content = orb.previewDockContent
         let shown = Array(content.marks.reversed())
         let capturing = shown.firstIndex { !$0.hasPixels }
@@ -3680,7 +3765,7 @@ extension OrbPreviewDelegate {
             framesOK = amber && white && half
             frameNote = String(format: "pending frame Δrgb %+.2f/%+.2f/%+.2f (amber %d); used frame white coverage %.2f (want ≈ 0.55 × 0.50 = 0.28; neutral %d)", pp.r - bp.r, pp.g - bp.g, pp.b - bp.b, amber ? 1 : 0, mean, white ? 1 : 0)
         }
-        // Five marks for a beat — a window (Safari, 1280×800) among them — two thumbs and "+3"; the window's caption read then.
+        // Five marks for a beat — a window (Safari, 1280×800) among them — two films and "+3" (→ Console); the window's caption read then.
         let keep = fakeMarks
         var five = fakeMarks
         if !five.contains(where: { $0.isWindow }) { five.append(makeFakeMark(FakeMarkSpec(kind: "window", size: CGSize(width: 1280, height: 800), ageSeconds: 5, app: "Safari"))) }
@@ -3690,14 +3775,17 @@ extension OrbPreviewDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self else { return }
             let overflow = self.orb.previewNotchThumbs
-            let overflowOK = overflow.count == 3 && overflow.filter { !$0.hasPrefix("+") }.count == 2 && overflow.last == "+3"
+            // The "+3" film is a `.console` press in the third slot.
+            let plusRect = self.orb.previewNotchHitList.first { $0.name == "console" }?.rect
+            let plusOK = plusRect.map { slots.count == 3 && abs($0.minX - slots[2].minX) < 0.5 && abs($0.minY - slots[2].minY) < 0.5 } ?? false
+            let overflowOK = overflow.count == 3 && overflow.filter { !$0.hasPrefix("+") }.count == 2 && overflow.last == "+3" && plusOK
             let windowCaption = self.orb.previewDockContent.marks.first { $0.isWindow }?.caption ?? ""
             let captionOK = windowCaption.hasPrefix("Captured · Safari · 1280×800")
             self.fakeMarks = keep
             self.publishFakeMarks()
-            let ok = slotsOK && overflowOK && framesOK && skeletonOK && captionOK
-            self.check(ok, "marks row: 3 thumbs 30×22 at x 174/210/246; 5 marks → 2 thumbs + \"+3\"; used α 0.50 no amber frame; capturing = skeleton; window caption \"Captured · Safari · 1280×800\"",
-                       "slots \(slots.map { "\(Int($0.minX))" }) thumbs \(thumbs); five → \(overflow); \(frameNote); window caption '\(windowCaption)'")
+            let ok = slotsOK && overflowOK && framesOK && skeletonOK && heroOK && captionHeadOK && captionOK
+            self.check(ok, "films: 3 × 84×60 at x 114/206/298 y 56–116; 5 marks → 2 films + \"+3\" (→ console); used α 0.50 plain frame; capturing = skeleton + amber frame; hero 1 line; head caption = the newest film's; window caption \"Captured · Safari · 1280×800\"",
+                       "slots \(slots.map { "\(Int($0.minX))" }) thumbs \(thumbs); five → \(overflow) (+3 → console \(plusOK ? 1 : 0)); \(frameNote); hero lines \(heroLines.count); head caption '\(headTip)'; window caption '\(windowCaption)'")
         }
     }
 
@@ -3706,6 +3794,9 @@ extension OrbPreviewDelegate {
         let v = (env["ORB_NOTCH_METER"] ?? "").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         guard v.count == 3 else { return }
         let footNow = orb.previewNotchFootText
+        let fillNow = orb.previewNotchMeterFill
+        let wantFill = CGFloat(v[1] / max(v[2], v[1]))
+        var asleepFill: CGFloat = -1
         let wantChip = TransportFormat.minutes(v[1])
         let wantFoot = "\(OrbStyle.mmss(v[0] + (CACurrentMediaTime() - launchedAt))) · \(TransportFormat.minutes(v[1])) · \(TransportFormat.dollars(v[1])) · today \(TransportFormat.minutes(v[2]))"
         let wantAsleep = "today \(TransportFormat.billed(v[2]))"
@@ -3735,6 +3826,7 @@ extension OrbPreviewDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                     guard let self else { return }
                     let f = self.orb.previewNotchFootText
+                    asleepFill = self.orb.previewNotchMeterFill
                     asleepOK = f == wantAsleep
                     asleepNote = "asleep foot '\(f)' (want '\(wantAsleep)')"
                 }
@@ -3744,8 +3836,9 @@ extension OrbPreviewDelegate {
             guard let self else { return }
             let chipOK = self.meterPeekChip == wantChip
             let footOK = footNow == wantFoot
-            self.check(chipOK && footOK && pausedOK && asleepOK, "meter: peek chip \"2.3 min\" in session; paused α 0.48 frozen; foot \"4:12 · 2.3 min · $0.12 · today 12.3 min\"; asleep foot \"today 12.3 min · $0.62\"",
-                       "peek chip '\(self.meterPeekChip)' (want '\(wantChip)'); foot '\(footNow)' (want '\(wantFoot)'); \(pausedNote); \(asleepNote)")
+            let fillOK = abs(fillNow - wantFill) <= 0.01 && (sleepAt < 0 || abs(asleepFill) < 0.001)
+            self.check(chipOK && footOK && pausedOK && asleepOK && fillOK, "meter: peek chip \"2.3 min\" in session; paused α 0.48 frozen; foot \"4:12 · 2.3 min · $0.12 · today 12.3 min\"; asleep foot \"today 12.3 min · $0.62\"; bar fill 138/738 = 0.19 ±0.01; asleep fill 0",
+                       "peek chip '\(self.meterPeekChip)' (want '\(wantChip)'); foot '\(footNow)' (want '\(wantFoot)'); \(pausedNote); \(asleepNote); " + String(format: "fill %.3f (want %.3f) asleep fill %.3f", fillNow, wantFill, asleepFill))
         }
     }
 
@@ -3767,9 +3860,17 @@ extension OrbPreviewDelegate {
               String(format: "%d samples, rise %@, stagger %@, pulse %.2f, island height peak %.1f (no overshoot = ratio 1.0)", reduceSamples.count, noRise ? "none" : "seen", noStagger ? "none" : "seen", pulse, notchMaxIslandHeight))
     }
 
-    /// From `watch()`: the open's timing, the island's peak height, the reduce-motion samples.
+    /// From `watch()`: the open's timing, the island's peak height, the reduce-motion samples, the kind-change beats.
     func watchNotchSurface(now: Double) {
         if let raw = orb.previewNotchIslandRaw { notchMaxIslandHeight = max(notchMaxIslandHeight, raw.height) }
+        if kindSwapAt >= 0, !kindSwapJudged {
+            let dt = now - kindSwapAt
+            var alphas: [CGFloat] = []
+            for i in 0..<6 { alphas.append(orb.previewNotchContentAppearance(i)?.alpha ?? -1) }
+            // A frame with the content not drawn at all (the island folded) is no sample.
+            if alphas.count == 6, !alphas.contains(-1) { kindSwapSamples.append((dt, alphas)) }
+            if dt > 0.55 { kindSwapJudged = true; kindSwapCheck() }
+        }
         if orb.previewNotchMode == "island", reduceSamples.count < 40, orb.previewNotchContentClock.contains("reduced 1") {
             var alphas: [CGFloat] = [], dys: [CGFloat] = []
             for i in 0..<6 {
@@ -3794,6 +3895,22 @@ extension OrbPreviewDelegate {
                 }
             }
         }
+    }
+
+    /// ORB_NOTCH_KIND_AT: beats 1–4 dip (a sample under 0.5 within `Motion.quick` + a frame) then are back at 1 by the
+    /// end of the window; beats 0 and 5 never leave 1 ± 0.02.
+    private func kindSwapCheck() {
+        let quick = Motion.quick + 0.04
+        let display = [1, 2, 3, 4], held = [0, 5]
+        let dipped = display.allSatisfy { i in kindSwapSamples.contains { $0.t <= quick && $0.alpha[i] >= 0 && $0.alpha[i] < 0.5 } }
+        let rose = display.allSatisfy { i in (kindSwapSamples.last?.alpha[i] ?? 0) > 0.98 }
+        let holds = held.allSatisfy { i in kindSwapSamples.allSatisfy { abs($0.alpha[i] - 1) <= 0.02 } }
+        let lows = display.map { i in kindSwapSamples.map { $0.alpha[i] }.min() ?? -1 }
+        let heldRange = held.map { i in (kindSwapSamples.map { $0.alpha[i] }.min() ?? -1, kindSwapSamples.map { $0.alpha[i] }.max() ?? -1) }
+        check(dipped && rose && holds && kindSwapSamples.count >= 6, "kind change while open → beats 1–4 alpha dip within quick then rise; beats 0 and 5 within ±0.02",
+              String(format: "%d samples over %.2f s; display lows %@; anchor/foot ranges %@; end %@", kindSwapSamples.count, kindSwapSamples.last?.t ?? 0,
+                     lows.map { String(format: "%.2f", $0) }.joined(separator: "/"), heldRange.map { String(format: "%.2f–%.2f", $0.0, $0.1) }.joined(separator: " "),
+                     (kindSwapSamples.last?.alpha ?? []).map { String(format: "%.2f", $0) }.joined(separator: "/")))
     }
 
     /// "… | open 0.412→1" → 0.412.
