@@ -1,4 +1,21 @@
 import SwiftUI
+
+/// The Settings dropdowns' and toggles' ids (the harness opens and focuses them by name) and the
+/// toggles' hints — Builder B's lighting of the sites the kit scenarios drive; Builder D's
+/// `SettingsWords` absorbs these.
+enum SettingsMenuIds {
+    static let voice = "settings.voice"
+    static let backend = "settings.backend"
+    static let effort = "settings.effort"
+    static let effortLabel = "Effort"
+    static let auth = "settings.auth"
+    static let wakeWord = "settings.wakeWord"
+    static let autoWake = "settings.autoWake"
+    static let remember = "settings.remember"
+    static let wakeHint = "listens on-device"
+    static let autoWakeHint = "wakes on launch"
+    static let rememberHint = "learns nothing while off"
+}
 import AVFoundation
 
 // Right rail: a segmented Now / Settings / Ledger control in a 40pt row that
@@ -1068,9 +1085,12 @@ struct SettingsPanel: View {
                 VStack(spacing: 2) {
                     // A voice is a timbre; every label says the language it will speak.
                     formRow("Voice") {
-                        ConsoleMenuField(value: settings.voice, options: voiceOptions, title: ConsoleTheme.voiceLabel,
-                                         pick: { patch(SettingsPatch(voice: $0)) })
-                            .accessibilityLabel("Voice: \(ConsoleTheme.voiceLabel(settings.voice))")
+                        // The kit's dropdown: the name alone (Language is its own row), Default / Also / All
+                        // voices, `default` on Ballad, a filter over the 22, a saved id outside the list kept.
+                        ConsoleMenuField(value: settings.voice, options: voiceOptions, title: VoiceWords.name,
+                                         pick: { patch(SettingsPatch(voice: $0)) },
+                                         id: SettingsMenuIds.voice, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
+                                         detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
                     }
                     // One language today: a value, not a menu with one row. The menu appears
                     // when a second language exists (ConsoleTheme.languages).
@@ -1119,13 +1139,14 @@ struct SettingsPanel: View {
                     }
                     .consoleHelp("The OpenAI key for the voice (\(setup.liveModel))")
                     formRow("Backend") {
-                        // The menu spells the long ones out; the field carries the short word.
+                        // The menu spells the long ones out with every kind's `needs` on line 2 and in the
+                        // foot; the field carries the short word and one badge (`this Mac` · `no key`).
                         ConsoleMenuField(value: kind, options: ConsoleTheme.brains, title: { $0.label },
                                          pick: { commitBrain(kind: $0) },
-                                         fieldTitle: { $0.shortLabel })
-                            .accessibilityLabel("Backend: \(kind.label)")
+                                         fieldTitle: { $0.shortLabel },
+                                         id: SettingsMenuIds.backend, label: BrainWords.label, fieldBadge: BrainWords.fieldBadge, badge: BrainWords.badge,
+                                         meta: BrainWords.needs, metaMono: false, foot: BrainWords.needs, width: 260)
                     }
-                    .consoleHelp(kind.label)
                     hint(kind.needs)
                     // Local: a menu over what the server lists (a pick commits at once, like every
                     // menu here); every other kind types an id. The compatible kind refuses to start
@@ -1176,7 +1197,8 @@ struct SettingsPanel: View {
                     }
                     formRow("Effort") {
                         ConsoleMenuField(value: settings.effort, options: effortOptions, title: { $0 },
-                                         pick: { patch(SettingsPatch(effort: $0)) }, mono: true)
+                                         pick: { patch(SettingsPatch(effort: $0)) }, mono: true,
+                                         id: SettingsMenuIds.effort, label: SettingsMenuIds.effortLabel, foot: HelpCopy.effort)
                     }
                     formRow("Status") { brainStatus }
                 }
@@ -1204,11 +1226,8 @@ struct SettingsPanel: View {
                         }
                     }
                     formRow("Auto-wake") {
-                        Toggle("", isOn: Binding(get: { settings.autoWake }, set: { patch(SettingsPatch(autoWake: $0)) }))
-                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
-                            .tint(ConsoleTheme.accent)
-                            .consoleHelp(wake.enabled ? "Wake on launch (the wake word gate owns waking while it is on)" : "Wake on launch")
-                            .accessibilityLabel("Auto-wake on launch")
+                        ConsoleToggle(on: settings.autoWake, hint: SettingsMenuIds.autoWakeHint, id: SettingsMenuIds.autoWake,
+                                      accessibilityLabel: "Auto-wake on launch") { patch(SettingsPatch(autoWake: $0)) }
                     }
                     // Where the orb lives: floating free (it stays where it last worked), or in
                     // the MacBook notch (it drops out for the work and flies back up).
@@ -1243,11 +1262,8 @@ struct SettingsPanel: View {
             }) {
                 VStack(spacing: 2) {
                     formRow("Remember") {
-                        Toggle("", isOn: Binding(get: { settings.memory }, set: { patch(SettingsPatch(memory: $0)) }))
-                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
-                            .tint(ConsoleTheme.accent)
-                            .consoleHelp("Learn durable things about Kevin from each conversation and use them quietly next time")
-                            .accessibilityLabel("Remember across sessions")
+                        ConsoleToggle(on: settings.memory, hint: SettingsMenuIds.rememberHint, id: SettingsMenuIds.remember,
+                                      accessibilityLabel: "Remember across sessions") { patch(SettingsPatch(memory: $0)) }
                     }
                     if !settings.memory {
                         hint("Off: nothing is learned or used. What was remembered stays.").transition(Motion.appear)
@@ -1342,11 +1358,9 @@ struct SettingsPanel: View {
             RailSection("Wake") {
                 VStack(spacing: 2) {
                     formRow("Wake word") {
-                        Toggle("", isOn: Binding(get: { wake.enabled }, set: { on in var w = wake; w.enabled = on; patch(SettingsPatch(wake: w)) }))
-                            .toggleStyle(.switch).controlSize(.small).labelsHidden()
-                            .tint(ConsoleTheme.accent)
-                            .consoleHelp("Listen on-device for the wake word while asleep")
-                            .accessibilityLabel("Wake word")
+                        ConsoleToggle(on: wake.enabled, hint: SettingsMenuIds.wakeHint, id: SettingsMenuIds.wakeWord, accessibilityLabel: "Wake word") { on in
+                            var w = wake; w.enabled = on; patch(SettingsPatch(wake: w))
+                        }
                     }
                     formRow("Phrases") {
                         // The stock list is wider than the field, so it wraps (up to three lines) rather than clipping mid-word.
@@ -1362,9 +1376,8 @@ struct SettingsPanel: View {
                         // The menu spells every option out; the field is too narrow for "Touch ID or passphrase".
                         ConsoleMenuField(value: wake.auth, options: WakeAuth.allCases, title: { $0.label },
                                          pick: { auth in var w = wake; w.auth = auth; patch(SettingsPatch(wake: w)) },
-                                         fieldTitle: { $0 == .either ? "Either" : $0.label })
-                            .consoleHelp(wake.auth.label)
-                            .accessibilityLabel("Authentication: \(wake.auth.label)")
+                                         fieldTitle: { $0 == .either ? "Either" : $0.label },
+                                         id: SettingsMenuIds.auth, label: "Auth")
                     }
                     if wake.auth == .none { hint("Anyone who says the word wakes it.").transition(Motion.appear) }
                     formRow("Passphrase") { WakePassphraseRow(set: gate.passphraseSet) }

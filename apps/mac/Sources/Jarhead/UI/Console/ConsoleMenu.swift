@@ -302,7 +302,7 @@ struct ConsoleMenuPopup<Value: Hashable>: View {
     private var filterStrip: some View {
         ConsoleFilterField(text: $query, placeholder: ConsoleMenuModel.filterPlaceholder(count: spec.options.count, noun: spec.filterNoun),
                            count: ConsoleMenuModel.countWord(shown: rows.count, of: spec.options.count, typing: !query.isEmpty),
-                           focus: $filterFocused, accessibilityLabel: ConsoleMenuWords.optionsLabel(spec.label),
+                           focus: $filterFocused, ring: false, accessibilityLabel: ConsoleMenuWords.optionsLabel(spec.label),
                            onMove: move, onSubmit: pickHighlight, onExit: escape)
             .padding(.horizontal, 4)
             .frame(height: 32)

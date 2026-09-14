@@ -228,6 +228,8 @@ struct ConsoleFilterField: View {
     let placeholder: String
     var count: String? = nil
     var focus: FocusState<Bool>.Binding
+    /// Off inside a popup: the field that opened it wears the one ring on screen; the caret says where focus is.
+    var ring = true
     var accessibilityLabel: String? = nil
     var onMove: (MoveCommandDirection) -> Void = { _ in }
     var onSubmit: () -> Void = {}
@@ -235,7 +237,7 @@ struct ConsoleFilterField: View {
     var onExit: () -> Void = {}
 
     var body: some View {
-        ConsoleFieldBox(size: .filter, focused: focus.wrappedValue, error: false, grows: false, shakes: 0) {
+        ConsoleFieldBox(size: .filter, focused: ring && focus.wrappedValue, error: false, grows: false, shakes: 0) {
             HStack(spacing: 6) {
                 Image(systemName: ConsoleFieldWords.magnifier).font(.system(size: 11, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
                 TextField(placeholder, text: $text)
