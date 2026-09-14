@@ -399,7 +399,7 @@ export type WakeAuth = "touch-id" | "passphrase" | "either" | "none";
 /**
  * The local wake word. While the engine is asleep the native app listens with the
  * system's on-device speech recogniser — nothing leaves the Mac and no API is
- * billed — and only after authentication does it send `wake`.
+ * billed — and only after authentication does it send `go`.
  */
 export interface WakeSettings {
   readonly enabled: boolean;
@@ -742,7 +742,7 @@ export type EngineCommand =
   | { readonly type: "go" }
   /**
    * Interrupt: cancel the current work and speech but stay awake and listening — what a
-   * spoken "stop" / "cancel" / "never mind" means. The pre-transport `stop`.
+   * spoken "stop" / "cancel" / "never mind" means.
    */
   | { readonly type: "interrupt"; readonly how?: "pressed" | "said" }
   // ---- conversation cleanup (the Console's; never a brain tool). Every one is undoable.
@@ -862,9 +862,8 @@ export type OverlayCommand =
  * One line of ~/.jarhead/ledger/<date>.jsonl. Append-only; the Console is a view
  * over this. `at` is wall-clock ms.
  *
- * Day files written before 2026-09-13 also hold `worker` rows and `delegation.step`
- * rows whose step says `worker`, not `thread`: readers fall through on a type or key
- * they do not know and never check `row.type` exhaustively.
+ * Day files written before 2026-09-13 also hold `worker` rows and `delegation.step` rows whose step says `worker`,
+ * not `thread`: readers fall through on a type or key they do not know and never check `row.type` exhaustively.
  */
 export type LedgerRow =
   | { readonly at: number; readonly type: "session.started"; readonly sessionId: string; readonly voice: string; readonly resumedFrom?: string; readonly language?: string; readonly accent?: Accent }

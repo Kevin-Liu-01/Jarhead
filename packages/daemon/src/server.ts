@@ -4,7 +4,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isEngineCommand, type EngineEvent, type OverlayCommand, type Permissions } from "@jarhead/protocol";
+import { isEngineCommand, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -28,21 +28,20 @@ const log = logger("daemon");
 export const MEMORY_LIST_DEFAULT = 50;
 export const MEMORY_LIST_MAX = 200;
 
-/** What the server needs from the engine; the real Engine satisfies it. */
+/** What the server needs from the engine; the real Engine satisfies it, and the test fakes implement all of it. */
 export interface EngineLike {
   on(event: "event", listener: (e: EngineEvent) => void): unknown;
   on(event: "audio", listener: (pcm: Buffer) => void): unknown;
   on(event: "overlay", listener: (cmd: OverlayCommand) => void): unknown;
-  /** Words the on-device ear should be biased toward (visible control titles, the front app, agent names). Optional: older fakes lack it. */
+  /** Words the on-device ear should be biased toward (visible control titles, the front app, agent names). */
   on(event: "ear.hints", listener: (strings: readonly string[]) => void): unknown;
   snapshot(): unknown;
   command(cmd: unknown): Promise<void>;
   feedMic(pcm: Buffer): void;
   reportInputLevel(level: number): void;
-  setMicrophonePermission(state: Permissions["microphone"]): void;
-  /** One permission as the app read it (any kind); the full list after a sweep. Optional: older fakes lack them. */
-  setPermission?(which: string, state: Permissions["microphone"], detail?: string): void;
-  setPermissions?(all: unknown[]): void;
+  /** One permission as the app read it (any kind, the microphone included); the full list after a sweep. */
+  setPermission(which: string, state: Grant, detail?: string): void;
+  setPermissions(all: unknown[]): void;
   registerOwnPid(pid: number): void;
   /** On-device partial/final transcript from the app (reflex path). */
   ear(text: string, isFinal: boolean, segment: number, at: number): void;
@@ -52,28 +51,59 @@ export interface EngineLike {
     days(): string[];
     sessions(): unknown[];
     readSession(sessionId: string): unknown[];
-    /** Full-text hits over the live day files (`ledger.search`); optional — an older fake answers none. */
-    search?(query: string, limit?: number): unknown[];
-    /** A whole chain's rows in one read (`ledger.chain`); optional — an older fake answers none. */
-    readChain?(rootId: string): { readonly rows: unknown[]; readonly truncated: boolean };
+    /** Full-text hits over the live day files (`ledger.search`). */
+    search(query: string, limit?: number): unknown[];
+    /** A whole chain's rows in one read (`ledger.chain`). */
+    readChain(rootId: string): { readonly rows: unknown[]; readonly truncated: boolean };
   };
-  /** The memory module's reads (`memory.list` / `memory.search`); optional — an engine without one answers empty lists. */
-  readonly memory?: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
-  /** A client's socket closed: its conversation viewers leave (no leaked tails). Optional: older fakes lack it. */
-  dropViewers?(clientId: string): void;
+  /** The memory module's reads (`memory.list` / `memory.search`). */
+  readonly memory: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
+  /** A client's socket closed: its conversation viewers leave (no leaked tails). */
+  dropViewers(clientId: string): void;
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
   /**
-   * A thread's lane runner by thread id (`t_…`, or a `w_…` worker id for one release),
-   * for `tool.run { worker }` from a bridge started with `JARHEAD_WORKER` — the wire field
-   * keeps its old name. Undefined for a thread the engine does not have — finished,
-   * stopped, never started — and the call is refused. Optional: an engine without threads
-   * refuses every such call the same way, and never hands one to `runner`. A server that
-   * fronts ONE brain (CodexBrain's own tool socket outside the daemon process) must still
-   * answer here for that brain's id, or its every call is refused as unknown.
+   * A thread's lane runner by thread id (`t_…`), for `tool.run { thread }` from a bridge
+   * started with JARHEAD_THREAD. Undefined for a thread the engine does not have —
+   * finished, stopped, never started — and the call is refused, never handed to `runner`.
    */
-  runnerFor?(worker: string): EngineLike["runner"] | undefined;
+  runnerFor(threadId: string): EngineLike["runner"] | undefined;
+}
+
+/**
+ * What `tool.run` needs and nothing more: the engine narrowed to its runners. CodexBrain's
+ * private tool socket (one brain outside the daemon process) fronts this — its `runnerFor`
+ * answers for exactly that brain's thread id, or its every stamped call is refused as
+ * unknown. A server built over a ToolHost answers `tool.run` and refuses or ignores the rest.
+ */
+export type ToolHost = Pick<EngineLike, "runner" | "runnerFor">;
+
+/** A ToolHost as an engine: the runners are its, everything else is inert. */
+function toolOnlyEngine(host: ToolHost): EngineLike {
+  const noRows = (): unknown[] => [];
+  return {
+    on: () => undefined,
+    snapshot: () => ({ phase: "asleep" }),
+    command: async () => undefined,
+    feedMic: () => undefined,
+    reportInputLevel: () => undefined,
+    setPermission: () => undefined,
+    setPermissions: () => undefined,
+    registerOwnPid: () => undefined,
+    ear: () => undefined,
+    problem: (text) => log.warn(text),
+    ledger: { read: noRows, days: () => [], sessions: noRows, readSession: noRows, search: noRows, readChain: () => ({ rows: [], truncated: false }) },
+    memory: { list: noRows, search: async () => [] },
+    dropViewers: () => undefined,
+    config: { stateDir: "" },
+    runner: host.runner,
+    runnerFor: (threadId) => host.runnerFor(threadId),
+  };
+}
+
+function isEngine(e: EngineLike | ToolHost): e is EngineLike {
+  return "command" in e;
 }
 
 interface Client {
@@ -102,7 +132,7 @@ function conversationKey(kind: "agent" | "thread", id: unknown): string | undefi
   return typeof id === "string" && id !== "" ? `${kind}:${id}` : undefined;
 }
 
-/** A page's own conversation id, read defensively: the engine's types promise it, a fake or an older engine may not. */
+/** A page's own conversation id, read defensively: a page without one is routed nowhere rather than thrown on. */
 function pageId(page: unknown, field: "agentId" | "threadId"): unknown {
   return typeof page === "object" && page !== null ? (page as Record<string, unknown>)[field] : undefined;
 }
@@ -125,14 +155,17 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   private server: Server | undefined;
   private readonly clients = new Set<Client>();
   private clientSeq = 0;
+  private readonly engine: EngineLike;
 
+  /** Over the engine, or over a ToolHost (a brain's private tool socket): then only `tool.run` does anything. */
   constructor(
-    private readonly engine: EngineLike,
+    engine: EngineLike | ToolHost,
     private readonly socketPath: string,
     private readonly version = "2.0.0",
   ) {
     super();
-    engine.on("event", (e) => {
+    this.engine = isEngine(engine) ? engine : toolOnlyEngine(engine);
+    this.engine.on("event", (e) => {
       switch (e.type) {
         case "snapshot":
           return this.broadcast({ type: "snapshot", snapshot: e.snapshot });
@@ -151,12 +184,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
           return this.route({ type: "thread.transcript", transcript: e.transcript, mode: e.mode }, conversationKey("thread", pageId(e.transcript, "threadId")));
       }
     });
-    engine.on("audio", (pcm) => {
+    this.engine.on("audio", (pcm) => {
       const frame = encodeFrame(FRAME_SPEAKER, pcm);
       for (const c of this.clients) if (c.audio && c.socket.writable) c.socket.write(frame);
     });
-    engine.on("overlay", (cmd) => this.broadcast({ type: "overlay", command: cmd }));
-    engine.on("ear.hints", (strings) => this.broadcast({ type: "ear.hints", strings }));
+    this.engine.on("overlay", (cmd) => this.broadcast({ type: "overlay", command: cmd }));
+    this.engine.on("ear.hints", (strings) => this.broadcast({ type: "ear.hints", strings }));
   }
 
   listen(): Promise<void> {
@@ -209,7 +242,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       client.viewers.clear();
       client.panes.clear();
       try {
-        this.engine.dropViewers?.(client.id);
+        this.engine.dropViewers(client.id);
       } catch (e) {
         log.debug(`dropViewers(${client.id}): ${(e as Error).message}`);
       }
@@ -257,11 +290,10 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));
         return;
       case "permission":
-        if (this.engine.setPermission) this.engine.setPermission(msg.which, msg.state, msg.detail);
-        else if (msg.which === "microphone") this.engine.setMicrophonePermission(msg.state);
+        this.engine.setPermission(msg.which, msg.state, msg.detail);
         break;
       case "permissions":
-        if (Array.isArray(msg.all)) this.engine.setPermissions?.(msg.all);
+        if (Array.isArray(msg.all)) this.engine.setPermissions(msg.all);
         return;
       case "ledger.read": {
         const t = Date.parse(`${msg.date}T12:00:00`);
@@ -280,12 +312,12 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "ledger.chain": {
         // One read for a whole conversation (the Console used to read a chain one session per round
         // trip); bounded by the ledger at CHAIN_ROWS_MAX, and the answer says when it was cut.
-        const r = typeof msg.rootId === "string" && this.engine.ledger.readChain ? this.engine.ledger.readChain(msg.rootId) : { rows: [], truncated: false };
+        const r = typeof msg.rootId === "string" ? this.engine.ledger.readChain(msg.rootId) : { rows: [], truncated: false };
         this.send(client, { type: "ledger.rows", id: String(msg.id ?? ""), rows: r.rows, ...(r.truncated ? { truncated: true } : {}) });
         return;
       }
       case "memory.list": {
-        const items = this.engine.memory ? this.engine.memory.list(typeof msg.state === "string" ? msg.state : undefined, memoryLimit(msg.limit)) : [];
+        const items = this.engine.memory.list(typeof msg.state === "string" ? msg.state : undefined, memoryLimit(msg.limit));
         this.send(client, { type: "memory.items", id: String(msg.id ?? ""), items: items.slice(0, MEMORY_LIST_MAX) });
         return;
       }
@@ -294,8 +326,8 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         const id = String(msg.id ?? "");
         const query = typeof msg.query === "string" ? msg.query : "";
         const limit = memoryLimit(msg.limit);
-        const search = this.engine.memory ? this.engine.memory.search(query, limit) : Promise.resolve([] as unknown[]);
-        void search
+        void this.engine.memory
+          .search(query, limit)
           .then((items) => this.send(client, { type: "memory.items", id, items: items.slice(0, MEMORY_LIST_MAX) }))
           .catch((e: unknown) => {
             log.warn(`memory.search failed: ${(e as Error).message}`);
@@ -309,14 +341,14 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         // over the walk's parsed cache; the trash is never read.
         const query = typeof msg.query === "string" ? msg.query : "";
         const limit = Number(msg.limit);
-        const hits = this.engine.ledger.search ? this.engine.ledger.search(query, ...(Number.isFinite(limit) && limit > 0 ? [limit] : [])) : [];
+        const hits = this.engine.ledger.search(query, ...(Number.isFinite(limit) && limit > 0 ? [limit] : []));
         this.send(client, { type: "ledger.hits", id: String(msg.id ?? ""), hits });
         return;
       }
       case "tool.run":
         // Nothing on this path may become an unhandled rejection: the daemon has no handler
         // for one, and Node would take the whole engine down over one bad tool call.
-        void this.runTool(client, msg.id, msg.name, msg.input, msg.worker).catch((e: unknown) => log.warn(`tool.run ${String(msg.name)} failed outside the runner: ${(e as Error).message}`));
+        void this.runTool(client, msg.id, msg.name, msg.input, msg.thread).catch((e: unknown) => log.warn(`tool.run ${String(msg.name)} failed outside the runner: ${(e as Error).message}`));
         return;
       case "ping":
         // Liveness (REDESIGN §16, "Liveness"): answered here, synchronously, with no engine
@@ -339,11 +371,11 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
    * business (policy, ledger, screenshot archive, the confirmation handshake),
    * exactly as for the in-process brains.
    *
-   * A call that names a worker goes to that worker's lane runner and nowhere else:
+   * A call that names a thread goes to that thread's lane runner and nowhere else:
    * the main runner holds the pointer and the keyboard, so an unknown, finished or
-   * malformed worker id is a refusal the model can read, never a fall-through.
+   * malformed thread id is a refusal the model can read, never a fall-through.
    */
-  private async runTool(client: Client, id: unknown, name: unknown, input: unknown, worker?: unknown): Promise<void> {
+  private async runTool(client: Client, id: unknown, name: unknown, input: unknown, thread?: unknown): Promise<void> {
     const requestId = typeof id === "string" ? id : String(id ?? "");
     const answer = (result: ToolResult): void => this.send(client, { type: "tool.result", id: requestId, result });
     if (typeof name !== "string" || !specByName(name)) return answer({ kind: "error", message: `unknown tool ${String(name)}` });
@@ -351,11 +383,11 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
     // refusal the model reads, never an unhandled rejection that exits the daemon.
     let runner: EngineLike["runner"];
     try {
-      if (worker === undefined) runner = this.engine.runner;
+      if (thread === undefined) runner = this.engine.runner;
       else {
-        if (typeof worker !== "string" || worker === "") return answer({ kind: "error", message: `refused: malformed worker id; ${name} was not run` });
-        const lane = this.engine.runnerFor?.(worker);
-        if (!lane) return answer({ kind: "error", message: `refused: no worker ${worker} is running in Jarhead; ${name} was not run (it finished, was stopped, or never started)` });
+        if (typeof thread !== "string" || thread === "") return answer({ kind: "error", message: `refused: malformed thread id; ${name} was not run` });
+        const lane = this.engine.runnerFor(thread);
+        if (!lane) return answer({ kind: "error", message: `refused: no thread ${thread} is running in Jarhead; ${name} was not run (it finished, was stopped, or never started)` });
         runner = lane;
       }
       // An out-of-process brain may only act while a delegation has the runner: a Codex

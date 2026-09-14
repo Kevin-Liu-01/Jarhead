@@ -11,16 +11,16 @@ import type { ToolResult } from "./toolset.ts";
  * re-fronts the taker's remembered app once, so its earlier screenshot is valid again
  * and the screen does not flicker between apps every tool call.
  *
- * Kevin's hands win. A worker never takes the screen while he is typing or clicking
+ * Kevin's hands win. A thread never takes the screen while he is typing or clicking
  * (`user_idle` says when he last did), and never re-fronts its app over one HE
  * switched to (STALE_FOCUS: the front app is one no lane activated and not the
- * worker's own — he is using it; the worker waits and says so). Jarhead's own hands
- * (the main brain, dictation) acquire with priority: they never wait on a worker's
+ * thread's own — he is using it; the thread waits and says so). Jarhead's own hands
+ * (the main brain, dictation) acquire with priority: they never wait on a thread's
  * idle or on Kevin's typing beyond the helper's own `busy` refusal, but they take the
- * lease from a worker only after MIN_HOLD_MS and never in the middle of one of its
+ * lease from a thread only after MIN_HOLD_MS and never in the middle of one of its
  * ops (a held `type` finishes first).
  *
- * Nothing decided before an await stands after it. The worker's gate and the re-front
+ * Nothing decided before an await stands after it. The thread's gate and the re-front
  * are helper round trips; a priority taker, a waking holder or a cut can land in the
  * middle of them, so the lease is re-judged after every one before anything is
  * assigned or reported — one holder, never mid-op, and a cut empties every waiter.
@@ -30,11 +30,11 @@ const log = logger("hands.lease");
 
 /** A holder that has not acted for this long has let go; the next in line may take the screen. */
 export const LEASE_IDLE_MS = 3_000;
-/** A worker keeps the lease at least this long before a priority taker may take it (never mid-op). */
+/** A thread keeps the lease at least this long before a priority taker may take it (never mid-op). */
 export const MIN_HOLD_MS = 1_500;
 /** How long a hand-over waits for the taker's remembered app to come to the front after `focus_app`. */
 export const SETTLE_MS = 300;
-/** The most a worker's tool waits for the screen before it returns "waiting for the screen: …". */
+/** The most a thread's tool waits for the screen before it returns "waiting for the screen: …". */
 export const WAIT_MAX_MS = 8_000;
 /** Kevin's last key/click/scroll this recent means his hands are on the machine: nobody else's move. */
 export const KEVIN_QUIET_MS = 1_500;
@@ -42,7 +42,7 @@ export const KEVIN_QUIET_MS = 1_500;
 export const USER_IDLE_POLL_MS = 250;
 /**
  * How long "a lane brought this app to the front" stands without that lane working in
- * it again. A worker lives at most 300 s and a main-brain turn as long: an activation
+ * it again. A thread lives at most 300 s and a main-brain turn as long: an activation
  * older than this is a hand's that is gone, and the app in front is Kevin's own by now —
  * re-fronting over it would be stepping on him. Refreshed by `rememberFront`,
  * `activated`, a re-front and release-time learning; dropped by `forget` and a cut.
@@ -50,16 +50,12 @@ export const USER_IDLE_POLL_MS = 250;
 export const ACTIVATED_TTL_MS = 5 * 60_000;
 
 export type LeaseRelease = "turn-end" | "question" | "idle" | "done" | "cut";
-/** The same, under the engine's name for it. */
-export type LeaseReleaseWhy = LeaseRelease;
 
 export type LeaseOutcome = { readonly ok: true; readonly refocused?: string } | { readonly ok: false; readonly reason: string };
-/** The same, under the engine's name for it. */
-export type LeaseGrant = LeaseOutcome;
 
 /** `undefined` is accepted for every optional (callers pass a maybe-signal straight through). */
 export interface AcquireOptions {
-  /** Jarhead's own hands: skip Kevin's-typing and stale-focus waits; take from a worker after MIN_HOLD_MS. */
+  /** Jarhead's own hands: skip Kevin's-typing and stale-focus waits; take from a thread after MIN_HOLD_MS. */
   readonly priority: boolean;
   /** The app this actor works in, remembered for the re-front on a later hand-over. */
   readonly app?: string | undefined;
@@ -86,7 +82,7 @@ export interface FocusLeaseOptions {
    * The helper `user_idle` is read from — it MUST be the one that posts events
    * (`pool.focus`, the default when `hands` is). Each helper subtracts only its own
    * posts, so on the never-posting background helper Jarhead's own clicks and
-   * keystrokes read as Kevin's, and every worker acquire after a Jarhead action would
+   * keystrokes read as Kevin's, and every thread acquire after a Jarhead action would
    * wait out KEVIN_QUIET_MS for nothing. Default: `hands`.
    */
   readonly userIdle?: NativeHands | undefined;
@@ -120,7 +116,7 @@ export class FocusLease {
   private inFlight = 0;
   /** The app each actor was seen working in (`rememberFront` / `touch(actor, app)`): the re-front target, and the STALE_FOCUS comparison. */
   private readonly remembered = new Map<string, string>();
-  /** The app an actor said it wants (`acquire({app})`): a re-front fallback only — a worker that has not acted yet has switched nothing. */
+  /** The app an actor said it wants (`acquire({app})`): a re-front fallback only — a thread that has not acted yet has switched nothing. */
   private readonly intended = new Map<string, string>();
   /** Apps some lane brought to the front or worked in (lower-cased → who, when): re-fronting over one of these is fair; over any other, Kevin switched. */
   private readonly activations = new Map<string, Activation>();
@@ -178,7 +174,7 @@ export class FocusLease {
   }
 
   /**
-   * An actor is gone (its worker ended): what it remembered, what it intended and the
+   * An actor is gone (its thread ended): what it remembered, what it intended and the
    * apps it activated are nobody's — the screen it left is Kevin's until a lane acts on
    * it again. A hold it still had is dropped without learning from it.
    */
@@ -236,7 +232,7 @@ export class FocusLease {
           // The gate is two helper round trips; the lease may have moved meanwhile — a
           // priority taker landed, the idle holder woke and began an op, a cut — so the
           // verdict from before it counts for nothing: judge again before taking anything.
-          const gate = o.priority ? undefined : await this.workerGate(actor);
+          const gate = o.priority ? undefined : await this.threadGate(actor);
           if (o.signal?.aborted) return { ok: false, reason: "cancelled" };
           if (this.generation !== gen) return { ok: false, reason: "cut" };
           if (this.held?.actor === actor) return { ok: true };
@@ -262,15 +258,15 @@ export class FocusLease {
 
   /**
    * What the lease itself holds against `actor` right now, or undefined when it is free
-   * for the taking: a holder mid-op (nobody's, ever), a worker's MIN_HOLD against a
-   * priority taker, a holder's recent activity against a worker.
+   * for the taking: a holder mid-op (nobody's, ever), a thread's MIN_HOLD against a
+   * priority taker, a holder's recent activity against a thread.
    */
   private blockedBy(actor: string, priority: boolean): string | undefined {
     const h = this.held;
     if (!h || h.actor === actor) return undefined;
     const now = this.now();
     if (priority) {
-      // Never mid-op; from a worker only after it has had its MIN_HOLD.
+      // Never mid-op; from a thread only after it has had its MIN_HOLD.
       if (this.inFlight === 0 && (h.priority || now - h.since >= MIN_HOLD_MS)) return undefined;
       return `${h.actor} is mid-action`;
     }
@@ -279,17 +275,17 @@ export class FocusLease {
   }
 
   /**
-   * What keeps a worker off the screen even when the lease is free: Kevin's hands on
+   * What keeps a thread off the screen even when the lease is free: Kevin's hands on
    * the machine within KEVIN_QUIET_MS, or an app in front that Kevin switched to
-   * (one no lane activated, not the worker's own). Returns the reason, or undefined.
+   * (one no lane activated, not the thread's own). Returns the reason, or undefined.
    */
-  private async workerGate(actor: string): Promise<string | undefined> {
+  private async threadGate(actor: string): Promise<string | undefined> {
     const idle = await this.idleHands.request<UserIdle>("user_idle", {}, 1500).catch(() => undefined);
     if (idle && idle.foreignMs < KEVIN_QUIET_MS) return "Kevin is using the keyboard or mouse";
     const front = await this.front();
     const mine = this.remembered.get(actor);
     if (front && mine && !this.isActivated(front.app) && !sameApp(mine, front.app)) {
-      // He switched here himself; the worker is never re-fronted behind him.
+      // He switched here himself; the thread is never re-fronted behind him.
       return `Kevin is using ${front.app}`;
     }
     return undefined;

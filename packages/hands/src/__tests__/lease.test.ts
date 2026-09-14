@@ -9,7 +9,7 @@ import { ACTIVATED_TTL_MS, FocusLease, KEVIN_QUIET_MS, LEASE_IDLE_MS, MIN_HOLD_M
  * The screen lease: one holder across calls; hand-over at turn end, a question or
  * LEASE_IDLE_MS of silence; a priority taker (Jarhead's own hands) waits out MIN_HOLD
  * and never lands mid-op; the taker's remembered app is re-fronted once; Kevin's own
- * hands hold every worker off (user_idle, then the helper's busy refusal, which the
+ * hands hold every thread off (user_idle, then the helper's busy refusal, which the
  * lease retries silently); an app Kevin switched to is never covered behind him.
  */
 
@@ -53,14 +53,14 @@ test("constants are the design's", () => {
   assert.equal(USER_IDLE_POLL_MS, 250);
 });
 
-test("a worker waits while the holder acts, takes the screen after LEASE_IDLE_MS of silence or at the holder's turn end, and gives up with the reason at WAIT_MAX_MS", async () => {
+test("a thread waits while the holder acts, takes the screen after LEASE_IDLE_MS of silence or at the holder's turn end, and gives up with the reason at WAIT_MAX_MS", async () => {
   const { clock, hands, lease } = world();
   hands.frontApp = "Slack";
   hands.frontPid = 200;
   assert.deepEqual(await lease.acquire("jarhead", { priority: true, app: "Slack" }), { ok: true });
   assert.equal(lease.holder, "jarhead");
 
-  // The holder keeps acting: the worker's 8 s run out.
+  // The holder keeps acting: the thread's 8 s run out.
   const t0 = clock.t;
   let acting = true;
   const keepActing = (async (): Promise<void> => {
@@ -69,67 +69,67 @@ test("a worker waits while the holder acts, takes the screen after LEASE_IDLE_MS
       await clock.sleep(500);
     }
   })();
-  const waited = await lease.acquire("w_1", { priority: false, app: "Spotify" });
+  const waited = await lease.acquire("t_1", { priority: false, app: "Spotify" });
   acting = false;
   await keepActing;
   assert.deepEqual(waited, { ok: false, reason: "jarhead has the screen" });
   assert.ok(clock.t - t0 >= WAIT_MAX_MS, `waited the full ${WAIT_MAX_MS} ms (${clock.t - t0})`);
   assert.equal(lease.holder, "jarhead");
 
-  // Silence: 3 s after the holder's last action the worker gets it.
+  // Silence: 3 s after the holder's last action the thread gets it.
   lease.touch("jarhead");
   const t1 = clock.t;
-  const got = await lease.acquire("w_1", { priority: false });
+  const got = await lease.acquire("t_1", { priority: false });
   assert.equal(got.ok, true);
   assert.ok(clock.t - t1 >= LEASE_IDLE_MS && clock.t - t1 < LEASE_IDLE_MS + 2 * USER_IDLE_POLL_MS, `took it after the idle window (${clock.t - t1} ms)`);
-  assert.equal(lease.holder, "w_1");
-  // The worker holds it across its own calls: re-acquiring is free.
-  assert.deepEqual(await lease.acquire("w_1", { priority: false }), { ok: true });
+  assert.equal(lease.holder, "t_1");
+  // The thread holds it across its own calls: re-acquiring is free.
+  assert.deepEqual(await lease.acquire("t_1", { priority: false }), { ok: true });
 
   // Turn end: the holder lets go and the next taker has it at once.
-  lease.release("w_1", "turn-end");
+  lease.release("t_1", "turn-end");
   assert.equal(lease.holder, undefined);
   lease.release("jarhead", "turn-end"); // not the holder: ignored
   const t2 = clock.t;
-  assert.equal((await lease.acquire("w_2", { priority: false })).ok, true);
+  assert.equal((await lease.acquire("t_2", { priority: false })).ok, true);
   assert.equal(clock.t, t2, "no wait");
 });
 
-test("a priority taker (Jarhead's hands) takes the lease from a worker after MIN_HOLD_MS, never mid-op: a held type finishes first", async () => {
+test("a priority taker (Jarhead's hands) takes the lease from a thread after MIN_HOLD_MS, never mid-op: a held type finishes first", async () => {
   const { clock, hands, lease } = world();
-  assert.equal((await lease.acquire("w_1", { priority: false, app: "Spotify" })).ok, true);
+  assert.equal((await lease.acquire("t_1", { priority: false, app: "Spotify" })).ok, true);
   const since = clock.t;
 
-  // Inside the worker's op: the main lane waits for it.
+  // Inside the thread's op: the main lane waits for it.
   hands.hold = "type";
-  const workerOp = lease.act("w_1", () => hands.request("type", { text: "focus" }));
+  const threadOp = lease.act("t_1", () => hands.request("type", { text: "focus" }));
   await new Promise<void>((r) => setImmediate(r));
   assert.equal(lease.info()?.inFlight, 1);
   clock.t = since + MIN_HOLD_MS + 100; // the hold is over, the op is not
   const take = lease.acquire("jarhead", { priority: true });
   await clock.sleep(USER_IDLE_POLL_MS * 3);
-  assert.equal(lease.holder, "w_1", "still the worker's while its type is in flight");
+  assert.equal(lease.holder, "t_1", "still the thread's while its type is in flight");
   hands.release();
-  await workerOp;
+  await threadOp;
   const took = await take;
   assert.equal(took.ok, true);
   assert.equal(lease.holder, "jarhead");
-  assert.ok(hands.posted.some((p) => p.op === "type"), "the worker's type landed whole before the hand-over");
+  assert.ok(hands.posted.some((p) => p.op === "type"), "the thread's type landed whole before the hand-over");
 
-  // A fresh worker hold: the priority taker waits out MIN_HOLD even with nothing in flight — but never Kevin's typing or the worker's idle.
+  // A fresh thread hold: the priority taker waits out MIN_HOLD even with nothing in flight — but never Kevin's typing or the thread's idle.
   lease.release("jarhead", "turn-end");
-  assert.equal((await lease.acquire("w_1", { priority: false })).ok, true);
-  hands.kevinActed(); // Kevin's hands on the machine: a worker would wait; Jarhead does not
+  assert.equal((await lease.acquire("t_1", { priority: false })).ok, true);
+  hands.kevinActed(); // Kevin's hands on the machine: a thread would wait; Jarhead does not
   const idleReads = hands.named("user_idle").length;
   const t0 = clock.t;
   const again = await lease.acquire("jarhead", { priority: true });
   assert.equal(again.ok, true);
   assert.ok(clock.t - t0 >= MIN_HOLD_MS, `waited MIN_HOLD (${clock.t - t0} ms)`);
   assert.ok(clock.t - t0 < MIN_HOLD_MS + 2 * USER_IDLE_POLL_MS, "and not the idle window");
-  assert.equal(hands.named("user_idle").length, idleReads, "a priority taker never reads user_idle (the worker acquires above did)");
+  assert.equal(hands.named("user_idle").length, idleReads, "a priority taker never reads user_idle (the thread acquires above did)");
 });
 
-test("hand-over re-fronts the taker's remembered app with exactly one focus_app and waits for it to settle; an app Kevin switched to himself is never covered (STALE_FOCUS: the worker waits and says so)", async () => {
+test("hand-over re-fronts the taker's remembered app with exactly one focus_app and waits for it to settle; an app Kevin switched to himself is never covered (STALE_FOCUS: the thread waits and says so)", async () => {
   const { clock, hands, lease } = world();
   hands.frontApp = "Slack";
   hands.frontPid = 200;
@@ -139,9 +139,9 @@ test("hand-over re-fronts the taker's remembered app with exactly one focus_app 
   assert.equal(lease.appOf("jarhead"), "Slack");
   lease.release("jarhead", "question");
 
-  // Spotify's worker worked in Spotify earlier (remembered), Slack is in front because Jarhead put it there.
-  lease.rememberFront("w_1", "Spotify");
-  const got = await lease.acquire("w_1", { priority: false });
+  // Spotify's thread worked in Spotify earlier (remembered), Slack is in front because Jarhead put it there.
+  lease.rememberFront("t_1", "Spotify");
+  const got = await lease.acquire("t_1", { priority: false });
   assert.deepEqual(got, { ok: true, refocused: "Spotify" });
   assert.equal(hands.named("focus_app").length, 1, "one re-front");
   assert.deepEqual(hands.named("focus_app")[0]?.params, { name: "Spotify" });
@@ -154,11 +154,11 @@ test("hand-over re-fronts the taker's remembered app with exactly one focus_app 
   assert.equal(hands.frontApp, "Slack");
   lease.release("jarhead", "turn-end");
 
-  // Kevin switched to Mail himself (no lane fronted it): the worker is not re-fronted behind him.
+  // Kevin switched to Mail himself (no lane fronted it): the thread is not re-fronted behind him.
   hands.frontApp = "Mail";
   hands.frontPid = 400;
   const t0 = clock.t;
-  const stale = await lease.acquire("w_1", { priority: false, timeoutMs: 2000 });
+  const stale = await lease.acquire("t_1", { priority: false, timeoutMs: 2000 });
   assert.deepEqual(stale, { ok: false, reason: "Kevin is using Mail" });
   assert.equal(hands.named("focus_app").length, 2, "no focus_app went out");
   assert.equal(lease.holder, undefined);
@@ -168,13 +168,13 @@ test("hand-over re-fronts the taker's remembered app with exactly one focus_app 
   assert.deepEqual(own, { ok: true }, "no refocus over an app Kevin chose");
   assert.equal(hands.named("focus_app").length, 2);
   lease.release("jarhead", "turn-end");
-  // Kevin goes back to Spotify (the worker's own app): fair game again.
+  // Kevin goes back to Spotify (the thread's own app): fair game again.
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
-  assert.deepEqual(await lease.acquire("w_1", { priority: false }), { ok: true });
+  assert.deepEqual(await lease.acquire("t_1", { priority: false }), { ok: true });
 });
 
-test("Kevin's hands: a worker waits while user_idle says he typed within KEVIN_QUIET_MS; the helper's busy refusal lands nothing and the lease's retry runs the op after the quiet window; ownDriver (dictation) is never held", async () => {
+test("Kevin's hands: a thread waits while user_idle says he typed within KEVIN_QUIET_MS; the helper's busy refusal lands nothing and the lease's retry runs the op after the quiet window; ownDriver (dictation) is never held", async () => {
   const { clock, hands, lease } = world();
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
@@ -182,10 +182,10 @@ test("Kevin's hands: a worker waits while user_idle says he typed within KEVIN_Q
   const ts = new ComputerToolset({ hands, now: clock.now });
   await ts.run("screenshot", {});
 
-  // Kevin pressed a key 400 ms ago: the worker waits until 1.5 s have passed.
+  // Kevin pressed a key 400 ms ago: the thread waits until 1.5 s have passed.
   hands.kevinActed(clock.t - 400);
   const t0 = clock.t;
-  const got = await lease.acquire("w_1", { priority: false, app: "Spotify" });
+  const got = await lease.acquire("t_1", { priority: false, app: "Spotify" });
   assert.equal(got.ok, true);
   assert.ok(clock.t - t0 >= KEVIN_QUIET_MS - 400 && clock.t - t0 < KEVIN_QUIET_MS, `waited out the quiet window (${clock.t - t0} ms)`);
   assert.ok(hands.named("user_idle").length >= 2, "polled user_idle");
@@ -205,7 +205,7 @@ test("Kevin's hands: a worker waits while user_idle says he typed within KEVIN_Q
 
   // The lease retries silently; the op lands once Kevin has been quiet for 1.5 s.
   const t1 = clock.t;
-  const landed = await lease.retryBusy(() => lease.act("w_1", () => ts.run("left_click", { coordinate: [100, 100] })), isBusyResult);
+  const landed = await lease.retryBusy(() => lease.act("t_1", () => ts.run("left_click", { coordinate: [100, 100] })), isBusyResult);
   assert.equal(landed.kind, "text");
   assert.equal(hands.posted.filter((p) => p.op === "click").length, 1, "one click landed");
   assert.ok(clock.t - t1 >= KEVIN_QUIET_MS - USER_IDLE_POLL_MS && clock.t - t1 <= KEVIN_QUIET_MS + USER_IDLE_POLL_MS, `landed after the quiet window (${clock.t - t1} ms)`);
@@ -221,69 +221,69 @@ test("Kevin's hands: a worker waits while user_idle says he typed within KEVIN_Q
 
 test("cancelAll empties the lease and every waiter returns at once; an aborted signal returns cancelled", async () => {
   const { clock, lease } = world();
-  assert.equal((await lease.acquire("w_1", { priority: false })).ok, true);
-  const waiting = lease.acquire("w_2", { priority: false });
+  assert.equal((await lease.acquire("t_1", { priority: false })).ok, true);
+  const waiting = lease.acquire("t_2", { priority: false });
   await clock.sleep(USER_IDLE_POLL_MS);
   lease.cancelAll("Kevin pressed stop");
   assert.deepEqual(await waiting, { ok: false, reason: "cut" });
   assert.equal(lease.holder, undefined);
   assert.equal(lease.info(), undefined);
   const ac = new AbortController();
-  assert.equal((await lease.acquire("w_1", { priority: false })).ok, true);
-  const p = lease.acquire("w_3", { priority: false, signal: ac.signal });
+  assert.equal((await lease.acquire("t_1", { priority: false })).ok, true);
+  const p = lease.acquire("t_3", { priority: false, signal: ac.signal });
   ac.abort();
   assert.deepEqual(await p, { ok: false, reason: "cancelled" });
 });
 
-// The worker's gate is two helper round trips between "the lease is free" and "it is
-// mine". Whatever lands in that gap wins; the worker judges again and goes back to
+// The thread's gate is two helper round trips between "the lease is free" and "it is
+// mine". Whatever lands in that gap wins; the thread judges again and goes back to
 // waiting — one holder, never mid-op, a cut empties every waiter.
 
-test("gate in flight, a priority taker lands: the worker does not overwrite it — it waits, and gets the screen only when Jarhead lets go", async () => {
+test("gate in flight, a priority taker lands: the thread does not overwrite it — it waits, and gets the screen only when Jarhead lets go", async () => {
   const { hands, lease } = world();
   hands.hold = "user_idle";
-  const worker = lease.acquire("w_1", { priority: false });
-  const w = settled(worker);
+  const thread = lease.acquire("t_1", { priority: false });
+  const w = settled(thread);
   await tick();
   assert.equal(lease.holder, undefined, "the gate is in flight: nothing taken yet");
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
   hands.hold = undefined;
   hands.release();
   for (let i = 0; i < 4; i++) await tick();
-  assert.equal(lease.holder, "jarhead", "one holder: the worker's stale verdict did not land");
-  assert.equal(w.done, false, "the worker is waiting");
+  assert.equal(lease.holder, "jarhead", "one holder: the thread's stale verdict did not land");
+  assert.equal(w.done, false, "the thread is waiting");
   lease.release("jarhead", "turn-end");
-  assert.deepEqual(await worker, { ok: true });
-  assert.equal(lease.holder, "w_1");
+  assert.deepEqual(await thread, { ok: true });
+  assert.equal(lease.holder, "t_1");
 });
 
-test("gate in flight, a second worker takes the free lease: the first sees it held and waits its turn", async () => {
+test("gate in flight, a second thread takes the free lease: the first sees it held and waits its turn", async () => {
   const { hands, lease } = world();
   hands.hold = "user_idle";
-  const a = lease.acquire("w_1", { priority: false });
+  const a = lease.acquire("t_1", { priority: false });
   const aState = settled(a);
   await tick();
   // The fake holds one request per op at a time: w_2's gate passes while w_1's is held.
-  const b = lease.acquire("w_2", { priority: false });
+  const b = lease.acquire("t_2", { priority: false });
   await tick();
   assert.deepEqual(await b, { ok: true });
-  assert.equal(lease.holder, "w_2");
+  assert.equal(lease.holder, "t_2");
   hands.hold = undefined;
   hands.release();
   for (let i = 0; i < 4; i++) await tick();
-  assert.equal(lease.holder, "w_2", "w_1's gate answered: the lease moved, w_1 did not take it");
+  assert.equal(lease.holder, "t_2", "t_1's gate answered: the lease moved, t_1 did not take it");
   assert.equal(aState.done, false, "w_1 waits behind w_2's activity");
-  lease.release("w_2", "turn-end");
+  lease.release("t_2", "turn-end");
   assert.deepEqual(await a, { ok: true });
-  assert.equal(lease.holder, "w_1");
+  assert.equal(lease.holder, "t_1");
 });
 
-test("gate in flight, the idle holder wakes and begins an op: the worker never lands mid-op, and waits out a fresh idle window after it", async () => {
+test("gate in flight, the idle holder wakes and begins an op: the thread never lands mid-op, and waits out a fresh idle window after it", async () => {
   const { clock, hands, lease } = world();
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
   clock.t += LEASE_IDLE_MS + 500; // silent long enough that the lease reads free
   hands.hold = "user_idle";
-  const worker = lease.acquire("w_1", { priority: false });
+  const thread = lease.acquire("t_1", { priority: false });
   await tick();
   lease.beginOp("jarhead"); // a mouse_down is going out
   hands.hold = undefined;
@@ -293,25 +293,25 @@ test("gate in flight, the idle holder wakes and begins an op: the worker never l
   assert.equal(lease.info()?.inFlight, 1);
   lease.endOp("jarhead");
   const t0 = clock.t;
-  const got = await worker;
+  const got = await thread;
   assert.deepEqual(got, { ok: true });
-  assert.equal(lease.holder, "w_1");
+  assert.equal(lease.holder, "t_1");
   assert.ok(clock.t - t0 >= LEASE_IDLE_MS && clock.t - t0 < LEASE_IDLE_MS + 2 * USER_IDLE_POLL_MS, `a full idle window after the op (${clock.t - t0} ms)`);
 });
 
-test("gate in flight, a cut: the worker returns cut and holds nothing after the stop; nothing is re-fronted", async () => {
+test("gate in flight, a cut: the thread returns cut and holds nothing after the stop; nothing is re-fronted", async () => {
   const { hands, lease } = world();
-  lease.rememberFront("w_1", "Spotify");
+  lease.rememberFront("t_1", "Spotify");
   hands.frontApp = "Slack";
   hands.frontPid = 200;
   lease.activated("Slack", "jarhead");
   hands.hold = "user_idle";
-  const worker = lease.acquire("w_1", { priority: false });
+  const thread = lease.acquire("t_1", { priority: false });
   await tick();
   lease.cancelAll("Kevin pressed stop");
   hands.hold = undefined;
   hands.release();
-  assert.deepEqual(await worker, { ok: false, reason: "cut" });
+  assert.deepEqual(await thread, { ok: false, reason: "cut" });
   assert.equal(lease.holder, undefined);
   assert.equal(hands.named("focus_app").length, 0, "no focus_app after a stop");
 });
@@ -321,12 +321,12 @@ test("a cut while the re-front is out (focus_app held, or the first frontmost re
   hands.frontApp = "Slack";
   hands.frontPid = 200;
   lease.activated("Slack", "jarhead");
-  lease.rememberFront("w_1", "Spotify");
+  lease.rememberFront("t_1", "Spotify");
   hands.hold = "focus_app";
-  const p = lease.acquire("w_1", { priority: false });
+  const p = lease.acquire("t_1", { priority: false });
   await tick();
   assert.equal(hands.named("focus_app").length, 1, "the re-front went out");
-  assert.equal(lease.holder, "w_1");
+  assert.equal(lease.holder, "t_1");
   assert.equal(lease.info()?.inFlight, 1, "a re-front counts as an op in flight");
   lease.cancelAll("stop");
   hands.hold = undefined;
@@ -338,7 +338,7 @@ test("a cut while the re-front is out (focus_app held, or the first frontmost re
   // The same with the cut landing during settle's first frontmost read, for a priority actor.
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
-  lease.activated("Spotify", "w_1");
+  lease.activated("Spotify", "t_1");
   lease.rememberFront("jarhead", "Slack");
   hands.hold = "frontmost";
   const q = lease.acquire("jarhead", { priority: true });
@@ -356,7 +356,7 @@ test("a priority taker waits for another priority holder's re-front to land (nev
   const { hands, lease } = world();
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
-  lease.activated("Spotify", "w_1");
+  lease.activated("Spotify", "t_1");
   lease.rememberFront("jarhead", "Slack");
   hands.hold = "focus_app";
   const main = lease.acquire("jarhead", { priority: true });
@@ -408,19 +408,19 @@ test("release learns only the lane's own app: what Kevin fronted while a lane he
   const { clock, hands, lease } = world();
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
-  assert.equal((await lease.acquire("w_1", { priority: false, app: "Spotify" })).ok, true);
-  lease.release("w_1", "done");
+  assert.equal((await lease.acquire("t_1", { priority: false, app: "Spotify" })).ok, true);
+  lease.release("t_1", "done");
   await tick();
-  assert.equal(lease.appOf("w_1"), "Spotify", "its intended app in front at release: learned, and a lane's");
+  assert.equal(lease.appOf("t_1"), "Spotify", "its intended app in front at release: learned, and a lane's");
   assert.ok(lease.isActivated("Spotify"));
 
   // Kevin brings Mail forward while w_1 holds the lease; w_1 lets go: Mail is his, not learned.
-  assert.equal((await lease.acquire("w_1", { priority: false })).ok, true);
+  assert.equal((await lease.acquire("t_1", { priority: false })).ok, true);
   hands.frontApp = "Mail";
   hands.frontPid = 400;
-  lease.release("w_1", "turn-end");
+  lease.release("t_1", "turn-end");
   await tick();
-  assert.equal(lease.appOf("w_1"), "Spotify");
+  assert.equal(lease.appOf("t_1"), "Spotify");
   assert.ok(!lease.isActivated("Mail"));
   // Jarhead (remembered Slack) takes the lease: nothing is re-fronted over Kevin's Mail …
   lease.rememberFront("jarhead", "Slack");
@@ -429,8 +429,8 @@ test("release learns only the lane's own app: what Kevin fronted while a lane he
   lease.release("jarhead", "turn-end");
   await tick();
   assert.equal(lease.appOf("jarhead"), "Slack", "Mail is not Jarhead's either");
-  // … and the worker is told whose it is.
-  assert.deepEqual(await lease.acquire("w_1", { priority: false, timeoutMs: 1000 }), { ok: false, reason: "Kevin is using Mail" });
+  // … and the thread is told whose it is.
+  assert.deepEqual(await lease.acquire("t_1", { priority: false, timeoutMs: 1000 }), { ok: false, reason: "Kevin is using Mail" });
 
   // Kevin goes back to Spotify — a lane's five minutes ago, his now: Jarhead does not re-front Slack over it.
   hands.frontApp = "Spotify";
@@ -442,7 +442,7 @@ test("release learns only the lane's own app: what Kevin fronted while a lane he
   lease.release("jarhead", "turn-end");
   await tick();
   // A fresh activation by a lane: re-fronting over it is fair again.
-  lease.activated("Spotify", "w_2");
+  lease.activated("Spotify", "t_2");
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true, refocused: "Slack" });
   assert.equal(hands.named("focus_app").length, 1);
   lease.release("jarhead", "turn-end");
@@ -450,8 +450,8 @@ test("release learns only the lane's own app: what Kevin fronted while a lane he
   // forget(actor): the apps it activated are nobody's.
   hands.frontApp = "Spotify";
   hands.frontPid = 300;
-  lease.activated("Spotify", "w_2");
-  lease.forget("w_2");
+  lease.activated("Spotify", "t_2");
+  lease.forget("t_2");
   assert.ok(!lease.isActivated("Spotify"));
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
   assert.equal(hands.named("focus_app").length, 1, "no re-front over an app whose lane is gone");
@@ -500,11 +500,11 @@ test("rank: a lower rank arriving while a higher one is already free to take the
   assert.deepEqual(await lease.acquire("jarhead", { priority: true }), { ok: true });
   assert.equal(lease.holder, "jarhead");
   // An unranked waiter is last: rank 9 beats it.
-  const unranked = lease.acquire("w_old", { priority: false });
+  const unranked = lease.acquire("t_old", { priority: false });
   await tick();
   const ranked = lease.acquire("t_z", { priority: false, rank: 9 });
   await tick();
-  assert.deepEqual(lease.waiting.slice(-2), ["t_z", "w_old"]);
+  assert.deepEqual(lease.waiting.slice(-2), ["t_z", "t_old"]);
   // A cut: the line is empty and every waiter returns `cut` on its next poll.
   lease.cancelAll("Kevin pressed stop");
   assert.deepEqual(lease.waiting, []);

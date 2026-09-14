@@ -14,12 +14,12 @@ export function expandHome(p: string): string {
 }
 
 /** Where a key came from, so the doctor can say so when one of them is stale. */
-export type KeySource = "state-dir" | "repo" | "shell" | "none";
+export type KeySource = "state-dir" | "shell" | "none";
 
 const sources = new Map<string, KeySource>();
 
 /**
- * Keys Jarhead owns. For these the state-dir file WINS over the shell: a stale
+ * Keys Jarhead owns. For these the env file WINS over the shell: a stale
  * OPENAI_API_KEY exported by ~/.zshrc must not shadow the key Kevin put in
  * ~/.jarhead/env on purpose. Everything else keeps dotenv convention (shell wins).
  */
@@ -29,7 +29,7 @@ const OWNED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /** Minimal dotenv: KEY=VALUE lines, no interpolation. */
-function loadDotenv(path: string, source: KeySource): void {
+function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
   for (const raw of readFileSync(path, "utf8").split("\n")) {
     const line = raw.trim();
@@ -42,11 +42,9 @@ function loadDotenv(path: string, source: KeySource): void {
       value = value.slice(1, -1);
     }
     if (!key || value === "") continue;
-    const current = sources.get(key) ?? (process.env[key] ? "shell" : "none");
-    const fileWins = OWNED_KEYS.has(key) && (current === "shell" || current === "none" || (source === "state-dir" && current === "repo"));
-    if (fileWins || process.env[key] === undefined || process.env[key] === "") {
+    if (OWNED_KEYS.has(key) || process.env[key] === undefined || process.env[key] === "") {
       process.env[key] = value;
-      sources.set(key, source);
+      sources.set(key, "state-dir");
     }
   }
 }
@@ -54,17 +52,15 @@ function loadDotenv(path: string, source: KeySource): void {
 let loaded = false;
 
 /**
- * Idempotent. Files are read state-dir first, then the repo. For Jarhead's own
- * keys the state-dir wins over the repo, and both win over the shell; for
- * everything else the shell wins (dotenv convention).
+ * Idempotent. One file is read: <stateDir>/env (~/.jarhead/env). For Jarhead's own
+ * keys it wins over the shell; for everything else the shell wins (dotenv
+ * convention). The repo holds no env files.
  */
 export function loadEnv(): void {
   if (loaded) return;
   loaded = true;
   for (const key of OWNED_KEYS) if (process.env[key]) sources.set(key, "shell");
-  loadDotenv(join(stateDirFromEnv(), "env"), "state-dir");
-  loadDotenv(join(REPO_ROOT, ".env.local"), "repo");
-  loadDotenv(join(REPO_ROOT, ".env"), "repo");
+  loadDotenv(join(stateDirFromEnv(), "env"));
 }
 
 /** Which source supplied a key (after loadEnv). */

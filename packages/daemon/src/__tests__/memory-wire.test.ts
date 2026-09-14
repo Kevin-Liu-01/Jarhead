@@ -13,20 +13,21 @@ import { DaemonClient } from "../client.ts";
  * answer under the request id with `memory.items` and clamp their limit; `ledger.chain`
  * answers a whole conversation as `ledger.rows` and says when it was cut; an
  * `agent.open` / `agent.close` viewer is prefixed with the client's id, and a client's
- * socket closing drops its viewers (no leaked tails). An engine without the memory
- * module or the chain read answers empty lists, never an error.
+ * socket closing drops its viewers (no leaked tails).
  */
 
 type Msg = { type: string; id?: string; items?: unknown[]; rows?: unknown[]; truncated?: boolean };
 
-/** An engine from before memory and the chain read: no `memory`, no `readChain`, no `dropViewers`. */
-class OldEngine extends EventEmitter implements EngineLike {
+/** The engine's memory reads, chain read and viewer drop — every call recorded. */
+class WireEngine extends EventEmitter implements EngineLike {
   commands: unknown[] = [];
-  ledger: EngineLike["ledger"] = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner: { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } = {
     run: async () => ({ result: { kind: "text", text: "" } }),
   };
+  runnerFor(): undefined {
+    return undefined;
+  }
   snapshot(): unknown {
     return { phase: "asleep" };
   }
@@ -35,29 +36,27 @@ class OldEngine extends EventEmitter implements EngineLike {
   }
   feedMic(): void {}
   reportInputLevel(): void {}
-  setMicrophonePermission(): void {}
+  setPermission(): void {}
+  setPermissions(): void {}
   registerOwnPid(): void {}
   ear(): void {}
   problem(): void {}
-}
-
-/** Today's engine: the memory reads, the chain read, and the viewer drop — every call recorded. */
-class WireEngine extends OldEngine {
   lists: { state: string | undefined; limit: number | undefined }[] = [];
   searches: { query: string; limit: number | undefined }[] = [];
   chains: string[] = [];
   dropped: string[] = [];
-  override ledger: EngineLike["ledger"] = {
+  ledger: EngineLike["ledger"] = {
     read: () => [],
     days: () => [],
     sessions: () => [],
     readSession: () => [],
+    search: () => [],
     readChain: (rootId: string) => {
       this.chains.push(rootId);
       return { rows: [{ at: 1, type: "session.started", sessionId: rootId, voice: "cedar" }, { at: 2, type: "heard" }], truncated: rootId === "big" };
     },
   };
-  memory: NonNullable<EngineLike["memory"]> = {
+  memory: EngineLike["memory"] = {
     list: (state, limit) => {
       this.lists.push({ state, limit });
       return Array.from({ length: Math.min(limit ?? 1, 300) }, (_v, i) => ({ id: `m_${i}`, text: `item ${i} (${state ?? "live"})` }));
@@ -137,19 +136,6 @@ test("ledger.chain answers a whole conversation as ledger.rows under the request
   });
 });
 
-test("an engine without the memory module or the chain read answers empty items and rows, not an error; its socket closing needs no dropViewers", async () => {
-  await withServer(new OldEngine(), async (client, messages) => {
-    client.sendJson({ type: "memory.list", id: "l9" });
-    client.sendJson({ type: "memory.search", id: "s9", query: "x" });
-    client.sendJson({ type: "ledger.chain", id: "c9", rootId: "sess_1" });
-    await until(() => messages.filter((m) => m.type === "memory.items").length === 2 && messages.some((m) => m.type === "ledger.rows"), "the three answers");
-    assert.deepEqual(messages.find((m) => m.id === "l9"), { type: "memory.items", id: "l9", items: [] });
-    assert.deepEqual(messages.find((m) => m.id === "s9"), { type: "memory.items", id: "s9", items: [] });
-    assert.deepEqual(messages.find((m) => m.id === "c9"), { type: "ledger.rows", id: "c9", rows: [] });
-    assert.ok(!messages.some((m) => m.type === "error"));
-  });
-});
-
 test("agent.open / agent.close viewers are prefixed with the client's id (a pane token, or 'pane' when the surface sent none); the socket closing drops that client's viewers", async () => {
   const engine = new WireEngine();
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
@@ -163,14 +149,14 @@ test("agent.open / agent.close viewers are prefixed with the client's id (a pane
     a.sendJson({ type: "command", command: { type: "agent.open", agentId: "sessions:codex:x", viewer: "p1" } });
     a.sendJson({ type: "command", command: { type: "agent.open", agentId: "sessions:codex:x" } });
     b.sendJson({ type: "command", command: { type: "agent.close", agentId: "sessions:codex:x", viewer: "p2" } });
-    b.sendJson({ type: "command", command: { type: "wake" } });
+    b.sendJson({ type: "command", command: { type: "go" } });
     await until(() => engine.commands.length === 4, "four commands");
     const viewers = engine.commands.map((c) => (c as { viewer?: string }).viewer);
     assert.equal(viewers[0], "c1/p1");
     assert.equal(viewers[1], "c1/pane", "no token from the surface: still this client's");
     assert.equal(viewers[2], "c2/p2");
     assert.equal(viewers[3], undefined, "other commands are untouched");
-    assert.deepEqual((engine.commands[3] as { type: string }), { type: "wake" });
+    assert.deepEqual((engine.commands[3] as { type: string }), { type: "go" });
     a.close();
     await until(() => engine.dropped.length === 1, "the client's viewers dropped");
     assert.deepEqual(engine.dropped, ["c1"]);

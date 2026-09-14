@@ -54,7 +54,7 @@ export const QUEUED_ID_PREFIX = "queued_";
 
 /** What the second hand's brain reads instead of a question: wait, do not retry. */
 export function queuedText(floor: { readonly laneName: string; readonly description: string }): string {
-  return `Queued behind ${floor.laneName}'s question: ${floor.description}. Kevin will be asked after that one; stop and wait (worker_wait), do not retry`;
+  return `Queued behind ${floor.laneName}'s question: ${floor.description}. Kevin will be asked after that one; stop and wait (thread_wait), do not retry`;
 }
 
 /** "left click on "Send · AXButton" in Slack" → "left click on "Send" in Slack": what is spoken, without the accessibility roles. */
@@ -96,7 +96,7 @@ export class ConfirmationDesk {
   }
 
   /**
-   * A lane's question — on the floor or queued — goes (its worker stopped or was cut);
+   * A lane's question — on the floor or queued — goes (its thread stopped or was cut);
    * the next queued question comes up. Nothing else's is touched.
    */
   drop(laneId: string): void {
@@ -231,7 +231,7 @@ export class ConfirmationDesk {
     const floor = this.floor;
     const q = this.queue.find((x) => x.id === result.pendingId);
     if (!q) return result;
-    return { ...result, question: floor ? queuedText(floor) : `Queued: ${q.description}. Kevin will be asked shortly; stop and wait (worker_wait), do not retry` };
+    return { ...result, question: floor ? queuedText(floor) : `Queued: ${q.description}. Kevin will be asked shortly; stop and wait (thread_wait), do not retry` };
   }
 
   private unqueue(laneId: string): void {

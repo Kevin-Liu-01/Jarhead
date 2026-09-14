@@ -94,3 +94,22 @@ test("input: the injected `refuse` is the one applied — a stricter caller's sh
   assert.equal(lax.dropped, 1, "only the redactor-marked key line");
   assert.ok(lax.lines.some((l) => /4111/.test(l.text)), "with no refusal shapes the card line stays — the shapes are the caller's, not hidden in the builder");
 });
+
+test("before 2026-09-13: the old row type, a delegation.step whose step carries the old name key and a session.started without language are never a source and never a throw", () => {
+  const OLD_TYPE = "worker"; // before 2026-09-13: the row type the threads pass replaced
+  const OLD_KEY = "worker"; // before 2026-09-13: the step key that is `thread` now
+  const rows = [
+    { at: T0, type: "session.started", sessionId: "live_old", voice: "cedar" }, // before 2026-09-13: no language, no accent
+    heard(T0 + 1000, "call me Kev"),
+    { at: T0 + 2000, type: OLD_TYPE, [OLD_KEY]: { id: "w_old", name: "Spotify", delegationId: "dlg_old", task: "my dentist is Dr. Patel", lane: "background", status: "working", startedAt: T0 + 2000, steps: 1 } },
+    { at: T0 + 3000, type: "delegation.step", delegationId: "dlg_old", step: { id: "s_old", at: T0 + 3000, kind: "note", text: "remember that I like dark mode", [OLD_KEY]: "Spotify" } },
+    said(T0 + 4000, "Sure, Kev."),
+  ] as unknown as Parameters<typeof buildExtractInput>[0];
+  const input = buildExtractInput(rows, base);
+  assert.deepEqual(input.lines.map((l) => `${l.speaker}: ${l.text}`), ["Kevin: call me Kev", "Jarhead: Sure, Kev."]);
+  const joined = JSON.stringify(input);
+  assert.ok(!joined.includes("dentist"), "the old row's task is not a source");
+  assert.ok(!joined.includes("dark mode"), "nor the old step's text");
+  assert.equal(input.dropped, 0, "skipped, not dropped: they were never lines");
+  assert.equal(input.upToAt, T0 + 4000, "the watermark still covers every row read");
+});

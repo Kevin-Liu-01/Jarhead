@@ -9,9 +9,8 @@ import { DaemonServer, type EngineLike } from "../server.ts";
 import { DaemonClient } from "../client.ts";
 
 /**
- * `ledger.search` over the socket: the query and the limit reach the ledger, the hits
- * come back under the request's id, and an engine whose ledger cannot search (an
- * older fake) answers an empty list rather than an error.
+ * `ledger.search` over the socket: the query and the limit reach the ledger, and the hits
+ * come back under the request's id.
  */
 
 class SearchEngine extends EventEmitter implements EngineLike {
@@ -25,25 +24,28 @@ class SearchEngine extends EventEmitter implements EngineLike {
       this.searches.push({ query, limit });
       return [{ sessionId: "s1", chainId: "s1", at: 1, kind: "heard", text: `hit for ${query}` }];
     },
+    readChain: () => ({ rows: [], truncated: false }),
   };
+  memory: EngineLike["memory"] = { list: () => [], search: async () => [] };
   config = { stateDir: "/tmp/jh-test" };
   runner: { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } = {
     run: async () => ({ result: { kind: "text", text: "" } }),
   };
+  runnerFor(): undefined {
+    return undefined;
+  }
   snapshot(): unknown {
     return { phase: "asleep" };
   }
   async command(): Promise<void> {}
   feedMic(): void {}
   reportInputLevel(): void {}
-  setMicrophonePermission(): void {}
+  setPermission(): void {}
+  setPermissions(): void {}
   registerOwnPid(): void {}
   ear(): void {}
   problem(): void {}
-}
-
-class OldEngine extends SearchEngine {
-  override ledger: EngineLike["ledger"] = { read: () => [], days: () => [], sessions: () => [], readSession: () => [] };
+  dropViewers(): void {}
 }
 
 async function withServer(engine: EngineLike, run: (client: DaemonClient, messages: { type: string; id?: string; hits?: unknown[] }[]) => Promise<void>): Promise<void> {
@@ -86,15 +88,5 @@ test("ledger.search: query and limit reach the ledger; hits answer under the req
       { query: "plan", limit: undefined },
       { query: "x", limit: undefined },
     ]);
-  });
-});
-
-test("ledger.search: an engine whose ledger cannot search answers no hits, not an error", async () => {
-  await withServer(new OldEngine(), async (client, messages) => {
-    client.sendJson({ type: "ledger.search", id: "q9", query: "anything" });
-    await until(() => messages.some((m) => m.type === "ledger.hits"), "a ledger.hits answer");
-    const hit = messages.find((m) => m.type === "ledger.hits");
-    assert.deepEqual(hit, { type: "ledger.hits", id: "q9", hits: [] });
-    assert.ok(!messages.some((m) => m.type === "error"));
   });
 });

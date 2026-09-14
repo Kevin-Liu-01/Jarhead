@@ -29,11 +29,11 @@ import {
 
 const THREAD_COMMANDS = ["thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say"] as const;
 
-test("isEngineCommand accepts exactly the eight thread.* commands; worker.stop and wake are not commands; a brain tool name or a stray thread.* verb is not a command", () => {
+test("isEngineCommand accepts exactly the eight thread.* commands; the verbs of before 2026-09-13 (worker.stop, wake) are not commands; a brain tool name or a stray thread.* verb is not a command", () => {
   for (const type of THREAD_COMMANDS) assert.ok(isEngineCommand({ type, threadId: "t_1" }), `${type} is a surface command`);
   assert.equal(THREAD_COMMANDS.length, 8);
-  assert.equal(isEngineCommand({ type: "worker.stop", workerId: "w_1" }), false, "threads are the vocabulary; there is no worker verb");
-  assert.equal(isEngineCommand({ type: "wake" }), false, "`go` is the verb that wakes");
+  assert.equal(isEngineCommand({ type: "worker.stop", workerId: "w_1" }), false, "the verb of before 2026-09-13; thread.stop is the command");
+  assert.equal(isEngineCommand({ type: "wake" }), false, "the verb of before 2026-09-13; `go` wakes");
   assert.ok(isEngineCommand({ type: "go" }));
   assert.ok(isEngineCommand({ type: "sleep", cause: "command" }));
   for (const type of ["thread_start", "thread_stop", "thread_wait", "thread_read", "thread.nonsense", "thread", "threads.open"]) {
@@ -50,7 +50,7 @@ test("SETTINGS_KEYS names every key of Settings once, DEFAULT_SETTINGS has a val
   const required = SETTINGS_KEYS.filter((k) => defaults[k] !== undefined).sort();
   assert.deepEqual(inDefaults, required, "every key with a default is listed and every listed key with a value has a default");
   for (const k of inDefaults) assert.ok((SETTINGS_KEYS as readonly string[]).includes(k), `${k} is a listed key`);
-  for (const retired of ["workers", "replayFinish"]) assert.equal((SETTINGS_KEYS as readonly string[]).includes(retired), false, `${retired} is not a setting`);
+  for (const retired of ["workers", "replayFinish"]) assert.equal((SETTINGS_KEYS as readonly string[]).includes(retired), false, `${retired} (a settings.json key from before 2026-09-13) is not a setting`);
 });
 
 test("grantOf reads the row for a kind and answers unknown when the app has not read it yet", () => {

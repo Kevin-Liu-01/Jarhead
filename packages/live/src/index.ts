@@ -1,10 +1,8 @@
 export { LiveSession, classifyLiveError } from "./session.ts";
-export type { LiveSessionOptions, LiveSessionEvents, LiveState, WebSocketLike, LiveErrorKind } from "./session.ts";
-export { LIVE_URL, LIVE_MODEL, SAMPLE_RATE, parseServerEvent } from "./events.ts";
-export type { ClientEvent, ServerEvent, ServerEventType, SessionConfig, SessionResource, BuiltInVoice, InitialItem, ResponsesDelegationConfig } from "./events.ts";
-export { Transcript, GAP_MS, ORPHAN_MS, joinFragments } from "./transcript.ts";
-export type { FragmentEvent } from "./transcript.ts";
-export { chunkForAppend, estimateTokens, APPEND_TOKEN_CAP, APPEND_CHAR_BUDGET } from "./appender.ts";
+export type { WebSocketLike } from "./session.ts";
+export { LIVE_URL, LIVE_MODEL, parseServerEvent } from "./events.ts";
+export type { ClientEvent, ServerEvent, SessionConfig, SessionResource, BuiltInVoice, ResponsesDelegationConfig } from "./events.ts";
+export { Transcript, joinFragments } from "./transcript.ts";
+export { chunkForAppend, estimateTokens, APPEND_CHAR_BUDGET } from "./appender.ts";
 export { buildLiveInstructions, DEFAULT_CAPABILITIES } from "./instructions.ts";
-export type { InstructionOptions } from "./instructions.ts";
 export { languageName, languageSection } from "./language.ts";

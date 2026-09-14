@@ -485,9 +485,9 @@ export class Ledger {
       case "session.closed":
       case "pause":
       case "resume":
-        // Older engines wrote pause / resume rows without a session, and a closed row
-        // for a session whose id was already gone says "?": those belong to whichever
-        // session is open around them.
+        // Day files from before 2026-09-13 hold pause / resume rows without a session,
+        // and a closed row for a session whose id was already gone says "?": those
+        // belong to whichever session is open around them.
         return typeof row.sessionId === "string" && row.sessionId !== "?" ? row.sessionId : undefined;
       default:
         return undefined;
@@ -648,9 +648,9 @@ export class Ledger {
             break;
           }
           case "session.closed": {
-            // A legacy "?" row is the open session's — unless that one began by losing its
-            // predecessor, when the row is as likely the lost one's; then it is left out
-            // rather than closing the wrong session with the wrong usage.
+            // A "?" row (day files from before 2026-09-13) is the open session's — unless
+            // that one began by losing its predecessor, when the row is as likely the lost
+            // one's; then it is left out rather than closing the wrong session with the wrong usage.
             const target = byId.get(row.sessionId) ?? (row.sessionId === "?" && open && !open.lostPredecessor ? open : undefined);
             if (!target) break;
             const lost = target.end !== undefined && !target.endInclusive;

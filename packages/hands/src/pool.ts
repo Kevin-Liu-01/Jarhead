@@ -3,8 +3,8 @@ import { NativeHandsProcess, type NativeHands, type NativeHandsProcessOptions } 
 /**
  * Two helper processes from one binary: `focus` acts (every op that posts an event,
  * activates an app or touches the pasteboard — the main brain, dictation, screen-lane
- * workers) and `background` reads (the engine's AX warm tick and ear hints, the wake
- * shot, background workers' probes). The helper is serial, so a worker's 30 s
+ * threads) and `background` reads (the engine's AX warm tick and ear hints, the wake
+ * shot, background threads' probes). The helper is serial, so a thread's 30 s
  * `open_app` or a long `type` on one process never stalls the gate probes and the
  * 500 ms tree walk on the other.
  *

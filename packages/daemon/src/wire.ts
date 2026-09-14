@@ -139,14 +139,12 @@ export type ClientMessage =
    * that gives an external brain (Codex) the same tools the in-process brains
    * have. Only local unix-socket clients exist, so there is no further auth.
    *
-   * `worker` names the thread whose brain is calling (the `t_…` id — or a `w_…` worker
-   * id for one release — the bridge was started with as `JARHEAD_WORKER`; the field
-   * keeps its wire name): the daemon routes the call to that thread's lane runner — its
-   * lane's refusals, its budget, its place in the confirmation queue — and refuses an id
-   * it does not know rather than falling back to the main runner, which holds the
-   * pointer. Absent: the main brain's call.
+   * `thread` is the `t_…` id the bridge was started with as JARHEAD_THREAD: the daemon
+   * routes the call to that thread's lane runner — its lane's refusals, its budget, its
+   * place in the confirmation queue — and refuses an unknown id rather than falling back
+   * to the main runner, which holds the pointer. Absent = the main brain.
    */
-  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown; readonly worker?: string }
+  | { readonly type: "tool.run"; readonly id: string; readonly name: string; readonly input: unknown; readonly thread?: string }
   /**
    * The app's on-device ear while awake: a partial or final transcript of what
    * Kevin is saying, ~100–200 ms behind his speech. `at` is ms since epoch when the

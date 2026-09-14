@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResult } from "@jarhead/hands";
 import { FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, type DaemonMessage } from "../wire.ts";
-import { DaemonServer, Lifeline, type EngineLike } from "../server.ts";
+import { DaemonServer, Lifeline, type EngineLike, type ToolHost } from "../server.ts";
 import { DaemonClient } from "../client.ts";
 
 test("frames survive arbitrary chunking and reject oversize", () => {
@@ -32,15 +32,18 @@ class FakeEngine extends EventEmitter implements EngineLike {
   pids: number[] = [];
   levels: number[] = [];
   micPermission = "unknown";
-  ledger = {
+  ledger: EngineLike["ledger"] = {
     read: () => [{ at: 1, type: "problem", text: "x" }],
     days: () => ["2026-09-09.jsonl", "2026-09-10.jsonl"],
     sessions: () => [{ id: "sess_a", day: "2026-09-10", startedAt: 1, closedAt: 9, reason: "paused", usageSeconds: 8, heard: 1, said: 1, delegations: 0, title: "hi" }],
     readSession: (id: string) => (id === "sess_a" ? [{ at: 1, type: "session.started", sessionId: "sess_a", voice: "cedar" }, { at: 9, type: "pause", sessionId: "sess_a", usageSeconds: 8 }] : []),
+    search: () => [],
+    readChain: () => ({ rows: [], truncated: false }),
   };
+  memory: EngineLike["memory"] = { list: () => [], search: async () => [] };
   config = { stateDir: "/tmp/jh-test" };
   toolCalls: { name: string; input: unknown }[] = [];
-  /** `attached` undefined = a runner that does not say (older engines); false = no task attached, tool.run is refused. */
+  /** `attached` undefined = a runner that does not say; false = no task attached, tool.run is refused. */
   runner: { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } = {
     run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
       this.toolCalls.push({ name, input });
@@ -50,22 +53,22 @@ class FakeEngine extends EventEmitter implements EngineLike {
       return { result: { kind: "text", text: `${name} ran with ${JSON.stringify(input)}` } };
     },
   };
-  /** Worker lane runners by id (`runnerFor`); a worker's call must land here and never in `runner`. */
-  workerRunners = new Map<string, { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> }>();
-  workerCalls: { worker: string; name: string; input: unknown }[] = [];
-  runnerFor(worker: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } | undefined {
-    return this.workerRunners.get(worker);
+  /** Thread lane runners by id (`runnerFor`); a thread's call must land here and never in `runner`. */
+  threadRunners = new Map<string, { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> }>();
+  threadCalls: { thread: string; name: string; input: unknown }[] = [];
+  runnerFor(threadId: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } | undefined {
+    return this.threadRunners.get(threadId);
   }
-  /** A worker whose lane runner answers with its own id, so a test can tell whose hands ran. */
-  addWorker(id: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } {
+  /** A thread whose lane runner answers with its own id, so a test can tell whose hands ran. */
+  addThread(id: string): { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } {
     const runner = {
       attached: true,
       run: async (name: string, input: unknown): Promise<{ result: ToolResult }> => {
-        this.workerCalls.push({ worker: id, name, input });
+        this.threadCalls.push({ thread: id, name, input });
         return { result: { kind: "text", text: `${id} ran ${name}` } };
       },
     };
-    this.workerRunners.set(id, runner);
+    this.threadRunners.set(id, runner);
     return runner;
   }
   snapshot(): unknown {
@@ -80,15 +83,12 @@ class FakeEngine extends EventEmitter implements EngineLike {
   reportInputLevel(level: number): void {
     this.levels.push(level);
   }
-  setMicrophonePermission(state: string): void {
-    this.micPermission = state;
-  }
-  /** Every `permission` message, as the engine would see it; the microphone still lands in its own field. */
+  /** Every `permission` message, as the engine would see it; the microphone is one of the rows. */
   permissionCalls: { which: string; state: string; detail?: string }[] = [];
   permissionLists: unknown[][] = [];
   setPermission(which: string, state: "granted" | "denied" | "unknown", detail?: string): void {
     this.permissionCalls.push({ which, state, ...(detail !== undefined ? { detail } : {}) });
-    if (which === "microphone") this.setMicrophonePermission(state);
+    if (which === "microphone") this.micPermission = state;
   }
   setPermissions(all: unknown[]): void {
     this.permissionLists.push(all);
@@ -121,7 +121,7 @@ test("server and client round-trip control, audio, and ledger over a unix socket
   assert.deepEqual(messages.map((m) => m.type), ["hello", "snapshot"]);
   assert.deepEqual(engine.pids, [4242]);
 
-  client.sendJson({ type: "command", command: { type: "wake" } });
+  client.sendJson({ type: "command", command: { type: "go" } });
   client.sendJson({ type: "command", command: { type: "nonsense" } as never });
   client.sendJson({ type: "mic-level", level: 0.4 });
   client.sendJson({ type: "permission", which: "microphone", state: "granted" });
@@ -132,7 +132,7 @@ test("server and client round-trip control, audio, and ledger over a unix socket
   client.sendJson({ type: "ledger.session", id: "r4", sessionId: "sess_a" });
   client.sendJson({ type: "ledger.session", id: "r5", sessionId: "nope" });
   await new Promise((r) => setTimeout(r, 50));
-  assert.deepEqual(engine.commands, [{ type: "wake" }]);
+  assert.deepEqual(engine.commands, [{ type: "go" }]);
   assert.deepEqual(engine.levels, [0.4]);
   assert.equal(engine.micPermission, "granted");
   assert.equal(engine.mic[0]?.length, 4800);
@@ -191,7 +191,7 @@ test("ping is answered with a pong carrying the same id and a wall-clock `at`, t
   await server.close();
 });
 
-test("permission and permissions messages reach the engine as sent; a non-array list is dropped; an older engine still gets the microphone", async () => {
+test("permission and permissions messages reach the engine as sent; a non-array list is dropped", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
@@ -217,30 +217,11 @@ test("permission and permissions messages reach the engine as sent; a non-array 
     { which: "contacts", state: "granted" },
     { which: "microphone", state: "granted" },
   ]);
-  assert.equal(engine.micPermission, "granted", "the microphone still lands in its own field");
+  assert.equal(engine.micPermission, "granted", "the microphone reaches the engine as a row like any other");
   assert.deepEqual(engine.permissionLists, [all], "the list arrives as sent; a non-array is dropped");
 
-  // An engine without setPermission (an older fake): the microphone is still delivered, other kinds are dropped.
-  const legacy = new FakeEngine();
-  Object.defineProperty(legacy, "setPermission", { value: undefined });
-  Object.defineProperty(legacy, "setPermissions", { value: undefined });
-  const legacyPath = join(dir, "l.sock");
-  const legacyServer = new DaemonServer(legacy, legacyPath);
-  await legacyServer.listen();
-  const legacyClient = new DaemonClient(legacyPath);
-  await legacyClient.connect({ pid: 8 });
-  legacyClient.sendJson({ type: "permission", which: "contacts", state: "denied" });
-  legacyClient.sendJson({ type: "permission", which: "microphone", state: "denied" });
-  legacyClient.sendJson({ type: "permissions", all });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(legacy.micPermission, "denied");
-  assert.equal(legacy.permissionCalls.length, 0);
-  assert.equal(legacy.permissionLists.length, 0);
-
   client.close();
-  legacyClient.close();
   await server.close();
-  await legacyServer.close();
 });
 
 test("tool.run goes through the engine's runner and answers the asking client only; unknown names are refused", async () => {
@@ -306,11 +287,11 @@ async function until(check: () => boolean, what: string, ms = 3000): Promise<voi
   }
 }
 
-test("tool.run with a worker goes to engine.runnerFor(worker) and never the main runner; unknown, malformed and unattached workers are refused in the runner's refusal shape", async () => {
+test("tool.run with a thread goes to engine.runnerFor(threadId) and never the main runner; unknown, malformed and unattached threads are refused in the runner's refusal shape", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
-  const spotify = engine.addWorker("w_spotify");
+  const spotify = engine.addThread("t_spotify");
   const server = new DaemonServer(engine, path);
   await server.listen();
   const bridge = new DaemonClient(path);
@@ -320,66 +301,64 @@ test("tool.run with a worker goes to engine.runnerFor(worker) and never the main
   const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
 
   const play = { script: 'tell application "Spotify" to play' };
-  bridge.sendJson({ type: "tool.run", id: "w1", name: "applescript", input: play, worker: "w_spotify" });
-  // A worker the engine does not have: finished, stopped or never started.
-  bridge.sendJson({ type: "tool.run", id: "w2", name: "left_click", input: { coordinate: [1, 1] }, worker: "w_gone" });
-  // A worker id that is not a string, and one that is empty: neither may reach any runner.
-  bridge.sendJson({ type: "tool.run", id: "w3", name: "left_click", input: { coordinate: [1, 1] }, worker: 7 } as never);
-  bridge.sendJson({ type: "tool.run", id: "w4", name: "frontmost_app", input: {}, worker: "" });
-  // No worker: the main brain's call, as before.
+  bridge.sendJson({ type: "tool.run", id: "w1", name: "applescript", input: play, thread: "t_spotify" });
+  // A thread the engine does not have: finished, stopped or never started.
+  bridge.sendJson({ type: "tool.run", id: "w2", name: "left_click", input: { coordinate: [1, 1] }, thread: "t_gone" });
+  // A thread id that is not a string, and one that is empty: neither may reach any runner.
+  bridge.sendJson({ type: "tool.run", id: "w3", name: "left_click", input: { coordinate: [1, 1] }, thread: 7 } as never);
+  bridge.sendJson({ type: "tool.run", id: "w4", name: "frontmost_app", input: {}, thread: "" });
+  // No thread: the main brain's call.
   bridge.sendJson({ type: "tool.run", id: "w5", name: "frontmost_app", input: {} });
   // The tool table is checked first, whoever asks.
-  bridge.sendJson({ type: "tool.run", id: "w6", name: "format_disk", input: {}, worker: "w_spotify" });
+  bridge.sendJson({ type: "tool.run", id: "w6", name: "format_disk", input: {}, thread: "t_spotify" });
   await until(() => results().length === 6, "six tool results");
-  // The worker's lane lost its task (cancelled, budget cut): the same refusal the main runner gives.
+  // The thread's lane lost its task (cancelled, budget cut): the same refusal the main runner gives.
   spotify.attached = false;
-  bridge.sendJson({ type: "tool.run", id: "w7", name: "applescript", input: play, worker: "w_spotify" });
+  bridge.sendJson({ type: "tool.run", id: "w7", name: "applescript", input: play, thread: "t_spotify" });
   await until(() => results().length === 7, "the seventh tool result");
 
   const byId = new Map(results().map((r) => [r.id, r.result]));
-  assert.deepEqual(byId.get("w1"), { kind: "text", text: "w_spotify ran applescript" });
+  assert.deepEqual(byId.get("w1"), { kind: "text", text: "t_spotify ran applescript" });
   assert.equal(byId.get("w2")?.kind, "error");
-  assert.match((byId.get("w2") as { message: string }).message, /^refused: no worker w_gone is running in Jarhead; left_click was not run \(it finished, was stopped, or never started\)$/);
-  assert.match((byId.get("w3") as { message: string }).message, /^refused: malformed worker id; left_click was not run$/);
-  assert.match((byId.get("w4") as { message: string }).message, /^refused: malformed worker id; frontmost_app was not run$/);
+  assert.match((byId.get("w2") as { message: string }).message, /^refused: no thread t_gone is running in Jarhead; left_click was not run \(it finished, was stopped, or never started\)$/);
+  assert.match((byId.get("w3") as { message: string }).message, /^refused: malformed thread id; left_click was not run$/);
+  assert.match((byId.get("w4") as { message: string }).message, /^refused: malformed thread id; frontmost_app was not run$/);
   assert.match((byId.get("w5") as { text: string }).text, /frontmost_app ran/);
   assert.match((byId.get("w6") as { message: string }).message, /unknown tool format_disk/);
   assert.match((byId.get("w7") as { message: string }).message, /^refused: no task is running in Jarhead; applescript was not run \(Kevin stopped the task, or it finished\)$/);
-  assert.deepEqual(engine.workerCalls, [{ worker: "w_spotify", name: "applescript", input: play }], "only the routed call reached the worker's lane");
-  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app"], "the main runner saw the main call and no worker's");
+  assert.deepEqual(engine.threadCalls, [{ thread: "t_spotify", name: "applescript", input: play }], "only the routed call reached the thread's lane");
+  assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app"], "the main runner saw the main call and no thread's");
 
-  // An engine without runnerFor (older engines, no workers): every worker call is refused; main calls still run.
-  const legacy = new FakeEngine();
-  Object.defineProperty(legacy, "runnerFor", { value: undefined });
-  const legacyPath = join(dir, "l.sock");
-  const legacyServer = new DaemonServer(legacy, legacyPath);
-  await legacyServer.listen();
-  const legacyBridge = new DaemonClient(legacyPath);
-  const legacyGot: DaemonMessage[] = [];
-  legacyBridge.on("message", (m) => legacyGot.push(m));
-  await legacyBridge.connect({ pid: 2 });
-  legacyBridge.sendJson({ type: "tool.run", id: "l1", name: "frontmost_app", input: {}, worker: "w_spotify" });
-  legacyBridge.sendJson({ type: "tool.run", id: "l2", name: "frontmost_app", input: {} });
-  await until(() => legacyGot.filter((m) => m.type === "tool.result").length === 2, "two legacy tool results");
-  const legacyById = new Map(legacyGot.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result").map((r) => [r.id, r.result]));
-  assert.match((legacyById.get("l1") as { message: string }).message, /^refused: no worker w_spotify is running in Jarhead/);
-  assert.equal(legacyById.get("l2")?.kind, "text");
-  assert.deepEqual(legacy.toolCalls.map((c) => c.name), ["frontmost_app"]);
+  // An engine with no thread running: every stamped call is refused as unknown; main calls still run.
+  const idle = new FakeEngine();
+  const idlePath = join(dir, "i.sock");
+  const idleServer = new DaemonServer(idle, idlePath);
+  await idleServer.listen();
+  const idleBridge = new DaemonClient(idlePath);
+  const idleGot: DaemonMessage[] = [];
+  idleBridge.on("message", (m) => idleGot.push(m));
+  await idleBridge.connect({ pid: 2 });
+  idleBridge.sendJson({ type: "tool.run", id: "i1", name: "frontmost_app", input: {}, thread: "t_spotify" });
+  idleBridge.sendJson({ type: "tool.run", id: "i2", name: "frontmost_app", input: {} });
+  await until(() => idleGot.filter((m) => m.type === "tool.result").length === 2, "two tool results from the idle engine");
+  const idleById = new Map(idleGot.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result").map((r) => [r.id, r.result]));
+  assert.match((idleById.get("i1") as { message: string }).message, /^refused: no thread t_spotify is running in Jarhead/);
+  assert.equal(idleById.get("i2")?.kind, "text");
+  assert.deepEqual(idle.toolCalls.map((c) => c.name), ["frontmost_app"]);
 
   bridge.close();
-  legacyBridge.close();
+  idleBridge.close();
   await server.close();
-  await legacyServer.close();
+  await idleServer.close();
 });
 
-test("a server over one brain's runner-only engine: runnerFor knows exactly its worker id — that id routes, every other id is refused, no worker still hits runner", async () => {
-  // The shape CodexBrain's own tool socket has outside the daemon process (codex.ts
-  // ensureToolSocket → runnerOnlyEngine): one runner, one worker id at most. A worker brain
-  // there names its id on every frame; the server must hand those to the same runner and
-  // nothing else to it.
+test("a server over a ToolHost (one brain's private tool socket): runnerFor knows exactly its thread id — that id routes, every other id is refused, no thread still hits runner; the other frames are inert", async () => {
+  // The shape CodexBrain's own tool socket has outside the daemon process: one runner, one
+  // thread id at most. A thread's brain there names its id on every frame; the server must
+  // hand those to the same runner and nothing else to it.
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
-  const calls: { name: string; worker?: string }[] = [];
+  const calls: { name: string }[] = [];
   const runner = {
     attached: true,
     run: async (name: string): Promise<{ result: ToolResult }> => {
@@ -387,34 +366,40 @@ test("a server over one brain's runner-only engine: runnerFor knows exactly its 
       return { result: { kind: "text", text: `${name} ran on the one runner` } };
     },
   };
-  const one = new FakeEngine();
-  one.runner = runner;
-  one.runnerFor = (w: string) => (w === "w_slack" ? runner : undefined);
-  const server = new DaemonServer(one, path);
+  const host: ToolHost = { runner, runnerFor: (threadId) => (threadId === "t_slack" ? runner : undefined) };
+  const server = new DaemonServer(host, path);
   await server.listen();
   const bridge = new DaemonClient(path);
   const got: DaemonMessage[] = [];
   bridge.on("message", (m) => got.push(m));
   await bridge.connect({ pid: 1 });
   const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
-  bridge.sendJson({ type: "tool.run", id: "s1", name: "frontmost_app", input: {}, worker: "w_slack" });
-  bridge.sendJson({ type: "tool.run", id: "s2", name: "frontmost_app", input: {}, worker: "w_spotify" });
+  bridge.sendJson({ type: "tool.run", id: "s1", name: "frontmost_app", input: {}, thread: "t_slack" });
+  bridge.sendJson({ type: "tool.run", id: "s2", name: "frontmost_app", input: {}, thread: "t_spotify" });
   bridge.sendJson({ type: "tool.run", id: "s3", name: "frontmost_app", input: {} });
-  await until(() => results().length === 3, "three tool results");
+  // Not a tool call: answered empty, never an error, never a crash.
+  bridge.sendJson({ type: "ledger.search", id: "q1", query: "anything" });
+  bridge.sendJson({ type: "memory.list", id: "m1" });
+  bridge.sendJson({ type: "command", command: { type: "go" } });
+  await until(() => results().length === 3 && got.some((m) => m.type === "ledger.hits") && got.some((m) => m.type === "memory.items"), "three tool results and the two empty answers");
   const byId = new Map(results().map((r) => [r.id, r.result]));
   assert.deepEqual(byId.get("s1"), { kind: "text", text: "frontmost_app ran on the one runner" });
-  assert.match((byId.get("s2") as { message: string }).message, /^refused: no worker w_spotify is running in Jarhead; frontmost_app was not run/);
+  assert.match((byId.get("s2") as { message: string }).message, /^refused: no thread t_spotify is running in Jarhead; frontmost_app was not run/);
   assert.deepEqual(byId.get("s3"), { kind: "text", text: "frontmost_app ran on the one runner" });
-  assert.equal(calls.length, 2, "the worker's own call and the plain call ran; the stranger's did not");
+  assert.equal(calls.length, 2, "the thread's own call and the plain call ran; the stranger's did not");
+  assert.deepEqual(got.find((m) => m.type === "ledger.hits"), { type: "ledger.hits", id: "q1", hits: [] });
+  assert.deepEqual(got.find((m) => m.type === "memory.items"), { type: "memory.items", id: "m1", items: [] });
+  assert.equal(got.filter((m) => m.type === "error").length, 0);
+  assert.equal(server.clientCount, 1);
   bridge.close();
   await server.close();
 });
 
-test("tool.run with worker: null on the wire is refused as malformed, never routed to the main runner", async () => {
+test("tool.run with thread: null on the wire is refused as malformed, never routed to the main runner", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
-  engine.addWorker("w_spotify");
+  engine.addThread("t_spotify");
   const server = new DaemonServer(engine, path);
   await server.listen();
   const bridge = new DaemonClient(path);
@@ -422,28 +407,28 @@ test("tool.run with worker: null on the wire is refused as malformed, never rout
   bridge.on("message", (m) => got.push(m));
   await bridge.connect({ pid: 1 });
   // JSON.stringify keeps a null where it drops an undefined: a bridge that sets the key to null sends it.
-  bridge.sendJson({ type: "tool.run", id: "n1", name: "frontmost_app", input: {}, worker: null } as never);
+  bridge.sendJson({ type: "tool.run", id: "n1", name: "frontmost_app", input: {}, thread: null } as never);
   await until(() => got.some((m) => m.type === "tool.result"), "the tool result");
   const r = got.find((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result")!;
   assert.equal(r.id, "n1");
-  assert.match((r.result as { message: string }).message, /^refused: malformed worker id; frontmost_app was not run$/);
+  assert.match((r.result as { message: string }).message, /^refused: malformed thread id; frontmost_app was not run$/);
   assert.equal(engine.toolCalls.length, 0, "the main runner never saw it");
-  assert.equal(engine.workerCalls.length, 0);
+  assert.equal(engine.threadCalls.length, 0);
   bridge.close();
   await server.close();
 });
 
 test("an engine whose runnerFor throws answers the asking client with an error result and the server keeps serving", async () => {
-  // runTool is fire-and-forget; a throw from the engine's pool lookup (a worker being cut
+  // runTool is fire-and-forget; a throw from the engine's pool lookup (a thread being cut
   // as its brain calls) must not become the unhandled rejection that would exit the daemon.
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
-  engine.runnerFor = (w: string) => {
-    if (w === "w_boom") throw new Error("the pool is mid-cut");
-    return engine.workerRunners.get(w);
+  engine.runnerFor = (threadId: string) => {
+    if (threadId === "t_boom") throw new Error("the pool is mid-cut");
+    return engine.threadRunners.get(threadId);
   };
-  engine.addWorker("w_ok");
+  engine.addThread("t_ok");
   const server = new DaemonServer(engine, path);
   await server.listen();
   const bridge = new DaemonClient(path);
@@ -451,23 +436,23 @@ test("an engine whose runnerFor throws answers the asking client with an error r
   bridge.on("message", (m) => got.push(m));
   await bridge.connect({ pid: 1 });
   const results = () => got.filter((m): m is Extract<DaemonMessage, { type: "tool.result" }> => m.type === "tool.result");
-  bridge.sendJson({ type: "tool.run", id: "b1", name: "frontmost_app", input: {}, worker: "w_boom" });
+  bridge.sendJson({ type: "tool.run", id: "b1", name: "frontmost_app", input: {}, thread: "t_boom" });
   await until(() => results().length === 1, "the refusal");
   assert.equal(results()[0]!.id, "b1");
   assert.match((results()[0]!.result as { message: string }).message, /^refused: the pool is mid-cut; frontmost_app was not run$/);
-  // Still up: the next worker call and the next main call both run.
-  bridge.sendJson({ type: "tool.run", id: "b2", name: "frontmost_app", input: {}, worker: "w_ok" });
+  // Still up: the next thread call and the next main call both run.
+  bridge.sendJson({ type: "tool.run", id: "b2", name: "frontmost_app", input: {}, thread: "t_ok" });
   bridge.sendJson({ type: "tool.run", id: "b3", name: "frontmost_app", input: {} });
   await until(() => results().length === 3, "two more results");
   const byId = new Map(results().map((r) => [r.id, r.result]));
-  assert.deepEqual(byId.get("b2"), { kind: "text", text: "w_ok ran frontmost_app" });
+  assert.deepEqual(byId.get("b2"), { kind: "text", text: "t_ok ran frontmost_app" });
   assert.equal(byId.get("b3")?.kind, "text");
   assert.equal(server.clientCount, 1, "the connection survived the throw");
   bridge.close();
   await server.close();
 });
 
-test("commands on the wire: worker.stop and sleep with a cause pass isEngineCommand and reach the engine as sent; a tool name is not a command", async () => {
+test("commands on the wire: thread.stop and sleep with a cause pass isEngineCommand and reach the engine as sent; a tool name is not a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
@@ -477,16 +462,16 @@ test("commands on the wire: worker.stop and sleep with a cause pass isEngineComm
   const got: DaemonMessage[] = [];
   app.on("message", (m) => got.push(m));
   await app.connect({ pid: 1 });
-  // The Console's Stop on a worker row; the blob dropped into the notch; a spoken cue with its phrase; the bare sleep of older surfaces.
+  // The Console's Stop on a thread card; the blob dropped into the notch; a spoken cue with its phrase; the app's bare sleep.
   const sent = [
-    { type: "worker.stop", workerId: "w_spotify" },
+    { type: "thread.stop", threadId: "t_spotify" },
     { type: "sleep", cause: "dock" },
     { type: "sleep", cause: "said", phrase: "go to sleep" },
     { type: "sleep" },
   ];
   for (const command of sent) app.sendJson({ type: "command", command });
-  // worker_start is a brain tool, not a surface command: refused as malformed, never dispatched.
-  app.sendJson({ type: "command", command: { type: "worker_start", name: "Spotify" } as never });
+  // thread_start is a brain tool, not a surface command: refused as malformed, never dispatched.
+  app.sendJson({ type: "command", command: { type: "thread_start", name: "Spotify" } as never });
   await until(() => got.some((m) => m.type === "error"), "the malformed-command error");
   assert.deepEqual(engine.commands, sent, "each command arrives intact, cause and phrase included");
   assert.deepEqual(got.filter((m) => m.type === "error"), [{ type: "error", message: "malformed command" }]);
@@ -661,25 +646,25 @@ test("a re-open from the same pane never double-counts: opened twice, closed onc
   await server.close();
 });
 
-test("tool.run with a thread id (t_…) goes to engine.runnerFor exactly as a worker id does: the wire field keeps its name, the value is the thread; an unknown thread id is refused the same way", async () => {
+test("tool.run with a minted thread id (newId(\"t\")) goes to engine.runnerFor; an unknown thread id is refused; the main brain's call has no thread", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
   const slack = "t_mp0z3k9pk3q9zx"; // newId("t"): a base36 time and six random chars
-  engine.addWorker(slack);
+  engine.addThread(slack);
   const server = new DaemonServer(engine, path);
   await server.listen();
   const bridge = await viewer(path, 1);
   const results = () => bridge.of("tool.result") as Extract<DaemonMessage, { type: "tool.result" }>[];
-  bridge.client.sendJson({ type: "tool.run", id: "t1", name: "click_element", input: { label: "Send" }, worker: slack });
-  bridge.client.sendJson({ type: "tool.run", id: "t2", name: "frontmost_app", input: {}, worker: "t_mp0z3k9pgone00" });
+  bridge.client.sendJson({ type: "tool.run", id: "t1", name: "click_element", input: { label: "Send" }, thread: slack });
+  bridge.client.sendJson({ type: "tool.run", id: "t2", name: "frontmost_app", input: {}, thread: "t_mp0z3k9pgone00" });
   bridge.client.sendJson({ type: "tool.run", id: "t3", name: "frontmost_app", input: {} });
   await until(() => results().length === 3, "three tool results");
   const byId = new Map(results().map((r) => [r.id, r.result]));
   assert.deepEqual(byId.get("t1"), { kind: "text", text: `${slack} ran click_element` }, "the thread's own lane ran it");
-  assert.match((byId.get("t2") as { message: string }).message, /^refused: no worker t_mp0z3k9pgone00 is running in Jarhead; frontmost_app was not run/);
+  assert.match((byId.get("t2") as { message: string }).message, /^refused: no thread t_mp0z3k9pgone00 is running in Jarhead; frontmost_app was not run/);
   assert.equal(byId.get("t3")?.kind, "text");
-  assert.deepEqual(engine.workerCalls, [{ worker: slack, name: "click_element", input: { label: "Send" } }]);
+  assert.deepEqual(engine.threadCalls, [{ thread: slack, name: "click_element", input: { label: "Send" } }]);
   assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app"], "the main runner saw only the main brain's call");
   bridge.client.close();
   await server.close();
@@ -711,7 +696,7 @@ test("a conversation page that names no thread or agent is routed nowhere and do
   await server.close();
 });
 
-test("commands on the wire: all eight thread.* commands pass isEngineCommand and reach the engine as sent (viewer rewritten on open/close); worker.stop stays; a thread tool name or an unknown thread.* verb is malformed", async () => {
+test("commands on the wire: all eight thread.* commands pass isEngineCommand and reach the engine as sent (viewer rewritten on open/close); a thread tool name and an unknown thread.* verb are malformed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
@@ -727,7 +712,6 @@ test("commands on the wire: all eight thread.* commands pass isEngineCommand and
     { type: "thread.resume", threadId: "t_spotify" },
     { type: "thread.answer", threadId: "t_slack", yes: true },
     { type: "thread.say", threadId: "t_spotify", text: "skip this song" },
-    { type: "worker.stop", workerId: "w_7f3a" },
   ];
   for (const command of sent) app.client.sendJson({ type: "command", command });
   // thread_start is a brain tool; thread.nonsense is nobody's verb: neither is dispatched.

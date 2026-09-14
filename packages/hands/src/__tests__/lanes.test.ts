@@ -61,11 +61,11 @@ test("two lanes ask: the first is the root's pending, the second is queued with 
   // The rendered result tells the second brain to stop and wait, not retry.
   const rendered = desk.render(b);
   assert.equal(rendered.kind, "needs-confirmation");
-  assert.match((rendered as { question: string }).question, /^Queued behind Jarhead's question: left click on "Send · AXButton" in Slack\. Kevin will be asked after that one; stop and wait \(worker_wait\), do not retry$/);
+  assert.match((rendered as { question: string }).question, /^Queued behind Jarhead's question: left click on "Send · AXButton" in Slack\. Kevin will be asked after that one; stop and wait \(thread_wait\), do not retry$/);
   assert.equal(desk.render(a), a, "a floor question renders as it is");
 });
 
-test("consume is false for a non-floor lane even with the same member and target; the floor's lane spends the yes, then the next question is promoted and spoken once, naming its worker", async () => {
+test("consume is false for a non-floor lane even with the same member and target; the floor's lane spends the yes, then the next question is promoted and spoken once, naming its thread", async () => {
   const { clock, root, desk, spoken } = world();
   const slack = laneToolset(desk, "jarhead", "Jarhead", "Slack", clock);
   const spotify = laneToolset(desk, "w_1", "Spotify", "Spotify", clock);
@@ -143,7 +143,7 @@ test("dropQuestion (Kevin moved on) drops the floor AND the queue — through a 
   assert.equal(desk.floorLane(), undefined);
 });
 
-test("the main lane queues too: with a worker's question on the floor, Jarhead's own gated action gets a queued_<n> id whose toolset text is still the policy's (the runner renders the queued one), nothing is spoken, and Kevin's yes arms the worker's question", async () => {
+test("the main lane queues too: with a thread's question on the floor, Jarhead's own gated action gets a queued_<n> id whose toolset text is still the policy's (the runner renders the queued one), nothing is spoken, and Kevin's yes arms the thread's question", async () => {
   const { clock, root, desk, spoken } = world();
   const spotify = laneToolset(desk, "w_1", "Spotify", "Spotify", clock);
   const slack = laneToolset(desk, "jarhead", "Jarhead", "Slack", clock);
@@ -157,10 +157,10 @@ test("the main lane queues too: with a worker's question on the floor, Jarhead's
   assert.equal(mine.kind, "needs-confirmation");
   assert.equal((mine as { pendingId: string }).pendingId, "queued_1");
   assert.doesNotMatch((mine as { question: string }).question, /^Queued behind/, "the gate builds the question from the policy decision: the desk cannot reach it");
-  assert.match((desk.render(mine) as { question: string }).question, /^Queued behind Spotify's question: left click on "Send · AXButton" in Spotify\. Kevin will be asked after that one; stop and wait \(worker_wait\), do not retry$/);
+  assert.match((desk.render(mine) as { question: string }).question, /^Queued behind Spotify's question: left click on "Send · AXButton" in Spotify\. Kevin will be asked after that one; stop and wait \(thread_wait\), do not retry$/);
   assert.deepEqual(spoken, [], "Kevin hears one question");
-  assert.equal(root.pending?.id, (first as { pendingId: string }).pendingId, "the worker's question is the one on the root");
-  // Kevin: "yes" — the Delegator arms the root: the worker's question, not Jarhead's.
+  assert.equal(root.pending?.id, (first as { pendingId: string }).pendingId, "the thread's question is the one on the root");
+  // Kevin: "yes" — the Delegator arms the root: the thread's question, not Jarhead's.
   assert.equal(root.arm()?.id, (first as { pendingId: string }).pendingId);
   assert.equal(desk.lane("jarhead", "Jarhead").consume("left_click", { coordinate: [100, 100] }), false, "not Jarhead's yes");
   assert.equal((await spotify.ts.run("left_click", { coordinate: [100, 100] })).kind, "text");
@@ -268,7 +268,7 @@ test("TTL: a floor question that expired unanswered takes the queue with it; a q
   assert.equal(desk.floorLane(), "w_3");
   assert.equal(spoken.length, 2);
   desk.dropQuestion();
-  // Slack queues behind Jarhead, then its worker ends: nothing of its stays; Jarhead's question does.
+  // Slack queues behind Jarhead, then its thread ends: nothing of its stays; Jarhead's question does.
   a.ask("send the message in Mail", "left_click", { coordinate: [1, 1] });
   const c = desk.lane("w_2", "Slack");
   c.ask('type "hi" in Slack', "type", { text: "hi" });

@@ -133,7 +133,9 @@ export function buildExtractInput(rows: readonly LedgerRow[], opts: BuildExtract
         return;
       }
       default:
-        return; // grant, delegation.step, problem, agent, worker, … are never a source
+        // grant, delegation.step, problem, agent, … are never a source — nor is any row type this
+        // switch does not name: the `worker` rows in day files from before 2026-09-13 are skipped here.
+        return;
     }
   });
 

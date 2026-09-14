@@ -166,7 +166,7 @@ test("sessions: a '?' closed row right after a lost session is left out rather t
   const ledger = fresh();
   ledger.append({ at: local(11, 8, 0), type: "session.started", sessionId: "A", voice: "cedar" });
   ledger.append({ at: local(11, 8, 5), type: "session.started", sessionId: "B", voice: "cedar" });
-  // Legacy: the id was gone at close time. It could be A's (never closed) or B's — nobody's, then.
+  // A "?" close (day files from before 2026-09-13): the id was gone at close time. It could be A's (never closed) or B's — nobody's, then.
   ledger.append({ at: local(11, 8, 6), type: "session.closed", sessionId: "?", reason: "connection_lost", usageSeconds: 300 });
   ledger.append(heard(local(11, 8, 7), "still talking to B"));
 
@@ -215,7 +215,7 @@ test("sessions: the walk is reused while no file changed, and redone when one do
   assert.equal(after[0]?.title, "now with a title");
 });
 
-test("sessions: legacy pause/resume rows without a session and a '?' closed row go to the open session", () => {
+test("sessions: pause/resume rows without a session and a '?' closed row (day files from before 2026-09-13) go to the open session", () => {
   const ledger = fresh();
   ledger.append({ at: local(11, 9, 0), type: "session.started", sessionId: "A", voice: "cedar" });
   ledger.append({ at: local(11, 9, 1), type: "pause" } as unknown as LedgerRow);
@@ -600,4 +600,55 @@ test("a hide older than WALK_DAYS still hides: agent.hidden is Kevin's decision 
   assert.deepEqual(ledger.hiddenAgents(), ["sessions:codex:new"]);
   // The old file is read once for its hidden rows and not kept as rows: a second call costs a stat.
   assert.deepEqual(ledger.hiddenAgents(), ["sessions:codex:new"]);
+});
+
+test("before 2026-09-13: a day file with the old row type, a delegation.step whose step carries the old name key, a session.started without language and a torn last line reads without a throw; the old row is neither a session nor a hit; the step lands on its delegation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-ledger-"));
+  const ledger = new Ledger(dir);
+  const t0 = local(11, 9, 0);
+  const d = delegation("dlg_old", local(11, 9, 2));
+  const OLD_TYPE = "worker"; // before 2026-09-13: the row type the threads pass replaced
+  const OLD_KEY = "worker"; // before 2026-09-13: the step key that is `thread` now
+  const oldRow = { at: local(11, 9, 3), type: OLD_TYPE, [OLD_KEY]: { id: "w_old", name: "Spotify", delegationId: "dlg_old", task: "play something quiet", lane: "background", status: "working", startedAt: local(11, 9, 3), steps: 1 } };
+  const oldStep = { at: local(11, 9, 4), type: "delegation.step", delegationId: "dlg_old", step: { id: "s_old", at: local(11, 9, 4), kind: "note", text: "Spotify is playing", [OLD_KEY]: "Spotify" } };
+  const rows = [
+    { at: t0, type: "session.started", sessionId: "live_old", voice: "cedar" }, // before 2026-09-13: no language, no accent
+    heard(local(11, 9, 1), "spotify, play something quiet"),
+    { at: local(11, 9, 2), type: "delegation.created", delegation: d },
+    oldRow,
+    oldStep,
+    { at: local(11, 9, 5), type: "delegation.finished", delegationId: "dlg_old", status: "done", timings: { delegatedAt: local(11, 9, 2), doneAt: local(11, 9, 5) }, summary: "Playing Spotify" },
+    said(local(11, 9, 6), "Playing something quiet."),
+    { at: local(11, 9, 7), type: "session.closed", sessionId: "?", reason: "idle", usageSeconds: 400 },
+  ];
+  const torn = JSON.stringify({ at: local(11, 9, 8), type: "heard", item: item("h_torn", "kevin", "and then the Mac slept", local(11, 9, 8)) }).slice(0, 40);
+  appendFileSync(join(ledger.dir, Ledger.fileNameFor(t0)), `${rows.map((r) => JSON.stringify(r)).join("\n")}\n${torn}`);
+
+  const read = ledger.read(t0);
+  assert.equal(read.length, rows.length, "every whole line parses; the torn one is skipped");
+  assert.equal(read.filter((r) => (r as { type: string }).type === OLD_TYPE).length, 1, "the old row type rides through parse untouched");
+
+  const sessions = ledger.sessions();
+  assert.equal(sessions.length, 1, "the old row is not a session");
+  const s = sessions[0]!;
+  assert.equal(s.id, "live_old");
+  assert.equal(s.closedAt, local(11, 9, 7), "the \"?\" closed row is the open session's");
+  assert.equal(s.usageSeconds, 400);
+  assert.equal(s.heard, 1);
+  assert.equal(s.said, 1);
+  assert.equal(s.delegations, 1);
+  assert.equal(s.title, "spotify, play something quiet");
+
+  const hits = ledger.search("Spotify");
+  assert.deepEqual(hits.map((h) => h.kind).sort(), ["heard", "summary"], "heard text and the summary hit; the old row's task never does");
+  assert.ok(hits.every((h) => h.sessionId === "live_old"));
+
+  const chain = ledger.readChain("live_old");
+  assert.equal(chain.truncated, false);
+  const step = chain.rows.find((r) => r.type === "delegation.step");
+  assert.ok(step && step.type === "delegation.step");
+  assert.equal(step.delegationId, "dlg_old", "the old step still belongs to its delegation");
+  assert.equal(step.step.thread, undefined, "the old name key on the step is not `thread`: the row reads as main's");
+  assert.equal((step.step as unknown as Record<string, unknown>)[OLD_KEY], "Spotify", "and the bytes are what they were");
+  assert.deepEqual(ledger.readSession("live_old").map((r) => r.type), rows.map((r) => r.type), "the session's rows, the old row among them, the torn line gone");
 });

@@ -221,7 +221,7 @@ export function axLabels(tree: AxTreeResult): NonNullable<ScreenState["ax"]> {
     if (!label) continue;
     if (!(n.pressable === true || LABEL_ROLE.test(n.role))) continue;
     if (n.x === undefined || n.y === undefined) continue;
-    const key = `${n.role} ${label.toLowerCase()}`;
+    const key = `${n.role}\u0000${label.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     labels.push({ role: n.role, label, center: { x: Math.round(n.x + (n.w ?? 0) / 2), y: Math.round(n.y + (n.h ?? 0) / 2) }, ...(n.pressable ? { pressable: true } : {}), ...(EDITABLE_ROLE.test(n.role) ? { editable: true } : {}) });
