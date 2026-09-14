@@ -129,6 +129,12 @@ import SwiftUI
 //                    (`settings.voice` · `settings.backend` · `settings.wakeWord`); `settings.model` is
 //                    LocalModelMenu's own. `check-kit` prints the pure placement / menu model / words /
 //                    tip / badge / copy pins. The kit's other scenarios (tip-* … agents-groups) are named
+//     memory-chips = the kit's memory rail (Builder C): the filter with `2 of 7`, the kind chips with
+//                    counts, `chip:fact` → the two fact rows (badge · meter · ⋯ at rest); Settings tab, tall.
+//     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
+//                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
+//     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
+//                    `1 [asks] · 1 done` as its head; two Claude Code rows open above it.
 //                    in console-preview.sh and render today's UI until their builder lands.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
@@ -332,6 +338,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // the window is inactive (a shot behind the lock screen).
         ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
         ConsoleFloatLayer.holdWhileInactive = true
+        // The folds live in memory alone here (a previous run's UserDefaults never leak into a shot);
+        // every list's focus move is a `list-focus:` line.
+        ConsoleFoldStore.persists = false
+        ConsoleListFocus.report = { line in print("list-focus: \(line)") }
         ConsoleTip.report = { [weak self] line in
             self?.tipLog.append(line)
             print("tip: \(line)")
@@ -339,11 +349,21 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
-        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared":
+        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
+            // The kit's `agents-groups`: two Claude Code rows and the Codex group, one of whose sessions
+            // asks — so the folded Codex head reads `1 [asks] · 1 done` above the fold.
+            if scenario == "agents-groups" {
+                let keep: Set<String> = ["sessions:cc:1", "sessions:claude:w1p2", "sessions:codex:1", FakeData.endedId, "sessions:codex:w2p2", "sessions:codex:thread-9"]
+                state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
+                if let i = state.snapshot.agents.firstIndex(where: { $0.id == "sessions:codex:w2p2" }) {
+                    state.snapshot.agents[i].status = .blocked
+                    state.snapshot.agents[i].hint = "blocked"
+                }
+            }
             // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen.
             if scenario == "cleanup" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
@@ -382,7 +402,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
             state.transcripts = fake.transcripts()
-        case "memory":
+        case "memory", "memory-chips":
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
@@ -505,7 +525,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked", "memory", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
+        case "settings", "wake-locked", "memory", "memory-chips", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
              "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "durability":
@@ -567,7 +587,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             + "trace:tab-now@7.8,tab:now@8.0,trace-stop@8.8,"
             + "trace:pick-day@9.0,pick-day:2026-09-10@9.2,trace-stop@10.2,"
             + "trace:show-now-3@10.4,show-now@10.6,trace-stop@11.4"
-        case "cleanup": defaultActions = "trash-open@0.4,hidden-open@0.4"
+        case "cleanup": defaultActions = "check-kit@0.3,trash-open@0.4,hidden-open@0.4"
         // A chain's id is its root session's (the paused one), not the resumed session's.
         case "cleanup-select": defaultActions = "trash-open@0.4,select:\(FakeData.chainPausedId)+\(FakeData.yesterdayId)@0.6"
         case "cleanup-rename": defaultActions = "rename:\(FakeData.pinnedId)@0.5"
@@ -627,6 +647,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8"
         // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
         case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
+        // The kit (Builder C): the memory rail's kind chips (`chip:fact` → 2 rows) and a row's card;
+        // the left rail's search with ↑↓ (the third hit takes the ring, Return opens it — `probe` says
+        // which); the agents grouped per tool with Codex folded (`1 asks`); `cleanup` re-shot with the folds.
+        case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
+        case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
+        case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -3081,6 +3107,7 @@ extension PreviewDelegate {
         expect("copy: a thread's verb carries its name", HelpCopy.stopThread("Slack").hint, "Stop Slack — the others carry on")
         checkTipCards(expect)
         checkKitMenu(expect)
+        failed += checkKitLists()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3196,5 +3223,64 @@ extension PreviewDelegate {
             let hint = HelpCopy.effort(level) ?? ""
             expect("copy: effort \(level)", HelpCopy.violations(HelpCopy.Entry(name: level, hint: hint)).joined(separator: ", ") + (hint.isEmpty ? "empty" : ""), "")
         }
+    }
+}
+
+// MARK: - The kit (Builder C): rows, lists, disclosures — the pure pins
+
+extension PreviewDelegate {
+    /// `ConsoleListModel` (heights · step · typeAhead · kinds · months · keys) and the disclosure
+    /// summaries' words, as `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitLists() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        expect("row height: one line", "\(Int(ConsoleListModel.height(lines: 1, meta: false)))", "28")
+        expect("row height: title + meta", "\(Int(ConsoleListModel.height(lines: 1, meta: true)))", "40")
+        expect("row height: two lines + meta", "\(Int(ConsoleListModel.height(lines: 2, meta: true)))", "56")
+        expect("row height: agents rail", "\(Int(ConsoleListModel.height(lines: 1, meta: true, rail: .agents)))", "44")
+        let ids = ["a", "b", "c"]
+        expect("list step: clamps at the end", ConsoleListModel.step("c", by: 1, in: ids) ?? "nil", "c")
+        expect("list step: clamps at the top", ConsoleListModel.step("a", by: -1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → first on down", ConsoleListModel.step(nil, by: 1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → last on up", ConsoleListModel.step(nil, by: -1, in: ids) ?? "nil", "c")
+        let titles = ["Ballad", "Cedar", "Coral", "Marin"]
+        expect("list typeAhead: next after the highlight", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "c", after: "Cedar") ?? "nil", "Coral")
+        expect("list typeAhead: wraps to the top", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "b", after: "Marin") ?? "nil", "Ballad")
+        expect("list countWord", ConsoleListModel.countWord(shown: 2, of: 7, typing: true) + " / " + ConsoleListModel.countWord(shown: 7, of: 7, typing: false), "2 of 7 / 7")
+        let kinds = ConsoleListModel.memoryKinds(fake?.memoryList(state: "live", limit: 30) ?? [])
+        expect("memory kinds: first-seen order with counts", kinds.map { "\(MemoryWords.kindChip($0.kind)) \($0.count)" }.joined(separator: " · "), "fact 2 · pref 2 · how 1 · who 1 · where 1")
+        expect("memory kinds: every chip word", MemoryKind.allCases.map(MemoryWords.kindChip).joined(separator: ","), "pref,fact,when,how,who,where")
+        let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
+        let months = ConsoleListModel.ledgerMonths(["2026-09-10", "2026-09-09", "2026-08-31", "2025-12-01"], now: sept)
+        expect("ledger months: first-seen, the year only when not this one", months.map { "\($0.title)[\($0.days.count)]" }.joined(separator: " "), "September[2] August[1] December 2025[1]")
+        expect("list keys: ⌘ leaves the key to the window", "\(ConsoleListModel.command(.down, option: false, command: true, typeAhead: true))", "ignore")
+        expect("list keys: ⌥↓ jumps to the end", "\(ConsoleListModel.command(.down, option: true, command: false, typeAhead: true))", "jump(toEnd: true)")
+        expect("list keys: Space is never a yes", "\(ConsoleListModel.command(.space, option: false, command: false, typeAhead: true))", "swallow")
+        expect("list keys: a letter types ahead only without a filter", "\(ConsoleListModel.command(.char("m"), option: false, command: false, typeAhead: false))", "ignore")
+        // The folded heads' words (ConsoleDisclosureSummary): the seven Settings heads, a permission
+        // area, a problem kind, a tool's agents, a ledger month, a fold.
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Audio", text(ConsoleDisclosureSummary.audio(voice: "Cedar", accent: "British")), "Cedar · British")
+        expect("disclosure: Brain", text(ConsoleDisclosureSummary.brain(kind: "Local", model: "qwen3.5:27b", ready: true)), "Local · qwen3.5:27b · [Ready]")
+        expect("disclosure: Leaves the Mac", text(ConsoleDisclosureSummary.leaves(cloud: 2, mac: 2)), "2 cloud · 2 mac")
+        expect("disclosure: Session", text(ConsoleDisclosureSummary.session(home: "Notch", idleMinutes: 10)), "Notch · 10 min")
+        expect("disclosure: Memory", text(ConsoleDisclosureSummary.memory(enabled: true, learnedAgo: "12m")), "[learned 12m]")
+        expect("disclosure: Memory off", text(ConsoleDisclosureSummary.memory(enabled: false, learnedAgo: "12m")), "[off]")
+        expect("disclosure: Retention", text(ConsoleDisclosureSummary.retention(ledgerDays: nil, trashDays: 30)), "forever · 30 d")
+        expect("disclosure: Wake", text(ConsoleDisclosureSummary.wake(enabled: false, phrases: 2)), "[off]")
+        expect("disclosure: Permissions area missing", text(ConsoleDisclosureSummary.permissionGroup(missing: ["Input Monitoring"], granted: ["Accessibility"])), "[1 missing] · Input Monitoring")
+        expect("disclosure: Permissions area granted", text(ConsoleDisclosureSummary.permissionGroup(missing: [], granted: ["Desktop", "Documents"])), "Desktop · Documents")
+        expect("disclosure: Problems kind", text(ConsoleDisclosureSummary.problemGroup(first: "Delegation failed: Codex session refused input")), "Delegation failed: Codex session refused input")
+        expect("disclosure: Ready", text(ConsoleDisclosureSummary.ready(notReady: 0)) + " / " + text(ConsoleDisclosureSummary.ready(notReady: 1)), "[all ok] / [1 missing]")
+        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "1 · [asks] · 2 working")
+        expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, done: 1)), "3 idle")
+        expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
+        expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")
+        expect("fold store: remembers in memory when not persisting", { ConsoleFoldStore.persists = false; ConsoleFoldStore.set("kit.check", false); return "\(ConsoleFoldStore.isOpen("kit.check", default: true))" }(), "false")
+        return failed
     }
 }

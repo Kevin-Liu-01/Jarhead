@@ -2,9 +2,12 @@ import SwiftUI
 import AppKit
 
 // The Memory rail: what Jarhead durably knows about Kevin, as rows he can read, correct and
-// hide. Under Settings › Memory: a search field, the segments Live | Forgotten | Archived,
-// at most thirty rows (kind glyph · the sentence · `seen 4× · 3d`), and each row's verbs —
-// Edit (inline; Return commits), Forget (a live row), Restore (a forgotten or archived one).
+// hide. Under Settings › Memory: a filter field with `k of n`, the segments Live | Forgotten |
+// Archived, the kind chips with counts (`All 7 · fact 2 · pref 2 …`), at most thirty `ConsoleRow`s
+// (kind glyph · the sentence on two lines · the kind badge · `seen 4× · 3d` · the importance
+// meter · ⋯ at rest; the scores, subjects and sources as the row's card), ↑↓ ⏎ over the rows
+// (`ConsoleListKeys`; Return edits), and each row's verbs — Edit (inline; Return commits),
+// Forget (a live row), Restore (a forgotten or archived one).
 // Never a deletion verb: Forget and Archive are states in Jarhead's own append-only record;
 // Restore undoes them; the store only grows. In the Now rail, "Memory · used this turn" lists what
 // the last delegation was given (MemorySummary.lastUsedIds) — the one lever against a
@@ -35,6 +38,46 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Words (pinned by check-kit)
+
+enum MemoryWords {
+    /// The kind chip's word and the row's badge: one short word per kind.
+    static func kindChip(_ kind: MemoryKind) -> String {
+        switch kind {
+        case .preference: return "pref"
+        case .fact: return "fact"
+        case .episode: return "when"
+        case .procedure: return "how"
+        case .contact: return "who"
+        case .place: return "where"
+        }
+    }
+    static let all = "All"
+    static let searchPlaceholder = "Filter memory"
+    static func filterPlaceholder(_ n: Int) -> String { n > 0 ? "Filter \(n) memories" : searchPlaceholder }
+    static let clearSearch = "Clear the filter"
+    static let reading = "Reading…"
+    static let restore = "Restore"
+    static let restoreArchivedHelp = "Back from Archived — Jarhead uses it again"
+    static let restoreForgottenHelp = "Back from Forgotten — Jarhead uses it again"
+    static let edit = "Edit"
+    static let kind = "Kind"
+    static let forget = "Forget"
+    static let editPlaceholder = "One sentence about Kevin"
+    static let editHelp = "Return keeps the change — Esc cancels"
+    static let editLabel = "Memory text"
+    static let nothingUsed = "Nothing used yet."
+    static func usedNotListed(_ n: Int) -> String { "Used \(n); the rows are not on the daemon's list." }
+    static let opensSettings = "Opens Settings › Memory"
+    static let live = "live"
+    static let importance = "importance"
+    static let confidence = "confidence"
+    static let subjects = "subjects"
+    static let source = "source"
+    static let origin = "origin"
+    static let mergedInto = "merged into"
+}
+
 // MARK: - Formatting (pure)
 
 enum MemoryFormat {
@@ -57,6 +100,19 @@ enum MemoryFormat {
         for s in item.sources.suffix(4) { lines.append("\(ConsoleFormat.fullDate(s.at)) · \(s.type)") }
         if let into = item.mergedInto { lines.append("merged into \(ConsoleFormat.shortId(into))") }
         return lines.joined(separator: "\n")
+    }
+
+    /// The row's card (tier 2): the kind with its state as the badge, the sentence and its
+    /// subjects, then the scores, how often it was met, every source and its origin as foot rows.
+    static func card(_ item: MemoryItem, now: Double) -> ConsoleRowCard {
+        var card = ConsoleRowCard(title: MemoryWords.kindChip(item.kind), badge: .word(item.state.rawValue), lines: [item.text])
+        if !item.subjects.isEmpty { card.lines.append("\(MemoryWords.subjects): \(item.subjects.joined(separator: ", "))") }
+        card.foot = [ConsoleRowCard.Foot(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
+                     ConsoleRowCard.Foot(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
+        for s in item.sources.suffix(4) { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
+        card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
+        if let into = item.mergedInto { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
+        return card
     }
 
     /// 0.8 → "0.8"; the scores are shown to one decimal.
@@ -118,14 +174,16 @@ struct MemoryRailList: View {
     /// Live | Forgotten | Archived (merged items sit under the item they were folded into).
     @State private var segment: MemoryState = .live
     @State private var query = ""
-    /// nil until the first answer; then what the segment lists.
+    /// One kind, or every kind (the chips).
+    @State private var kindFilter: MemoryKind?
+    /// nil until the first answer; then what the segment lists (before the kind filter).
     @State private var items: [MemoryItem]?
     @State private var loading = false
     /// Why the rows are missing (the app's wiring, or the daemon), when they are.
     @State private var gap: Gap?
     @State private var editingId: String?
     @State private var task: Task<Void, Never>?
-    @FocusState private var searchFocused: Bool
+    @StateObject private var focus = ConsoleListFocus()
 
     /// At most this many rows; the search narrows what does not fit.
     static let maxRows = 30
@@ -150,52 +208,31 @@ struct MemoryRailList: View {
     }
 
     private var segments: [MemoryState] { [.live, .forgotten, .archived] }
+    /// The rows on screen: the segment's answer through the kind filter.
+    private var shown: [MemoryItem] { (items ?? []).filter { kindFilter == nil || $0.kind == kindFilter } }
+    private var total: Int { segment == .live ? (summary?.count ?? items?.count ?? 0) : (items?.count ?? 0) }
+    private var filtering: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty || kindFilter != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            searchField
+            MemoryFilterField(query: $query, placeholder: MemoryWords.filterPlaceholder(total),
+                              count: ConsoleListModel.countWord(shown: shown.count, of: total, typing: filtering),
+                              clear: { query = ""; kindFilter = nil }, move: { step($0) }, submit: { if let id = focus.id { edit(id) } })
             ConsoleSegments(value: segment, options: segments, title: ConsoleTheme.memoryStateLabel,
                             pick: { segment = $0 }, accessibilityLabel: "Memory state: \(ConsoleTheme.memoryStateLabel(segment))")
-            // The rows and the lines that stand in for them crossfade; a row leaving (a Forget) drops away.
-            ZStack(alignment: .topLeading) {
-                if let items, !items.isEmpty {
-                    // Relative times tick slowly; nothing else here needs the clock.
-                    TimelineView(.periodic(from: .now, by: 30)) { ctx in
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(items) { item in
-                                MemoryRow(item: item, now: ctx.date.timeIntervalSince1970 * 1000, editing: editingId == item.id, verbs: verbs(item))
-                                    .transition(Motion.appear)
-                            }
-                        }
-                    }
-                    .transition(.opacity)
-                } else if loading && items == nil {
-                    HStack(spacing: 8) {
-                        ConsoleGlyphs(cols: 8, rows: 1)
-                        Text("Reading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                    }
-                    .frame(height: 24)
-                    .transition(.opacity)
-                } else if let gap {
-                    Text(gap.line).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(minHeight: 22, alignment: .leading)
-                        .transition(.opacity)
-                } else {
-                    Text(MemoryFormat.emptyLine(state: segment, query: query)).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(minHeight: 22, alignment: .leading)
-                        .transition(.opacity)
+            if let items, !items.isEmpty {
+                MemoryKindChips(kinds: ConsoleListModel.memoryKinds(items), total: items.count, picked: kindFilter) { pick in
+                    withAnimation(Motion.snappy) { kindFilter = pick }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(Motion.gentle, value: items?.map(\.id) ?? [])
-            .animation(Motion.fade, value: loading && items == nil)
+            MemoryRailBody(shown: shown, items: items, loading: loading, gap: gap, emptyLine: MemoryFormat.emptyLine(state: segment, query: query),
+                           editingId: editingId, focus: focus, verbs: verbs)
+                .consoleListKeys(ConsoleListKeys(focus: focus, ids: shown.map(\.id), typeAhead: false, primary: { edit($0) }, escape: { query = ""; kindFilter = nil }))
             Text(ConsoleTheme.memoryForgetHint).font(ConsoleTheme.sans(11)).lineSpacing(1).foregroundStyle(ConsoleTheme.titanium)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear(perform: reload)
-        .onChange(of: segment) { editingId = nil; reload() }
+        .onChange(of: segment) { editingId = nil; kindFilter = nil; reload() }
         .onChange(of: query) { reload() }
         // A run landed or a verb went through: the counts moved, so the rows may have.
         .onChange(of: summary) { reload() }
@@ -206,12 +243,29 @@ struct MemoryRailList: View {
         .accessibilityLabel("Memory, \(ConsoleTheme.memoryStateLabel(segment))")
     }
 
+    /// ↑↓ from the filter field: the highlight moves over the rows (the ring shows; the caret stays).
+    private func step(_ delta: Int) {
+        guard let next = ConsoleListModel.step(focus.id, by: delta, in: shown.map(\.id)) else { return }
+        focus.set(next, keyboard: true, why: delta > 0 ? "down" : "up")
+    }
+
+    /// Return on a row: the inline edit.
+    private func edit(_ id: String) {
+        guard let item = shown.first(where: { $0.id == id }) else { return }
+        verbs(item).edit()
+    }
+
     /// The harness's verbs, through the row's own closures (`verbs`), so the trace proves the rail's
-    /// path — the optimistic removal and the one command — not a re-statement of it.
+    /// path — the optimistic removal and the one command — not a re-statement of it; `chip:<kind>` picks a kind chip.
     private func preview(_ info: [AnyHashable: Any]) {
         if let raw = info["memorySegment"] as? String, let wanted = MemoryState(rawValue: raw) {
             segment = wanted
             Self.previewReport?("segment \(raw)")
+        }
+        if let word = info[ConsolePreviewKey.chip] as? String {
+            let kind = MemoryKind.allCases.first { $0.rawValue == word || MemoryWords.kindChip($0) == word }
+            withAnimation(Motion.snappy) { kindFilter = kind }
+            Self.previewReport?("chip \(word) → \(kind.map(MemoryWords.kindChip) ?? "all") · rows \(shown.count) of \(items?.count ?? -1)")
         }
         guard let verb = info["memoryVerb"] as? String, let id = info["memoryId"] as? String else { return }
         guard let item = items?.first(where: { $0.id == id }) else {
@@ -229,28 +283,6 @@ struct MemoryRailList: View {
         let after = items?.count ?? -1
         let text = verb == "edit" ? " text '\(items?.first { $0.id == id }?.text ?? "")'" : ""
         Self.previewReport?("\(verb) \(id) → rows \(after) (was \(before))\(text)")
-    }
-
-    /// The magnifier, the field, × while there is text — the rail head's search, at row height.
-    private var searchField: some View {
-        HStack(spacing: iconGap) {
-            ConsoleIcon(name: "magnifyingglass", size: 12)
-            TextField("Search memory", text: $query)
-                .consoleField(height: 24, focused: searchFocused)
-                .focused($searchFocused)
-                .onExitCommand { query = ""; searchFocused = false }
-                .accessibilityLabel("Search memory")
-            if !query.isEmpty {
-                Button { query = "" } label: {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
-                .consoleHelp("Clear the search")
-                .accessibilityLabel("Clear the search")
-                .transition(.opacity)
-            }
-        }
-        .animation(Motion.fade, value: query.isEmpty)
     }
 
     /// The verbs behind a row's menu and its ⋯, one place so every site agrees. Forget and
@@ -327,6 +359,117 @@ struct MemoryRailList: View {
     }
 }
 
+/// The rows, or the line that stands in for them (Reading… · the gap · the empty line); they crossfade.
+private struct MemoryRailBody: View {
+    let shown: [MemoryItem]
+    let items: [MemoryItem]?
+    let loading: Bool
+    let gap: MemoryRailList.Gap?
+    let emptyLine: String
+    let editingId: String?
+    @ObservedObject var focus: ConsoleListFocus
+    let verbs: (MemoryItem) -> MemoryVerbs
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if !shown.isEmpty {
+                // Relative times tick slowly; nothing else here needs the clock.
+                TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(shown) { item in
+                            MemoryRow(item: item, now: ctx.date.timeIntervalSince1970 * 1000, editing: editingId == item.id,
+                                      focused: focus.ringOn(item.id), verbs: verbs(item), hovered: { if $0 { focus.hovered(item.id) } })
+                                .transition(Motion.appear)
+                        }
+                    }
+                }
+                // The rows carry their own 12 pt inset and run to the rail's edge; the section's inset
+                // around them comes off (gone once the section is a `ConsoleDisclosure` without one).
+                .padding(.horizontal, -12)
+                .transition(.opacity)
+            } else if loading && items == nil {
+                HStack(spacing: 8) {
+                    ConsoleGlyphs(cols: 8, rows: 1)
+                    Text(MemoryWords.reading).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                }
+                .frame(height: 24)
+                .transition(.opacity)
+            } else {
+                Text(gap?.line ?? emptyLine).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 22, alignment: .leading)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(Motion.gentle, value: shown.map(\.id))
+        .animation(Motion.fade, value: loading && items == nil)
+    }
+}
+
+/// The rail's filter: the magnifier inside the box, the placeholder with the count, `k of n`
+/// in the trailing slot, × while there is text. ↑↓ step the rows' highlight, Return runs the
+/// focused row, Esc clears. (Folds into Builder B's `ConsoleFilterField` when it lands.)
+private struct MemoryFilterField: View {
+    @Binding var query: String
+    let placeholder: String
+    let count: String
+    let clear: () -> Void
+    let move: (Int) -> Void
+    let submit: () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(ConsoleTheme.fg3).frame(width: 12)
+            TextField(placeholder, text: $query)
+                .focused($focused)
+                .onSubmit(submit)
+                .onExitCommand { clear(); focused = false }
+                // ↑↓ before the field editor sees them (a single-line field swallows moveDown:).
+                .onKeyPress(.downArrow) { move(1); return .handled }
+                .onKeyPress(.upArrow) { move(-1); return .handled }
+                .accessibilityLabel(MemoryWords.searchPlaceholder)
+            Text(count).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
+                .contentTransition(ConsoleMotion.numeric)
+                .animation(Motion.snappy, value: count)
+            if !query.isEmpty {
+                Button(action: clear) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                    .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 18))
+                    .consoleHelp(MemoryWords.clearSearch)
+                    .accessibilityLabel(MemoryWords.clearSearch)
+                    .transition(.opacity)
+            }
+        }
+        .consoleField(height: 24, focused: focused)
+        .font(ConsoleTheme.sans(12))
+        .animation(Motion.fade, value: query.isEmpty)
+    }
+}
+
+/// `All 7 · fact 2 · pref 2 · how 1 …` — one chip per kind the rows carry, the picked one inverted.
+private struct MemoryKindChips: View {
+    let kinds: [ConsoleListModel.KindCount]
+    let total: Int
+    let picked: MemoryKind?
+    let pick: (MemoryKind?) -> Void
+
+    var body: some View {
+        ConsoleFlow(hSpacing: 4, vSpacing: 4) {
+            ConsoleChip(word: MemoryWords.all, count: "\(total)", on: picked == nil) { pick(nil) }
+                .accessibilityLabel("\(MemoryWords.all) \(total)")
+            ForEach(kinds, id: \.kind) { kc in
+                ConsoleChip(word: MemoryWords.kindChip(kc.kind), count: "\(kc.count)", on: picked == kc.kind) { pick(picked == kc.kind ? nil : kc.kind) }
+                    .accessibilityLabel("\(MemoryWords.kindChip(kc.kind)) \(kc.count)")
+            }
+        }
+        .animation(Motion.snappy, value: kinds)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Kind")
+    }
+}
+
 /// The verbs a memory row offers (MemoryRailList.verbs builds them once per row).
 struct MemoryVerbs {
     var edit: () -> Void = {}
@@ -337,121 +480,70 @@ struct MemoryVerbs {
     var restore: () -> Void = {}
 }
 
-/// One remembered sentence: the kind's solid symbol on the icon column, the text (two lines;
-/// the tooltip has it whole with its scores and sources), `seen 4× · 3d` under it in mono. A
-/// forgotten or archived row sits back (dimmed) and carries Restore; every row has a context
-/// menu and a hover ⋯ with Edit, the kind, and Forget or Restore.
+/// One remembered sentence as a `ConsoleRow`: the kind's solid symbol on the icon column, the
+/// text on two lines with the kind badge after it, `seen 4× · 3d` and the importance meter under
+/// it, the ⋯ at rest with Edit · Kind ▸ · Forget / Restore; the scores, subjects and sources as
+/// the row's card. A forgotten or archived row sits back and carries Restore; while editing the
+/// sentence is a field.
 struct MemoryRow: View {
     let item: MemoryItem
     let now: Double
     var editing = false
+    var focused = false
     var verbs = MemoryVerbs()
-
-    @State private var hovering = false
+    var hovered: (Bool) -> Void = { _ in }
 
     private var live: Bool { item.state == .live }
 
+    /// The kind badge's column: one width so the words align down the rail.
+    static let badgeWidth: CGFloat = 44
+
     var body: some View {
+        if editing {
+            editRow.transition(.opacity)
+        } else {
+            ConsoleRow(title: item.text, lines: 2, icon: .symbol(ConsoleTheme.memorySymbol(item.kind), tint: live ? ConsoleTheme.titanium : ConsoleTheme.fg3),
+                       badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: Self.badgeWidth,
+                       meta: MemoryFormat.meta(item, now: now), meter: item.importance,
+                       trailing: .ellipsis(menuVerbs), verb: live ? nil : ConsoleRowVerb(title: MemoryWords.restore, help: restoreHelp, run: verbs.restore),
+                       focused: focused, sitsBack: !live, card: MemoryFormat.card(item, now: now),
+                       accessibilityHint: "\(item.kind.rawValue), \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"),
+                       onHover: hovered, primary: verbs.edit)
+                .transition(.opacity)
+        }
+    }
+
+    private var restoreHelp: String { item.state == .archived ? MemoryWords.restoreArchivedHelp : MemoryWords.restoreForgottenHelp }
+
+    private var editRow: some View {
         HStack(alignment: .top, spacing: iconGap) {
-            ConsoleIcon(name: ConsoleTheme.memorySymbol(item.kind), tint: live ? ConsoleTheme.titanium : ConsoleTheme.fg3)
-                .padding(.top, 1)
-                .consoleHelp(item.kind.rawValue)
-                .accessibilityLabel(item.kind.rawValue)
+            ConsoleIcon(name: ConsoleTheme.memorySymbol(item.kind)).padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
-                if editing {
-                    MemoryEditField(initial: item.text, commit: verbs.commitEdit, cancel: verbs.cancelEdit)
-                        .transition(.opacity)
-                } else {
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(item.text.isEmpty ? "—" : item.text)
-                            .font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
-                            .lineLimit(2).truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .contentTransition(.opacity)
-                            .animation(Motion.fade, value: item.text)
-                        Spacer(minLength: 0)
-                        // The trailing zone: Restore on a hidden row, and the ⋯ while hovering.
-                        HStack(spacing: 4) {
-                            if !live {
-                                Button("Restore", action: verbs.restore)
-                                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 20, small: true))
-                                    .consoleHelp(item.state == .archived ? "Back from Archived; Jarhead uses it again" : "Back from Forgotten; Jarhead uses it again")
-                            }
-                            ZStack(alignment: .trailing) {
-                                if hovering {
-                                    MemoryRowOverflow { menuItems }
-                                        .transition(.opacity)
-                                }
-                            }
-                            .frame(width: 20, height: 20, alignment: .trailing)
-                        }
-                        .layoutPriority(1)
-                    }
-                    .transition(.opacity)
-                }
+                MemoryEditField(initial: item.text, commit: verbs.commitEdit, cancel: verbs.cancelEdit)
                 Text(MemoryFormat.meta(item, now: now))
                     .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
                     .lineLimit(1).truncationMode(.tail)
-                    .contentTransition(ConsoleMotion.numeric)
-                    .animation(Motion.snappy, value: item.seenCount)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12).padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(!editing && hovering ? ConsoleTheme.hover : Color.clear)
-        .contentShape(Rectangle())
-        .opacity(live ? 1 : 0.62)
-        .contextMenu { menuItems }
-        .onHover { hovering = $0 }
-        .animation(ConsoleMotion.hover, value: hovering)
-        .animation(Motion.snappy, value: editing)
-        .consoleHelp(MemoryFormat.tooltip(item))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(item.kind.rawValue): \(item.text). \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"))
+        .background(ConsoleTheme.active)
+        .accessibilityLabel("Editing \(item.text)")
     }
 
-    @ViewBuilder
-    private var menuItems: some View {
-        Button("Edit", action: verbs.edit)
-        Menu("Kind") {
-            ForEach(MemoryKind.allCases, id: \.self) { kind in
-                Button {
-                    verbs.setKind(kind)
-                } label: {
-                    if kind == item.kind { Label(kind.rawValue, systemImage: "checkmark") } else { Text(kind.rawValue) }
-                }
-            }
+    /// Edit · Kind ▸ (the current one checked) · Forget, or Restore — the same array for the ⋯ and the context menu.
+    private var menuVerbs: [ConsoleVerb] {
+        let kinds = MemoryKind.allCases.map { kind in
+            ConsoleVerb(id: "kind.\(kind.rawValue)", title: kind.rawValue, checked: kind == item.kind) { verbs.setKind(kind) }
         }
-        Divider()
+        var out = [ConsoleVerb(id: "edit", title: MemoryWords.edit, run: verbs.edit),
+                   ConsoleVerb(id: "kind", title: MemoryWords.kind, children: kinds)]
         if live {
-            Button("Forget", action: verbs.forget)
+            out.append(ConsoleVerb(id: "forget", title: MemoryWords.forget, separatorBefore: true, run: verbs.forget))
         } else {
-            Button("Restore", action: verbs.restore)
+            out.append(ConsoleVerb(id: "restore", title: MemoryWords.restore, separatorBefore: true, run: verbs.restore))
         }
-    }
-}
-
-/// The hover overflow: a ⋯ that opens the row's verbs (the agents rail's idiom).
-private struct MemoryRowOverflow<Items: View>: View {
-    let items: Items
-
-    init(@ViewBuilder items: () -> Items) {
-        self.items = items()
-    }
-
-    var body: some View {
-        Menu { items } label: {
-            Image(systemName: "ellipsis").font(.system(size: 13, weight: .medium))
-                .foregroundStyle(ConsoleTheme.fg2)
-                .frame(width: 20, height: 20)
-                .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.hover))
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .consoleHelp("More")
-        .accessibilityLabel("More")
+        return out
     }
 }
 
@@ -467,7 +559,7 @@ private struct MemoryEditField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField("One sentence about Kevin", text: $text, axis: .vertical)
+        TextField(MemoryWords.editPlaceholder, text: $text, axis: .vertical)
             .lineLimit(1...3)
             .consoleField(height: 22, focused: focused, grows: true)
             .focused($focused)
@@ -480,8 +572,8 @@ private struct MemoryEditField: View {
                 text = initial
                 DispatchQueue.main.async { focused = true }
             }
-            .consoleHelp("Return keeps the change; Esc cancels")
-            .accessibilityLabel("Memory text")
+            .consoleHelp(MemoryWords.editHelp)
+            .accessibilityLabel(MemoryWords.editLabel)
     }
 
     private func finish(_ body: () -> Void) {
@@ -494,48 +586,44 @@ private struct MemoryEditField: View {
 // MARK: - Now › Memory · used this turn
 
 /// What the last delegation was given (MemorySummary.lastUsedIds), resolved against the live
-/// list: at most eight rows of glyph and sentence, so a misheard "fact" steering the voice is
-/// seen the turn it happens. Re-read when the ids change; "—" while nothing has been used.
+/// list: at most eight `ConsoleRow`s (kind glyph · the sentence · the kind badge · `seen 4× · 3d`),
+/// so a misheard "fact" steering the voice is seen the turn it happens; ↑↓ ⏎ (or a click) open
+/// Settings › Memory. Re-read when the ids change; "—" while nothing has been used.
 struct MemoryUsedList: View {
     let ids: [String]
 
     @Environment(\.consoleMemory) private var memory
+    @EnvironmentObject private var session: ConsoleSession
     @State private var items: [MemoryItem] = []
     @State private var loading = false
+    @StateObject private var focus = ConsoleListFocus()
 
     /// The rail shows this many at most; the brain's block is capped at about that many lines anyway.
     static let maxRows = 8
+
+    private var shown: [MemoryItem] { Array(items.prefix(Self.maxRows)) }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if !items.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(items.prefix(Self.maxRows)) { item in
-                        HStack(alignment: .top, spacing: iconGap) {
-                            ConsoleIcon(name: ConsoleTheme.memorySymbol(item.kind))
-                                .consoleHelp(item.kind.rawValue)
-                                .accessibilityLabel(item.kind.rawValue)
-                            Text(item.text)
-                                .font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg2)
-                                .lineLimit(2).truncationMode(.tail)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 3)
-                        .consoleHelp(MemoryFormat.tooltip(item))
-                        .transition(Motion.appear)
+                    ForEach(shown) { item in
+                        MemoryUsedRow(item: item, focused: focus.ringOn(item.id), hovered: { if $0 { focus.hovered(item.id) } }) { open() }
+                            .transition(Motion.appear)
                     }
                 }
+                .consoleListKeys(ConsoleListKeys(focus: focus, ids: shown.map(\.id), typeAhead: false, primary: { _ in open() }))
+                .padding(.horizontal, -12)
                 .transition(.opacity)
             } else if loading {
                 HStack(spacing: 8) {
                     ConsoleGlyphs(cols: 8, rows: 1)
-                    Text("Reading…").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
+                    Text(MemoryWords.reading).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
                 }
                 .frame(height: 22)
                 .transition(.opacity)
             } else {
-                Text(ids.isEmpty ? "Nothing used yet." : "Used \(ids.count); the rows are not on the daemon's list.")
+                Text(ids.isEmpty ? MemoryWords.nothingUsed : MemoryWords.usedNotListed(ids.count))
                     .font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 22, alignment: .leading)
@@ -555,5 +643,24 @@ struct MemoryUsedList: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Memory used this turn: \(items.count)")
+    }
+
+    /// The row's primary: Settings › Memory (the link that did not exist).
+    private func open() { withAnimation(Motion.snappy) { session.select(.settings) } }
+}
+
+/// One used sentence at 40: the kind glyph, the text on two lines, the kind badge, `seen 4× · 3d`.
+private struct MemoryUsedRow: View {
+    let item: MemoryItem
+    var focused = false
+    var hovered: (Bool) -> Void = { _ in }
+    let open: () -> Void
+
+    var body: some View {
+        let now = ConsoleFormat.nowMs
+        ConsoleRow(title: item.text, lines: 2, icon: .symbol(ConsoleTheme.memorySymbol(item.kind)),
+                   badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: MemoryRow.badgeWidth,
+                   meta: MemoryFormat.meta(item, now: now), focused: focused, card: MemoryFormat.card(item, now: now),
+                   accessibilityHint: MemoryWords.opensSettings, onHover: hovered, primary: open)
     }
 }

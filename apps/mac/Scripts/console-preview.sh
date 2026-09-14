@@ -177,6 +177,9 @@ if [[ -n "${PREVIEW_PHASE:-}" ]]; then export PREVIEW_PHASE; fi
 # The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
 # its default actions run to 2.3 s (the verbs), so the shot waits for them.
 if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+# The kit's memory rail (the chips, a row's card) sits in the same tall window; `list-keys` runs its keys to 2.4 s.
+if [[ "$SCENARIO" == "memory-chips" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
+if [[ "$SCENARIO" == "list-keys" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
