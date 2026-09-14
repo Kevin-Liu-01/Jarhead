@@ -143,19 +143,22 @@ struct ConsoleField: View {
 
     private func onCommitIfClears() { if commit.emptyClears { onCommit() } }
 
-    /// Return: an empty commit reverts; otherwise commit and let go of focus.
+    /// Return: an empty commit reverts; otherwise commit and let go of focus. `last` is taken
+    /// AFTER the handler ran: a handler that empties the binding (a secret written once) must
+    /// not find the focus-leaving pass putting the typed value back.
     private func submit() {
         if text.isEmpty, !commit.emptyClears { text = last; focused = false; return }
-        last = text
         onCommit()
         focused = false
     }
+        last = text
 
     private func cancel() {
         text = last
         onCancel()
         focused = false
     }
+        last = text
 
     /// Focus arriving remembers the value; focus leaving commits (or reverts an empty field).
     private func blur(was: Bool, now: Bool) {
