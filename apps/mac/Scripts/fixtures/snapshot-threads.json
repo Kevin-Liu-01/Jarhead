@@ -188,7 +188,14 @@
           "openai": true,
           "anthropic": false,
           "brainApiKey": false
-        }
+        },
+        "local": { "reachable": false, "baseUrl": "", "models": [], "ramBytes": 137438953472, "checkedAt": 0 },
+        "dataPaths": [
+          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1 — every word heard and said; billed per second of open session" },
+          { "what": "brain", "where": "cloud", "detail": "gpt-5.3-codex — OpenAI via your ChatGPT login; screenshots and tool results leave" },
+          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model — item text and closed conversations leave" },
+          { "what": "web", "where": "cloud", "detail": "the sites you ask for (web_fetch, web_search)" }
+        ]
       },
       "marks": [],
       "trash": {
@@ -1079,7 +1086,14 @@
           {"kind": "filesDownloads", "grant": "granted", "ask": "prompt", "required": false, "label": "Downloads", "why": "Files in Downloads.", "checkedAt": 1789243262000}
         ]
       },
-      "problems": [],
+      "problems": [
+        {
+          "kind": "brain.local",
+          "text": "Nothing on Ollama 0.34.0 can call tools; pull a model with the tools badge. The brain's work goes to OpenAI until then; memory stays local.",
+          "remedy": { "label": "Retry", "command": { "type": "problem.retry", "kind": "brain.local" }, "copy": "ollama pull qwen3.5:27b" },
+          "since": 1789243195000
+        }
+      ],
       "brainReady": true,
       "handsReady": true,
       "setup": {
@@ -1092,7 +1106,14 @@
           "openai": true,
           "anthropic": false,
           "brainApiKey": false
-        }
+        },
+        "local": { "reachable": false, "baseUrl": "", "models": [], "ramBytes": 137438953472, "checkedAt": 0 },
+        "dataPaths": [
+          { "what": "voice", "where": "cloud", "detail": "OpenAI gpt-live-1 — every word heard and said; billed per second of open session" },
+          { "what": "brain", "where": "cloud", "detail": "gpt-5.3-codex — OpenAI via your ChatGPT login; screenshots and tool results leave" },
+          { "what": "memory", "where": "cloud", "detail": "text-embedding-3-small + a mini model — item text and closed conversations leave" },
+          { "what": "web", "where": "cloud", "detail": "the sites you ask for (web_fetch, web_search)" }
+        ]
       },
       "marks": [],
       "trash": {

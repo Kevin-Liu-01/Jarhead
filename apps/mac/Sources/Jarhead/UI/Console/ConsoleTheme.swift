@@ -312,9 +312,22 @@ enum ConsoleTheme {
     }
 
     /// The Settings row's "Matching" value: how items are compared. OpenAI embeddings (the voice
-    /// key; item text leaves the Mac for that) or keyword matching (nothing leaves).
-    static func memoryMatching(_ embeddings: String) -> String {
-        embeddings == "openai" ? "OpenAI · 512 dims" : "keyword · no key"
+    /// key; item text leaves the Mac for that), a local embedding model on this Mac, or keyword
+    /// matching (nothing leaves). "—" before a summary has arrived.
+    static func memoryMatching(_ m: MemorySummary?) -> String {
+        guard let m else { return "—" }
+        switch m.embeddings {
+        case "openai":
+            if let dims = m.embeddingDims { return "OpenAI · \(dims) dims" }
+            return "OpenAI · 512 dims"
+        case "local":
+            var parts = ["local"]
+            if let model = m.embeddingModel, !model.isEmpty { parts.append(model) }
+            if let dims = m.embeddingDims { parts.append("\(dims) dims") }
+            return parts.joined(separator: " · ")
+        default:
+            return "keyword · nothing leaves"
+        }
     }
 
     /// "142 live · 3 forgotten · 1 archived" — the counts in one mono line.
@@ -339,7 +352,51 @@ enum ConsoleTheme {
         switch kind {
         case .claudeCode, .anthropicApi: return "claude-opus-5"
         case .openaiResponses: return "gpt-5.6-terra"
-        case .auto, .codex, .openaiCompatible: return ""
+        case .auto, .codex, .openaiCompatible, .local: return ""
+        }
+    }
+
+    // MARK: data paths (SetupStatus.dataPaths) — the "Leaves the Mac" rows
+
+    /// One solid symbol per `what` (voice · brain · memory · web).
+    static func dataPathSymbol(_ what: String) -> String {
+        switch what {
+        case "voice": return "waveform"
+        case "brain": return "brain.fill"
+        case "memory": return "tray.full.fill"
+        case "web": return "globe"
+        default: return "questionmark.circle.fill"
+        }
+    }
+
+    /// The trailing glyph for `where`: the cloud, this Mac, the LAN, off.
+    static func dataPathWhereSymbol(_ where: String) -> String {
+        switch `where` {
+        case "cloud": return "icloud.fill"
+        case "mac": return "laptopcomputer"
+        case "lan": return "network"
+        default: return "minus.circle"
+        }
+    }
+
+    /// Cloud in titanium (the fact, not a fault), this Mac in the acting green, the LAN in amber, off quiet.
+    static func dataPathTint(_ where: String) -> Color {
+        switch `where` {
+        case "cloud": return titanium
+        case "mac": return acting
+        case "lan": return speaking
+        default: return fg3
+        }
+    }
+
+    /// The row's name: "Voice", "Brain", "Memory", "Web"; an unknown `what` capitalised.
+    static func dataPathName(_ what: String) -> String {
+        switch what {
+        case "voice": return "Voice"
+        case "brain": return "Brain"
+        case "memory": return "Memory"
+        case "web": return "Web"
+        default: return what.capitalized
         }
     }
 
@@ -400,7 +457,7 @@ enum ConsoleTheme {
         case "permission.microphone": return "mic.fill"
         case "permission.fullDiskAccess": return "internaldrive.fill"
         case "permission.other": return "lock.fill"
-        case "brain.unavailable", "brain.probe": return "brain.fill"
+        case "brain.unavailable", "brain.probe", "brain.local": return "brain.fill"
         case "voice.limit": return "waveform.badge.exclamationmark"
         case "voice.connection": return "wifi.exclamationmark"
         case "voice.key": return "key.fill"
@@ -414,9 +471,10 @@ enum ConsoleTheme {
     }
 
     /// A permission missing is a warning (the hands work less), and so is Jarhead twice in the
-    /// Dock (`dock`: cosmetic, one press fixes it); everything else is an error.
+    /// Dock (`dock`: cosmetic, one press fixes it) and the local server or model needing Kevin
+    /// (`brain.local`: he runs the printed command); everything else is an error.
     static func problemTint(_ kind: String) -> Color {
-        kind.hasPrefix("permission.") || kind == "dock" ? speaking : error
+        kind.hasPrefix("permission.") || kind == "dock" || kind == "brain.local" ? speaking : error
     }
 
     // MARK: retention (Settings) — the menus' options and their words
@@ -1039,7 +1097,8 @@ struct ConsoleShake: GeometryEffect {
 }
 
 /// A picker drawn as a field: value, chevron, hairline box; the menu lists the options.
-/// `fieldTitle` is the collapsed label when the full title is too long for the field.
+/// `fieldTitle` is the collapsed label when the full title is too long for the field; `dim`
+/// names the options drawn quiet (a model that does not fit this Mac) — still pickable.
 struct ConsoleMenuField<Value: Hashable>: View {
     let value: Value
     let options: [Value]
@@ -1047,14 +1106,20 @@ struct ConsoleMenuField<Value: Hashable>: View {
     let pick: (Value) -> Void
     var mono = false
     var fieldTitle: ((Value) -> String)? = nil
+    var dim: ((Value) -> Bool)? = nil
 
     @State private var hovering = false
+
+    private func isDim(_ option: Value) -> Bool {
+        guard let dim else { return false }
+        return dim(option)
+    }
 
     var body: some View {
         Menu {
             Picker("", selection: Binding(get: { value }, set: { pick($0) })) {
                 ForEach(options, id: \.self) { option in
-                    Text(title(option)).tag(option)
+                    Text(title(option)).foregroundStyle(isDim(option) ? ConsoleTheme.fg3 : ConsoleTheme.fg).tag(option)
                 }
             }
             .pickerStyle(.inline)

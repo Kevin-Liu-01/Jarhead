@@ -54,7 +54,7 @@ struct RightRail: View, Equatable {
                         NowPanel(phase: snapshot.phase, sessionInfo: snapshot.session, pause: snapshot.pause, usageToday: snapshot.usageToday,
                                  permissions: snapshot.permissions,
                                  problems: snapshot.problems, brainReady: snapshot.brainReady, handsReady: snapshot.handsReady,
-                                 brain: snapshot.settings.brain, marks: snapshot.marks,
+                                 settings: snapshot.settings, setup: snapshot.setup, marks: snapshot.marks,
                                  memory: snapshot.memory, threads: threads,
                                  openThread: { [session] id in withAnimation(Motion.wipeAnimation) { session.openThread(id) } })
                             .transition(.identity)
@@ -149,8 +149,9 @@ private struct RailTabs: View {
     }
 }
 
-/// A section: head, content, and the section's own bottom rule.
-private struct RailSection<Trailing: View, Content: View>: View {
+/// A section: head, content, and the section's own bottom rule. Shared with the Local brain's
+/// "Leaves the Mac" section (LocalBrainRows.swift), so it is not private to this file.
+struct RailSection<Trailing: View, Content: View>: View {
     let title: String
     let count: Int?
     let inset: Bool
@@ -251,7 +252,10 @@ struct NowPanel: View {
     let problems: [Problem]
     let brainReady: Bool
     let handsReady: Bool
-    let brain: BrainKind
+    /// The brain setting and its model (Snapshot.settings), for the Ready row's detail.
+    let settings: Settings
+    /// The last probe (Snapshot.setup): what `auto` or a fallback resolved to, the local server's pick.
+    let setup: SetupStatus
     /// What Kevin circled (Snapshot.marks); context for the next delegation.
     let marks: [ScreenMark]
     /// What Jarhead remembers (Snapshot.memory); `lastUsedIds` is what the last delegation was given.
@@ -274,6 +278,30 @@ struct NowPanel: View {
     static func usedIds(_ memory: MemorySummary?) -> [String] {
         guard let memory, memory.enabled else { return [] }
         return memory.lastUsedIds ?? []
+    }
+
+    /// The Ready row's detail for the brain. Under `local` it is the model that runs: the saved
+    /// id, or the engine's best-fit pick while the id is empty — and when the local brain could
+    /// not start, the kind the engine fell back to (`openai-responses`), so a paid fallback is
+    /// never quiet. Every other kind names itself.
+    static func readyBrainDetail(brain: BrainKind, brainModel: String, setup: SetupStatus) -> String {
+        guard brain == .local else { return brain.rawValue }
+        if setup.brainResolved == .local {
+            if !brainModel.isEmpty { return brainModel }
+            if let picked = setup.local.picked, !picked.isEmpty { return picked }
+            return "local"
+        }
+        if let resolved = setup.brainResolved { return resolved.rawValue }
+        return "local"
+    }
+
+    private var readyBrainDetail: String { NowPanel.readyBrainDetail(brain: settings.brain, brainModel: settings.brainModel, setup: setup) }
+
+    /// The command Kevin runs himself (`remedy.copy`), when the engine named one — the Problems
+    /// row offers it as a Copy chip; nil draws no chip.
+    static func problemCopy(_ problem: Problem) -> String? {
+        guard let copy = problem.remedy?.copy, !copy.isEmpty else { return nil }
+        return copy
     }
 
     /// Which of the three meter blocks is up; a change crossfades them (Motion.swap).
@@ -452,7 +480,7 @@ struct NowPanel: View {
 
             RailSection("Ready") {
                 VStack(spacing: 0) {
-                    readyRow("brain.fill", "Brain", brainReady, brain.rawValue)
+                    readyRow("brain.fill", "Brain", brainReady, readyBrainDetail)
                     readyRow("hand.raised.fill", "Hands", handsReady, handsReady ? "see + click" : "needs permissions")
                 }
             }
@@ -535,7 +563,8 @@ struct NowPanel: View {
 /// One typed problem: the kind's solid symbol (a missing grant in the warning tint, the
 /// rest in red), the line, and the remedy as a small ghost button under it — "Open pane",
 /// "Request", "Retry", "Restart daemon" — or a plain "Retry" when the engine named none.
-/// The tooltip says when it was first seen.
+/// When the remedy carries a command for Kevin to run (`remedy.copy`: `ollama pull …`), a
+/// second ghost button copies it — the app never runs it. The tooltip says when it was first seen.
 private struct ProblemRow: View {
     let problem: Problem
     let act: () -> Void
@@ -547,9 +576,14 @@ private struct ProblemRow: View {
                 Text(problem.text).font(ConsoleTheme.sans(12)).lineSpacing(2).foregroundStyle(ConsoleTheme.fg)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                Button(problem.remedy?.label ?? "Retry", action: act)
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .help(remedyHelp)
+                HStack(spacing: 6) {
+                    Button(problem.remedy?.label ?? "Retry", action: act)
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+                        .help(remedyHelp)
+                    if let copy = NowPanel.problemCopy(problem) {
+                        CopyChip(text: copy)
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1067,23 +1101,30 @@ struct SettingsPanel: View {
                     }
                     .help("The OpenAI key for the voice (\(setup.liveModel))")
                     formRow("Backend") {
-                        // The menu spells the long one out; the hint under the field already says "server".
+                        // The menu spells the long ones out; the field carries the short word.
                         ConsoleMenuField(value: kind, options: ConsoleTheme.brains, title: { $0.label },
                                          pick: { commitBrain(kind: $0) },
-                                         fieldTitle: { $0 == .openaiCompatible ? "OpenAI-compatible" : $0.label })
+                                         fieldTitle: { $0.shortLabel })
                             .accessibilityLabel("Backend: \(kind.label)")
                     }
                     .help(kind.label)
                     hint(kind.needs)
+                    // Local: a menu over what the server lists (a pick commits at once, like every
+                    // menu here); every other kind types an id. The compatible kind refuses to start
+                    // without one, so its placeholder asks for it.
                     formRow("Model") {
-                        let fallback = ConsoleTheme.defaultBrainModel(kind)
-                        TextField(fallback.isEmpty ? "backend default" : fallback, text: $modelDraft)
-                            .consoleField(mono: true, height: 26, focused: focus == .model)
-                            .focused($focus, equals: .model)
-                            .onSubmit { commitBrain(); focus = nil }
-                            .accessibilityLabel("Model id")
+                        if SettingsPanel.modelRowIsMenu(kind) {
+                            LocalModelMenu(status: setup.local, saved: modelDraft, pick: { id in modelDraft = id; commitBrain() })
+                        } else {
+                            TextField(SettingsPanel.modelPlaceholder(kind), text: $modelDraft)
+                                .consoleField(mono: true, height: 26, focused: focus == .model)
+                                .focused($focus, equals: .model)
+                                .onSubmit { commitBrain(); focus = nil }
+                                .accessibilityLabel("Model id")
+                        }
                     }
-                    // The rows a backend wants arrive and leave with the pick (Motion.appear).
+                    // The rows a backend wants arrive and leave with the pick (Motion.appear). The
+                    // Local server row is drawn only when discovery found nothing or a root is pinned.
                     if kind == .openaiCompatible {
                         formRow("Server") {
                             TextField("http://localhost:11434/v1", text: $serverDraft)
@@ -1093,9 +1134,16 @@ struct SettingsPanel: View {
                                 .accessibilityLabel("Server base URL")
                         }
                         .transition(Motion.appear)
+                    } else if SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft) {
+                        formRow("Server") {
+                            LocalServerRow(status: setup.local, text: $serverDraft, focused: focus == .server)
+                                .focused($focus, equals: .server)
+                                .onSubmit { commitBrain(); focus = nil }
+                        }
+                        .transition(Motion.appear)
                     }
-                    // The OpenAI brain reuses the voice key above; logins need no key at all.
-                    if let secret = kind.secretKey, kind != .openaiResponses {
+                    // The OpenAI brain reuses the voice key above; logins and the local server need no key at all.
+                    if let secret = kind.secretKey, SettingsPanel.keyRowShown(kind) {
                         formRow("Key") {
                             SecretField(placeholder: kind == .openaiCompatible ? "server key" : "sk-ant-…",
                                         onFile: kind == .anthropicApi ? setup.secrets.anthropic : setup.secrets.brainApiKey,
@@ -1115,7 +1163,10 @@ struct SettingsPanel: View {
                     formRow("Status") { brainStatus }
                 }
                 .animation(Motion.gentle, value: kind)
+                .animation(Motion.gentle, value: SettingsPanel.serverRowShown(kind: kind, local: setup.local, pin: serverDraft))
             }
+            // Where words go right now: the engine's four rows, the same ones the doctor prints.
+            DataPathsSection(paths: setup.dataPaths)
             RailSection("Session") {
                 VStack(spacing: 2) {
                     formRow("Idle sleep") {
@@ -1184,13 +1235,12 @@ struct SettingsPanel: View {
                         hint("Off: nothing is learned or used. What was remembered stays.").transition(Motion.appear)
                     }
                     formRow("Matching") {
-                        Text(memory.map { ConsoleTheme.memoryMatching($0.embeddings) } ?? "—")
+                        Text(ConsoleTheme.memoryMatching(memory))
                             .font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
                             .frame(height: 26)
                             .contentTransition(.opacity)
-                            .animation(Motion.fade, value: memory?.embeddings)
-                            .help(memory?.embeddings == "openai" ? "Item text goes to OpenAI for matching (the voice key); nothing else leaves"
-                                  : "Keyword matching: nothing leaves the Mac. Add the OpenAI key for closer matches.")
+                            .animation(Motion.fade, value: ConsoleTheme.memoryMatching(memory))
+                            .help(SettingsPanel.matchingHelp(memory))
                     }
                     formRow("Known") { memoryCounts }
                     hint(ConsoleTheme.memoryBudgetHint)
@@ -1359,6 +1409,38 @@ struct SettingsPanel: View {
     }
 
     // MARK: brain
+
+    /// The Model row is a menu for the Local brain (the server lists what there is); a field for every other kind.
+    static func modelRowIsMenu(_ kind: BrainKind) -> Bool { kind == .local }
+
+    /// The Model field's placeholder: the kind's suggested id, "pick a model" for the compatible
+    /// server (compatible.ts refuses to start without one), "backend default" elsewhere.
+    static func modelPlaceholder(_ kind: BrainKind) -> String {
+        let fallback = ConsoleTheme.defaultBrainModel(kind)
+        if !fallback.isEmpty { return fallback }
+        return kind == .openaiCompatible ? "pick a model" : "backend default"
+    }
+
+    /// The Local Server row is drawn only when discovery found nothing or a root is pinned; the
+    /// compatible kind draws its own field; no other kind has one.
+    static func serverRowShown(kind: BrainKind, local: LocalServerStatus, pin: String) -> Bool {
+        guard kind == .local else { return false }
+        return LocalBrainWords.serverRowShown(status: local, pin: pin)
+    }
+
+    /// The Key row: a kind with its own secret, except OpenAI (the voice key above). Logins and the local server have none.
+    static func keyRowShown(_ kind: BrainKind) -> Bool { kind.secretKey != nil && kind != .openaiResponses }
+
+    /// The Matching row's tooltip: where item text goes for matching.
+    static func matchingHelp(_ memory: MemorySummary?) -> String {
+        switch memory?.embeddings {
+        case "openai": return "Item text goes to OpenAI for matching (the voice key); nothing else leaves"
+        case "local":
+            if let model = memory?.embeddingModel, !model.isEmpty { return "Item text goes to \(model) on this Mac; nothing leaves for memory" }
+            return "Item text goes to a model on this Mac; nothing leaves for memory"
+        default: return "Keyword matching: nothing leaves the Mac. Add the OpenAI key or pull an embedding model for closer matches."
+        }
+    }
 
     /// Backend, model and server go out together, once per edit: the snapshot's
     /// value lags the daemon round trip, so the guard also remembers what was just

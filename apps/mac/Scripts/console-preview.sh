@@ -5,7 +5,17 @@
 #           conversation | conversation-codex | jarhead | jarhead-log | paused | switch |
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
 #           search | search-hit | problems | cleared | loading | wipe | timing |
-#           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending (default live)
+#           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending |
+#           local | local-empty (default live)
+#   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
+#   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
+#   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,
+#   and the new `Leaves the Mac` section (voice cloud · brain mac · memory mac · web cloud);
+#   `local-empty` is the Now tab with the server up but nothing on it that can call tools: the amber
+#   `brain.local` row with its Retry and Copy (`ollama pull qwen3.5:27b` — never run here) and the
+#   Ready row's detail naming the fallback `openai-responses`. Both print the pass's `check:` pins
+#   (check-local) into .build/console-preview/run.log: Model row is a menu, Server row hidden, no Key
+#   row, Ready detail is the id, the Problems row has Copy, four data-path rows.
 #   The Threads pass: `threads` is Jarhead's threads (Snapshot.threads → AppState.threads) — the main
 #   thread idle, Spotify acting (background), Slack waiting on Kevin (screen) with its question, Notes
 #   done and lingering — the left rail's Threads section (waiting-kevin → busy → idle main → finished;
@@ -105,7 +115,7 @@ cd "$(dirname "$0")/.."
 SCENARIO="${1:-live}"
 OUT="${2:-}"
 case "$SCENARIO" in
-  live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending) ;;
+  live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -137,6 +147,9 @@ if [[ -n "${PREVIEW_PHASE:-}" ]]; then export PREVIEW_PHASE; fi
 # The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
 # its default actions run to 2.3 s (the verbs), so the shot waits for them.
 if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+# The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
+# Permissions on the Now tab: a taller window shows them whole.
+case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
 if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi

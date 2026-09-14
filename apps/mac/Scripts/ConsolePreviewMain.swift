@@ -108,6 +108,14 @@ import SwiftUI
 //                    its transcript with tool calls and folded reasoning, a permission question
 //                    with Allow / Deny, two circled regions in the Now panel
 //     conversation-codex = the finished Codex session (gt · api hotfix) stepped into
+//     local        = the Local brain: asleep, the Settings tab, Backend → Local model with Ollama
+//                    0.34.0 up (six models, the engine's best fit qwen3.5:27b, brainModel ""): the
+//                    Model row a menu ("best fit · qwen3.5:27b"), no Server row, no Key row, the
+//                    Status line `Local · …`, memory local, and the "Leaves the Mac" section under
+//                    Brain (voice cloud · brain mac · memory mac · web cloud). Runs `check-local`.
+//     local-empty  = the Now tab with Ollama up but nothing on it that can call tools: the amber
+//                    `brain.local` row with Retry and Copy (`ollama pull qwen3.5:27b`, copied, never
+//                    run), the Ready row naming the fallback `openai-responses`. Runs `check-local`.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
 //   PREVIEW_SHOT_PNG                the screenshot step's file inside that dir
@@ -316,7 +324,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.settings.brain = .anthropicApi
             state.snapshot.settings.brainModel = "claude-opus-5"
             state.snapshot.setup = SetupStatus(openaiKey: .ok, brain: .unavailable, brainDetail: "ANTHROPIC_API_KEY is not set", brainResolved: nil,
-                                               liveModel: "gpt-live-1", secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false))
+                                               liveModel: "gpt-live-1", secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                                               local: fake.noServer(), dataPaths: [])
             state.wakeGate = .lockedOut(until: Date().addingTimeInterval(47))
             state.wakeHeard = ""
             state.wakePassphraseSet = false
@@ -329,6 +338,15 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
+        case "local":
+            // Backend → Local model, Ollama up, the engine's best fit; the Settings tab.
+            state.snapshot = fake.localSnapshot()
+            state.wakeGate = .listening
+            state.wakeHeard = "hey jarhead"
+            state.wakePassphraseSet = true
+        case "local-empty":
+            // Ollama up, nothing tool-capable on it: the amber row and the loud fallback; the Now tab.
+            state.snapshot = fake.localEmptySnapshot()
         case "durability":
             // The ended Codex thread, with its long transcript (1 200 messages, the last call interrupted).
             state.snapshot = fake.live()
@@ -437,7 +455,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked", "memory": console.selectTab(.settings)
+        case "settings", "wake-locked", "memory", "local": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "durability":
             pendingAgentOpen = FakeData.endedId
@@ -519,6 +537,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // pinned — `geometry` before and after (distance stays 0, the content grows), the action line
         // says held/shown/loaded (shown must grow by the page, or it sat above the fold unseen).
         case "durability": defaultActions = "check-durability@0.3,reconnect@1.0,hide-window@1.4,show-window@1.8,geometry@2.2,load-earlier:60@2.4,geometry@3.0"
+        // The Local brain pass: the pure words (the rows' visibility, the Ready detail, the Copy chip,
+        // the four data-path rows, the menu's titles) as `check:` lines — the package has no test target.
+        case "local", "local-empty": defaultActions = "check-local@0.3"
         // The Threads pass: the pins into run.log (the thread words, then the sleep words — the package has
         // no test target), then Spotify ends by an `ended` event at 1.6 s (its row settles to the checkmark
         // and drops to the finished group; the chips and the right rail follow).
@@ -681,6 +702,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkDurabilityWords(stamp: stamp)
             } else if action == "check-threads" {
                 checkThreadWords(stamp: stamp)
+            } else if action == "check-local" {
+                checkLocalWords(stamp: stamp)
             } else if action.hasPrefix("thread-open:") {
                 let id = String(action.dropFirst("thread-open:".count))
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["threadOpen": id])
@@ -914,6 +937,105 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("a row type from before 2026-09-13 decodes", decodedOld.map { $0.type } ?? "nil", "worker") // before 2026-09-13
         expect("a row type from before 2026-09-13 has no tombstone", decodedOld.flatMap { ConsoleFormat.tombstone($0) } == nil ? "nil" : "some", "nil")
         expect("a row type from before 2026-09-13 yields no stream line", String(systemLines(decodedOld.map { [$0] } ?? []).count), "0")
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") at \(stamp)s")
+    }
+
+    /// `check-local`: the Local brain pass's pure words as `check: ok|FAIL` lines. The Settings
+    /// rows' visibility (Model a menu, the Server row only when nothing was found or a root is
+    /// pinned, no Key row), the Ready row's detail (the id, the best-fit pick, the loud fallback's
+    /// kind), the Problems row's Copy (only from `remedy.copy`), the four data-path rows and their
+    /// glyphs, the menu's titles and options, the status note, the wizard's nudge and Done line,
+    /// the memory Matching words — and that every new SF Symbol exists.
+    private func checkLocalWords(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        guard let fake else { print("check: FAIL no fixtures at \(stamp)s"); return }
+        let up = fake.ollamaUp()
+        let empty = fake.ollamaEmpty()
+        let none = fake.noServer()
+        let ready = fake.localSnapshot()
+        let fallback = fake.localEmptySnapshot()
+
+        // Settings › Brain: which rows a kind draws.
+        expect("model row is a menu for local", String(SettingsPanel.modelRowIsMenu(.local)), "true")
+        expect("model row is a field for the compatible kind", String(SettingsPanel.modelRowIsMenu(.openaiCompatible)), "false")
+        expect("compatible placeholder asks for a model", SettingsPanel.modelPlaceholder(.openaiCompatible), "pick a model")
+        expect("codex placeholder is the backend default", SettingsPanel.modelPlaceholder(.codex), "backend default")
+        expect("server row hidden: found, no pin", String(SettingsPanel.serverRowShown(kind: .local, local: up, pin: "")), "false")
+        expect("server row shown: pinned", String(SettingsPanel.serverRowShown(kind: .local, local: up, pin: "http://10.0.0.7:11434")), "true")
+        expect("server row shown: nothing found", String(SettingsPanel.serverRowShown(kind: .local, local: none, pin: "")), "true")
+        expect("no local server row for codex", String(SettingsPanel.serverRowShown(kind: .codex, local: none, pin: "")), "false")
+        expect("no key row for local", String(SettingsPanel.keyRowShown(.local)), "false")
+        expect("local wants no secret", BrainKind.local.secretKey ?? "nil", "nil")
+        expect("key row for the compatible kind", String(SettingsPanel.keyRowShown(.openaiCompatible)), "true")
+        expect("no key row for openai (the voice key)", String(SettingsPanel.keyRowShown(.openaiResponses)), "false")
+        expect("short labels", [BrainKind.local, .openaiCompatible, .codex].map(\.shortLabel).joined(separator: "/"), "Local/OpenAI-compatible/Codex")
+        expect("brains list ends with local", ConsoleTheme.brains.last?.rawValue ?? "nil", "local")
+        expect("default model for local is empty (best fit)", ConsoleTheme.defaultBrainModel(.local), "")
+
+        // Now › Ready: the brain's detail.
+        expect("ready detail: local best fit names the pick", NowPanel.readyBrainDetail(brain: .local, brainModel: "", setup: ready.setup), "qwen3.5:27b")
+        expect("ready detail: local explicit id", NowPanel.readyBrainDetail(brain: .local, brainModel: "qwen3.5:9b", setup: ready.setup), "qwen3.5:9b")
+        expect("ready detail: the fallback names its kind", NowPanel.readyBrainDetail(brain: .local, brainModel: "", setup: fallback.setup), "openai-responses")
+        var unresolved = fallback.setup; unresolved.brainResolved = nil
+        expect("ready detail: local unresolved", NowPanel.readyBrainDetail(brain: .local, brainModel: "", setup: unresolved), "local")
+        expect("ready detail: other kinds name themselves", NowPanel.readyBrainDetail(brain: .codex, brainModel: "", setup: ready.setup), "codex")
+
+        // Problems: the Copy chip only from remedy.copy.
+        expect("problems row has Copy", NowPanel.problemCopy(fake.localProblem) ?? "nil", "ollama pull qwen3.5:27b")
+        expect("no Copy without remedy.copy", NowPanel.problemCopy(fake.accessibilityProblem) ?? "nil", "nil")
+        expect("brain.local is amber", ConsoleTheme.problemTint("brain.local") == ConsoleTheme.speaking ? "speaking" : "error", "speaking")
+        expect("brain.local glyph", ConsoleTheme.problemSymbol("brain.local"), "brain.fill")
+        expect("local-empty carries the one problem", fallback.problems.map(\.kind).joined(separator: ","), "brain.local")
+
+        // Leaves the Mac: four rows, their glyphs.
+        expect("four data-path rows", String(ready.setup.dataPaths.count), "4")
+        expect("data paths in order", ready.setup.dataPaths.map(\.what).joined(separator: ","), "voice,brain,memory,web")
+        expect("data paths where (local)", ready.setup.dataPaths.map(\.where).joined(separator: ","), "cloud,mac,mac,cloud")
+        expect("data paths where (fallback)", fallback.setup.dataPaths.map(\.where).joined(separator: ","), "cloud,cloud,mac,cloud")
+        expect("data path symbols", ["voice", "brain", "memory", "web"].map(ConsoleTheme.dataPathSymbol).joined(separator: ","), "waveform,brain.fill,tray.full.fill,globe")
+        expect("data path where symbols", ["cloud", "mac", "lan", "off"].map(ConsoleTheme.dataPathWhereSymbol).joined(separator: ","), "icloud.fill,laptopcomputer,network,minus.circle")
+        expect("data path names", ["voice", "brain", "memory", "web"].map(ConsoleTheme.dataPathName).joined(separator: ","), "Voice,Brain,Memory,Web")
+        expect("mac is the acting green", ConsoleTheme.dataPathTint("mac") == ConsoleTheme.acting ? "acting" : "other", "acting")
+
+        // The Model menu's words.
+        expect("collapsed: best fit", LocalBrainWords.collapsedTitle(saved: "", status: up), "best fit · qwen3.5:27b")
+        expect("collapsed: nothing pickable", LocalBrainWords.collapsedTitle(saved: "", status: empty), "pick a model")
+        expect("collapsed: saved id", LocalBrainWords.collapsedTitle(saved: "qwen3.5:9b", status: up), "qwen3.5:9b")
+        expect("options: best fit first, tool-capable only", LocalBrainWords.modelOptions(saved: "", status: up).joined(separator: ","), ",qwen3.5:27b,qwen3.5:9b,gpt-oss:120b,llama3.3:70b,deepseek-v3.1:671b")
+        expect("options: a saved id off the server is appended", LocalBrainWords.modelOptions(saved: "qwen3:8b", status: up).last ?? "nil", "qwen3:8b")
+        expect("options: a saved listed id adds nothing", String(LocalBrainWords.modelOptions(saved: "qwen3.5:9b", status: up).count), "5")
+        expect("row title", LocalBrainWords.modelTitle("qwen3.5:27b", status: up), "qwen3.5:27b  ·  17 GB · fits")
+        expect("row title: tight", LocalBrainWords.modelTitle("gpt-oss:120b", status: up), "gpt-oss:120b  ·  65 GB · tight fit")
+        expect("row title: best fit names the pick", LocalBrainWords.modelTitle("", status: up), "best fit · qwen3.5:27b")
+        expect("row title: off the server", LocalBrainWords.modelTitle("qwen3:8b", status: up), "qwen3:8b · not on Ollama 0.34.0")
+        expect("too big rows are dim", String(LocalBrainWords.isDim("deepseek-v3.1:671b", status: up)), "true")
+        expect("fitting rows are not dim", String(LocalBrainWords.isDim("qwen3.5:27b", status: up)), "false")
+        expect("gigabytes", LocalBrainWords.gigabytes(17e9) + "/" + LocalBrainWords.gigabytes(6.6e9), "17 GB/6.6 GB")
+        expect("server placeholder: found", LocalBrainWords.serverPlaceholder(up), "127.0.0.1:11434 · Ollama 0.34.0")
+        expect("server placeholder: nothing", LocalBrainWords.serverPlaceholder(none), "nothing found — 11434, 1234, 8080")
+        expect("status line: up", LocalBrainWords.statusLine(up), "Ollama 0.34.0 · 4 models fit this Mac")
+        expect("status line: nothing tool-capable", LocalBrainWords.statusLine(empty), "Nothing here can call tools.")
+        expect("status line: no server", LocalBrainWords.statusLine(none), "No local server. Open Ollama, then Check.")
+        expect("auto nudge: up", LocalBrainWords.autoNudge(up) ?? "nil", "Ollama 0.34.0 is running with 4 models that fit. Pick Local model to keep the brain on this Mac.")
+        expect("auto nudge: nothing", LocalBrainWords.autoNudge(none) ?? "nil", "nil")
+        expect("pickable excludes tools-less models", up.pickable.map(\.id).contains("gemma4:31b") ? "listed" : "greyed out", "greyed out")
+
+        // The Matching row (the wizard's Done line is pinned by OnboardingBench: the harness here
+        // compiles without UI/Onboarding).
+        expect("matching: local", ConsoleTheme.memoryMatching(fake.memorySummaryLocal()), "local · embeddinggemma · 768 dims")
+        expect("matching: openai", ConsoleTheme.memoryMatching(fake.memorySummary()), "OpenAI · 512 dims")
+        expect("matching: nothing yet", ConsoleTheme.memoryMatching(nil), "—")
+        expect("matching help: local names the model", SettingsPanel.matchingHelp(fake.memorySummaryLocal()), "Item text goes to embeddinggemma on this Mac; nothing leaves for memory")
+
+        // Every new symbol exists on this macOS.
+        let symbols = ["waveform", "brain.fill", "tray.full.fill", "globe", "icloud.fill", "laptopcomputer", "network", "minus.circle", "questionmark.circle.fill", "arrow.up.right.square.fill"]
+        let missing = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        expect("every data-path symbol exists", missing.joined(separator: ","), "")
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") at \(stamp)s")
     }
 
@@ -1289,8 +1411,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("used this turn: no summary, nothing", NowPanel.usedIds(nil).joined(separator: ","), "")
         let summary = fake.memorySummary()
         expect("memory counts", ConsoleTheme.memoryCounts(summary), "7 live · 1 forgotten · 1 archived")
-        expect("memory matching: openai", ConsoleTheme.memoryMatching("openai"), "OpenAI · 512 dims")
-        expect("memory matching: keyword", ConsoleTheme.memoryMatching("keyword"), "keyword · no key")
+        expect("memory matching: openai", ConsoleTheme.memoryMatching(summary), "OpenAI · 512 dims")
+        var keyword = summary; keyword.embeddings = "keyword"
+        expect("memory matching: keyword", ConsoleTheme.memoryMatching(keyword), "keyword · nothing leaves")
         expect("learned line: ago", SettingsPanel.learnedLine(summary, now: fake.now), "learned 12m ago")
         var fresh = summary; fresh.lastRunAt = nil; fresh.pending = 0
         expect("learned line: not yet", SettingsPanel.learnedLine(fresh, now: fake.now), "not learned yet")
@@ -1806,10 +1929,124 @@ struct FakeData {
         })
     }
 
-    /// Keys on file, the brain probed and ready: what Settings shows on a working Mac.
+    /// Keys on file, the brain probed and ready: what Settings shows on a working Mac. No local
+    /// server answered; the four data-path rows say the brain and memory are in the cloud.
     var setup: SetupStatus {
         SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "ok", brainResolved: .claudeCode, liveModel: "gpt-live-1",
-                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false))
+                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                    local: noServer(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave"))
+    }
+
+    // MARK: the Local brain (SetupStatus.local / dataPaths as the engine's discovery would send them)
+
+    /// This Mac's memory as the engine reports it (128 GiB).
+    static let ram: Double = 137_438_953_472
+
+    /// Ollama 0.34.0 up with six models: four tool-capable that fit (one tight), one too big, one
+    /// without tools; embeddinggemma pulled for memory. The engine's best fit is qwen3.5:27b.
+    func ollamaUp() -> LocalServerStatus {
+        LocalServerStatus(reachable: true, flavor: .ollama, version: "0.34.0", baseUrl: "http://127.0.0.1:11434", models: [
+            LocalModel(id: "qwen3.5:27b", capabilities: ["completion", "tools", "vision", "thinking"], sizeBytes: 17.0e9, contextLength: 262_144, family: "qwen3", parameterSize: "27B", modifiedAt: ago(2 * 3600), fit: .good, loaded: true, cloud: false),
+            LocalModel(id: "qwen3.5:9b", capabilities: ["completion", "tools", "thinking"], sizeBytes: 6.6e9, contextLength: 262_144, family: "qwen3", parameterSize: "9B", modifiedAt: ago(5 * 86_400), fit: .good, loaded: false, cloud: false),
+            LocalModel(id: "gpt-oss:120b", capabilities: ["completion", "tools", "thinking"], sizeBytes: 65.0e9, contextLength: 131_072, family: "gptoss", parameterSize: "120B", modifiedAt: ago(9 * 86_400), fit: .tight, loaded: false, cloud: false),
+            LocalModel(id: "llama3.3:70b", capabilities: ["completion", "tools"], sizeBytes: 43.0e9, contextLength: 131_072, family: "llama", parameterSize: "70B", modifiedAt: ago(12 * 86_400), fit: .good, loaded: false, cloud: false),
+            LocalModel(id: "deepseek-v3.1:671b", capabilities: ["completion", "tools"], sizeBytes: 404.0e9, contextLength: 163_840, family: "deepseek2", parameterSize: "671B", modifiedAt: ago(20 * 86_400), fit: .no, loaded: false, cloud: false),
+            LocalModel(id: "gemma4:31b", capabilities: ["completion", "vision"], sizeBytes: 19.0e9, contextLength: 131_072, family: "gemma4", parameterSize: "31B", modifiedAt: ago(3 * 86_400), fit: .good, loaded: false, cloud: false),
+        ], picked: "qwen3.5:27b", embedModel: "embeddinggemma", suggested: nil, ramBytes: Self.ram, checkedAt: now)
+    }
+
+    /// Ollama up with nothing that can call tools (a vision model and an embedding model): the
+    /// engine suggests the pull for this Mac and falls back to OpenAI, loudly.
+    func ollamaEmpty() -> LocalServerStatus {
+        LocalServerStatus(reachable: true, flavor: .ollama, version: "0.34.0", baseUrl: "http://127.0.0.1:11434", models: [
+            LocalModel(id: "gemma4:31b", capabilities: ["completion", "vision"], sizeBytes: 19.0e9, contextLength: 131_072, family: "gemma4", parameterSize: "31B", modifiedAt: ago(3 * 86_400), fit: .good, loaded: false, cloud: false),
+        ], picked: nil, embedModel: nil, suggested: LocalSuggested(id: "qwen3.5:27b", sizeBytes: 17.0e9, command: "ollama pull qwen3.5:27b"), ramBytes: Self.ram, checkedAt: now)
+    }
+
+    /// Nothing answered on 11434, 1234 or 8080; the engine still names this Mac's memory.
+    func noServer() -> LocalServerStatus {
+        var s = LocalServerStatus.none
+        s.ramBytes = Self.ram
+        s.checkedAt = now
+        return s
+    }
+
+    /// The four rows with the brain and memory in the cloud (a Codex / Claude / OpenAI brain).
+    func cloudPaths(brain: String) -> [DataPath] {
+        [
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "brain", where: "cloud", detail: brain),
+            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model — item text and closed conversations leave"),
+            DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
+        ]
+    }
+
+    /// The four rows under the Local brain: only the voice and the web leave.
+    func localPaths() -> [DataPath] {
+        [
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"),
+            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"),
+            DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
+        ]
+    }
+
+    /// Memory matched on this Mac: embeddinggemma's 768 dims, the local extractor.
+    func memorySummaryLocal() -> MemorySummary {
+        var m = memorySummary()
+        m.embeddings = "local"
+        m.embeddingModel = "embeddinggemma"
+        m.embeddingDims = 768
+        m.lastRun = MemorySummary.LastRun(extractor: "local", added: 3, updated: 1, noop: 4, refused: 1, ms: 6_400)
+        return m
+    }
+
+    /// The amber row when nothing on the server can call tools: Retry re-discovers; Copy carries
+    /// the pull Kevin runs himself.
+    var localProblem: Problem {
+        Problem(kind: "brain.local",
+                text: "Nothing on Ollama 0.34.0 can call tools; pull a model with the tools badge. The brain's work goes to OpenAI until then; memory stays local.",
+                remedy: ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string("brain.local")], open: nil, copy: "ollama pull qwen3.5:27b"),
+                since: ago(2 * 60))
+    }
+
+    /// Backend → Local model, asleep, Ollama up: the engine's best fit runs (brainModel ""), the
+    /// Status line says so, memory is local.
+    func localSnapshot() -> Snapshot {
+        var s = asleep()
+        s.settings.brain = .local
+        s.settings.brainModel = ""
+        s.settings.brainBaseUrl = nil
+        s.setup = SetupStatus(openaiKey: .ok, brain: .ok,
+                              brainDetail: "Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools · best fit (pick another in Settings)",
+                              brainResolved: .local, liveModel: "gpt-live-1",
+                              secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                              local: ollamaUp(), dataPaths: localPaths())
+        s.memory = memorySummaryLocal()
+        return s
+    }
+
+    /// Local model picked, Ollama up, nothing on it can call tools: the loud fallback to OpenAI,
+    /// memory kept local by keywords, the amber row with its Copy.
+    func localEmptySnapshot() -> Snapshot {
+        var s = live()
+        s.settings.brain = .local
+        s.settings.brainModel = ""
+        s.settings.brainBaseUrl = nil
+        var paths = cloudPaths(brain: "gpt-5.6-terra — OpenAI (the voice key), while nothing local can call tools; screenshots and tool results leave")
+        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules — nothing leaves")
+        s.setup = SetupStatus(openaiKey: .ok, brain: .ok,
+                              brainDetail: "Local · nothing on Ollama 0.34.0 can call tools → OpenAI gpt-5.6-terra until a model with the tools badge is pulled",
+                              brainResolved: .openaiResponses, liveModel: "gpt-live-1",
+                              secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                              local: ollamaEmpty(), dataPaths: paths)
+        s.problems = [localProblem]
+        var m = memorySummary()
+        m.embeddings = "keyword"
+        m.embeddingModel = nil
+        m.embeddingDims = nil
+        s.memory = m
+        return s
     }
 
     /// The ended Codex thread the `threads` scenario steps into: no process owns it, its last
