@@ -76,6 +76,9 @@ enum MemoryWords {
     static let source = "source"
     static let origin = "origin"
     static let mergedInto = "merged into"
+    /// A row's card on the float layer: `memory.<id>` under Settings, `memory.used.<id>` in the Now rail.
+    static func cardId(_ id: String) -> String { "memory.\(id)" }
+    static func usedCardId(_ id: String) -> String { "memory.used.\(id)" }
 }
 
 // MARK: - Formatting (pure)
@@ -104,14 +107,14 @@ enum MemoryFormat {
 
     /// The row's card (tier 2): the kind with its state as the badge, the sentence and its
     /// subjects, then the scores, how often it was met, every source and its origin as foot rows.
-    static func card(_ item: MemoryItem, now: Double) -> ConsoleRowCard {
-        var card = ConsoleRowCard(title: MemoryWords.kindChip(item.kind), badge: .word(item.state.rawValue), lines: [item.text])
+    static func card(_ item: MemoryItem, now: Double) -> ConsoleTipCard {
+        var card = ConsoleTipCard(title: MemoryWords.kindChip(item.kind), badge: .word(item.state.rawValue), lines: [item.text])
         if !item.subjects.isEmpty { card.lines.append("\(MemoryWords.subjects): \(item.subjects.joined(separator: ", "))") }
-        card.foot = [ConsoleRowCard.Foot(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
-                     ConsoleRowCard.Foot(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
-        for s in item.sources.suffix(4) { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
-        card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
-        if let into = item.mergedInto { card.foot.append(ConsoleRowCard.Foot(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
+        card.foot = [ConsoleTipCard.Row(key: MemoryWords.importance, value: "\(score(item.importance)) · \(MemoryWords.confidence) \(score(item.confidence))"),
+                     ConsoleTipCard.Row(key: "seen", value: "\(max(1, item.seenCount))× · last \(ConsoleFormat.relative(item.lastSeenAt, now: now))")]
+        for s in item.sources.suffix(4) { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.source, value: "\(ConsoleFormat.fullDate(s.at)) · \(s.type)")) }
+        card.foot.append(ConsoleTipCard.Row(key: MemoryWords.origin, value: "\(item.origin) · \(item.id)"))
+        if let into = item.mergedInto { card.foot.append(ConsoleTipCard.Row(key: MemoryWords.mergedInto, value: ConsoleFormat.shortId(into))) }
         return card
     }
 
@@ -506,7 +509,7 @@ struct MemoryRow: View {
                        badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: Self.badgeWidth,
                        meta: MemoryFormat.meta(item, now: now), meter: item.importance,
                        trailing: .ellipsis(menuVerbs), verb: live ? nil : ConsoleRowVerb(title: MemoryWords.restore, help: restoreHelp, run: verbs.restore),
-                       focused: focused, sitsBack: !live, card: MemoryFormat.card(item, now: now),
+                       focused: focused, sitsBack: !live, id: MemoryWords.cardId(item.id), card: MemoryFormat.card(item, now: now),
                        accessibilityHint: "\(item.kind.rawValue), \(MemoryFormat.meta(item, now: now))" + (live ? "" : ", \(ConsoleTheme.memoryStateLabel(item.state).lowercased())"),
                        onHover: hovered, primary: verbs.edit)
                 .transition(.opacity)
@@ -660,7 +663,7 @@ private struct MemoryUsedRow: View {
         let now = ConsoleFormat.nowMs
         ConsoleRow(title: item.text, lines: 2, icon: .symbol(ConsoleTheme.memorySymbol(item.kind)),
                    badge: .word(MemoryWords.kindChip(item.kind)), badgeWidth: MemoryRow.badgeWidth,
-                   meta: MemoryFormat.meta(item, now: now), focused: focused, card: MemoryFormat.card(item, now: now),
+                   meta: MemoryFormat.meta(item, now: now), focused: focused, id: MemoryWords.usedCardId(item.id), card: MemoryFormat.card(item, now: now),
                    accessibilityHint: MemoryWords.opensSettings, onHover: hovered, primary: open)
     }
 }

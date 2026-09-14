@@ -6,7 +6,9 @@ import SwiftUI
 // `ConsoleFocusRing` (the keyboard's one ring), `ConsoleListKeys` + `ConsoleListFocus` (↑↓ ⏎ → ←
 // Esc and type-ahead over a list's ids) and `ConsoleListModel` (pure: heights, stepping,
 // type-ahead, the memory kinds, the ledger's months — pinned by `check-kit`). A row's verbs are
-// one `[ConsoleVerb]` rendered to the context menu and to the ⋯, so right-click and ⋯ always agree.
+// one `[ConsoleVerb]` rendered to the context menu, to the ⋯ and to the ⌘↓ float
+// (`ConsoleVerbFloat`), so right-click, ⋯ and ⌘↓ always agree. A row's card is A's `ConsoleTipCard`,
+// drawn beside the row through `consoleHelp(id:card:edge:)` when the row has an id.
 // Canon: tokens only, the accent as the 2 pt selection bar and the focus ring alone, radius 6,
 // no shadow; the meter's dither is the one shade the kit carries.
 
@@ -52,36 +54,6 @@ struct ConsoleVerbMenu: View {
                 Menu(verb.title) { ConsoleVerbMenu(verbs: verb.children) }
             }
         }
-    }
-}
-
-// MARK: - The card a row hovers (the tier-2 shape)
-
-/// The tier-2 card's value, built by a row in a static func. The same fields as the design's
-/// `ConsoleTipCard` (Builder A's); the integrator aliases this to it and renders through
-/// `consoleHelp(id:card:edge:)`. Until then a row speaks it through the tier-1 alias.
-struct ConsoleRowCard: Equatable {
-    struct Foot: Equatable {
-        let key: String
-        let value: String
-    }
-
-    var title: String
-    var badge: ConsoleBadge.Word? = nil
-    var status: String? = nil
-    var lines: [String] = []
-    var foot: [Foot] = []
-    var last: Foot? = nil
-
-    /// Every line, ", "-joined: the trigger's accessibility hint and, for now, its tip.
-    var spoken: String {
-        var parts = [title]
-        if let badge { parts[0] += " · \(ConsoleBadge.text(badge))" }
-        if let status { parts[0] += " · \(status)" }
-        parts += lines
-        parts += foot.map { "\($0.key) \($0.value)" }
-        if let last { parts.append("\(last.key) \(last.value)") }
-        return parts.joined(separator: ", ")
     }
 }
 
@@ -132,7 +104,10 @@ struct ConsoleRow: View {
     var open = false
     var sitsBack = false
     var disabled = false
-    var card: ConsoleRowCard? = nil
+    /// The row's stable id on the float layer: its card's anchor (`memory.<id>`) and its ⌘↓ float's.
+    var id: String? = nil
+    /// The tier-2 card beside the row (edge .trailing; a right-rail row's lands over the stream).
+    var card: ConsoleTipCard? = nil
     /// The list's one glide id for the selection bar.
     var selection: Namespace.ID? = nil
     var accessibilityHint: String? = nil
@@ -169,14 +144,17 @@ struct ConsoleRow: View {
         .onHover { hovering = $0; onHover($0) }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: selected)
-        .consoleRowCard(card)
+        .modifier(ConsoleRowCardTip(id: id, card: card))
     }
 }
 
-extension View {
-    /// The row's card through the tier-1 alias (Builder A's card tier replaces this line).
-    @ViewBuilder func consoleRowCard(_ card: ConsoleRowCard?) -> some View {
-        if let card { consoleHelp(card.spoken) } else { self }
+/// The row's card beside it (tier 2) when it has one; a row without an id anchors on its spoken form.
+struct ConsoleRowCardTip: ViewModifier {
+    let id: String?
+    let card: ConsoleTipCard?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let card { content.consoleHelp(id: id ?? ConsoleTip.id(for: card.spoken), card: card, edge: .trailing) } else { content }
     }
 }
 

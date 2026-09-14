@@ -67,6 +67,11 @@ enum AgentsRailWords {
     static func agentId(_ id: String) -> String { "agent:\(id)" }
     static func hitId(_ id: String) -> String { "hit:\(id)" }
     static func groupId(_ tool: AgentTool) -> String { "agents.\(tool.rawValue)" }
+    /// The rows' cards on the float layer (`tipOpen:` / `hover:` reach them by these).
+    static func threadTip(_ id: String) -> String { "rail.thread.\(id)" }
+    static func chainTip(_ id: String) -> String { "rail.chain.\(id)" }
+    static func agentTip(_ id: String) -> String { "rail.agent.\(id)" }
+    static func hitTip(_ id: String) -> String { "rail.hit.\(id)" }
     /// `resumed ×1` — the chain row's badge.
     static func resumed(_ n: Int) -> String { "resumed ×\(n)" }
     /// A search hit's type as the badge word (the glyph's legend).
@@ -79,11 +84,8 @@ enum AgentsRailWords {
     }
     /// An agent's status as the trailing word (blocked is the `asks` badge instead).
     static func status(_ s: AgentStatus) -> String { s.rawValue }
-    // The cards' keys.
+    // The cards' keys (the thread card's are ConsoleTipWords', the card being A's).
     static let started = "started"
-    static let lane = "lane"
-    static let steps = "steps"
-    static let budget = "budget"
     static let sessions = "sessions"
     static let inTrash = "In the Trash"
     static let archivedWord = "Archived"
@@ -92,9 +94,6 @@ enum AgentsRailWords {
     /// The Threads head's tip and the rename field's — ≤ 60 characters, no "you", no "Kevin".
     static let threadsHelp = "Threads asking first, then busy, then finished (5 min kept)"
     static let renameHelp = "Return keeps the name; Esc cancels; empty is the auto title"
-    static let mainThread = "the main conversation, as a thread"
-    static func turns(_ n: Int) -> String { n == 1 ? "1 turn" : "\(n) turns" }
-    static func budgetLine(steps: Int, seconds: Int) -> String { "\(steps) steps / \(seconds) s" }
 }
 
 /// What the Now row says, sliced from the snapshot by the root so the rail stays a plain value.
@@ -1107,7 +1106,7 @@ struct JarheadNowRow: View {
 /// One thread: the status glyph on the icon column, the name (medium while its pane is open),
 /// the status word at the right — the `asks` badge while it waits on Kevin — the ⋯ at rest, and
 /// one mono meta line, `00:12 · screen · 7 steps`, the seconds rolling while it is live. The
-/// thread's card (the ask, started · lane · steps · budget) is the same one the right rail shows.
+/// thread's card is `ConsoleTipCard.thread` — the one the stream's chip and the right rail show.
 /// The menu (right-click, or the ⋯): Open, Stop (`thread.stop`, this thread only; main parks its
 /// turn), and for a spawned thread Pause / Resume. Never a Delete: a finished thread ages off the
 /// rail and lives in the ledger.
@@ -1127,22 +1126,6 @@ struct ThreadRow: View {
     private var meta: ConsoleTheme.ThreadMeta { ConsoleTheme.thread(thread.status) }
     private var isMain: Bool { thread.id == "main" }
     private var asks: Bool { thread.status == .waitingKevin }
-
-    /// The tier-2 card: `Slack [asks] · the ask · started · lane · steps · budget · Opens its pane ⏎`.
-    static func card(_ thread: WorkThread) -> ConsoleRowCard {
-        let meta = ConsoleTheme.thread(thread.status)
-        var card = ConsoleRowCard(title: thread.name + (thread.id == "main" ? " — \(AgentsRailWords.mainThread)" : ""))
-        if thread.status == .waitingKevin { card.badge = .asks } else { card.status = meta.label }
-        if let q = thread.question, !q.isEmpty { card.lines.append(q) } else if !thread.task.isEmpty { card.lines.append(thread.task) }
-        if let d = thread.detail, !d.isEmpty, card.lines.first != d { card.lines.append(d) }
-        card.lines = Array(card.lines.prefix(2))
-        card.foot = [ConsoleRowCard.Foot(key: AgentsRailWords.started, value: ConsoleFormat.clock(thread.startedAt)),
-                     ConsoleRowCard.Foot(key: AgentsRailWords.lane, value: ConsoleTheme.lane(thread.lane)),
-                     ConsoleRowCard.Foot(key: AgentsRailWords.steps, value: "\(thread.steps) · \(AgentsRailWords.turns(thread.turns))"),
-                     ConsoleRowCard.Foot(key: AgentsRailWords.budget, value: AgentsRailWords.budgetLine(steps: thread.budget.steps, seconds: thread.budget.seconds))]
-        card.last = ConsoleRowCard.Foot(key: ConsoleRowWords.opensPane, value: ConsoleRowWords.returnKey)
-        return card
-    }
 
     var body: some View {
         Button(action: toggle) {
@@ -1177,7 +1160,8 @@ struct ThreadRow: View {
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.fade, value: thread.status.isLive)
-        .consoleRowCard(Self.card(thread))
+        // The one thread card (ConsoleTipCard.thread): the stream's chip and the right rail draw the same.
+        .consoleHelp(id: AgentsRailWords.threadTip(thread.id), card: .thread(thread), edge: .trailing)
         .accessibilityLabel("Thread \(thread.name), \(meta.label)")
         .accessibilityHint(open ? "Open in the centre" : "Opens the thread")
         .accessibilityAddTraits(open ? .isSelected : [])
@@ -1268,13 +1252,13 @@ struct JarheadChainRow: View {
 
     /// The story of a chain in one card: the name, the first line heard, `date · reason`, the
     /// sessions a → b → c, and where it sits (the Trash since …, Archived).
-    static func card(_ chain: JarheadChain) -> ConsoleRowCard {
-        var card = ConsoleRowCard(title: chain.name ?? (chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title))
+    static func card(_ chain: JarheadChain) -> ConsoleTipCard {
+        var card = ConsoleTipCard(title: chain.name ?? (chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title))
         if chain.name != nil { card.lines.append(chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title) }
         if chain.resumes > 0 { card.badge = .word(AgentsRailWords.resumed(chain.resumes)) }
-        card.foot.append(ConsoleRowCard.Foot(key: AgentsRailWords.started, value: ConsoleFormat.fullDate(chain.startedAt) + " · " + (chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason))))
+        card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.started, value: ConsoleFormat.fullDate(chain.startedAt) + " · " + (chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason))))
         if chain.resumes > 0 {
-            card.foot.append(ConsoleRowCard.Foot(key: AgentsRailWords.sessions, value: "\(chain.sessions.count): " + chain.sessions.map { ConsoleFormat.shortId($0.id) }.joined(separator: " → ")))
+            card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.sessions, value: "\(chain.sessions.count): " + chain.sessions.map { ConsoleFormat.shortId($0.id) }.joined(separator: " → ")))
         }
         if chain.isTrashed { card.status = AgentsRailWords.inTrash + (chain.trashedAt.map { " since \(ConsoleFormat.fullDate($0))" } ?? "") }
         if chain.isArchived { card.status = AgentsRailWords.archivedWord }
@@ -1380,7 +1364,7 @@ struct JarheadChainRow: View {
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.fade, value: picked)
-        .consoleRowCard(Self.card(chain))
+        .consoleHelp(id: AgentsRailWords.chainTip(chain.id), card: Self.card(chain), edge: .trailing)
         .accessibilityLabel("Jarhead conversation, \(title), \(metaLine)" + (chain.isTrashed ? ", in the Trash" : chain.isArchived ? ", archived" : "") + (picked ? ", selected" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation; ⌘-click selects")
         .accessibilityAddTraits(open || picked ? .isSelected : [])
@@ -1479,8 +1463,8 @@ private struct SearchHitRow: View {
     @State private var hovering = false
 
     /// The hit whole: `date · day` and the text.
-    static func card(_ hit: LedgerHit) -> ConsoleRowCard {
-        ConsoleRowCard(title: ConsoleFormat.fullDate(hit.at) + (hit.day.map { " · \($0)" } ?? ""), badge: .word(AgentsRailWords.hitType(hit.type)), lines: [hit.text])
+    static func card(_ hit: LedgerHit) -> ConsoleTipCard {
+        ConsoleTipCard(title: ConsoleFormat.fullDate(hit.at) + (hit.day.map { " · \($0)" } ?? ""), badge: .word(AgentsRailWords.hitType(hit.type)), lines: [hit.text])
     }
 
     /// Kevin's line, Jarhead's, a delegation's request, its summary (the ledger's four hit kinds).
@@ -1529,7 +1513,7 @@ private struct SearchHitRow: View {
         .modifier(ConsoleFocusRing(on: focused))
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
-        .consoleRowCard(Self.card(hit))
+        .consoleHelp(id: AgentsRailWords.hitTip(hit.id), card: Self.card(hit), edge: .trailing)
         .accessibilityLabel("Hit at \(ConsoleFormat.time(hit.at)): \(hit.text)")
         .accessibilityHint("Opens the conversation at this row")
     }
@@ -1590,12 +1574,12 @@ struct AgentRowView: View {
     }
 
     /// `name [asks] · detail · cwd`.
-    static func card(_ agent: AgentInfo) -> ConsoleRowCard {
-        var card = ConsoleRowCard(title: agent.name)
+    static func card(_ agent: AgentInfo) -> ConsoleTipCard {
+        var card = ConsoleTipCard(title: agent.name)
         if agent.status == .blocked { card.badge = .asks } else { card.status = AgentsRailWords.status(agent.status) }
         if let d = agent.detail, !d.isEmpty { card.lines.append(d) }
-        if let cwd = agent.cwd, !cwd.isEmpty { card.foot.append(ConsoleRowCard.Foot(key: AgentsRailWords.cwd, value: ConsoleFormat.truncPath(cwd, max: 48))) }
-        card.last = ConsoleRowCard.Foot(key: ConsoleRowWords.opensPane, value: ConsoleRowWords.returnKey)
+        if let cwd = agent.cwd, !cwd.isEmpty { card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.cwd, value: ConsoleFormat.truncPath(cwd, max: 48))) }
+        card.last = ConsoleTipCard.Row(key: ConsoleRowWords.opensPane, value: ConsoleRowWords.returnKey)
         return card
     }
 
@@ -1614,7 +1598,7 @@ struct AgentRowView: View {
         .contextMenu { ConsoleVerbMenu(verbs: verbs) }
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
-        .consoleRowCard(Self.card(agent))
+        .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent), edge: .trailing)
         .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)" + (hidden ? ", hidden" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])
