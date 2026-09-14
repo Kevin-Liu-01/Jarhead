@@ -265,6 +265,8 @@ export interface Delegation {
   readonly threadId?: string;
   /** Step total of a thread's delegation (threads/turns.ts writes it); a thread page shows it before its steps are paged in. Absent on main's delegations, whose `steps` are complete. */
   readonly stepCount?: number;
+  /** The automation whose `wake-brain` action ran this turn: `liveId` is "" and nothing is appended to Live. */
+  readonly origin?: { readonly automationId: string };
 }
 
 // ----------------------------------------------------------------- agents ---
@@ -373,6 +375,247 @@ export interface ConnectorHealth {
   readonly detail: string;
 }
 
+// ------------------------------------------------------------ automations ---
+//
+// Set while awake, carried out by the daemon while asleep.
+//
+// Kevin (2026-09-14): "alarms, automations and more that don't require the agent to be fully
+// awake but can just be on system". An Automation is `when <trigger> then <actions>`, armed by a
+// brain tool in a conversation (confirmed once at set-up when an action needs a yes) and fired
+// by the engine from tick() or a system signal with NO Live session and NO brain turn — except
+// `wake-brain`, opted into per row with the cost said out loud. Nothing fires that would need a
+// question at fire time: the set-up gate refuses it. Rows are never deleted: `trashed` is a state.
+
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+/** "HH:mm", 24 h, local. DST follows the Mac's clock: 07:10 is 07:10 on both sides of the change. */
+export type ClockTime = `${number}:${number}`;
+
+/** Local wall-clock recurrence, normalised from Kevin's phrase. `monthly`/`monthday` are pass 2 (typed now so the wire holds). */
+export type Recurrence =
+  /** "weekdays 09:00" · "daily 18:00" · "mon,wed 07:10" */
+  | { readonly kind: "weekly"; readonly days: readonly Weekday[]; readonly at: ClockTime }
+  /** "every 2 h" (≥ 60 000) */
+  | { readonly kind: "interval"; readonly everyMs: number; readonly anchorAt: number }
+  | { readonly kind: "monthly"; readonly nth: 1 | 2 | 3 | 4 | -1; readonly weekday: Weekday; readonly at: ClockTime }
+  | { readonly kind: "monthday"; readonly day: number; readonly at: ClockTime };
+
+/** When it fires. `at` and `in` are one-shots; `every` and `on` repeat. */
+export type AutomationWhen =
+  /** alarm, reminder: wall-clock ms */
+  | { readonly kind: "at"; readonly at: number }
+  /** timer: ms after createdAt; nextAt fixed once */
+  | { readonly kind: "in"; readonly ms: number }
+  /** alarm (repeating), routine; `phrase` for read-back */
+  | { readonly kind: "every"; readonly every: Recurrence; readonly phrase: string }
+  /** watcher */
+  | { readonly kind: "on"; readonly on: SystemEvent };
+
+/** A signal the daemon can see without a brain. Pass 1 set. */
+export type SystemEvent =
+  /** A file appears in a folder and settles (`settleMs` after its last write, default 3000); `glob` narrows ("*.pdf"). Browser partials never count. */
+  | { readonly kind: "folder.file"; readonly path: string; readonly glob?: string; readonly settleMs?: number }
+  | { readonly kind: "download.done"; readonly glob?: string }
+  | { readonly kind: "app.launch" | "app.quit"; readonly app: string }
+  | { readonly kind: "mac.wake" | "screen.unlock" }
+  | { readonly kind: "display.connected" | "display.disconnected" }
+  /** A named recipe polled every `everySeconds` (≥ 30); fires when its exit flips non-zero and once when it flips back. */
+  | { readonly kind: "recipe.red"; readonly recipe: string; readonly everySeconds: number }
+  /** One of Kevin's coding-agent sessions changed status (the agents registry). `agent` absent = any. */
+  | { readonly kind: "agent.status"; readonly agent?: string; readonly status: AgentStatus };
+// Reserved for pass 2 (never armed in pass 1; classifyAutomation refuses the kind by name):
+//   { kind: "clipboard.match"; pattern } · { kind: "network.changed"; network? } · { kind: "automation.fired"; id }
+
+/** What happens. Each kind is a chip in Settings.automations.unattended; off there = refused at set-up. */
+export type AutomationAction =
+  /** sound + island line with Snooze · Done (+ banner) */
+  | { readonly kind: "chime"; readonly line: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero" }
+  /** LocalSpeaker reads a FIXED line ≤ 160, written at set-up, redacted */
+  | { readonly kind: "say"; readonly line: string }
+  /** banner with Snooze · Done (Open · Done when `open`) */
+  | { readonly kind: "notify"; readonly title: string; readonly body?: string; readonly open?: string }
+  /** app · https URL · file/folder; classifyUrl/Path must say run */
+  | { readonly kind: "open"; readonly app?: string; readonly url?: string; readonly path?: string }
+  /** move the triggering file (folder.file/download.done only); never overwrite, never unlink, inside ~ */
+  | { readonly kind: "file"; readonly into: string }
+  /** a Settings recipe; shell gate with confirmed=false must say run */
+  | { readonly kind: "run-recipe"; readonly recipe: string }
+  /** one key/chord in a named app, only while it is in front and no secure field has focus */
+  | { readonly kind: "press"; readonly app: string; readonly key: string }
+  | { readonly kind: "wake-brain"; readonly prompt: string; readonly budget: { readonly steps: number; readonly seconds: number }; readonly speak: boolean };
+
+export const AUTOMATION_ACTION_KINDS = ["chime", "say", "notify", "open", "file", "run-recipe", "press", "wake-brain"] as const;
+export type AutomationActionKind = (typeof AUTOMATION_ACTION_KINDS)[number];
+/** The kinds that act on the Mac (a row carries at most one); the rest only show, say or sound. */
+export const AUTOMATION_ACTING_KINDS: ReadonlySet<AutomationActionKind> = new Set<AutomationActionKind>(["open", "file", "run-recipe", "press", "wake-brain"]);
+
+export interface AutomationClauses {
+  /** fires only inside (local, wraps midnight) */
+  readonly window?: { readonly from: ClockTime; readonly to: ClockTime };
+  /** watchers only; `every` carries its own days */
+  readonly days?: readonly Weekday[];
+  /** one-shot watcher · at most once per local day */
+  readonly once?: boolean | "day";
+  /** seconds between fires (storm guard); default 30 for watchers, 0 for clocks */
+  readonly cooldown?: number;
+  /** repeaters stop after this instant */
+  readonly until?: number;
+  /** alarms default override; everything else respect */
+  readonly quiet: "respect" | "override";
+}
+
+export type AutomationState =
+  /** waiting for nextAt or the signal */
+  | "armed"
+  /** snoozedUntil is the new nextAt */
+  | "snoozed"
+  /** an action runs now (recipe, brain turn, file move) */
+  | "firing"
+  /** rang; waiting for Done (chime/notify/say) until Done or AUTOMATION_LINGER_MS */
+  | "fired"
+  /** due inside quiet hours with quiet=respect; fires at quiet end */
+  | "deferred"
+  /** Kevin paused it */
+  | "paused"
+  /** a one-shot that fired and was dismissed/skipped, or a repeater past `until` */
+  | "done"
+  /** the last fire could not run (lastDetail says why); repeaters re-arm, one-shots stay */
+  | "failed"
+  /** Moved to Trash: hidden from the rails, restorable, never deleted */
+  | "trashed";
+export const AUTOMATION_TERMINAL: ReadonlySet<AutomationState> = new Set<AutomationState>(["done", "trashed"]);
+
+/** The Console's word for a row, derived — nothing stores it. */
+export type AutomationKind = "alarm" | "timer" | "reminder" | "routine" | "watcher";
+export function automationKind(a: Pick<Automation, "when" | "then">): AutomationKind {
+  const w = a.when.kind, first = a.then[0]?.kind;
+  if (w === "in") return "timer";
+  if (w === "on") return "watcher";
+  if (w === "every") return first === "chime" ? "alarm" : "routine";
+  return first === "chime" ? "alarm" : "reminder";
+}
+
+export interface Automation {
+  /** "auto_…" (newId) */
+  readonly id: string;
+  /** ≤ 24 chars, spoken as-is; unique among non-trashed rows, case-insensitive */
+  readonly name: string;
+  readonly when: AutomationWhen;
+  /** 1–3, in order; at most one acting kind; a failure stops the chain */
+  readonly then: readonly AutomationAction[];
+  readonly clauses: AutomationClauses;
+  /** the one line Jarhead read back at set-up, ≤ 120, redacted */
+  readonly echo: string;
+  readonly state: AutomationState;
+  /** absent for watchers and terminal states */
+  readonly nextAt?: number;
+  readonly lastFiredAt?: number;
+  /** ≤ 200, redacted: "filed invoice.pdf → Papers" · "recipe exit 1" · "quiet hours: shown, not said" · "12 min late" */
+  readonly lastDetail?: string;
+  readonly fires: number;
+  /** skipped or late because the daemon was down or the Mac slept */
+  readonly missed: number;
+  readonly snoozedUntil?: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly createdBy: { readonly by: "brain" | "console" | "cli"; readonly chainId?: string; readonly delegationId?: string; readonly request: string };
+  /** The set-up yes for run-recipe / press / wake-brain: when Kevin confirmed and the words he heard (the cost line). Absent for free kinds. */
+  readonly confirmed?: { readonly at: number; readonly heard: string };
+}
+
+/** rows in one snapshot (armed first; trashed never) */
+export const AUTOMATIONS_MAX = 32;
+export const AUTOMATION_ACTIONS_MAX = 3;
+/** a ring stays up this long; alarms then self-snooze ONCE, others count as Done ("unanswered") */
+export const AUTOMATION_LINGER_MS = 10 * 60_000;
+/** alarms re-chime while `fired` */
+export const AUTOMATION_REPEAT_CHIME_MS = 30_000;
+/** minutes; the box's word is Settings.snoozeMinutes; the minis show the other two */
+export const AUTOMATION_SNOOZES = [5, 10, 30] as const;
+/** say/chime/notify lines: a sentence, not a briefing */
+export const AUTOMATION_LINE_CHARS = 160;
+export const AUTOMATION_WATCH_COOLDOWN_S = 30;
+/** recipe.red floor */
+export const AUTOMATION_POLL_MIN_S = 30;
+export const AUTOMATION_FOLDER_WATCHERS_MAX = 8;
+/** a watcher that wakes the brain needs ten minutes between fires */
+export const AUTOMATION_WAKE_COOLDOWN_MIN_S = 600;
+/** a tick gap this long means the Mac slept: resync */
+export const AUTOMATION_SLEEP_GAP_MS = 5_000;
+/** How late a one-shot may still fire after the daemon comes back; later = missed. Routines and watchers never fire late. */
+export const AUTOMATION_GRACE_MS: Readonly<Record<AutomationKind, number>> = { alarm: 15 * 60_000, timer: 10 * 60_000, reminder: 60 * 60_000, routine: 0, watcher: 0 };
+
+/** The presses a ring offers; the island, the banner and the Console show the same set. */
+export type AutomationPress = { readonly kind: "snooze"; readonly minutes: number } | { readonly kind: "done" } | { readonly kind: "open"; readonly target: string };
+
+/** The one line the island shows while a row is `fired` (the newest; `more` counts the others). */
+export interface RingLine {
+  readonly id: string;
+  readonly kind: AutomationKind;
+  readonly name: string;
+  /** "07:10 · Wake up, Kevin" */
+  readonly line: string;
+  /** one quieter second line: the echo's tail or the next fire ("Monday · standup notes at 9") */
+  readonly calm?: string;
+  readonly at: number;
+  readonly lateMs?: number;
+  readonly presses: readonly AutomationPress[];
+  readonly more: number;
+}
+
+/** One change on one row; broadcast like thread.event (≤ 200 B, coalesced 50 ms per id). */
+export type AutomationEvent = { readonly seq: number; readonly at: number; readonly id: string } & (
+  | { readonly kind: "set"; readonly automation: Automation }
+  | { readonly kind: "fired"; readonly actions: readonly AutomationActionKind[]; readonly line: string; readonly ok: boolean; readonly detail?: string; readonly lateMs?: number; readonly presses: readonly AutomationPress[] }
+  | { readonly kind: "state"; readonly state: AutomationState; readonly nextAt?: number; readonly detail?: string }
+  | { readonly kind: "missed"; readonly dueAt: number; readonly lateMs?: number; readonly skipped?: boolean; readonly why: MissedWhy }
+  /** a running timer, ≤ 1/s, only while a client views the island/Console; never a snapshot */
+  | { readonly kind: "tick"; readonly remainingMs: number }
+);
+export type MissedWhy = "daemon-down" | "mac-slept" | "quiet-hours" | "budget";
+
+/** A signal the app observes on Kevin's behalf and forwards; the daemon has no NSWorkspace. Data, never a command. */
+export type SystemSignal =
+  | { readonly kind: "app.launch" | "app.quit"; readonly app: string; readonly bundleId?: string }
+  | { readonly kind: "mac.wake" | "mac.sleep" | "screen.unlock" | "screen.lock" | "display.connected" | "display.disconnected" | "clock.changed" };
+
+export interface ShellRecipe {
+  /** ≤ 24 chars; what a row names in run-recipe / recipe.red */
+  readonly name: string;
+  readonly command: string;
+  readonly cwd?: string;
+  /** ≤ 600 */
+  readonly timeoutSeconds: number;
+  /** Kevin's yes (voice set-up or the Console's Add); the shell gate re-judges the text at every fire anyway */
+  readonly approvedAt: number;
+}
+
+export interface AutomationSettings {
+  /** master; off = nothing fires, every row stays */
+  readonly enabled: boolean;
+  /** kinds allowed to fire while ASLEEP; default chime say notify open file */
+  readonly unattended: readonly AutomationActionKind[];
+  readonly quietHours?: { readonly from: ClockTime; readonly to: ClockTime };
+  /** the island's one Snooze press (default 10; timers use 5) */
+  readonly snoozeMinutes: number;
+  /** 0 = wake-brain refused at set-up */
+  readonly wakeBudgetMinutesPerDay: number;
+  readonly recipes: readonly ShellRecipe[];
+  /** the app registers itself to open at login on Kevin's press */
+  readonly openAtLogin: boolean;
+}
+
+export const DEFAULT_AUTOMATIONS: AutomationSettings = {
+  enabled: true,
+  unattended: ["chime", "say", "notify", "open", "file"],
+  snoozeMinutes: 10,
+  wakeBudgetMinutesPerDay: 5,
+  recipes: [],
+  openAtLogin: false,
+};
+
+/** A row as the Console form or the CLI sends it; the engine fills id, state, fires, missed, the stamps and createdBy. */
+export type AutomationDraft = Omit<Automation, "id" | "state" | "fires" | "missed" | "createdAt" | "updatedAt" | "createdBy" | "confirmed"> & { readonly id?: string };
+
 // --------------------------------------------------------------- settings ---
 
 /**
@@ -461,6 +704,8 @@ export interface Settings {
   readonly threadOverflow: "supersede" | "spawn";
   /** Warm codex app-server processes kept ready for threads (0..3). */
   readonly warmThreads: number;
+  /** Alarms, timers, reminders, routines and watchers the daemon carries out while asleep: the master switch, the unattended kinds, quiet hours, the recipes. */
+  readonly automations: AutomationSettings;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -490,6 +735,7 @@ export const DEFAULT_SETTINGS: Settings = {
   typedWakes: false,
   threadOverflow: "supersede",
   warmThreads: 2,
+  automations: DEFAULT_AUTOMATIONS,
 };
 
 /**
@@ -500,7 +746,7 @@ export const DEFAULT_SETTINGS: Settings = {
  */
 export const SETTINGS_KEYS = [
   "voice", "brain", "brainModel", "brainBaseUrl", "effort", "onboarded", "micDeviceId", "idleSleepMinutes", "autoWake", "orbPosition", "wake", "reflexes", "orbHome",
-  "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads",
+  "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads", "automations",
 ] as const satisfies readonly (keyof Settings)[];
 type SettingsKeysCover = Record<(typeof SETTINGS_KEYS)[number], 0>;
 const settingsKeysCoverEverything: Record<keyof Settings, 0> = {} as SettingsKeysCover;
@@ -710,13 +956,21 @@ export interface Snapshot {
   readonly memory?: MemorySummary;
   /** Every live thread (main first) and those finished within THREAD_LINGER_MS; ≤ THREADS_MAX. */
   readonly threads: readonly Thread[];
+  /** Non-trashed rows, ≤ AUTOMATIONS_MAX: armed/snoozed/deferred by nextAt, then the rest by updatedAt. */
+  readonly automations: readonly Automation[];
+  /** The newest `fired` row with a line, while one is up. */
+  readonly ringing?: RingLine;
+  /** The foot's "next Timer 12:00 · pasta". */
+  readonly nextFire?: { readonly id: string; readonly kind: AutomationKind; readonly name: string; readonly at: number };
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
 /** `brain.local`: the local server or model needs Kevin — not running, nothing pulled that can call tools, the picked id is gone, a cloud tag, a window too small. Amber, with the command to run in `remedy.copy`. */
+/** `automation.*`: a row fired late or was skipped (`missed`, remedy Run now), an action kind is off in Settings (`blocked`), the wake-brain minutes are spent (`budget`), banners are denied (`notifications`), a watched folder cannot be read (`watch`, remedy Ask). */
 export type ProblemKind =
   | "permission.accessibility" | "permission.screenRecording" | "permission.microphone" | "permission.fullDiskAccess" | "permission.other"
-  | "brain.unavailable" | "brain.probe" | "brain.local" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other";
+  | "brain.unavailable" | "brain.probe" | "brain.local" | "voice.limit" | "voice.connection" | "voice.key" | "hands.helper" | "disk.low" | "dock" | "daemon" | "crash" | "other"
+  | "automation.missed" | "automation.blocked" | "automation.budget" | "automation.notifications" | "automation.watch";
 
 export interface ProblemRemedy {
   /** Button text: "Open pane", "Request", "Retry", "Reveal", "Restart daemon", "Fix the Dock". */
@@ -799,7 +1053,13 @@ export type EngineEvent =
   /** One change on one thread (broadcast, ≤ 200 B); a spawned thread's steps never rebuild the snapshot. */
   | { readonly type: "thread.event"; readonly event: ThreadEvent }
   /** A page of a thread's conversation (`replace`), new rows (`append`) or older ones (`prepend`); viewers only. */
-  | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" };
+  | { readonly type: "thread.transcript"; readonly transcript: ThreadTranscript; readonly mode: "replace" | "append" | "prepend" }
+  /** One change on one automation row (broadcast, ≤ 200 B, coalesced 50 ms per id). */
+  | { readonly type: "automation.event"; readonly event: AutomationEvent }
+  /** The app plays the earcon and the local speaker reads `text`; never model text except a redacted wake-brain line ≤ AUTOMATION_LINE_CHARS. */
+  | { readonly type: "local.say"; readonly text?: string; readonly sound?: "Pop" | "Glass" | "Ping" | "Hero"; readonly automationId: string }
+  /** A banner with the ring's presses; a press lands on the same row as the island's. */
+  | { readonly type: "notify"; readonly id: string; readonly title: string; readonly body?: string; readonly presses: readonly AutomationPress[]; readonly automationId: string };
 
 /**
  * A settings change. `null` clears an optional field (JSON has no way to send
@@ -887,6 +1147,23 @@ export type EngineCommand =
   | { readonly type: "thread.answer"; readonly threadId: string; readonly yes: boolean }
   /** A follow-up turn on that thread's own brain, in Kevin's words. */
   | { readonly type: "thread.say"; readonly threadId: string; readonly text: string }
+  // ---- automations (the Console's rail, the island's presses, the CLI). Never a deletion: Move to Trash / Restore.
+  /** Console form / CLI; the engine fills id, state, fires, createdAt, createdBy { by: "console" | "cli" }. */
+  | { readonly type: "automation.set"; readonly automation: AutomationDraft }
+  | { readonly type: "automation.snooze"; readonly id: string; readonly minutes: number }
+  | { readonly type: "automation.done"; readonly id: string }
+  /** repeater: roll the next occurrence · one-shot: done without firing */
+  | { readonly type: "automation.skip"; readonly id: string }
+  | { readonly type: "automation.pause"; readonly id: string }
+  | { readonly type: "automation.resume"; readonly id: string }
+  | { readonly type: "automation.rename"; readonly id: string; readonly name: string }
+  | { readonly type: "automation.trash"; readonly id: string }
+  | { readonly type: "automation.restore"; readonly id: string }
+  /** fire it now — refused unless a Live session is open (Kevin hears it) or the command came from the Console/CLI with Kevin present (presence.recent) */
+  | { readonly type: "automation.run"; readonly id: string }
+  /** the Console's Recipes list; the engine writes settings.json */
+  | { readonly type: "recipe.set"; readonly recipe: ShellRecipe }
+  | { readonly type: "recipe.trash"; readonly name: string }
   /** Older turns before message `before`. */
   | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
   /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
@@ -1001,7 +1278,14 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "ledger.moved"; readonly day: string; readonly what: "ledger" | "shots"; readonly to: "trash" | "live"; readonly path: string; readonly by: "kevin" | "retention" }
   | { readonly at: number; readonly type: "agent.hidden"; readonly agentId: string; readonly hidden: boolean }
   /** A confirmation Kevin gave that stays good for the rest of the conversation (same app, same action class); `until` is wall-clock ms. */
-  | { readonly at: number; readonly type: "grant"; readonly chainId: string; readonly app: string; readonly actionClass: string; readonly until: number };
+  | { readonly at: number; readonly type: "grant"; readonly chainId: string; readonly app: string; readonly actionClass: string; readonly until: number }
+  // ---- automations: the record, never a session's rows (META_TYPES). The schedule itself lives in automations/jobs.ndjson.
+  | { readonly at: number; readonly type: "automation.set"; readonly automation: Automation; readonly by: "brain" | "console" | "cli" }
+  | { readonly at: number; readonly type: "automation.fired"; readonly id: string; readonly actions: readonly AutomationActionKind[]; readonly ok: boolean; readonly line: string; readonly detail?: string; readonly lateMs?: number; readonly ms: number; readonly delegationId?: string; readonly brainSeconds?: number }
+  | { readonly at: number; readonly type: "automation.state"; readonly id: string; readonly state: AutomationState; readonly by: "kevin" | "brain" | "engine"; readonly until?: number; readonly detail?: string }
+  | { readonly at: number; readonly type: "automation.missed"; readonly id: string; readonly dueAt: number; readonly lateMs?: number; readonly skipped?: boolean; readonly why: MissedWhy }
+  | { readonly at: number; readonly type: "recipe.set"; readonly recipe: ShellRecipe; readonly by: "kevin" | "brain" }
+  | { readonly at: number; readonly type: "recipe.trashed"; readonly name: string };
 
 // ------------------------------------------------------------ type guards ---
 
@@ -1011,6 +1295,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
   "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
   "thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say",
+  "automation.set", "automation.snooze", "automation.done", "automation.skip", "automation.pause", "automation.resume", "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {
