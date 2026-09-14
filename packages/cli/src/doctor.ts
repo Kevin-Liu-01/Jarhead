@@ -686,9 +686,11 @@ export async function runChecks(): Promise<Check[]> {
   }
   // ---- privacy: where words go — the daemon's rows when one answers, else the same function over what the doctor read
   {
+    // A daemon from a build before the field answers without `dataPaths` (and without `local`, read above the same way).
+    const daemonPaths = running?.setup?.dataPaths;
     const paths =
-      running?.setup && running.setup.dataPaths.length > 0
-        ? running.setup.dataPaths
+      daemonPaths && daemonPaths.length > 0
+        ? daemonPaths
         : dataPaths({
             brain,
             brainModel,

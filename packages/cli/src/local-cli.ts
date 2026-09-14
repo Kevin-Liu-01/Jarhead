@@ -1,7 +1,7 @@
 import { totalmem } from "node:os";
 import { dataPaths } from "@jarhead/core";
 import { bestFit, discoverLocalServer, serverLabel, suggestedPull } from "@jarhead/brain";
-import { BRAIN_KINDS, type BrainKind, type EngineCommand, type LocalModel, type LocalServerStatus, type Snapshot } from "@jarhead/protocol";
+import { BRAIN_KINDS, LOCAL_NONE, type BrainKind, type EngineCommand, type LocalModel, type LocalServerStatus, type Snapshot } from "@jarhead/protocol";
 
 /**
  * The CLI's view of the local model server and the brain setting — pure where it can be, so
@@ -106,17 +106,20 @@ type BrainSnapshot = Pick<Snapshot, "settings" | "setup" | "brainReady" | "memor
  */
 export function brainLines(s: BrainSnapshot): string[] {
   const { settings, setup } = s;
-  const lines = [`  setting    ${settings.brain}${settings.brainModel ? ` · model ${settings.brainModel}` : settings.brain === "local" ? ` · model best fit${setup.local.picked ? ` (${setup.local.picked})` : ""}` : ""}${settings.brainBaseUrl ? ` · server ${settings.brainBaseUrl}` : ""}`];
+  // A daemon from a build before the fields answers without `local` and `dataPaths`: the lines still print.
+  const local = setup.local ?? LOCAL_NONE;
+  const lines = [`  setting    ${settings.brain}${settings.brainModel ? ` · model ${settings.brainModel}` : settings.brain === "local" ? ` · model best fit${local.picked ? ` (${local.picked})` : ""}` : ""}${settings.brainBaseUrl ? ` · server ${settings.brainBaseUrl}` : ""}`];
   lines.push(`  running    ${setup.brainResolved ?? "none"} · ${s.brainReady ? "ready" : "not ready"} — ${setup.brainDetail}`);
+  const daemonPaths = setup.dataPaths ?? [];
   const paths =
-    setup.dataPaths.length > 0
-      ? setup.dataPaths
+    daemonPaths.length > 0
+      ? daemonPaths
       : dataPaths({
           brain: settings.brain,
           brainModel: settings.brainModel,
           ...(setup.brainResolved ? { brainResolved: setup.brainResolved } : {}),
           brainDetail: setup.brainDetail,
-          local: setup.local,
+          local,
           ...(s.memory ? { memory: s.memory } : {}),
           hasOpenAIKey: setup.secrets.openai,
           liveModel: setup.liveModel,
