@@ -305,8 +305,12 @@ export interface MemoryCheckInput {
   /** `<stateDir>/memory` and how many rows its append-only log holds; undefined rows = no store yet. */
   readonly storeDir: string;
   readonly storeRows: number | undefined;
-  /** `Settings.brain === "local"`: the brain's model memory reads conversations with ("" = not known yet: rules); undefined under every other kind. */
-  readonly localChat?: string | undefined;
+  /**
+   * `Settings.brain === "local"`: whether a server answers, and the listed model memory reads
+   * conversations with ("" = none resolves: rules); undefined under every other kind. The engine's
+   * target for a server that does not answer is keywords + rules, whatever the setting names.
+   */
+  readonly local?: { readonly reachable: boolean; readonly chat: string } | undefined;
 }
 
 /** "just now", "3 min ago", "2 h ago", "4 d ago" — the suffix is part of the word, so no caller writes "just now ago". */
@@ -330,8 +334,16 @@ export function agoWords(at: number, now = Date.now()): string {
  */
 export function memoryChecks(input: MemoryCheckInput): Check[] {
   const out: Check[] = [];
-  const local = input.localChat !== undefined;
-  const matching = local ? `local (${input.localChat || "rules"} on this Mac's server — nothing leaves for memory)` : input.hasOpenAIKey ? "openai embeddings (text-embedding-3-small, 512 dims)" : "keywords (no OPENAI_API_KEY — nothing leaves the Mac)";
+  const local = input.local !== undefined;
+  const offline = input.local !== undefined && !input.local.reachable;
+  const chat = input.local?.chat ?? "";
+  const matching = local
+    ? offline
+      ? "keywords · rules (no local server answering — nothing leaves for memory)"
+      : `local (${chat || "rules"} on this Mac's server — nothing leaves for memory)`
+    : input.hasOpenAIKey
+      ? "openai embeddings (text-embedding-3-small, 512 dims)"
+      : "keywords (no OPENAI_API_KEY — nothing leaves the Mac)";
   if (!input.enabled) {
     out.push({ group: "memory", name: "memory", status: "ok", detail: `off (Settings › Memory) — nothing is extracted, injected or embedded; the store under ${input.storeDir} stays as it is`, required: false });
   } else if (input.summary) {
@@ -340,7 +352,7 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
     const waiting = m.pending ? ` · ${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting` : "";
     const spent = m.budgetUsed ? ` · last prompts ${m.budgetUsed.brain} brain / ${m.budgetUsed.voice} voice tokens` : "";
     // Under the local brain the daemon's summary names the space: which embedding model, how wide, which model reads — nothing leaves for memory.
-    const how = m.embeddings === "local" ? `local embeddings (${m.embeddingModel ?? "a local model"}, ${m.embeddingDims ?? "?"} dims) · extractor ${input.localChat || "rules"} — nothing leaves for memory` : local && m.embeddings === "keyword" ? `keywords · extractor ${input.localChat || "rules"} — nothing leaves for memory` : m.embeddings;
+    const how = m.embeddings === "local" ? `local embeddings (${m.embeddingModel ?? "a local model"}, ${m.embeddingDims ?? "?"} dims) · extractor ${chat || "rules"} — nothing leaves for memory` : local && m.embeddings === "keyword" ? `keywords · ${offline ? "rules (no local server answering)" : `extractor ${chat || "rules"}`} — nothing leaves for memory` : m.embeddings;
     out.push({
       group: "memory",
       name: "memory",
@@ -356,8 +368,10 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
   // Off is Kevin's choice: no extractor row, nothing is configured to run.
   if (!input.enabled) return out;
   // Under the local brain the extractor is the brain's model on this Mac (Chat Completions JSON mode); the OpenAI plan does not apply.
+  // No server answering is rules, whatever model the setting names — the fix is the server, not the pick.
   if (local) {
-    out.push({ group: "memory", name: "extractor", status: input.localChat ? "ok" : "warn", detail: input.localChat ? `runs ${input.localChat} on the local server (Chat Completions JSON mode; rules when it cannot answer) — nothing leaves for memory` : "rules until the local brain has a model (pick one, or pull a tool-capable model)", required: false });
+    const detail = offline ? "rules (no local server answering) — nothing leaves for memory" : chat ? `runs ${chat} on the local server (Chat Completions JSON mode; rules when it cannot answer) — nothing leaves for memory` : "rules until the local brain has a model (pick one, or pull a tool-capable model)";
+    out.push({ group: "memory", name: "extractor", status: !offline && chat ? "ok" : "warn", detail, required: false, ...(offline ? { fix: OPEN_OLLAMA } : {}) });
     return out;
   }
   const plan = extractorPlan(input.modelIds, input.override);
@@ -432,10 +446,10 @@ export function localChecks(input: LocalCheckInput): Check[] {
   }
   const server = serverLabel(status);
   const host = status.baseUrl.replace(/^https?:\/\//, "");
-  const models = status.models.filter((m) => !m.cloud);
-  const cloud = status.models.length - models.length;
+  // Discovery lists the chat models only (a cloud tag or an embedding-only model is never in `models`); the embedding model has its own row below.
+  const models = status.models;
   const withTools = models.filter((m) => m.capabilities.includes("tools"));
-  out.push({ group: "local", name: "server", status: "ok", detail: `${server} @ ${host}${pinned ? " (pinned)" : ""} · ${models.length} model${models.length === 1 ? "" : "s"} · ${withTools.length} with tools${cloud ? ` · ${cloud} cloud (skipped)` : ""}`, required: false });
+  out.push({ group: "local", name: "server", status: "ok", detail: `${server} @ ${host}${pinned ? " (pinned)" : ""} · ${models.length} model${models.length === 1 ? "" : "s"} · ${withTools.length} with tools`, required: false });
   if (!local) return out;
   const resolved = resolveLocalModel(brainModel, status);
   const ram = ramWords(status.ramBytes);
@@ -474,6 +488,50 @@ export function localChecks(input: LocalCheckInput): Check[] {
     out.push({ group: "local", name: "embeddings", status: "warn", detail: `keyword matching until an embedding model is pulled (${first}, ~300 MB)`, required: false, fix: status.flavor === "ollama" ? `ollama pull ${first}` : `load an embedding model (${EMBED_PREFERENCE.join(", ")})` });
   }
   return out;
+}
+
+/** What the doctor knows of the daemon it diagnoses: the `setup` of its first snapshot, when one answered. */
+export interface RunningDaemon {
+  readonly setup: SetupStatus | undefined;
+}
+
+/**
+ * The `local › daemon` row: a warn when the daemon on the socket answers without `setup.local` — a
+ * build from before the local brain, which the rest of the doctor tolerates quietly (its own look
+ * at the server, its own data paths) and which would take a `local` pick and land on Responses
+ * without a word. Nothing when no daemon answered, or when it carries the field.
+ */
+export function staleDaemonCheck(running: RunningDaemon | undefined): Check | undefined {
+  if (!running || running.setup?.local !== undefined) return undefined;
+  return {
+    group: "local",
+    name: "daemon",
+    status: "warn",
+    detail: "the daemon on the socket predates this build (its snapshot has no setup.local) — the rows below are the doctor's own look, and `jarhead brain <kind>` refuses a pick until it is restarted",
+    required: false,
+    fix: "quit and reopen Jarhead.app (or restart jarheadd) so the bundled daemon runs",
+  };
+}
+
+/** What `memorySummaryWithoutDaemon` reads: the memory setting, the brain setting, the doctor's look at the server, and whether a key is present. */
+export interface MemoryWithoutDaemonInput {
+  readonly enabled: boolean;
+  readonly brain: BrainKind;
+  readonly local: LocalServerStatus;
+  readonly hasOpenAIKey: boolean;
+}
+
+/**
+ * The memory summary the engine would report, from what the doctor already read, for the privacy
+ * rows when no daemon answers: under `local`, local embeddings when the server answers with an
+ * embedding model, else keywords; under every other kind, OpenAI embeddings with a key, keywords
+ * without. `dataPaths()` maps an absent summary to "memory is off", which the doctor's own memory
+ * group two rows up contradicts — so the summary is never absent here.
+ */
+export function memorySummaryWithoutDaemon(i: MemoryWithoutDaemonInput): Pick<MemorySummary, "enabled" | "embeddings" | "embeddingModel"> {
+  const localEmbed = i.brain === "local" && i.local.reachable ? i.local.embedModel : undefined;
+  const embeddings: MemorySummary["embeddings"] = i.brain === "local" ? (localEmbed ? "local" : "keyword") : i.hasOpenAIKey ? "openai" : "keyword";
+  return { enabled: i.enabled, embeddings, ...(localEmbed ? { embeddingModel: localEmbed } : {}) };
 }
 
 /** The `privacy` group: one row per data path, `ok` always — they inform. The same rows the Console's "Leaves the Mac" shows, from the same function. */
@@ -676,13 +734,20 @@ export async function runChecks(): Promise<Check[]> {
     ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
   });
 
-  // ---- local: the server on this Mac, and under `local` the model and the embeddings memory uses (the daemon's dims when it answers)
+  // ---- local: a daemon from before the field is said so first; then the server on this Mac, and under `local` the model and the embeddings memory uses (the daemon's dims when it answers)
+  const stale = staleDaemonCheck(running);
+  if (stale) add(stale);
   for (const c of localChecks({ status: localStatus, brain, brainModel, brainBaseUrl, memory: daemon?.memory })) add(c);
   // ---- memory: what Jarhead durably knows about Kevin, how it matches, which model reads the conversations.
   // Reads the running daemon's summary and the store's row count; the model list is the keys row's one GET. Never a session, never the extractor.
+  const memoryOn = saved.memory ?? true;
+  const hasOpenAIKey = Boolean(cfg.openaiApiKey);
   {
     const memoryDir = join(cfg.stateDir, "memory");
-    for (const c of memoryChecks({ enabled: saved.memory ?? true, hasOpenAIKey: Boolean(cfg.openaiApiKey), modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir), ...(brain === "local" ? { localChat: brainModel || localStatus.picked || "" } : {}) })) add(c);
+    // The model memory reads with is the one that resolves on the server (Kevin's pick or the best fit) — none when nothing answers or nothing fits.
+    const resolvedChat = resolveLocalModel(brainModel, localStatus);
+    const localChat = "model" in resolvedChat ? resolvedChat.model.id : "";
+    for (const c of memoryChecks({ enabled: memoryOn, hasOpenAIKey, modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir), ...(brain === "local" ? { local: { reachable: localStatus.reachable, chat: localChat } } : {}) })) add(c);
   }
   // ---- privacy: where words go — the daemon's rows when one answers, else the same function over what the doctor read
   {
@@ -697,8 +762,9 @@ export async function runChecks(): Promise<Check[]> {
             ...(running?.resolved ? { brainResolved: running.resolved as Exclude<BrainKind, "auto"> } : {}),
             brainDetail: running?.detail ?? "",
             local: localStatus,
-            ...(daemon?.memory ? { memory: daemon.memory } : {}),
-            hasOpenAIKey: Boolean(cfg.openaiApiKey),
+            // No daemon: the summary the engine would report, so this row agrees with the memory group above (an absent summary reads as "off").
+            memory: daemon?.memory ?? memorySummaryWithoutDaemon({ enabled: memoryOn, brain, local: localStatus, hasOpenAIKey }),
+            hasOpenAIKey,
             liveModel: cfg.liveModel,
           });
     for (const c of privacyChecks(paths)) add(c);

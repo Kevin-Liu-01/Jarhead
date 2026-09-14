@@ -5,7 +5,7 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
-import { type AgentInfo, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
+import { type AgentInfo, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
 import { MEMORY_ID, agentsByStatus, agoWords, memoryLine, render, runChecks, summarizePermissions } from "./doctor.ts";
 import { localStatusLine, runBrain, runModels, type BrainDaemon } from "./local-cli.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
@@ -18,7 +18,7 @@ import { resolveThread, threadsLines } from "./threads-cli.ts";
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
 
-  pnpm jarhead doctor                 keys, brain, hands, agents, app (signing, wake word), toolchain
+  pnpm jarhead doctor                 keys, brain, hands, permissions, local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
   pnpm jarhead live                   headless session in this terminal (ffmpeg mic, ffplay speaker)
   pnpm jarhead probe "<utterance>"    synthesize the utterance, run it through the whole stack, print the timeline
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
@@ -38,12 +38,13 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead memory restore <id>   bring a forgotten or archived item back into use
   pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in Kevin's words (redacted and refused like anything extracted)
   pnpm jarhead memory run            read the closed conversations not read yet, now (it runs on its own at a quiet moment; never while a voice session is open)
-  pnpm jarhead models [--json]          the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use;
-                                        cloud tags are listed dimmed and never offered. No daemon needed. Nothing is pulled: an empty list prints the \`ollama pull …\` line to run
+  pnpm jarhead models [--json] [--server URL]   the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use
+                                        (the embedding model memory uses has its own row); a cloud tag (remote_host set) runs on ollama.com and is not listed. No daemon needed.
+                                        Nothing is pulled: an empty list prints the \`ollama pull …\` line to run (Ollama), or says to load a tool-capable model (LM Studio, llama.cpp)
   pnpm jarhead brain                    the brain setting, what runs now, and where words go (the four data-path rows)
   pnpm jarhead brain local [<model>] [--server URL]   pick a local model as the brain through the running daemon (memory follows); empty model = best fit; prints the status line when it lands
   pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
-  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; agents by status —
+  pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status —
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
                                       with name · status · lane · steps · id; memory: counts and the last learn)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
@@ -501,13 +502,13 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brainModel?: string } };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string } };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
-  // The local model server, whatever the brain kind: what is running on this Mac and which model the brain would use.
-  console.log(localStatusLine(s.setup?.local, s.settings?.brainModel ?? ""));
+  // The local model server, whatever the brain kind: what is running on this Mac, and the model the brain runs there only when the setting is `local`.
+  console.log(localStatusLine(s.setup?.local, s.settings?.brain, s.settings?.brainModel ?? ""));
   // One row per grant, read by the app (TCC keys them on Jarhead.app) or, without the app, by the daemon's helper for the four it can read.
   // The headline names the three the voice and the hands stand on; the summary counts the rest.
   const perms = s.permissions;
@@ -569,9 +570,10 @@ function jsonReport(r: HygieneReport): unknown {
 }
 
 /**
- * The daemon as `jarhead brain` sees it (local-cli.ts `BrainDaemon`): one snapshot, or a command
- * followed by the snapshots until the pick has landed. The daemon owns settings.json; nothing here
- * writes it.
+ * The daemon as `jarhead brain` sees it (local-cli.ts `BrainDaemon`), over one connection: the
+ * snapshot the connect answered with (the brain before the pick), a command followed by the
+ * snapshots until the pick has landed, and `close()` when the verb is done. The daemon owns
+ * settings.json; nothing here writes it.
  */
 async function brainDaemon(): Promise<BrainDaemon> {
   const client = await daemon();
@@ -598,25 +600,19 @@ async function brainDaemon(): Promise<BrainDaemon> {
       waiters.add(w);
     });
   return {
+    // The snapshot the connect answered with (or the next one): the state before any command, on the connection the command then uses.
     snapshot: async () => {
-      try {
-        const got = snapshots.at(-1) ?? (await nextMatching(() => true, 1500));
-        if (!got) throw new Error("the daemon sent no snapshot");
-        return got;
-      } finally {
-        client.close();
-      }
+      const got = snapshots.at(-1) ?? (await nextMatching(() => true, 1500));
+      if (!got) throw new Error("the daemon sent no snapshot");
+      return got;
     },
     command: async (cmd: EngineCommand, until, waitMs) => {
-      try {
-        // Only snapshots after the command count: the one the connect answered with shows the old setting.
-        const pending = nextMatching(until, waitMs);
-        client.sendJson({ type: "command", command: cmd });
-        return await pending;
-      } finally {
-        client.close();
-      }
+      // Only snapshots after the command count: the one the connect answered with shows the old setting.
+      const pending = nextMatching(until, waitMs);
+      client.sendJson({ type: "command", command: cmd });
+      return await pending;
     },
+    close: () => client.close(),
   };
 }
 
