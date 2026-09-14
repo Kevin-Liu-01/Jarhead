@@ -7,8 +7,7 @@ import { LANE_REFUSAL, MAIN_LEASE_WAIT_MS, needsFocus } from "../threads/index.t
 import { delegate, nextUtterance, rows, settle, until, world, type World } from "./world.ts";
 
 /**
- * Threads through the engine (the workers pass's 28 cases, migrated): the main brain
- * says `thread_start` (or `worker_start`, one release); Kevin hears one line at the
+ * Threads through the engine: the main brain says `thread_start`; Kevin hears one line at the
  * split ("Spotify alongside.") and one when the thread finishes; the thread's steps
  * land on ITS OWN Delegation (`threadId` set), never the parent's; its brain is told
  * Kevin's words as `request`, the brief in `dialogue`, the eyes' shot as an
@@ -18,11 +17,8 @@ import { delegate, nextUtterance, rows, settle, until, world, type World } from 
  * Jarhead's own hands take back after MIN_HOLD and never mid-op. Every cut verb
  * cancels every thread with its brain's cancel called once; the Console's Stop
  * cancels one and the session stays open. Two spares (Settings.warmThreads) are
- * warmed at wake and topped up after every take.
- *
- * engine.ts still constructs the scheduler under its old name (`engine.workers`) and
- * emits `Snapshot.workers`; `snapshot.threads` / `thread.event` are the engine
- * wiring's (B3). These cases read the scheduler's table directly for the summaries.
+ * warmed at wake and topped up after every take. These cases read the scheduler's
+ * table directly for the summaries (`snapshot.threads` carries the same records).
  */
 
 type StartedRow = Extract<LedgerRow, { type: "thread.started" }>;
@@ -54,9 +50,9 @@ async function startThread(w: World, name: string, task: string, lane: "backgrou
   return out.result;
 }
 
-/** The spawned threads, live and lingering, oldest first (what `snapshot.threads` carries once the engine wires it). */
+/** The spawned threads, live and lingering, oldest first (what `snapshot.threads` carries). */
 const threadsOf = (w: World): readonly Thread[] =>
-  w.engine.workers
+  w.engine.threads
     .threads()
     .filter((t) => t.id !== MAIN_THREAD_ID)
     .slice()
@@ -107,23 +103,23 @@ test("thread_start: one split line, a started row and no row for thinking↔acti
     assert.match(task.delegationId, new RegExp(`^${spotify.id}/dlg_`), "identity rides in the delegation id until BrainTask.thread is named");
     assert.ok(task.notes?.some((n) => /you are Jarhead's thread Spotify/.test(n)));
     // Its step is on ITS OWN record, never the parent's, and the eyes' shot is not counted as its work.
-    const turns = engine.workers.turnsOf(spotify.id);
+    const turns = engine.threads.turnsOf(spotify.id);
     assert.equal(turns.length, 1);
     assert.equal(turns[0]!.threadId, spotify.id);
     assert.equal(turns[0]!.request, task.request);
-    await until(() => engine.workers.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "frontmost_app"));
-    assert.ok(engine.workers.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "screenshot"), "the eyes' shot is on its record");
-    assert.ok(!engine.snapshot().delegations[0]!.steps.some((s) => s.worker === "Spotify" && s.kind === "tool"), "nothing of the thread's on the parent's timeline");
+    await until(() => engine.threads.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "frontmost_app"));
+    assert.ok(engine.threads.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "screenshot"), "the eyes' shot is on its record");
+    assert.ok(!engine.snapshot().delegations[0]!.steps.some((s) => s.thread === "Spotify" && s.kind === "tool"), "nothing of the thread's on the parent's timeline");
     assert.equal(threadsOf(w)[0]!.steps, 1, "one step: the look, not the eyes' shot");
-    assert.ok((engine.workers.turnsOf(spotify.id)[0]!.timings as { firstToolAt?: number }).firstToolAt !== undefined, "the marks are stamped on its own turn");
+    assert.ok((engine.threads.turnsOf(spotify.id)[0]!.timings as { firstToolAt?: number }).firstToolAt !== undefined, "the marks are stamped on its own turn");
     // speak_progress: once per turn, with its name; thinking stays on the record.
     fb.sink!.commentary("I am pressing play now");
     fb.sink!.thinking("looking at the playlist");
     fb.sink!.commentary("and now the volume");
     await until(() => live.commentary.length === 2, 1500);
     assert.deepEqual(live.commentary, ["Spotify alongside.", "Spotify: I am pressing play now"], "one progress line a turn, with the name; the second stays on the record");
-    assert.ok(engine.workers.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "commentary" && s.text === "and now the volume"));
-    assert.equal(engine.workers.statusLine("spotify"), "Spotify is pressing play now — 0 seconds in", "the status line quotes what it last said it was doing, as a phrase ('I am pressing play now' → 'pressing play now'); the fragment 'and now the volume' is none");
+    assert.ok(engine.threads.turnsOf(spotify.id)[0]!.steps.some((s) => s.kind === "commentary" && s.text === "and now the volume"));
+    assert.equal(engine.threads.statusLine("spotify"), "Spotify is pressing play now — 0 seconds in", "the status line quotes what it last said it was doing, as a phrase ('I am pressing play now' → 'pressing play now'); the fragment 'and now the volume' is none");
 
     // Two more hands, then the cap (main + 3).
     const slack = await startThread(w, "Slack", "tell Ben I'm running late", "screen");
@@ -157,12 +153,12 @@ test("thread_start: one split line, a started row and no row for thinking↔acti
     assert.equal(ended[0]!.steps, 1);
     assert.ok(rows<SaidRow>(w, "thread.said").some((r) => r.threadId === spotify.id && r.text === "Spotify: playing Focus."));
     assert.equal(fb.stops, 1, "its process ends with it");
-    assert.equal(engine.workers.turnsOf(spotify.id)[0]!.status, "done");
+    assert.equal(engine.threads.turnsOf(spotify.id)[0]!.status, "done");
     const waited = await engine.runner.run("thread_wait", { name: "Spotify" });
     assert.equal(waited.result.kind, "text");
     assert.match((waited.result as { text: string }).text, /^Spotify: done — playing Focus\. \(Kevin was told: "Spotify: playing Focus\."\)/);
     // The parent's timeline recorded the thread_* calls as tool steps of its own.
-    assert.ok(engine.snapshot().delegations[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "thread_start" && !s.worker));
+    assert.ok(engine.snapshot().delegations[0]!.steps.some((s) => s.kind === "tool" && s.tool?.name === "thread_start" && !s.thread));
 
     // Slack fails: one line; Mail finishes; the parent carries on and finishes with its own summary once.
     const slackBrain = w.threads.byName("Slack")!;
@@ -170,7 +166,7 @@ test("thread_start: one split line, a started row and no row for thinking↔acti
     slackBrain.resolve!({ status: "failed", error: "Slack is not running on this Mac" });
     await until(() => live.commentary.some((c) => /Slack failed: Slack is not running on this Mac/.test(c)));
     w.threads.byName("Mail")!.resolve!({ status: "done", summary: "inbox checked." });
-    await until(() => engine.workers.running() === 0);
+    await until(() => engine.threads.running() === 0);
     brain.resolve!({ status: "done", summary: "Sent to Ben." });
     await until(() => engine.snapshot().delegations[0]!.status === "done");
     assert.equal(live.commentary.filter((c) => /Sent to Ben/.test(c)).length, 1);
@@ -196,18 +192,18 @@ test("two threads finishing within the coalescing window are one spoken append; 
     await until(() => live.commentary.some((c) => /Slack: sent/.test(c)), 1500);
     assert.deepEqual(live.commentary, ["Spotify alongside.", "Spotify: playing Focus. Slack: sent."], "two finish lines within 600 ms are one append");
     assert.equal(threadsOf(w).length, 2, "both linger for the Console");
-    assert.ok(engine.snapshot().delegations[0]!.steps.filter((s) => s.kind === "commentary" && s.worker).length >= 2, "the lines stay on the parent's record");
+    assert.ok(engine.snapshot().delegations[0]!.steps.filter((s) => s.kind === "commentary" && s.thread).length >= 2, "the lines stay on the parent's record");
     // Past THREAD_LINGER_MS they leave the summaries; the table still knows them by name for a moment longer than nothing.
     w.clock.t += 31_000;
     assert.equal(threadsOf(w).length, 0);
-    assert.equal(engine.workers.table.byNameRecent("spotify"), undefined);
-    assert.match(engine.workers.statusLine("spotify"), /^nothing called spotify is running$/);
+    assert.equal(engine.threads.table.byNameRecent("spotify"), undefined);
+    assert.match(engine.threads.statusLine("spotify"), /^nothing called spotify is running$/);
   } finally {
     await engine.stop();
   }
 });
 
-test("background lane: type, click, open_url, clipboard_write, an activating AppleScript and `open`/`osascript` shells are refused with the lane line and no helper op; open -g is not the lane's business; thread_*, worker_* and self_* are not a spawned thread's; the eyes' shot goes to the reading helper", async () => {
+test("background lane: type, click, open_url, clipboard_write, an activating AppleScript and `open`/`osascript` shells are refused with the lane line and no helper op; open -g is not the lane's business; thread_* and self_* are not a spawned thread's; the eyes' shot goes to the reading helper", async () => {
   // The table, before the engine: the shell head and the AppleScript verbs.
   assert.equal(needsFocus("run_shell", { command: "open -g Spotify" }), false);
   assert.equal(needsFocus("run_shell", { command: "open -j x" }), false);
@@ -249,7 +245,6 @@ test("background lane: type, click, open_url, clipboard_write, an activating App
         ["run_shell", { command: "open -a Spotify" }],
         ["run_shell", { command: "osascript -e 'beep'" }],
         ["thread_start", { name: "Nested", task: "no" }],
-        ["worker_start", { name: "Nested", task: "no" }],
         ["self_status", {}],
         ["frontmost_app", {}],
       ];
@@ -268,7 +263,7 @@ test("background lane: type, click, open_url, clipboard_write, an activating App
       }
       assert.equal(r.kind, "error", key);
       const message = (r as { message: string }).message;
-      if (key.startsWith("thread_start") || key.startsWith("worker_start") || key.startsWith("self_status")) assert.match(message, /not a spawned thread's/, key);
+      if (key.startsWith("thread_start") || key.startsWith("self_status")) assert.match(message, /not a spawned thread's/, key);
       else assert.equal(message, LANE_REFUSAL, key);
     }
     for (const op of ["type", "click", "open_app", "focus_app", "key", "scroll"]) {
@@ -281,9 +276,9 @@ test("background lane: type, click, open_url, clipboard_write, an activating App
     assert.equal(hands.named("screenshot").length, 0, "never the acting one");
     // The refusals are on the thread's own record as error steps; the parent's timeline has none of them.
     const id = threadsOf(w)[0]!.id;
-    const errors = engine.workers.turnsOf(id)[0]!.steps.filter((s) => s.kind === "error");
+    const errors = engine.threads.turnsOf(id)[0]!.steps.filter((s) => s.kind === "error");
     assert.ok(errors.length >= 9, `${errors.length} refusals recorded`);
-    assert.equal(engine.snapshot().delegations[0]!.steps.filter((s) => s.worker === "Spotify" && s.kind !== "commentary").length, 0, "only its spoken line lands on the parent, as commentary");
+    assert.equal(engine.snapshot().delegations[0]!.steps.filter((s) => s.thread === "Spotify" && s.kind !== "commentary").length, 0, "only its spoken line lands on the parent, as commentary");
     await until(() => threadsOf(w)[0]?.status === "done");
   } finally {
     await engine.stop();
@@ -317,7 +312,7 @@ test("screen lane: a thread acquires only when the main brain's turn ends, re-fr
     await until(() => threadsOf(w)[0]?.status === "waiting-screen");
     assert.equal(hands.named("open_app").length, 0, "the thread waits: the main brain's turn is still running");
     assert.deepEqual(rows<StatusRow>(w, "thread.status").map((r) => r.status), ["waiting-screen"], "a wait writes its row");
-    assert.match(engine.workers.statusLine("slack"), /^Slack is waiting for the screen/);
+    assert.match(engine.threads.statusLine("slack"), /^Slack is waiting for the screen/);
     // The turn ends: the thread takes the screen within a poll.
     brain.resolve!({ status: "done", summary: "on it." });
     await opened.p;
@@ -328,7 +323,7 @@ test("screen lane: a thread acquires only when the main brain's turn ends, re-fr
     assert.ok(busy(threadsOf(w)[0]));
     assert.deepEqual(threadsOf(w)[0]!.apps, ["Spotify"], "open_app claims the app for the blob");
     assert.equal(threadsOf(w)[0]!.app, "Spotify");
-    assert.equal(engine.workers.table.byApp("spotify")[0]?.id, slackId);
+    assert.equal(engine.threads.table.byApp("spotify")[0]?.id, slackId);
     assert.equal(engine.snapshot().delegations[0]!.status, "running", "the parent drains while its thread works");
 
     // Kevin asks something else; the thread is mid-type (held on the fake); Jarhead's hands wait for the op and MIN_HOLD.
@@ -359,7 +354,7 @@ test("screen lane: a thread acquires only when the main brain's turn ends, re-fr
     await until(() => hands.named("key").length === 2);
     assert.equal(hands.named("focus_app").filter((f) => f.params["name"] === "Spotify").length, 1, "exactly one re-front");
     assert.equal(hands.frontApp, "Spotify");
-    assert.ok(engine.workers.turnsOf(slackId)[0]!.steps.some((s) => s.kind === "note" && /brought Spotify back to the front/.test(s.text ?? "")), "the note is on the thread's own record");
+    assert.ok(engine.threads.turnsOf(slackId)[0]!.steps.some((s) => s.kind === "note" && /brought Spotify back to the front/.test(s.text ?? "")), "the note is on the thread's own record");
     await until(() => engine.snapshot().delegations[0]!.status !== "running");
   } finally {
     hands.release();
@@ -427,7 +422,7 @@ test("interrupt while threads run: both helpers' pendings fail, every thread is 
     assert.equal(w.threads.byName("Spotify")!.cancels, 1);
     assert.equal(w.threads.byName("Slack")!.cancels, 1);
     assert.deepEqual(threadsOf(w).map((x) => x.status), ["stopped", "stopped"]);
-    assert.equal(engine.workers.running(), 0);
+    assert.equal(engine.threads.running(), 0);
     assert.equal(engine.lease.holder, undefined);
     const bg = await spotify;
     assert.equal(bg.kind, "error");
@@ -436,7 +431,7 @@ test("interrupt while threads run: both helpers' pendings fail, every thread is 
     assert.equal(fg.kind, "error", "the acting helper's pending failed");
     hands.release();
     handsBg.release();
-    assert.equal(engine.runnerFor(spotifyId), undefined, "a late tool.run {worker} has nowhere to go: refused");
+    assert.equal(engine.runnerFor(spotifyId), undefined, "a late tool.run {thread} has nowhere to go: refused");
     assert.equal(live.currentState, "started", "a spoken stop keeps the session");
     assert.ok(!live.commentary.some((c) => /stopped\./.test(c)), "a cut says nothing per thread");
     assert.equal(rows<EndedRow>(w, "thread.ended").filter((r) => r.status === "stopped").length, 2);
@@ -448,7 +443,7 @@ test("interrupt while threads run: both helpers' pendings fail, every thread is 
   }
 });
 
-test("worker.stop (one release) stops one thread, says '<Name> stopped.' once, leaves the other working and the session open; a second stop of it is a word; thread_stop and stopNamed do the same", async () => {
+test("thread.stop stops one thread, says '<Name> stopped.' once, leaves the other working and the session open; a second stop of it is a word; thread_stop and stopNamed do the same", async () => {
   const w = world();
   const { engine, live, events } = w;
   try {
@@ -456,7 +451,7 @@ test("worker.stop (one release) stops one thread, says '<Name> stopped.' once, l
     w.handsBg.release();
     const spotify = named(w, "Spotify")!;
     events.length = 0;
-    await engine.command({ type: "worker.stop", workerId: spotify.id });
+    await engine.command({ type: "thread.stop", threadId: spotify.id });
     await until(() => live.commentary.some((c) => /Spotify stopped\./.test(c)));
     assert.equal(live.commentary.filter((c) => /Spotify stopped\./.test(c)).length, 1);
     assert.equal(named(w, "Spotify")!.status, "stopped");
@@ -466,21 +461,21 @@ test("worker.stop (one release) stops one thread, says '<Name> stopped.' once, l
     assert.equal(live.currentState, "started");
     assert.ok(events.some((e) => e.type === "toast" && e.text === "Spotify stopped"));
     events.length = 0;
-    await engine.command({ type: "worker.stop", workerId: "t_nobody" });
-    assert.ok(events.some((e) => e.type === "toast" && e.text === "no such worker"));
+    await engine.command({ type: "thread.stop", threadId: "t_nobody" });
+    assert.ok(events.some((e) => e.type === "toast" && e.text === "no such thread"));
     // Its row still lingers for the Console: a Stop on it stops nothing, and says so — no second "stopped" line.
     events.length = 0;
-    await engine.command({ type: "worker.stop", workerId: spotify.id });
+    await engine.command({ type: "thread.stop", threadId: spotify.id });
     assert.ok(events.some((e) => e.type === "toast" && e.text === "Spotify had already finished"));
     assert.equal(live.commentary.filter((c) => /Spotify stopped\./.test(c)).length, 1);
     assert.equal(w.threads.byName("Spotify")!.cancels, 1);
-    assert.equal(await engine.workers.stopNamed("spotify"), false, "a finished thread is not live: nothing to stop by name");
+    assert.equal(await engine.threads.stopNamed("spotify"), false, "a finished thread is not live: nothing to stop by name");
     // The main brain's thread_stop does the same for the other, with a result it can read.
     const stopped = await engine.runner.run("thread_stop", { name: "Slack" });
     assert.equal(stopped.result.kind, "text");
     assert.match((stopped.result as { text: string }).text, /Slack stopped/);
     await until(() => live.commentary.some((c) => /Slack stopped\./.test(c)));
-    assert.equal(engine.workers.running(), 0);
+    assert.equal(engine.threads.running(), 0);
   } finally {
     w.handsBg.release();
     await engine.stop();
@@ -504,17 +499,17 @@ test("pause, Stop and sleep cut every thread today (brain cancel once each); sle
       // The engine's pause still cuts through cancelAll today (engine.ts); the scheduler's pauseAll is the wiring's to call (B3).
       if (verb === "pause") await engine.command({ type: "pause" });
       else if (verb === "stop") await engine.command({ type: "stop" });
-      else await engine.sleep();
+      else await engine.command({ type: "sleep" });
       assert.deepEqual(threadsOf(w).map((x) => x.status), ["stopped", "stopped"], verb);
       assert.equal(spotify.cancels, 1, `${verb}: Spotify's brain cancelled once`);
       assert.equal(slack.cancels, 1, `${verb}: Slack's brain cancelled once`);
       assert.equal(live.currentState, "closed", `${verb} closes the session`);
-      assert.equal(engine.workers.running(), 0);
+      assert.equal(engine.threads.running(), 0);
       assert.equal(spotify.stops, 1, `${verb}: a stopped thread's process ends with it`);
       assert.equal(slack.stops, 1);
       if (verb !== "pause") {
         assert.ok(spares.every((b) => b.stops === 1), `${verb}: the spares' processes end too`);
-        assert.equal(engine.workers.spareIds.length, 0);
+        assert.equal(engine.threads.spareIds.length, 0);
         const types = (engine.ledger.read(w.clock.t) as unknown as { type: string }[]).map((r) => r.type).filter((t) => t === "stop" || t === "sleep");
         assert.deepEqual(types, verb === "stop" ? ["stop", "sleep"] : ["sleep"], verb);
       }
@@ -536,12 +531,12 @@ test("the spares: two thread processes are warmed at wake (started, no task), th
     await until(() => w.threads.brains.length === 2 && w.threads.brains.every((b) => b.started === 1));
     const spares = w.threads.brains.slice();
     assert.ok(spares.every((b) => b.tasks.length === 0), "a process, not a model request");
-    assert.deepEqual(engine.workers.spareIds, spares.map((b) => b.id));
-    assert.equal(engine.workers.pool.warmCount, 2);
+    assert.deepEqual(engine.threads.spareIds, spares.map((b) => b.id));
+    assert.equal(engine.threads.pool.warmCount, 2);
     assert.equal(threadsOf(w).length, 0, "a spare is not a thread");
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     assert.ok(spares.every((b) => b.stops === 1), "sleep ends the spares' processes");
-    assert.equal(engine.workers.spareIds.length, 0);
+    assert.equal(engine.threads.spareIds.length, 0);
     // The next wake warms two again; the first split takes one and the pool tops up behind it.
     await engine.wake("test");
     await until(() => w.threads.brains.length === 4);
@@ -556,8 +551,8 @@ test("the spares: two thread processes are warmed at wake (started, no task), th
     await until(() => w.threads.byName("Spotify") !== undefined);
     assert.equal(w.threads.byName("Spotify"), w.threads.brains[2], "the first ready spare");
     await until(() => w.threads.brains.length === 5, 1500);
-    assert.equal(engine.workers.spareIds.length, 2, "topped up after the take");
-    assert.ok(!engine.workers.spareIds.includes(w.threads.brains[2]!.id), "taken");
+    assert.equal(engine.threads.spareIds.length, 2, "topped up after the take");
+    assert.ok(!engine.threads.spareIds.includes(w.threads.brains[2]!.id), "taken");
   } finally {
     await engine.stop();
   }
@@ -587,7 +582,7 @@ test("idle sleep is held while a thread runs and fires at the ordinary time afte
     brain.resolve!({ status: "done", summary: "on it." });
     await steps.p;
     assert.equal(lastKevinAt(), kevinBefore, "a thread's 61 s of actions are the brain's activity, not Kevin's");
-    assert.equal(engine.workers.running(), 1);
+    assert.equal(engine.threads.running(), 1);
     tick();
     await settle();
     assert.equal(live.currentState, "started", "held: a thread still works");
@@ -595,7 +590,7 @@ test("idle sleep is held while a thread runs and fires at the ordinary time afte
     assert.equal(rows(w, "sleep").length, 0);
     // The thread reports; then the ordinary idle time passes.
     w.threads.byName("Spotify")!.resolve!({ status: "done", summary: "playing Focus." });
-    await until(() => engine.workers.running() === 0 && engine.snapshot().delegations[0]!.status !== "running");
+    await until(() => engine.threads.running() === 0 && engine.snapshot().delegations[0]!.status !== "running");
     clock.t += 61_000;
     tick();
     await settle();
@@ -623,7 +618,7 @@ test("a new request while a thread runs parks the parent (its threads carry on) 
     await settle();
     const parent = engine.snapshot().delegations.find((d) => d.liveId === "item_1")!;
     assert.equal(parent.status, "running", "parked, not cancelled");
-    assert.ok(parent.steps.some((s) => s.kind === "note" && /Kevin asked something else; the workers carry on/.test(s.text ?? "")));
+    assert.ok(parent.steps.some((s) => s.kind === "note" && /Kevin asked something else; the threads carry on/.test(s.text ?? "")));
     assert.equal(brain.tasks.length, 2, "the new task runs");
     assert.ok(busy(threadsOf(w)[0]), "the thread was not cut");
     assert.equal(w.threads.byName("Spotify")!.cancels, 0);
@@ -632,7 +627,7 @@ test("a new request while a thread runs parks the parent (its threads carry on) 
     await until(() => engine.snapshot().delegations.find((d) => d.liveId === "item_1")!.status !== "running");
     const finished = engine.snapshot().delegations.find((d) => d.liveId === "item_1")!;
     assert.equal(finished.status, "cancelled");
-    assert.match(finished.summary ?? "", /the workers carried on/);
+    assert.match(finished.summary ?? "", /the threads carried on/);
     assert.ok(live.commentary.some((c) => /Spotify: playing Focus\./.test(c)), "its line still reached Kevin through the parked parent");
     assert.equal(engine.snapshot().delegations.find((d) => d.liveId === "item_2")!.status, "running");
   } finally {
@@ -658,13 +653,13 @@ test("one question floor: the first thread's question is spoken with its name, t
     assert.doesNotMatch((q1 as { question: string }).question, /Queued/);
     await until(() => threadsOf(w)[0]?.status === "waiting-kevin");
     await until(() => live.commentary.join(" ").includes("Slack asks:"), 1500);
-    assert.equal(engine.workers.floorLane()?.name, "Slack");
-    assert.deepEqual(engine.workers.floorThread(), { id: threadsOf(w)[0]!.id, name: "Slack" });
+    assert.equal(engine.threads.floorThread()?.name, "Slack");
+    assert.deepEqual(engine.threads.floorThread(), { id: threadsOf(w)[0]!.id, name: "Slack" });
     assert.ok(engine.confirmations.pending, "the question is on the root, where the Delegator arms it");
     assert.ok(threadsOf(w)[0]!.question, "the question is on the record");
-    assert.match(engine.workers.statusLine("slack"), /^Slack is waiting on you: /);
+    assert.match(engine.threads.statusLine("slack"), /^Slack is waiting on you: /);
     assert.deepEqual(rows<StatusRow>(w, "thread.status").map((r) => r.status).filter((s) => s === "waiting-kevin"), ["waiting-kevin"]);
-    assert.equal(engine.workers.turnsOf(threadsOf(w)[0]!.id)[0]!.status, "awaiting-confirmation", "its turn ended on the question");
+    assert.equal(engine.threads.turnsOf(threadsOf(w)[0]!.id)[0]!.status, "awaiting-confirmation", "its turn ended on the question");
 
     await startThread(w, "Spotify", "clear the queue", "screen");
     await until(() => results["Spotify"]!.length === 1);
@@ -673,14 +668,14 @@ test("one question floor: the first thread's question is spoken with its name, t
     assert.match((q2 as { pendingId: string }).pendingId, /^queued_/);
     // A thread has no thread_wait: the desk's text is rewritten for it — end the turn; Jarhead resumes it on Kevin's yes.
     assert.match((q2 as { question: string }).question, /^Queued behind Slack's question: .* stop and wait \(end your turn; Jarhead resumes you when Kevin answers\), do not retry/);
-    assert.doesNotMatch((q2 as { question: string }).question, /worker_wait|thread_wait/);
+    assert.doesNotMatch((q2 as { question: string }).question, /thread_wait/);
     await until(() => named(w, "Spotify")?.status === "waiting-kevin");
     await settle(700);
     assert.equal(live.commentary.join(" ").split("Slack asks:").length - 1, 1, "one question spoken");
     assert.ok(!live.commentary.join(" ").includes("Spotify asks:"), "the queued question is not spoken over the first");
     assert.equal(hands.named("click").length, 0, "nothing clicked yet");
     // The Console's Allow on Spotify's pane is refused: the floor is Slack's.
-    const refused = await engine.workers.answerYes(named(w, "Spotify")!.id);
+    const refused = await engine.threads.answerYes(named(w, "Spotify")!.id);
     assert.deepEqual(refused, { ok: false, reason: "another question is on the floor: Slack's" });
     assert.equal(hands.named("click").length, 0);
 
@@ -701,7 +696,7 @@ test("one question floor: the first thread's question is spoken with its name, t
     assert.equal(engine.snapshot().delegations[0]!.status, "running");
     // The queue moves: Spotify's question is now the floor's, spoken with its name.
     await until(() => live.commentary.join(" ").includes("Spotify asks:"), 1500);
-    assert.equal(engine.workers.floorLane()?.name, "Spotify");
+    assert.equal(engine.threads.floorThread()?.name, "Spotify");
     assert.equal(results["Spotify"]!.length, 1, "a yes never consumes another lane's action");
     await until(() => live.commentary.some((c) => /Slack: sent\./.test(c)));
   } finally {
@@ -728,13 +723,13 @@ test("runnerFor: a thread's lane runner is attached while it works and gone once
   }
 });
 
-test("threads off in Settings (the workers flag): thread_start says so and starts nothing; no spare is warmed at wake", async () => {
+test("threads off in Settings: thread_start says so and starts nothing; no spare is warmed at wake", async () => {
   const w = world();
   const { engine } = w;
   try {
     await engine.start();
     await engine.ready();
-    engine.updateSettings({ idleSleepMinutes: 0, workers: false });
+    engine.updateSettings({ idleSleepMinutes: 0, threads: false });
     await engine.wake("test");
     assert.equal(w.threads.brains.length, 0, "no spare");
     delegate(w, "jarhead do two things", "item_1");
@@ -744,7 +739,7 @@ test("threads off in Settings (the workers flag): thread_start says so and start
     assert.match((out.result as { message: string }).message, /threads are off/);
     assert.equal(threadsOf(w).length, 0);
     // The main thread is on the table too: its turn is what is running (the brain holds the task), in the first person.
-    assert.match(engine.workers.statusLine(), /^I am working on it/);
+    assert.match(engine.threads.statusLine(), /^I am working on it/);
   } finally {
     await engine.stop();
   }
@@ -824,7 +819,7 @@ test("a MAIN-lane question queued behind a thread's is voiced once when promoted
     const mine = await engine.runner.run("click_element", { name: "Send" });
     assert.equal(mine.result.kind, "needs-confirmation", JSON.stringify(mine.result));
     assert.match((mine.result as { pendingId: string }).pendingId, /^queued_/);
-    assert.match((mine.result as { question: string }).question, /^Queued behind Slack's question: .*\(worker_wait\)/);
+    assert.match((mine.result as { question: string }).question, /^Queued behind Slack's question: .*\(thread_wait\)/);
     assert.equal(engine.desk.queuedCount, 1);
     await settle(700);
     assert.ok(!live.commentary.some((c) => /May I/.test(c)), "not spoken while Slack's question holds the floor");
@@ -837,14 +832,13 @@ test("a MAIN-lane question queued behind a thread's is voiced once when promoted
     await until(() => live.commentary.some((c) => /May I .*"Send.*\? Say yes\./.test(c)), 1500);
     assert.equal(live.commentary.join(" ").split("May I").length - 1, 1, "voiced once");
     assert.equal(engine.desk.floor?.laneId, "jarhead");
-    assert.equal(engine.workers.floorLane(), undefined, "the floor is the main lane's, not a thread's");
-    assert.deepEqual(engine.workers.floorThread(), { id: MAIN_THREAD_ID, name: "Jarhead" });
+    assert.deepEqual(engine.threads.floorThread(), { id: MAIN_THREAD_ID, name: "Jarhead" }, "the floor is the main lane's, not a spawned thread's");
     assert.ok(engine.confirmations.pending, "the root holds the spoken question");
     assert.equal(brain.tasks.length, 1, "the first yes was Slack's; the main brain's turn was not touched");
     assert.equal(brain.cancels, 0);
-    assert.ok(engine.snapshot().delegations[0]!.steps.some((s) => s.kind === "commentary" && s.worker === "Jarhead" && /May I/.test(s.text ?? "")), "on the parent's timeline, as Jarhead's");
+    assert.ok(engine.snapshot().delegations[0]!.steps.some((s) => s.kind === "commentary" && s.thread === "Jarhead" && /May I/.test(s.text ?? "")), "on the parent's timeline, as Jarhead's");
     // The main thread's yes is the engine's to arm: the scheduler refuses it by name.
-    assert.equal((await engine.workers.answerYes(MAIN_THREAD_ID)).ok, false);
+    assert.equal((await engine.threads.answerYes(MAIN_THREAD_ID)).ok, false);
     // Only now does a yes arm it: the main brain gets its confirmation turn.
     nextUtterance(w);
     delegate(w, "yes", "item_yes2");
@@ -931,7 +925,7 @@ test("Kevin's hands win, silently: the helper's busy refusals mid-retry are not 
   }
 });
 
-test("worker.stop on a thread awaiting a yes: its question leaves the floor, the next queued question is promoted and spoken with its name, and Kevin's yes then lands on that one only", async () => {
+test("thread.stop on a thread awaiting a yes: its question leaves the floor, the next queued question is promoted and spoken with its name, and Kevin's yes then lands on that one only", async () => {
   const w = world();
   const { engine, live, hands } = w;
   try {
@@ -949,10 +943,10 @@ test("worker.stop on a thread awaiting a yes: its question leaves the floor, the
     await until(() => live.commentary.join(" ").includes("Slack asks:"), 1500);
     assert.ok(!live.commentary.join(" ").includes("Spotify asks:"));
     const slackId = named(w, "Slack")!.id;
-    await engine.command({ type: "worker.stop", workerId: slackId });
+    await engine.command({ type: "thread.stop", threadId: slackId });
     await until(() => live.commentary.join(" ").includes("Spotify asks:"), 1500);
     assert.equal(named(w, "Slack")!.status, "stopped");
-    assert.equal(engine.workers.floorLane()?.name, "Spotify");
+    assert.equal(engine.threads.floorThread()?.name, "Spotify");
     assert.equal(engine.desk.queuedCount, 0);
     assert.ok(live.commentary.some((c) => /Slack stopped\./.test(c)));
     // Kevin's yes is Spotify's now; Slack's Send never lands.
@@ -992,7 +986,7 @@ test("budgets: a thread past its seconds is cut at its next step and one past it
     assert.equal(live.commentary.filter((c) => /Spotify failed/.test(c)).length, 1);
     assert.equal(w.threads.byName("Spotify")!.cancels, 1);
     assert.equal(w.threads.byName("Spotify")!.stops, 1);
-    assert.match(engine.workers.statusLine("Spotify"), /^Spotify failed: I ran out of time/);
+    assert.match(engine.threads.statusLine("Spotify"), /^Spotify failed: I ran out of time/);
 
     // Steps: a budget of two tool calls; the third ends it.
     w.threads.script = async (job) => {
@@ -1196,7 +1190,7 @@ test("a thread's detail and its spoken line are struck of secrets: a token in it
     assert.ok(live.commentary.some((c) => /Slack: posted with \[redacted secret\]\./.test(c)));
     const waited = await engine.runner.run("thread_wait", { name: "Slack" });
     assert.doesNotMatch((waited.result as { text: string }).text, /xoxb-/);
-    assert.doesNotMatch(engine.workers.statusLine("slack"), /xoxb-/);
+    assert.doesNotMatch(engine.threads.statusLine("slack"), /xoxb-/);
   } finally {
     await engine.stop();
   }
@@ -1215,9 +1209,9 @@ test("a spare's boot fails while the first thread_start waits on it: the thread 
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
     await until(() => w.threads.brains.length === 2 && boots.size === 2);
-    const [first, second] = engine.workers.spareIds;
+    const [first, second] = engine.threads.spareIds;
     assert.ok(first && second);
-    assert.equal(engine.workers.pool.warmCount, 0, "both still booting");
+    assert.equal(engine.threads.pool.warmCount, 0, "both still booting");
     assert.equal(engine.runnerFor(first), undefined, "a spare's bridge can never act");
     delegate(w, "jarhead play focus and tell ben", "item_1");
     await settle();
@@ -1226,7 +1220,7 @@ test("a spare's boot fails while the first thread_start waits on it: the thread 
     assert.equal(threadsOf(w)[0]!.status, "starting");
     assert.equal(threadsOf(w)[0]!.id, first, "the booting spare, ahead of a cold one");
     assert.equal(engine.runnerFor(first)?.attached, false, "not until its brain is up");
-    assert.match(engine.workers.statusLine("spotify"), /^Spotify is starting$/);
+    assert.match(engine.threads.statusLine("spotify"), /^Spotify is starting$/);
     boots.get(first)!({ ready: false, detail: "codex is not logged in" });
     await until(() => threadsOf(w)[0]?.status === "failed");
     assert.equal(threadsOf(w)[0]!.detail, "its brain did not start: codex is not logged in");
@@ -1235,17 +1229,17 @@ test("a spare's boot fails while the first thread_start waits on it: the thread 
     assert.equal(w.threads.brains[0]!.stops, 1);
     // The other spare comes up; the pool holds it and (after the take's top-up) one more; a cold third thread still works.
     boots.get(second)!({ ready: true, detail: "fake thread" });
-    await until(() => engine.workers.pool.warmCount >= 1);
+    await until(() => engine.threads.pool.warmCount >= 1);
     const again = await engine.runner.run("thread_start", { name: "Slack", task: "tell Ben" });
     assert.equal(again.result.kind, "text");
     await until(() => named(w, "Slack")?.status === "done");
     // Sleep, wake: spares are warmed again, all ready.
-    await engine.sleep();
-    assert.equal(engine.workers.spareIds.length, 0);
+    await engine.command({ type: "sleep" });
+    assert.equal(engine.threads.spareIds.length, 0);
     const before = w.threads.brains.length;
     await engine.wake("test");
     await until(() => w.threads.brains.length === before + 2);
-    await until(() => engine.workers.pool.warmCount === 2);
+    await until(() => engine.threads.pool.warmCount === 2);
   } finally {
     await engine.stop();
   }
@@ -1267,7 +1261,6 @@ test("the ear is free while the main brain merely waits on its threads (thread_w
     const waiting = engine.runner.run("thread_wait", { name: "Spotify", timeout: 30 });
     await settle(20);
     assert.equal(engine.runner.waitingOnThreads, true);
-    assert.equal(engine.runner.waitingOnWorkers, true, "the old name reads the same");
     engine.ear("scroll down", true, 2, clock.t);
     await until(() => hands.named("scroll").length === 1, 1500);
     w.threads.byName("Spotify")!.resolve!({ status: "done", summary: "playing." });
@@ -1335,10 +1328,10 @@ test("Jarhead's hands never land mid-op — but a thread's op that outlasts MAIN
 });
 
 // ------------------------------------------------------------------ threads
-// What the threads pass adds over the workers: no snapshot per step, one table event;
-// follow-up turns by name on the thread's own brain; the deprecated Worker list.
+// The table's own wire: no snapshot per step, one table event; follow-up turns by name
+// on the thread's own brain; `snapshot.threads` reads the same table.
 
-test("a spawned thread's step emits 0 snapshots and exactly one `step` event ≤ 200 B in the table's ring; the started/ended events bracket it; the deprecated Snapshot.workers still lists it", async () => {
+test("a spawned thread's step emits 0 snapshots and exactly one `step` event ≤ 200 B in the table's ring; the started/ended events bracket it; snapshot.threads lists it", async () => {
   const w = world();
   const { engine, events } = w;
   try {
@@ -1348,10 +1341,10 @@ test("a spawned thread's step emits 0 snapshots and exactly one `step` event ≤
     await until(() => busy(threadsOf(w)[0]));
     const id = threadsOf(w)[0]!.id;
     const fb = w.threads.byName("Spotify")!;
-    const table = engine.workers.table;
+    const table = engine.threads.table;
     // The invariant at its source: the scheduler asks the engine for a snapshot only when the LIST of threads
     // changed (a start, an end) — `listChanges` counts those asks and a step must not move it.
-    const listChanges = engine.workers.listChanges;
+    const listChanges = engine.threads.listChanges;
     // And on the wire: the engine's own start-up snapshots (the brain's probe, the setup probe's) land within the
     // first ~150 ms of a wake on their own debounce — wait for the stream to go quiet before counting, or a
     // probe's snapshot is mistaken for the step's.
@@ -1365,7 +1358,7 @@ test("a spawned thread's step emits 0 snapshots and exactly one `step` event ≤
     const out = await fb.runner.run("frontmost_app", {});
     assert.equal(out.result.kind, "text");
     await until(() => table.lastSeq > seq);
-    assert.equal(engine.workers.listChanges, listChanges, "a step never asks for a snapshot");
+    assert.equal(engine.threads.listChanges, listChanges, "a step never asks for a snapshot");
     await settle(120);
     assert.equal(events.filter((e) => e.type === "snapshot").length, snapshots, "a thread's step never rebuilds the snapshot");
     const fresh = table.since(seq);
@@ -1375,16 +1368,16 @@ test("a spawned thread's step emits 0 snapshots and exactly one `step` event ≤
     assert.ok(JSON.stringify(fresh[0]).length <= 200, `${JSON.stringify(fresh[0]).length} B`);
     assert.ok(table.since(0).some((e) => e.kind === "started" && e.threadId === id));
     assert.ok(JSON.stringify(threadsOf(w)[0]).length <= 700, "a summary stays small");
-    // The deprecated list keeps the Worker shape for one release.
-    const workers = engine.snapshot().workers ?? [];
-    assert.equal(workers.length, 1);
-    assert.equal(workers[0]!.id, id);
-    assert.equal(workers[0]!.status, "working");
-    assert.equal(workers[0]!.delegationId, engine.snapshot().delegations[0]!.id);
+    // The snapshot's `threads` is the same table: the one spawned thread, under its parent delegation.
+    const spawned = () => engine.snapshot().threads.filter((t) => t.id !== MAIN_THREAD_ID);
+    assert.equal(spawned().length, 1);
+    assert.equal(spawned()[0]!.id, id);
+    assert.equal(spawned()[0]!.status, "acting", "its step was a tool");
+    assert.equal(spawned()[0]!.parentDelegationId, engine.snapshot().delegations[0]!.id);
     fb.resolve!({ status: "done", summary: "playing Focus." });
     await until(() => threadsOf(w)[0]?.status === "done");
     assert.equal(table.since(0).filter((e) => e.kind === "ended" && e.threadId === id).length, 1);
-    assert.equal((engine.snapshot().workers ?? [])[0]!.status, "done");
+    assert.equal(spawned()[0]!.status, "done");
   } finally {
     await engine.stop();
   }
@@ -1399,8 +1392,8 @@ test("a follow-up by name ('spotify, skip this song') runs a second turn on the 
     await startThread(w, "Spotify", "play Focus");
     const fb = w.threads.byName("Spotify")!;
     const id = threadsOf(w)[0]!.id;
-    const firstTurn = engine.workers.turnsOf(id)[0]!;
-    const ok = await engine.workers.followUp(id, "skip this song", { marks: [{ path: "/tmp/mark.png", mediaType: "image/png", note: "Kevin circled this", kind: "mark" }] });
+    const firstTurn = engine.threads.turnsOf(id)[0]!;
+    const ok = await engine.threads.followUp(id, "skip this song", { marks: [{ path: "/tmp/mark.png", mediaType: "image/png", note: "Kevin circled this", kind: "mark" }] });
     assert.equal(ok, true);
     await until(() => fb.tasks.length === 2);
     assert.equal(fb.cancels, 1, "the running turn was interrupted once");
@@ -1411,7 +1404,7 @@ test("a follow-up by name ('spotify, skip this song') runs a second turn on the 
     assert.ok(fb.tasks[1]!.attachments?.some((a) => a.kind === "screen"), "and a fresh look");
     assert.equal(brain.cancels, 0, "the main brain's turn was not superseded");
     assert.equal(brain.tasks.length, 1);
-    const turns = engine.workers.turnsOf(id);
+    const turns = engine.threads.turnsOf(id);
     assert.equal(turns.length, 2);
     assert.equal(turns[0]!.id, firstTurn.id);
     assert.equal(turns[0]!.status, "cancelled");
@@ -1420,7 +1413,7 @@ test("a follow-up by name ('spotify, skip this song') runs a second turn on the 
     assert.equal(turns[1]!.request, "skip this song");
     assert.equal(named(w, "Spotify")!.turns, 2);
     assert.ok(busy(named(w, "Spotify")));
-    assert.equal(await engine.workers.followUp("t_nobody", "x"), false);
+    assert.equal(await engine.threads.followUp("t_nobody", "x"), false);
     fb.resolve!({ status: "done", summary: "skipped." });
     await until(() => live.commentary.some((c) => /Spotify: skipped\./.test(c)));
     assert.equal(named(w, "Spotify")!.status, "done");

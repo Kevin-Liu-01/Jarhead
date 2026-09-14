@@ -343,8 +343,8 @@ test("Pause mid-farewell: a dismissal already in flight wins — the farewell en
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    await until(() => w.workers.brains.length === 1);
-    const spare = w.workers.brains[0]!;
+    await until(() => w.threads.brains.length === 1);
+    const spare = w.threads.brains[0]!;
     live.instructions.length = 0;
     engine.ear("go to sleep jarhead", true, 1, clock.t);
     await settle();
@@ -411,14 +411,14 @@ test("cause brain-changed (the closer's half of a brain swap across the Response
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    await until(() => w.workers.brains.length === 1);
+    await until(() => w.threads.brains.length === 1);
     live.instructions.length = 0;
     await engine.fallAsleep("brain-changed");
     assert.equal(engine.currentPhase, "asleep");
     assert.equal(live.currentState, "closed");
     assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => [r.cause, r.farewell, r.sessionId]), [["brain-changed", undefined, "sess_1"]]);
     assert.deepEqual(live.instructions, [], "no farewell for a swap");
-    assert.equal(w.workers.brains[0]!.stops, 1, "the spare runs the old brain kind: it goes with it");
+    assert.equal(w.threads.brains[0]!.stops, 1, "the spare runs the old brain kind: it goes with it");
   } finally {
     await engine.stop();
   }

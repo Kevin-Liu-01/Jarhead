@@ -85,7 +85,7 @@ test("the Dock is read once, 20 s after start (shortened here) and read-only: tw
     assert.ok(calls.every((c) => c.timeoutMs === Engine.DOCK_EXEC_TIMEOUT_MS), "every Dock shell-out is capped: spawnSync on the daemon's event loop");
     assert.equal(Engine.DOCK_EXEC_TIMEOUT_MS, 3000);
     assert.ok(rows<{ type: string; text: string }>(w, "problem").some((r) => r.text === "Two Jarhead tiles in the Dock"), "one ledger row on the first sighting");
-    assert.equal(engine.snapshot().problemsTyped?.find((q) => q.kind === "dock")?.remedy?.label, "Fix the Dock");
+    assert.equal(engine.snapshot().problems.find((q) => q.kind === "dock")?.remedy?.label, "Fix the Dock");
     assert.equal(Engine.DOCK_AUDIT_DELAY_MS, 20_000);
   } finally {
     await engine.stop();
@@ -280,6 +280,6 @@ test("dockProblemText: two tiles with a pin is the line; more is the count; a re
   const unpinned = dictSet(dictSet(clean, "persistent-apps", { kind: "array", items: [apps.items[0]!] }), "recent-apps", recents);
   assert.equal(Engine.dockProblemText(read(serializePlistXml(unpinned))), undefined);
   // A pin at the old build path.
-  assert.match(Engine.dockProblemText(read(fixture("dock-stale-url.xml"))) ?? "", /^The Dock's Jarhead pin points at file:\/\/\/Users\/kevinliu\/jarvis\/build\/Jarhead\.app\/$/);
+  assert.equal(Engine.dockProblemText(read(fixture("dock-stale-url.xml"))), "The Dock's Jarhead pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/");
   assert.deepEqual(Engine.DOCK_REMEDY, REMEDY);
 });

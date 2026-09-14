@@ -43,7 +43,7 @@ export interface BrainPoolOptions<L extends PoolLane> {
   /** Builds a lane with a brain that has its own thread, or undefined when the current brain kind cannot. */
   readonly makeLane: () => L | undefined;
   readonly now?: (() => number) | undefined;
-  /** Settings.workers (the on/off flag): no spares while off. */
+  /** Settings.threads (the on/off flag): no spares while off. */
   readonly enabled?: (() => boolean) | undefined;
   /** The idle spare's RSS in MB, for the one log line per spare (default: `ps` over the brain's pid when it exposes one). */
   readonly rssOf?: ((lane: L) => Promise<number | undefined>) | undefined;

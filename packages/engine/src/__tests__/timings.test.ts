@@ -131,7 +131,7 @@ test("timings: a thread's steps land on ITS OWN delegation (threadId) with their
   try {
     let acted!: () => void;
     const actedP = new Promise<void>((r) => (acted = r));
-    w.workers.script = async (job) => {
+    w.threads.script = async (job) => {
       for (let i = 0; i < 6; i++) {
         clock.t += 10_000;
         await job.runner.run("frontmost_app", {});
@@ -152,14 +152,14 @@ test("timings: a thread's steps land on ITS OWN delegation (threadId) with their
     await actedP;
     assert.equal(lastKevinAt(), kevinBefore, "61 s of a thread's actions are not Kevin's presence");
     const d = engine.snapshot().delegations[0]!;
-    assert.equal(d.steps.filter((s) => s.worker === "Spotify" && s.kind === "tool").length, 0, "a thread's steps never land on the parent");
+    assert.equal(d.steps.filter((s) => s.thread === "Spotify" && s.kind === "tool").length, 0, "a thread's steps never land on the parent");
     // thread_start is the main brain's own tool step; the thread's reads are on its own record, not the main brain's first tool or action.
     const t = d.timings as { firstToolAt?: number; firstActionAt?: number };
     const threadStart = d.steps.find((s) => s.kind === "tool" && s.tool?.name === "thread_start")!;
     assert.equal(t.firstToolAt, threadStart.at, "the first tool is the brain's own thread_start");
     assert.equal(t.firstActionAt, undefined, "a thread's read is nobody's action; thread_start changes nothing on screen");
-    const threadId = engine.workers.threads().find((x) => x.name === "Spotify")!.id;
-    const own = engine.workers.turnsOf(threadId)[0]!;
+    const threadId = engine.threads.threads().find((x) => x.name === "Spotify")!.id;
+    const own = engine.threads.turnsOf(threadId)[0]!;
     assert.equal(own.threadId, threadId);
     assert.equal(own.steps.filter((s) => s.kind === "tool" && s.tool?.name === "frontmost_app").length, 6, "on its own delegation");
     const tt = own.timings as { firstToolAt?: number; firstActionAt?: number; toolRoundTripMs?: number[] };

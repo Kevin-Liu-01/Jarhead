@@ -213,8 +213,8 @@ test("`jarhead cmd pause|resume` shapes: the engine commands are accepted by the
     assert.equal(engine.currentPhase, "listening");
     assert.equal(lives.length, 2);
     await engine.command({ type: "pause" });
-    await engine.command({ type: "wake" });
-    assert.equal(engine.currentPhase, "listening", "wake while paused is a resume");
+    await engine.command({ type: "go" });
+    assert.equal(engine.currentPhase, "listening", "go while paused is a resume");
     assert.equal(lives.length, 3);
     assert.match(lives[2]!.config?.instructions ?? "", /Continuity/);
     await engine.command({ type: "pause" });
@@ -226,13 +226,13 @@ test("`jarhead cmd pause|resume` shapes: the engine commands are accepted by the
   }
 });
 
-test("pause while workers run: every worker is cancelled with its brain's cancel called once, both helpers' pendings dropped, the session closed; the resume opens a new session and workers start again", async () => {
+test("pause while threads run: every thread is cancelled with its brain's cancel called once, both helpers' pendings dropped, the session closed; the resume opens a new session and threads start again", async () => {
   const w = world();
   const { engine, live, lives, hands, handsBg, brain } = w;
   try {
     let read!: (r: unknown) => void;
     const reading = new Promise<unknown>((r) => (read = r));
-    w.workers.script = async (job) => {
+    w.threads.script = async (job) => {
       read((await job.runner.run("frontmost_app", {})).result);
       return undefined;
     };
@@ -243,7 +243,7 @@ test("pause while workers run: every worker is cancelled with its brain's cancel
     delegate(w, "jarhead tell ben on slack and play focus on spotify", "item_1");
     await settle();
     handsBg.hold = "frontmost";
-    await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
+    await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
     await settle(50);
     // The main toolset's gate probe reads on the reading helper (SplitHands); the type itself is the acting helper's pending.
     hands.hold = "type";
@@ -255,8 +255,8 @@ test("pause while workers run: every worker is cancelled with its brain's cancel
     assert.equal(engine.isPaused, true);
     assert.equal(live.currentState, "closed");
     assert.equal(brain.cancels, 1);
-    assert.equal(w.workers.byName("Spotify")!.cancels, 1);
-    assert.equal((engine.snapshot().workers ?? [])[0]!.status, "cancelled");
+    assert.equal(w.threads.byName("Spotify")!.cancels, 1);
+    assert.equal(engine.snapshot().threads.find((t) => t.name === "Spotify")!.status, "stopped");
     assert.equal((await typing).kind, "error", "the acting helper's pending failed");
     assert.equal(((await reading) as { kind: string }).kind, "error", "the reading helper's pending failed");
     hands.release();
@@ -268,8 +268,8 @@ test("pause while workers run: every worker is cancelled with its brain's cancel
     nextUtterance(w);
     delegate(w, "jarhead play focus on spotify and tell ben", "item_2");
     await settle();
-    const again = await engine.runner.run("worker_start", { name: "Spotify", task: "play Focus" });
-    assert.equal(again.result.kind, "text", "workers start again on the new session");
+    const again = await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
+    assert.equal(again.result.kind, "text", "threads start again on the new session");
   } finally {
     hands.release();
     handsBg.release();

@@ -449,6 +449,7 @@ export class ThreadTable {
           break;
         }
         default:
+          // Day files before 2026-09-13 also hold `worker` rows and `delegation.step` rows whose step says `worker`: unknown rows are skipped, never matched exhaustively.
           break;
       }
     }

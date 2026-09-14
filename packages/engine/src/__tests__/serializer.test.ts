@@ -33,14 +33,14 @@ test("haltReasonFor is batch.ts's haltReason, word for word", () => {
   for (const o of [question(), refused(), failed(), text()]) assert.equal(haltReasonFor("type", o), haltReason({ name: "type", input: {} }, o));
   assert.equal(haltReasonFor("type", text()), undefined);
   assert.ok(READ_ONLY_TOOLS.size > 0 && [...READ_ONLY_TOOLS].every((t) => SERIALIZER_BYPASS.has(t)), "every look bypasses the queue");
-  for (const t of ["thread_wait", "worker_wait", "speak_progress", "agent_wait"]) assert.ok(SERIALIZER_BYPASS.has(t), `${t} never holds the acts behind it`);
+  for (const t of ["thread_wait", "speak_progress", "agent_wait"]) assert.ok(SERIALIZER_BYPASS.has(t), `${t} never holds the acts behind it`);
   // The hands-free management tools: never behind an act, never halted by its question.
-  for (const t of ["thread_start", "thread_stop", "thread_read", "worker_start", "worker_stop", "worker_read", "agent_start", "agent_send", "agent_read"]) assert.ok(SERIALIZER_BYPASS.has(t), `${t} touches neither the hands nor the lease`);
+  for (const t of ["thread_start", "thread_stop", "thread_read", "agent_start", "agent_send", "agent_read"]) assert.ok(SERIALIZER_BYPASS.has(t), `${t} touches neither the hands nor the lease`);
   for (const t of ["self_edit", "self_apply", "self_check", "self_discard", "left_click", "type", "applescript", "run_shell", "browser_navigate", "write_file"]) assert.ok(!SERIALIZER_BYPASS.has(t), `${t} takes the queue`);
 });
 
 test("a thread_start (and its alias, and an agent_start / agent_send) issued alongside a left_click that asks Kevin starts at once and answers its own text — never `not run:`", async () => {
-  for (const mgmt of ["thread_start", "worker_start", "thread_stop", "agent_start", "agent_send"]) {
+  for (const mgmt of ["thread_start", "thread_stop", "agent_start", "agent_send"]) {
     const s = new ActingSerializer();
     const click = deferred();
     const started = deferred();
@@ -149,7 +149,7 @@ test("I6: drain answers every queued acting call `stopped: <reason>`; the one in
   await pd;
 });
 
-test("two lanes' queues are independent: a worker lane's act does not wait on the main lane's, and a halt on one halts nothing on the other", async () => {
+test("two lanes' queues are independent: a thread lane's act does not wait on the main lane's, and a halt on one halts nothing on the other", async () => {
   const main = new ActingSerializer();
   const lane = new ActingSerializer();
   const a = deferred();

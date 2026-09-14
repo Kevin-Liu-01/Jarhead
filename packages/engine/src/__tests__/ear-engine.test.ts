@@ -153,7 +153,7 @@ test("ear: Settings.reflexes off switches the layer off (ear and delegation alik
     assert.equal(engine.snapshot().delegations[0]!.summary, "Kevin said stop");
     assert.equal(brain.cancels, 1);
     // Asleep: partials are ignored.
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     engine.ear("scroll down", true, 3, 3);
     await settle(60);
     assert.equal(hands.named("scroll").length, 0);
@@ -580,7 +580,7 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
     assert.ok(sent[1]!.at - sent[0]!.at >= 500, `paced: ${Math.round(sent[1]!.at - sent[0]!.at)} ms apart`);
     assert.ok(sent[1]!.strings.includes("Send"));
     // Asleep: the warm tick stops and nothing more is sent.
-    await engine.sleep();
+    await engine.command({ type: "sleep" });
     nodes = [...nodes, { i: 8, depth: 1, role: "AXButton", title: "Later" }];
     await settle(600);
     assert.equal(sent.length, 2);
@@ -592,11 +592,11 @@ test("ear hints: the AX warm tick turns the front window into `ear.hints` — ap
 
 test("ear hints: earHintsFrom keeps controls only, three words at most, trims ellipses and edge punctuation, dedupes, caps 80 controls and 100 strings, app first, window second, agents last", () => {
   const many = Array.from({ length: 120 }, (_, i) => ({ i, depth: 1, role: "AXButton", title: `Button ${i}` }));
-  const hints = earHintsFrom(many, "Google Chrome", "Kevin Wiki — Design notes and more", ["Codex · jarvis", "Claude Code · Kevin-Wiki-v3"]);
+  const hints = earHintsFrom(many, "Google Chrome", "Kevin Wiki — Design notes and more", ["Codex · jarhead", "Claude Code · Kevin-Wiki-v3"]);
   assert.equal(hints[0], "Google Chrome");
   assert.equal(hints[1], "Kevin Wiki", "the window's first three words, the dangling dash trimmed");
   assert.equal(hints.filter((h) => h.startsWith("Button")).length, 80, "controls capped at 80");
-  assert.deepEqual(hints.slice(-2), ["Codex · jarvis", "Claude Code"], "agents last, each cut to three words, a dangling separator trimmed");
+  assert.deepEqual(hints.slice(-2), ["Codex · jarhead", "Claude Code"], "agents last, each cut to three words, a dangling separator trimmed");
   assert.ok(hints.length <= 100);
   const cleaned = earHintsFrom(
     [

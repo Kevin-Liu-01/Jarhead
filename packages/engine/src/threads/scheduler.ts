@@ -1,11 +1,11 @@
 import { join } from "node:path";
 import { logger, newId, type Ledger } from "@jarhead/core";
 import { ComputerToolset, ConfirmationState, HOLD_ID, Screen, spokenQuestion, type ArmedConfirmation, type ConfirmationDesk, type ConfirmationGrant, type FocusLease, type Grantable, type LaneConfirmationState, type NativeHands, type PendingConfirmation, type ToolResult, type ToolsetOptions } from "@jarhead/hands";
-import { screenNote, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
-import { MAIN_THREAD_ID, THREAD_MAX_LIVE, THREAD_NAME_CHARS, THREAD_SECONDS_DEFAULT, THREAD_SECONDS_MAX, THREAD_SPAWN_DEPTH, THREAD_STEPS_DEFAULT, THREAD_STEPS_MAX, type DelegationStep, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent, type ThreadStatus, type TranscriptItem, type Worker, type WorkerStatus } from "@jarhead/protocol";
+import { screenNote, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions, type ThreadFloor, type ToolRunner } from "@jarhead/brain";
+import { MAIN_THREAD_ID, THREAD_MAX_LIVE, THREAD_NAME_CHARS, THREAD_SECONDS_DEFAULT, THREAD_SECONDS_MAX, THREAD_SPAWN_DEPTH, THREAD_STEPS_DEFAULT, THREAD_STEPS_MAX, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent, type ThreadStatus, type TranscriptItem } from "@jarhead/protocol";
 import { BrainPool, type PoolLane, type Ready } from "./brain-pool.ts";
 import { CONFIRMATION_RESUME, cutLine, phraseForLine, phraseForTool, resumeText, threadBrief } from "./lines.ts";
-import { LaneRunner, WorkerAwareRunner, canonicalThreadTool, type ActionObserverLike, type ActingSerializerLike, type SpawnLane } from "./runner.ts";
+import { LaneRunner, ThreadAwareRunner, type ActionObserverLike, type ActingSerializerLike, type SpawnLane } from "./runner.ts";
 import { ThreadEventCoalescer, ThreadTable, THREAD_EVENT_COALESCE_MS } from "./table.ts";
 import { ThreadLog, ThreadTurns, type ThreadTurn } from "./turns.ts";
 
@@ -23,9 +23,6 @@ import { ThreadLog, ThreadTurns, type ThreadTurn } from "./turns.ts";
  * thread — never a snapshot; the snapshot is rebuilt only when the LIST of threads
  * changes (a start, an end). The desk, the lease and the handshake stay exactly as
  * they were: one question floor, one pointer, a yes only for the floor's lane.
- *
- * `worker_*` names are answered as `thread_*` for one release; the `WorkerPool`
- * name lives on in ../workers.ts as an alias of this class.
  */
 
 const log = logger("engine.threads");
@@ -62,21 +59,18 @@ export interface ThreadParent {
 
 /**
  * How a thread's lines reach the voice: the Delegator's hooks on the parent
- * delegation (`splitLine` once at the split, `workerSay` for Jarhead's own lines —
- * never gated, through the 600 ms coalescer — while the parent runs or drains;
- * `workerStep` is kept for the interface and no longer called: a thread's steps land
- * on its own record).
+ * delegation — `splitLine` once at the split, `threadSay` for Jarhead's own lines
+ * about a thread (never gated, through the 600 ms coalescer) while the parent runs
+ * or drains. A thread's steps land on its own record, never on the parent's.
  */
 export interface ThreadVoice {
   splitLine(parentId: string, name: string): void;
-  workerStep(parentId: string, name: string, step: Omit<DelegationStep, "id" | "at" | "worker">): void;
-  workerSay(parentId: string, name: string, text: string): void;
+  threadSay(parentId: string, name: string, text: string): void;
 }
 
 export interface ThreadBrainSpec {
   readonly runner: ToolRunner;
-  /** The thread id — the `worker` field its bridge stamps on every tool.run frame. */
-  readonly workerId: string;
+  /** The thread id — the `thread` field its bridge stamps on every tool.run frame. */
   readonly threadId: string;
   /** The wall clock the brain itself enforces as a backstop (the scheduler cuts first). */
   readonly secondsCap: number;
@@ -110,7 +104,7 @@ export interface ThreadSchedulerOptions {
   readonly parentFor: (task: BrainTask | undefined) => ThreadParent | undefined;
   /** The parent delegation's voice: the Delegator's hooks. */
   readonly voice: () => ThreadVoice | undefined;
-  /** Settings.workers — the on/off flag. */
+  /** Settings.threads — the on/off flag. */
   readonly enabled: () => boolean;
   /** The LIST of threads changed (a start, an end): the snapshot goes out. Never called for a step or a status. */
   readonly onChange: () => void;
@@ -310,12 +304,12 @@ export class ThreadScheduler {
 
   // --------------------------------------------------------- the tools
 
-  /** `thread_*` (and `worker_*`) from the main lane's runner. */
+  /** `thread_*` from the main lane's runner. */
   async tool(name: string, args: Record<string, unknown>, ctx: { readonly task: BrainTask | undefined }): Promise<ToolResult> {
     const parent = this.opts.parentFor(ctx.task);
     if (!parent) return { kind: "error", message: `${name}: no task is running to own a thread` };
     const who = String(args["name"] ?? "").trim();
-    switch (canonicalThreadTool(name)) {
+    switch (name) {
       case "thread_start":
         return this.start(parent, { name: who, task: String(args["task"] ?? ""), lane: args["lane"] === "screen" ? "screen" : "background", budget: typeof args["budget"] === "object" && args["budget"] !== null ? (args["budget"] as { steps?: unknown; seconds?: unknown }) : {} });
       case "thread_wait": {
@@ -843,7 +837,7 @@ export class ThreadScheduler {
       cancel = this.cancelBrain(job, turn);
     }
     job.laneRef.runner.abortTask(reason);
-    job.laneRef.runner.attach(undefined); // the lease goes; a late tool.run {worker} is refused (attached === false)
+    job.laneRef.runner.attach(undefined); // the lease goes; a late tool.run {thread} is refused (attached === false)
     // Its question goes with it — THIS lane's only: a queued one is forgotten, one on the floor is
     // dropped and the next queued question comes up, spoken (`desk.dropQuestion()` would take the
     // whole queue with it, and another hand's question would never be asked).
@@ -909,7 +903,7 @@ export class ThreadScheduler {
   /** One line for Kevin, in Jarhead's voice — struck of secrets first, like every text a model or Kevin gets. Returns what was said. */
   private say(job: Job, line: string): string {
     const clean = job.laneRef.runner.redactor.redact(line);
-    this.opts.voice()?.workerSay(job.parent.id, job.name, clean);
+    this.opts.voice()?.threadSay(job.parent.id, job.name, clean);
     this.publish(this.table.said(job.id, clean));
     this.row({ at: this.now(), type: "thread.said", threadId: job.id, text: clean });
     job.turns.system("waveform", clean);
@@ -1028,7 +1022,7 @@ export class ThreadScheduler {
   async answerYes(threadId: string): Promise<{ readonly ok: boolean; readonly reason?: string }> {
     const floor = this.opts.desk.floor;
     if (!floor) return { ok: false, reason: "no question is waiting" };
-    const laneId = threadId === MAIN_THREAD_ID ? WorkerAwareRunner.ACTOR : threadId;
+    const laneId = threadId === MAIN_THREAD_ID ? ThreadAwareRunner.ACTOR : threadId;
     if (floor.laneId !== laneId) return { ok: false, reason: `another question is on the floor: ${floor.name}'s` };
     if (threadId === MAIN_THREAD_ID) return { ok: false, reason: "the main thread's yes is the engine's to arm" };
     const job = this.jobs.get(threadId);
@@ -1148,19 +1142,13 @@ export class ThreadScheduler {
     return n;
   }
 
-  /** The thread whose question is on the floor, or undefined: the floor is free or the main lane's (the Delegator's reading). */
-  floorLane(): { readonly id: string; readonly name: string } | undefined {
-    const floor = this.opts.desk.floor;
-    const job = floor ? this.jobs.get(floor.laneId) : undefined;
-    return job ? { id: job.id, name: job.name } : undefined;
-  }
-
-  /** The thread whose question is on the floor — main included ("Jarhead") — or undefined when the floor is free. */
-  floorThread(): { readonly id: string; readonly name: string } | undefined {
+  /** The thread whose question is on the floor — main included ("Jarhead") — or undefined when the floor is free or the lane is nobody's. */
+  floorThread(): ThreadFloor | undefined {
     const floor = this.opts.desk.floor;
     if (!floor) return undefined;
-    if (floor.laneId === WorkerAwareRunner.ACTOR) return { id: MAIN_THREAD_ID, name: "Jarhead" };
-    return this.floorLane();
+    if (floor.laneId === ThreadAwareRunner.ACTOR) return { id: MAIN_THREAD_ID, name: "Jarhead" };
+    const job = this.jobs.get(floor.laneId);
+    return job ? { id: job.id, name: job.name } : undefined;
   }
 
   /** A screen-lane thread is at work (thinking, acting or waiting for the screen): the ear holds; background threads never hold it. */
@@ -1188,14 +1176,9 @@ export class ThreadScheduler {
     return true;
   }
 
-  /** The runner a `tool.run {worker}` frame lands on (the field name stays `worker` on the wire; the value is the thread id); undefined for a thread nobody owns (the daemon refuses). */
+  /** The runner a `tool.run {thread}` frame lands on; undefined for a thread nobody owns (the daemon refuses). */
   runnerFor(threadId: string): ToolRunner | undefined {
     return this.jobs.get(threadId)?.laneRef.runner;
-  }
-
-  /** @deprecated read `runnerFor`. */
-  laneRunner(threadId: string): ToolRunner | undefined {
-    return this.runnerFor(threadId);
   }
 
   /** The snapshot's `threads`: live (main first) and lingering summaries. */
@@ -1227,39 +1210,10 @@ export class ThreadScheduler {
     return this.table.liveNames();
   }
 
-  /**
-   * @deprecated `Snapshot.workers`, one release: the spawned threads' summaries in the
-   * Worker shape (thinking/acting/paused → working, waiting-kevin → awaiting-confirmation,
-   * stopped → cancelled).
-   */
-  list(): readonly Worker[] {
-    return this.table
-      .summaries()
-      .filter((t) => t.id !== MAIN_THREAD_ID)
-      .map((t) => ({
-        id: t.id,
-        name: t.name,
-        delegationId: t.parentDelegationId ?? "",
-        task: t.task,
-        lane: t.lane === "voice" ? "screen" : t.lane,
-        status: workerStatus(t.status),
-        ...(t.detail !== undefined ? { detail: t.detail } : {}),
-        startedAt: t.startedAt,
-        ...(t.doneAt !== undefined ? { doneAt: t.doneAt } : {}),
-        steps: t.steps,
-        ...(t.app !== undefined ? { app: t.app } : {}),
-      }));
-  }
-
   /** Warm the spares (Settings.warmThreads) at wake and after a retry window. Nothing awaits it. */
   warm(): number {
     if (!this.opts.enabled()) return 0;
     return this.pool.warm();
-  }
-
-  /** @deprecated read `warm`. */
-  warmSpare(): void {
-    this.warm();
   }
 
   /** For tests: the first spare lane's id, if one is warm or booting. */
@@ -1326,7 +1280,7 @@ export class ThreadScheduler {
       observer: this.opts.observer,
       serializer: this.opts.serializer,
     });
-    const brain = factory({ runner, workerId: id, threadId: id, secondsCap: THREAD_SECONDS_MAX });
+    const brain = factory({ runner, threadId: id, secondsCap: THREAD_SECONDS_MAX });
     if (!brain) return undefined;
     return { id, hands, confirmations, toolset, runner, brain, started: undefined };
   }
@@ -1382,30 +1336,6 @@ function settledWithin(p: Promise<void>, ms: number): Promise<boolean> {
       resolve(true);
     });
   });
-}
-
-/** The Worker status a thread status reads as, one release. */
-export function workerStatus(status: ThreadStatus): WorkerStatus {
-  switch (status) {
-    case "idle":
-    case "queued":
-    case "starting":
-      return "starting";
-    case "thinking":
-    case "acting":
-    case "paused":
-      return "working";
-    case "waiting-screen":
-      return "waiting-screen";
-    case "waiting-kevin":
-      return "awaiting-confirmation";
-    case "done":
-      return "done";
-    case "failed":
-      return "failed";
-    case "stopped":
-      return "cancelled";
-  }
 }
 
 /** The app a tool call works in: open_app / focus_app's name, an AppleScript's `tell application "X"`, a browser host. */
