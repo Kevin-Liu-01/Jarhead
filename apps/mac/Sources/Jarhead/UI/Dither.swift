@@ -64,6 +64,18 @@ enum Dither {
         Stop(0.74, hex: 0x2f5ce0),
         Stop(1.00, SIMD3(24, 58, 168)),
     ]
+    /// The quiet mark's ramp — the orb's five bands in titanium's own hue (#8a8f98, 219°, 9 %), so a
+    /// conversation that is over wears the same crosshatch beside the stamp and the section heads
+    /// as one neutral. Pale grey → titanium → fg3-ish → the deep end; ≈ 25 % darker than the blue
+    /// ramp at its bright end, level with it at the dark end. LUT (5 bands):
+    /// a9adb5 · 8f949d · 747881 · 595d64 · 40444b · 2e3137.
+    static let markQuietStops: [Stop] = [
+        Stop(0.00, hex: 0xa9adb5),
+        Stop(0.24, hex: 0x8a8f98),
+        Stop(0.50, hex: 0x666a72),
+        Stop(0.74, hex: 0x464a51),
+        Stop(1.00, hex: 0x2e3137),
+    ]
     /// Ink to the accent: for a shaded ground rather than a coloured one.
     static let inkStops: [Stop] = [
         Stop(0.0, hex: 0x070707),
