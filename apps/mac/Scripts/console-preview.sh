@@ -15,19 +15,23 @@
 #   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
 #   `menu-escape` / `menu-outside` the layer's contract, `toggle` the Wake word `On | Off` flipped by Space.
 #   run.log ends with the `probe-floats:` rects and `check: all ok (kit)` (placement, the menu model, the
-#   sites' words, tips, badges, copy). The Settings-tab fields answer their ids (`settings.voice`,
-#   `settings.backend`, `settings.wakeWord`) once RightRailView passes them (Builder D); `settings.model`
-#   is LocalModelMenu's own and renders today. The other kit names (tip-*, settings-index,
-#   permissions-groups, problems-groups, ledger-months, memory-chips, list-keys, agents-groups) are
-#   reserved here and render today's UI until their builder lands. `list-verbs` (Builder E) rings yesterday's
-#   conversation row and presses ⌘↓: its verbs float under the row (`probe-floats:` names `rail.chain.<id>.verbs`).
-#   The kit's tips (Builder A): `tip-thread` pins the thread card on the stream's Slack chip (`tipOpen:chip.<id>`
-#   — the same ConsoleTipCard.thread the rails draw; retarget to a rail row once one carries the card),
-#   `tip-key` gives the composer's Stop focus and presses `?` (the pinned bubble with its ⌘. keycap and the one
-#   key ring), `tip-warm` runs the real 350 ms delay (hover Go, leave, hover Mute within 400 ms → at once;
-#   run.log's `tip:` trail and `check: … (tips)`), `tip-thumb` opens Slack's pane and pins the header thumb's
-#   preview; `menu-escape` / `menu-outside` drive the layer's closing contract on the Voice popup (Esc; a
-#   click at (300,300)) and end `check: … (floats)`. Every one runs `check-kit@0.3` and ends `check: all ok (kit)`.
+#   sites' words, tips, badges, copy). The Settings-tab fields answer their ids: `settings.voice`,
+#   `settings.mic`, `settings.backend`, `settings.model` (LocalModelMenu; `menu-model` ends
+#   `check-floats:settings.model`, so a popup that never reached the layer fails the run), `settings.effort`,
+#   `settings.wakeWord`, `settings.check`. `settings-index` is Settings as seven folded heads carrying their
+#   summary (Memory opened by id); `permissions-groups` the Now rail's Permissions areas Senses / Hands / Files
+#   (rows 40 with the why on line 2); `problems-groups` the Problems kinds Grants / Engine (Engine folded);
+#   `ledger-months` the Ledger's forty days by month, two August days and Sep 10 read, then ↓ ⏎ over the list;
+#   `memory-chips` the memory rail's kind chips (`chip:fact`) and a row's card; `list-keys` the left rail's
+#   search with ↑↓ ⏎ over the hits; `agents-groups` the agents per tool with Codex folded (`1 asks`).
+#   `list-verbs` rings yesterday's conversation row and presses ⌘↓: its verbs float under the row
+#   (`check-floats:rail.chain.<id>.verbs`). The tips: `tip-thread` pins the thread card beside the right rail's
+#   Slack row (the same ConsoleTipCard.thread the stream's chip and the left rail draw), `tip-key` gives the
+#   Brain section's Check focus and presses `?` (the pinned bubble and the one key ring), `tip-warm` runs the
+#   real 350 ms delay (hover Go, leave, hover Mute within 400 ms → at once; run.log's `tip:` trail and
+#   `check: … (tips)`), `tip-thumb` opens Slack's pane and pins the header thumb's preview; `menu-escape` /
+#   `menu-outside` drive the layer's closing contract on the Voice popup (Esc; a click at (300,300)) and end
+#   `check: … (floats)`. Every one runs `check-kit@0.3` and ends `check: all ok (kit)`.
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
 #   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,
@@ -137,7 +141,7 @@ SCENARIO="${1:-live}"
 OUT="${2:-}"
 case "$SCENARIO" in
   live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
-  # The component kit's scenarios (design9); each may render today's UI until its builder lands.
+  # The component kit's scenarios (design9): the dropdowns, the tips, the toggle, the folds, the lists.
   menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|list-verbs|agents-groups) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
