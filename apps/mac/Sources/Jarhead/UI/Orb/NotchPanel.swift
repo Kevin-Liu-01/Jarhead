@@ -2113,7 +2113,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let c = content
         if c.marking {
             let figure = "Circle something · Esc"
-            list.append(Chip(kind: .marking, glyph: "scope", tint: Self.markTone, figure: figure, tooltip: "Circling — draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
+            list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling — draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
         } else {
             if let q = c.question {
                 let name = q.name.count > 10 ? String(q.name.prefix(10)) : q.name
@@ -2877,7 +2877,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let granted = content.screenRecordingGranted
         var cells: [StripCell] = []
         if !content.marks.isEmpty, z.kind != .question { cells.append(StripCell(press: .clear, rect: z.clear, symbol: "eraser.fill", enabled: true, dim: 1)) }
-        cells.append(StripCell(press: .circle, rect: z.circle, symbol: "scope", enabled: true, dim: granted ? 1 : 0.45))
+        cells.append(StripCell(press: .circle, rect: z.circle, symbol: "pencil.and.outline", enabled: true, dim: granted ? 1 : 0.45))
         cells.append(StripCell(press: .window, rect: z.window, symbol: "macwindow", enabled: true, dim: granted ? 1 : 0.45))
         if z.kind != .question { cells.append(StripCell(press: .ask, rect: z.ask, symbol: "questionmark.bubble.fill", enabled: askEnabled, dim: 1)) }
         drawStrip(cg, cells: cells.map { $0.offset(dy: a.dy) }, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)

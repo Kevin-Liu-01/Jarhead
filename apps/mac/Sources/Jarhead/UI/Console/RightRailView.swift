@@ -432,7 +432,7 @@ struct NowPanel: View {
                         }
                         .padding(.top, 2)
                     }
-                    Button { actions.beginMarkMode() } label: { Label("Circle something…", systemImage: "scope") }
+                    Button { actions.beginMarkMode() } label: { Label("Circle something…", systemImage: "pencil.and.outline") }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
                         .help("Circle a region of the screen for Jarhead (⌥⇧C)")
                 }

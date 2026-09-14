@@ -212,7 +212,7 @@ final class StatusItem: NSObject {
         let circle = NSMenuItem(title: "Circle Something…", action: #selector(doMark), keyEquivalent: "c")
         circle.keyEquivalentModifierMask = [.option, .shift]
         circle.target = self
-        circle.image = StatusItem.symbol("scope")
+        circle.image = StatusItem.symbol("pencil.and.outline")
         circle.toolTip = "Draw around anything on screen and Jarhead sees it (⌥⇧C)"
         menu.addItem(circle)
 
