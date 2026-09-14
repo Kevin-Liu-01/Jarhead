@@ -6,9 +6,16 @@ import SwiftUI
 // Scripts/onboarding-preview.sh. It never talks to the daemon, TCC or OpenAI:
 // commands are printed, permissions are canned, prompts are printed.
 //   PREVIEW_STEP=welcome|voice|brain|permissions|wake|agents|done   (default welcome)
-//   PREVIEW_SCENARIO=ready|fresh|broken|auto (default ready: everything set up; fresh: nothing yet;
-//                                          broken: an invalid key and an unavailable brain;
-//                                          auto: brain "auto" resolved to Claude Code)
+//   PREVIEW_SCENARIO=ready|fresh|broken|auto|local-ready|local-no-server
+//                                         (default ready: everything set up; fresh: nothing yet;
+//                                          broken: an invalid key and an unavailable brain (the
+//                                          compatible kind's failure case: a dead 11434);
+//                                          auto: brain "auto" resolved to Claude Code, with Ollama up
+//                                          so the Brain step's nudge shows;
+//                                          local-ready: Backend Local model, Ollama 0.34.0 up with six
+//                                          models, the engine's best-fit pick, memory local;
+//                                          local-no-server: Local model picked, nothing answers — the
+//                                          note, the Server field, Open ollama.com, the loud fallback)
 //   PREVIEW_APPEARANCE=dark|light         (default dark, so shots are deterministic)
 //   PREVIEW_SIZE=WxH                      (content size, e.g. 560x480 for the minimum; default 620x520)
 //   PREVIEW_GO=<step>@<seconds>           go to another step at that moment (inside withAnimation,
@@ -113,6 +120,16 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot = fake.auto()
             state.wakeGate = .listening
             state.wakeHeard = "so anyway hey jarhead"
+            state.wakePassphraseSet = true
+        case "local-ready":
+            state.snapshot = fake.localReady()
+            state.wakeGate = .listening
+            state.wakeHeard = "so anyway hey jarhead"
+            state.wakePassphraseSet = true
+        case "local-no-server":
+            state.snapshot = fake.localNoServer()
+            state.wakeGate = .listening
+            state.wakeHeard = ""
             state.wakePassphraseSet = true
         default:
             state.snapshot = fake.ready()
@@ -308,17 +325,22 @@ struct OnboardingFakeData {
                  permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .denied),
                  problems: [], brainReady: true, handsReady: false,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · claude-opus-5 · logged in as kevin", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)), marks: [], threads: [])
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                                    local: noServer(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave")),
+                 marks: [], threads: [])
     }
 
-    /// Brain "auto", resolved by the engine to Claude Code; no explicit model.
+    /// Brain "auto", resolved by the engine to Claude Code; no explicit model. Ollama is up with
+    /// fitting models, so the Brain step's nudge under Automatic shows — `auto` still never picks it.
     func auto() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
                  settings: settings(brain: .auto, model: "", onboarded: true, wake: .standard),
                  permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
                  problems: [], brainReady: true, handsReady: true,
                  setup: SetupStatus(openaiKey: .ok, brain: .ok, brainDetail: "Claude Agent SDK · logged in as kevin", brainResolved: .claudeCode, liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false)), marks: [], threads: [])
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                                    local: ollamaUp(), dataPaths: cloudPaths(brain: "claude-opus-5 — Anthropic (your Claude Code login); screenshots and tool results leave")),
+                 marks: [], threads: [])
     }
 
     func fresh() -> Snapshot {
@@ -327,9 +349,13 @@ struct OnboardingFakeData {
                  permissions: permissions(microphone: .unknown, screenRecording: .denied, accessibility: .denied),
                  problems: [], brainReady: false, handsReady: false,
                  setup: SetupStatus(openaiKey: .missing, brain: .unavailable, brainDetail: "claude: not logged in — run `claude` once in a terminal", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: false, anthropic: false, brainApiKey: false)), marks: [], threads: [])
+                                    secrets: SetupStatus.Secrets(openai: false, anthropic: false, brainApiKey: false),
+                                    local: .none, dataPaths: []),
+                 marks: [], threads: [])
     }
 
+    /// The compatible kind's failure case: a dead 11434 behind an OpenAI-compatible pick (for Ollama
+    /// on this Mac the wizard now says to pick Local model; this stays the compatible server's own break).
     func broken() -> Snapshot {
         Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
                  settings: settings(brain: .openaiCompatible, model: "qwen3:32b", baseUrl: "http://localhost:11434", onboarded: true,
@@ -337,6 +363,89 @@ struct OnboardingFakeData {
                  permissions: permissions(microphone: .denied, screenRecording: .granted, accessibility: .denied),
                  problems: [Problem(kind: "voice.connection", text: "could not reach api.openai.com: fetch failed", remedy: nil, since: ago(30))], brainReady: false, handsReady: false,
                  setup: SetupStatus(openaiKey: .invalid, brain: .unavailable, brainDetail: "connect ECONNREFUSED 127.0.0.1:11434", liveModel: "gpt-live-1",
-                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: true)), marks: [], threads: [])
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: true),
+                                    local: noServer(), dataPaths: cloudPaths(brain: "qwen3:32b — an OpenAI-compatible server at localhost:11434; screenshots and tool results leave")),
+                 marks: [], threads: [])
+    }
+
+    // MARK: the Local brain (SetupStatus.local / dataPaths as the engine's discovery would send them)
+
+    /// This Mac's memory as the engine reports it (128 GiB).
+    static let ram: Double = 137_438_953_472
+
+    /// Ollama 0.34.0 up with six models: four tool-capable that fit (one tight), one too big, one
+    /// without tools; embeddinggemma pulled for memory. The engine's best fit is qwen3.5:27b.
+    func ollamaUp() -> LocalServerStatus {
+        LocalServerStatus(reachable: true, flavor: .ollama, version: "0.34.0", baseUrl: "http://127.0.0.1:11434", models: [
+            LocalModel(id: "qwen3.5:27b", capabilities: ["completion", "tools", "vision", "thinking"], sizeBytes: 17.0e9, contextLength: 262_144, family: "qwen3", parameterSize: "27B", modifiedAt: ago(2 * 3600), fit: .good, loaded: true, cloud: false),
+            LocalModel(id: "qwen3.5:9b", capabilities: ["completion", "tools", "thinking"], sizeBytes: 6.6e9, contextLength: 262_144, family: "qwen3", parameterSize: "9B", modifiedAt: ago(5 * 86_400), fit: .good, loaded: false, cloud: false),
+            LocalModel(id: "gpt-oss:120b", capabilities: ["completion", "tools", "thinking"], sizeBytes: 65.0e9, contextLength: 131_072, family: "gptoss", parameterSize: "120B", modifiedAt: ago(9 * 86_400), fit: .tight, loaded: false, cloud: false),
+            LocalModel(id: "llama3.3:70b", capabilities: ["completion", "tools"], sizeBytes: 43.0e9, contextLength: 131_072, family: "llama", parameterSize: "70B", modifiedAt: ago(12 * 86_400), fit: .good, loaded: false, cloud: false),
+            LocalModel(id: "deepseek-v3.1:671b", capabilities: ["completion", "tools"], sizeBytes: 404.0e9, contextLength: 163_840, family: "deepseek2", parameterSize: "671B", modifiedAt: ago(20 * 86_400), fit: .no, loaded: false, cloud: false),
+            LocalModel(id: "gemma4:31b", capabilities: ["completion", "vision"], sizeBytes: 19.0e9, contextLength: 131_072, family: "gemma4", parameterSize: "31B", modifiedAt: ago(3 * 86_400), fit: .good, loaded: false, cloud: false),
+        ], picked: "qwen3.5:27b", embedModel: "embeddinggemma", suggested: nil, ramBytes: Self.ram, checkedAt: now)
+    }
+
+    /// Nothing answered on 11434, 1234 or 8080; the engine still names this Mac's memory.
+    func noServer() -> LocalServerStatus {
+        var s = LocalServerStatus.none
+        s.ramBytes = Self.ram
+        s.checkedAt = now
+        return s
+    }
+
+    /// The four rows with the brain and memory in the cloud (a Codex / Claude / OpenAI brain).
+    func cloudPaths(brain: String) -> [DataPath] {
+        [
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "brain", where: "cloud", detail: brain),
+            DataPath(what: "memory", where: "cloud", detail: "text-embedding-3-small + a mini model — item text and closed conversations leave"),
+            DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
+        ]
+    }
+
+    /// The four rows under the Local brain: only the voice and the web leave.
+    func localPaths() -> [DataPath] {
+        [
+            DataPath(what: "voice", where: "cloud", detail: "OpenAI gpt-live-1 — every word heard and said; billed per second of open session"),
+            DataPath(what: "brain", where: "mac", detail: "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"),
+            DataPath(what: "memory", where: "mac", detail: "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"),
+            DataPath(what: "web", where: "cloud", detail: "the sites you ask for (web_fetch, web_search)"),
+        ]
+    }
+
+    /// Backend → Local model with Ollama up: the engine picked qwen3.5:27b (brainModel stays ""),
+    /// the Status line says so, memory runs on the Mac.
+    func localReady() -> Snapshot {
+        Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
+                 settings: settings(brain: .local, model: "", onboarded: true, wake: .standard),
+                 permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
+                 problems: [], brainReady: true, handsReady: true,
+                 setup: SetupStatus(openaiKey: .ok, brain: .ok,
+                                    brainDetail: "Local · qwen3.5:27b on Ollama 0.34.0 · 64k ctx · vision · thinking low · 58 tools · best fit (pick another in Settings)",
+                                    brainResolved: .local, liveModel: "gpt-live-1",
+                                    secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                                    local: ollamaUp(), dataPaths: localPaths()),
+                 marks: [], threads: [])
+    }
+
+    /// Local model picked, nothing answers: the loud fallback — the brain's work goes to OpenAI,
+    /// memory stays on the Mac by keywords — and the amber `brain.local` row.
+    func localNoServer() -> Snapshot {
+        let problem = Problem(kind: "brain.local",
+                              text: "No local server answers at 127.0.0.1:11434, :1234 or :8080. Open Ollama (or pin a root under Server); the brain's work goes to OpenAI until then, memory stays local.",
+                              remedy: ProblemRemedy(label: "Retry", command: ["type": .string("problem.retry"), "kind": .string("brain.local")], open: nil), since: ago(45))
+        var paths = cloudPaths(brain: "gpt-5.6-terra — OpenAI (the voice key), while the local server is down; screenshots and tool results leave")
+        paths[2] = DataPath(what: "memory", where: "mac", detail: "keywords · rules — nothing leaves")
+        return Snapshot(phase: .asleep, session: nil, transcript: [], delegations: [], agents: agents(), connectors: connectors(codexOk: true),
+                        settings: settings(brain: .local, model: "", onboarded: true, wake: .standard),
+                        permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
+                        problems: [problem], brainReady: true, handsReady: true,
+                        setup: SetupStatus(openaiKey: .ok, brain: .ok,
+                                           brainDetail: "Local · nothing answers at 127.0.0.1:11434, :1234, :8080 → OpenAI gpt-5.6-terra until it does",
+                                           brainResolved: .openaiResponses, liveModel: "gpt-live-1",
+                                           secrets: SetupStatus.Secrets(openai: true, anthropic: false, brainApiKey: false),
+                                           local: noServer(), dataPaths: paths),
+                        marks: [], threads: [])
     }
 }

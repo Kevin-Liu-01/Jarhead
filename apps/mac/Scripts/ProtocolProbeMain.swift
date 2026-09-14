@@ -13,8 +13,11 @@ import Foundation
 // packages/protocol's shapes — the probe is what keeps the fixture faithful to the contract):
 //   - the whole capture decodes: Settings with every required field present (`threads`, the
 //     language / accent / memory / observe / typedWakes / threadOverflow / warmThreads knobs),
-//     `permissions.all` row for row, `problems` typed (kind, text, remedy), `setup`, `marks`
-//     and `threads` present in every snapshot;
+//     `permissions.all` row for row, `problems` typed (kind, text, remedy — and `remedy.copy`,
+//     the command a row offers to copy), `setup` with its required `local` (the local model
+//     server's discovery) and `dataPaths` (the four "where words go" rows), `marks` and
+//     `threads` present in every snapshot; `BrainKind` "local" decodes and an unknown kind
+//     falls to `auto`; `mark.remove` / `mark.window` encode and a window mark's `source` decodes;
 //   - `DelegationStep.thread` (the [Name] tag) survives on snapshot steps and `delegation.step`
 //     rows; `sleep` ledger rows keep their columns (cause, phrase, sessionId, farewell);
 //   - the commands the app sends encode as the daemon's isEngineCommand expects:
@@ -117,6 +120,29 @@ struct Probe {
         check(say["type"] as? String == "thread.say" && say["threadId"] as? String == "t_b02d" && say["text"] as? String == "skip this song", "threadSay → \(compact(say))")
         let eight = Set([open, close, history, tstop, pause, resume, answer, say].compactMap { $0["type"] as? String })
         check(eight == ["thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say"], "exactly eight thread.* command types")
+
+        // The notch panel's two mark commands, as ENGINE_COMMAND_TYPES spells them.
+        let remove = EngineCommand.markRemove(id: "m_9a1c").json
+        check(remove["type"] as? String == "mark.remove" && remove["id"] as? String == "m_9a1c", "markRemove → \(compact(remove))")
+        let window = EngineCommand.markWindow.json
+        check(window["type"] as? String == "mark.window" && window.count == 1, "markWindow → \(compact(window))")
+
+        // The brain kinds: "local" is the seventh and decodes to .local; a kind this app does not
+        // know decodes to .auto, never a crash (a newer daemon's kind).
+        print("brain kinds:")
+        func kind(_ raw: String) -> BrainKind? { try? jarheadJSONDecoder.decode(BrainKind.self, from: Data("\"\(raw)\"".utf8)) }
+        check(kind("local") == .local && BrainKind(rawValue: "local") == .local && BrainKind.local.secretKey == nil,
+              "BrainKind local decodes → .local · label \"\(BrainKind.local.label)\" · shortLabel \"\(BrainKind.local.shortLabel)\" · no secret")
+        check(kind("zzz-unknown") == .auto, "unknown kind → auto (\"zzz-unknown\")")
+        check(BrainKind.allCases.count == 7 && BrainKind.allCases.last == .local, "seven kinds, local last (the pickers derive from allCases)")
+
+        // A mark made from the front window (ScreenMark.source "window") decodes with its flags.
+        let markJSON = #"{"id":"m_win","rect":{"x":0,"y":0,"w":800,"h":600},"at":1789243190000,"consumed":false,"element":{"role":"window","title":"Notes","app":"Notes"},"source":"window"}"#
+        let mark = try? jarheadJSONDecoder.decode(ScreenMark.self, from: Data(markJSON.utf8))
+        check(mark?.source == "window" && mark?.isWindow == true && mark?.isPending == true, "ScreenMark.source window → isWindow, isPending (as raw)")
+        let strokeJSON = #"{"id":"m_c","rect":{"x":0,"y":0,"w":10,"h":10},"at":1,"consumed":true}"#
+        let stroke = try? jarheadJSONDecoder.decode(ScreenMark.self, from: Data(strokeJSON.utf8))
+        check(stroke != nil && stroke?.source == nil && stroke?.isWindow == false && stroke?.isPending == false, "a stroke without source decodes: not a window, not pending once consumed")
     }
 
     // MARK: - daemon → app
@@ -178,7 +204,26 @@ struct Probe {
         let problemsOk = snap.problems.count == rawProblems.count
             && zip(snap.problems, rawProblems).allSatisfy { $0.kind == $1["kind"] as? String && $0.text == $1["text"] as? String && $0.remedy?.label == ($1["remedy"] as? [String: Any])?["label"] as? String }
         check(problemsOk, "problems \(snap.problems.count)\(snap.problems.isEmpty ? "" : ": " + snap.problems.map { "\($0.kind) → \($0.remedy?.label ?? "Retry")" }.joined(separator: ", ")) (as raw)")
+        // remedy.copy, problem for problem: the command a row offers to copy, never runs.
+        let copies = snap.problems.map { $0.remedy?.copy }
+        let rawCopies = rawProblems.map { ($0["remedy"] as? [String: Any])?["copy"] as? String }
+        let copyTexts = copies.compactMap { $0 }
+        check(copies == rawCopies, "remedy.copy decoded: \(copyTexts.isEmpty ? "none on this snapshot" : copyTexts.joined(separator: ", ")) (as raw)")
         check(snap.marks.count == (raw["marks"] as? [Any])?.count, "marks \(snap.marks.count) · setup \(snap.setup.brain.rawValue) · \(snap.setup.brainResolved?.rawValue ?? "unresolved") (as raw)")
+
+        // The local server and the data paths: required members of setup (app and daemon ship
+        // together), decoded field for field against the raw block.
+        let rawSetup = raw["setup"] as? [String: Any] ?? [:]
+        let rawLocal = rawSetup["local"] as? [String: Any]
+        let local = snap.setup.local
+        let localOk = rawLocal != nil && local.reachable == rawLocal?["reachable"] as? Bool && local.baseUrl == rawLocal?["baseUrl"] as? String
+            && local.models.count == (rawLocal?["models"] as? [Any])?.count && local.ramBytes == (rawLocal?["ramBytes"] as? NSNumber)?.doubleValue
+            && local.checkedAt == (rawLocal?["checkedAt"] as? NSNumber)?.doubleValue && local.picked == rawLocal?["picked"] as? String
+        check(localOk, "setup.local decoded · reachable \(local.reachable) · \(local.models.count) models (\(local.pickable.count) pickable) · \(Int(local.ramBytes / 1_073_741_824)) GiB RAM (as raw)")
+        let rawPaths = rawSetup["dataPaths"] as? [[String: Any]] ?? []
+        let pathsOk = rawSetup["dataPaths"] != nil && snap.setup.dataPaths.count == rawPaths.count
+            && zip(snap.setup.dataPaths, rawPaths).allSatisfy { $0.what == $1["what"] as? String && $0.where == $1["where"] as? String && $0.detail == $1["detail"] as? String }
+        check(pathsOk, "setup.dataPaths \(snap.setup.dataPaths.count) rows · \(snap.setup.dataPaths.map { "\($0.what) \($0.where)" }.joined(separator: " · ")) (as raw)")
 
         // Threads: count against the raw array, every record against its raw JSON, and the
         // live / spawned splits the rail and the fleet read — a status this app does not know

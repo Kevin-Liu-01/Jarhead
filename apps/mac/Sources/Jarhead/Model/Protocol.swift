@@ -220,6 +220,7 @@ public struct MemoryItem: Codable, Identifiable, Equatable, Sendable {
 
 public struct MemorySummary: Codable, Equatable, Sendable {
     public struct LastRun: Codable, Equatable, Sendable {
+        /// responses | local | rules
         public var extractor: String
         public var added: Int
         public var updated: Int
@@ -235,8 +236,11 @@ public struct MemorySummary: Codable, Equatable, Sendable {
     public var count: Int
     public var forgotten: Int
     public var archived: Int
-    /// openai | keyword
+    /// How items are matched: openai | local | keyword.
     public var embeddings: String
+    /// "text-embedding-3-small" or the local model's id; absent for keyword matching.
+    public var embeddingModel: String?
+    public var embeddingDims: Int?
     public var pending: Int
     public var lastRunAt: Double?
     public var lastRun: LastRun?
@@ -406,12 +410,20 @@ public struct ScreenMark: Codable, Identifiable, Equatable {
     public var screenshotPath: String?
     public var consumed: Bool
     public var element: MarkElement?
+    /// How it was made. Absent or "circle": Kevin's stroke. "window": the front window captured
+    /// whole (`mark.window`); its rect is the window's frame, no snap.
+    public var source: String?
 
     public struct MarkElement: Codable, Equatable {
         public var role: String?
         public var title: String?
         public var app: String?
     }
+
+    /// A whole front window (`mark.window`), not a stroke.
+    public var isWindow: Bool { source == "window" }
+    /// Not handed to a brain yet.
+    public var isPending: Bool { !consumed }
 }
 
 public struct ConnectorHealth: Codable, Equatable {
@@ -420,6 +432,11 @@ public struct ConnectorHealth: Codable, Equatable {
     public var detail: String
 }
 
+/// Mirror of the protocol's `BrainKind`. `local` is a model on this Mac served by Ollama
+/// (127.0.0.1:11434), LM Studio (:1234) or llama.cpp (:8080), discovered by the engine or pinned
+/// by `Settings.brainBaseUrl`; explicit only — `auto` never picks it. Under `local`,
+/// `Settings.brainModel` is the server's own id ("qwen3.5:27b"), or empty for the best fit on
+/// this Mac (`setup.local.picked`).
 public enum BrainKind: String, Codable, CaseIterable {
     case auto
     case codex
@@ -427,6 +444,7 @@ public enum BrainKind: String, Codable, CaseIterable {
     case anthropicApi = "anthropic-api"
     case openaiResponses = "openai-responses"
     case openaiCompatible = "openai-compatible"
+    case local
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = BrainKind(rawValue: raw) ?? .auto
@@ -439,6 +457,15 @@ public enum BrainKind: String, Codable, CaseIterable {
         case .anthropicApi: return "Anthropic API"
         case .openaiResponses: return "OpenAI"
         case .openaiCompatible: return "OpenAI-compatible server"
+        case .local: return "Local model"
+        }
+    }
+    /// The collapsed title for the 26pt field (ConsoleMenuField.fieldTitle): "OpenAI-compatible", "Local", else label.
+    public var shortLabel: String {
+        switch self {
+        case .openaiCompatible: return "OpenAI-compatible"
+        case .local: return "Local"
+        default: return label
         }
     }
     /// One line for a picker: what it needs.
@@ -449,13 +476,14 @@ public enum BrainKind: String, Codable, CaseIterable {
         case .claudeCode: return "Your Claude Code login on this Mac. No key."
         case .anthropicApi: return "An Anthropic API key."
         case .openaiResponses: return "The OpenAI key you already use for the voice."
-        case .openaiCompatible: return "A base URL and a key: OpenRouter, Ollama, LM Studio, vLLM…"
+        case .openaiCompatible: return "A base URL and a key: OpenRouter, vLLM, a hosted server. For Ollama or LM Studio on this Mac, pick Local model."
+        case .local: return "A model on this Mac through Ollama or LM Studio. Everything but the voice stays here."
         }
     }
     /// Which secret, if any, a kind wants entered.
     public var secretKey: String? {
         switch self {
-        case .auto, .codex, .claudeCode: return nil
+        case .auto, .codex, .claudeCode, .local: return nil
         case .anthropicApi: return "ANTHROPIC_API_KEY"
         case .openaiResponses: return "OPENAI_API_KEY"
         case .openaiCompatible: return "JARHEAD_BRAIN_API_KEY"
@@ -503,8 +531,11 @@ public struct WakeSettings: Codable, Equatable {
 public struct Settings: Codable, Equatable {
     public var voice: String
     public var brain: BrainKind
+    /// Model override for the chosen backend; empty = that backend's default. Under `local`: the
+    /// server's listed id, verbatim; empty = the best fit on this Mac (`setup.local.picked`).
     public var brainModel: String
-    /// openai-compatible only: the Chat Completions server.
+    /// openai-compatible: base URL of the Chat Completions server. local: pin the server root
+    /// instead of discovering it (a second Ollama on another port, a LAN box). No trailing /v1 needed.
     public var brainBaseUrl: String?
     public var effort: String
     /// First-run onboarding finished (keys, brain, permissions, wake word).
@@ -543,6 +574,123 @@ public struct Settings: Codable, Equatable {
     public var livesInNotch: Bool { orbHome == "notch" }
 }
 
+// MARK: - Local model servers (mirror of LocalFlavor / LocalFit / LocalModel / LocalServerStatus / DataPath)
+
+/// Which local server answered. `ollama`: GET /api/version; `lmstudio`: GET /api/v0/models;
+/// `llamacpp`: GET /health. A flavour this app does not know decodes as `.unknown`.
+public enum LocalFlavor: String, Codable, Equatable {
+    case ollama, lmstudio, llamacpp, unknown
+    public init(from decoder: Decoder) throws {
+        self = LocalFlavor(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+    /// The server's name as a surface prints it ("Ollama 0.34.0").
+    public var name: String {
+        switch self {
+        case .ollama: return "Ollama"
+        case .lmstudio: return "LM Studio"
+        case .llamacpp: return "llama.cpp"
+        case .unknown: return "local server"
+        }
+    }
+}
+
+/// Weights against this Mac's memory — display data the engine computes, a rule of thumb, not a
+/// measurement: `good` ≤ 50 % of usable, `tight` ≤ 85 %, else `no`; `unknown` when the server
+/// reports no size (LM Studio, llama.cpp).
+public enum LocalFit: String, Codable, Equatable {
+    case good, tight, no, unknown
+    public init(from decoder: Decoder) throws {
+        self = LocalFit(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
+
+public struct LocalModel: Codable, Equatable, Identifiable {
+    /// Verbatim as the server lists it ("qwen3.5:27b", "qwen3.5:27b-mlx"); always sent as-is.
+    public var id: String
+    /// Mirror of LocalCapability (completion | tools | vision | thinking | embedding), kept [String]:
+    /// a capability this app does not know still decodes.
+    public var capabilities: [String]
+    /// Bytes on disk (Ollama /api/tags `size`); absent when the server does not say.
+    public var sizeBytes: Double?
+    /// Trained maximum (Ollama model_info "<arch>.context_length"; LM Studio max_context_length; llama.cpp n_ctx).
+    public var contextLength: Int?
+    public var family: String?
+    public var parameterSize: String?
+    /// Ollama `modified_at`, wall-clock ms.
+    public var modifiedAt: Double?
+    public var fit: LocalFit
+    /// Loaded in memory right now (Ollama /api/ps; LM Studio state === "loaded"; llama.cpp always).
+    public var loaded: Bool
+    /// Ollama `remote_host` set: runs on ollama.com, not this Mac. Never offered as a brain or an embedder.
+    public var cloud: Bool
+
+    public init(id: String, capabilities: [String], sizeBytes: Double? = nil, contextLength: Int? = nil, family: String? = nil,
+                parameterSize: String? = nil, modifiedAt: Double? = nil, fit: LocalFit, loaded: Bool, cloud: Bool) {
+        self.id = id; self.capabilities = capabilities; self.sizeBytes = sizeBytes; self.contextLength = contextLength
+        self.family = family; self.parameterSize = parameterSize; self.modifiedAt = modifiedAt; self.fit = fit; self.loaded = loaded; self.cloud = cloud
+    }
+
+    public var hasTools: Bool { capabilities.contains("tools") }
+    public var hasVision: Bool { capabilities.contains("vision") }
+    public var hasThinking: Bool { capabilities.contains("thinking") }
+    public var isEmbedding: Bool { capabilities.contains("embedding") }
+}
+
+/// What to suggest pulling for this Mac when nothing tool-capable is listed. Never run by Jarhead:
+/// a surface prints `command` with Copy and Kevin runs it.
+public struct LocalSuggested: Codable, Equatable {
+    public var id: String
+    public var sizeBytes: Double
+    public var command: String
+    public init(id: String, sizeBytes: Double, command: String) { self.id = id; self.sizeBytes = sizeBytes; self.command = command }
+}
+
+/// The local model server as the engine last looked (SetupStatus.local), whatever `brain` is.
+public struct LocalServerStatus: Codable, Equatable {
+    public var reachable: Bool
+    public var flavor: LocalFlavor?
+    /// Ollama /api/version; others when they say.
+    public var version: String?
+    /// The root in use (discovered or pinned), "" when none answered.
+    public var baseUrl: String
+    /// Every non-cloud model with `completion` (tools-less ones included, so the picker can grey them), best fit first.
+    public var models: [LocalModel]
+    /// The id the engine chose when `Settings.brainModel` is empty under `local`; absent when a model is picked or nothing fits.
+    public var picked: String?
+    /// The embedding model memory uses; absent = keyword matching.
+    public var embedModel: String?
+    public var suggested: LocalSuggested?
+    /// Total memory of this Mac, so a surface can say "17 GB of 128 GB".
+    public var ramBytes: Double
+    /// Wall-clock ms of the last look; 0 = never.
+    public var checkedAt: Double
+
+    public init(reachable: Bool, flavor: LocalFlavor?, version: String?, baseUrl: String, models: [LocalModel], picked: String?,
+                embedModel: String?, suggested: LocalSuggested?, ramBytes: Double, checkedAt: Double) {
+        self.reachable = reachable; self.flavor = flavor; self.version = version; self.baseUrl = baseUrl; self.models = models
+        self.picked = picked; self.embedModel = embedModel; self.suggested = suggested; self.ramBytes = ramBytes; self.checkedAt = checkedAt
+    }
+
+    /// The value before any look, and the empty value when nothing answers (the protocol's LOCAL_NONE).
+    public static let none = LocalServerStatus(reachable: false, flavor: nil, version: nil, baseUrl: "", models: [], picked: nil, embedModel: nil, suggested: nil, ramBytes: 0, checkedAt: 0)
+
+    /// Tool-capable, non-cloud, for the picker.
+    public var pickable: [LocalModel] { models.filter { $0.hasTools && !$0.cloud } }
+}
+
+/// One row of "where words go" (SetupStatus.dataPaths). The voice is always `cloud`; the brain
+/// and memory move with the settings; the web is the sites Kevin asks for.
+public struct DataPath: Codable, Equatable, Identifiable {
+    /// voice | brain | memory | web (String: a row this app does not know still decodes)
+    public var what: String
+    /// cloud | mac | lan | off
+    public var `where`: String
+    /// One mono line: "OpenAI gpt-live-1 — every word heard and said; billed per second".
+    public var detail: String
+    public init(what: String, where: String, detail: String) { self.what = what; self.where = `where`; self.detail = detail }
+    public var id: String { what }
+}
+
 /// Configuration health without secrets: key presence and the last probe.
 public struct SetupStatus: Codable, Equatable {
     public enum KeyState: String, Codable { case ok, missing, invalid, unchecked
@@ -563,8 +711,18 @@ public struct SetupStatus: Codable, Equatable {
     public var brainResolved: BrainKind?
     public var liveModel: String
     public var secrets: Secrets
+    /// The local model server, whatever `brain` is: refreshed by config.probe, restartBrain and the local heal timer.
+    public var local: LocalServerStatus
+    /// Where words go right now (the four rows voice · brain · memory · web), computed by the engine; the doctor prints the same rows.
+    public var dataPaths: [DataPath]
 
-    public static let unknown = SetupStatus(openaiKey: .unchecked, brain: .unchecked, brainDetail: "", brainResolved: nil, liveModel: "gpt-live-1", secrets: Secrets(openai: false, anthropic: false, brainApiKey: false))
+    public init(openaiKey: KeyState, brain: BrainState, brainDetail: String, brainResolved: BrainKind? = nil, liveModel: String, secrets: Secrets,
+                local: LocalServerStatus, dataPaths: [DataPath]) {
+        self.openaiKey = openaiKey; self.brain = brain; self.brainDetail = brainDetail; self.brainResolved = brainResolved
+        self.liveModel = liveModel; self.secrets = secrets; self.local = local; self.dataPaths = dataPaths
+    }
+
+    public static let unknown = SetupStatus(openaiKey: .unchecked, brain: .unchecked, brainDetail: "", brainResolved: nil, liveModel: "gpt-live-1", secrets: Secrets(openai: false, anthropic: false, brainApiKey: false), local: .none, dataPaths: [])
 }
 
 public enum Grant: String, Codable, Sendable {
@@ -691,16 +849,24 @@ public struct ProblemRemedy: Codable, Equatable {
     public var label: String
     public var command: [String: JSONValue]?
     public var open: String?
+    /// Text the surface offers to copy (a shell command Kevin runs himself: `ollama pull qwen3.5:27b`).
+    /// Never executed by any surface.
+    public var copy: String?
+    public init(label: String, command: [String: JSONValue]?, open: String?, copy: String? = nil) {
+        self.label = label; self.command = command; self.open = open; self.copy = copy
+    }
 }
 
 public struct Problem: Codable, Equatable, Identifiable {
     /// Mirror of `ProblemKind`, kept a String on purpose: a kind this app does not know
     /// (a newer daemon) decodes as itself and the Console shows it with the default glyph.
     /// Today: permission.accessibility, permission.screenRecording, permission.microphone,
-    /// permission.fullDiskAccess, permission.other, brain.unavailable, brain.probe,
+    /// permission.fullDiskAccess, permission.other, brain.unavailable, brain.probe, brain.local,
     /// voice.limit, voice.connection, voice.key, hands.helper, disk.low, dock, daemon,
     /// crash, other. `dock` is Jarhead twice in the Dock; its remedy is "Fix the Dock"
-    /// (`problem.retry {kind:"dock"}`).
+    /// (`problem.retry {kind:"dock"}`). `brain.local` is the local server or model needing
+    /// Kevin — not running, nothing pulled that can call tools, the picked id gone, a cloud tag,
+    /// a window too small: amber, with the command to run in `remedy.copy`.
     public var kind: String
     public var text: String
     public var remedy: ProblemRemedy?
@@ -796,6 +962,10 @@ public enum EngineCommand: Equatable {
     case agentHistory(agentId: String, before: String)
     /// Kevin circled a region (global points, y down) — with his stroke.
     case markAdd(rect: Rect, path: [Point2]?)
+    /// Forget one circled region (the × on a thumbnail); an unknown id changes nothing.
+    case markRemove(id: String)
+    /// Capture the frontmost window whole as a mark (the notch's Window box).
+    case markWindow
     case markClear
     /// Restart the engine process on its current code (the app respawns it).
     case daemonRestart
@@ -872,6 +1042,8 @@ public enum EngineCommand: Equatable {
             var o: [String: Any] = ["type": "mark.add", "rect": ["x": rect.x, "y": rect.y, "w": rect.w, "h": rect.h]]
             if let path { o["path"] = path.map { ["x": $0.x, "y": $0.y] } }
             return o
+        case .markRemove(let id): return ["type": "mark.remove", "id": id]
+        case .markWindow: return ["type": "mark.window"]
         case .markClear: return ["type": "mark.clear"]
         case .daemonRestart: return ["type": "daemon.restart"]
         case .pause: return ["type": "pause"]

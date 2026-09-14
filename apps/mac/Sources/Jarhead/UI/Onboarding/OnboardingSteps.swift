@@ -208,9 +208,13 @@ struct OnboardingBrainStep: View, Equatable {
         switch kind {
         case .claudeCode, .anthropicApi: return "claude-opus-5"
         case .openaiResponses: return "gpt-5.6-terra"
-        case .auto, .codex, .openaiCompatible: return ""
+        case .auto, .codex, .openaiCompatible, .local: return ""
         }
     }
+
+    /// The kinds whose Base URL / Server field is part of the pick: the compatible server needs
+    /// one, the local brain takes one as a pin (empty = discover).
+    static func takesBaseUrl(_ kind: BrainKind) -> Bool { kind == .openaiCompatible || kind == .local }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -251,7 +255,7 @@ struct OnboardingBrainStep: View, Equatable {
         guard let from = loadedFrom else { return false }
         return kind != from.kind
             || trimmed(model) != from.model
-            || (kind == .openaiCompatible && trimmed(baseUrl) != from.baseUrl)
+            || (OnboardingBrainStep.takesBaseUrl(kind) && trimmed(baseUrl) != from.baseUrl)
             || !trimmed(secret).isEmpty
     }
 
@@ -268,7 +272,7 @@ struct OnboardingBrainStep: View, Equatable {
         kind = k
         model = k == brain ? brainModel : OnboardingBrainStep.defaultModel(k)
         secret = ""
-        if k == .openaiCompatible, baseUrl.isEmpty { baseUrl = brainBaseUrl ?? "" }
+        if OnboardingBrainStep.takesBaseUrl(k), baseUrl.isEmpty { baseUrl = brainBaseUrl ?? "" }
     }
 
     /// The secret this kind takes as its own; OpenAI reuses the voice key, so none here.
@@ -288,6 +292,40 @@ struct OnboardingBrainStep: View, Equatable {
         switch kind {
         case .auto:
             loginRow("Picks a signed-in Codex or Claude Code; otherwise the OpenAI key from the Voice step.")
+            // A server with fitting models is up: say so once, under the login line. Automatic never
+            // picks it on its own — a running server is not a choice Kevin made.
+            if let nudge = LocalBrainWords.autoNudge(setup.local) {
+                OnboardingFormRow("") { OnboardingNote(nudge) }
+                    .transition(Motion.appear)
+            }
+        case .local:
+            // The server as discovery found it, the models it lists as a menu (a plain id field
+            // while nothing answers), the Server row only for a pin or when nothing was found, and
+            // the way to ollama.com — a page the app opens; it installs nothing.
+            OnboardingFormRow("") {
+                VStack(alignment: .leading, spacing: 6) {
+                    LocalStatusNote(status: setup.local)
+                    if !setup.local.reachable { openOllamaRow }
+                }
+            }
+            if setup.local.reachable {
+                OnboardingFormRow("Model") {
+                    LocalModelMenu(status: setup.local, saved: trimmed(model), pick: { model = $0 })
+                        .frame(height: onboardingRowHeight)
+                }
+            } else {
+                modelRow
+            }
+            if LocalBrainWords.serverRowShown(status: setup.local, pin: baseUrl) {
+                OnboardingFormRow("Server") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        LocalServerRow(status: setup.local, text: $baseUrl, focused: focus == .baseUrl, height: onboardingRowHeight)
+                            .focused($focus, equals: .baseUrl)
+                            .onSubmit(apply)
+                        OnboardingNote("Empty finds Ollama, LM Studio or llama.cpp on this Mac; a root pins one.")
+                    }
+                }
+            }
         case .codex:
             loginRow("Uses your ChatGPT / Codex login on this Mac. Not signed in? Run `codex` once in a terminal.")
         case .claudeCode:
@@ -318,6 +356,20 @@ struct OnboardingBrainStep: View, Equatable {
 
     private func loginRow(_ text: String) -> some View {
         OnboardingFormRow("Login") { OnboardingNote(text) }
+    }
+
+    /// Ghost "Open ollama.com": the download page in the browser. The app never installs.
+    private var openOllamaRow: some View {
+        Button {
+            actions.openURL(URL(string: "https://ollama.com/download")!)
+        } label: {
+            HStack(spacing: 4) {
+                Text("Open ollama.com")
+                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+            }
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
+        .help("ollama.com/download — install and open it yourself, then Check")
     }
 
     private func secretRow(_ label: String, placeholder: String) -> some View {
@@ -372,7 +424,7 @@ struct OnboardingBrainStep: View, Equatable {
         if kind != from.kind { patch.brain = kind; changed = true }
         if m != from.model { patch.brainModel = m; changed = true }
         var sentBaseUrl = from.baseUrl
-        if kind == .openaiCompatible, u != from.baseUrl {
+        if OnboardingBrainStep.takesBaseUrl(kind), u != from.baseUrl {
             patch.brainBaseUrl = .some(u.isEmpty ? nil : u)
             sentBaseUrl = u
             changed = true
@@ -513,6 +565,11 @@ struct OnboardingDoneStep: View, Equatable {
                 row("lock.shield.fill", "Permissions", report.permissions)
                 ConsoleHairline(weight: .row)
                 row("ear.fill", "Wake", report.wake)
+                // Where words go, once the engine has said (SetupStatus.dataPaths).
+                if let data = report.data {
+                    ConsoleHairline(weight: .row)
+                    row("arrow.up.right.square.fill", "Data", data)
+                }
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))

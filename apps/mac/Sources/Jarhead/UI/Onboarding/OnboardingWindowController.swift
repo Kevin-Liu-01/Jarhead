@@ -313,11 +313,45 @@ struct OnboardingReport: Equatable {
     var brain: Line
     var permissions: Line
     var wake: Line
+    /// Where words go (from SetupStatus.dataPaths); nil until the engine has said, and the Done
+    /// page draws no row then.
+    var data: Line?
 
     /// "Claude Code", or "Automatic → Claude Code" once `auto` has resolved.
     static func brainName(_ kind: BrainKind, resolved: BrainKind?) -> String {
         if kind == .auto, let r = resolved, r != .auto { return "Automatic → \(r.label)" }
         return kind.label
+    }
+
+    /// The Done page's data line from the engine's rows: "Voice in the cloud (OpenAI); brain and
+    /// memory on this Mac." / "Voice, brain and memory in the cloud." / "Voice in the cloud;
+    /// brain on this Mac; memory by keywords." — the phrase is per row, never a global promise.
+    static func dataLine(_ paths: [DataPath]) -> Line? {
+        guard let brain = paths.first(where: { $0.what == "brain" }),
+              let memory = paths.first(where: { $0.what == "memory" }) else { return nil }
+        let brainPhrase: String
+        switch brain.where {
+        case "mac": brainPhrase = "brain on this Mac"
+        case "lan": brainPhrase = "brain on your network"
+        default: brainPhrase = "brain in the cloud"
+        }
+        let memoryPhrase: String
+        if memory.where == "off" {
+            memoryPhrase = "memory off"
+        } else if memory.detail.hasPrefix("keywords") {
+            memoryPhrase = "memory by keywords"
+        } else if memory.where == "mac" || memory.where == "lan" {
+            memoryPhrase = "memory on this Mac"
+        } else {
+            memoryPhrase = "memory in the cloud"
+        }
+        if brainPhrase == "brain in the cloud", memoryPhrase == "memory in the cloud" {
+            return Line(mark: .neutral, text: "Voice, brain and memory in the cloud.")
+        }
+        if brainPhrase == "brain on this Mac", memoryPhrase == "memory on this Mac" {
+            return Line(mark: .neutral, text: "Voice in the cloud (OpenAI); brain and memory on this Mac.")
+        }
+        return Line(mark: .neutral, text: "Voice in the cloud; \(brainPhrase); \(memoryPhrase).")
     }
 
     /// The model id worth showing next to the brain: none when the engine's own
@@ -352,6 +386,7 @@ struct OnboardingReport: Equatable {
         case .unavailable: brain = Line(mark: .attention, text: "\(name) unavailable", detail: detail)
         case .unchecked: brain = Line(mark: .neutral, text: "\(name) not checked yet")
         }
+        data = OnboardingReport.dataLine(setup.dataPaths)
 
         // Required kinds decide the mark; the count of everything rides along as detail.
         // Speech Recognition is required only while the wake word is on.
@@ -426,6 +461,19 @@ enum OnboardingBench {
         check(accents == ["american", "british", "none"], "accents in the protocol's order: \(accents)")
         check(OnboardingVoiceStep.accentOptions(for: "british") == accents, "a known accent: the three as they are")
         check(OnboardingVoiceStep.accentOptions(for: "scottish") == accents + ["scottish"], "an unknown saved accent is appended")
+
+        // The Done page's data line, from the engine's four rows; none before they arrive.
+        func path(_ what: String, _ where: String, _ detail: String) -> DataPath { DataPath(what: what, where: `where`, detail: detail) }
+        let voice = path("voice", "cloud", "OpenAI gpt-live-1 — every word heard and said; billed per second of open session")
+        let web = path("web", "cloud", "the sites you ask for (web_fetch, web_search)")
+        let local = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"), path("memory", "mac", "embeddings embeddinggemma 768 dims · extractor qwen3.5:27b — nothing leaves"), web])
+        check(local?.text == "Voice in the cloud (OpenAI); brain and memory on this Mac.", "Done data line, local brain and memory: \(local?.text ?? "nil")")
+        let cloud = OnboardingReport.dataLine([voice, path("brain", "cloud", "gpt-5.3-codex — OpenAI via your ChatGPT login"), path("memory", "cloud", "text-embedding-3-small + a mini model — item text leaves"), web])
+        check(cloud?.text == "Voice, brain and memory in the cloud.", "Done data line, everything in the cloud: \(cloud?.text ?? "nil")")
+        let keywords = OnboardingReport.dataLine([voice, path("brain", "mac", "qwen3.5:27b on Ollama 0.34.0 — nothing leaves"), path("memory", "mac", "keywords · rules — nothing leaves"), web])
+        check(keywords?.text == "Voice in the cloud; brain on this Mac; memory by keywords.", "Done data line, memory by keywords: \(keywords?.text ?? "nil")")
+        check(OnboardingReport.dataLine([]) == nil, "no data line before the engine has said")
+        check(OnboardingBrainStep.defaultModel(.local) == "" && OnboardingBrainStep.takesBaseUrl(.local) && !OnboardingBrainStep.takesBaseUrl(.codex), "the Local kind: no default model, takes a server pin")
         return out
     }
 }
