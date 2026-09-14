@@ -230,6 +230,7 @@ enum NowWords {
     static let request = "Request"
     static let openSettings = "Open"
     static let copy = "Copy"
+    static let ask = "Ask"
     static let copyTip = "Copy the command — it runs by hand, never here"
     static func requestTip(_ label: String) -> String { "Ask for \(label.lowercased()) access" }
     static let openSettingsTip = "Open the System Settings pane"
@@ -944,23 +945,31 @@ struct ProblemsRailList: View {
 }
 
 /// One problem as a `ConsoleRow` 40 (see `ProblemsRailList`).
-private struct ProblemRailRow: View {
+struct ProblemRailRow: View {
     let problem: Problem
     let act: () -> Void
 
-    /// Copy as the row's small verb when the remedy carries a command for Kevin to run.
-    static func copyVerb(_ copy: String?) -> ConsoleRowVerb? {
-        guard let copy else { return nil }
-        return ConsoleRowVerb(title: NowWords.copy, help: NowWords.copyTip, run: { CopyChip.copy(copy) })
+    /// Copy in the trailing zone when the remedy carries a command for Kevin to run.
+    static func copyVerb(_ copy: String?) -> ConsoleRow.Trailing {
+        guard let copy else { return .none }
+        return .verb(NowWords.copy, { CopyChip.copy(copy) })
+    }
+
+    /// The remedy as one word in the row's 58 pt verb slot: `Request` → `Ask`, else the label's
+    /// first word (`Reveal shots` → `Reveal`); the meta line and the tip keep the label whole.
+    static func verbWord(_ label: String?) -> String {
+        guard let label, !label.isEmpty else { return NowWords.retry }
+        if label == NowWords.request { return NowWords.ask }
+        return String(label.split(separator: " ").first ?? Substring(label))
     }
 
     var body: some View {
         let look = ConsoleTheme.problem(problem.kind)
-        // The remedy's word takes its own width in the trailing zone ("Reveal shots" is wider than the 58 pt verb slot).
+        let label = problem.remedy?.label ?? NowWords.retry
         ConsoleRow(title: problem.text, lines: 2, icon: .symbol(look.symbol, tint: look.tint), meta: ProblemsRailList.meta(problem),
-                   trailing: .verb(problem.remedy?.label ?? NowWords.retry, act), verb: Self.copyVerb(NowPanel.problemCopy(problem)),
-                   accessibilityHint: NowWords.problem(problem.text, problem.remedy?.label ?? NowWords.retry), primary: act)
-            .consoleHelp(ProblemsRailList.remedyTip(problem))
+                   trailing: Self.copyVerb(NowPanel.problemCopy(problem)),
+                   verb: ConsoleRowVerb(title: Self.verbWord(label), help: label + NowWords.dot + ProblemsRailList.remedyTip(problem), run: act),
+                   accessibilityHint: NowWords.problem(problem.text, label), primary: act)
     }
 }
 

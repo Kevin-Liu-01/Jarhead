@@ -3359,6 +3359,7 @@ extension PreviewDelegate {
             expect("rail: problem remedy tip opens", ProblemsRailList.remedyTip(p), "Opens \(ConsoleFormat.truncPath("/Users/kevinliu/.jarhead/shots", max: 40))")
         }
         expect("rail: problem remedy tip sends", ProblemsRailList.remedyTip(problems[0]), "Sends request-permission")
+        expect("rail: problem verb word", [ProblemRailRow.verbWord("Request"), ProblemRailRow.verbWord("Reveal shots"), ProblemRailRow.verbWord(nil)].joined(separator: " "), "Ask Reveal Retry")
         // Threads: the status word first, then the figures.
         let t0: Double = 1_757_856_000_000
         let slack = fake.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0)
