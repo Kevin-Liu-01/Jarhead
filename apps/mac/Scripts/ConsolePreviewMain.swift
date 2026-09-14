@@ -134,7 +134,7 @@ import SwiftUI
 //     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
 //                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
 //     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
-//                    `[1 asks] · 1 done` as its head; two Claude Code rows open above it.
+//                    `[1 asks] · ended · 40m` as its head; two Claude Code rows open above it.
 //     rail · rail-expanded · rail-asleep · rail-agents · rail-search · rail-keys · rail-midnight
 //                  = the left rail (design10): the state ladder (bright · quiet 0.72 · back 0.48, the grey orb
 //                    for what is over), Today open, Yesterday and Older folded with figures, agents at 44 / 28
@@ -372,7 +372,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.trash = fake.trash
             state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
             // The kit's `agents-groups`: two Claude Code rows and the Codex group, one of whose sessions
-            // asks — so the folded Codex head reads `[1 asks] · 1 done` above the fold.
+            // asks — so the folded Codex head reads `[1 asks] · ended · 40m` (the badge, then the one resting item).
             if scenario == "agents-groups" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:claude:w1p2", "sessions:codex:1", FakeData.endedId, "sessions:codex:w2p2", "sessions:codex:thread-9"]
                 state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
@@ -641,7 +641,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // The Threads pass: the pins into run.log (the thread words, then the sleep words — the package has
         // no test target), then Spotify ends by an `ended` event at 1.6 s (its row settles to the checkmark
         // and drops to the finished group; the chips and the right rail follow).
-        case "threads": defaultActions = "check-threads@0.3,check-sleep@0.4,thread-end:\(FakeData.spotifyId)@1.6"
+        case "threads": defaultActions = "check-kit@0.2,check-threads@0.3,check-sleep@0.4,thread-end:\(FakeData.spotifyId)@1.6"
         case "thread-pane": defaultActions = "thread-open:\(FakeData.slackId)@0.3"
         // Allow the way the strip sends it: the `send:` line must be thread.answer, never say-text or stop.
         case "thread-answer": defaultActions = "thread-open:\(FakeData.slackId)@0.3,thread-answer:\(FakeData.slackId):yes@1.0,check-threads@1.2"
@@ -698,7 +698,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // is `codex` (Titles · Hits · the orphan day · Agents); `rail-keys` walks ↓ from the pinned row onto
         // Yesterday's head and → opens it (`rail-probe:` before and after); `rail-asleep` is `rail` with
         // PREVIEW_PHASE=asleep (the .sh sets it).
-        case "rail", "rail-asleep", "rail-midnight": defaultActions = "check-kit@0.3"
+        case "rail", "rail-asleep", "rail-midnight", "live", "light": defaultActions = "check-kit@0.3"
         case "rail-expanded": defaultActions = "check-kit@0.3,fold:rail.day.\(fake.day(fake.ago(26 * 3600 + 12 * 60))):open@0.5,fold:rail.older:open@0.7,"
             + "tipOpen:rail.chain.\(FakeData.yesterdayId)@1.2,probe-floats@1.6"
         case "rail-agents": defaultActions = "check-kit@0.3,fold:agents.claude.ended:open@0.5,fold:agents.codex:open@0.7,hidden-open@0.9,"
@@ -3505,9 +3505,10 @@ extension PreviewDelegate {
         expect("words: newest title skips the empty one", RailWords.newestTitle(yesterday) ?? "nil", "Open the PR for the landing refresh and read me the diff summ")
         expect("words: tips", RailWords.olderTip(count: 31, since: "Aug 2") + " / " + RailWords.jarheadTip(active: 7, archived: 2, trashed: 2) + " / " + RailWords.agentsTip(alive: 7, over: 6),
                "Every day before yesterday · 31 · since Aug 2 / 7 conversations · 2 archived · 2 in the Trash / 7 alive · 6 over")
-        let dayKey = ConsoleFoldStore.key(RailWords.dayId("2026-09-13"))
-        ConsoleFoldStore.set(RailWords.dayId("2026-09-13"), true)
-        expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(RailWords.dayId("2026-09-13"), default: false)) \(UserDefaults.standard.object(forKey: dayKey) == nil)", "true true")
+        // A day no rail shows (never today's or yesterday's: the memory would open a real head in the shot).
+        let dayKey = ConsoleFoldStore.key(RailWords.dayId("1999-12-31"))
+        ConsoleFoldStore.set(RailWords.dayId("1999-12-31"), true)
+        expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(RailWords.dayId("1999-12-31"), default: false)) \(UserDefaults.standard.object(forKey: dayKey) == nil)", "true true")
         let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
         let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
                         ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]
