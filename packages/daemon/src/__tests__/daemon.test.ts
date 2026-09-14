@@ -724,6 +724,62 @@ test("commands on the wire: all eight thread.* commands pass isEngineCommand and
   await server.close();
 });
 
+test("commands on the wire: mark.remove {id} and mark.window pass the allow-list and reach the engine as sent, beside mark.add and mark.clear", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  // The overlay's stroke; the notch's × on one thumbnail; the notch's Window box; the notch's Clear.
+  const sent = [
+    { type: "mark.add", rect: { x: 10, y: 20, w: 100, h: 50 }, path: [{ x: 10, y: 20 }, { x: 110, y: 70 }] },
+    { type: "mark.remove", id: "mark_pending" },
+    { type: "mark.window" },
+    { type: "mark.clear" },
+  ];
+  for (const command of sent) app.client.sendJson({ type: "command", command });
+  await until(() => engine.commands.length === sent.length, "four mark commands at the engine");
+  assert.deepEqual(engine.commands, sent, "each arrives intact: the id on mark.remove, nothing added to mark.window");
+  assert.deepEqual(app.of("error"), [], "none is refused");
+  app.client.close();
+  await server.close();
+});
+
+test("mark.remove without id is refused as malformed and never dispatched; an empty or non-string id is the same refusal", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  app.client.sendJson({ type: "command", command: { type: "mark.remove" } as never });
+  app.client.sendJson({ type: "command", command: { type: "mark.remove", id: "" } as never });
+  app.client.sendJson({ type: "command", command: { type: "mark.remove", id: 7 } as never });
+  // A well-formed one behind them still lands, so the refusals are per command, not per client.
+  app.client.sendJson({ type: "command", command: { type: "mark.remove", id: "mark_pending" } });
+  await until(() => app.of("error").length === 3 && engine.commands.length === 1, "three refusals and one dispatch");
+  assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }, { type: "error", message: "malformed command" }, { type: "error", message: "malformed command" }]);
+  assert.deepEqual(engine.commands, [{ type: "mark.remove", id: "mark_pending" }], "only the one with an id reached the engine");
+  app.client.close();
+  await server.close();
+});
+
+test("mark.delete is refused: not a verb on the wire, never dispatched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  app.client.sendJson({ type: "command", command: { type: "mark.delete", id: "mark_pending" } as never });
+  await until(() => app.of("error").length === 1, "the malformed-command error");
+  assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }]);
+  assert.deepEqual(engine.commands, [], "nothing reached the engine");
+  app.client.close();
+  await server.close();
+});
+
 // ----------------------------------------------------------------- the lifeline: bye vs. no bye
 
 /** A Lifeline with a short window and every decision recorded. */

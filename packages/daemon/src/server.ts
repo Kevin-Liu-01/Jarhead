@@ -268,6 +268,8 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         return;
       case "command": {
         if (!isEngineCommand(msg.command)) return this.send(client, { type: "error", message: "malformed command" });
+        // The × on one thumbnail names its mark; without an id there is nothing to forget, and the engine never sees it.
+        if (msg.command.type === "mark.remove" && (typeof msg.command.id !== "string" || msg.command.id === "")) return this.send(client, { type: "error", message: "malformed command" });
         let command = msg.command;
         // A conversation viewer is this client's: its pane token (or "pane" when the surface
         // sent none) under the client id, so opens are per pane, a re-open after a reconnect
