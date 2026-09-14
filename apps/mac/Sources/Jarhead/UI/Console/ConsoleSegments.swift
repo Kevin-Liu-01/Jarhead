@@ -186,7 +186,7 @@ struct ConsoleStepper: View {
         HStack(spacing: 0) {
             ConsoleStepperCell(symbol: ConsoleSegmentWords.minus, label: ConsoleSegmentWords.decrease, enabled: value > range.lowerBound) { nudge(-1) }
             Rectangle().fill(ConsoleTheme.hair).frame(width: 1)
-            ConsoleStepperValue(draft: $draft, unit: unit, focused: $focused, commit: commit, revert: revert, move: moved)
+            ConsoleStepperValue(draft: $draft, unit: unit, focused: $focused, commit: commit, revert: revert, step: nudge)
             Rectangle().fill(ConsoleTheme.hair).frame(width: 1)
             ConsoleStepperCell(symbol: ConsoleSegmentWords.plus, label: ConsoleSegmentWords.increase, enabled: value < range.upperBound) { nudge(1) }
         }
@@ -205,15 +205,14 @@ struct ConsoleStepper: View {
         .accessibilityValue("\(value) \(unit)")
     }
 
-    private func nudge(_ direction: Int) {
-        let by = NSEvent.modifierFlags.contains(.option) ? step * 10 : step
+    /// A cell's click reads ⌥ from the current event; a key press hands its own modifiers.
+    private func nudge(_ direction: Int) { nudge(direction, option: NSEvent.modifierFlags.contains(.option)) }
+
+    private func nudge(_ direction: Int, option: Bool) {
+        let by = option ? step * 10 : step
         let next = min(max(value + direction * by, range.lowerBound), range.upperBound)
         if next != value { set(next) }
         draft = String(next)
-    }
-
-    private func moved(_ direction: MoveCommandDirection) {
-        if direction == .up { nudge(1) } else if direction == .down { nudge(-1) }
     }
 
     private func commit() {
@@ -258,14 +257,17 @@ struct ConsoleStepperCell: View {
     }
 }
 
-/// The value is a field: mono 12 fg digits, the unit mono 11 titanium after them.
+/// The value is a field: mono 12 fg digits, the unit mono 11 titanium after them. ↑↓ step
+/// through `onKeyPress` — a single-line field editor swallows moveUp: / moveDown:, so
+/// `onMoveCommand` alone never stepped (ConsoleFilterField's finding); ⌥ comes from the press.
 struct ConsoleStepperValue: View {
     @Binding var draft: String
     let unit: String
     var focused: FocusState<Bool>.Binding
     let commit: () -> Void
     let revert: () -> Void
-    let move: (MoveCommandDirection) -> Void
+    /// (direction ±1, ⌥ held)
+    let step: (Int, Bool) -> Void
 
     var body: some View {
         HStack(spacing: 4) {
@@ -279,7 +281,8 @@ struct ConsoleStepperValue: View {
                 .focused(focused)
                 .onSubmit(commit)
                 .onExitCommand(perform: revert)
-                .onMoveCommand(perform: move)
+                .onKeyPress(.upArrow, phases: .down) { step(1, $0.modifiers.contains(.option)); return .handled }
+                .onKeyPress(.downArrow, phases: .down) { step(-1, $0.modifiers.contains(.option)); return .handled }
             Text(unit).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
         }
         .frame(maxWidth: .infinity)
