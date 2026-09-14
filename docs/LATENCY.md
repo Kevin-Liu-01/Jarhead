@@ -169,7 +169,7 @@ visible action inside 5 s needs the first generation to BE the action and a
 per-generation cost under ~3 s; nothing in the tool path is worth optimising for
 this goal.
 
-### BEFORE, the worktree as the builders started (`pnpm jarhead bench --brain --runs 2`, 2026-09-12 02:35 UTC)
+### 3c′. BEFORE, the worktree as the builders started (`pnpm jarhead bench --brain --runs 2`, 2026-09-12 02:35 UTC)
 
 The second BEFORE sample, taken with the harness as shipped in this change (real
 Codex, canned hands, effort medium, load average 8.9 → 11.6, warm app-server, thread
@@ -290,8 +290,9 @@ Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): fir
   with both paths and a near-zero speech end → delegation on every row — no Codex
   turn spent — and without a signed-in Codex the bench refuses before anything
   starts unless `--allow-api-spend` is passed.
-- The two copies of `ACTING_TOOLS` (`delegator.ts`, `bench-brain.ts`) are each pinned
-  to the same list by their own test (the brain's index does not export the set).
+- `ACTING_TOOLS` has one home, `packages/brain/src/timings.ts`, exported from
+  `@jarhead/brain`; the Delegator and `bench-brain.ts` import it, and the timings test
+  pins the list.
 - `packages/live/src/__tests__/transcript.test.ts`: `finalizeOpen` emits `final`
   once for each item it closes; `settle` does not emit it again.
 - `packages/engine/src/__tests__/timings.test.ts` and
@@ -426,9 +427,9 @@ built to and stay **reasoned** until a day of use is read back with `pnpm jarhea
 What the bench measured on this Mac with fake hands and the stand-in brain the day the rows
 landed (`pnpm jarhead bench --fake-hands --runs 3`, load ≈ 4): the numbers in the run log
 below this section's commit — read them as the BEFORE for SplitHands and the observer, since
-the engine wiring lands after the rows. Rows that need the threads engine (status reflex,
-targeted stop) report "not measured" until `thread_start` is admitted; the bench says so
-instead of failing.
+the engine wiring landed after the rows. The thread rows (status reflex, targeted stop) run
+against the live thread table; the bench reports "not measured" only when it could not get
+two live threads to test against, and says so instead of failing.
 
 The two honest caveats stand from §9: the brain-path-only first action cannot go under one
 generation plus ~0.65 s of hand-off (≈ 3.6–4.3 s), so the ≤ 3.0 s median target is a

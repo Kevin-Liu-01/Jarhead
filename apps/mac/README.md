@@ -58,10 +58,9 @@ Go resumes it with that context.
 | `⌥⎋` | stop — interrupt everything, close the session (the meter stops), sleep |
 | `⌥⇧Space` | go / pause — go wakes, or resumes a pause with its context; pause closes the session (the meter stops) and keeps the conversation |
 | `⌥⇧C` | circle something on screen for Jarhead |
-| `⌥⇧P` | alias of `⌥⇧Space` (go / pause) |
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
-`jarhead://stop` (`wake`, `resume`, `sleep` are aliases). While paused the mic is off
+`jarhead://stop` — the three transport verbs, nothing else. While paused the mic is off
 and the wake gate listens: the word resumes without Touch ID or the passphrase — the
 pause was authenticated when its session opened and decays to asleep on its own.
 
@@ -86,22 +85,30 @@ knows where this checkout is, signs the helper and then the app, and verifies th
 stage with `codesign --verify --strict`.
 
 **The install is in place.** The Dock's pinned tile stores a bookmark keyed on the
-bundle directory's inode; replacing the directory (`rm` + `cp -R`, what the first
-version did) gave it a new inode every build and the running app came back as a
-second, "recent" Dock tile. So the step now: refuses a target that is a symlink, a
-regular file or another user's directory (`planInstall`); on a first install copies
-the stage whole (`cp -R`); otherwise snapshots the current bundle to gitignored
-`build/previous/Jarhead.app.zip` (an archive — LaunchServices registered every directory snapshot, whatever its name) and runs `/usr/bin/rsync -rlptD -c --delay-updates
---delete-after --itemize-changes build/stage/Jarhead.app/ /Applications/Jarhead.app/`
-— each changed file is renamed over the old name, so the running app keeps the
-inodes it has mapped; never `-a`, never `-E` (openrsync's xattr emulation writes
-`._*` AppleDouble entries into the bundle), never `--inplace`. Then it verifies the
-INSTALLED copy, not the stage: `codesign --verify --strict --deep`, the designated
-requirement must carry `identifier "com.kevinliu.jarhead"` (what TCC keys the grants
-on), a sha256 walk proves the installed tree is exactly the signed stage, and the
-directory inode must be the one from before. A failure prints the rollback line and
-keeps the stage (the order and every fail path are `performInstall` in
-`@jarhead/cli/install`, pinned by a scripted test). Then the one-Jarhead pass:
+bundle directory's inode, so the installer never replaces the directory. The step
+refuses a target that is a symlink, a regular file or another user's directory
+(`planInstall`); on a first install it copies the stage whole (`cp -R`); otherwise it
+runs `/usr/bin/rsync -rlptD -c --delay-updates --delete-after --itemize-changes
+build/stage/Jarhead.app/ /Applications/Jarhead.app/` — each changed file is renamed
+over the old name, so the running app keeps the inodes it has mapped; never `-a`,
+never `-E` (openrsync's xattr emulation writes `._*` AppleDouble entries into the
+bundle), never `--inplace`. Then it verifies the INSTALLED copy, not the stage:
+`codesign --verify --strict --deep`, the designated requirement must carry
+`identifier "com.kevinliu.jarhead"` (what TCC keys the grants on), a sha256 walk
+proves the installed tree is exactly the signed stage, and the directory inode must
+be the one from before. A failure keeps the stage (the order and every fail path are
+`performInstall` in `@jarhead/cli/install`, pinned by a scripted test).
+
+**The rollback is git.** The install keeps no copy of the previous bundle by default:
+`git checkout <previous> && pnpm build:mac` rebuilds and reinstalls it, in place, inode
+kept. `JARHEAD_INSTALL_SNAPSHOT=1 pnpm build:mac` opts into a snapshot: before the
+rsync the installed bundle is archived as `Jarhead.app.zip` under gitignored
+`build/previous/` (`ditto -c -k` — an archive, never a directory: LaunchServices
+registers any directory holding an `Info.plist` as a bundle, a second Jarhead) and the
+build prints the rollback line, `ditto -x -k <the zip> /tmp/jarhead-rollback && rsync
+-rlptD -c --delete-after /tmp/jarhead-rollback/Jarhead.app/ /Applications/Jarhead.app/`.
+
+Then the one-Jarhead pass:
 `lsregister -f` on the installed bundle, stale Jarhead records (a Trash copy, a
 worktree's probe bundle, an old stage path — never a symlink that resolves to the
 installed bundle) unregistered from the LaunchServices database — no file, the Trash
@@ -125,10 +132,8 @@ Apple-issued identities get `--timestamp`. `pnpm run doctor` shows which identit
 the built bundle carries and warns when it is ad-hoc.
 
 The engine runs from the checkout through tsx, so changing Jarhead's behaviour is
-editing this checkout (or, once v2 is committed, pulling it); changes under
-`apps/mac` or `packages/hands/native` need a repackage. This app is the only face:
-the Electron shell it replaced was retired on 2026-09-10 to
-git history (before `1ff11e2`) and is not built.
+editing this checkout (or pulling it); changes under `apps/mac` or
+`packages/hands/native` need a repackage. This app is the only face.
 
 ## Setup (`Sources/Jarhead/UI/Onboarding`)
 
@@ -232,7 +237,7 @@ holds the published list and the sweep progress for the Setup step and the statu
 prints the readers' answers for the shell's own process and a dry-run sweep — never a
 prompt. Preview: `Scripts/onboarding-preview.sh permissions`
 (`PREVIEW_SWEEP=asking|waiting|settings|folders|done`; `all` also shoots the step at
-620x1500 as `preview-onboarding-permissions-all.png`, every row in one picture).
+620x1500, every row in one picture — the README's copy is `docs/media/onboarding-permissions.png`).
 
 The launch path still asks for the microphone first (`refreshMicrophoneGrant`), re-checks
 it on every activation, and answers the Console's microphone "Request" in-process; the
@@ -258,9 +263,9 @@ signature), and switch the new row on.
 has no reminders key). Screen recording, accessibility, input monitoring, speech, full
 disk access, notifications, local network and the folders are TCC-only and need no
 entitlement. `Info.plist` carries a usage string for every prompt the app fires
-(microphone, speech, Apple events, camera, contacts, calendars and reminders — full
-access and legacy keys — local network with `NSBonjourServices`, the three folders,
-network and removable volumes). No hardened-runtime exceptions: spawning node and the
+(microphone, speech, Apple events, camera, contacts, calendars and reminders — the
+FullAccess keys — local network with `NSBonjourServices`, the three folders, network
+and removable volumes). No hardened-runtime exceptions: spawning node and the
 helper is unaffected by the hardened runtime, which governs only what loads into the
 app's own process; the helper is signed without entitlements and still reads
 accessibility and screen recording, which are TCC checks on the responsible process.
@@ -297,9 +302,9 @@ transcript for any of `settings.wake.phrases` on word boundaries. When it hears 
    `passphrase` — a phrase Kevin says or types; `either` — both at once, first
    one wins; `none` — no check (doctor warns). With nothing to check against the
    gate stays shut and says so.
-2. On success it sends `wake` and the Live session opens. The gate guards the
+2. On success it sends `go` and the Live session opens. The gate guards the
    hands-free path only: a deliberate Orb tap, the hotkey, the menu-bar item or
-   `pnpm jarhead cmd wake` open the session directly. Three wrong answers lock the
+   `pnpm jarhead cmd go` open the session directly. Three wrong answers lock the
    gate for a minute. No answer for 15 s → "Never mind."
 3. Once the engine is awake the voice `AudioEngine` owns the microphone and the
    listener stops; when the session ends (sleep, idle) the gate listens again.
@@ -328,24 +333,61 @@ type 3  speaker PCM16 mono 24 kHz, daemon → app
 max frame 16 MiB
 ```
 
-Daemon → app JSON: `hello {version,pid,stateDir}`, `snapshot {snapshot}`,
-`levels {levels}`, `toast {text,tone}`, `overlay {command}`, `audio {control:"flush"}`
-(sent whenever the engine emits `speaker-flush`: Stop, a spoken "stop"/"cancel"
-that cancels a delegation, or sleep — the app drops its queued speaker audio),
-`ledger.rows {id,rows}`, `ledger.days {id,days}`, `error {message}`.
+Every JSON message, both directions (`DaemonMessage` / `ClientMessage` in `wire.ts`):
 
-`set-settings` patches follow `SettingsPatch` in `packages/protocol`: `null` clears
-an optional field, so "system default microphone" is `{ micDeviceId: null }`.
+Daemon → app:
 
-App → daemon JSON: `hello {pid,version,audio:true}` (first; `audio:true` subscribes
-to speaker frames, `pid` excludes the app's windows from screenshots),
-`command {command:<EngineCommand>}`, `mic-level {level}`,
-`permission {which,state,detail?}` (one kind as the app read it), `permissions {all}`
-(every `PermissionInfo` after a read that changed something), `ledger.read {id,date}`,
-`ledger.days {id}`.
+- `hello {version,pid,stateDir}` — first, then the first `snapshot`.
+- `snapshot {snapshot}` — the whole `Snapshot` (settings, permissions `{all}`, typed
+  `problems`, `threads`, agents, marks…); coalesced to ≤ 30/s before it reaches `AppState`.
+- `levels {levels}`, `toast {text,tone}`, `overlay {command}`.
+- `audio {control:"flush"}` — sent whenever the engine emits `speaker-flush` (Stop, a
+  spoken "stop"/"cancel" that cancels a delegation, sleep); the app drops its queued
+  speaker audio.
+- `pong {id,at}` — the answer to a `ping`; two missed pongs and the app respawns the daemon.
+- `ear.hints {strings}` — words the on-device ear should be biased toward now: visible
+  control titles, the front app and window, agent names.
+- `ledger.rows {id,rows,truncated?}` — the rows of a day, a session or a chain;
+  `ledger.days {id,days}`; `ledger.sessions {id,sessions}` (Jarhead's own, newest first);
+  `ledger.hits {id,hits}` — full-text hits for the Console's search box.
+- `memory.items {id,items}` — `MemoryItem`s for `memory.list` / `memory.search`, never a vector.
+- `agent.transcript {transcript,mode}` — a page of an agent's conversation, to the
+  clients viewing that agent; `mode` is `replace`, `append` or `prepend`.
+- `thread.event {event}` — one change on one thread (a `ThreadEvent`), broadcast so the
+  orb's satellites and the Threads rail follow without a snapshot;
+  `thread.transcript {transcript,mode}` — a page of a thread's conversation, to the
+  clients that opened it.
+- `tool.result {id,result}` — the answer to a `tool.run`, to the client that asked.
+- `bye` — the daemon has read the app's `bye`; the app closes the socket only after this.
+- `error {message}`.
 
-Snapshots are coalesced to ≤ 30/s before they reach `AppState`. Ledger requests
-resolve through ids with a 5 s timeout.
+App → daemon:
+
+- `hello {pid,version?,audio?}` — first; `audio:true` subscribes to speaker frames,
+  `pid` excludes the app's windows from screenshots.
+- `command {command}` — an `EngineCommand` (`go`, `pause`, `resume`, `stop`, `interrupt`,
+  `sleep`, `set-settings`, `thread.*`, `agent.*`…). `set-settings` patches follow
+  `SettingsPatch` in `packages/protocol`: `null` clears an optional field, so "system
+  default microphone" is `{ micDeviceId: null }`.
+- `mic-level {level}`.
+- `permission {which,state,detail?}` — one kind as the app read it; `permissions {all}` —
+  every `PermissionInfo` after a read that changed something.
+- `ear {text,isFinal,segment,at}` — the on-device ear's partial or final transcript while
+  awake; the engine's reflex layer acts on the unambiguous ones.
+- `ping {id}`.
+- `ledger.read {id,date}`, `ledger.days {id}`, `ledger.sessions {id}`,
+  `ledger.session {id,sessionId}`, `ledger.chain {id,rootId}` (a whole conversation,
+  oldest first; answered with `ledger.rows` + `truncated`), `ledger.search {id,query,limit?}`.
+- `memory.list {id,state?,limit?}`, `memory.search {id,query,limit?}`.
+- `tool.run {id,name,input,thread?}` — run one of Jarhead's tools through the engine's
+  `ToolRunner` (policy, ledger, screenshot archive, confirmation handshake included); the
+  MCP bridge uses it to give Codex the same tools the in-process brains have. `thread` is
+  the `t_…` id the bridge was started with as `JARHEAD_THREAD`: the daemon routes the call
+  to that thread's lane runner and refuses an id it does not know; absent, the main brain's.
+- `bye` — a clean quit is on its way; stdin closing without a recent `bye` means the app
+  crashed and the daemon lingers for the relaunch.
+
+Requests carrying an `id` resolve through it with a 5 s timeout.
 
 ## Audio
 
@@ -412,13 +454,20 @@ System Settings › Sound). Unknown ids fall back to the system default.
 ## Layout
 
 ```
-Sources/Jarhead/App          main, AppDelegate, StatusItem, Hotkeys, Menus
+Sources/Jarhead/App          main, AppDelegate, CrashGuard, StatusItem, Hotkeys, Menus
 Sources/Jarhead/Daemon       RepoLocator, DaemonProcess, Wire, EngineClient
-Sources/Jarhead/Audio        AudioEngine
+Sources/Jarhead/Audio        AudioEngine, ObjCTry (the Swift face of JHTry)
+Sources/Jarhead/Ear          EarListener, SegmentedRecognizer, EarGrammar, EarThrottle, ReflexEar — the on-device ear behind the reflexes
 Sources/Jarhead/Wake         WakeGate, WakeWordListener, LocalAuth, LocalSpeaker
 Sources/Jarhead/Permissions  PermissionsKit (readers, panes), PermissionsRequests (one awaited prompt per kind), PermissionsCenter (the list, the sweep, the dry run)
 Sources/Jarhead/Model        Protocol.swift, AppState.swift (the contract; do not edit casually)
-Sources/Jarhead/UI           Orb, Overlay, Console, Onboarding
-Resources                    Info.plist, entitlements.plist, preview-*.png (harness screenshots)
-Scripts                      orb-preview.sh, console-preview.sh (scenarios incl. `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, permissions-probe.sh (read-only readers + dry-run sweep), *PreviewMain.swift (+ mock/ fixtures the previews resolve)
+Sources/Jarhead/UI           Dither, Motion; Orb (BlobField, BlobPhysics, BlobFleet + SatelliteBlob — one blob per thread, NotchPanel, NotchInk, OrbTrace), Overlay, Console, Onboarding
+Sources/JarheadObjC          JHTry: the @try/@catch shim AVFoundation calls run inside
+Resources                    Info.plist, entitlements.plist, preview-icon-sizes.png (the icon contact strip; the harnesses' other preview-*.png are gitignored)
+Scripts                      orb-preview.sh, console-preview.sh (scenarios incl. `threads`, `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, protocol-probe.sh (the Swift mirror against fixtures/snapshot-threads.json), permissions-probe.sh (read-only readers + dry-run sweep), appstate-bench.sh, *PreviewMain.swift / *ProbeMain.swift / AppStateBenchMain.swift; fixtures/ holds the probe fixture and the one fake screenshot the previews resolve
 ```
+
+`Scripts/appstate-bench.sh` runs the model's acceptance checks (apps/mac has no XCTest
+target): `AppStateBench` and `OnboardingBench`, behind `#if DEBUG`, drive `AppState` over
+fixed snapshots and fail on a wrong derived value, so a Protocol.swift change is proven
+there before it reaches the app.

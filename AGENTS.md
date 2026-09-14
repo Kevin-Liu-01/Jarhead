@@ -1,7 +1,8 @@
 # jarhead — agent index
 
-Voice-first computer-use assistant for Kevin's Mac. v2 (2026-09-10) rebuilt on
-GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not built or tested.
+Voice-first computer-use assistant for Kevin's Mac, built on GPT-Live-1
+delegation: the voice owns the conversation, a brain of Kevin's choosing owns what
+happens, a Swift helper owns the Mac.
 
 ## Boot
 
@@ -27,13 +28,14 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
   `packages/daemon/src/wire.ts`. Change the TS first, then the mirror.
 - No new npm dependencies without a reason in the PR description. No build
   step for the engine: TypeScript runs through tsx; the app is `swift build`.
-- Never commit keys. `~/.jarhead/env` and `.env.local` are the only homes. The
-  app writes the former through `config.set-secrets` (Setup / Console) and only
-  ever reads back presence and probe results (`snapshot.setup`), never a value.
+- Never commit keys. `~/.jarhead/env` is the only home; the daemon loads no
+  `.env` file from the checkout. The app writes it through `config.set-secrets`
+  (Setup / Console) and only ever reads back presence and probe results
+  (`snapshot.setup`), never a value.
 - **Agents link to anything, not to one tool.** The `sessions` connector finds
   the agent sessions on this Mac (Claude Code, Codex, other CLIs on disk or
   running); `claude-code` continues one. Do not add a connector for a specific
-  product; the herdr and T3 Code ones were retired for that reason.
+  product.
 - **Agent statuses are lease-bounded, and `ended` is a word.** `AgentStatus` =
   `working` (a live owner process, a turn-bearing write within 30 s, no closing
   marker) · `idle` (a live owner otherwise) · `blocked` (an open permission
@@ -48,9 +50,10 @@ GPT-Live-1 delegation. v1 lives in git history (before `1ff11e2`) and is not bui
   `AGENT_STATUSES satisfies Record<AgentStatus, 0>` pin), the Sessions rail. A
   tool call with no result when its session ended reads `interrupted`, no pulse.
   `send()` to an `ended` Codex session still resumes it.
-- **Retire, do not delete.** Superseded code moves under git history (before `1ff11e2`)
-  (`shell-electron-v2`, `connectors-v2`, `vendor-docs`, v1 `packages/`); nothing
-  there is built, typechecked or tested.
+- **Delete; history is git.** Superseded code is removed outright — no alias
+  shims, no deprecated fields, no fixtures of retired shapes. The one compatibility
+  kept: ledger day files from before 2026-09-13 hold `worker` rows, `step.worker` and
+  session rows without `language`; every reader skips them.
 - **Gated by policy, not by absence.** The brain can read, write, run, fetch and
   script anything on this Mac; `packages/core/src/policy.ts` decides per call
   (`classifyAction` / `classifyPath` / `classifyAppleScript` / `classifyUrl`):
@@ -113,13 +116,13 @@ pnpm run doctor · pnpm run typecheck · pnpm test · pnpm run check
 pnpm build:mac                # builds, signs, installs /Applications/Jarhead.app IN PLACE (rsync; the bundle directory and its inode never change); build/Jarhead.app is a symlink to it. JARHEAD_INSTALL_HYGIENE=0 skips the Dock/LaunchServices audit, =fix also repairs the Dock
 pnpm jarhead dock [--fix]     # one Jarhead: Dock tiles + LaunchServices records for /Applications/Jarhead.app, read-only; --fix drops recent tiles, rebuilds the pin, unregisters stale bundle paths, restarts the Dock only on a change
 pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps it quiet
-pnpm jarhead status | say "…" | probe "…" | agents | cmd wake|sleep [cause]|mute|unmute|stop|pause|resume|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>|worker.stop <id>
+pnpm jarhead status | say "…" | probe "…" | agents | hands | live | doctor | cmd go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop|thread.pause|thread.resume   # thread.* take <id|name>
 pnpm jarhead ledger --speed [--days N] | reflex-miss [--days N]   # where the time went (acting→screenshot share, now: lines, round trips by class, generation gaps); the short commands the grammar missed
 pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] | search "…" | forget <id> | restore <id> | add "…" [--kind k] | run   # over the daemon; forget is a state, nothing is deleted
 pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path (+ read during a type, acting call incl. observation, status reflex, targeted stop); exit 1 when p95 to dispatch > 250 ms with the real helper
 pnpm jarhead bench --brain [--runs N] [--effort low] [--observe off] [--compare F] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
-apps/mac/Scripts/console-preview.sh [scenario] [out.png]   # Console with fake data (fixtures in apps/mac/Scripts/mock)
+apps/mac/Scripts/console-preview.sh [scenario] [out.png]   # Console with fake data (fixtures in apps/mac/Scripts/fixtures)
 apps/mac/Scripts/onboarding-preview.sh [step] [out.png]    # Setup window with fake data (welcome … done)
 scripts/make-readme-shots.sh [--only console|orb|onboarding] [--skip-build] [--audit]   # every README screenshot into docs/media, then an audit of README.md's image links
 pnpm build:banner · pnpm build:media   # docs/media/banner.png (the README hero, 2560×800 so one 8 px cell is 4 CSS px); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
@@ -157,9 +160,9 @@ to his microphone and bills per second.
   a channel map produces silence. `apps/mac/.../Audio/AudioEngine.swift` tries
   the wirings in order and logs "mic diag" every 5 s.
 - Every test launch of Jarhead.app or `jarheadd` must carry `JARHEAD_AUTO_WAKE=0`
-  unless a voice session is the point; `pnpm jarhead cmd wake|sleep` toggles it.
+  unless a voice session is the point; `pnpm jarhead cmd go|sleep` toggles it.
   With the wake word gate enabled (the default) the daemon never auto-wakes: the
-  app sends `wake` only after Kevin says the word and authenticates.
+  app sends `go` only after Kevin says the word and authenticates.
 - `SFSpeechRecognizer` on-device needs the English dictation model present
   (System Settings › Keyboard › Dictation); tasks end after ~1 min, so a
   continuous listener rolls requests every 50 s and treats each roll as a new
@@ -287,8 +290,11 @@ to his microphone and bills per second.
   "click Send, then ⌘Q" in one turn and the question must reach Kevin first.
 - In tests, two transcript fragments less than `GAP_MS` (1400 ms) apart in
   session time merge into one utterance, and a `FakeLive.nowMs` that never moves
-  pins `lastDelegationEndMs`, so the next request repeats old words. Space
-  utterances and advance `nowMs` per delegation.
+  pins `lastDelegationEndMs`, so the next request repeats old words (the
+  stop-aftermath test's second request once carried the first utterance's words
+  and looked like an engine bug). Space utterances and advance `nowMs` per
+  delegation — `delegate()` / `nextUtterance()` from
+  `packages/engine/src/__tests__/world.ts` do both.
 - A test that asserts *before* it cancels its pending helper requests leaves
   their 8 s timers alive; node:test then reports the late timeouts as
   "asynchronous activity after the test ended" — the symptom of the early
@@ -348,10 +354,6 @@ to his microphone and bills per second.
   "Executing JavaScript through AppleScript is turned off" — map it to
   `permission_denied` with the menu path, and remember it per app for a minute so
   Kevin flipping the item is noticed.
-- A `FakeLive.nowMs` that never moves pins `lastDelegationEndMs` (again): the
-  stop-aftermath test's second request carried the first utterance's words and
-  looked like an engine bug. Use `delegate()` / `nextUtterance()` from
-  `packages/engine/src/__tests__/world.ts`.
 - `assert.deepEqual(x, [])` narrows `x` to `never[]` under `@types/node`'s
   assertion signature; `x.map(r => r.label)` afterwards fails to typecheck. Use
   `assert.equal(x.length, 0)`.
@@ -503,15 +505,6 @@ to his microphone and bills per second.
   their half-edited files fail to compile in yours. `Scripts/orb-preview.sh
   --build-only` compiles exactly Model + UI + UI/Orb + UI/Overlay and is the compile
   check for those files while the package build is red on someone else's.
-- Rules that came out of this pass (the other builders' learnings are forwarded by
-  the integrator): **levels are untrusted numbers** (clamp at the source, `isFinite`
-  before `min`/`max`/`Int`); **AVFoundation throws ObjC exceptions** Swift cannot
-  catch (`JHTry` around every tap, connect, reset, prepare, format read);
-  **tombstones, not deletes** (a conversation's state is the last row for its
-  chain in an append-only file; day files move by `rename(2)`, nothing is ever
-  unlinked); **grants never for destructive verbs** (a remembered yes is scoped to
-  a conversation, an app, an action class and a deadline, and send / pay / delete /
-  post / purchase stay spoken-yes-once).
 - Cleanup never deletes: conversations get tombstone rows (`conversation.*`) in
   TODAY's ledger file, the bytes stay where they were written, whole day files
   MOVE to `~/.jarhead/trash` by rename(2) (`ledger.moved`), and every Console
@@ -537,26 +530,21 @@ to his microphone and bills per second.
   Date.now while later ones used the injected clock — pass clocks lazily.
 - The hands helper is serial, so a cancel line queues behind the op it means to
   stop; the out-of-band stop is a signal whose default action is ignore (SIGURG).
-- **The Dock's pinned tile is a bookmark keyed on the bundle directory's inode.**
-  `rm -rf /Applications/Jarhead.app && cp -R` gave the directory a new inode every
-  build; the pin's `book` blob stopped resolving and the running app came back as a
-  second, "recent" tile. `pnpm build:mac` now rsyncs INTO the existing directory
-  (`-rlptD -c --delay-updates --delete-after --itemize-changes`, each changed file
-  renamed in, so the running app keeps its mapped inodes), verifies the INSTALLED
-  copy (`codesign --verify --strict --deep`, the designated requirement's
-  `identifier "com.kevinliu.jarhead"`, a sha256 parity walk against the stage, the
-  directory inode unchanged), snapshots the last good bundle to gitignored
-  `build/previous/Jarhead.app.zip` (never a name ending in `.app` — see the
-  learnings below), refreshes LaunchServices (`lsregister -f`) and unregisters stale
-  Jarhead bundle paths (the database only — the Trash's contents are never touched),
-  then only READS the Dock. The Dock repair (`defaults export` → drop Jarhead's
-  recent tiles, keep one pin stripped to bundle-identifier / file-data / file-label /
-  file-type → `defaults import` behind a `mod-count` race check → `killall Dock` only
-  when something was written) is `pnpm jarhead dock --fix` or
-  `JARHEAD_INSTALL_HYGIENE=fix`; `=0` skips the audit. `planInstall` refuses a
-  symlink, a regular file or another uid at the target before anything is written.
-  Library: `@jarhead/cli/install` (pure functions over parsed plists and lsregister
-  dumps, one injectable `exec`; every test runs in CI without a Dock).
+- **One Jarhead, installed in place.** The Dock's pinned tile is a bookmark keyed
+  on the bundle directory's inode and TCC keys its grants on the bundle's signature,
+  so `pnpm build:mac` rsyncs INTO `/Applications/Jarhead.app` (the directory and its
+  inode never change; each changed file is renamed in so the running app keeps its
+  mapped inodes), verifies the INSTALLED copy, refreshes LaunchServices and only
+  READS the Dock (`pnpm jarhead dock --fix` repairs it). The rollback is git — `git
+  checkout <previous> && pnpm build:mac`; `JARHEAD_INSTALL_SNAPSHOT=1` opts into a
+  `Jarhead.app.zip` archive of the installed bundle under `build/previous/` and the
+  printed `ditto -x -k … && rsync …` line. The rsync flags and what each forbids
+  (never `-a`, `-E` or `--inplace`), the verify steps, the Dock repair and the
+  `planInstall` refusals are apps/mac/README.md › Package; the CI rule (assert what
+  openrsync's chatter *means*, never its shape) and the self-healing `dock` problem
+  row are docs/REDESIGN.md §14 "Learned since". Library: `@jarhead/cli/install`
+  (pure functions over parsed plists and lsregister dumps, one injectable `exec`;
+  every test runs in CI without a Dock).
 - **lsregister waits on lsd.** `lsregister -dump Bundle` is ~2 s on an idle Mac and
   66–85 s at load average 300 (a self-edit build under a running test suite); a
   20 s cap made the LaunchServices half of the one-Jarhead pass silently do nothing
@@ -564,22 +552,11 @@ to his microphone and bills per second.
   now gets 120 s (`LSREGISTER_TIMEOUT_MS`), a failed dump carries its stderr into
   the line, and a build dumps once — the `-u` exit codes are the report; only
   `dock --fix` re-dumps to prove the records went.
-- **openrsync `-E` emits AppleDouble.** `/usr/bin/rsync` is openrsync (protocol 29,
-  "2.6.9 compatible"); `-E` (xattrs) with `--delay-updates` writes `._*` entries and
-  `.~tmp~` errors into the destination, and FinderInfo/ResourceFork sideband inside
-  a bundle fails `--strict`. The signature is embedded (the Mach-O and
-  `Contents/_CodeSignature/CodeResources`), the bundle has no xattr but
-  `com.apple.provenance`, and a copy without xattrs verifies strict — so never `-E`,
-  never `-a` (owner/group rewrite), never `--inplace` (writes into the running app's
-  mapped, signed binary); `parseItemized` fails the build if a `._` entry appears.
-  `-c` (checksum) because two files of equal size in the same second were skipped by
-  the quick check once.
 - **Threads are not agents.** Agents (`agents_*`, the Console's Sessions rail) are
   Kevin's coding sessions on this Mac. Threads (`thread_start` / `thread_wait` /
-  `thread_read` / `thread_stop`; `worker_*` accepted one release as aliases;
-  `Snapshot.threads`, `THREAD_MAX_LIVE` 4 = main + 3, depth 1, names ≤ 16, budgets 25
-  steps / 180 s per turn, caps 40 / 300; `Settings.workers` is still the on/off flag)
-  are independent lines of work, each with its own brain (a warm `codex app-server`
+  `thread_read` / `thread_stop`; `Snapshot.threads`, `THREAD_MAX_LIVE` 4 = main + 3,
+  depth 1, names ≤ 16, budgets 25 steps / 180 s per turn, caps 40 / 300;
+  `Settings.threads` is the on/off flag) are independent lines of work, each with its own brain (a warm `codex app-server`
   process from the `BrainPool`, `Settings.warmThreads` 2), its own conversation
   (`Delegation.threadId`; steps NEVER on the parent), lane, budget and blob: a
   **background** lane (Apple events, `browser_*`, files, shell, web; the pointer and
@@ -644,33 +621,33 @@ to his microphone and bills per second.
 - **The desk.** The engine's root `ConfirmationState` stays; every toolset — the
   main lane too — gets `desk.lane(id, name)`. A question posts to the root when the
   floor is free, otherwise it queues ("Queued behind <Floor>'s question … stop and
-  wait (worker_wait), do not retry"); `consume` is true only for the floor's lane;
+  wait (thread_wait), do not retry"); `consume` is true only for the floor's lane;
   `promote()` re-asks the next queued question on the root and SPEAKS it with its
-  worker's name. Kevin's yes is one action on the floor, never a grant to the queue;
-  `dropQuestion()` / `clear()` drop floor and queue together. A "yes" while a worker
+  thread's name. Kevin's yes is one action on the floor, never a grant to the queue;
+  `dropQuestion()` / `clear()` drop floor and queue together. A "yes" while a thread
   holds the floor is relayed to it in `onDelegation` before any supersede.
 - **The lease.** `FocusLease` is the one holder of pointer, keyboard and frontmost.
   Hand-over only at the holder's turn end, a confirm question, or 3 s of no acting
   call; a priority taker (main brain, dictation) waits `MIN_HOLD_MS` 1500 and never
-  cuts mid-op, then re-fronts its remembered app after 300 ms settle. A worker tool
-  waits at most 8 s then returns "waiting for the screen: …" (status waiting-screen);
-  three waits fail it. Kevin's hands win inside the helper, atomically before the
+  cuts mid-op, then re-fronts its remembered app after 300 ms settle. A thread's
+  tool waits at most 8 s then returns "waiting for the screen: …" (status
+  waiting-screen); three waits fail it. Kevin's hands win inside the helper, atomically before the
   first `CGEvent.post`: `busy` when his own key/click/scroll was within 1500 ms
   (`secondsSinceLastEventType`, own posts excluded), `focus_moved` when the
   frontmost pid is not the `expectFront` one. STALE_FOCUS: a front app no lane
   activated means Kevin switched — nothing is ever pulled back in front of him. Two
   helper processes (`HandsPool { focus, background }`, same TCC identity, both with
-  `SECRET_KEYS` stripped): screen actors use `focus`, background workers and the
+  `SECRET_KEYS` stripped): screen actors use `focus`, background threads and the
   engine's own reads use `background`.
 - **`fallAsleep(cause)` is the only closer.** `sleep()` (cause command), the idle
   tick (idle), pause decay (pause-decayed), a brain swap (brain-changed), the blob
   dropped into the notch (dock), `Engine.stop()` (shutdown) and `pressStop` (its
   `stop` row, then cause stop) all end there, idempotently: typed `sleep` row →
-  `cutEverything` (both helpers, lease, workers, confirmations) → for `farewell`
+  `cutEverything` (both helpers, lease, threads, confirmations) → for `farewell`
   only, `FAREWELL_LINE` appended when the voice has not just said "night." and a
   wait for the first output delta + 300 ms quiet, cap 1800 ms → `detachLive` +
   `closeWithDeadline(live, "sleep:<cause>")` → phase asleep → toast →
-  `workers.stopAll()`. Non-farewell causes flip the phase synchronously before the
+  `threads.stopAll()`. Non-farewell causes flip the phase synchronously before the
   first await (pressStop needs that). The orb needs nothing: asleep already
   converges on `goHomeForTransition()`.
 - **The sleep grammar is one regex with three entries.** `SLEEP` in `reflex.ts`
@@ -688,19 +665,16 @@ to his microphone and bills per second.
   exactly "night." and delegates the words unchanged (`# Sleep` in
   `instructions.ts`).
 
-## Learnings (2026-09-12, workers / sleep / dither pass)
+## Learnings (2026-09-12, threads / sleep / dither pass)
 
 - The helper's `busy` check lives in `packages/hands/native/Input.swift` because only the posting process knows the timestamp of every event it posted: own posts are subtracted per kind with 30 ms slack, `mouseMoved` is not counted, `ownDriver` (dictation) skips it, `mouse_up` skips busy but not `expectFront`. `user_idle.foreignMs` is therefore per helper process — the lease reads it from the acting helper.
 - `type` with a pre-post `expectFront` mismatch is an error `focus_moved` like a click's; a mid-text switch is a cancelled result with reason `focus_moved` and the characters landed.
-- In the lease nothing decided before an `await` stands after it (the worker gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it — only `consume` and `drop(laneId)` promote.
-- Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island, the meters and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands (four on the Console ground). Blue noise at one device pixel with seven bands read as a smooth gradient; the pattern has to be big enough to see. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:media` (= `build:icon` + `build:banner`) after any change to `scripts/dither.ts`, `icon-render.ts`, `make-icon.ts` or `make-banner.ts` (docs/media/icon.png, docs/media/icon-sizes.png, docs/media/banner.png and apps/mac/Resources/preview-icon-sizes.png are tracked; the icon must stay byte-identical across a pure refactor — `git status --porcelain docs/media apps/mac/Resources` after `pnpm build:icon`). The face (`FACE` in dither.ts, Kevin's `^ ^`) is a cell mask: one pattern from 64 to 1024, hand bitmaps at 32 and 16, pinned exactly by `scripts/__tests__/icon.test.ts`; `pnpm build:mac` rebuilds the icns whenever those scripts are newer than build/Jarhead.icns (it used to build it only when missing — the Dock showed a stale tile for days).
-- Dither everywhere (Kevin: "use the dither theme across ascii loading states, the app background and more"): `Dither.Cache` is budgeted by BYTES (48 MB, count 32 as a second cap) with a pending queue capped at 4, so a resize drag drops its stalest sizes instead of rendering every frame's. The Console ground renders at scale 1 and is magnified by nearest (the same pixels as a 2× render with 4 px cells, a quarter of the work), at sizes rounded up to 64 pt (`sizeStep`) and pinned bottom-trailing, so the key changes only across a 64 pt boundary and the whisper corner stays in the window's corner; the last image holds while the next renders. A wipe's two halves must share one curve (`Motion.wipe`: insertion and removal both `easeOut` over `base`, the removal on the inverted tiles) or the ground shows through between them. `Motion.wipe` reads `Dither.Tiles.shared.hasWipe` and falls back to a fade, so a harness must `Dither.prewarm(scale:)` first thing (ConsolePreviewMain, OnboardingPreviewMain, OrbPreviewApp do); the app must too, in `AppDelegate.applicationDidFinishLaunching` after `installDockIcon()` — `NotchInk.prewarm()` only runs when the notch dock is built, so on a Mac without a notch nothing else would. Failing both, the first wipe or meter that asks (`Tiles.ensure(scale:)`) starts the build for its scale and takes its fallback once. `Dither.Cache` records the key in flight, so many views asking for one key (every JarheadMark in the rail) render it once; `DitheredGradient` / `DitheredShadow` ignore a render landing for a key they no longer want (the queue pops newest first, so under a resize an older size can land last). `Dither.Tiles` is an ObservableObject — a static view that asked before the tiles landed (a meter) must observe it or it keeps the fallback. The onboarding harness compiles Console files, so `Scripts/onboarding-preview.sh` lists `UI/Dither.swift` beside `UI/Motion.swift`. Console harness: scenarios `loading` (the glyphs; `PREVIEW_SLOW_THUMBS=1` holds thumbnails so skeletons show) and `wipe` (mid-wipe pictures + `probe` under the mask); actions `check-dither` (the Bayer/tile/glyph/bar/rounding pins in run.log — the package has no test target), `probe-ground` (the ground's colours from the window's own pixels) `snap:<name>` (the window's own pixels written in-process at the scheduled instant — `shot:` spawns screencapture and lands 0.1–0.3 s late) and `snap-wipe:<name>` (arms `Motion.wipeMidHook`: a pane's arriving `DitherWipe` (`Motion.curtain`; a thumbnail's `Motion.wipe` never reports) fires it on its first frame at 0.4 of the ranks and the snap follows 0.25 s later, the screen lagging the evaluation by a frame or two — the only way to a reproducible mid-wipe frame, since the wipe's frames saturate the main thread and starve timers). The `wipe` scenario also stretches the wipe to 2 s (`PREVIEW_WIPE_SECONDS` → `Motion.wipeSecondsOverride`, nil in the app) so there are frames to catch. Measured (2026-09-12, -O harness, traced per frame): a pane's first masked frame costs the main thread 0.3–0.5 s (RenderBox rasterises the masked pane through CoreGraphics; the arriving Jarhead pane also lands its entries then; no such stall under Reduce Motion's fade), then frames come every 45–150 ms — longer than the real 0.24 s wipe, so at real speed a pane switch is a freeze and a cut more often than a wipe. The stream's LEAVING half never animates (its inverted `DitherWipe` is evaluated once, at identity, and the pane is dropped whole when the transaction ends; a conversation's leaving half animates and complements the arriving stream exactly, leave = 1 − arrive on every frame) — neither an explicit `.id` nor one `withAnimation` around the whole open changed that — so the conversation panes carry `.zIndex(1)`: stepping in wipes the conversation in over the stream, stepping out wipes it away over the stream arriving beneath, and both directions read. The switch itself is made in `Motion.wipeAnimation` (the root ZStack's `.animation(_, value: paneKey)` — which overrides the call site's transaction for the pane change — plus `ConsoleSession.openJarhead`, the rail's agent toggle and the harness's actions): the transaction's animation is what keeps a leaving pane alive when its own half does not animate, so a shorter spring (`Motion.gentle` / `Motion.snappy`) dropped the stream whole before the arriving cells had covered it and the ground showed through the gaps. Masking only the arriving pane halves the work but is the same z-order problem; dropping the mask once full re-creates the pane and doubles the stall. Orb harness: an `ORB_EXPAND` or `ORB_OVERLAY` run takes no `phase-*` shots (they would overwrite the collapsed blob's halo pictures with the capsule), so shoot `preview-blob-phase-*.png` with the phases command on its own. Alpha-only CGImages have no Swift initializer with the nil colour space they need, so coverage images (the shadow, the bar's edge) are premultiplied RGBA. Committed pictures: `preview-console-{live,light,empty,loading,loading-still,wipe,wipe-mid,wipe-back,skeleton,conversation,jarhead}.png`, `preview-onboarding-{welcome,done,welcome-light,brain,light}.png`, `preview-blob-{expanded,light-expanded,phase-listening,phase-thinking,phase-acting}.png`, `preview-overlay-shapes.png`. Pane, rail-tab and feed↔ledger switches are `Motion.curtain(color)`: the arriving pane renders plain (`.transition(.identity)`, no mask, no zIndex) and a `DitherCurtain` of ground-coloured inverted Bayer tiles sits over it and disappears rank by rank over `Motion.base` (7–11 ms a frame; the switch's own turn 11–68 ms where the mask cost 300–500 ms). `Motion.wipe` (the mask) stays for small things: thumbnails, marks, the ground image landing. `DitherCurtain` must not be `Animatable` (a first cut was double-interpolated); `Reveal` is the Animatable modifier the transition drives. Both hosting windows set `hosting.sizingOptions = []` (their `minSize` is set by hand; `NSHostingView.minSize` re-ran a full layout pass per switch). The `timing` console-preview scenario traces main-thread turns per switch; the residual 100–270 ms frame per switch is the arriving pane's own construction (SwiftUI layout/CoreText), not the transition — a layout pass for later.
-
-## Learnings (2026-09-12, one-Jarhead fixes: CI, the snapshot, the self-healing Dock)
-
-- **A snapshot named `.app` is a second Jarhead to LaunchServices.** The rollback copy `build/previous/Jarhead.app` was a full bundle with Jarhead's id, and `lsregister -dump` on Kevin's Mac listed it next to /Applications — LaunchServices registers any `*.app` directory it meets, whatever unregistered it a build earlier. The snapshot is now `build/previous/Jarhead.app.zip` (`snapshotNameOk` refuses a `previous` that ends in `.app` before anything is written), `performInstall` retires the old name (`InstallSpec.retire`, an `rmTree` of the build's own artifact — never the Trash, never /Applications) before the new snapshot, and the stale rule already treats Jarhead's id at any other path as stale, so the record for the gone directory is `-u`'d by step 6 of the same build. The rollback line reads `rsync -rlptD -c --delete-after build/previous/Jarhead.app.zip/ /Applications/Jarhead.app/`. Anything else under `build/` that must be a bundle-shaped tree should follow the same rule.
-- **openrsync's `*deleting` lines differ by build.** This Mac's openrsync itemizes the emptied directory as `Contents/Resources/`; GitHub's macos-15 runner prints `Contents/Resources` and every deletion twice (one line per `--delete-after` pass), which failed `install-bundle.test.ts` in CI with `['…/stale.txt','Contents/Resources','…/stale.txt','Contents/Resources']`. `parseItemized` is version-agnostic now — each path once, trailing slash trimmed, files and directories both kept in `deleted` — and the tests assert the SET (stale.txt present, nothing outside its subtree), never the list; `installLine`'s counts are of unique entries. Rule: never assert the exact shape of a system tool's chatter across macOS versions; assert what it means.
-- **The Dock heals itself, on Kevin's press.** `ProblemKind` gained `dock` (protocol + the Swift mirror, whose `Problem.kind` is a String so an unknown kind still decodes; the Console's `problemSymbol` falls back to the triangle). Twenty seconds after `start()` the engine READS the Dock — `readDock`: one `defaults export com.apple.dock -`, never lsregister — and a pin with a recent Jarhead tile next to it (or two pins) is "Two Jarhead tiles in the Dock" with **Fix the Dock** (`problem.retry {kind:"dock"}`). The retry runs `repairDock` — the Dock half of `pnpm jarhead dock --fix`: import behind the mod-count check, `killall Dock` only when written — then re-reads and clears the row; `tick()` reads once more 10 s later (`DOCK_RECHECK_MS`) in case the relaunched Dock grew the tile back. A recent tile with no pin is one tile and no row (the fix could do nothing; pinning is Kevin's). The startup read never restarts the Dock. An import whose `killall Dock` failed is NOT a fix: cfprefsd holds the clean document while the Dock process still draws both tiles (and writes its copy back on its next event), so the re-read is not the truth — the row stays as "… — Dock not restarted" with a warn toast, no recheck is armed, a clean audit meanwhile keeps the row (`dockRestartOwed`), and the next press runs only `restartDock` (`killall Dock`). A press whose read fails toasts "Could not read the Dock: …" and leaves the row. Every Dock shell-out carries `timeoutMs` = `Engine.DOCK_EXEC_TIMEOUT_MS` (3 s; `DockOnlyOptions.timeoutMs`, forwarded by `readDock` / `repairDock` / `restartDock`) because they are spawnSync on the daemon's event loop; the CLI passes none and keeps defaultExec's 20 s. Seams: `EngineOptions.exec` (scripted in tests; `world.ts` exports `noShell`, which every `new Engine` in a test passes, so no test reads the real Dock) and `dockAuditDelayMs`. The engine imports `@jarhead/cli/install` (`packages/cli/src/install/index.ts`): no module cycle — that entry never loads the CLI proper — but a package-level one, resolved through the hoisted root `node_modules` like brain→daemon already is; declare it in `packages/engine/package.json` (and update the lockfile) if that ever stops working.
+- In the lease nothing decided before an `await` stands after it (the thread gate and the re-front are helper round trips; the lease re-judges after each). In the desk a root question that vanished takes its queue with it — only `consume` and `drop(laneId)` promote.
+- Dither is the classic 8×8 Bayer matrix in point-sized cells (`Dither.cellPoints` 1.5 pt on the island, the meters and the blob's halo, 2 pt in `DitheredGradient` and the Dock icon), five bands (four on the Console ground); the pattern has to be big enough to see, so never a device-pixel cell. The icon samples geometry per pixel and the threshold per cell so the silhouette stays crisp. Regenerate with `pnpm build:media` (= `build:icon` + `build:banner`) after any change to `scripts/dither.ts`, `icon-render.ts`, `make-icon.ts` or `make-banner.ts` (docs/media/icon-sizes.png, docs/media/banner.png and apps/mac/Resources/preview-icon-sizes.png are tracked; the icon must stay byte-identical across a pure refactor — `git status --porcelain docs/media apps/mac/Resources` after `pnpm build:icon`). The face (`FACE` in dither.ts, Kevin's `^ ^`) is a cell mask: one pattern from 64 to 1024, hand bitmaps at 32 and 16, pinned exactly by `scripts/__tests__/icon.test.ts`; `pnpm build:mac` rebuilds the icns whenever those scripts are newer than build/Jarhead.icns.
+- **Dither everywhere** (Kevin: "use the dither theme across ascii loading states, the app background and more"). `Dither.Cache` is budgeted by BYTES (48 MB, count 32 as a second cap) with a pending queue capped at 4, so a resize drag drops its stalest sizes instead of rendering every frame's; it records the key in flight, so many views asking for one key (every JarheadMark in the rail) render it once, and `DitheredGradient` / `DitheredShadow` ignore a render landing for a key they no longer want (the queue pops newest first, so under a resize an older size can land last). The Console ground renders at scale 1 and is magnified by nearest (the same pixels as a 2× render with 4 px cells, a quarter of the work), at sizes rounded up to 64 pt (`sizeStep`) and pinned bottom-trailing, so the key changes only across a 64 pt boundary and the whisper corner stays in the window's corner; the last image holds while the next renders. Alpha-only CGImages have no Swift initializer with the nil colour space they need, so coverage images (the shadow, the bar's edge) are premultiplied RGBA.
+- **Prewarm the tiles.** `Motion.wipe` reads `Dither.Tiles.shared.hasWipe` and falls back to a fade, so a harness must `Dither.prewarm(scale:)` first thing (ConsolePreviewMain, OnboardingPreviewMain, OrbPreviewApp do); the app must too, in `AppDelegate.applicationDidFinishLaunching` after `installDockIcon()` — `NotchInk.prewarm()` only runs when the notch dock is built, so on a Mac without a notch nothing else would. Failing both, the first wipe or meter that asks (`Tiles.ensure(scale:)`) starts the build for its scale and takes its fallback once. `Dither.Tiles` is an ObservableObject — a static view that asked before the tiles landed (a meter) must observe it or it keeps the fallback. The onboarding harness compiles Console files, so `Scripts/onboarding-preview.sh` lists `UI/Dither.swift` beside `UI/Motion.swift`.
+- **Curtain, not mask, for a pane switch.** Pane, rail-tab and feed↔ledger switches are `Motion.curtain(color)`: the arriving pane renders plain (`.transition(.identity)`, no mask, no zIndex) and a `DitherCurtain` of ground-coloured inverted Bayer tiles sits over it and disappears rank by rank over `Motion.base` (7–11 ms a frame; the switch's own turn 11–68 ms where a mask cost 300–500 ms — measured 2026-09-12 with the -O harness traced per frame: a pane's first masked frame costs the main thread 0.3–0.5 s because RenderBox rasterises the masked pane through CoreGraphics, then frames come every 45–150 ms, longer than the 0.24 s wipe, so at real speed a masked pane switch is a freeze and a cut). `Motion.wipe` (the mask) stays for small things: thumbnails, marks, the ground image landing. A wipe's two halves must share one curve (insertion and removal both `easeOut` over `base`, the removal on the inverted tiles) or the ground shows through between them. `DitherCurtain` must not be `Animatable` (a first cut was double-interpolated); `Reveal` is the Animatable modifier the transition drives. The switch itself is made in `Motion.wipeAnimation` (the root ZStack's `.animation(_, value: paneKey)`, which overrides the call site's transaction for the pane change, plus `ConsoleSession.openJarhead`, the rail's agent toggle and the harness's actions): the transaction's animation is what keeps a leaving pane alive when its own half does not animate — a shorter spring dropped the stream whole before the arriving cells had covered it. The conversation panes carry `.zIndex(1)` so stepping in wipes the conversation in over the stream and stepping out wipes it away over the stream arriving beneath. Both hosting windows set `hosting.sizingOptions = []` (their `minSize` is set by hand; `NSHostingView.minSize` re-ran a full layout pass per switch). The residual 100–270 ms frame per switch is the arriving pane's own construction (SwiftUI layout/CoreText), not the transition.
+- **Harness knobs for the dither.** Console scenarios `loading` (the glyphs; `PREVIEW_SLOW_THUMBS=1` holds thumbnails so skeletons show), `wipe` (mid-wipe pictures + `probe` under the mask; it stretches the wipe to 2 s through `PREVIEW_WIPE_SECONDS` → `Motion.wipeSecondsOverride`, nil in the app, so there are frames to catch) and `timing` (main-thread turns per switch); actions `check-dither` (the Bayer/tile/glyph/bar/rounding pins in run.log — the package has no test target), `probe-ground` (the ground's colours from the window's own pixels), `snap:<name>` (the window's own pixels written in-process at the scheduled instant — `shot:` spawns screencapture and lands 0.1–0.3 s late) and `snap-wipe:<name>` (arms `Motion.wipeMidHook`: a pane's arriving `DitherWipe` fires it on its first frame at 0.4 of the ranks and the snap follows 0.25 s later — the only way to a reproducible mid-wipe frame, since the wipe's frames saturate the main thread and starve timers). Orb harness: an `ORB_EXPAND` or `ORB_OVERLAY` run takes no `phase-*` shots (they would overwrite the collapsed blob's halo pictures with the capsule), so shoot `preview-blob-phase-*.png` with the phases command on its own. Harness pictures are gitignored (`preview-*.png`); the one tracked picture under `apps/mac/Resources` is `preview-icon-sizes.png`, and the README's copies live in `docs/media` (`scripts/make-readme-shots.sh`).
 
 ## Learnings (2026-09-13, threads / satellites / speed / messages / face pass)
 
@@ -710,4 +684,3 @@ to his microphone and bills per second.
 - **A bench row that is a tally is not a latency.** `bench` files every sample with a `unit` (`ms`, or `count` for "brain generations spent"); a count row prints `(count, not ms)` in the table and `unit: "count"` in `--json`, so a `1` in the median column is never read as 1 ms. `bench.test.ts` runs the fake-hands bench once and asserts the row SET, because a row that silently skips (a regex that stopped matching the helper's answer) only shows as a missing line nobody reads.
 - **A gate the composer can trust is computed from the listing's own snapshot, synchronously.** `AgentInfo.send` reads what `statusFor` and `canContinue` read (archived, live owners minus our own pids, degraded detection, the Codex CLI's `usable()` — taken WITH the process snapshot so a listing costs no extra await — and a cached `statSync` of the session's folder); the reason is a short phrase the composer shows verbatim ("open in a terminal", "Codex not signed in", "folder is gone"). `SendResult.mode` (`queue | resume | answer`) says how an accepted line travelled; the wire's `AgentInfo.send.mode` vocabulary is `queue | resume` only, so a pending permission shows as `resume` with `pendingPermission` carrying the question.
 - **Typed lines are transcript items, emitted once.** `Transcript.pushTyped` closes any open utterance first (its `final` is what writes the `heard` row) and emits the typed item as a single `final` — an item born final never "starts", and a second emission would write the ledger row twice.
-- **`codex.test.ts` has a fixture that ages out.** The archived thread C2 is dated 2026-08-30 and the connector there uses `Date.now` with the 14-day window: from 2026-09-13 on, the health line counts "1 thread" and the test fails on any tree. Not this pass's change; pin `now` or move the fixture date.
