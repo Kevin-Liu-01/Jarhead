@@ -3109,6 +3109,26 @@ extension PreviewDelegate {
         expect("list keys: ⌥↓ jumps to the end", "\(ConsoleListModel.command(.down, option: true, command: false, typeAhead: true))", "jump(toEnd: true)")
         expect("list keys: Space is never a yes", "\(ConsoleListModel.command(.space, option: false, command: false, typeAhead: true))", "swallow")
         expect("list keys: a letter types ahead only without a filter", "\(ConsoleListModel.command(.char("m"), option: false, command: false, typeAhead: false))", "ignore")
+        // The folded heads' words (ConsoleDisclosureSummary): the seven Settings heads, a permission
+        // area, a problem kind, a tool's agents, a ledger month, a fold.
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Audio", text(ConsoleDisclosureSummary.audio(voice: "Cedar", accent: "British")), "Cedar · British")
+        expect("disclosure: Brain", text(ConsoleDisclosureSummary.brain(kind: "Local", model: "qwen3.5:27b", ready: true)), "Local · qwen3.5:27b · [Ready]")
+        expect("disclosure: Leaves the Mac", text(ConsoleDisclosureSummary.leaves(cloud: 2, mac: 2)), "2 cloud · 2 mac")
+        expect("disclosure: Session", text(ConsoleDisclosureSummary.session(home: "Notch", idleMinutes: 10)), "Notch · 10 min")
+        expect("disclosure: Memory", text(ConsoleDisclosureSummary.memory(enabled: true, learnedAgo: "12m")), "[learned 12m]")
+        expect("disclosure: Memory off", text(ConsoleDisclosureSummary.memory(enabled: false, learnedAgo: "12m")), "[off]")
+        expect("disclosure: Retention", text(ConsoleDisclosureSummary.retention(ledgerDays: nil, trashDays: 30)), "forever · 30 d")
+        expect("disclosure: Wake", text(ConsoleDisclosureSummary.wake(enabled: false, phrases: 2)), "[off]")
+        expect("disclosure: Permissions area missing", text(ConsoleDisclosureSummary.permissionGroup(missing: ["Input Monitoring"], granted: ["Accessibility"])), "[1 missing] · Input Monitoring")
+        expect("disclosure: Permissions area granted", text(ConsoleDisclosureSummary.permissionGroup(missing: [], granted: ["Desktop", "Documents"])), "Desktop · Documents")
+        expect("disclosure: Problems kind", text(ConsoleDisclosureSummary.problemGroup(first: "Delegation failed: Codex session refused input")), "Delegation failed: Codex session refused input")
+        expect("disclosure: Ready", text(ConsoleDisclosureSummary.ready(notReady: 0)) + " / " + text(ConsoleDisclosureSummary.ready(notReady: 1)), "[all ok] / [1 missing]")
+        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "1 · [asks] · 2 working")
+        expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, done: 1)), "3 idle")
+        expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
+        expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")
+        expect("fold store: remembers in memory when not persisting", { ConsoleFoldStore.persists = false; ConsoleFoldStore.set("kit.check", false); return "\(ConsoleFoldStore.isOpen("kit.check", default: true))" }(), "false")
         return failed
     }
 }
