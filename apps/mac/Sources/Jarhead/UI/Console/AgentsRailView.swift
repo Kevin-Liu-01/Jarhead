@@ -584,7 +584,7 @@ struct AgentsRail: View, Equatable {
         return nil
     }
 
-    /// The search's rows: the title matches, then each group's row and its hits.
+    /// The search's rows: the title matches, then each group's row and its hits, then the agents that match.
     private var searchWalk: [String] {
         let q = ConsoleSession.searchKey(session.searchQuery)
         let groups = SearchGroups.build(hits: session.searchHits ?? [], chains: jarhead, liveSessionId: self.now.sessionId)
@@ -594,7 +594,16 @@ struct AgentsRail: View, Equatable {
             if let chain = group.chain { out.append(AgentsRailWords.chainId(chain.id)) } else if group.isNow { out.append(AgentsRailWords.nowId) }
             out += group.hits.prefix(hitsPerChain).map { AgentsRailWords.hitId($0.id) }
         }
+        out += agentMatches(q).map { AgentsRailWords.agentId($0.id) }
         return out
+    }
+
+    /// Agents the search matches by name, project, the connector's detail or the tool's label — in the rail's order.
+    private func agentMatches(_ q: String) -> [AgentInfo] {
+        guard !q.isEmpty else { return [] }
+        return groups.flatMap(\.agents).filter { agent in
+            [agent.name, ConsoleFormat.projectName(agent.cwd) ?? "", agent.detail ?? "", agent.resolvedTool.label].contains { $0.lowercased().contains(q) }
+        }
     }
 
     private var headIds: Set<String> {
@@ -607,11 +616,11 @@ struct AgentsRail: View, Equatable {
         return out
     }
 
-    /// `k of n`: conversations the search matched, of every conversation on the rail.
+    /// `k of n`: conversations the search matched, of every conversation on the rail (Now and the active and archived chains).
     private var hitCount: String? {
         guard session.isSearching, session.searchHits != nil else { return nil }
-        let matched = Set(searchWalk.filter { !$0.hasPrefix("hit:") })
-        return ConsoleRowWords.count(shown: matched.count, of: jarhead.count + 1)
+        let matched = Set(searchWalk.filter { !$0.hasPrefix("hit:") && !$0.hasPrefix("agent:") })
+        return ConsoleRowWords.count(shown: matched.count, of: jarhead.filter { !$0.isTrashed }.count + 1)
     }
 
     /// A row's title for type-ahead.
@@ -933,16 +942,23 @@ struct AgentsRail: View, Equatable {
                 .transition(.opacity)
         }
 
+        // Folds are suspended, not changed: every result is flat, lifted to 1.0, and keeps its orb's tint.
         if !titleOnly.isEmpty {
             ConsoleGroupHead(title: AgentsRailWords.titles, count: "\(titleOnly.count)")
                 .transition(Motion.appear)
-            ForEach(titleOnly) { chain in chainRow(chain, now: now) }
+            ForEach(titleOnly) { chain in chainRow(chain, now: now, lifted: true) }
         }
 
+        let owned = groups.filter { $0.chain != nil || $0.isNow }.count
+        if owned > 0 {
+            ConsoleGroupHead(title: RailWords.hits, count: "\(owned)")
+                .padding(.top, titleOnly.isEmpty ? 0 : 8)
+                .transition(Motion.appear)
+        }
         ForEach(groups) { group in
             VStack(alignment: .leading, spacing: 0) {
                 if let chain = group.chain {
-                    chainRow(chain, now: now)
+                    chainRow(chain, now: now, lifted: true)
                 } else if group.isNow {
                     JarheadNowRow(info: self.now, now: now, on: session.showsNow,
                                   focused: focus.ringOn(AgentsRailWords.nowId), hovered: hover(AgentsRailWords.nowId),
@@ -971,6 +987,15 @@ struct AgentsRail: View, Equatable {
             }
             .padding(.top, 8)
             .transition(Motion.appear)
+        }
+
+        // The agents the query names (name · project · detail · tool), as 28 rows in their tone, lifted.
+        let matched = agentMatches(q)
+        if !matched.isEmpty {
+            ConsoleHairline().padding(.top, 12)
+            ConsoleSectionHead(RailWords.agents, count: matched.count).padding(.top, 4)
+                .transition(Motion.appear)
+            ForEach(matched) { agent in agentRow(agent, now: now, hidden: hiddenAgents.contains(agent.id), lifted: true) }
         }
     }
 
