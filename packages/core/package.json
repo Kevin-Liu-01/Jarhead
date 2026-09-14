@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

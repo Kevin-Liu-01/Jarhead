@@ -15,8 +15,29 @@ import {
   BRAIN_KINDS,
   AUTO_BRAIN_ORDER,
   LOCAL_NONE,
+  AUTOMATION_ACTION_KINDS,
+  AUTOMATION_ACTING_KINDS,
+  AUTOMATION_TERMINAL,
+  AUTOMATIONS_MAX,
+  AUTOMATION_ACTIONS_MAX,
+  AUTOMATION_LINGER_MS,
+  AUTOMATION_REPEAT_CHIME_MS,
+  AUTOMATION_SNOOZES,
+  AUTOMATION_LINE_CHARS,
+  AUTOMATION_WATCH_COOLDOWN_S,
+  AUTOMATION_POLL_MIN_S,
+  AUTOMATION_FOLDER_WATCHERS_MAX,
+  AUTOMATION_WAKE_COOLDOWN_MIN_S,
+  AUTOMATION_SLEEP_GAP_MS,
+  AUTOMATION_GRACE_MS,
+  DEFAULT_AUTOMATIONS,
+  automationKind,
   grantOf,
   isEngineCommand,
+  type Automation,
+  type AutomationEvent,
+  type AutomationSettings,
+  type ClockTime,
   type LedgerRow,
   type Permissions,
   type Settings,
@@ -246,4 +267,102 @@ test("isEngineCommand accepts mark.remove and mark.window (the notch panel's ver
   assert.ok(isEngineCommand({ type: "mark.remove", id: "mark_x" }));
   assert.ok(isEngineCommand({ type: "mark.window" }));
   assert.equal(isEngineCommand({ type: "mark.delete", id: "mark_x" }), false, "remove is the verb; delete is not a command");
+});
+
+// ----------------------------------------------------------------- automations (design11)
+
+/** The twelve surface verbs over automations and recipes: every one a state change or a Move to Trash, never a deletion. */
+const AUTOMATION_COMMANDS = [
+  "automation.set", "automation.snooze", "automation.done", "automation.skip", "automation.pause", "automation.resume",
+  "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash",
+] as const;
+
+test("isEngineCommand accepts exactly the twelve automation.* / recipe.* commands and refuses automation.delete, rule.delete, recipe.delete and the brain tools' names", () => {
+  assert.equal(AUTOMATION_COMMANDS.length, 12);
+  assert.equal(new Set(AUTOMATION_COMMANDS).size, 12, "no verb twice");
+  for (const type of AUTOMATION_COMMANDS) assert.ok(isEngineCommand({ type, id: "auto_1" }), `${type} is a surface command`);
+  for (const type of ["automation.delete", "rule.delete", "recipe.delete", "automation.cancel", "automation.list", "automation_set", "automation_list", "automation_change", "recipe_list", "automation", "automations.set"]) {
+    assert.equal(isEngineCommand({ type }), false, `${type} is not a command on the wire`);
+  }
+});
+
+test("SETTINGS_KEYS lists automations once and DEFAULT_SETTINGS.automations is the contract's default: on, five free kinds unattended, snooze 10, five brain minutes, no recipes, not opening at login", () => {
+  assert.equal((SETTINGS_KEYS as readonly string[]).filter((k) => k === "automations").length, 1);
+  const a: AutomationSettings = (DEFAULT_SETTINGS as Settings).automations;
+  assert.deepEqual(a, { enabled: true, unattended: ["chime", "say", "notify", "open", "file"], snoozeMinutes: 10, wakeBudgetMinutesPerDay: 5, recipes: [], openAtLogin: false });
+  assert.deepEqual(a, DEFAULT_AUTOMATIONS);
+  assert.equal(a.quietHours, undefined, "no quiet hours until Kevin sets them");
+  for (const k of a.unattended) assert.equal(AUTOMATION_ACTING_KINDS.has(k) && k !== "open" && k !== "file", false, `${k} is a free kind or one of the two reversible acting kinds`);
+  for (const opt of ["run-recipe", "press", "wake-brain"] as const) assert.equal(a.unattended.includes(opt), false, `${opt} needs the chip and a per-row yes`);
+});
+
+test("the action vocabulary: eight kinds, five of them acting; the terminal states are done and trashed only (trashed is a state, never a deletion)", () => {
+  assert.deepEqual([...AUTOMATION_ACTION_KINDS], ["chime", "say", "notify", "open", "file", "run-recipe", "press", "wake-brain"]);
+  assert.deepEqual([...AUTOMATION_ACTING_KINDS].sort(), ["file", "open", "press", "run-recipe", "wake-brain"]);
+  for (const k of AUTOMATION_ACTING_KINDS) assert.ok((AUTOMATION_ACTION_KINDS as readonly string[]).includes(k));
+  assert.deepEqual([...AUTOMATION_TERMINAL].sort(), ["done", "trashed"]);
+});
+
+test("the constants the daemon and the surfaces size themselves by", () => {
+  assert.equal(AUTOMATIONS_MAX, 32);
+  assert.equal(AUTOMATION_ACTIONS_MAX, 3);
+  assert.equal(AUTOMATION_LINGER_MS, 10 * 60_000);
+  assert.equal(AUTOMATION_REPEAT_CHIME_MS, 30_000);
+  assert.deepEqual([...AUTOMATION_SNOOZES], [5, 10, 30]);
+  assert.equal(AUTOMATION_LINE_CHARS, 160);
+  assert.equal(AUTOMATION_WATCH_COOLDOWN_S, 30);
+  assert.equal(AUTOMATION_POLL_MIN_S, 30);
+  assert.equal(AUTOMATION_FOLDER_WATCHERS_MAX, 8);
+  assert.equal(AUTOMATION_WAKE_COOLDOWN_MIN_S, 600);
+  assert.equal(AUTOMATION_SLEEP_GAP_MS, 5_000);
+  assert.deepEqual(AUTOMATION_GRACE_MS, { alarm: 15 * 60_000, timer: 10 * 60_000, reminder: 60 * 60_000, routine: 0, watcher: 0 }, "routines and watchers never fire late");
+});
+
+const at: ClockTime = "07:10";
+const row = (when: Automation["when"], first: Automation["then"][number]): Pick<Automation, "when" | "then"> => ({ when, then: [first] });
+
+test("automationKind is derived from when + the first action: in → timer, on → watcher, every+chime → alarm, every+else → routine, at+chime → alarm, at+else → reminder", () => {
+  const chime = { kind: "chime", line: "Wake up, Kevin" } as const;
+  const notify = { kind: "notify", title: "standup" } as const;
+  assert.equal(automationKind(row({ kind: "in", ms: 12 * 60_000 }, chime)), "timer");
+  assert.equal(automationKind(row({ kind: "on", on: { kind: "app.quit", app: "Slack" } }, notify)), "watcher");
+  assert.equal(automationKind(row({ kind: "every", every: { kind: "weekly", days: ["mon"], at }, phrase: "mon 07:10" }, chime)), "alarm");
+  assert.equal(automationKind(row({ kind: "every", every: { kind: "weekly", days: ["mon"], at }, phrase: "mon 07:10" }, notify)), "routine");
+  assert.equal(automationKind(row({ kind: "at", at: 1_789_243_208_790 }, chime)), "alarm");
+  assert.equal(automationKind(row({ kind: "at", at: 1_789_243_208_790 }, notify)), "reminder");
+  assert.equal(automationKind({ when: { kind: "at", at: 1 }, then: [] }), "reminder", "no action yet: a reminder, never a throw");
+});
+
+test("automation.event bytes, measured: state fits 200 B with detail ≤ 70 (196 B; 80 is 206), missed 146 B, tick 93 B; fired is the one kind over the line — 228 B at a 40-char line with Snooze · Done, 268 B at the 80-char cap the table applies, 348 B at a full 160-char line", () => {
+  const base = { seq: 4096, at: 1_789_243_218_790, id: `auto_${T36}k3q9zx` };
+  const state = (detail: number): number => bytes({ ...base, kind: "state", state: "snoozed", nextAt: 1_789_243_818_790, detail: chars(detail) } satisfies AutomationEvent);
+  assert.ok(state(70) <= 200, `state with a 70-char detail is ${state(70)} B`);
+  assert.ok(state(80) > 200, `state with an 80-char detail is ${state(80)} B — the table caps detail at 70`);
+  const missed: AutomationEvent = { ...base, kind: "missed", dueAt: 1_789_243_208_790, lateMs: 720_000, skipped: false, why: "mac-slept" };
+  const tick: AutomationEvent = { ...base, kind: "tick", remainingMs: 252_000 };
+  assert.ok(bytes(missed) <= 200, `missed is ${bytes(missed)} B`);
+  assert.ok(bytes(tick) <= 100, `tick is ${bytes(tick)} B (≤ 1/s while a client views a timer)`);
+  const fired = (line: number): number => bytes({ ...base, kind: "fired", actions: ["chime"], line: chars(line), ok: true, lateMs: 720_000, presses: [{ kind: "snooze", minutes: 10 }, { kind: "done" }] } satisfies AutomationEvent);
+  assert.ok(fired(40) > 200, `fired carries its presses (~50 B) and is over 200 B even at a 40-char line: ${fired(40)} B`);
+  assert.ok(fired(80) < 280, `fired at the table's 80-char line cap is ${fired(80)} B`);
+  assert.ok(fired(AUTOMATION_LINE_CHARS) < 360, `fired at a full line is ${fired(AUTOMATION_LINE_CHARS)} B — the record keeps the line whole, the event carries a head`);
+});
+
+test("the six automation ledger rows type-check as LedgerRow and a reader that does not know them falls through", () => {
+  const a: Automation = {
+    id: "auto_1", name: "Wake up", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at }, phrase: "weekdays 07:10" },
+    then: [{ kind: "chime", line: "Wake up, Kevin", sound: "Hero" }], clauses: { quiet: "override" }, echo: "weekdays at 7:10, a chime",
+    state: "armed", nextAt: 2, fires: 0, missed: 0, createdAt: 1, updatedAt: 1, createdBy: { by: "brain", request: "wake me at 7:10 on weekdays" },
+  };
+  const rows: LedgerRow[] = [
+    { at: 1, type: "automation.set", automation: a, by: "brain" },
+    { at: 2, type: "automation.fired", id: a.id, actions: ["chime"], ok: true, line: "07:10 · Wake up", lateMs: 720_000, ms: 12 },
+    { at: 3, type: "automation.state", id: a.id, state: "snoozed", by: "kevin", until: 4 },
+    { at: 4, type: "automation.missed", id: a.id, dueAt: 2, why: "daemon-down" },
+    { at: 5, type: "recipe.set", recipe: { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: 5 }, by: "kevin" },
+    { at: 6, type: "recipe.trashed", name: "tests" },
+  ];
+  assert.equal(rows.length, 6);
+  const sessionRows = rows.filter((r) => r.type === "heard" || r.type === "said");
+  assert.deepEqual(sessionRows, [], "none of them is a session's own row");
 });
