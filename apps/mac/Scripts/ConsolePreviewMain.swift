@@ -3069,6 +3069,46 @@ extension PreviewDelegate {
         expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
         expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
         expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
+        failed += checkKitLists()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+}
+
+// MARK: - The kit (Builder C): rows, lists, disclosures — the pure pins
+
+extension PreviewDelegate {
+    /// `ConsoleListModel` (heights · step · typeAhead · kinds · months · keys) and the disclosure
+    /// summaries' words, as `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitLists() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        expect("row height: one line", "\(Int(ConsoleListModel.height(lines: 1, meta: false)))", "28")
+        expect("row height: title + meta", "\(Int(ConsoleListModel.height(lines: 1, meta: true)))", "40")
+        expect("row height: two lines + meta", "\(Int(ConsoleListModel.height(lines: 2, meta: true)))", "56")
+        expect("row height: agents rail", "\(Int(ConsoleListModel.height(lines: 1, meta: true, rail: .agents)))", "44")
+        let ids = ["a", "b", "c"]
+        expect("list step: clamps at the end", ConsoleListModel.step("c", by: 1, in: ids) ?? "nil", "c")
+        expect("list step: clamps at the top", ConsoleListModel.step("a", by: -1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → first on down", ConsoleListModel.step(nil, by: 1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → last on up", ConsoleListModel.step(nil, by: -1, in: ids) ?? "nil", "c")
+        let titles = ["Ballad", "Cedar", "Coral", "Marin"]
+        expect("list typeAhead: next after the highlight", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "c", after: "Cedar") ?? "nil", "Coral")
+        expect("list typeAhead: wraps to the top", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "b", after: "Marin") ?? "nil", "Ballad")
+        expect("list countWord", ConsoleListModel.countWord(shown: 2, of: 7, typing: true) + " / " + ConsoleListModel.countWord(shown: 7, of: 7, typing: false), "2 of 7 / 7")
+        let kinds = ConsoleListModel.memoryKinds(fake?.memoryList(state: "live", limit: 30) ?? [])
+        expect("memory kinds: first-seen order with counts", kinds.map { "\(MemoryWords.kindChip($0.kind)) \($0.count)" }.joined(separator: " · "), "fact 2 · pref 2 · how 1 · who 1 · where 1")
+        expect("memory kinds: every chip word", MemoryKind.allCases.map(MemoryWords.kindChip).joined(separator: ","), "pref,fact,when,how,who,where")
+        let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
+        let months = ConsoleListModel.ledgerMonths(["2026-09-10", "2026-09-09", "2026-08-31", "2025-12-01"], now: sept)
+        expect("ledger months: first-seen, the year only when not this one", months.map { "\($0.title)[\($0.days.count)]" }.joined(separator: " "), "September[2] August[1] December 2025[1]")
+        expect("list keys: ⌘ leaves the key to the window", "\(ConsoleListModel.command(.down, option: false, command: true, typeAhead: true))", "ignore")
+        expect("list keys: ⌥↓ jumps to the end", "\(ConsoleListModel.command(.down, option: true, command: false, typeAhead: true))", "jump(toEnd: true)")
+        expect("list keys: Space is never a yes", "\(ConsoleListModel.command(.space, option: false, command: false, typeAhead: true))", "swallow")
+        expect("list keys: a letter types ahead only without a filter", "\(ConsoleListModel.command(.char("m"), option: false, command: false, typeAhead: false))", "ignore")
+        return failed
     }
 }

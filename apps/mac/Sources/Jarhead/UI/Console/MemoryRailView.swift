@@ -35,6 +35,45 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Words (pinned by check-kit)
+
+enum MemoryWords {
+    /// The kind chip's word and the row's badge: one short word per kind.
+    static func kindChip(_ kind: MemoryKind) -> String {
+        switch kind {
+        case .preference: return "pref"
+        case .fact: return "fact"
+        case .episode: return "when"
+        case .procedure: return "how"
+        case .contact: return "who"
+        case .place: return "where"
+        }
+    }
+    static let all = "All"
+    static let searchPlaceholder = "Filter memory"
+    static let clearSearch = "Clear the filter"
+    static let reading = "Reading…"
+    static let restore = "Restore"
+    static let restoreArchivedHelp = "Back from Archived — Jarhead uses it again"
+    static let restoreForgottenHelp = "Back from Forgotten — Jarhead uses it again"
+    static let edit = "Edit"
+    static let kind = "Kind"
+    static let forget = "Forget"
+    static let editPlaceholder = "One sentence about Kevin"
+    static let editHelp = "Return keeps the change — Esc cancels"
+    static let editLabel = "Memory text"
+    static let nothingUsed = "Nothing used yet."
+    static func usedNotListed(_ n: Int) -> String { "Used \(n); the rows are not on the daemon's list." }
+    static let opensSettings = "Opens Settings › Memory"
+    static let live = "live"
+    static let importance = "importance"
+    static let confidence = "confidence"
+    static let subjects = "subjects"
+    static let source = "source"
+    static let origin = "origin"
+    static let mergedInto = "merged into"
+}
+
 // MARK: - Formatting (pure)
 
 enum MemoryFormat {
