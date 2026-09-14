@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { Brain } from "@jarhead/brain";
 import type { LedgerRow } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
 import { delegate, frame, nextUtterance, rows, settle, until, world } from "./world.ts";
@@ -419,6 +420,39 @@ test("cause brain-changed (the closer's half of a brain swap across the Response
     assert.deepEqual(rows<SleepRow>(w, "sleep").map((r) => [r.cause, r.farewell, r.sessionId]), [["brain-changed", undefined, "sess_1"]]);
     assert.deepEqual(live.instructions, [], "no farewell for a swap");
     assert.equal(w.threads.brains[0]!.stops, 1, "the spare runs the old brain kind: it goes with it");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("sleep lets a local brain's weights go: fallAsleep calls brain.cool once (after the threads and the cancel), whatever the cause; a brain without cool is left alone", async () => {
+  const calls: string[] = [];
+  const brain: Brain = {
+    kind: "fake",
+    start: async () => ({ ready: true, detail: "fake" }),
+    handle: async () => ({ status: "done", summary: "done." }),
+    cancel: async () => {
+      calls.push("cancel");
+    },
+    stop: async () => undefined,
+    cool: async () => {
+      calls.push("cool");
+    },
+  };
+  const w = world({ brain });
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    assert.deepEqual(calls.filter((c) => c === "cool"), [], "awake: the weights stay loaded");
+    await engine.command({ type: "sleep", cause: "dock" });
+    assert.equal(engine.currentPhase, "asleep");
+    assert.deepEqual(calls.filter((c) => c === "cool"), ["cool"], "one cool per sleep");
+    // Nothing open: a sleep still tells the brain (it is idle; keep_alive 0 is cheap), never twice for one sleep.
+    await engine.command({ type: "sleep" });
+    assert.equal(calls.filter((c) => c === "cool").length, 2);
   } finally {
     await engine.stop();
   }

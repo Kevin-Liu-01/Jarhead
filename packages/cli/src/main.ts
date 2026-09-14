@@ -5,8 +5,9 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
-import { type AgentInfo, type Delegation, type Effort, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SleepCause, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
+import { type AgentInfo, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
 import { MEMORY_ID, agentsByStatus, agoWords, memoryLine, render, runChecks, summarizePermissions } from "./doctor.ts";
+import { localStatusLine, runBrain, runModels, type BrainDaemon } from "./local-cli.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
 import { benchBrain } from "./bench-brain.ts";
@@ -37,6 +38,11 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead memory restore <id>   bring a forgotten or archived item back into use
   pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in Kevin's words (redacted and refused like anything extracted)
   pnpm jarhead memory run            read the closed conversations not read yet, now (it runs on its own at a quiet moment; never while a voice session is open)
+  pnpm jarhead models [--json]          the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use;
+                                        cloud tags are listed dimmed and never offered. No daemon needed. Nothing is pulled: an empty list prints the \`ollama pull …\` line to run
+  pnpm jarhead brain                    the brain setting, what runs now, and where words go (the four data-path rows)
+  pnpm jarhead brain local [<model>] [--server URL]   pick a local model as the brain through the running daemon (memory follows); empty model = best fit; prints the status line when it lands
+  pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (--permissions: every grant as a row; agents by status —
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
                                       with name · status · lane · steps · id; memory: counts and the last learn)
@@ -75,11 +81,12 @@ flags
   --limit N      (ledger search, memory list/search) how many hits (default 50 / 50 / 30, at most 200)
   --state S      (memory list) live (default) | forgotten | archived | merged | all
   --kind K       (memory add) preference | fact | episode | procedure | contact | place (the store classifies when absent)
+  --server URL   (models, brain) the local server's root instead of the three loopback ports (a second Ollama, a LAN box); (brain) pins it in Settings
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind", "--days", "--compare", "--observe"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind", "--days", "--compare", "--observe", "--server"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -494,11 +501,13 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brainModel?: string } };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
   console.log(`  brain      ${s.brainReady ? "ready" : "not ready"}   hands ${s.handsReady ? "ready" : "not ready"}`);
+  // The local model server, whatever the brain kind: what is running on this Mac and which model the brain would use.
+  console.log(localStatusLine(s.setup?.local, s.settings?.brainModel ?? ""));
   // One row per grant, read by the app (TCC keys them on Jarhead.app) or, without the app, by the daemon's helper for the four it can read.
   // The headline names the three the voice and the hands stand on; the summary counts the rest.
   const perms = s.permissions;
@@ -559,6 +568,58 @@ function jsonReport(r: HygieneReport): unknown {
   return { ...r, dock: { ...r.dock, before: audit(r.dock.before), after: audit(r.dock.after) } };
 }
 
+/**
+ * The daemon as `jarhead brain` sees it (local-cli.ts `BrainDaemon`): one snapshot, or a command
+ * followed by the snapshots until the pick has landed. The daemon owns settings.json; nothing here
+ * writes it.
+ */
+async function brainDaemon(): Promise<BrainDaemon> {
+  const client = await daemon();
+  const snapshots: Snapshot[] = [];
+  const waiters = new Set<(s: Snapshot) => void>();
+  client.on("message", (m) => {
+    if (m.type !== "snapshot") return;
+    const snap = m.snapshot as Snapshot;
+    snapshots.push(snap);
+    for (const w of waiters) w(snap);
+  });
+  const nextMatching = (until: (s: Snapshot) => boolean, waitMs: number): Promise<Snapshot | undefined> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        waiters.delete(w);
+        resolve(undefined);
+      }, waitMs);
+      const w = (s: Snapshot): void => {
+        if (!until(s)) return;
+        clearTimeout(timer);
+        waiters.delete(w);
+        resolve(s);
+      };
+      waiters.add(w);
+    });
+  return {
+    snapshot: async () => {
+      try {
+        const got = snapshots.at(-1) ?? (await nextMatching(() => true, 1500));
+        if (!got) throw new Error("the daemon sent no snapshot");
+        return got;
+      } finally {
+        client.close();
+      }
+    },
+    command: async (cmd: EngineCommand, until, waitMs) => {
+      try {
+        // Only snapshots after the command count: the one the connect answered with shows the old setting.
+        const pending = nextMatching(until, waitMs);
+        client.sendJson({ type: "command", command: cmd });
+        return await pending;
+      } finally {
+        client.close();
+      }
+    },
+  };
+}
+
 /** Send one command; stay `listenMs` for the toasts it raises (a move says what moved and why anything stayed). */
 async function sendCommand(cmd: Record<string, unknown>, listenMs = 150): Promise<void> {
   const client = await daemon();
@@ -611,6 +672,13 @@ try {
     }
     case "memory":
       await memoryCommand(rest);
+      break;
+    case "models":
+      // Read directly from the server (no daemon): nothing is pulled, loaded or unloaded.
+      await runModels({ json: flags.has("--json"), server: flagValue("server"), out: (line) => console.log(line) });
+      break;
+    case "brain":
+      await runBrain(rest, flagValue("server"), brainDaemon, (line) => console.log(line));
       break;
     case "status":
       await status();

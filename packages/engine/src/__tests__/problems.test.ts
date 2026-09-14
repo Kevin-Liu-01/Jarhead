@@ -429,3 +429,37 @@ test("the disk preflight runs before every capture: a disk that fills mid-sessio
     await engine.stop();
   }
 });
+
+test("brain.local is a ProblemKind of its own (the amber, Kevin-does-a-thing class beside permission.*), carries a copyable command in its remedy, and its Retry restarts the brain like the other brain kinds", async () => {
+  const starts = { n: 0 };
+  const brain = {
+    kind: "fake",
+    start: async () => {
+      starts.n++;
+      return { ready: true, detail: "fake" };
+    },
+    handle: async () => ({ status: "done" as const }),
+    cancel: async () => undefined,
+    stop: async () => undefined,
+  };
+  const w = world({ brain });
+  const { engine } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    const kind: ProblemKind = "brain.local";
+    const remedy = { label: "Retry", command: { type: "problem.retry" as const, kind }, copy: "ollama pull qwen3.5:27b" };
+    engine.problemOf(kind, "Local brain: Ollama 0.34.0 is up but nothing on it can call tools. In a terminal: ollama pull qwen3.5:27b (17 GB, fits this Mac).", remedy);
+    const rows = ofKind(w, kind);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.remedy?.copy, "ollama pull qwen3.5:27b", "the command Kevin runs himself rides on the remedy; no surface runs it");
+    assert.deepEqual(rows[0]!.remedy?.command, { type: "problem.retry", kind: "brain.local" });
+    const before = starts.n;
+    await engine.command({ type: "problem.retry", kind });
+    assert.equal(ofKind(w, kind).length, 0, "the row clears on Retry");
+    assert.equal(starts.n, before + 1, "and the brain was restarted");
+    assert.equal(engine.brainInfo.ready, true);
+  } finally {
+    await engine.stop();
+  }
+});

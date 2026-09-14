@@ -95,3 +95,28 @@ test("a settings.json from before 2026-09-13: the old threads flag becomes `thre
   writeFileSync(path, JSON.stringify({ [OLD_THREADS_FLAG]: false, threads: true }));
   assert.equal(bare(stateDir).snapshot().settings.threads, true);
 });
+
+test("brain `local` round-trips through settings.json with an empty model (best fit) and a pinned server; SETTINGS_KEYS is unchanged — no key was added for the local brain", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-local-"));
+  const engine = bare(stateDir);
+  engine.updateSettings({ brain: "local", brainModel: "", brainBaseUrl: "http://10.0.0.5:11434" });
+  const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(saved["brain"], "local");
+  assert.equal(saved["brainModel"], "");
+  assert.equal(saved["brainBaseUrl"], "http://10.0.0.5:11434");
+  const again = bare(stateDir).snapshot().settings;
+  assert.equal(again.brain, "local");
+  assert.equal(again.brainModel, "");
+  assert.equal(again.brainBaseUrl, "http://10.0.0.5:11434");
+  // A pick writes the id; clearing the server goes back to discovery.
+  engine.updateSettings({ brainModel: "qwen3.5:27b", brainBaseUrl: null });
+  const picked = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(picked["brainModel"], "qwen3.5:27b");
+  assert.equal("brainBaseUrl" in picked, false);
+  // The contract's pin: the local brain rides on brain / brainModel / brainBaseUrl and adds no key.
+  assert.deepEqual(
+    [...SETTINGS_KEYS].sort(),
+    ["accent", "autoWake", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
+  );
+  assert.ok(!SETTINGS_KEYS.some((k) => /local/i.test(k)));
+});

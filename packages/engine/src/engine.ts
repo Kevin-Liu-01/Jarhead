@@ -1,19 +1,22 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { totalmem } from "node:os";
 import { join } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, dataPaths, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
-import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, foreignModel, normalizeUtterance, responsesDelegationConfig, screenNote, similarity, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
+import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, bestFit, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
-import { MemoryBridge, type MemoryBridgeSeams } from "./memory-bridge.ts";
+import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
 import {
+  BRAIN_KINDS,
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
+  LOCAL_NONE,
   MAIN_THREAD_ID,
   SETTINGS_KEYS,
   grantOf,
@@ -32,6 +35,7 @@ import {
   type EngineCommand,
   type EngineEvent,
   type LedgerRow,
+  type LocalServerStatus,
   type OverlayCommand,
   type PauseInfo,
   type Permissions,
@@ -125,6 +129,8 @@ export interface EngineOptions {
   readonly dockAuditDelayMs?: number;
   /** The memory module's seams: a whole fake service (tests), or the embedder / extractor / fetch the real one is built over. */
   readonly memory?: MemoryBridgeSeams;
+  /** Test seam: answers the local model server discovery instead of the three loopback ports. */
+  readonly discoverLocal?: (o: { baseUrl?: string | undefined; ramBytes: number }) => Promise<LocalServerStatus>;
 }
 
 /** Where a page's messages sit in the session file (`TranscriptPage.cursor`); "Load earlier" reads backward from `startOffset`. */
@@ -245,6 +251,10 @@ export class Engine extends EventEmitter<EngineEvents> {
   private brain: Brain | undefined;
   private brainReady = false;
   private brainDetail = "not started";
+  /** The local model server as last seen (`lookLocal`): on the snapshot whatever the brain kind is. */
+  private localStatus: LocalServerStatus = LOCAL_NONE;
+  /** The local heal timer: when the next look falls due while `brain === "local"` and no local brain is ready; 0 = disarmed. */
+  private localHealAt = 0;
   private setupProbe: { openaiKey: SetupStatus["openaiKey"]; brain: SetupStatus["brain"] } = { openaiKey: "unchecked", brain: "unchecked" };
   /** Regions Kevin circled for Jarhead; the delegator hands the unconsumed ones to the brain. */
   protected marks: ScreenMark[] = [];
@@ -499,6 +509,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       apiKey: () => this.config.openaiApiKey,
       model: () => this.config.memoryModel,
       enabled: () => this.settings.memory !== false,
+      // Memory follows the SETTING: under `local` it runs on the server on this Mac, and while
+      // that server is down it runs on keywords and rules — never on OpenAI, whatever brain the
+      // fallback is running (docs/LOCAL.md §4).
+      local: () => this.localMemoryTarget(),
       onChange: () => this.scheduleSnapshot(),
       ...(opts.memory ?? {}),
     });
@@ -673,6 +687,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   updateSettings(patch: SettingsPatch): void {
     const next: Record<string, unknown> = { ...this.settings };
     for (const [key, value] of Object.entries(patch)) {
+      // A brain kind this build does not know would otherwise fall through selection as Responses; it is refused here, with a line.
+      if (key === "brain" && value !== null && value !== undefined && !(BRAIN_KINDS as readonly unknown[]).includes(value)) {
+        log.warn(`settings: unknown brain ${JSON.stringify(value)} dropped (one of ${BRAIN_KINDS.join(", ")})`);
+        continue;
+      }
       if (value === null) {
         // Clearing is only meaningful for optional fields; required ones keep their value.
         if (key in DEFAULT_SETTINGS) continue;
@@ -729,14 +748,86 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.agentsList = r.agents;
       this.scheduleSnapshot();
     });
-    // The brain can take a while to prove its auth; nothing else should wait for it.
-    this.brainStarted = this.startBrain().then(() => {
-      this.setupProbe = { ...this.setupProbe, brain: this.brainReady ? "ok" : "unavailable" };
-      this.scheduleSnapshot();
-      // One cheap key check at start, so Setup and the Console show the truth without a click.
-      void this.probeSetup();
-    });
+    // The brain can take a while to prove its auth; nothing else should wait for it. The local
+    // server is looked at first (one round of loopback probes), so an explicit `local` starts on
+    // a fresh listing and every other kind's Setup can say what is running on this Mac.
+    this.brainStarted = this.lookLocal()
+      .then(() => this.startBrain())
+      .then(async () => {
+        this.setupProbe = { ...this.setupProbe, brain: this.brainReady ? "ok" : "unavailable" };
+        this.armLocalHeal();
+        this.scheduleSnapshot();
+        // Memory's providers follow the brain setting: the bridge rebuilds only when its identity moved.
+        await this.memory.relink();
+        // One cheap key check at start, so Setup and the Console show the truth without a click.
+        void this.probeSetup();
+      });
     this.scheduleSnapshot();
+  }
+
+  // -------------------------------------------------------- the local server
+  // Discovery is the engine's: one look at start, at every probe and brain restart, and — while
+  // Kevin picked `local` and no local brain is ready — every LOCAL_HEAL_MS from tick(), so a server
+  // opened after the daemon is picked up without a click. Read-only throughout (docs/LOCAL.md).
+
+  /** How often the heal timer looks while `brain === "local"` and the local brain is not ready. */
+  static readonly LOCAL_HEAL_MS = 60_000;
+
+  /** One look at the local server (pinned root under `local`, else the three loopback ports); stores it and redraws. Never throws. */
+  private async lookLocal(): Promise<LocalServerStatus> {
+    const baseUrl = this.settings.brain === "local" ? this.settings.brainBaseUrl?.trim() || undefined : undefined;
+    const ramBytes = totalmem();
+    try {
+      const status = this.opts.discoverLocal
+        ? await this.opts.discoverLocal({ baseUrl, ramBytes })
+        : await discoverLocalServer({ baseUrl, ramBytes, fetch, now: this.now, apiKey: secretsPresent().brainApiKey ? this.config.brainApiKey : undefined });
+      // A look never forgets the running brain's pick while the server still lists it (discovery itself does not pick).
+      const picked = this.brain instanceof LocalBrain ? this.brain.status.picked : undefined;
+      this.localStatus = picked && status.models.some((m) => m.id === picked) ? { ...status, picked } : status;
+    } catch (e) {
+      log.debug(`local server look failed: ${(e as Error).message}`);
+      this.localStatus = { ...LOCAL_NONE, ...(baseUrl ? { baseUrl } : {}), ramBytes, checkedAt: this.now() };
+    }
+    this.scheduleSnapshot();
+    return this.localStatus;
+  }
+
+  /** Whether the running brain is the local one and ready. */
+  private localBrainUp(): boolean {
+    return this.brainReady && this.brain instanceof LocalBrain;
+  }
+
+  /** Arm the heal timer when Kevin picked `local` and no local brain is ready; disarm it otherwise (a ready local brain, another kind). */
+  private armLocalHeal(): void {
+    this.localHealAt = this.settings.brain === "local" && !this.localBrainUp() ? this.now() + Engine.LOCAL_HEAL_MS : 0;
+  }
+
+  /** From tick(): the heal timer fell due — look again, and when the server can run the pick (or a best fit) restart the brain onto it. */
+  private async healLocal(): Promise<void> {
+    if (this.brainRestart) return;
+    const status = await this.lookLocal();
+    if (this.settings.brain !== "local" || this.localBrainUp()) {
+      this.armLocalHeal();
+      return;
+    }
+    const wanted = this.settings.brainModel.trim();
+    const fits = status.reachable && (wanted ? status.models.some((m) => m.id === wanted || m.id === `${wanted}:latest`) : bestFit(status.models) !== undefined);
+    if (fits) await this.restartBrain("local server appeared");
+    else this.armLocalHeal();
+  }
+
+  /**
+   * Where memory runs (memory-bridge.ts `local`): under `local`, the server on this Mac with the
+   * brain's model as the extractor and the discovered embedding model — or `"offline"` while nothing
+   * answers, so item text stays on the Mac on keywords and rules; undefined under every other kind.
+   */
+  private localMemoryTarget(): LocalMemoryTarget | "offline" | undefined {
+    if (this.settings.brain !== "local") return undefined;
+    const s = this.localStatus;
+    if (!s.reachable || !s.flavor) return "offline";
+    const chatModel = (this.brain instanceof LocalBrain ? this.brain.status.picked : undefined) ?? this.settings.brainModel.trim();
+    const chatContext = s.models.find((m) => m.id === chatModel)?.contextLength;
+    return { flavor: s.flavor, baseUrl: s.baseUrl, chatModel, ...(chatContext !== undefined ? { chatContext } : {}), ...(s.embedModel ? { embedModel: s.embedModel } : {}) };
   }
 
   /** Resolves once the brain has been chosen (ready or fallen back). */
@@ -1146,8 +1237,10 @@ export class Engine extends EventEmitter<EngineEvents> {
         log.warn(`old brain did not stop cleanly: ${(e as Error).message}`);
       }
       const wasResponses = old instanceof ResponsesBrain;
+      await this.lookLocal();
       await this.startBrain();
       this.setupProbe = { ...this.setupProbe, brain: this.brainReady ? "ok" : "unavailable" };
+      this.armLocalHeal();
       if (this.live && this.brain) {
         // Live fixes the delegation target (client vs Responses) when the session
         // starts, so a swap across that line needs a fresh session; within a kind the
@@ -1162,6 +1255,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         }
       }
       this.scheduleSnapshot();
+      // The brain setting may have moved memory's providers (local ↔ OpenAI ↔ keywords).
+      await this.memory.relink();
     })().finally(() => {
       this.brainRestart = undefined;
     });
@@ -1202,6 +1297,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         openaiKey = "unchecked";
       }
     }
+    // The local server, for every kind: Setup says "Ollama 0.34.0 · 3 models" under the Local option before Kevin commits.
+    await this.lookLocal();
     await this.ready();
     this.setupProbe = { openaiKey, brain: this.brainReady ? "ok" : "unavailable" };
     this.scheduleSnapshot();
@@ -1219,7 +1316,24 @@ export class Engine extends EventEmitter<EngineEvents> {
       ...(this.brainReady && this.brain && this.brain !== this.opts.brain ? { brainResolved: this.brain.kind as Exclude<Settings["brain"], "auto"> } : {}),
       liveModel: this.config.liveModel,
       secrets: secretsPresent(),
+      local: this.localStatus,
+      dataPaths: this.dataPathsNow(),
     };
+  }
+
+  /** The four "where words go" rows, from the one function the doctor prints too (@jarhead/core `dataPaths`). */
+  private dataPathsNow(): SetupStatus["dataPaths"] {
+    const resolved = this.brainReady && this.brain && this.brain !== this.opts.brain ? (this.brain.kind as Exclude<Settings["brain"], "auto">) : undefined;
+    return dataPaths({
+      brain: this.settings.brain,
+      brainModel: this.settings.brainModel,
+      ...(resolved ? { brainResolved: resolved } : {}),
+      brainDetail: this.brain?.detail ?? this.brainDetail,
+      local: this.localStatus,
+      memory: this.memory.summary(),
+      hasOpenAIKey: Boolean(this.config.openaiApiKey),
+      liveModel: this.config.liveModel,
+    });
   }
 
   private async startBrain(): Promise<void> {
@@ -1265,6 +1379,9 @@ export class Engine extends EventEmitter<EngineEvents> {
           return baseUrl ? undefined : "no server URL (Settings or JARHEAD_BRAIN_BASE_URL)";
         case "openai-responses":
           return undefined;
+        case "local":
+          // Never in AUTO_BRAIN_ORDER: a server another project left running is not a choice Kevin made.
+          return wanted === "local" ? undefined : "only when picked (Settings › Brain › Local model)";
       }
     };
 
@@ -1304,7 +1421,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             }),
           };
         case "anthropic-api":
-          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort }) };
+          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }) };
         case "openai-compatible": {
           // Only a key Kevin set for this brain (JARHEAD_BRAIN_API_KEY) goes to an arbitrary
           // host; config.brainApiKey falls back to OPENAI_API_KEY, which belongs to OpenAI alone.
@@ -1316,9 +1433,31 @@ export class Engine extends EventEmitter<EngineEvents> {
           return {
             label: "OpenAI-compatible",
             ...(key.warning ? { warning: key.warning } : {}),
-            brain: new OpenAICompatibleBrain({ runner, baseUrl, apiKey: key.apiKey, model }),
+            brain: new OpenAICompatibleBrain({ runner, baseUrl, apiKey: key.apiKey, model, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }),
           };
         }
+        case "local":
+          // The model on this Mac: discovered (or pinned by brainBaseUrl), Kevin's id or the best fit; only a
+          // key Kevin set for this brain (an LM Studio token) ever goes to it, never OPENAI_API_KEY. A
+          // thread's brain shares main's discovery and sends no thread_* tools of its own.
+          return {
+            label: "Local",
+            brain: new LocalBrain({
+              runner,
+              baseUrl: this.settings.brainBaseUrl?.trim() || undefined,
+              model: this.settings.brainModel.trim(),
+              effort: this.settings.effort,
+              threads: () => this.settings.threads && !spec,
+              status: this.localStatus,
+              ramBytes: this.localStatus.ramBytes || totalmem(),
+              apiKey: secretsPresent().brainApiKey ? this.config.brainApiKey : undefined,
+              maxWallMs: spec ? spec.secondsCap * 1000 : undefined,
+              onStatus: (status) => {
+                this.localStatus = status;
+                this.scheduleSnapshot();
+              },
+            }),
+          };
         case "openai-responses":
           if (spec) return undefined;
           // The model override only applies when Kevin chose this backend; under `auto` it may be another vendor's id.
@@ -1347,12 +1486,13 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
       const candidate = build(kind);
       if (!candidate) continue;
-      if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.PROBE_REMEDY);
+      if (candidate.warning) this.problemOf("brain.probe", candidate.warning, Engine.BRAIN_REMEDY);
       const r = await candidate.brain.start();
       if (r.ready) {
         this.brain = candidate.brain;
         this.threadFactoryOfKind = threadFactoryFor(kind);
         this.brainReady = true;
+        if (kind === "local") this.localBrainReady(candidate.brain as LocalBrain);
         // Landing on Responses under `auto` deserves a why: which backends broke
         // (they have a problem() line each) and whether the rest were merely absent.
         const why = [failed.length ? `${failed.join(", ")} could not start` : "", skipped ? "no other brain is signed in or configured" : ""].filter(Boolean).join("; ");
@@ -1363,8 +1503,16 @@ export class Engine extends EventEmitter<EngineEvents> {
       await candidate.brain.stop().catch(() => undefined);
       tried.push(`${candidate.label}: ${r.detail}`);
       failed.push(candidate.label);
-      // A configured backend that cannot start is worth a line in the Console.
-      this.problemOf("brain.unavailable", `${candidate.label} brain unavailable (${r.detail}); ${order.length > 1 ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.PROBE_REMEDY);
+      // A configured backend that cannot start is worth a line in the Console. For `local` the line is
+      // Kevin's to act on (amber, with the command to run) and the fallback is said out loud: his brain
+      // was free, and until the server is back the work bills OpenAI; memory stays on the Mac.
+      if (kind === "local") {
+        const problem = this.localProblem(r.detail);
+        this.problemOf("brain.local", problem.text, problem.remedy);
+        this.problemOf("brain.unavailable", `Local brain unavailable (${r.detail}); using the OpenAI backend instead — until it is back, the brain's work goes to OpenAI too. Memory stays local.`, Engine.BRAIN_REMEDY);
+        continue;
+      }
+      this.problemOf("brain.unavailable", `${candidate.label} brain unavailable (${r.detail}); ${order.length > 1 ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.BRAIN_REMEDY);
     }
     // An explicit choice that could not start: the Live session's own Responses delegation always can.
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
@@ -1375,9 +1523,61 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.brainDetail = r.detail;
   }
 
+  /**
+   * The local brain came up: the rows about it go, and what is left to say is informational —
+   * a trained window under LOCAL_NUM_CTX_MIN (Jarhead's tools alone are ~11k tokens), or a
+   * pinned root off this Mac (the words leave for the network). Both texts are docs/LOCAL.md §10's.
+   */
+  private localBrainReady(brain: LocalBrain): void {
+    this.clearProblems("brain.local");
+    this.clearProblems("brain.unavailable", (t) => t.startsWith("Local brain unavailable"));
+    const status = brain.status;
+    const id = this.settings.brainModel.trim() || status.picked || "";
+    const model = status.models.find((m) => m.id === id);
+    if (model?.contextLength !== undefined && model.contextLength < LOCAL_NUM_CTX_MIN) {
+      this.problemOf("brain.local", `Local brain: ${model.id}'s window is ${Math.round(model.contextLength / 1024)}k tokens; Jarhead's tools alone are ~11k. Pick a larger model.`, Engine.SETUP_REMEDY);
+    }
+    const host = hostOf(status.baseUrl);
+    if (host && !isLoopbackHost(host)) this.problemOf("brain.probe", `Local brain on ${new URL(status.baseUrl).host}: leaves this Mac for your network`);
+  }
+
+  /**
+   * The amber row for a local brain that did not start, from what the last look found: the text
+   * table of docs/LOCAL.md §10 — nothing answering, nothing that can call tools (with the pull to
+   * run), the picked id gone (with its pull), else the resolver's own sentence. `copy` is the
+   * command Kevin runs himself; no surface ever runs it.
+   */
+  private localProblem(detail: string): { text: string; remedy: ProblemRemedy } {
+    const status = this.localStatus;
+    const pinned = this.settings.brainBaseUrl?.trim();
+    if (!status.reachable) {
+      const where = pinned ? `at ${hostOf(status.baseUrl) ? new URL(status.baseUrl).host : pinned}` : "on this Mac (127.0.0.1:11434, :1234, :8080)";
+      return { text: `Local brain: nothing answers ${where}. Open Ollama, or install it — see docs/LOCAL.md.`, remedy: Engine.LOCAL_REMEDY };
+    }
+    const server = serverLabel(status);
+    const wanted = this.settings.brainModel.trim();
+    const resolved = resolveLocalModel(wanted, status);
+    if ("error" in resolved) {
+      if (!wanted) {
+        if (status.flavor !== "ollama") return { text: `Local brain: ${server} is up but nothing on it can call tools. Load a model that can.`, remedy: Engine.LOCAL_REMEDY };
+        const s = status.suggested ?? suggestedPull(status.ramBytes);
+        return { text: `Local brain: ${server} is up but nothing on it can call tools. In a terminal: ${s.command} (${Math.round(s.sizeBytes / 1e9)} GB, fits this Mac).`, remedy: { ...Engine.LOCAL_REMEDY, copy: s.command } };
+      }
+      const listed = status.models.some((m) => m.id === wanted || m.id === `${wanted}:latest` || m.id.split(":")[0] === wanted);
+      if (!listed && !/:cloud$|-cloud$/i.test(wanted)) {
+        const have = status.models.map((m) => m.id);
+        const has = have.length ? `it has ${have.slice(0, 6).join(", ")}${have.length > 6 ? ` and ${have.length - 6} more` : ""}` : "it lists nothing";
+        return { text: `Local brain: ${wanted} is not on ${server} (${has}). Pull it, or pick another.`, remedy: status.flavor === "ollama" ? { ...Engine.SETUP_REMEDY, copy: `ollama pull ${wanted}` } : Engine.SETUP_REMEDY };
+      }
+      return { text: resolved.error, remedy: Engine.SETUP_REMEDY };
+    }
+    // The model resolved and the server still refused the start (a token, a 5xx): the brain's own sentence, with Retry.
+    return { text: `Local brain: ${detail}`, remedy: Engine.LOCAL_REMEDY };
+  }
+
   /** Called by the shell when the brain fails to authenticate mid-run. */
   private async swapToResponses(reason: string): Promise<void> {
-    this.problemOf("brain.unavailable", `brain failed (${reason}); switching to the OpenAI backend for the next session`, Engine.PROBE_REMEDY);
+    this.problemOf("brain.unavailable", `brain failed (${reason}); switching to the OpenAI backend for the next session`, Engine.BRAIN_REMEDY);
     await this.brain?.stop();
     const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
     await responses.start();
@@ -1926,6 +2126,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       log.info(`asleep (${cause}${o.phrase ? `: "${o.phrase}"` : ""}${farewell ? ", after the farewell" : ""})`);
       // The thread processes — the spare too — and the brain's own cancel; neither holds anything up.
       await this.bounded(Promise.all([this.threads.stopAll(), cancel]));
+      // Asleep in the notch, the weights need not sit in memory: a local brain lets them go (Ollama keep_alive 0); warmUp() reloads them at wake.
+      await this.bounded((this.brain?.cool?.() ?? Promise.resolve()).catch((e: Error) => log.debug(`brain cool at sleep: ${e.message}`)));
     })();
     this.sleeping = run.finally(() => {
       this.sleeping = undefined;
@@ -2215,6 +2417,8 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private async lookAtScreen(sink: BrainSink): Promise<BrainAttachment | undefined> {
     if (this.brain instanceof ResponsesBrain) return undefined;
+    // A text-only model (a local one without vision) has nowhere to put the pixels: no pre-warm shot for it.
+    if (this.brain?.acceptsImages === false) return undefined;
     if (!this.hands.ready && !this.hands.available) return undefined;
     this.runner.attach(sink);
     try {
@@ -2925,23 +3129,31 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** A circle nobody asked about for this long is not context any more; it leaves rather than ride into an unrelated task. */
   private static readonly PENDING_MARK_TTL_MS = 15 * 60_000;
 
-  private async addMark(rawRect: Rect, path?: readonly Point[]): Promise<void> {
+  private async addMark(rawRect: Rect, path?: readonly Point[], opts?: { readonly source?: "window"; readonly element?: ScreenMark["element"] }): Promise<void> {
     const bbox = normalizeRect(rawRect);
     const id = newId("mark");
     const at = this.now();
     const size = `${Math.round(bbox.w)}×${Math.round(bbox.h)} at ${Math.round(bbox.x)},${Math.round(bbox.y)}`;
+    const window = opts?.source === "window";
     // Registered before the capture, so a delegation fired while the hands work
-    // sees a mark to wait for instead of missing it.
-    const mark: ScreenMark = { id, rect: bbox, ...(path && path.length > 0 ? { path } : {}), at, consumed: false };
+    // sees a mark to wait for instead of missing it. A window mark carries how it was
+    // made and what it is; its rect is the window's frame already.
+    const mark: ScreenMark = { id, rect: bbox, ...(path && path.length > 0 ? { path } : {}), at, consumed: false, ...(window ? { source: "window" as const, ...(opts?.element ? { element: opts.element } : {}) } : {}) };
     this.marks = [...this.marks, mark].slice(-Engine.MAX_MARKS);
     this.scheduleSnapshot();
     // Asleep, the mark simply waits for the next session; awake, the voice hears about it now.
-    this.live?.appendInstructions(null, `Kevin just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`);
+    this.live?.appendInstructions(
+      null,
+      window
+        ? `Kevin just captured a window of his screen (${opts?.element?.app ?? "a window"}, ${Math.round(bbox.w)}×${Math.round(bbox.h)}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`
+        : `Kevin just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`,
+    );
     // What did he surround? The element under the stroke's centroid and the window
     // list say; the mark snaps to the smallest frame that holds the centroid and
-    // sits mostly inside his stroke. Failing that, the stroke's own box stands.
+    // sits mostly inside his stroke. Failing that, the stroke's own box stands. A
+    // window is already the target: no probes, no snap.
     const capture = (async () => {
-      const snapped = await this.resolveMarkTarget(bbox, path);
+      const snapped = window ? (opts?.element ? { rect: bbox, element: opts.element } : undefined) : await this.resolveMarkTarget(bbox, path);
       if (snapped) this.marks = this.marks.map((m) => (m.id === id ? { ...m, rect: snapped.rect, ...(snapped.element ? { element: snapped.element } : {}) } : m));
       const rect = snapped?.rect ?? bbox;
       const what = snapped?.element ? ` (${[snapped.element.role, snapped.element.title ? `"${snapped.element.title}"` : "", snapped.element.app ? `in ${snapped.element.app}` : ""].filter(Boolean).join(" ")})` : "";
@@ -2963,6 +3175,39 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (!path || path.length < 2) this.emit("overlay", { cmd: "stroke", points: rectCorners(target.rect), tone: "mark", ttlMs: 2500 });
     const label = target.element?.title || target.element?.app;
     this.emit("overlay", { cmd: "orb.trace", points: roundedRectPoints(target.rect), closed: true, tone: "mark", ttlMs: 6000, ...(label ? { label: label.slice(0, 40) } : {}), reason: "mark" });
+  }
+
+  /** A mark id as `newId("mark")` mints it: "mark_" and lowercase base36. Anything else is malformed and ignored. */
+  private static readonly MARK_ID = /^mark_[a-z0-9]+$/;
+
+  /**
+   * The × on one thumbnail: the mark leaves now, consumed or not. A capture still in flight
+   * for it finishes into nothing — captureMark writes through `this.marks.map`, which no
+   * longer finds the id. An unknown or malformed id changes nothing and says nothing: the
+   * snapshot is the truth.
+   */
+  private removeMark(id: string): void {
+    if (!Engine.MARK_ID.test(id)) return;
+    if (!this.marks.some((m) => m.id === id)) return;
+    this.marks = this.marks.filter((m) => m.id !== id);
+    this.markConsumedAt.delete(id);
+    this.scheduleSnapshot();
+  }
+
+  /** The notch's Window box: the front window as a mark, whole, no snap. Works asleep. No front window: a toast, no mark. */
+  private async markFrontWindow(): Promise<void> {
+    const fm = await this.hands.request<FrontmostInfo>("frontmost", {}, 1500).catch((e: Error) => {
+      log.debug(`mark.window: ${e.message}`);
+      return undefined;
+    });
+    const w = fm?.window;
+    if (!w || !(w.w >= 16 && w.h >= 16)) {
+      this.toast("No front window to capture", "warn");
+      return;
+    }
+    const element: NonNullable<ScreenMark["element"]> = { role: "window", ...(w.title ? { title: w.title } : {}), ...(fm.app ? { app: fm.app } : {}) };
+    void this.addMark({ x: w.x, y: w.y, w: w.w, h: w.h }, undefined, { source: "window", element });
+    this.toast(`Captured ${fm.app || "window"} · ${Math.round(w.w)}×${Math.round(w.h)}`);
   }
 
   /** Over this share of a frame inside the padded stroke box, the frame is what Kevin surrounded. */
@@ -3797,6 +4042,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       }
       case "mark.add":
         return this.addMark(cmd.rect, cmd.path);
+      case "mark.remove":
+        return this.removeMark(String((cmd as { id?: unknown }).id ?? ""));
+      case "mark.window":
+        void this.markFrontWindow();
+        return;
       case "mark.clear":
         return this.clearMarks();
       case "daemon.restart":
@@ -3844,6 +4094,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    this.localHealAt = 0;
     if (this.dockAuditTimer) clearTimeout(this.dockAuditTimer);
     this.dockAuditTimer = undefined;
     this.stopAxWarm();
@@ -3884,6 +4135,11 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.logMemory();
     }
     this.problemsTick(now);
+    // The local heal: Kevin picked `local`, no local brain is ready, a minute passed — look again (and restart onto the server when it can run the pick).
+    if (this.localHealAt !== 0 && now >= this.localHealAt) {
+      this.localHealAt = now + Engine.LOCAL_HEAL_MS;
+      void this.healLocal();
+    }
     // A question queued behind one Kevin moved on from comes up now (the desk cannot see the root's drop).
     this.desk.promote();
     const idleMs = this.settings.idleSleepMinutes * 60_000;
@@ -4137,6 +4393,9 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   /** The remedies that are one command away. */
   private static readonly PROBE_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "config.probe" } };
+  /** A brain row's Retry restarts the brain (`config.probe` only re-checks the key and never re-selects). */
+  private static readonly BRAIN_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "problem.retry", kind: "brain.unavailable" } };
+  private static readonly LOCAL_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "problem.retry", kind: "brain.local" } };
   private static readonly SETUP_REMEDY: ProblemRemedy = { label: "Open Setup", open: "jarhead://setup" };
   private static readonly GO_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "go" } };
   private static readonly LIMIT_REMEDY: ProblemRemedy = { label: "Retry in 30 s", command: { type: "problem.retry", kind: "voice.limit" } };
@@ -4187,6 +4446,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         return;
       case "brain.unavailable":
       case "brain.probe":
+      case "brain.local":
         this.clearProblems(kind);
         await this.restartBrain("problem.retry");
         await this.probeSetup();
@@ -4954,6 +5214,15 @@ export class Engine extends EventEmitter<EngineEvents> {
 
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
     return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brain?.detail ?? this.brainDetail };
+  }
+}
+
+/** The hostname of a server root, "" when the URL does not parse. */
+function hostOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return "";
   }
 }
 

@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type MemorySummary, type PermissionInfo, type Permissions, type Problem, type WakeSettings } from "@jarhead/protocol";
-import { REPO_ROOT, keySource, readConfig } from "@jarhead/core";
+import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type DataPath, type LocalServerStatus, type MemorySummary, type PermissionInfo, type Permissions, type Problem, type SetupStatus, type WakeSettings } from "@jarhead/protocol";
+import { REPO_ROOT, dataPaths, keySource, readConfig, secretsPresent } from "@jarhead/core";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
 import { defaultConnectors } from "@jarhead/agents";
-import { browserJsDoctor, probeCodex, selfEditDoctorRow } from "@jarhead/brain";
+import { EMBED_PREFERENCE, LOCAL_NUM_CTX_MAX, LOCAL_NUM_CTX_MIN, browserJsDoctor, discoverLocalServer, probeCodex, resolveLocalModel, selfEditDoctorRow, serverLabel, suggestedPull } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess, type HelloPermissions } from "@jarhead/hands";
 import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, defaultExec, describeDock, planInstall, probeTarget, requirementHasIdentifier, runHygiene, type Exec, type TargetProbe } from "./install/index.ts";
@@ -139,8 +139,8 @@ function readSavedSettings(stateDir: string): { brain?: BrainKind; brainModel?: 
   }
 }
 
-/** Ask a running daemon which brain it resolved to; undefined when none answers within 1.5 s. */
-async function daemonBrain(socketPath: string): Promise<{ resolved: string | undefined; detail: string } | undefined> {
+/** Ask a running daemon which brain it resolved to, with its whole `setup` (the local server it saw, the data paths it computed); undefined when none answers within 1.5 s. */
+async function daemonBrain(socketPath: string): Promise<{ resolved: string | undefined; detail: string; setup: SetupStatus | undefined } | undefined> {
   if (!existsSync(socketPath)) return undefined;
   const client = new DaemonClient(socketPath);
   try {
@@ -153,8 +153,8 @@ async function daemonBrain(socketPath: string): Promise<{ resolved: string | und
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
         clearTimeout(timer);
-        const setup = (m.snapshot as { setup?: { brainResolved?: string; brainDetail?: string } } | undefined)?.setup;
-        resolve({ resolved: setup?.brainResolved, detail: setup?.brainDetail ?? "" });
+        const setup = (m.snapshot as { setup?: SetupStatus } | undefined)?.setup;
+        resolve({ resolved: setup?.brainResolved, detail: setup?.brainDetail ?? "", setup });
       });
       client.connect({ pid: process.pid, audio: false }).catch(() => {
         clearTimeout(timer);
@@ -305,6 +305,8 @@ export interface MemoryCheckInput {
   /** `<stateDir>/memory` and how many rows its append-only log holds; undefined rows = no store yet. */
   readonly storeDir: string;
   readonly storeRows: number | undefined;
+  /** `Settings.brain === "local"`: the brain's model memory reads conversations with ("" = not known yet: rules); undefined under every other kind. */
+  readonly localChat?: string | undefined;
 }
 
 /** "just now", "3 min ago", "2 h ago", "4 d ago" — the suffix is part of the word, so no caller writes "just now ago". */
@@ -328,7 +330,8 @@ export function agoWords(at: number, now = Date.now()): string {
  */
 export function memoryChecks(input: MemoryCheckInput): Check[] {
   const out: Check[] = [];
-  const matching = input.hasOpenAIKey ? "openai embeddings (text-embedding-3-small, 512 dims)" : "keywords (no OPENAI_API_KEY — nothing leaves the Mac)";
+  const local = input.localChat !== undefined;
+  const matching = local ? `local (${input.localChat || "rules"} on this Mac's server — nothing leaves for memory)` : input.hasOpenAIKey ? "openai embeddings (text-embedding-3-small, 512 dims)" : "keywords (no OPENAI_API_KEY — nothing leaves the Mac)";
   if (!input.enabled) {
     out.push({ group: "memory", name: "memory", status: "ok", detail: `off (Settings › Memory) — nothing is extracted, injected or embedded; the store under ${input.storeDir} stays as it is`, required: false });
   } else if (input.summary) {
@@ -336,11 +339,13 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
     const learned = m.lastRunAt ? `learned ${agoWords(m.lastRunAt)}${m.lastRun ? ` (+${m.lastRun.added} · ~${m.lastRun.updated} · ${m.lastRun.noop} noop · ${m.lastRun.extractor})` : ""}` : "not learned yet (runs after a conversation closes, at a quiet moment)";
     const waiting = m.pending ? ` · ${m.pending} conversation${m.pending === 1 ? "" : "s"} waiting` : "";
     const spent = m.budgetUsed ? ` · last prompts ${m.budgetUsed.brain} brain / ${m.budgetUsed.voice} voice tokens` : "";
+    // Under the local brain the daemon's summary names the space: which embedding model, how wide, which model reads — nothing leaves for memory.
+    const how = m.embeddings === "local" ? `local embeddings (${m.embeddingModel ?? "a local model"}, ${m.embeddingDims ?? "?"} dims) · extractor ${input.localChat || "rules"} — nothing leaves for memory` : local && m.embeddings === "keyword" ? `keywords · extractor ${input.localChat || "rules"} — nothing leaves for memory` : m.embeddings;
     out.push({
       group: "memory",
       name: "memory",
       status: m.enabled ? "ok" : "warn",
-      detail: `${m.count} remembered · ${m.forgotten} forgotten · ${m.archived} archived · matching ${m.embeddings} · ${learned}${waiting}${spent} (caps ${BRAIN_MEMORY_TOKENS} brain / ${VOICE_MEMORY_TOKENS} voice tokens per prompt)`,
+      detail: `${m.count} remembered · ${m.forgotten} forgotten · ${m.archived} archived · matching ${how} · ${learned}${waiting}${spent} (caps ${BRAIN_MEMORY_TOKENS} brain / ${VOICE_MEMORY_TOKENS} voice tokens per prompt)`,
       required: false,
       fix: m.enabled ? undefined : "the daemon reports memory off while settings.json says on — restart the daemon or flip Settings › Memory",
     });
@@ -350,6 +355,11 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
   }
   // Off is Kevin's choice: no extractor row, nothing is configured to run.
   if (!input.enabled) return out;
+  // Under the local brain the extractor is the brain's model on this Mac (Chat Completions JSON mode); the OpenAI plan does not apply.
+  if (local) {
+    out.push({ group: "memory", name: "extractor", status: input.localChat ? "ok" : "warn", detail: input.localChat ? `runs ${input.localChat} on the local server (Chat Completions JSON mode; rules when it cannot answer) — nothing leaves for memory` : "rules until the local brain has a model (pick one, or pull a tool-capable model)", required: false });
+    return out;
+  }
   const plan = extractorPlan(input.modelIds, input.override);
   const via = plan.pinned ? "JARHEAD_MEMORY_MODEL" : "the memory module's default";
   const spend = "Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each";
@@ -378,6 +388,97 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
     });
   }
   return out;
+}
+
+/** What the `local` rows need: the one look at the server (the daemon's, or the doctor's own), and the brain setting. */
+export interface LocalCheckInput {
+  readonly status: LocalServerStatus;
+  readonly brain: BrainKind;
+  readonly brainModel: string;
+  /** `Settings.brainBaseUrl` under `local`: a pinned root, named in the server row. */
+  readonly brainBaseUrl?: string | undefined;
+  /** The running daemon's memory summary, for the embedding model's measured dims. */
+  readonly memory?: MemorySummary | undefined;
+}
+
+const LOCAL_ROOTS = "127.0.0.1:11434, :1234, :8080";
+const OPEN_OLLAMA = "open Ollama.app — or brew install --cask ollama-app; see docs/LOCAL.md";
+
+/** A model's bytes as the rows say them: "17 GB" (decimal, as Ollama lists it). */
+function gbWords(bytes: number | undefined): string {
+  return bytes === undefined ? "? GB" : `${Math.round(bytes / 1e9)} GB`;
+}
+
+/** This Mac's memory as it is sold: "128 GB" (GiB-rounded). */
+function ramWords(bytes: number): string {
+  return `${Math.round(bytes / 1024 ** 3)} GB`;
+}
+
+/**
+ * The `local` group — `server`, and under `brain === "local"` also `model` and `embeddings`.
+ * Read-only: every fix is a command Kevin runs himself (an `ollama pull`, opening the app); the
+ * doctor never spawns `ollama` or `brew`. Advisory throughout (`required: false`): a Mac without
+ * a local server is a Mac on the cloud brains, not a broken one.
+ */
+export function localChecks(input: LocalCheckInput): Check[] {
+  const out: Check[] = [];
+  const { status, brain, brainModel } = input;
+  const local = brain === "local";
+  const pinned = input.brainBaseUrl?.trim();
+  if (!status.reachable) {
+    out.push({ group: "local", name: "server", status: "warn", detail: pinned ? `not answering at ${pinned}` : `not running (${LOCAL_ROOTS})`, required: false, fix: OPEN_OLLAMA });
+    if (local) out.push({ group: "local", name: "model", status: "warn", detail: `${brainModel || "the best fit"} waits for a server — until one answers the brain's work goes to OpenAI (memory stays on the Mac)`, required: false, fix: OPEN_OLLAMA });
+    return out;
+  }
+  const server = serverLabel(status);
+  const host = status.baseUrl.replace(/^https?:\/\//, "");
+  const models = status.models.filter((m) => !m.cloud);
+  const cloud = status.models.length - models.length;
+  const withTools = models.filter((m) => m.capabilities.includes("tools"));
+  out.push({ group: "local", name: "server", status: "ok", detail: `${server} @ ${host}${pinned ? " (pinned)" : ""} · ${models.length} model${models.length === 1 ? "" : "s"} · ${withTools.length} with tools${cloud ? ` · ${cloud} cloud (skipped)` : ""}`, required: false });
+  if (!local) return out;
+  const resolved = resolveLocalModel(brainModel, status);
+  const ram = ramWords(status.ramBytes);
+  if ("error" in resolved) {
+    if (!brainModel.trim()) {
+      const s = status.suggested ?? suggestedPull(status.ramBytes);
+      out.push({ group: "local", name: "model", status: "fail", detail: `nothing on ${server} can call tools`, required: false, fix: status.flavor === "ollama" ? `${s.command}  (${gbWords(s.sizeBytes)}, fits this Mac's ${ram})` : "load a model that can call tools" });
+    } else if (/ is not on /.test(resolved.error)) {
+      out.push({ group: "local", name: "model", status: "fail", detail: `${brainModel} not listed on ${server}${withTools.length ? ` (with tools: ${withTools.slice(0, 3).map((m) => m.id).join(", ")})` : ""}`, required: false, fix: resolved.copy ?? "pick a listed model in Settings › Brain" });
+    } else if (/cannot call tools/.test(resolved.error)) {
+      out.push({ group: "local", name: "model", status: "fail", detail: `${brainModel} cannot call tools${withTools.length ? ` — with tools: ${withTools.slice(0, 3).map((m) => m.id).join(", ")}` : ""}`, required: false, fix: withTools.length ? `pick one of ${withTools.slice(0, 3).map((m) => m.id).join(", ")} in Settings › Brain, or pnpm jarhead brain local ${withTools[0]!.id}` : (status.suggested ?? suggestedPull(status.ramBytes)).command });
+    } else {
+      out.push({ group: "local", name: "model", status: "fail", detail: resolved.error, required: false, fix: "pick a listed model in Settings › Brain" });
+    }
+  } else {
+    const m = resolved.model;
+    const trained = m.contextLength;
+    const asks = trained === undefined ? LOCAL_NUM_CTX_MAX : trained < LOCAL_NUM_CTX_MIN ? trained : Math.min(trained, LOCAL_NUM_CTX_MAX);
+    const window = trained === undefined ? `Jarhead asks ${asks}` : `trained ${trained}, Jarhead asks ${asks}${trained < LOCAL_NUM_CTX_MIN ? " (small: Jarhead's tools alone are ~11k tokens)" : ""}`;
+    const facts = `${m.capabilities.filter((c) => c !== "completion").join(" ") || "completion"} · ${window} · ${gbWords(m.sizeBytes)} of ${ram}`;
+    out.push({
+      group: "local",
+      name: "model",
+      status: resolved.picked ? "warn" : "ok",
+      detail: resolved.picked ? `best fit ${m.id} (nothing picked) · ${facts}` : `${m.id} · ${facts}`,
+      required: false,
+      fix: resolved.picked ? `pick it once in Settings › Brain › Model (or pnpm jarhead brain local ${m.id}) so a newer pull cannot move the choice` : undefined,
+    });
+  }
+  const embed = status.embedModel;
+  if (embed) {
+    const dims = input.memory?.embeddings === "local" && input.memory.embeddingDims ? ` · ${input.memory.embeddingDims} dims` : "";
+    out.push({ group: "local", name: "embeddings", status: "ok", detail: `${embed}${dims} · local`, required: false });
+  } else {
+    const first = EMBED_PREFERENCE[0] ?? "embeddinggemma";
+    out.push({ group: "local", name: "embeddings", status: "warn", detail: `keyword matching until an embedding model is pulled (${first}, ~300 MB)`, required: false, fix: status.flavor === "ollama" ? `ollama pull ${first}` : `load an embedding model (${EMBED_PREFERENCE.join(", ")})` });
+  }
+  return out;
+}
+
+/** The `privacy` group: one row per data path, `ok` always — they inform. The same rows the Console's "Leaves the Mac" shows, from the same function. */
+export function privacyChecks(paths: readonly DataPath[]): Check[] {
+  return paths.map((p) => ({ group: "privacy", name: p.what, status: "ok" as const, detail: `${p.where} · ${p.detail}`, required: false }));
 }
 
 // ---- words shared with `jarhead status` (main.ts runs on import, so they live here, where a test can reach them)
@@ -498,6 +599,8 @@ export async function runChecks(): Promise<Check[]> {
   const brainModel = saved.brainModel ?? cfg.brainModel;
   const brainBaseUrl = saved.brainBaseUrl ?? cfg.brainBaseUrl;
   const running = await daemonBrain(cfg.socketPath);
+  // The local model server: the running daemon's look when one answers, else one read of the three loopback ports (or the pinned root). Never a pull.
+  const localStatus = running?.setup?.local ?? (await discoverLocalServer({ ...(brain === "local" && brainBaseUrl ? { baseUrl: brainBaseUrl } : {}), ramBytes: totalmem(), apiKey: secretsPresent().brainApiKey ? cfg.brainApiKey : undefined }));
   const anthropicOk = checks.some((c) => c.name === "ANTHROPIC_API_KEY" && c.status === "ok");
   const expected = codex.bin && codex.signedIn ? "codex" : claudeBin || existsSync(join(homedir(), ".claude")) ? "claude-code (if its login answers the start-up probe)" : anthropicOk ? "anthropic-api" : brainBaseUrl ? "openai-compatible" : "openai-responses";
   const resolved =
@@ -510,11 +613,13 @@ export async function runChecks(): Promise<Check[]> {
         : running?.resolved
           ? `running (${running.detail})`
           : "explicit";
+  // Under `local` the row names the model that runs (Kevin's or the pick) and the server root, discovered or pinned.
+  const localWords = brain === "local" ? `${brainModel || localStatus.picked ? ` (${brainModel || localStatus.picked})` : ""}${localStatus.reachable ? ` @ ${localStatus.baseUrl.replace(/^https?:\/\//, "")} (${brainBaseUrl ? "pinned" : "discovered"})` : brainBaseUrl ? ` @ ${brainBaseUrl} (pinned, not answering)` : " (no server answering)"}` : `${brainModel ? ` (${brainModel})` : ""}${brainBaseUrl ? ` @ ${brainBaseUrl}` : ""}`;
   add({
     group: "brain",
     name: "default brain",
     status: "ok",
-    detail: `${brain}${brainModel ? ` (${brainModel})` : ""}${brainBaseUrl ? ` @ ${brainBaseUrl}` : ""} — ${resolved}; auto order ${AUTO_BRAIN_ORDER.join(" → ")}`,
+    detail: `${brain}${localWords} — ${resolved}; auto order ${AUTO_BRAIN_ORDER.join(" → ")} (local only when picked)`,
     required: false,
   });
 
@@ -571,11 +676,30 @@ export async function runChecks(): Promise<Check[]> {
     ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
   });
 
+  // ---- local: the server on this Mac, and under `local` the model and the embeddings memory uses (the daemon's dims when it answers)
+  for (const c of localChecks({ status: localStatus, brain, brainModel, brainBaseUrl, memory: daemon?.memory })) add(c);
   // ---- memory: what Jarhead durably knows about Kevin, how it matches, which model reads the conversations.
   // Reads the running daemon's summary and the store's row count; the model list is the keys row's one GET. Never a session, never the extractor.
   {
     const memoryDir = join(cfg.stateDir, "memory");
-    for (const c of memoryChecks({ enabled: saved.memory ?? true, hasOpenAIKey: Boolean(cfg.openaiApiKey), modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir) })) add(c);
+    for (const c of memoryChecks({ enabled: saved.memory ?? true, hasOpenAIKey: Boolean(cfg.openaiApiKey), modelIds: modelIds, override: cfg.memoryModel, summary: daemon?.memory, storeDir: memoryDir, storeRows: memoryStoreRows(memoryDir), ...(brain === "local" ? { localChat: brainModel || localStatus.picked || "" } : {}) })) add(c);
+  }
+  // ---- privacy: where words go — the daemon's rows when one answers, else the same function over what the doctor read
+  {
+    const paths =
+      running?.setup && running.setup.dataPaths.length > 0
+        ? running.setup.dataPaths
+        : dataPaths({
+            brain,
+            brainModel,
+            ...(running?.resolved ? { brainResolved: running.resolved as Exclude<BrainKind, "auto"> } : {}),
+            brainDetail: running?.detail ?? "",
+            local: localStatus,
+            ...(daemon?.memory ? { memory: daemon.memory } : {}),
+            hasOpenAIKey: Boolean(cfg.openaiApiKey),
+            liveModel: cfg.liveModel,
+          });
+    for (const c of privacyChecks(paths)) add(c);
   }
 
   // ---- agents: the sessions on this Mac and the connector that continues one

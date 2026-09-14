@@ -2,7 +2,9 @@ import { join } from "node:path";
 import { logger, type Ledger } from "@jarhead/core";
 import { normalizeUtterance } from "@jarhead/brain";
 import {
+  ChatExtractor,
   KeywordEmbedder,
+  LocalEmbedder,
   MemoryService,
   OpenAIEmbedder,
   ResponsesExtractor,
@@ -18,7 +20,7 @@ import {
   pickMemoryModel,
   DEFAULT_MEMORY_MODEL,
 } from "@jarhead/memory";
-import type { EngineCommand, LedgerRow, MemoryItem, MemoryKind, MemoryState, MemorySummary, TranscriptItem } from "@jarhead/protocol";
+import type { EngineCommand, LedgerRow, LocalFlavor, MemoryItem, MemoryKind, MemoryState, MemorySummary, TranscriptItem } from "@jarhead/protocol";
 
 /**
  * The engine's one door to @jarhead/memory: what Jarhead durably knows about Kevin.
@@ -34,7 +36,12 @@ import type { EngineCommand, LedgerRow, MemoryItem, MemoryKind, MemoryState, Mem
  * never delays the first action. The spoken reflexes ("remember that …", "forget
  * that") cost nothing and need no brain. Memory never calls Codex: the extractor is a
  * Responses call on Kevin's OpenAI key (dollars, bounded by the caps), or rules when
- * there is no key.
+ * there is no key — or, under `Settings.brain === "local"`, the brain's own model on the
+ * server on this Mac (`ChatExtractor`) with a discovered embedding model (`LocalEmbedder`)
+ * or keywords, so item text and closed conversations never leave the Mac. Memory follows
+ * the SETTING, not the running brain: a fallback to OpenAI never re-routes memory text.
+ * `relink()` rebuilds the service when that identity moves and `reembed` heals the
+ * vectors at quiet ticks.
  *
  * Tests inject a FakeMemoryService through `EngineOptions.memory.service`; a store
  * that cannot start leaves memory off with one warning and the engine runs on.
@@ -92,7 +99,21 @@ export interface MemoryServiceLike {
   summary(): Omit<MemorySummary, "enabled" | "pending">;
   /** One slice of housekeeping (≤ 200 pair checks); the cursor carries across calls; `done` ends the pass. */
   consolidateStep(opts?: { readonly signal?: AbortSignal }): Promise<{ readonly merged: number; readonly archived: number; readonly done: boolean }>;
+  /** Live items with no vector in the current embedding space, `limit` at a time; returns how many were embedded, 0 when every item has one. */
+  reembed(limit?: number): Promise<number>;
   flush(): void;
+}
+
+/** The local server memory runs on under `Settings.brain === "local"`: the brain's model reads conversations, the embedding model (when one is pulled) matches items. */
+export interface LocalMemoryTarget {
+  readonly flavor: LocalFlavor;
+  readonly baseUrl: string;
+  /** The brain's model id, verbatim (Kevin's pick or the engine's best fit); "" when none is known yet — rules read then. */
+  readonly chatModel: string;
+  /** The model's trained window, when discovery knows it; sizes the extractor's slice. */
+  readonly chatContext?: number;
+  /** First of EMBED_PREFERENCE on the server; absent = keyword matching. */
+  readonly embedModel?: string;
 }
 
 /** Test seams: a whole service, or the parts the bridge would otherwise build from the package. */
@@ -116,6 +137,12 @@ export interface MemoryBridgeOptions extends MemoryBridgeSeams {
   readonly model: () => string | undefined;
   /** `Settings.memory !== false`, read live: off means no extraction, no injection, no embedding call, no memory.* row. */
   readonly enabled: () => boolean;
+  /**
+   * Where memory runs, read live. A target: `Settings.brain === "local"` and the server answers —
+   * memory runs there and the OpenAI branch is skipped even with a key. `"offline"`: the setting is
+   * `local` but nothing answers — keywords and rules, nothing leaves. undefined: every other kind.
+   */
+  readonly local: () => LocalMemoryTarget | "offline" | undefined;
   /** The snapshot wants redrawing (counts, pending, the last run). */
   readonly onChange: () => void;
 }
@@ -144,38 +171,40 @@ export class MemoryBridge {
   private consolidateAt = 0;
   /** The extractor model the key's own list names when JARHEAD_MEMORY_MODEL is not set (one free GET at start). */
   private pickedModel: string | undefined;
-  private picking: Promise<void> | undefined;
+  /** Whether the key's list was asked yet (once per process; a wrong default would fall to rules on every run). */
+  private pickedOnce = false;
+  /** The build or relink under way; `ready()` waits on it. */
+  private building: Promise<void> | undefined;
+  /** Which providers the service is built over ("local|url|embed|chat", "openai|model", "keyword"); relink() rebuilds only when it moves. */
+  private identity: string | undefined;
+  /** A relink changed the embedding space: `reembed()` runs at quiet ticks until it returns 0. */
+  private reembedPending = false;
+  /** A reembed slice is the run in flight (not a conversation: the summary's `pending` leaves it out). */
+  private reembedding = false;
 
   constructor(private readonly opts: MemoryBridgeOptions) {
     if (opts.service) {
       this.service = opts.service;
       return;
     }
-    // With a key and no pinned model, ask the key which mini-class Responses model it lists before the
-    // extractor is built (a wrong default would fall to rules on every run). Until it answers — at most
-    // PICK_TIMEOUT_MS — the bridge has no service: nothing is read, nothing injected, which is what a
-    // fresh daemon's first seconds look like anyway.
-    if (this.opts.apiKey() && !this.opts.model() && !this.opts.extractor) {
-      this.picking = this.pickModel().finally(() => {
-        this.picking = undefined;
-        this.start();
-      });
-      return;
-    }
-    this.start();
+    this.building = this.start().finally(() => {
+      this.building = undefined;
+    });
   }
 
-  /** Build the service (once) and read what the ledger holds; a store that cannot start is one warning. */
-  private start(): void {
+  /** Build the service (once) over the providers the settings name and read what the ledger holds; a store that cannot start is one warning. */
+  private async start(): Promise<void> {
+    const target = this.opts.local();
     try {
-      this.service = this.build();
+      this.service = await this.build(target);
+      this.identity = this.identityOf(target);
     } catch (e) {
       // The store lives under <stateDir>/memory; a dir that cannot be made or read is one warning, not a dead engine.
       log.warn(`could not start the memory store: ${(e as Error).message.split("\n")[0]}; memory is off until it does`);
       return;
     }
     const s = this.service.summary();
-    log.info(`store at ${join(this.opts.stateDir, "memory")} · ${s.embeddings} matching · ${s.count} live`);
+    log.info(`store at ${join(this.opts.stateDir, "memory")} · ${s.embeddings} matching${s.embeddingModel ? ` (${s.embeddingModel})` : ""} · ${s.count} live`);
     this.catchUp();
   }
 
@@ -183,6 +212,7 @@ export class MemoryBridge {
   private async pickModel(): Promise<void> {
     const key = this.opts.apiKey();
     if (!key) return;
+    this.pickedOnce = true;
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     try {
       const r = await fetchImpl("https://api.openai.com/v1/models", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(PICK_TIMEOUT_MS) });
@@ -200,26 +230,64 @@ export class MemoryBridge {
     }
   }
 
-  /** Resolves once the service exists (after the model pick when one runs). */
+  /** Resolves once the service exists (after the model pick when one runs, after a relink's rebuild). */
   ready(): Promise<void> {
-    return this.picking ?? Promise.resolve();
+    return this.building ?? Promise.resolve();
+  }
+
+  /** The providers a target names, as one string: what `relink()` compares. */
+  private identityOf(target: LocalMemoryTarget | "offline" | undefined): string {
+    if (target === "offline") return "keyword";
+    if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}`;
+    return this.opts.apiKey() ? `openai|${this.opts.model() ?? ""}` : "keyword";
   }
 
   /**
-   * The store over Kevin's OpenAI key when there is one (embeddings and the Responses
-   * extractor, which is also the decider), rules and keywords when there is not. The
-   * choice is made once per process: a key added later is heard at the next daemon start.
+   * The store over the providers the settings name. Under `local` with a reachable server: the
+   * discovered embedding model (probed once for its dims; a probe that fails is keywords with a
+   * warning) and the brain's model as extractor and decider in Chat Completions JSON mode — the
+   * OpenAI branch is skipped even with a key. Under `local` with nothing answering: keywords and
+   * rules. Otherwise Kevin's OpenAI key when there is one (embeddings and the Responses extractor,
+   * which is also the decider — the key's model list is asked once when no model is pinned),
+   * rules and keywords when there is not.
    */
-  private build(): MemoryServiceLike {
+  private async build(target: LocalMemoryTarget | "offline" | undefined): Promise<MemoryServiceLike> {
     const dir = join(this.opts.stateDir, "memory");
-    const apiKey = this.opts.apiKey;
-    const withKey = Boolean(apiKey());
     const fetchImpl = this.opts.fetchImpl;
-    const model = this.opts.model() ?? this.pickedModel;
-    const embedder = this.opts.embedder ?? (withKey ? new OpenAIEmbedder({ apiKey, ...(fetchImpl ? { fetchImpl } : {}) }) : new KeywordEmbedder());
-    const responses = withKey && !this.opts.extractor ? new ResponsesExtractor({ apiKey, ...(model ? { model } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
-    const extractor = this.opts.extractor ?? responses ?? new RulesExtractor();
-    const decider = this.opts.decider ?? responses ?? new RulesDecider();
+    let embedder: Embedder;
+    let extractor: Extractor;
+    let decider: Decider;
+    let maxChars: number | undefined;
+    if (target === "offline") {
+      embedder = this.opts.embedder ?? new KeywordEmbedder();
+      extractor = this.opts.extractor ?? new RulesExtractor();
+      decider = this.opts.decider ?? new RulesDecider();
+    } else if (target) {
+      if (this.opts.embedder) embedder = this.opts.embedder;
+      else if (target.embedModel) {
+        try {
+          embedder = await LocalEmbedder.probe({ flavor: target.flavor, baseUrl: target.baseUrl, model: target.embedModel, ...(fetchImpl ? { fetchImpl } : {}) });
+        } catch (e) {
+          log.warn(`local embeddings (${target.embedModel}) did not answer the probe: ${(e as Error).message.split("\n")[0]}; matching by keywords until they do`);
+          embedder = new KeywordEmbedder();
+        }
+      } else embedder = new KeywordEmbedder();
+      const chat = target.chatModel && !this.opts.extractor ? new ChatExtractor({ baseUrl: target.baseUrl, model: target.chatModel, ...(target.chatContext !== undefined ? { contextLength: target.chatContext } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
+      extractor = this.opts.extractor ?? chat ?? new RulesExtractor();
+      decider = this.opts.decider ?? chat ?? new RulesDecider();
+      maxChars = chat?.maxChars;
+    } else {
+      const apiKey = this.opts.apiKey;
+      const withKey = Boolean(apiKey());
+      // With a key and no pinned model, ask the key which mini-class Responses model it lists before the
+      // extractor is built (a wrong default would fall to rules on every run) — at most PICK_TIMEOUT_MS, once.
+      if (withKey && !this.opts.model() && !this.opts.extractor && !this.pickedOnce) await this.pickModel();
+      const model = this.opts.model() ?? this.pickedModel;
+      embedder = this.opts.embedder ?? (withKey ? new OpenAIEmbedder({ apiKey, ...(fetchImpl ? { fetchImpl } : {}) }) : new KeywordEmbedder());
+      const responses = withKey && !this.opts.extractor ? new ResponsesExtractor({ apiKey, ...(model ? { model } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
+      extractor = this.opts.extractor ?? responses ?? new RulesExtractor();
+      decider = this.opts.decider ?? responses ?? new RulesDecider();
+    }
     // The assignment to MemoryServiceLike is the check that the package still has the shape the bridge calls.
     const service: MemoryServiceLike = new MemoryService({
       dir,
@@ -229,10 +297,45 @@ export class MemoryBridge {
       decider,
       redact: this.opts.redact,
       retrieveTimeoutMs: RETRIEVE_RACE_MS,
+      ...(maxChars !== undefined ? { maxChars } : {}),
       // The audit rows carry ids only (protocol LedgerRow memory.*); the words live in the store.
       onRow: (row) => this.opts.ledger.append(row),
     });
     return service;
+  }
+
+  /**
+   * The brain setting moved (a restart, a pick): when the providers' identity changed — local ↔
+   * OpenAI ↔ keywords, another server, another embedding or chat model — wait for the run in
+   * flight, flush, rebuild the service over the same <stateDir>/memory and schedule `reembed()` at
+   * quiet ticks until it returns 0. Unchanged → nothing. A test's whole fake service is never rebuilt.
+   */
+  async relink(): Promise<void> {
+    if (this.opts.service) return;
+    await this.ready();
+    const target = this.opts.local();
+    const id = this.identityOf(target);
+    if (this.service && id === this.identity) return;
+    this.building = (async () => {
+      await this.running?.catch(() => undefined);
+      this.service?.flush();
+      try {
+        this.service = await this.build(target);
+      } catch (e) {
+        log.warn(`memory could not move to ${id.split("|")[0]}: ${(e as Error).message.split("\n")[0]}; the store stays as it was`);
+        return;
+      }
+      this.identity = id;
+      this.reembedPending = true;
+      const s = this.service.summary();
+      const where = target && target !== "offline" ? `extractor ${target.chatModel || "rules"} on ${target.baseUrl}` : target === "offline" ? "rules (the local server is down)" : this.opts.apiKey() ? "the Responses extractor" : "rules";
+      log.info(`memory now ${s.embeddings} matching${s.embeddingModel ? ` (${s.embeddingModel}, ${s.embeddingDims ?? "?"} dims)` : ""} · ${where}; vectors heal at quiet ticks`);
+      this.catchUp();
+      this.opts.onChange();
+    })().finally(() => {
+      this.building = undefined;
+    });
+    return this.building;
   }
 
   /** The conversation a session belongs to: its chain's root (itself when it resumed nothing the ledger knows). */
@@ -359,7 +462,9 @@ export class MemoryBridge {
     if (!service) return;
     const next = this.pending.values().next();
     if (next.done) {
-      this.consolidate(service);
+      // Nothing to read: heal the vectors after a relink first, then the daily consolidation slice.
+      if (this.reembedPending) this.reembed(service);
+      else this.consolidate(service);
       return;
     }
     const root = next.value;
@@ -409,6 +514,23 @@ export class MemoryBridge {
       .catch((e: unknown) => log.warn(`run over ${root} failed: ${(e as Error).message}`))
       .finally(() => {
         this.running = undefined;
+        this.opts.onChange();
+      });
+  }
+
+  /** One `reembed` slice after a relink: the live items without a vector in the new space, ≤ 96 a tick, until none is left. */
+  private reembed(service: MemoryServiceLike): void {
+    this.reembedding = true;
+    this.running = service
+      .reembed()
+      .then((n) => {
+        if (n === 0) this.reembedPending = false;
+        else log.info(`re-embedded ${n} item(s) in the new space`);
+      })
+      .catch((e: unknown) => log.debug(`re-embed slice failed: ${(e as Error).message}; again at a later quiet tick`))
+      .finally(() => {
+        this.running = undefined;
+        this.reembedding = false;
         this.opts.onChange();
       });
   }
@@ -531,8 +653,10 @@ export class MemoryBridge {
       count: base?.count ?? 0,
       forgotten: base?.forgotten ?? 0,
       archived: base?.archived ?? 0,
-      embeddings: base?.embeddings ?? (this.opts.apiKey() ? "openai" : "keyword"),
-      pending: this.pending.size + (this.running && !this.consolidating ? 1 : 0),
+      embeddings: base?.embeddings ?? (this.opts.local() || !this.opts.apiKey() ? "keyword" : "openai"),
+      ...(base?.embeddingModel ? { embeddingModel: base.embeddingModel } : {}),
+      ...(base?.embeddingDims ? { embeddingDims: base.embeddingDims } : {}),
+      pending: this.pending.size + (this.running && !this.consolidating && !this.reembedding ? 1 : 0),
       ...(lastRunAt !== undefined ? { lastRunAt } : {}),
       ...(lastRun ? { lastRun } : {}),
       budgetUsed: this.budgetUsed,

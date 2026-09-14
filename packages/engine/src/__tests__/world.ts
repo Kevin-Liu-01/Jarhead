@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConfig, type JarheadConfig } from "@jarhead/core";
@@ -7,7 +9,7 @@ import type { LiveSession, SessionConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarhead/brain";
 import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { AgentConnector, SendResult, TranscriptDelta, TranscriptOptions, TranscriptPage } from "@jarhead/agents";
-import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
+import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, LocalModel, LocalServerStatus, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
 import type { Exec } from "@jarhead/cli/install";
 import type { IngestOptions, IngestResult, RememberResult, Rendered } from "@jarhead/memory";
 import { Engine, type EngineOptions } from "../engine.ts";
@@ -504,7 +506,123 @@ export class FakeMemoryService implements MemoryServiceLike {
     this.consolidations++;
     return { merged: 0, archived: 0, done: true };
   }
+  /** Keywords only: nothing to re-embed, ever. */
+  async reembed(): Promise<number> {
+    this.reembeds++;
+    return 0;
+  }
+  reembeds = 0;
   flush(): void {}
+}
+
+// ---- the local model server, faked ----------------------------------------------------------
+// `EngineOptions.discoverLocal` answers discovery from a scripted status; the brain and memory
+// still talk to a server, so a tiny HTTP stand-in answers the reads the daemon makes of Ollama
+// (/v1/models for the compatible probe, /api/generate for warm-up and cool, /api/chat is never
+// reached in these tests, /api/embed and /v1/chat/completions for memory). Anything else is
+// recorded as a violation — the never-writes pin, as the brain's own tests keep it.
+
+const GIB = 1024 ** 3;
+
+/** One tool-capable, vision-capable Ollama model as discovery would list it (17 GB, 256k trained). */
+export function localModel(id: string, over: Partial<LocalModel> = {}): LocalModel {
+  return { id, capabilities: ["completion", "tools", "vision", "thinking"], sizeBytes: 17e9, contextLength: 262_144, family: "qwen35", parameterSize: "27B", modifiedAt: 1_757_000_000_000, fit: "good", loaded: false, cloud: false, ...over };
+}
+
+/** A reachable Ollama at `baseUrl` with these models (checkedAt now, so the brain reuses the engine's look instead of discovering again). */
+export function localStatus(baseUrl: string, models: readonly LocalModel[], over: Partial<LocalServerStatus> = {}): LocalServerStatus {
+  return { reachable: true, flavor: "ollama", version: "0.34.0", baseUrl, models, ramBytes: 128 * GIB, checkedAt: Date.now(), ...over };
+}
+
+/** Nothing answering on this Mac. */
+export function localNone(over: Partial<LocalServerStatus> = {}): LocalServerStatus {
+  return { reachable: false, baseUrl: "", models: [], ramBytes: 128 * GIB, checkedAt: Date.now(), ...over };
+}
+
+export interface FakeLocalRequest {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+export interface FakeLocalServer {
+  url: string;
+  /** Every request, in order. */
+  seen: FakeLocalRequest[];
+  /** Requests outside the never-writes allowlist (pull, delete, create, copy, push, download, load). */
+  violations: string[];
+  /** The model ids /v1/models lists. */
+  models: string[];
+  /** What POST /api/embed answers: a unit vector of `dims` per input (0 = answer 404, "not pulled"). */
+  embedDims: number;
+  /** What POST /v1/chat/completions answers as `choices[0].message.content` (an extractor's JSON), or a status. */
+  chat: { status: number; content: string };
+  close(): Promise<void>;
+}
+
+const LOCAL_READS: ReadonlyArray<{ method: string; path: string }> = [
+  { method: "GET", path: "/api/version" },
+  { method: "GET", path: "/api/tags" },
+  { method: "POST", path: "/api/show" },
+  { method: "GET", path: "/api/ps" },
+  { method: "GET", path: "/v1/models" },
+  { method: "POST", path: "/api/chat" },
+  { method: "POST", path: "/api/generate" },
+  { method: "POST", path: "/api/embed" },
+  { method: "POST", path: "/v1/chat/completions" },
+  { method: "POST", path: "/v1/embeddings" },
+  { method: "GET", path: "/api/v0/models" },
+  { method: "GET", path: "/health" },
+  { method: "GET", path: "/props" },
+];
+
+export async function fakeLocalServer(models: readonly string[] = ["qwen3.5:27b"]): Promise<FakeLocalServer> {
+  const fake: FakeLocalServer = { url: "", seen: [], violations: [], models: [...models], embedDims: 768, chat: { status: 200, content: JSON.stringify({ items: [] }) }, close: async () => undefined };
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: unknown;
+      try {
+        body = raw ? JSON.parse(raw) : undefined;
+      } catch {
+        body = raw;
+      }
+      const method = req.method ?? "";
+      const path = (req.url ?? "").split("?")[0] ?? "";
+      fake.seen.push({ method, path, body });
+      const answer = (status: number, json: unknown): void => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(json));
+      };
+      if (!LOCAL_READS.some((a) => a.method === method && a.path === path) || (path === "/api/generate" && (typeof body !== "object" || body === null || !("keep_alive" in body) || "prompt" in body))) {
+        fake.violations.push(`${method} ${path}`);
+        return answer(500, { error: `never-writes: ${method} ${path}` });
+      }
+      if (path === "/api/version") return answer(200, { version: "0.34.0" });
+      if (path === "/v1/models") return answer(200, { object: "list", data: fake.models.map((id) => ({ id, object: "model", owned_by: "library" })) });
+      if (path === "/api/generate") return answer(200, { model: (body as { model?: string }).model, done: true, done_reason: (body as { keep_alive?: unknown }).keep_alive === 0 ? "unload" : "load" });
+      if (path === "/api/embed") {
+        if (fake.embedDims === 0) return answer(404, { error: `model '${(body as { model?: string }).model}' not found` });
+        const input = (body as { input: string[] }).input;
+        return answer(200, { model: (body as { model?: string }).model, embeddings: input.map((_, i) => Array.from({ length: fake.embedDims }, (_x, k) => (k === i % fake.embedDims ? 1 : 0.0001 * (i + 1)))) });
+      }
+      if (path === "/v1/chat/completions") {
+        if (fake.chat.status !== 200) return answer(fake.chat.status, { error: { message: "no" } });
+        return answer(200, { id: "c1", object: "chat.completion", model: (body as { model?: string }).model, choices: [{ index: 0, message: { role: "assistant", content: fake.chat.content }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5 } });
+      }
+      return answer(404, { error: `no fake for ${method} ${path}` });
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  fake.url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  fake.close = () =>
+    new Promise<void>((r) => {
+      server.closeAllConnections();
+      server.close(() => r());
+    });
+  return fake;
 }
 
 export interface BrainState {
