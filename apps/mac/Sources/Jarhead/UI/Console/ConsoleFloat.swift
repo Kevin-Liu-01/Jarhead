@@ -2,17 +2,20 @@ import SwiftUI
 import AppKit
 
 // The Console's floats: tips and menus drawn in the window, over the columns, from anchors the
-// triggers publish. Nothing here opens a window. One `ConsoleFloatLayer` per window root
-// (`ConsoleRootView.chromeA`, `OnboardingRootView`) reads the anchors through a preference and
-// places each float with `ConsoleFloatPlacement`. Option (a) of the mechanics; the spike of kit
-// step 0's spike proved focus, keys and anchors on this Swift; `ConsoleMenuField` is the first real trigger.
+// triggers publish. Nothing here opens a window. A trigger appends a `ConsoleFloat` to the
+// `ConsoleFloatKey` anchor preference while it is on (`transformAnchorPreference`, so a tip on a
+// menu field, or a verb's tip inside a carded row, composes with the floats under it); one
+// `ConsoleFloatLayer` per window root (`ConsoleRootView.chromeA`, `OnboardingRootView`) reads them
+// through `overlayPreferenceValue`, resolves each anchor in its own space and places the float
+// with `ConsoleFloatPlacement`. A trigger republishes on `onGeometryChange`, so a popup follows
+// its field under a rail scroll.
 
 /// One floating surface a view asked for: who (a stable id), what kind, where (an anchor the root
 /// resolves in its own space) and how to draw it. `AnyView` is taken exactly once, here, at the
 /// content boundary. Equatable by id, kind and the anchor's last frame: a scroll inside a rail
-/// never invalidates the root's overlay on its own (the spike proved it), so the trigger tracks
-/// its frame with `onGeometryChange` and republishes — the layer re-runs, `proxy[anchor]`
-/// re-resolves, and the float follows its field.
+/// never invalidates the root's overlay on its own, so the trigger tracks its frame with
+/// `onGeometryChange` and republishes — the layer re-runs, `proxy[anchor]` re-resolves, and the
+/// float follows its field.
 struct ConsoleFloat: Identifiable, Equatable {
     enum Kind: Equatable { case tip, menu }
     /// Controls open below; a rail row's card opens beside it.
@@ -91,7 +94,10 @@ extension View {
     }
 }
 
-/// The trigger's half: its frame tracked (so a scroll republishes) and the float published while `on`.
+/// The trigger's half: its frame tracked (so a scroll republishes) and the float appended to the
+/// subtree's floats while `on` — appended, never replacing, so a publisher above another (a tip on
+/// a menu field, a row's card over its verbs' tips) keeps what its descendants published. The
+/// innermost publisher transforms first, so the deepest float is first in the array.
 struct ConsoleFloatPublisher<C: View>: ViewModifier {
     let id: String
     let kind: ConsoleFloat.Kind
@@ -104,8 +110,8 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
     func body(content view: Content) -> some View {
         view
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { moved(to: $0) }
-            .anchorPreference(key: ConsoleFloatKey.self, value: .bounds) { anchor in
-                on ? [ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)] : []
+            .transformAnchorPreference(key: ConsoleFloatKey.self, value: .bounds) { floats, anchor in
+                if on { floats.append(ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)) }
             }
     }
 
@@ -120,8 +126,9 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
 
 /// Draws the floats over the whole root. While a menu is open only the menu is drawn (tips never
 /// sit beside a menu) and an outside-click catcher lies under it — the click is swallowed, as
-/// NSMenu swallows it. Everything goes when the window stops being key; one event monitor lives
-/// while anything is open.
+/// NSMenu swallows it. Of several tips only the innermost draws (the first published: the ⋯'s
+/// `More`, not the row's card under the same pointer) — one float at a time. Everything goes when
+/// the window stops being key; one event monitor lives while anything is open.
 struct ConsoleFloatLayer: View {
     let floats: [ConsoleFloat]
     @Environment(\.controlActiveState) private var active
@@ -131,7 +138,13 @@ struct ConsoleFloatLayer: View {
     @MainActor static var holdWhileInactive = false
 
     private var menu: ConsoleFloat? { floats.first { $0.kind == .menu } }
-    private var shown: [ConsoleFloat] { menu.map { [$0] } ?? floats }
+    private var shown: [ConsoleFloat] { Self.shown(floats) }
+
+    /// The menu alone while one is open; else the innermost tip alone (the first published).
+    static func shown(_ floats: [ConsoleFloat]) -> [ConsoleFloat] {
+        if let menu = floats.first(where: { $0.kind == .menu }) { return [menu] }
+        return floats.first.map { [$0] } ?? []
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -187,7 +200,8 @@ struct ConsoleFloatSlot: View {
 /// One local event monitor while any float is open. It only observes (every event is returned
 /// unchanged) and it only looks at the key window: a tip dismisses on any mouse-down, wheel or
 /// key-down; a menu on a ⌘ key-down (the window's shortcut is about to run) and on a wheel
-/// outside itself. Outside clicks on a menu are the layer's catcher's, not the monitor's.
+/// outside itself — a wheel over the popup scrolls its list (the placed rect is the test, in the
+/// root's top-left space). Outside clicks on a menu are the layer's catcher's, not the monitor's.
 @MainActor
 final class ConsoleFloatMonitor {
     private var token: Any?
@@ -204,14 +218,22 @@ final class ConsoleFloatMonitor {
     }
 
     private func observe(_ event: NSEvent) {
-        guard event.window === NSApp.keyWindow else { return }
+        guard let window = event.window, window === NSApp.keyWindow else { return }
         let command = event.type == .keyDown && event.modifierFlags.contains(.command)
         for f in floats {
             switch f.kind {
             case .tip: f.dismiss()
-            case .menu: if command || event.type == .scrollWheel { f.dismiss() }
+            case .menu: if command || (event.type == .scrollWheel && !Self.inside(f.id, event: event, window: window)) { f.dismiss() }
             }
         }
+    }
+
+    /// Whether the wheel is over the float: the event's point flipped into the root's top-left
+    /// space and tested against the rect the layer placed it at (an unplaced float is outside).
+    static func inside(_ id: String, event: NSEvent, window: NSWindow) -> Bool {
+        guard let rect = ConsoleFloatSlot.placed[id], let content = window.contentView else { return false }
+        let point = CGPoint(x: event.locationInWindow.x, y: content.bounds.height - event.locationInWindow.y)
+        return rect.contains(point)
     }
 
     private func remove() {

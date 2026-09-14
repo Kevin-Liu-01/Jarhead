@@ -74,8 +74,8 @@ struct ConsoleVerbFloat: ViewModifier {
     let close: () -> Void
 
     func body(content: Content) -> some View {
-        // Published from a background the row's size: `anchorPreference` replaces the subtree's value,
-        // so a second publisher on the row itself would wipe the card's float (seen: `probe-floats: none`).
+        // Published from a background the row's size, so the float's anchor is the row and its
+        // frame tracking never fights the card's (publishers append, so both floats reach the layer).
         content.background {
             Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, dismiss: close) {
                 ConsoleMenuPopup(spec: ConsoleVerbFloatModel.spec(id: id, verbs: verbs, close: close))

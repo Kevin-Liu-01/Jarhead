@@ -666,7 +666,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "menu-voice-filter": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,keyDown:m+a@1.0,"
             + "snap:preview-console-menu-voice-filter-typed@1.6,keyDown:down+return@2.0,probe-floats@2.6"
         // The saved row is highlighted on open (the bottom); ↑↑ lands on gpt-oss:120b, whose foot says why it is tight.
-        case "menu-model": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,keyDown:up+up@1.2,probe-floats@2.0"
+        case "menu-model": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,keyDown:up+up@1.2,probe-floats@2.0,check-floats:settings.model@2.1"
         // ↓ moves the highlight and the foot to the next kind's `needs` sentence.
         case "menu-backend": defaultActions = "check-kit@0.3,menuOpen:settings.backend@0.6,keyDown:down@1.2,probe-floats@2.0"
         // Esc closes unchanged; an outside click closes and does not focus the composer.
