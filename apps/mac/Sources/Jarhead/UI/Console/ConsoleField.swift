@@ -376,6 +376,14 @@ struct ConsoleSecretOnFile: View {
 /// A key on the left, a control on the right: 28 tall, the key 80 wide (the wizard passes 88).
 /// The label centres on the control's first `height`, so a field with a hint under it keeps
 /// its label on the field, not on the gap.
+///
+/// The row is as tall as its control and never squeezed (`fixedSize` on the vertical): the
+/// control's `minHeight` floor made the row compressible, and once one row's control stands
+/// taller than its label (the Automations chips flow, 90 in a 26 row) the panel's VStack hands
+/// the deficit of its height arithmetic to the next compressible row — Settings › Memory's
+/// `Known` counts drew 78 pt inside a 28 pt row, over the hints on either side, whenever the
+/// Automations fold was open above it (measured in the harness: the row's frame 78 → 28 as the
+/// memory rail loaded; a plain HStack or this fixedSize keeps it 78).
 struct ConsoleFormRow<C: View>: View {
     let label: String
     var keyWidth: CGFloat = 80
@@ -395,6 +403,7 @@ struct ConsoleFormRow<C: View>: View {
                 .frame(width: keyWidth, height: height, alignment: .leading)
             control.frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
