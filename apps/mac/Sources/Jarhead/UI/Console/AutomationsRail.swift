@@ -664,7 +664,9 @@ enum AutomationForm {
         let verb = kind == "chime" ? AutomationWords.echoRing : AutomationWords.actionWord(kind)
         let words = phrase.trimmingCharacters(in: .whitespaces)
         guard let first = words.first else { return "" }
-        return String(first).uppercased() + words.dropFirst() + ", " + verb + " “" + name + "”."
+        // Two statements, not one six-term `+` chain of String and Substring (CI's older Swift).
+        let capitalised = String(first).uppercased() + String(words.dropFirst())
+        return [capitalised, ", ", verb, " “", name, "”."].joined()
     }
 
     /// The draft `automation.set` sends: Kevin's phrase as `whenPhrase` (no `when`), one action of `kind`

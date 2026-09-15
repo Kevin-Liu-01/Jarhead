@@ -367,7 +367,10 @@ extension ConsoleFormat {
             return (symbol, word, "\(line) · \(row.ok == false ? "failed" : "fired")", row.lateMs.map { lateWords($0) }, row.detail)
         case "automation.state":
             guard let state = row.state, state != "firing" else { return nil }
-            return (symbol, word, "\(name.isEmpty ? "" : name + " · ")\(stateWords(state, until: row.until))", nil, row.detail)
+            var parts: [String] = []
+            if !name.isEmpty { parts.append(name) }
+            parts.append(stateWords(state, until: row.until))
+            return (symbol, word, parts.joined(separator: AutomationWords.dot), nil, row.detail)
         case "automation.missed":
             // One statement per word (CI's older Swift gives up on ternaries concatenating inside one interpolation).
             var parts: [String] = []
