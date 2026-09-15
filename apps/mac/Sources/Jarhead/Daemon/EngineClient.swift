@@ -24,6 +24,10 @@ final class EngineClient: @unchecked Sendable {
     var audio: AudioEngine?
     /// Fired (on the main queue) after each successful hello; re-send anything the daemon must know.
     var onConnected: (() -> Void)?
+    /// An automation fired while asleep (design11): `local.say` — the earcon and a fixed line through the app's
+    /// on-device speaker; `notify` — a banner with the ring's presses. Both on the main actor; the app installs them.
+    var onLocalSay: (@MainActor (LocalSayMessage) -> Void)?
+    var onNotify: (@MainActor (NotifyMessage) -> Void)?
 
     // Snapshot coalescing: at most ~30 publishes per second.
     private var pendingSnapshot: Snapshot?
@@ -392,6 +396,17 @@ final class EngineClient: @unchecked Sendable {
         net.async { self.rawSend(json: ["type": "permissions", "all": rows]) }
     }
 
+    /// A signal the app observed on Kevin's behalf (wire.ts `system.signal`, design11): an app quit, the Mac
+    /// woke, a display came. Data for the daemon's watchers, never a command — so never queued: a signal from
+    /// before a reconnect is stale, and the daemon's resync covers what it slept through.
+    func sendSignal(_ signal: SystemSignal) {
+        let json = signal.json(at: Date().timeIntervalSince1970 * 1000)
+        net.async {
+            guard self.connection != nil, self.isConnected else { return }
+            self.rawSend(json: json)
+        }
+    }
+
     /// The on-device ear's partial or final transcript (wire.ts `ear`): `at` is ms
     /// since epoch when the recogniser produced it. Never queued: a partial from before
     /// a reconnect is stale by the time the socket is back, so it is simply dropped.
@@ -630,6 +645,22 @@ final class EngineClient: @unchecked Sendable {
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["sessions"]) }
         case "ledger.hits":
             if let id = obj["id"] as? String, let resolve = pendingLedger.removeValue(forKey: id) { resolve(obj["hits"]) }
+        case "automation.event":
+            // One ≤ 200 B delta on one automation row (design11): `set` carries the row, the rest patch what
+            // AppState holds; `fired` is what a crash report should know the app was doing.
+            guard let sub = obj["event"], let e: AutomationEvent = decode(sub) else { return }
+            if e.kind == "fired" { CrashGuard.remember("automation → fired \(e.id)" + (e.line.map { " “\($0.prefix(40))”" } ?? "")) }
+            onMain { $0.applyAutomationEvent(e) }
+        case "local.say":
+            // The daemon has no speaker: the app plays the earcon and reads the fixed line (never model text but a
+            // redacted wake-brain line ≤ 160) through the gate's LocalSpeaker — never while a session is open.
+            guard let msg: LocalSayMessage = decode(obj) else { return }
+            CrashGuard.remember("automation → local.say \(msg.automationId)")
+            onMain { [onLocalSay] _ in onLocalSay?(msg) }
+        case "notify":
+            guard let msg: NotifyMessage = decode(obj) else { return }
+            CrashGuard.remember("automation → notify \(msg.automationId)")
+            onMain { [onNotify] _ in onNotify?(msg) }
         case "ear.hints":
             // What is on the screen (wire.ts `ear.hints`): the words the on-device ear should
             // be biased toward. Handed over by notification on this queue; ReflexEar owns the
