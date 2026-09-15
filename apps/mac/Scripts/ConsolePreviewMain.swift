@@ -3505,10 +3505,18 @@ extension PreviewDelegate {
         expect("words: newest title skips the empty one", RailWords.newestTitle(yesterday) ?? "nil", "Open the PR for the landing refresh and read me the diff summ")
         expect("words: tips", RailWords.olderTip(count: 31, since: "Aug 2") + " / " + RailWords.jarheadTip(active: 7, archived: 2, trashed: 2) + " / " + RailWords.agentsTip(alive: 7, over: 6),
                "Every day before yesterday · 31 · since Aug 2 / 7 conversations · 2 archived · 2 in the Trash / 7 alive · 6 over")
-        // A day no rail shows (never today's or yesterday's: the memory would open a real head in the shot).
-        let dayKey = ConsoleFoldStore.key(RailWords.dayId("1999-12-31"))
-        ConsoleFoldStore.set(RailWords.dayId("1999-12-31"), true)
-        expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(RailWords.dayId("1999-12-31"), default: false)) \(UserDefaults.standard.object(forKey: dayKey) == nil)", "true true")
+        // A day no rail shows (never today's or yesterday's: the memory would open a real head in the shot). The
+        // harness runs with `persists = false`, so the pin turns persistence on for two writes — a day id leaves
+        // no key, a control id leaves one — and puts both back.
+        let dayId = RailWords.dayId("1999-12-31"), controlId = "kit.persist"
+        ConsoleFoldStore.persists = true
+        ConsoleFoldStore.set(dayId, true)
+        ConsoleFoldStore.set(controlId, true)
+        let dayKeyAbsent = UserDefaults.standard.object(forKey: ConsoleFoldStore.key(dayId)) == nil
+        let controlKeyKept = UserDefaults.standard.object(forKey: ConsoleFoldStore.key(controlId)) as? Bool == true
+        UserDefaults.standard.removeObject(forKey: ConsoleFoldStore.key(controlId))
+        ConsoleFoldStore.persists = false
+        expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(dayId, default: false)) \(dayKeyAbsent) \(controlKeyKept)", "true true true")
         // Nothing stored → the live default (what an unbound disclosure and the rail's isFoldOpen both read); a write wins over it.
         let unstoredId = "kit.unstored"
         let liveDefault = "\(ConsoleFoldStore.isOpen(unstoredId, default: false)) \(ConsoleFoldStore.isOpen(unstoredId, default: true))"
