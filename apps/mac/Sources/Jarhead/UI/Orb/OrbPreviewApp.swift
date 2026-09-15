@@ -293,6 +293,16 @@ import SwiftUI
 //                          list of that kind whatever the content, for the tooltip lines and the shots
 //   ORB_NOTCH_KIND_AT="kind@t"   the forced kind changes at t with the island open: beats 1–4 are sampled for 0.5 s and
 //                          must dip within `Motion.quick` then rise while beats 0 and 5 hold (the kind-change line)
+//   ORB_NOTCH_RING="07:10 · Wake up, Kevin"   the fake engine fires an alarm at ORB_NOTCH_RING_AT (default 1.5 s): snapshot.ringing
+//                          with Snooze 10 · Done, its row in snapshot.automations (weekdays 07:10); ORB_NOTCH_RING_CALM the calm
+//                          second line, ORB_NOTCH_RING_LATE=ms the head's `N min late`. Snooze / Done presses are answered like the
+//                          daemon would (the ring ends 50 ms later). ORB_NOTCH_RING_FOLD_AT=t a .face press folds the ring's pinned
+//                          island (the pill under the lip is read 0.2 s later → notch-island-alarm-folded.png); ORB_NOTCH_WAKE_AT=t
+//                          the phase goes listening (the peek chips); ORB_NOTCH_RING_CLEAR_AT=t the engine ends the ring itself
+//   ORB_NOTCH_NEXT="timer:pasta:720"   snapshot.nextFire (kind:name:seconds from 0.5 s) and an armed timer row: the asleep foot's
+//                          `next Timer m:ss · pasta`, the awake chip, the lip pill
+//   ORB_NOTCH_QUESTION_AT=ring-end|t   the fleet's question lands when the ring ends (or at t) instead of with the fleet: the kind flip
+//                          the consent boxes' 500 ms dead-time guards (a deny inside it sends nothing)
 //   ORB_NOTCH_LINE_AT="text@t"   a transcript line lands at t with the island open: 0.3 s later exactly one animated hero
 //                          swap (old = the hero before, new = the line) must have started at the landing — the hero-swap
 //                          line; after ORB_NOTCH_KIND_AT's window it proves the swap is not latched off by a kind change
@@ -414,6 +424,19 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var lastThreadAnswerYes: Bool?
     var lastSleepCause = ""
     var lastRequestPermission = ""
+    // The ring (design11): what the fake engine rang and when the kind last flipped because of it.
+    var ringKindChangeAt = -1.0
+    var lastSnooze: (id: String, minutes: Int)?
+    var lastDone = ""
+    var lastPressAt = -1.0
+    var lastPressDead = false
+    var ringEarly: (mode: String, pinned: Bool, tucked: Bool)?
+    var ringPillFolded: (kind: String, text: String, mode: String)?
+    var timerPillEarly: (kind: String, text: String)?
+    var pendingQuestion: (id: String, text: String)?
+    var pendingQuestionAtRingEnd = false
+    /// ORB_NOTCH_QUESTION_AT: the first Allow / Deny press after the question landed is the dead-time's — checked whichever way it went.
+    var deadTimePressWanted = false
     var windowInactiveResult: [String]?
     var windowActiveResult: (sent: [String], pill: String)?
     var allowResult: (sent: [String], yes: Bool?)?
@@ -563,6 +586,12 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             case .sleepCause(let cause): self.lastSleepCause = cause
             case .sleep: self.lastSleepCause = ""
             case .requestPermission(let which): self.lastRequestPermission = which
+            case .automationSnooze(let id, let minutes):
+                self.lastSnooze = (id, minutes)
+                DispatchQueue.main.async { [weak self] in self?.engineEndsRing(id: id, state: "snoozed", why: "snooze \(minutes) min") }
+            case .automationDone(let id):
+                self.lastDone = id
+                DispatchQueue.main.async { [weak self] in self?.engineEndsRing(id: id, state: "done", why: "done") }
             default: break
             }
             self.fakeEngine(cmd.json)
@@ -1445,8 +1474,17 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
         if let q = env["ORB_NOTCH_QUESTION"] {
             let parts = q.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
             if parts.count == 2, let i = fleetThreads.firstIndex(where: { $0.name.lowercased() == parts[0].lowercased() }) {
-                fleetThreads[i].status = .waitingKevin
-                fleetThreads[i].question = parts[1]
+                if let at = env["ORB_NOTCH_QUESTION_AT"] {
+                    // Deferred: with the ring's end, or at t — the kind flip the dead-time guards.
+                    pendingQuestion = (fleetThreads[i].id, parts[1])
+                    deadTimePressWanted = true
+                    if at == "ring-end" { pendingQuestionAtRingEnd = true } else if let t = Double(at) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.applyPendingQuestion() }
+                    }
+                } else {
+                    fleetThreads[i].status = .waitingKevin
+                    fleetThreads[i].question = parts[1]
+                }
             } else {
                 print("ORB_NOTCH_QUESTION: could not parse \(q) or no fleet thread named \(parts.first ?? "?"); want Name:question")
             }
@@ -2625,6 +2663,8 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
 struct NotchSends {
     var sayText = 0, markRemove = 0, markWindow = 0, markClear = 0, threadStop = 0, threadAnswer = 0
     var go = 0, pause = 0, stop = 0, mute = 0, sleep = 0, requestPermission = 0, other = 0
+    /// The ring's two presses (design11) — never a session, never a brain turn.
+    var automationSnooze = 0, automationDone = 0
     /// The overlay's own command, counted apart: the notch never sends it.
     var markAdd = 0
     var setSettings = 0
@@ -2650,13 +2690,15 @@ struct NotchSends {
         case "mute", "unmute": mute += 1
         case "sleep": sleep += 1
         case "request-permission": requestPermission += 1
+        case "automation.snooze": automationSnooze += 1
+        case "automation.done": automationDone += 1
         case "set-settings": setSettings += 1; other += 1; otherTypes.append(type)
         default: other += 1; otherTypes.append(type)
         }
     }
 
     var line: String {
-        "notch sends: say-text \(sayText) mark.remove \(markRemove) mark.window \(markWindow) mark.clear \(markClear) thread.stop \(threadStop) thread.answer \(threadAnswer) go \(go) pause \(pause) stop \(stop) mute \(mute) sleep \(sleep) request-permission \(requestPermission) other \(other)"
+        "notch sends: say-text \(sayText) mark.remove \(markRemove) mark.window \(markWindow) mark.clear \(markClear) thread.stop \(threadStop) thread.answer \(threadAnswer) go \(go) pause \(pause) stop \(stop) mute \(mute) sleep \(sleep) request-permission \(requestPermission) other \(other) automation.snooze \(automationSnooze) automation.done \(automationDone)"
     }
 }
 
@@ -3066,6 +3108,7 @@ extension OrbPreviewDelegate {
             }
         }
         if env["ORB_NOTCH_PILL_TEST"] == "1" { notchPillTest() }
+        notchRingScript(env: env)
         if let t = Double(env["ORB_NOTCH_PHASE_SWEEP"] ?? "") {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPhaseSweep() }
         }
@@ -3137,6 +3180,9 @@ extension OrbPreviewDelegate {
         let hittable = orb.previewNotchHitList.contains { $0.name == name }
         let dim = orb.previewNotchBoxDim(name)
         let tooltip = orb.previewNotchTooltip(name)
+        // Read at the press, carried to its check: a second press 200 ms later must not overwrite them.
+        let pressAt = CACurrentMediaTime()
+        let dead = orb.previewNotchMiddleDead
         let pressed = orb.previewNotchPress(name)
         print(stamp, "notch press \(raw)\(raw == name ? "" : " (\(name))"): hittable \(hittable ? 1 : 0) pressed \(pressed ? 1 : 0) dim \(String(format: "%.2f", dim)) awake \(awake ? 1 : 0) mode \(orb.previewNotchMode)")
         if !hittable { print(stamp, "  hit list: \(orb.previewNotchHitList.map(\.name)); thread chips \(orb.previewNotchThreadChips); store \(state.threads.count) rows \(content.threads.map(\.id))") }
@@ -3147,6 +3193,8 @@ extension OrbPreviewDelegate {
             let pill = self.orb.previewNotchPillText
             print(self.stamp, "  -> \(raw): sent \(sent.isEmpty ? "nothing" : sent.joined(separator: ", ")); pill '\(pill)' (\(self.orb.previewNotchPillKind)); beginMarkMode +\(self.beginMarkModeCalls - beginBefore) openConsole +\(self.openConsoleCalls - consoleBefore) openThread +\(self.openThreadCalls - threadBefore)")
             fflush(stdout)
+            self.lastPressAt = pressAt
+            self.lastPressDead = dead
             self.pressChecks(raw: raw, name: name, sent: sent, pill: pill, hittable: hittable, dim: dim, tooltip: tooltip, active: active, awake: awake, content: content,
                              beginMarkMode: self.beginMarkModeCalls - beginBefore, openConsole: self.openConsoleCalls - consoleBefore, openThread: self.openThreadCalls - threadBefore)
         }
@@ -3157,7 +3205,27 @@ extension OrbPreviewDelegate {
                              beginMarkMode: Int, openConsole: Int, openThread: Int) {
         let head = name.split(separator: ":").first.map(String.init) ?? name
         let counted = notchSends
+        // The consent boxes' dead-time: a press in the Allow / Deny rects inside 500 ms of a kind change lands nowhere.
+        let firstAfterFlip = ["allow", "deny"].contains(head) && deadTimePressWanted && pendingQuestion == nil
+        if ["allow", "deny", "done", "snooze"].contains(head), lastPressDead || firstAfterFlip {
+            deadTimePressWanted = false
+            let since = ringKindChangeAt >= 0 ? String(format: "%.0f ms", (lastPressAt - ringKindChangeAt) * 1000) : "?"
+            check(lastPressDead && sent.isEmpty && hittable, "press \(head) within 500 ms of a kind change → 0 sends (the consent boxes' dead-time); thread.answer untouched",
+                  "hittable \(hittable ? 1 : 0) dead \(lastPressDead ? 1 : 0); sent \(sent.isEmpty ? "nothing" : sent.joined(separator: ", ")); the kind changed \(since) before the press; thread.answer so far \(counted.threadAnswer)")
+            return
+        }
         switch head {
+        case "snooze":
+            let minutes = Int(name.split(separator: ":").last.map(String.init) ?? "") ?? -1
+            let ok = sent == ["automation.snooze"] && lastSnooze?.id == Self.ringId && lastSnooze?.minutes == minutes && counted.go == 0 && counted.sayText == 0 && counted.threadAnswer == 0
+            var snoozed = "none"
+            if let s = lastSnooze { snoozed = "\(s.id) \(s.minutes) min" }
+            check(ok, "press snooze:10 → automation.snooze 1 (the ringing row, 10 minutes); go 0, say-text 0, thread.answer 0",
+                  "sent \(sent); snooze \(snoozed); run totals go \(counted.go) say-text \(counted.sayText) thread.answer \(counted.threadAnswer)")
+        case "done":
+            let ok = sent == ["automation.done"] && lastDone == Self.ringId && counted.go == 0 && counted.threadAnswer == 0
+            check(ok, "press done → automation.done 1 (the ringing row); go 0, thread.answer 0",
+                  "sent \(sent); done '\(lastDone)'; run totals go \(counted.go) thread.answer \(counted.threadAnswer)")
         case "circle":
             let f = foldAtBeginMark
             let ok = sent.isEmpty && f != nil && f?.pinned == false && f?.mode == "peek" && f?.ignoresMouse == true
@@ -3514,6 +3582,210 @@ extension OrbPreviewDelegate {
         }
     }
 
+    // MARK: the ring (design11 § Island)
+
+    static let ringId = "auto_alarm"
+    static let timerId = "auto_timer"
+
+    /// ORB_NOTCH_RING / ORB_NOTCH_NEXT / ORB_NOTCH_RING_FOLD_AT / ORB_NOTCH_WAKE_AT / ORB_NOTCH_RING_CLEAR_AT (the header).
+    func notchRingScript(env: [String: String]) {
+        guard notchMode else { return }
+        if let spec = env["ORB_NOTCH_NEXT"] {
+            let parts = spec.split(separator: ":").map(String.init)
+            if parts.count == 3, let seconds = Double(parts[2]) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self else { return }
+                    let nowMs = Date().timeIntervalSince1970 * 1000
+                    var snap = self.state.snapshot
+                    var rows = snap.automations ?? []
+                    rows.removeAll { $0.id == Self.timerId }
+                    rows.append(Self.fakeTimerRow(name: parts[1], firesAt: nowMs + seconds * 1000, nowMs: nowMs))
+                    snap.automations = rows
+                    snap.nextFire = NextFire(id: Self.timerId, kind: parts[0], name: parts[1], at: nowMs + seconds * 1000)
+                    self.state.snapshot = snap
+                    print(self.stamp, "engine: next fire \(parts[0]) \(parts[1]) in \(Int(seconds)) s; a timer row armed")
+                    fflush(stdout)
+                }
+                if env["ORB_NOTCH_PHASE"] == "asleep" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                        guard let self else { return }
+                        self.timerPillEarly = (self.orb.previewNotchPillKind, self.orb.previewNotchPillText)
+                        print(self.stamp, "timer: tucked asleep -> pill '\(self.orb.previewNotchPillText)' (\(self.orb.previewNotchPillKind)) foot '\(self.orb.previewNotchFootText)'")
+                        fflush(stdout)
+                    }
+                }
+            } else {
+                print("ORB_NOTCH_NEXT: could not parse \(spec); want kind:name:seconds")
+            }
+        }
+        guard let line = env["ORB_NOTCH_RING"] else { return }
+        let ringAt = Double(env["ORB_NOTCH_RING_AT"] ?? "") ?? 1.5
+        let calm = env["ORB_NOTCH_RING_CALM"] ?? "Monday · standup notes at 9"
+        let late = Double(env["ORB_NOTCH_RING_LATE"] ?? "")
+        DispatchQueue.main.asyncAfter(deadline: .now() + ringAt) { [weak self] in
+            guard let self else { return }
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            var snap = self.state.snapshot
+            var rows = snap.automations ?? []
+            rows.removeAll { $0.id == Self.ringId }
+            rows.insert(Self.fakeAlarmRow(line: line, nowMs: nowMs), at: 0)
+            snap.automations = rows
+            snap.ringing = RingLine(id: Self.ringId, kind: "alarm", name: "Wake up", line: line, calm: calm, at: nowMs, lateMs: late,
+                                    presses: [AutomationPress(kind: "snooze", minutes: 10, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)], more: 0)
+            self.state.snapshot = snap
+            self.ringKindChangeAt = CACurrentMediaTime()
+            print(self.stamp, "engine: automation fired — ring \"\(line)\" (mode \(self.orb.previewNotchMode), pinned \(self.orb.previewNotchPinned ? 1 : 0), tucked \(self.orb.previewIsTucked ? 1 : 0))")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + ringAt + 0.3) { [weak self] in
+            guard let self else { return }
+            self.ringEarly = (self.orb.previewNotchMode, self.orb.previewNotchPinned, self.orb.previewIsTucked)
+            print(self.stamp, "ring: 0.3 s after — mode \(self.orb.previewNotchMode) pinned \(self.orb.previewNotchPinned ? 1 : 0) tucked \(self.orb.previewIsTucked ? 1 : 0) kind \(self.orb.previewNotchCanvasKind) word '\(self.orb.previewNotchAnchorWord)'")
+            fflush(stdout)
+        }
+        if let t = Double(env["ORB_NOTCH_RING_FOLD_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                self.orb.previewNotchPress("face")
+                print(self.stamp, "ring: folded (a .face press) -> mode \(self.orb.previewNotchMode) pinned \(self.orb.previewNotchPinned ? 1 : 0)")
+                fflush(stdout)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.2) { [weak self] in
+                guard let self else { return }
+                self.ringPillFolded = (self.orb.previewNotchPillKind, self.orb.previewNotchPillText, self.orb.previewNotchMode)
+                print(self.stamp, "ring: folded pill '\(self.orb.previewNotchPillText)' (\(self.orb.previewNotchPillKind)) mode \(self.orb.previewNotchMode) lip chip '\(self.orb.previewNotchLipChip)'")
+                fflush(stdout)
+                self.notchShotsOwed.insert("island-alarm-folded")
+                self.notchShot("island-alarm-folded", note: "the ring folded: the pill under the lip, mode \(self.orb.previewNotchMode)")
+            }
+        }
+        if let t = Double(env["ORB_NOTCH_WAKE_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self else { return }
+                self.state.snapshot.phase = .listening
+                self.phaseStart = Date()
+                print(self.stamp, "notch: phase -> listening (ORB_NOTCH_WAKE_AT) mode \(self.orb.previewNotchMode)")
+                fflush(stdout)
+            }
+        }
+        if let t = Double(env["ORB_NOTCH_RING_CLEAR_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.engineEndsRing(id: Self.ringId, state: "done", why: "the engine's linger") }
+        }
+        // The island shot at 3.4 s and the checks at 3.45 read Snooze hovered (the minis up); the pointer leaves at 3.5.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.35) { [weak self] in self?.orb.previewNotchHoverControl("snooze:10") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in self?.orb.previewNotchHoverControl(nil) }
+        // 1.6 s after the pointer left Snooze the minis have gone from the hit list (while the ring is still up).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
+            guard let self, self.orb.previewNotchCanvasKind == "ring" else { return }
+            let snoozes = self.orb.previewNotchHitList.filter { $0.name.hasPrefix("snooze:") }.map(\.name)
+            self.check(!self.orb.previewNotchRingMinisShown && snoozes == ["snooze:10"], "minis leave 1.5 s after the pointer left Snooze (only snooze:10 in the hit list)",
+                       "minis shown \(self.orb.previewNotchRingMinisShown ? 1 : 0); snooze presses \(snoozes)")
+        }
+    }
+
+    /// The daemon's answer to a Snooze / Done (or its own linger): the ring ends, the row's state moves; with
+    /// ORB_NOTCH_QUESTION_AT=ring-end the fleet's question lands in the same turn.
+    func engineEndsRing(id: String, state newState: String, why: String) {
+        var snap = state.snapshot
+        if snap.ringing?.id == id { snap.ringing = nil }
+        if var rows = snap.automations, let i = rows.firstIndex(where: { $0.id == id }) {
+            rows[i].state = newState
+            rows[i].updatedAt = Date().timeIntervalSince1970 * 1000
+            snap.automations = rows
+        }
+        state.snapshot = snap
+        ringKindChangeAt = CACurrentMediaTime()
+        print(stamp, "engine: ring \(id) -> \(newState) (\(why)); mode \(orb.previewNotchMode) pinned \(orb.previewNotchPinned ? 1 : 0) kind \(orb.previewNotchCanvasKind)")
+        fflush(stdout)
+        if pendingQuestionAtRingEnd { pendingQuestionAtRingEnd = false; applyPendingQuestion() }
+    }
+
+    /// The deferred fleet question lands: that thread waits on Kevin (the kind flips to question).
+    func applyPendingQuestion() {
+        guard let p = pendingQuestion else { return }
+        pendingQuestion = nil
+        guard let i = state.snapshot.threads.firstIndex(where: { $0.id == p.id }) else { print(stamp, "ORB_NOTCH_QUESTION_AT: no thread \(p.id) in the snapshot yet"); return }
+        state.snapshot.threads[i].status = .waitingKevin
+        state.snapshot.threads[i].question = p.text
+        state.applySnapshotThreads(state.snapshot.threads)
+        ringKindChangeAt = CACurrentMediaTime()
+        print(stamp, "engine: \(p.id) asks \"\(p.text)\" — kind \(orb.previewNotchCanvasKind) mode \(orb.previewNotchMode)")
+        fflush(stdout)
+    }
+
+    static func fakeChime(_ line: String, sound: String) -> AutomationAction {
+        AutomationAction(kind: "chime", line: line, sound: sound, title: nil, body: nil, open: nil, app: nil, url: nil, path: nil, into: nil, recipe: nil, key: nil, prompt: nil, budget: nil, speak: nil)
+    }
+
+    /// "Weekdays at 07:10, ring "Wake up, Kevin"." — fired now.
+    static func fakeAlarmRow(line: String, nowMs: Double) -> Automation {
+        let every = Recurrence(kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "07:10", everyMs: nil, anchorAt: nil, nth: nil, weekday: nil, day: nil)
+        return Automation(id: ringId, name: "Wake up", when: AutomationWhen(kind: "every", at: nil, ms: nil, every: every, phrase: "weekdays 07:10", on: nil),
+                          then: [fakeChime(RingWords.body(of: line), sound: "Hero")],
+                          clauses: AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: "override"),
+                          echo: "Weekdays at 07:10, ring \"\(RingWords.body(of: line))\".", state: "fired", nextAt: nil, lastFiredAt: nowMs, lastDetail: nil, fires: 1, missed: 0,
+                          snoozedUntil: nil, createdAt: nowMs - 86_400_000, updatedAt: nowMs,
+                          createdBy: AutomationCreatedBy(by: "brain", chainId: nil, delegationId: nil, request: "wake me at seven ten on weekdays"), confirmed: nil)
+    }
+
+    /// "In 12:00, ring "pasta"." — armed, firing at `firesAt`.
+    static func fakeTimerRow(name: String, firesAt: Double, nowMs: Double) -> Automation {
+        Automation(id: timerId, name: name, when: AutomationWhen(kind: "in", at: nil, ms: firesAt - nowMs, every: nil, phrase: nil, on: nil),
+                   then: [fakeChime("\(name) is up", sound: "Glass")],
+                   clauses: AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: "respect"),
+                   echo: "In 12:00, ring \"\(name)\".", state: "armed", nextAt: firesAt, lastFiredAt: nil, lastDetail: nil, fires: 0, missed: 0,
+                   snoozedUntil: nil, createdAt: nowMs, updatedAt: nowMs,
+                   createdBy: AutomationCreatedBy(by: "brain", chainId: nil, delegationId: nil, request: "twelve-minute timer for the pasta"), confirmed: nil)
+    }
+
+    /// The ring's island at 3.45 s (Snooze hovered since 3.35): the kind, the anchor word, the hero, the boxes in the
+    /// consent rects, the minis, the head, Ask dead asleep, the foot's notice; the early pinned open; the tooltips; and
+    /// the folded readings when the run folded it (the pill under the lip, the timer's pill before the ring).
+    func ringIslandChecks(env: [String: String]) {
+        let content = orb.previewDockContent
+        let ring = env["ORB_NOTCH_RING"] ?? ""
+        let kind = orb.previewNotchCanvasKind
+        let word = orb.previewNotchAnchorWord
+        let line = orb.previewNotchLineText
+        let hits = orb.previewNotchHitList
+        func at(_ name: String, _ x0: CGFloat, _ x1: CGFloat, _ y0: CGFloat, _ y1: CGFloat) -> Bool {
+            guard let r = hits.first(where: { $0.name == name })?.rect else { return false }
+            return abs(r.minX - x0) < 0.5 && abs(r.maxX - x1) < 0.5 && abs(r.minY - y0) < 0.5 && abs(r.maxY - y1) < 0.5
+        }
+        if content.ring != nil {
+            let minis = hits.filter { $0.name == "snooze:5" || $0.name == "snooze:30" }
+            let minisOK = minis.count == 2 && at("snooze:5", 340, 370, 85, 107) && at("snooze:30", 376, 406, 85, 107)
+            let ask = orb.previewNotchBoxDim("ask")
+            let askWant: CGFloat = content.awake ? 1 : 0.35
+            let foot = orb.previewNotchFootText
+            // The notice row is the asleep foot's (a problem row still wins it); awake the meter stays.
+            let footOK = content.awake || content.problem != nil || env["ORB_NOTCH_NEXT"] == nil || foot.range(of: "^asleep · next Timer \\d+:\\d\\d · pasta$", options: .regularExpression) != nil
+            let ok = kind == "ring" && word == "Alarm" && line == ring && at("snooze:10", 114, 198, 82, 110) && at("done", 206, 290, 82, 110)
+                && at("ringOpen", 114, 114 + 292, 11, 31) && minisOK && orb.previewNotchRingMinisShown && abs(ask - askWant) < 0.01 && footOK
+                && !hits.contains { $0.name == "allow" || $0.name == "deny" }
+            check(ok, "ring → kind ring; anchor word \"Alarm\"; hero \"07:10 · Wake up, Kevin\"; Snooze 114–198 / Done 206–290 y 82–110 (no Allow / Deny); minis snooze:5 / snooze:30 at x 340/376 while Snooze is hovered; head \"Alarm · weekdays\" hittable ringOpen; Ask 0.35 asleep; foot \"asleep · next Timer 12:00 · pasta\" asleep",
+                  "kind \(kind) word '\(word)' hero '\(line)' awake \(content.awake ? 1 : 0) hits \(hits.map(\.name)) minis \(minis.map { "\($0.name)@\(Int($0.rect.minX))" }) ask \(String(format: "%.2f", ask)) foot '\(foot)'")
+            let heroTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 40))
+            let snoozeTip = orb.previewNotchTooltip("snooze:10"), doneTip = orb.previewNotchTooltip("done"), headTip = orb.previewNotchTooltip("ringOpen")
+            let tips = heroTip.hasPrefix(ring) && snoozeTip == "Snooze — rings again in 10 min" && doneTip == "Done — stops the alarm" && headTip == "Alarm · weekdays — Console"
+            check(tips, "ring tooltips: hero = the whole line; Snooze — rings again in 10 min; Done — stops the alarm; head → Alarm · weekdays — Console",
+                  "hero '\(heroTip)' snooze '\(snoozeTip)' done '\(doneTip)' head '\(headTip)'")
+        }
+        if let e = ringEarly {
+            check(e.mode == "island" && e.pinned && e.tucked, "ring arrives asleep → the island opens pinned before any pointer; the blob stays tucked",
+                  "mode \(e.mode) pinned \(e.pinned ? 1 : 0) tucked \(e.tucked ? 1 : 0)")
+        }
+        if let f = ringPillFolded {
+            let want = RingWords.body(of: ring) + " · Snooze ⌥⇧S"
+            check(f.kind == "ring" && f.text == want && f.mode == "tucked", "ring folded asleep → the pill under the lip 🔔 \"Wake up, Kevin · Snooze ⌥⇧S\" (kind ring), the blob tucked",
+                  "pill '\(f.text)' (\(f.kind)) mode \(f.mode)")
+        }
+        if let t = timerPillEarly {
+            let ok = t.kind == "timer" && t.text.range(of: "^pasta · \\d+:\\d\\d$", options: .regularExpression) != nil
+            check(ok, "tucked asleep with a running timer → the pill \"pasta · m:ss\" under the lip (kind timer)", "pill '\(t.text)' (\(t.kind))")
+        }
+    }
+
     /// Every phase, 0.2 s apart: Mute is in the hit list only in a session's phases; Stop always.
     func notchPhaseSweep() {
         let phases = Phase.allCases
@@ -3563,8 +3835,17 @@ extension OrbPreviewDelegate {
         let dotsExtra: CGFloat = dotCount > 0 ? CGFloat(dotCount) * 5 + CGFloat(dotCount - 1) * 3 + 8 : 0
         peekBefore = (orb.previewNotchPeekWidthTarget, orb.previewNotchChipsExtraWidth, dotsExtra)
         let wants = ["ORB_NOTCH_QUESTION", "ORB_NOTCH_MARKS", "ORB_NOTCH_PROBLEM", "ORB_NOTCH_METER"].filter { env[$0] != nil }.count
+        if env["ORB_NOTCH_RING"] != nil, orb.previewDockContent.ring != nil {
+            let order = ["ring", "question", "marks", "timer", "problem", "meter"]
+            let ranks = kinds.compactMap { order.firstIndex(of: $0) }
+            let sorted = ranks == ranks.sorted() && ranks.count == kinds.count
+            let timerOK = env["ORB_NOTCH_NEXT"] == nil || chips.contains { $0.range(of: "^timer:\\d+:\\d\\d$", options: .regularExpression) != nil }
+            let ok = chips.first == "ring:07:10" && sorted && timerOK && chips.count <= 4 && orb.previewNotchPeekWidthTarget <= NotchGeometry.peekWidthCap + 0.5
+            check(ok, "ring folded awake → peek chip bell 07:10 first; order ring > question > marks > timer > problem > meter; a running timer's chip m:ss after marks; chips ≤ 4; peek ≤ 360",
+                  "chips \(chips) width target \(Int(orb.previewNotchPeekWidthTarget))")
+        }
         if wants >= 3 || env["ORB_NOTCH_CHIPS_CHECK"] == "1" {
-            let order = ["question", "marks", "problem", "meter"]
+            let order = ["ring", "question", "marks", "timer", "problem", "meter"]
             let ranks = kinds.compactMap { order.firstIndex(of: $0) }
             let sorted = ranks == ranks.sorted() && ranks.count == kinds.count
             let ok = chips.count <= 4 && sorted && orb.previewNotchPeekWidthTarget <= NotchGeometry.peekWidthCap + 0.5
@@ -3613,6 +3894,9 @@ extension OrbPreviewDelegate {
         var names = ["word", "go", "stop", "mute", "head", "heroUsed", "field", "clear", "circle", "window", "ask", "console", "sleep"]
         switch kind {
         case "question": names += ["allow", "deny", "mini0", "mini1"]
+        case "ring":
+            names += ["allow", "deny"]
+            if orb.previewNotchRingMinisShown { names += ["mini0", "mini1"] }
         case "marks": names += ["film0", "film1", "film2"]
         default:
             let threads = orb.previewDockContent.threads.count
@@ -3656,7 +3940,7 @@ extension OrbPreviewDelegate {
         let footTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 168))
         let footText = orb.previewNotchFootText
         check(footTip.contains(footText) && !footText.isEmpty, "tooltip at (200,168) contains footText", "tooltip '\(footTip)' foot '\(footText)'")
-        if let q = orb.previewDockContent.question {
+        if let q = orb.previewDockContent.question, orb.previewDockContent.ring == nil {
             let heroTip = orb.previewNotchTooltipAt(NSPoint(x: 200, y: 40))
             check(heroTip == q.text, "tooltip at (200,40) == question (question set)", "tooltip '\(heroTip)' question '\(q.text)'")
         }
@@ -3672,8 +3956,10 @@ extension OrbPreviewDelegate {
         if notchOpenTiming { openTimingCheck() }
         if env["ORB_REDUCE_MOTION"] == "1" { reduceMotionCheck() }
 
+        if env["ORB_NOTCH_RING"] != nil { ringIslandChecks(env: env) }
         if env["ORB_NOTCH_MARKS"] != nil, content.marks.count >= 3, content.question == nil { marksRowCheck(layout: rects) }
-        if env["ORB_NOTCH_QUESTION"] != nil {
+        // With a ring up the question waits in its chip: its island line is read only once it is the kind again.
+        if env["ORB_NOTCH_QUESTION"] != nil, env["ORB_NOTCH_RING"] == nil || kind == "question" {
             let line = orb.previewNotchLineText
             let heroLines = orb.previewNotchHeroLines
             let names = orb.previewNotchHitList

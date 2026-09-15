@@ -34,7 +34,9 @@ private struct GateInputs: Equatable {
 final class WakeGate {
     private let state: AppState
     private let listener = WakeWordListener()
-    private let speaker = LocalSpeaker()
+    /// The shared on-device speaker (`AppState.localSpeaker`): the automations' chimes and lines go through the
+    /// same instance, so `isQuiet` below covers their echo too (design11's echo rail).
+    private var speaker: LocalSpeaker { state.localSpeaker }
     private var cancellables = Set<AnyCancellable>()
 
     // Inputs.

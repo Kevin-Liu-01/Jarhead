@@ -603,11 +603,14 @@ public final class OrbPanelController {
             .store(in: &cancellables)
         // The dock's content: built whole from the snapshot, the thread store, the mark
         // state, the gate and the decoded thumbnails; set only when it differs.
+        // The automations (design11): the ring, the next fire and the rows, as AppState holds them from the
+        // snapshot and the `automation.event` deltas — payloads, never re-read from `state` in here.
+        let automations = Publishers.CombineLatest3(state.$ringing.removeDuplicates(), state.$nextFire.removeDuplicates(), state.$automations.removeDuplicates())
         Publishers.CombineLatest4(state.$snapshot, state.$threads, state.$marking.eraseToAnyPublisher().removeDuplicates(), state.$wakeGate.removeDuplicates())
-            .combineLatest(thumbsChanged)
-            .map { [weak self] top, _ -> (DockContent, [ScreenMark]) in
+            .combineLatest(thumbsChanged, automations)
+            .map { [weak self] top, _, auto -> (DockContent, [ScreenMark]) in
                 guard let self else { return (.empty, []) }
-                return (self.buildDockContent(snapshot: top.0, threads: top.1, marking: top.2, gate: top.3), top.0.marks)
+                return (self.buildDockContent(snapshot: top.0, threads: top.1, marking: top.2, gate: top.3, ringing: auto.0, nextFire: auto.1, automations: auto.2), top.0.marks)
             }
             .removeDuplicates { $0.0 == $1.0 }
             .sink { [weak self] content, marks in self?.dockContentChanged(content, marks: marks) }
@@ -716,9 +719,11 @@ public final class OrbPanelController {
             state.$toasts.map(\.last).removeDuplicates { a, b in
                 a?.tone == b?.tone && a?.text.lowercased() == b?.text.lowercased()
             })
-            .combineLatest(state.$snapshot.map(\.phase).removeDuplicates())
-            .map { top, phase -> OrbPill? in
+            .combineLatest(state.$snapshot.map(\.phase).removeDuplicates(), state.$ringing.removeDuplicates())
+            .map { [weak self] top, phase, ring -> OrbPill? in
                 let (problem, gate, home, toast) = top
+                // A ring first (design11: ring > problem > gate > home > toast): its line, Snooze as the pill's one press.
+                if let r = ring { return OrbPill(text: r.line, tone: .info, icon: "bell.fill", action: { [weak self] in self?.snoozeRing(r) }, actionTitle: "Snooze") }
                 if let p = problem { return OrbPill(text: p, tone: .error) }
                 if let g = gate { return g }
                 if let h = home { return h }
@@ -961,6 +966,10 @@ public final class OrbPanelController {
         dock.sleep = { [weak self] in self?.state.send(.sleepCause("dock")) }
         dock.remedy = { [weak self] row in self?.remedyFromDock(row) }
         dock.say = { [weak self] text in self?.state.send(.sayText(text)) }
+        // The ring's presses (design11): Snooze · Done go to the row; the head and Open go to the Console — never a session.
+        dock.snooze = { [weak self] id, minutes in self?.state.send(.automationSnooze(id: id, minutes: minutes)) }
+        dock.done = { [weak self] id in self?.state.send(.automationDone(id: id)) }
+        dock.ringOpen = { [weak self] _, _ in self?.state.openConsole() }
         dock.setThreads(threadDots)
         dock.setContent(dockContent)
         return dock
@@ -1034,7 +1043,8 @@ public final class OrbPanelController {
     /// One `DockContent` from the snapshot, the thread store (rail order: the asking
     /// thread first), the mark state and the gate. Spawned threads only: main's turn is
     /// the transport's; main's awaiting-confirmation delegation counts as "Jarhead asks".
-    private func buildDockContent(snapshot s: Snapshot, threads store: [String: WorkThread], marking: Bool, gate: WakeGateState) -> DockContent {
+    private func buildDockContent(snapshot s: Snapshot, threads store: [String: WorkThread], marking: Bool, gate: WakeGateState,
+                                  ringing: RingLine? = nil, nextFire: NextFire? = nil, automations: [Automation] = []) -> DockContent {
         let now = Date()
         let awake = s.phase != .asleep
         let inSession = AppState.inSessionPhases.contains(s.phase)
@@ -1076,11 +1086,45 @@ public final class OrbPanelController {
         }
         let ws = s.settings.wake
         let gateLabel = awake ? nil : OrbStyle.gateLabel(gate, phrases: ws.phrases, auth: ws.auth, now: now, paused: s.phase == .paused)
+        let rings = Self.ringRows(ringing: ringing, nextFire: nextFire, automations: automations, snoozeMinutes: s.settings.automationSettings.snoozeMinutes)
         return DockContent(awake: awake, inSession: inSession, typedWakes: s.settings.typedWakes,
                            request: s.delegations.last { $0.status == .running }?.request,
                            lastLine: s.transcript.last?.text, gateLabel: gateLabel,
                            marks: marks, question: question, threads: rows, problem: problem, meter: meter,
-                           marking: marking, screenRecordingGranted: s.permissions.grant(.screenRecording) != .denied)
+                           marking: marking, screenRecordingGranted: s.permissions.grant(.screenRecording) != .denied,
+                           ring: rings.ring, next: rings.next, timer: rings.timer)
+    }
+
+    /// The ring (the newest `fired` row with a line), the foot's next fire and the soonest running timer, in the
+    /// dock's words: the kind's label, the head's source line, the chip's figure, the Snooze box's minutes (the
+    /// ring's own snooze press, else Settings — timers five).
+    static func ringRows(ringing: RingLine?, nextFire: NextFire?, automations: [Automation], snoozeMinutes: Int) -> (ring: DockContent.RingRow?, next: DockContent.NextRow?, timer: DockContent.TimerRow?) {
+        var ring: DockContent.RingRow?
+        if let r = ringing {
+            let row = automations.first { $0.id == r.id }
+            let kind = AutomationKindWord(rawValue: r.kind) ?? row?.kind ?? .alarm
+            let presses = r.presses.map { DockContent.RingPress(kind: $0.kind, minutes: $0.minutes, target: $0.target) }
+            let snooze = presses.first { $0.kind == "snooze" }?.minutes ?? (kind == .timer ? 5 : snoozeMinutes)
+            let head = RingWords.head(kindLabel: kind.label, whenKind: row?.when.kind, phrase: row?.when.phrase, eventKind: row?.when.on?.kind)
+            ring = DockContent.RingRow(id: r.id, kind: kind.rawValue, kindLabel: kind.label, name: r.name, line: r.line, calm: r.calm, head: head,
+                                       chip: RingWords.chip(line: r.line, name: r.name), lateMs: r.lateMs, presses: presses, more: max(0, r.more), snoozeMinutes: snooze)
+        }
+        var next: DockContent.NextRow?
+        if let n = nextFire, n.at.isFinite {
+            let kind = AutomationKindWord(rawValue: n.kind) ?? .alarm
+            let at = Date(timeIntervalSince1970: n.at / 1000)
+            next = DockContent.NextRow(kindLabel: kind.label, clock: RingWords.clock(at), name: n.name, until: kind == .timer ? at : nil)
+        }
+        let soonest = automations.filter { $0.kind == .timer && $0.state == "armed" && ($0.nextAt?.isFinite ?? false) }.min { ($0.nextAt ?? 0) < ($1.nextAt ?? 0) }
+        let timer = soonest.map { DockContent.TimerRow(id: $0.id, name: $0.name, until: Date(timeIntervalSince1970: ($0.nextAt ?? 0) / 1000)) }
+        return (ring, next, timer)
+    }
+
+    /// The capsule pill's Snooze (free mode): the ring's own snooze press, else Settings' minutes (timers five).
+    private func snoozeRing(_ r: RingLine) {
+        let settings = state.snapshot.settings.automationSettings.snoozeMinutes
+        let minutes = r.presses.first { $0.kind == "snooze" }?.minutes ?? (r.kind == "timer" ? 5 : settings)
+        state.send(.automationSnooze(id: r.id, minutes: minutes))
     }
 
     /// New content: the dock takes it; a mark that landed while tucked gets its six
@@ -2790,6 +2834,9 @@ extension OrbPanelController {
     public var previewNotchHeroSwaps: [(from: String, to: String, at: Double)] { NotchView.previewHeroSwaps }
     public func previewNotchSetKind(_ name: String?) { notch?.view.previewSetKind(name) }
     public var previewNotchPinned: Bool { notch?.previewPinned ?? false }
+    public var previewNotchAnchorWord: String { notch?.view.previewAnchorWord ?? "" }
+    public var previewNotchRingMinisShown: Bool { notch?.view.previewRingMinisShown ?? false }
+    public var previewNotchMiddleDead: Bool { notch?.view.previewMiddleDead ?? false }
     public var previewNotchPinAfterMark: Bool { notch?.previewPinAfterMark ?? false }
     public var previewNotchMarking: Bool { notch?.previewMarking ?? false }
     public var previewNotchIgnoresMouse: Bool { notch?.previewIgnoresMouse ?? true }
