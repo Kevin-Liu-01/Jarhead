@@ -231,7 +231,7 @@ export function parseClockAutomation(words: string, now: number): ParsedAutomati
   const kind = automationKind({ when, then });
   const whenWords = describe(when);
   const echo = cut(`${whenWords.charAt(0).toUpperCase()}${whenWords.slice(1)}, ${echoVerb(action)}.`, ECHO_CHARS);
-  return { name, when, then, clauses: { quiet: kind === "alarm" ? "override" : "respect" }, echo };
+  return { name, when, whenPhrase, then, clauses: { quiet: kind === "alarm" ? "override" : "respect" }, echo };
 }
 
 /** An `open` argument: an https URL, a path (`/…`, `~…`), else an app name. */

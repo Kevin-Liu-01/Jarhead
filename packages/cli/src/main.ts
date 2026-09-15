@@ -653,7 +653,10 @@ async function automationsCommand(rest: string[]): Promise<void> {
       if ("error" in draft) throw new Error(`${draft.error}\n  usage: jarhead automations add "<when> <chime|say|notify|open> <what>"`);
       // The stamp before the send: only a row created after it — armed, the CLI's — is the one this command set (`landedAutomation`).
       const sentAt = Date.now();
-      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft, by: "cli" }, (s) => landedAutomation(s.automations ?? [], draft.name, sentAt) !== undefined, AUTOMATION_WAIT_MS);
+      // The wire carries the phrase, not the parse: core's parseWhen is the one grammar and the engine runs it;
+      // the local parse above only gives the offline error text and the echo.
+      const { when: _parsedLocally, ...wire } = draft;
+      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: wire, by: "cli" }, (s) => landedAutomation(s.automations ?? [], draft.name, sentAt) !== undefined, AUTOMATION_WAIT_MS);
       console.log(`\n  sent automation.set · ${draft.echo}`);
       for (const t of toasts) console.log(`  ${t}`);
       const row = snapshot ? landedAutomation(snapshot.automations ?? [], draft.name, sentAt) : undefined;
