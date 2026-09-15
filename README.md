@@ -268,8 +268,20 @@ never the voice — opted into per row with its cost said before your yes. A rec
 brain wake asks **once, at set-up**; anything that would need a yes when it fires is refused
 then, with the nearest safe kind offered. Nothing fires while Jarhead is quit; `Open at login`
 (your press) brings it back with you, and missed fires say so honestly with `Run now`. Rows are
-never deleted — Move to Trash, Restore. `pnpm jarhead automations`, `pnpm jarhead recipes`, a
-`doctor` group, [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
+never deleted — Move to Trash, Restore. `pnpm jarhead automations`, `pnpm jarhead recipes`
+(a recipe has the same Trash and `restore`), a `doctor` group,
+[`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/console-automations.jpg" alt="The Console's Automations section: the summary line and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash folded with Restore"></td>
+    <td width="50%"><img src="docs/media/notch-island-alarm.png" alt="The island ringing: the alarm's line as the hero on the black pool, Snooze 10 · Done where Allow · Deny usually sit"></td>
+  </tr>
+  <tr>
+    <td>Automations in the Console: one row each, the Trash folded with Restore. Nothing is deleted.</td>
+    <td>An alarm on the island: the line as the hero, Snooze 10 · Done.</td>
+  </tr>
+</table>
 
 ## Numbers
 
