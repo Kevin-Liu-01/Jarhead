@@ -298,7 +298,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 | your hands | a key, click or scroll of yours holds the helper `busy` for 1500 ms |
 | liveness | ping every 2 s · two unanswered → drop, reconnect, kick |
 | crash | relaunch ≤ 3 in 10 min · daemon lingers 90 s |
-| tools · permissions · brains | 67 · 16 (7 required) · 5 + auto |
+| tools · permissions · brains | 71 · 16 (7 required) · 5 + auto |
 | retention | ledger forever (default) · screenshots 14 days · disk preflight 500 MB |
 
 ## Safety rails
