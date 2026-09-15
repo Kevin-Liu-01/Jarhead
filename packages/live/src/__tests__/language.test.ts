@@ -40,7 +40,7 @@ test("the rail is untouched: the standing orders carry no # Language of their ow
   const joined = [orders, languageSection("Kevin", "en", "american")].join("\n\n");
   assert.ok(joined.indexOf("# Names and numbers") < joined.indexOf("# Language"));
   const words = (s: string): number => s.split(/\s+/).filter(Boolean).length;
-  assert.ok(words(orders) <= 1100, `${words(orders)} words`);
+  assert.ok(words(orders) <= 1450, `${words(orders)} words`); // the ceiling instructions.test.ts carries (1100 → 1450 for design11's automation lines)
   assert.ok(words(languageSection("Kevin", "en", "american")) <= 30, "the section is a couple of lines");
 });
 
