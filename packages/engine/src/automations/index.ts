@@ -1,5 +1,7 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { classifyAction, classifyAutomation, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
+import { dirname, join } from "node:path";
+import { classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, parseWhen, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
 import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
@@ -9,11 +11,14 @@ import {
   AUTOMATION_SLEEP_GAP_MS,
   AUTOMATION_WATCH_COOLDOWN_S,
   automationKind,
+  liveRecipes,
+  recipeNamed,
   type Automation,
   type AutomationClauses,
   type AutomationDraft,
   type AutomationKind,
   type AutomationState,
+  type AutomationWhen,
   type EngineCommand,
   type EngineEvent,
   type MissedWhy,
@@ -22,6 +27,7 @@ import {
   type RingLine,
   type Settings,
   type SettingsPatch,
+  type AutomationSettings,
   type ShellRecipe,
   type Snapshot,
   type SystemSignal,
@@ -40,7 +46,7 @@ export { Watchers, FOLDER_POLL_MS, APP_POLL_MS, globToRegExp } from "./watchers.
  * The Automations façade the engine constructs beside the ThreadScheduler: arming (the
  * set-up gate, judged once, awake), the clock (`tick(now)` from the engine's 1 s tick —
  * sleep detection by the tick gap, the due loop, the rings, the watchers, the timer
- * ticks, the day's brain spend), the signals the app forwards, the twelve commands, the
+ * ticks, the day's brain spend), the signals the app forwards, the thirteen commands, the
  * snapshot projection and the `AutomationSource` the brain's four tools call.
  *
  * Rails: nothing here opens a Live session or reads a yes (the engine's wake path, its
@@ -62,6 +68,8 @@ export const CAFFEINATE_MAX_MS = 60 * 60_000;
 export const RESTART_DETAIL = "the daemon restarted";
 /** A recipe the brain hands in with a row is saved with this cap. */
 const RECIPE_TIMEOUT_DEFAULT_S = 120;
+/** The daemon stamps `<stateDir>/automations/alive` this often from tick(): at the next start it is when the watching stopped. */
+export const ALIVE_EVERY_MS = 60_000;
 
 /** The brain's `automation_change` verbs, one word each (packages/brain declares them; the surfaces send the same set). */
 export type ChangeVerb = AutomationVerb;
@@ -153,6 +161,13 @@ export class Automations implements AutomationSource {
   private readonly home: string;
   private readonly exec: AutomationExec;
   private lastTickAt = 0;
+  /** `<stateDir>/automations/alive`: the last instant this daemon was known to be watching (written every ALIVE_EVERY_MS). */
+  private readonly alivePath: string;
+  private aliveAt = 0;
+  /** At load: the previous daemon's last heartbeat, for the missed rows' words ("Jarhead was off from 02:10") and the watchers' baseline. */
+  private downSince: number | undefined;
+  /** The master switch as the last tick saw it: the off→on edge resyncs what fell due while off. */
+  private wasEnabled: boolean | undefined;
   /** The app said the Mac is going to sleep: evidence for the missed row's detail. */
   private sleptAt: number | undefined;
   /** Alarms that self-snoozed once while unanswered. */
@@ -170,12 +185,15 @@ export class Automations implements AutomationSource {
   /** Brain seconds `wake-brain` spent today and the day it was summed for. */
   private brainSpent = 0;
   private spendDay = "";
+  /** Budget seconds reserved by wake-brain fires in flight, by row: counted as spent until the fire settles. */
+  private readonly reservedBrain = new Map<string, number>();
   private loaded = false;
 
   constructor(private readonly opts: AutomationsOptions) {
     this.now = opts.now;
     this.home = opts.home ?? homedir();
     this.exec = opts.exec ?? defaultAutomationExec;
+    this.alivePath = join(opts.stateDir, "automations", "alive");
     const shell: ShellRunner = opts.shell ?? ((o) => runShell(o));
     const shellGate: ShellGate = opts.shellGate ?? ((ctx: ActionContext): Decision => classifyAction(ctx));
     this.table = new AutomationTable({ stateDir: opts.stateDir, now: this.now, sink: (e) => opts.emit({ type: "automation.event", event: e }), coalesceMs: opts.coalesceMs, compactBytes: opts.compactBytes });
@@ -194,7 +212,8 @@ export class Automations implements AutomationSource {
       home: this.home,
       repoRoot: opts.repoRoot,
       problem: opts.problem,
-      brainSpentToday: () => this.brainSpent,
+      brainSpentToday: () => this.brainSpent + [...this.reservedBrain.values()].reduce((a, b) => a + b, 0),
+      reserveBrain: (id, seconds) => this.reservedBrain.set(id, seconds),
     });
     this.watchers = new Watchers({ now: this.now, reader: opts.reader, shell, shellGate, settings: opts.settings, home: this.home, repoRoot: opts.repoRoot });
   }
@@ -212,6 +231,9 @@ export class Automations implements AutomationSource {
     const rows = this.table.load();
     this.rings.clear();
     this.holds.clear();
+    // The last daemon's heartbeat: from then until now nothing watched. Its folders' baselines are taken as of that instant.
+    const downSince = this.readAlive();
+    this.downSince = downSince !== undefined && downSince < now ? downSince : undefined;
     for (const a of rows) {
       if (a.state === "firing") {
         this.write(mut(a, { state: this.repeats(a) ? "armed" : "failed", nextAt: this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined, lastDetail: RESTART_DETAIL, updatedAt: now }), "engine", RESTART_DETAIL);
@@ -228,7 +250,7 @@ export class Automations implements AutomationSource {
         else if (a.when.kind === "at" || a.when.kind === "in") this.write(mut(a, { state: "failed", lastDetail: "missed", missed: a.missed + 1, updatedAt: now }), "engine", "missed");
       }
       if (a.state === "armed" && a.when.kind === "on") {
-        const err = this.watchers.watch(a);
+        const err = this.watchers.watch(a, this.downSince);
         if (err) this.watchProblem(a, err);
       }
       if (a.state === "armed" && a.when.kind === "in" && a.nextAt !== undefined) this.caffeinate(a, now);
@@ -237,7 +259,30 @@ export class Automations implements AutomationSource {
     this.loaded = true;
     this.lastTickAt = 0;
     this.resync(now, "daemon-down");
+    this.downSince = undefined;
+    this.heartbeat(now);
     this.opts.onChange();
+  }
+
+  /** The previous daemon's last heartbeat, or undefined when there is none (a first run, an unreadable file). */
+  private readAlive(): number | undefined {
+    try {
+      const n = Number(readFileSync(this.alivePath, "utf8").trim());
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `alive` holds `now`: one small file rewritten every minute; a failure to write it changes nothing else. */
+  private heartbeat(now: number): void {
+    this.aliveAt = now;
+    try {
+      mkdirSync(dirname(this.alivePath), { recursive: true });
+      writeFileSync(this.alivePath, String(now));
+    } catch (e) {
+      log.debug(`alive: ${(e as Error).message}`);
+    }
   }
 
   private repeats(a: Automation): boolean {
@@ -260,9 +305,20 @@ export class Automations implements AutomationSource {
    * rolled — the brain spend is re-summed.
    */
   tick(now = this.now()): void {
-    if (this.lastTickAt !== 0 && now - this.lastTickAt > AUTOMATION_SLEEP_GAP_MS) this.resync(now, "mac-slept");
+    if (now - this.aliveAt >= ALIVE_EVERY_MS) this.heartbeat(now);
+    const enabled = this.opts.settings().automations.enabled;
+    if (!enabled) {
+      // Off: nothing fires, nothing resyncs (a sleep gap while off is settled at the flip), every row stays.
+      this.lastTickAt = now;
+      this.wasEnabled = false;
+      return;
+    }
+    // The switch back on: what fell due while it was off goes through the missed table — grace for one-shots, skipped
+    // routines — never fired hours late. Otherwise a tick gap over AUTOMATION_SLEEP_GAP_MS means the Mac slept.
+    if (this.wasEnabled === false) this.resync(now, "daemon-down");
+    else if (this.lastTickAt !== 0 && now - this.lastTickAt > AUTOMATION_SLEEP_GAP_MS) this.resync(now, "mac-slept");
     this.lastTickAt = now;
-    if (!this.opts.settings().automations.enabled) return;
+    this.wasEnabled = true;
     this.fireDue(now);
     this.ringTick(now);
     void this.pollWatchers(now);
@@ -281,17 +337,24 @@ export class Automations implements AutomationSource {
         this.roll(a, dueAt, now, "outside its window");
         continue;
       }
-      const quiet = this.opts.settings().automations.quietHours;
-      if (a.clauses.quiet === "respect" && inQuiet(quiet, now) && a.state !== "deferred") {
-        if (a.then.some((x) => x.kind !== "chime" && x.kind !== "say" && x.kind !== "notify")) {
-          this.defer(a, now, dueAt);
-          continue;
-        }
-        void this.fire(a, now, Math.max(0, now - dueAt), { dueAt, quiet: true });
+      // Later than its grace (a tick's worth of slack): the missed table, never a late run — whatever let it get this late.
+      const lateMs = now - dueAt;
+      if (a.state !== "deferred" && lateMs > Math.max(graceFor(automationKind(a)), AUTOMATION_SLEEP_GAP_MS)) {
+        this.settleDue(a, now, "daemon-down");
         continue;
       }
-      void this.fire(a, now, Math.max(0, now - dueAt), { dueAt, quiet: false });
+      this.fireOrDefer(a, now, dueAt, lateMs);
     }
+  }
+
+  /** A due row fires now — unless quiet hours hold and it acts, then it waits for the quiet end (the one quiet rule, for the tick and the resync alike). */
+  private fireOrDefer(a: Automation, now: number, dueAt: number, lateMs: number): void {
+    const quiet = a.clauses.quiet === "respect" && a.state !== "deferred" && inQuiet(this.opts.settings().automations.quietHours, now);
+    if (quiet && a.then.some((x) => x.kind !== "chime" && x.kind !== "say" && x.kind !== "notify")) {
+      this.defer(a, now, dueAt);
+      return;
+    }
+    void this.fire(a, now, Math.max(0, lateMs), { dueAt, quiet });
   }
 
   /** An acting kind due inside quiet hours: it waits for the quiet end — unless the next regular occurrence comes sooner. */
@@ -364,9 +427,10 @@ export class Automations implements AutomationSource {
       this.sleptAt = at;
       return;
     }
+    // Off: the switch's own resync at the flip settles everything; a signal fires nothing meanwhile.
+    if (!this.opts.settings().automations.enabled) return;
     if (sig.kind === "mac.wake" || sig.kind === "clock.changed") this.resync(this.now(), "mac-slept");
     if (sig.kind === "screen.lock") return;
-    if (!this.opts.settings().automations.enabled) return;
     for (const f of this.watchers.signal(sig, this.armedWatchers())) this.watcherFire(f.id, this.now(), undefined, f.what);
   }
 
@@ -420,13 +484,17 @@ export class Automations implements AutomationSource {
     try {
       outcome = await this.executor.fire({ a: started, now, lateMs, file: o.file, quiet: o.quiet, dueAt: o.dueAt }, next);
     } catch (e) {
-      outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: `failed: ${(e as Error).message}`, presses: [], ring: false, ms: 0 };
+      // The same redaction the executor gives its own details: an error carrying a path or a token reaches no surface.
+      outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: cut(this.opts.redact(`failed: ${(e as Error).message}`), DETAIL_CHARS), presses: [], ring: false, ms: 0 };
     } finally {
       this.firing.delete(row.id);
+      // The reservation ends with the fire, in the same turn that adds the real spend below.
+      this.reservedBrain.delete(row.id);
     }
     const at = this.now();
     const current = this.table.get(row.id) ?? started;
-    if (current.state === "trashed" || current.state === "paused") return; // Kevin moved it while it ran; the fire's record stands, the state is his.
+    // Kevin trashed or paused it while it ran: the fire's record (the ledger row, the event) still stands; the state stays his.
+    const moved = current.state === "trashed" || current.state === "paused";
     const late = lateMs > 60_000 ? `${Math.round(lateMs / 60_000)} min late` : undefined;
     const quietNote = o.quiet && outcome.ok && outcome.ring ? "quiet hours: shown, not said" : undefined;
     // Signals counted inside the cooldown while this fire ran stay on the row ("+4 in cooldown").
@@ -448,7 +516,10 @@ export class Automations implements AutomationSource {
     });
     const base: Automation = mut(current, { fires: current.fires + 1, lastFiredAt: at, ...(detail ? { lastDetail: cut(detail, DETAIL_CHARS) } : { lastDetail: undefined }), snoozedUntil: undefined, updatedAt: at });
     const oneShotDone = row.clauses.once === true || row.when.kind === "at" || row.when.kind === "in";
-    if (!outcome.ok) {
+    if (moved) {
+      // The count and the detail are the fire's; the state is what Kevin set (trashed rows leave the heap, paused rows wait).
+      this.write(mut(base, { state: current.state, nextAt: undefined }), "engine", undefined, false);
+    } else if (!outcome.ok) {
       if (this.repeats(row) && !oneShotDone) this.write(this.rearmed(base, next, at), "engine", detail);
       else this.write(mut(base, { state: "failed", nextAt: undefined }), "engine", detail);
     } else if (outcome.ring) {
@@ -471,10 +542,11 @@ export class Automations implements AutomationSource {
     return mut(base, { state: "armed", nextAt: next });
   }
 
-  /** A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm. */
+  /** A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm; the alarm's one self-snooze is per ring, so it resets here. */
   private finishRing(a: Automation, now: number, detail: string | undefined): void {
     this.rings.delete(a.id);
     this.lastChimeAt.delete(a.id);
+    this.selfSnoozed.delete(a.id);
     const next = a.nextAt !== undefined && a.nextAt > now ? a.nextAt : this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined;
     const base: Automation = mut(a, { snoozedUntil: undefined, ...(detail ? { lastDetail: detail } : {}), updatedAt: now });
     if (this.repeats(a) && a.clauses.once !== true) this.write(this.rearmed(base, next, now), "engine", detail);
@@ -493,43 +565,60 @@ export class Automations implements AutomationSource {
   resync(now: number, why: MissedWhy): void {
     for (const a of this.table.due(now)) {
       if (a.nextAt === undefined || this.firing.has(a.id)) continue;
-      const dueAt = a.nextAt;
-      const lateMs = now - dueAt;
-      const kind = automationKind(a);
-      if (a.state === "deferred") {
-        void this.fire(a, now, lateMs, { dueAt, quiet: false });
-        continue;
-      }
-      if (lateMs <= graceFor(kind)) {
-        void this.fire(a, now, lateMs, { dueAt, quiet: a.clauses.quiet === "respect" && inQuiet(this.opts.settings().automations.quietHours, now) });
-        continue;
-      }
-      const routine = kind === "routine" || kind === "watcher";
-      this.missedRow(a, dueAt, why, routine);
-      if (routine) {
-        const next = nextFire(a.when, now, a.createdAt);
-        const detail = `skipped ${describeInstant(dueAt)} · ${whyWords(why, this.sleptAt)}`;
-        if (next === undefined) this.write(mut(a, { state: "done", nextAt: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-        else this.write(mut(a, { state: "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-        continue;
-      }
-      const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`;
-      this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
-      if (this.repeats(a)) {
-        const next = nextFire(a.when, now, a.createdAt);
-        this.write(mut(a, { state: next === undefined ? "done" : "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-      } else {
-        this.write(mut(a, { state: "failed", nextAt: undefined, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-      }
+      this.settleDue(a, now, why);
     }
     const landed = this.watchers.rebaseline();
     for (const [id, n] of landed) {
       const a = this.table.get(id);
       if (!a) continue;
-      const detail = `not watching while ${whyWords(why, this.sleptAt)} · ${n} new file${n === 1 ? "" : "s"} not handled`;
+      const detail = `not watching ${this.span(why, now)} · ${n} new file${n === 1 ? "" : "s"} not handled`;
       this.write(mut(a, { missed: a.missed + n, lastDetail: detail, updatedAt: now }), "engine", detail, false);
     }
     this.sleptAt = undefined;
+  }
+
+  /**
+   * One waiting row whose `nextAt` passed (the missed table): a deferred row fires (its quiet
+   * end came); inside its kind's grace it fires late (deferring again if quiet hours hold);
+   * past the grace it is `missed` — routines and watchers skip to the next slot with a row,
+   * one-shots and alarms get ONE problem with Run now, repeaters roll, one-shots stay `failed`.
+   */
+  private settleDue(a: Automation, now: number, why: MissedWhy): void {
+    if (a.nextAt === undefined) return;
+    const dueAt = a.nextAt;
+    const lateMs = now - dueAt;
+    const kind = automationKind(a);
+    if (a.state === "deferred") {
+      void this.fire(a, now, lateMs, { dueAt, quiet: false });
+      return;
+    }
+    if (lateMs <= graceFor(kind)) {
+      this.fireOrDefer(a, now, dueAt, lateMs);
+      return;
+    }
+    const routine = kind === "routine" || kind === "watcher";
+    this.missedRow(a, dueAt, why, routine);
+    if (routine) {
+      const next = nextFire(a.when, now, a.createdAt);
+      const detail = `skipped ${describeInstant(dueAt)} · ${whyWords(why, this.sleptAt, this.downSince)}`;
+      if (next === undefined) this.write(mut(a, { state: "done", nextAt: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+      else this.write(mut(a, { state: "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+      return;
+    }
+    const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt, this.downSince)}`;
+    this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt, this.downSince)}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
+    if (this.repeats(a)) {
+      const next = nextFire(a.when, now, a.createdAt);
+      this.write(mut(a, { state: next === undefined ? "done" : "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+    } else {
+      this.write(mut(a, { state: "failed", nextAt: undefined, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+    }
+  }
+
+  /** "02:10–07:04" when the gap's start is known (the heartbeat, the app's mac.sleep), else "while Jarhead was off" / "while the Mac slept". */
+  private span(why: MissedWhy, now: number): string {
+    const from = why === "daemon-down" ? this.downSince : why === "mac-slept" ? this.sleptAt : undefined;
+    return from !== undefined ? `${clockOf(from)}–${clockOf(now)}` : `while ${whyWords(why, undefined)}`;
   }
 
   private missedRow(a: Automation, dueAt: number, why: MissedWhy, skipped: boolean): void {
@@ -555,11 +644,19 @@ export class Automations implements AutomationSource {
     if (this.table.nameTaken(name, draft.id)) return { kind: "refused", reason: `an automation named "${name}" is already set; pick another name, or change that one` };
     const then = Array.isArray(draft.then) ? draft.then : [];
     if (then.length === 0 || then.length > AUTOMATION_ACTIONS_MAX) return { kind: "refused", reason: `an automation runs 1 to ${AUTOMATION_ACTIONS_MAX} actions` };
-    if (!draft.when || typeof draft.when !== "object") return { kind: "refused", reason: "say when it fires: a time, 'in 12 minutes', 'weekdays 09:00', or a signal" };
-    const clauses = { ...(draft.clauses ?? {}), quiet: draft.clauses?.quiet ?? (then[0]?.kind === "chime" && draft.when.kind !== "on" ? "override" : "respect") } as Automation["clauses"];
+    // When it fires: a normalised `when`, or Kevin's phrase through core's parseWhen — the ONE grammar (the Console's form and the
+    // CLI send the phrase; the brain's tool parsed it already). A phrase the grammar does not catch is refused in its own words.
+    let when: AutomationWhen | undefined = draft.when && typeof draft.when === "object" ? draft.when : undefined;
+    if (!when && typeof draft.whenPhrase === "string" && draft.whenPhrase.trim()) {
+      const parsed = parseWhen(draft.whenPhrase, now);
+      if ("error" in parsed) return { kind: "refused", reason: parsed.error };
+      when = parsed;
+    }
+    if (!when) return { kind: "refused", reason: "say when it fires: a time, 'in 12 minutes', 'weekdays 09:00', or a signal" };
+    const clauses = { ...(draft.clauses ?? {}), quiet: draft.clauses?.quiet ?? (then[0]?.kind === "chime" && when.kind !== "on" ? "override" : "respect") } as Automation["clauses"];
     const settings = this.opts.settings().automations;
     const judged = classifyAutomation({
-      when: draft.when,
+      when,
       then,
       clauses,
       settings,
@@ -578,13 +675,13 @@ export class Automations implements AutomationSource {
     }
     if (judged.verdict === "confirm" && !confirmed) return { kind: "confirm", question: judged.reason };
     const id = draft.id && typeof draft.id === "string" && !this.table.get(draft.id) ? draft.id : newId("auto");
-    const nextAt = nextFire(draft.when, now, now);
-    if (draft.when.kind !== "on" && nextAt === undefined) return { kind: "refused", reason: `${describe(draft.when)} is already past; say a time ahead` };
-    const echo = cut(this.opts.redact(String(draft.echo ?? "").replace(/\s+/g, " ").trim() || `${describe(draft.when)}: ${then.map((x) => x.kind).join(", ")}`), AUTOMATION_ECHO_CHARS);
+    const nextAt = nextFire(when, now, now);
+    if (when.kind !== "on" && nextAt === undefined) return { kind: "refused", reason: `${describe(when)} is already past; say a time ahead` };
+    const echo = cut(this.opts.redact(String(draft.echo ?? "").replace(/\s+/g, " ").trim() || `${describe(when)}: ${then.map((x) => x.kind).join(", ")}`), AUTOMATION_ECHO_CHARS);
     const a: Automation = {
       id,
       name,
-      when: draft.when,
+      when,
       then,
       clauses,
       echo,
@@ -598,8 +695,10 @@ export class Automations implements AutomationSource {
       ...(judged.verdict === "confirm" ? { confirmed: { at: now, heard: ctx.heard ?? judged.reason } } : {}),
     };
     // A recipe the brain handed in with the row is Kevin's once he said yes: the ENGINE writes it to settings (a tool never does).
+    // It belongs to the run-recipe action, or to a recipe.red trigger naming a recipe not yet approved (the gate asked for both).
     const recipeAction = then.find((x) => x.kind === "run-recipe");
-    if (draft.recipeCommand && recipeAction?.kind === "run-recipe") this.saveRecipe(recipeAction.recipe, draft.recipeCommand, by === "brain" ? "brain" : "kevin", now);
+    const recipeName = recipeAction?.kind === "run-recipe" ? recipeAction.recipe : when.kind === "on" && when.on.kind === "recipe.red" ? when.on.recipe : undefined;
+    if (draft.recipeCommand && recipeName) this.saveRecipe(recipeName, draft.recipeCommand, by === "brain" ? "brain" : "kevin", now);
     let watchNote = "";
     if (a.when.kind === "on") {
       const err = this.watchers.watch(a);
@@ -621,7 +720,8 @@ export class Automations implements AutomationSource {
 
   private saveRecipe(name: string, command: string, by: "kevin" | "brain", now: number): void {
     const recipes = this.opts.settings().automations.recipes;
-    if (!name || recipes.some((r) => r.name.toLowerCase() === name.toLowerCase())) return;
+    // A name in use — live or in the Trash — is never overwritten; the gate refused a trashed name before this ran.
+    if (!name || recipeNamed(recipes, name, "any")) return;
     const recipe: ShellRecipe = { name: cut(name, AUTOMATION_NAME_CHARS), command, timeoutSeconds: RECIPE_TIMEOUT_DEFAULT_S, approvedAt: now };
     this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: [...recipes, recipe] } });
     this.opts.ledger.append({ at: now, type: "recipe.set", recipe, by });
@@ -754,6 +854,8 @@ export class Automations implements AutomationSource {
     this.releaseHold(a.id);
     this.rings.delete(a.id);
     this.lastChimeAt.delete(a.id);
+    // Kevin's own Snooze answers the ring: the engine's one self-snooze is available again for this occurrence's re-ring.
+    if (by !== "engine") this.selfSnoozed.delete(a.id);
     const until = now + minutes * 60_000;
     const row = this.write(mut(a, { state: "snoozed", snoozedUntil: until, nextAt: until, ...(detail ? { lastDetail: detail } : {}), updatedAt: now }), by, detail, true, until);
     if (row.when.kind === "in") this.caffeinate(mut(row, { nextAt: until }), now);
@@ -792,8 +894,8 @@ export class Automations implements AutomationSource {
     return { ok: after?.state !== "failed", text: `${a.name}: ${after?.lastDetail ?? (after?.state === "fired" ? "rang" : "ran")}` };
   }
 
-  /** `automation.rename`: ≤ 24 chars, unique among the non-trashed rows. */
-  rename(id: string, name: string): { readonly ok: boolean; readonly text: string } {
+  /** `automation.rename`: ≤ 24 chars, unique among the non-trashed rows; `by` is the surface that sent it (the ledger's `automation.set` row wears it). */
+  rename(id: string, name: string, by: Exclude<ArmOrigin, "brain"> = "console"): { readonly ok: boolean; readonly text: string } {
     const a = this.table.get(id);
     if (!a) return { ok: false, text: `no automation ${id}` };
     const clean = name.replace(/\s+/g, " ").trim();
@@ -801,7 +903,7 @@ export class Automations implements AutomationSource {
     if (clean.length > AUTOMATION_NAME_CHARS) return { ok: false, text: `"${cut(clean, 30)}" is too long (${AUTOMATION_NAME_CHARS} at most)` };
     if (this.table.nameTaken(clean, a.id)) return { ok: false, text: `another automation is named "${clean}"` };
     const row = this.table.put(mut(a, { name: clean, updatedAt: this.now() }));
-    this.opts.ledger.append({ at: this.now(), type: "automation.set", automation: row, by: "console" });
+    this.opts.ledger.append({ at: this.now(), type: "automation.set", automation: row, by });
     this.table.push(row.id, { kind: "set", automation: row });
     this.opts.onChange();
     return { ok: true, text: `renamed to ${clean}` };
@@ -809,14 +911,17 @@ export class Automations implements AutomationSource {
 
   // -------------------------------------------------------------- commands
 
-  /** The twelve surface commands. Never a deletion: `trash` is Move to Trash, `restore` brings it back. */
+  /** The thirteen surface commands. Never a deletion: `trash` is Move to Trash (rows and recipes alike), `restore` brings it back. */
   async command(cmd: EngineCommand, toast: (text: string, tone?: "info" | "warn") => void): Promise<void> {
     switch (cmd.type) {
       case "automation.set": {
-        // The Console's form (and the CLI): the press on Add is Kevin's own hand on a control that says what it does — the
-        // two-press idiom's second press — so a confirm-tier row arms with the question as what he heard. Free kinds arm at once.
-        const r = this.arm(cmd.automation as AutomationSetInput, cmd.by === "cli" ? "cli" : "console", true, {});
-        toast(r.kind === "armed" ? r.text : r.kind === "confirm" ? `needs a yes: ${r.question}` : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
+        // The Console's form: the press on Add is Kevin's own hand on a control that says what it does — the two-press
+        // idiom's second press — so a confirm-tier row arms with the question as what he heard. The CLI (or any process on
+        // the socket saying `by: "cli"`) is never a yes: its free kinds arm at once and a confirm-tier row is refused, not asked.
+        const by: ArmOrigin = cmd.by === "cli" ? "cli" : "console";
+        const r = this.arm(cmd.automation as AutomationSetInput, by, by === "console", {});
+        if (r.kind === "confirm") return toast(by === "cli" ? `not armed: ${r.question} — that needs a yes, and the CLI hears none; set it up by voice or in the Console` : `needs a yes: ${r.question}`, "warn");
+        toast(r.kind === "armed" ? r.text : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
         return;
       }
       case "automation.snooze":
@@ -830,7 +935,7 @@ export class Automations implements AutomationSource {
       case "automation.resume":
         return toast(...this.said(this.changeNow(cmd.id, "resume")));
       case "automation.rename":
-        return toast(...this.said(this.rename(cmd.id, String(cmd.name ?? ""))));
+        return toast(...this.said(this.rename(cmd.id, String(cmd.name ?? ""), cmd.by === "cli" ? "cli" : "console")));
       case "automation.trash":
         return toast(...this.said(this.changeNow(cmd.id, "trash")));
       case "automation.restore":
@@ -843,18 +948,36 @@ export class Automations implements AutomationSource {
         if (!name || !String(recipe?.command ?? "").trim()) return toast("a recipe needs a name and a command", "warn");
         const now = this.now();
         const clean: ShellRecipe = { name: cut(name, AUTOMATION_NAME_CHARS), command: String(recipe.command), ...(recipe.cwd ? { cwd: recipe.cwd } : {}), timeoutSeconds: Math.min(600, Math.max(1, Math.round(Number(recipe.timeoutSeconds) || RECIPE_TIMEOUT_DEFAULT_S))), approvedAt: now };
-        const rest = this.opts.settings().automations.recipes.filter((r) => r.name.toLowerCase() !== clean.name.toLowerCase());
+        const all = this.opts.settings().automations.recipes;
+        const trashed = recipeNamed(all, clean.name, "any");
+        if (trashed?.trashedAt !== undefined) return toast(`recipe ${trashed.name} is in the Trash; restore it, or pick another name`, "warn");
+        const rest = all.filter((r) => r.name.toLowerCase() !== clean.name.toLowerCase());
         this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: [...rest, clean] } });
         this.opts.ledger.append({ at: now, type: "recipe.set", recipe: clean, by: "kevin" });
         return toast(`recipe ${clean.name} saved`);
       }
       case "recipe.trash": {
+        // Move to Trash: the recipe stays in Settings with `trashedAt` — hidden from pickers, refused as a target, restorable. Nothing is deleted.
         const name = String(cmd.name ?? "").trim();
-        const recipes = this.opts.settings().automations.recipes;
-        if (!recipes.some((r) => r.name.toLowerCase() === name.toLowerCase())) return toast(`no recipe named "${name}"`, "warn");
-        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: recipes.filter((r) => r.name.toLowerCase() !== name.toLowerCase()) } });
-        this.opts.ledger.append({ at: this.now(), type: "recipe.trashed", name });
-        return toast(`recipe ${name} moved to the Trash (its row is in the ledger)`);
+        const all = this.opts.settings().automations.recipes;
+        const found = recipeNamed(all, name, "any");
+        if (!found) return toast(`no recipe named "${name}"`, "warn");
+        if (found.trashedAt !== undefined) return toast(`recipe ${found.name} is already in the Trash`);
+        const now = this.now();
+        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: all.map((r) => (r === found ? { ...r, trashedAt: now } : r)) } });
+        this.opts.ledger.append({ at: now, type: "recipe.trashed", name: found.name });
+        return toast(`recipe ${found.name} moved to the Trash · Restore brings it back`);
+      }
+      case "recipe.restore": {
+        const name = String(cmd.name ?? "").trim();
+        const all = this.opts.settings().automations.recipes;
+        const found = recipeNamed(all, name, "any");
+        if (!found) return toast(`no recipe named "${name}"`, "warn");
+        if (found.trashedAt === undefined) return toast(`recipe ${found.name} is not in the Trash`);
+        const now = this.now();
+        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: all.map((r) => (r === found ? mutRecipe(r) : r)) } });
+        this.opts.ledger.append({ at: now, type: "recipe.restored", name: found.name });
+        return toast(`recipe ${found.name} restored`);
       }
       default:
         return;
@@ -901,10 +1024,10 @@ export class Automations implements AutomationSource {
     return this.recipeRows();
   }
 
-  /** Settings' recipes with the shell gate's present verdict and the rows that name each; the snapshot's `recipesAsking` reads the same list. */
+  /** Settings' live recipes (never the Trash's) with the shell gate's present verdict and the rows that name each; the snapshot's `recipesAsking` reads the same list. */
   recipeRows(): readonly RecipeRow[] {
     const rows = this.table.inState("all");
-    return this.opts.settings().automations.recipes.map((r) => {
+    return liveRecipes(this.opts.settings().automations.recipes).map((r) => {
       const name = r.name.toLowerCase();
       const usedBy = rows.filter((a) => a.then.some((x) => x.kind === "run-recipe" && x.recipe.toLowerCase() === name) || (a.when.kind === "on" && a.when.on.kind === "recipe.red" && a.when.on.recipe.toLowerCase() === name)).map((a) => a.name);
       const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
@@ -959,12 +1082,34 @@ export class Automations implements AutomationSource {
   }
 }
 
-function whyWords(why: MissedWhy, sleptAt: number | undefined): string {
+/** A recipe out of the Trash: the same row with `trashedAt` gone (the contract's optionals are absent, never undefined). */
+function mutRecipe(r: ShellRecipe): ShellRecipe {
+  const { trashedAt: _gone, ...rest } = r;
+  return rest;
+}
+
+/**
+ * A client's `set-settings { automations }` block, with the Trash kept: the Console re-encodes the whole
+ * block from its own ShellRecipe (an older app, or one from before `trashedAt`), so a recipe that arrives
+ * under a trashed name without `trashedAt` keeps the stored one, and a block with no `recipes` array keeps
+ * the stored recipes. Only `recipe.restore` brings a recipe back — never a chip toggle. Pure.
+ */
+export function keepRecipeTrash(stored: AutomationSettings, incoming: AutomationSettings): AutomationSettings {
+  const kept = Array.isArray(incoming.recipes) ? incoming.recipes : stored.recipes;
+  const recipes = kept.map((r) => {
+    if (r.trashedAt !== undefined) return r;
+    const was = recipeNamed(stored.recipes, r.name, "any");
+    return was?.trashedAt !== undefined ? { ...r, trashedAt: was.trashedAt } : r;
+  });
+  return { ...incoming, recipes };
+}
+
+function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: number): string {
   switch (why) {
     case "mac-slept":
       return sleptAt !== undefined ? `the Mac slept from ${describeInstant(sleptAt).slice(0, 5)}` : "the Mac slept";
     case "daemon-down":
-      return "Jarhead was off";
+      return downSince !== undefined ? `Jarhead was off from ${clockOf(downSince)}` : "Jarhead was off";
     case "quiet-hours":
       return "quiet hours";
     case "budget":

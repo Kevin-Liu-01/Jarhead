@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, classifyPath, classifyUrl, clockOf, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
 import type { FocusedText, FrontmostInfo, NativeHands } from "@jarhead/hands";
-import { AUTOMATION_LINE_CHARS, automationKind, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
+import { AUTOMATION_LINE_CHARS, automationKind, recipeNamed, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
 import type { LaneRunner } from "../threads/runner.ts";
 
 /**
@@ -112,8 +112,10 @@ export interface ExecutorOptions {
   readonly home: string;
   readonly repoRoot?: string | undefined;
   readonly problem: (kind: ProblemKind, text: string, remedy?: ProblemRemedy) => void;
-  /** Brain seconds `wake-brain` spent today (the ledger's `automation.fired { brainSeconds }` rows). */
+  /** Brain seconds `wake-brain` spent today (the ledger's `automation.fired { brainSeconds }` rows) plus what fires in flight have reserved. */
   readonly brainSpentToday: () => number;
+  /** A fire about to wake the brain reserves its budget under its row's id, so two rows due in one tick cannot both pass the cap; the façade clears it when the fire settles. */
+  readonly reserveBrain: (automationId: string, seconds: number) => void;
 }
 
 export interface FireContext {
@@ -187,8 +189,10 @@ export class AutomationExecutor {
   }
 
   /**
-   * Run the row's actions in order; the first failure stops the chain. The line, the
-   * calm second line and the presses are the island's; every text is redacted.
+   * Run the row's actions in Kevin's order; the first failure stops the chain (a line kind
+   * before a failing acting kind has already rung — that is the order he set). The line, the
+   * calm second line and the presses are the island's; every text is redacted. Awake, the
+   * line kinds are one instruction to Live for the whole fire.
    */
   async fire(ctx: FireContext, nextAt: number | undefined): Promise<FireOutcome> {
     const t0 = this.opts.now();
@@ -202,12 +206,12 @@ export class AutomationExecutor {
     let delegationId: string | undefined;
     let brainSeconds: number | undefined;
     let ok = true;
-    // The acting kind runs first when the row has one, so the line can say what it did ("filed invoice.pdf → Papers").
-    const order = [...a.then].sort((x, y) => Number(isLine(x)) - Number(isLine(y)));
-    for (const action of order) {
+    // Awake, the line kinds are ONE instruction to Live for the whole fire, appended after the loop; each chime/say adds its line here.
+    const spoken: string[] = [];
+    // The actions run in the order Kevin set them — `then` is his sequence — and the first failure stops the chain.
+    for (const action of a.then) {
       actions.push(action.kind);
-      const r = await this.one(action, ctx, kind, what, nextAt);
-      // The acting kind's failure ends the chain before any line kind rings for it.
+      const r = await this.one(action, ctx, kind, what, nextAt, spoken);
       if (r.what) what = r.what;
       if (r.open) openTarget = r.open;
       if (r.ring) ring = true;
@@ -222,17 +226,22 @@ export class AutomationExecutor {
     }
     const line = this.line(a, ctx.dueAt, what);
     const presses = this.presses(a, openTarget);
+    const live = this.opts.live();
+    if (live && spoken.length > 0) live.appendInstructions(null, `Kevin's ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`);
     return { ok, actions, line, calm: this.calm(a, nextAt), detail: detail ? cut(this.opts.redact(detail), DETAIL_CHARS) : undefined, presses, ring, delegationId, brainSeconds, ms: this.opts.now() - t0 };
   }
 
   // ------------------------------------------------------------- actions
 
-  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined): Promise<StepOutcome> {
+  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): Promise<StepOutcome> {
+    // The Settings › While asleep chip is a kill switch per kind: judged at set-up AND here, so a chip turned off after a row
+    // was armed stops that row's action at its next fire (a failed row with the reason; repeaters re-arm and say so).
+    if (!this.opts.settings().automations.unattended.includes(action.kind)) return { ok: false, detail: `${action.kind} is off in Settings › Automations › While asleep` };
     switch (action.kind) {
       case "chime":
-        return this.chime(action, ctx, kind, what, nextAt);
+        return this.chime(action, ctx, kind, what, nextAt, spoken);
       case "say":
-        return this.say(action, ctx, what);
+        return this.say(action, ctx, what, spoken);
       case "notify":
         return this.notify(action, ctx);
       case "open":
@@ -255,32 +264,30 @@ export class AutomationExecutor {
     this.opts.emit({ type: "notify", id: newId("ntf"), title: cut(this.opts.redact(title), AUTOMATION_LINE_CHARS), ...(body ? { body: cut(this.opts.redact(body), AUTOMATION_LINE_CHARS) } : {}), presses: this.presses(a, open), automationId: a.id });
   }
 
-  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined): StepOutcome {
+  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): StepOutcome {
     const { a } = ctx;
     const line = this.line(a, ctx.dueAt, what);
-    const spoken = cut(this.opts.redact(action.line.trim() || a.name), AUTOMATION_LINE_CHARS);
-    const live = this.opts.live();
+    const said = cut(this.opts.redact(action.line.trim() || a.name), AUTOMATION_LINE_CHARS);
     let detail: string | undefined;
-    if (live) {
-      // Awake: the island line only; the chime is skipped (the mic would hear it) and Live is told once.
-      live.appendInstructions(null, `Kevin's ${a.name} fired: say '${spoken}' once, with its name, and nothing more.`);
+    if (this.opts.live()) {
+      // Awake: the island line only; the chime is skipped (the mic would hear it) and Live is told once per fire, after the loop.
+      spoken.push(said);
       detail = "said by the voice";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
     } else {
       this.opts.emit({ type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : "Glass"), automationId: a.id });
     }
-    this.banner(a, line, spoken !== line ? spoken : this.calm(a, nextAt), undefined);
+    this.banner(a, line, said !== line ? said : this.calm(a, nextAt), undefined);
     return { ok: true, ring: true, detail };
   }
 
-  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined): StepOutcome {
+  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined, spoken: string[]): StepOutcome {
     const { a } = ctx;
     const text = cut(this.opts.redact(action.line.trim()), AUTOMATION_LINE_CHARS);
-    const live = this.opts.live();
     let detail: string | undefined;
-    if (live) {
-      live.appendInstructions(null, `Kevin's ${a.name} fired: say '${text}' once, with its name, and nothing more.`);
+    if (this.opts.live()) {
+      spoken.push(text);
       detail = "said by the voice";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
@@ -322,8 +329,10 @@ export class AutomationExecutor {
     }
     if (action.path) {
       const p = expandPath(action.path, this.opts.home);
-      const d = classifyPath({ path: p, access: "read", home: this.opts.home });
-      if (d.verdict !== "run") return { ok: false, detail: d.reason };
+      // The same lexical gate as set-up (an app bundle, a script, an installer would RUN), then the bit the lexicon cannot see.
+      const why = openPathReason(p, this.opts.home);
+      if (why) return { ok: false, detail: why };
+      if (isExecutableFile(p)) return { ok: false, detail: `${basename(p)} is executable; an open never runs anything — a run-recipe does, with a yes` };
       const r = await this.opts.exec.run("/usr/bin/open", [p], OPEN_TIMEOUT_MS);
       if (r.code !== 0) return { ok: false, detail: `could not open ${cut(action.path, 60)}${r.error ? `: ${r.error}` : ` (exit ${r.code ?? "?"})`}` };
       this.opts.emit({ type: "local.say", sound: "Pop", automationId });
@@ -363,8 +372,9 @@ export class AutomationExecutor {
 
   /** `run-recipe`: the saved text re-judged by the shell gate at every fire — anything but `run` is a failure, never a question. */
   private async recipe(action: Extract<AutomationAction, { kind: "run-recipe" }>, ctx: FireContext): Promise<StepOutcome> {
-    const recipe = this.opts.settings().automations.recipes.find((r) => r.name.toLowerCase() === action.recipe.trim().toLowerCase());
-    if (!recipe) return { ok: false, detail: `no recipe named "${action.recipe}"` };
+    const recipes = this.opts.settings().automations.recipes;
+    const recipe = recipeNamed(recipes, action.recipe);
+    if (!recipe) return { ok: false, detail: recipeNamed(recipes, action.recipe, "any") ? `recipe ${action.recipe} is in the Trash; restore it first` : `no recipe named "${action.recipe}"` };
     const cwd = recipe.cwd ? expandPath(recipe.cwd, this.opts.home) : this.opts.home;
     const d = this.opts.shellGate({ kind: "run_shell", text: recipe.command, confirmed: false, cwd, home: this.opts.home, presence: { recent: false }, ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
     if (d.verdict === "confirm") return { ok: false, detail: `recipe ${recipe.name} would need a yes; nobody to ask (${d.reason.replace(/; ask first$/, "")})` };
@@ -385,6 +395,9 @@ export class AutomationExecutor {
   /** `press`: the front app and the focused field are probed; only the named app in front with no secure field gets the key. */
   private async press(action: Extract<AutomationAction, { kind: "press" }>): Promise<StepOutcome> {
     if (HANDS_OFF_APPS.test(action.app)) return { ok: false, detail: `${action.app} is hands-off; nothing is pressed there` };
+    // The combo itself, re-read at fire: a delete, a quit, a log-out, a force-quit never goes, whatever an older journal row says.
+    const never = pressKeyReason(action.key);
+    if (never) return { ok: false, detail: never };
     let front: FrontmostInfo | undefined;
     let focused: FocusedText | undefined;
     try {
@@ -427,6 +440,8 @@ export class AutomationExecutor {
       this.opts.problem("automation.budget", `brain minutes for automations are spent today (${Math.round(spent / 60)} of ${Math.round(cap / 60)} min)`);
       return { ok: false, detail: "budget" };
     }
+    // Reserved now, before anything awaits: the next row's check sees this turn's budget as spent.
+    this.opts.reserveBrain(a.id, action.budget.seconds);
     await this.opts.brain.warmUp().catch(() => undefined);
     const lane = await this.opts.brain.lane().catch(() => undefined);
     if (!lane) {
@@ -527,10 +542,6 @@ interface StepOutcome {
   readonly brainSeconds?: number | undefined;
 }
 
-function isLine(a: AutomationAction): boolean {
-  return a.kind === "chime" || a.kind === "say" || a.kind === "notify";
-}
-
 function isUnder(p: string, root: string): boolean {
   const a = resolve(p);
   const r = resolve(root);
@@ -547,6 +558,16 @@ export function firstSentence(text: string): string {
 export function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** A regular file with any execute bit set: `/usr/bin/open` would run it, so an automation never opens one. */
+export function isExecutableFile(path: string): boolean {
+  try {
+    const s = statSync(path);
+    return s.isFile() && (s.mode & 0o111) !== 0;
   } catch {
     return false;
   }

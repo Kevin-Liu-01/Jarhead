@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Automation, LedgerRow } from "@jarhead/protocol";
@@ -152,6 +152,55 @@ test("rebuild: a torn last line is skipped, a row missing its shape is skipped, 
     engine.automations.load(now);
     assert.equal(readFileSync(path, "utf8"), before, "a clean load appends nothing");
     assert.deepEqual(engine.snapshot().automations.map((a) => a.id), ["auto_good"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("rebuild: a folder watcher's files that landed while the daemon was off are counted from the alive heartbeat — 'not watching HH:MM–HH:MM · 1 new file not handled', missed 1 — never filed or fired; a file older than the heartbeat is the baseline; a file landing after the restart fires as ever; the missed alarm's words carry the span", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-auto-rebuild-watch-"));
+  const home = mkdtempSync(join(tmpdir(), "jh-auto-rebuild-home-"));
+  const inbox = join(home, "Inbox");
+  const papers = join(home, "Papers");
+  mkdirSync(inbox);
+  const now = new Date(2026, 8, 14, 7, 30, 0).getTime();
+  // Every instant here is the test clock's: the heartbeat, the files' mtimes (set by hand), the engine's now.
+  const stamp = (name: string, text: string, at: number): void => {
+    writeFileSync(join(inbox, name), text);
+    utimesSync(join(inbox, name), at / 1000, at / 1000);
+  };
+  stamp("old.pdf", "already here before the daemon quit", now - 3 * H);
+  stamp("landed.pdf", "landed while Jarhead was off", now - H);
+  stamp("landed.txt", "not a pdf: outside the glob, not counted", now - H);
+  const watcher: Automation = { ...row("auto_watch", "file papers", now - H, { then: [{ kind: "file", into: papers }, { kind: "chime", line: "filed", sound: "Glass" }], clauses: { quiet: "respect", cooldown: 0 } }), when: { kind: "on", on: { kind: "folder.file", path: inbox, glob: "*.pdf", settleMs: 3000 } } };
+  delete (watcher as { nextAt?: number }).nextAt;
+  const missedAlarm = row("auto_missed", "twenty late", now - 20 * M);
+  const path = journalWith(dir, [watcher, missedAlarm]);
+  // The previous daemon's last heartbeat: two hours before this start.
+  writeFileSync(join(dir, "state", "automations", "alive"), String(now - 2 * H));
+  const exec = { run: async () => ({ code: 0 }), hold: () => undefined };
+  const w = world({ automations: { exec, home } }, { dir });
+  const { engine, clock } = w;
+  clock.t = now;
+  try {
+    await engine.start();
+    const by = (id: string): Automation | undefined => engine.automations.table.get(id);
+    assert.equal(by("auto_watch")?.state, "armed");
+    assert.match(by("auto_watch")?.lastDetail ?? "", /^not watching \d\d:\d\d–\d\d:\d\d · 1 new file not handled$/);
+    assert.equal(by("auto_watch")?.missed, 1);
+    assert.equal(existsSync(papers), false, "nothing was filed: a folder is not a queue");
+    assert.equal(rows<FiredRow>(w, "automation.fired").length, 0);
+    assert.match(by("auto_missed")?.lastDetail ?? "", /^missed \d\d:\d\d · Jarhead was off from \d\d:\d\d$/, "the missed alarm says since when");
+    // The watcher still works: a PDF landing now settles and is filed; the counted one stays put.
+    writeFileSync(join(inbox, "fresh.pdf"), "landed after the restart");
+    for (let i = 0; i < 3; i++) {
+      clock.t += 5_000;
+      (engine as unknown as { tick(): void }).tick();
+    }
+    await until(() => rows<FiredRow>(w, "automation.fired").length >= 1, 1500);
+    assert.deepEqual(readdirSync(papers), ["fresh.pdf"]);
+    assert.deepEqual(readdirSync(inbox).sort(), ["landed.pdf", "landed.txt", "old.pdf"]);
+    assert.ok(Number(readFileSync(join(dir, "state", "automations", "alive"), "utf8")) >= now, "this daemon stamped alive");
   } finally {
     await engine.stop();
   }

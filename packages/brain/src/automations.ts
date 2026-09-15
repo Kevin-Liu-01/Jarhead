@@ -80,7 +80,9 @@ export interface AutomationSource {
 
 // ------------------------------------------------------------ arguments → draft
 
-export type DraftParse = { readonly draft: AutomationDraft; readonly recipeCommand?: string | undefined } | { readonly error: string };
+/** The tool's draft: `when` is always parsed here (the runner describes it in the question), never left as a phrase. */
+export type ToolDraft = AutomationDraft & { readonly when: AutomationWhen };
+export type DraftParse = { readonly draft: ToolDraft; readonly recipeCommand?: string | undefined } | { readonly error: string };
 
 const CLOCK = /^(\d{1,2}):(\d{2})$/;
 const WEEKDAYS: ReadonlySet<string> = new Set(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
@@ -266,7 +268,7 @@ function describeAction(a: AutomationAction): string {
 }
 
 /** `arm "Wake up" — weekdays 07:10: chime "Wake up, Kevin"` — the description the handshake's question opens with. */
-export function describeDraft(d: Pick<AutomationDraft, "name" | "when" | "then">): string {
+export function describeDraft(d: Pick<ToolDraft, "name" | "when" | "then">): string {
   return `arm "${d.name}" — ${describe(d.when)}: ${describeActions(d.then)}`;
 }
 

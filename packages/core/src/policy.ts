@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
-import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
+import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, recipeNamed, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
 import { REPO_ROOT } from "./env.ts";
 
 /**
@@ -1248,14 +1248,31 @@ const AUTOMATION_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "downlo
 const FOLDER_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "download.done"]);
 /** A key or chord a `press` may name: letters, digits, `+` and spaces ("cmd+s", "space", "cmd+shift+r"). */
 const PRESS_KEY = /^[a-z0-9+ ]{1,32}$/i;
+/** Keys that delete, quit, log out, force-quit, power off or eject: never pressed unattended, with or without a yes (the trash rule and IRREVERSIBLE, for a chord). */
+const PRESS_NEVER_KEYS: ReadonlySet<string> = new Set(["delete", "del", "backspace", "forwarddelete", "power", "eject"]);
+const PRESS_MODIFIERS: Readonly<Record<string, string>> = { cmd: "cmd", command: "cmd", meta: "cmd", opt: "opt", option: "opt", alt: "opt", ctrl: "ctrl", control: "ctrl", shift: "shift", fn: "fn" };
+
+/**
+ * Why a `press` combo may not be pressed unattended, if it may not: malformed, or a key that
+ * deletes / quits / logs out / force-quits / powers off / ejects — `cmd+shift+delete` empties
+ * the Trash for good, `cmd+q` discards state, `cmd+shift+q` logs out, `cmd+opt+esc` force-quits.
+ * Judged at set-up and again by the executor before the key goes, so an older row cannot slip by.
+ */
+export function pressKeyReason(key: string): string | undefined {
+  if (!PRESS_KEY.test(key)) return `"${key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`;
+  const parts = key.toLowerCase().split("+").map((w) => w.trim()).filter(Boolean).map((w) => PRESS_MODIFIERS[w] ?? w);
+  const has = (k: string): boolean => parts.includes(k);
+  const never = parts.some((w) => PRESS_NEVER_KEYS.has(w)) || (has("cmd") && has("q")) || (has("cmd") && has("opt") && (has("esc") || has("escape")));
+  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask Kevin to press it` : undefined;
+}
 const WAKE_PROMPT_CHARS = 400;
 const UNATTENDED_HINT = "a notify or a chime is";
 
 /**
  * A shell head that brings something to the front: `open` (unless a flag cluster carries g or
- * j, or `--background` / `--hide`) or `osascript`. The engine's background lane refuses these
- * (threads/runner.ts `shellSteals`); a recipe that fronts an app is told to use the `open`
- * action instead. The two regexes are copies of the runner's and a test pins them equal.
+ * j, or `--background` / `--hide`) or `osascript`. The ONE copy: the engine's background lane
+ * (threads/runner.ts) imports `shellSteals` from here to refuse these, and the automations'
+ * set-up gate tells a recipe that fronts an app to use the `open` action instead.
  */
 export const BACKGROUND_SHELL_REFUSE = /^(?:open|osascript)$/;
 export const OPEN_BACKGROUND_FLAG = /^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/;
@@ -1365,18 +1382,19 @@ export function costLine(budget: { readonly steps: number; readonly seconds: num
   return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
 }
 
-/** The recipe a row names, or the text that arrived with it. */
+/** The recipe a row names (never one in the Trash), or the text that arrived with it. */
 function recipeCommandOf(name: string, ctx: AutomationContext): string | undefined {
-  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
-  return known?.command ?? ctx.recipeCommand;
+  return recipeNamed(ctx.settings.recipes, name)?.command ?? ctx.recipeCommand;
 }
 
 /** Why a recipe may not run unattended, if it may not: the shell gate must say `run` on its own, with nobody to ask. */
 function recipeReason(name: string, ctx: AutomationContext, home: string): string | undefined {
+  const trashed = recipeNamed(ctx.settings.recipes, name, "any");
+  if (trashed?.trashedAt !== undefined) return `recipe "${trashed.name}" is in the Trash; restore it (Settings › Automations › Recipes, or \`jarhead recipes restore\`) or pick another name`;
   const command = recipeCommandOf(name, ctx);
   if (!command || !command.trim()) return `no recipe named "${name}"; add it in Settings › Automations › Recipes, or give its command`;
   if (shellSteals(command)) return `the recipe fronts an app (open / osascript); use the open action instead`;
-  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
+  const known = recipeNamed(ctx.settings.recipes, name);
   if (known?.cwd) {
     const cwd = shellCwdReason(known.cwd, home);
     if (cwd) return cwd;
@@ -1446,6 +1464,35 @@ function lineReason(line: string, what: string): string | undefined {
   return undefined;
 }
 
+/**
+ * A path `/usr/bin/open` would RUN rather than show: an app bundle, a shell or script file,
+ * an AppleScript, an Automator workflow, an installer, a disk image, a Terminal profile. An
+ * `open` is a free kind (armed silently, no yes), so none of these is ever its target — a
+ * `run-recipe` executes things, behind its one yes.
+ */
+export const OPEN_EXECUTABLE_EXT = /\.(app|command|tool|sh|zsh|bash|py|rb|pl|scpt|applescript|workflow|pkg|mpkg|dmg|terminal)$/i;
+
+/**
+ * Why an `open { path }` may not be armed or fired, if it may not: an executable or bundle
+ * by extension (the hands-off apps by their bundle name), anything inside an app bundle, or a
+ * path the read gate does not rate `run` (a secret store). Lexical: the executor adds the
+ * execute-bit check at fire. Shared by the set-up gate and the executor so the two agree.
+ */
+export function openPathReason(path: string, home: string = homedir()): string | undefined {
+  const p = expandPath(path.trim(), home).replace(/\/+$/, "");
+  if (!p) return "open needs an app, an https URL or a path";
+  const base = basename(p);
+  if (/\.app$/i.test(base)) {
+    const app = base.replace(/\.app$/i, "");
+    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; Kevin opens it himself`;
+    return `${base} is an app bundle; open the app by name instead (open { app: "${app}" })`;
+  }
+  if (/\.app(\/|$)/i.test(p)) return `${base} is inside an app bundle; nothing runs from an open`;
+  if (OPEN_EXECUTABLE_EXT.test(base)) return `${base} would run when opened; an open never executes anything — a run-recipe does, with a yes`;
+  const d = classifyPath({ path: p, access: "read", home });
+  return d.verdict === "run" ? undefined : d.reason;
+}
+
 /** An `open` target judged lexically, as the executor will judge it again at fire. */
 function openReason(a: { readonly app?: string; readonly url?: string; readonly path?: string }, ctx: AutomationContext, home: string): string | undefined {
   if (a.app) {
@@ -1459,10 +1506,7 @@ function openReason(a: { readonly app?: string; readonly url?: string; readonly 
     if (risky) return `${risky}; Kevin opens those himself`;
     return undefined;
   }
-  if (a.path) {
-    const d = classifyPath({ path: a.path, access: "read", home });
-    return d.verdict === "run" ? undefined : d.reason;
-  }
+  if (a.path) return openPathReason(a.path, home);
   return "open needs an app, an https URL or a path";
 }
 
@@ -1520,7 +1564,8 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
     case "press": {
       if (!action.app.trim()) return refuse("press needs the app it lands in");
       if (HANDS_OFF_APPS.test(action.app)) return refuse(`${action.app} is hands-off; nothing is pressed there unattended`);
-      if (!PRESS_KEY.test(action.key)) return refuse(`"${action.key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`);
+      const never = pressKeyReason(action.key);
+      if (never) return refuse(never);
       return confirm(`\`${action.key}\` will be pressed in ${action.app} unattended, only while it is in front and no password field has focus`);
     }
     case "wake-brain": {
@@ -1552,6 +1597,16 @@ export function classifyAutomation(ctx: AutomationContext): Decision {
   const trigger = triggerReason(ctx);
   if (trigger) return refuse(trigger);
   const asks: string[] = [];
+  // A recipe.red trigger naming a recipe not yet approved, with its text arriving as `recipeCommand`: the poll is a shell
+  // running unattended every `everySeconds`, so it needs the one set-up yes exactly as run-recipe does (the engine then
+  // saves the recipe after that yes). One recipeCommand names one recipe: a run-recipe action under another new name refuses.
+  if (ctx.when.kind === "on" && ctx.when.on.kind === "recipe.red" && ctx.recipeCommand && !recipeNamed(ctx.settings.recipes, ctx.when.on.recipe)) {
+    const red = ctx.when.on;
+    const other = ctx.then.find((a) => a.kind === "run-recipe" && a.recipe.trim().toLowerCase() !== red.recipe.trim().toLowerCase() && !recipeNamed(ctx.settings.recipes, a.recipe));
+    if (other?.kind === "run-recipe") return refuse(`one recipeCommand names one recipe: the trigger polls "${red.recipe}" and the action runs "${other.recipe}", both new — approve one at a time`);
+    const command = ctx.recipeCommand.trim();
+    asks.push(`recipe ${red.recipe} (${command.length > 80 ? `${command.slice(0, 77)}…` : command}) will be run every ${red.everySeconds} s unattended to watch its exit code, without a yes each time`);
+  }
   for (const action of ctx.then) {
     const kind = String((action as { readonly kind?: unknown }).kind ?? "");
     if (!(AUTOMATION_ACTION_KINDS as readonly string[]).includes(kind)) return refuse(`unknown action kind "${kind}"; not armed`);

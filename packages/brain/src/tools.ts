@@ -325,7 +325,7 @@ export const AUTOMATION_SPECS: readonly ToolSpec[] = [
           type: "array",
           minItems: 1,
           maxItems: 3,
-          description: "the actions, in order: { kind: 'chime', line, sound? (Pop, Glass, Ping, Hero) } · { kind: 'say', line } · { kind: 'notify', title, body?, open? } · { kind: 'open', app? | url? (https) | path? } · { kind: 'file', into } (folder triggers only; never overwrites, never deletes) · { kind: 'run-recipe', recipe } · { kind: 'press', app, key } · { kind: 'wake-brain', prompt, budget? { steps, seconds }, speak? }",
+          description: "the actions, in order: { kind: 'chime', line, sound? (Pop, Glass, Ping, Hero) } · { kind: 'say', line } · { kind: 'notify', title, body?, open? } · { kind: 'open', app? | url? (https) | path? } (path: a document or folder — never an app bundle, a script or an installer; a run-recipe runs those, behind its yes) · { kind: 'file', into } (folder triggers only; never overwrites, never deletes) · { kind: 'run-recipe', recipe } · { kind: 'press', app, key } · { kind: 'wake-brain', prompt, budget? { steps, seconds }, speak? }",
           items: { type: "object", properties: { kind: { type: "string", enum: ["chime", "say", "notify", "open", "file", "run-recipe", "press", "wake-brain"] } }, required: ["kind"] },
         },
         clauses: {

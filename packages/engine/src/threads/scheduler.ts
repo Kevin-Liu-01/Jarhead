@@ -1263,6 +1263,16 @@ export class ThreadScheduler {
 
   // ------------------------------------------------------------- inner
 
+  /**
+   * One lane built cold, outside the pool: for the automations' headless `wake-brain` turn,
+   * which takes a single brain process and never opens the pool (asleep, no spare boots
+   * behind Jarhead's back). Undefined when the current brain kind cannot run a thread.
+   */
+  coldLane(): Lane | undefined {
+    const factory = this.opts.makeBrain();
+    return factory ? this.makeLane(newId("t"), factory) : undefined;
+  }
+
   private makeLane(id: string, factory: ThreadBrainFactory): Lane | undefined {
     const hands = new LaneHands(this.opts.hands.background, this.opts.hands.background);
     const confirmations = new LaneConfirmations();

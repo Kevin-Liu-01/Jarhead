@@ -1,9 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { AutomationAction, AutomationClauses, AutomationSettings, AutomationWhen } from "@jarhead/protocol";
-import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
+import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, openPathReason, pressKeyReason, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
 
 // The set-up gate, row by row from the design's policy table. Every fixture names the home so
 // the machine's real ~ is never read; the repo root is a folder nothing here writes into.
@@ -65,6 +63,31 @@ test("open: an ordinary app, an https page and a readable path run; 1Password, h
   const empty = ctx({ then: [{ kind: "open" }] });
   assert.equal(verdict(empty), "refuse");
   assert.match(reason(empty), /needs an app, an https URL or a path/);
+});
+
+test("open { path }: a .command, a .sh, a .py, a .scpt, a .workflow, a .pkg, a .dmg, a .terminal and any .app refuse (nothing runs from a free open); 1Password.app names the hands-off app; a path inside a bundle refuses; a PDF and a folder run; a banner's Open target is judged the same", () => {
+  for (const path of ["~/scripts/deploy.command", "~/bin/tidy.sh", "~/x.zsh", "~/x.bash", "~/tools/report.py", "~/x.rb", "~/x.pl", "~/x.scpt", "~/x.applescript", "~/x.workflow", "~/Downloads/x.pkg", "~/Downloads/x.mpkg", "~/Downloads/x.dmg", "~/x.tool", "~/x.terminal", "~/Downloads/DEPLOY.COMMAND"]) {
+    const d = classifyAutomation(ctx({ then: [{ kind: "open", path }] }));
+    assert.equal(d.verdict, "refuse", path);
+    assert.match(d.reason, /would run when opened|never executes/, path);
+    assert.match(d.reason, /run-recipe/, `${path}: the safe kind is named`);
+  }
+  const bundle = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/Notes.app" }] }));
+  assert.equal(bundle.verdict, "refuse");
+  assert.match(bundle.reason, /app bundle; open the app by name/);
+  const hands = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/1Password.app/" }] }));
+  assert.equal(hands.verdict, "refuse");
+  assert.match(hands.reason, /1Password is hands-off/);
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "/Applications/Keychain Access.app" }] })), "refuse");
+  const inside = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/Slack.app/Contents/MacOS/Slack" }] }));
+  assert.equal(inside.verdict, "refuse");
+  assert.match(inside.reason, /inside an app bundle/);
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/report.pdf" }] })), "run");
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/Papers/" }] })), "run");
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/apples.txt" }] })), "run", "'app' inside a name is not a bundle");
+  assert.equal(verdict(ctx({ then: [{ kind: "notify", title: "Deploy", open: "~/scripts/deploy.command" }] })), "refuse", "a banner's Open target is judged like open");
+  assert.equal(openPathReason("~/scripts/deploy.command", HOME)?.includes("deploy.command"), true);
+  assert.equal(openPathReason("~/Documents/report.pdf", HOME), undefined);
 });
 
 test("file: into a folder inside ~ with a folder trigger runs; outside ~, into ~/.jarhead, into a secret store, or with a clock trigger refuses", () => {
@@ -136,6 +159,21 @@ test("run-recipe: mv or cp without -n refuses (never overwrite), with -n confirm
   assert.equal(verdict(cwd), "refuse");
 });
 
+test("a recipe in the Trash is refused as a target by name — run-recipe and recipe.red alike, even with a recipeCommand or a yes — and the refusal says Restore; the same name live confirms", () => {
+  const binned = { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: 1, trashedAt: 2 };
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [binned] };
+  const row = classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "Tests" }], settings }));
+  assert.equal(row.verdict, "refuse");
+  assert.match(row.reason, /recipe "tests" is in the Trash; restore it/);
+  assert.equal(classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], settings, recipeCommand: "pnpm test", confirmed: true })).verdict, "refuse", "a new text under the trashed name does not revive it");
+  const red = classifyAutomation(ctx({ when: { kind: "on", on: { kind: "recipe.red", recipe: "tests", everySeconds: 60 } }, then: [notify], settings }));
+  assert.equal(red.verdict, "refuse");
+  assert.match(red.reason, /in the Trash/);
+  const { trashedAt: _gone, ...alive } = binned;
+  const live = { ...settings, recipes: [alive] };
+  assert.equal(classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], settings: live })).verdict, "confirm");
+});
+
 test("a kind off in Settings › While asleep is refused, not asked, naming the chip and the nearest safe kind — run-recipe under the default chips, and a chime under an empty list", () => {
   const d = classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], recipeCommand: "pnpm test" }));
   assert.equal(d.verdict, "refuse");
@@ -157,6 +195,23 @@ test("press: Keychain Access and 1Password refuse; a malformed key refuses; cmd+
   assert.equal(ok.verdict, "confirm");
   assert.equal(ok.reason, "`cmd+s` will be pressed in Notes unattended, only while it is in front and no password field has focus");
   assert.equal(classifyAutomation({ ...press("Notes", "cmd+s"), confirmed: true }).verdict, "run");
+});
+
+test("press never deletes, quits, logs out, force-quits, powers off or ejects: cmd+shift+delete, cmd+delete, delete, backspace, forwarddelete, fn+delete, cmd+q, 'Cmd + Q', cmd+shift+q, cmd+opt+esc, cmd+alt+escape, power and eject refuse at set-up even with confirmed; cmd+s, space, return, the arrows and media keys confirm", () => {
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
+  const press = (key: string, confirmed = false): AutomationContext => ctx({ then: [{ kind: "press", app: "Finder", key }], settings, confirmed });
+  for (const key of ["cmd+shift+delete", "cmd+delete", "delete", "Delete", "backspace", "forwarddelete", "fn+delete", "cmd+q", "Cmd + Q", "q+cmd", "cmd+shift+q", "command+q", "cmd+opt+esc", "cmd+alt+escape", "cmd+option+esc", "power", "eject", "shift+delete"]) {
+    const d = classifyAutomation(press(key));
+    assert.equal(d.verdict, "refuse", key);
+    assert.match(d.reason, /never pressed unattended/, key);
+    assert.equal(classifyAutomation(press(key, true)).verdict, "refuse", `${key}: a yes does not open it`);
+    assert.match(pressKeyReason(key) ?? "", /never pressed unattended/, key);
+  }
+  for (const key of ["cmd+s", "space", "return", "down", "cmd+shift+r", "cmd+r", "cmd+l", "play", "cmd+w", "esc", "cmd+opt+s"]) {
+    assert.equal(classifyAutomation(press(key)).verdict, "confirm", key);
+    assert.equal(pressKeyReason(key), undefined, key);
+  }
+  assert.match(pressKeyReason("cmd+shift+§") ?? "", /not a key or chord/);
 });
 
 test("wake-brain: budget 0 refuses naming the setting; otherwise confirms with the cost line ('brain minute'); a spawned thread and an empty or 400+ prompt refuse; a local brain says warm-up", () => {
@@ -226,6 +281,21 @@ test("the 9th folder watcher refuses (download.done counts as one); a watched fo
   assert.equal(verdict(ctx({ when: { kind: "on", on: { kind: "mac.wake" } }, then: [{ kind: "open", app: "Notes" }] })), "run");
 });
 
+test("recipe.red naming a recipe not yet approved, with recipeCommand: the poll asks once ('will be run every 60 s unattended') and runs with confirmed; the same trigger on an approved recipe runs at once; a run-recipe action under a second new name refuses", () => {
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
+  const RED: AutomationWhen = { kind: "on", on: { kind: "recipe.red", recipe: "ci", everySeconds: 60 } };
+  const asks = classifyAutomation(ctx({ when: RED, then: [notify], settings, recipeCommand: "pnpm test" }));
+  assert.equal(asks.verdict, "confirm");
+  assert.match(asks.reason, /^recipe ci \(pnpm test\) will be run every 60 s unattended/);
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings, recipeCommand: "pnpm test", confirmed: true })).verdict, "run");
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings: { ...settings, recipes: recipes({ name: "ci", command: "pnpm test" }) } })).verdict, "run", "an approved recipe needs no second yes");
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings })).verdict, "refuse", "no recipe and no text: refused, as before");
+  const two = classifyAutomation(ctx({ when: RED, then: [{ kind: "run-recipe", recipe: "deploy" }], settings, recipeCommand: "pnpm test" }));
+  assert.equal(two.verdict, "refuse");
+  assert.match(two.reason, /one recipeCommand names one recipe/);
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [{ kind: "run-recipe", recipe: "ci" }], settings, recipeCommand: "pnpm test" })).verdict, "confirm", "the same new name on both is one recipe, one yes");
+});
+
 test("a watcher whose action wakes the brain needs cooldown ≥ 600; with it the row confirms on the cost line", () => {
   const wake: AutomationAction = { kind: "wake-brain", prompt: "summarise what Slack left open", budget: { steps: 8, seconds: 120 }, speak: false };
   const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
@@ -260,15 +330,11 @@ test("a fixed-line row that also asks: the free actions run silently and the one
   assert.equal(verdict(broken), "refuse");
 });
 
-// ----------------------------------------------------------------- the copy of shellSteals
+// ----------------------------------------------------------------- shellSteals (the one copy; the engine's background lane imports it)
 
-test("shellSteals is the runner's: the two regexes in core are byte-for-byte the ones in packages/engine/src/threads/runner.ts, and the head test agrees on the cases the runner documents", () => {
-  const runner = readFileSync(fileURLToPath(new URL("../../../engine/src/threads/runner.ts", import.meta.url)), "utf8");
-  const refuse = /export const BACKGROUND_SHELL_REFUSE = (\/.*\/);\n/.exec(runner);
-  const flag = /const OPEN_BACKGROUND_FLAG = (\/.*\/);\n/.exec(runner);
-  assert.ok(refuse && flag, "the runner still declares both regexes");
-  assert.equal(String(BACKGROUND_SHELL_REFUSE), refuse[1]);
-  assert.equal(String(OPEN_BACKGROUND_FLAG), flag[1]);
+test("shellSteals: the head test on the cases the background lane documents — open fronts unless a background flag rides along, osascript always, every segment of a compound line past its wrappers and the head's directory; the regexes it reads are exported for the lane", () => {
+  assert.equal(String(BACKGROUND_SHELL_REFUSE), "/^(?:open|osascript)$/");
+  assert.equal(String(OPEN_BACKGROUND_FLAG), "/^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/");
   assert.equal(shellSteals("open -a Slack"), true);
   assert.equal(shellSteals("ls && open -a Slack"), true);
   assert.equal(shellSteals("cd x; open ."), true);

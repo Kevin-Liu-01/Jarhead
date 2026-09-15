@@ -1,4 +1,4 @@
-import { logger } from "@jarhead/core";
+import { logger, shellSteals } from "@jarhead/core";
 import { ACTING_MEMBERS, USER_IDLE_POLL_MS, WAIT_MAX_MS, isBusyResult, type AcquireOptions, type ConfirmationDesk, type FocusLease, type LeaseOutcome, type ToolResult } from "@jarhead/hands";
 import { ToolRunner, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions } from "@jarhead/brain";
 import { ACTING_TOOLS, FOCUS_APPLESCRIPT } from "@jarhead/brain";
@@ -33,16 +33,12 @@ export const THREAD_TOOLS: ReadonlySet<string> = new Set(["thread_start", "threa
 export const FOCUS_TOOLS: ReadonlySet<string> = new Set([...ACTING_MEMBERS, "open_url", "browser_click", "browser_type", "clipboard_read", "clipboard_write"]);
 
 /**
- * A shell head that brings something to the front: `open` (unless a flag cluster
- * carries g or j, or `--background` / `--hide`) or `osascript`. Judged on EVERY
- * command of a compound line (`ls && open -a Slack`, `cd x; open .`, `echo | osascript`),
- * past `sudo` / `env VAR=x` / `nohup` and past the head's directory (`/usr/bin/open`).
+ * A shell head that brings something to the front (`open` without a background flag,
+ * `osascript`) is judged by core's `shellSteals` — the ONE copy, shared with the
+ * automations' set-up gate (a recipe that fronts an app is told to use the open action).
+ * Re-exported here so the lane's rail keeps its name.
  */
-export const BACKGROUND_SHELL_REFUSE = /^(?:open|osascript)$/;
-/** `open` flags that keep the opened thing in the background: -g (do not bring forward), -j (hidden), in any cluster (`-ga`, `-gj`). */
-const OPEN_BACKGROUND_FLAG = /^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/;
-/** Words that run another command rather than being one; their own flags are skipped with them. */
-const SHELL_PREFIXES: ReadonlySet<string> = new Set(["sudo", "env", "nohup", "exec", "command", "time", "nice", "caffeinate", "builtin", "doas"]);
+export { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, shellSteals } from "@jarhead/core";
 
 /** Depth one: a spawned thread never spawns a thread and never edits Jarhead. */
 export const DENIED_FOR_THREADS: ReadonlySet<string> = new Set([...THREAD_TOOLS, "self_edit", "self_check", "self_review", "self_apply", "self_discard", "self_status"]);
@@ -61,90 +57,6 @@ export function needsFocus(name: string, args: Record<string, unknown>): boolean
   if (name === "applescript") return FOCUS_APPLESCRIPT.test(String(args["script"] ?? ""));
   if (name === "run_shell") return shellSteals(String(args["command"] ?? ""));
   return false;
-}
-
-/**
- * Does any command in this line front an app? Every segment of `a; b && c | d` is
- * judged: its wrappers (`sudo`, `env VAR=x`, `nohup`) and `VAR=value` heads skipped,
- * the head's directory dropped, `open` allowed only with a background flag.
- */
-export function shellSteals(command: string): boolean {
-  return shellSegments(command).some((segment) => {
-    const words = shellWords(segment);
-    const head = words[0];
-    if (!head || !BACKGROUND_SHELL_REFUSE.test(head)) return false;
-    if (head === "osascript") return true;
-    return !words.slice(1).some((w) => OPEN_BACKGROUND_FLAG.test(w));
-  });
-}
-
-/** The line split at `;`, `&`, `&&`, `|`, `||` and newlines outside quotes (good enough for the head test: a quoted separator is an argument). */
-function shellSegments(command: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let quote: string | undefined;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i]!;
-    if (quote) {
-      cur += ch;
-      if (ch === quote) quote = undefined;
-      else if (ch === "\\" && quote === '"') {
-        cur += command[i + 1] ?? "";
-        i++;
-      }
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      cur += ch;
-      continue;
-    }
-    if (ch === "\\") {
-      cur += ch + (command[i + 1] ?? "");
-      i++;
-      continue;
-    }
-    if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
-      out.push(cur);
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  out.push(cur);
-  return out.map((s) => s.trim()).filter(Boolean);
-}
-
-/** A segment's words with the command's wrappers and leading assignments gone, the head reduced to its lower-cased basename. */
-function shellWords(segment: string): string[] {
-  const words = segment.split(/\s+/).filter(Boolean);
-  let i = 0;
-  let afterPrefix = false;
-  while (i < words.length) {
-    const w = words[i]!;
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
-      i++;
-      continue;
-    }
-    if (SHELL_PREFIXES.has(basename(w))) {
-      afterPrefix = true;
-      i++;
-      continue;
-    }
-    if (afterPrefix && w.startsWith("-")) {
-      i++;
-      continue;
-    }
-    break;
-  }
-  const rest = words.slice(i);
-  if (rest[0] !== undefined) rest[0] = basename(rest[0]).toLowerCase();
-  return rest;
-}
-
-function basename(word: string): string {
-  const bare = word.replace(/^["']|["']$/g, "");
-  return bare.slice(bare.lastIndexOf("/") + 1);
 }
 
 // ------------------------------------------------------- step recording

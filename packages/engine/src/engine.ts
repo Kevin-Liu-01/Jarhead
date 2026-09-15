@@ -12,7 +12,7 @@ import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
-import { Automations, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
+import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
 import {
   BRAIN_KINDS,
   DEFAULT_SETTINGS,
@@ -497,23 +497,28 @@ export class Engine extends EventEmitter<EngineEvents> {
         warmUp: async () => {
           await this.brain?.warmUp?.();
         },
-        // One spare from the thread pool on the background lane: `pool.warm()` opens it (closed asleep), `take()` hands the lane over.
+        // ONE brain process for one headless turn, built cold outside the pool. The pool is never touched here: `warm()` would
+        // top up to Settings.warmThreads spares, and a `take()` or a `release()` tops up again — none of that is this turn's.
+        // Its release stops its own process only.
         lane: async () => {
-          this.threads.pool.warm();
-          const lane = this.threads.pool.take();
+          const lane = this.threads.coldLane();
           if (!lane) return undefined;
           lane.started ??= lane.brain.start();
           const ready = await lane.started.catch((e: unknown) => ({ ready: false, detail: (e as Error).message }));
+          const stop = async (): Promise<void> => {
+            await lane.brain.stop().catch((e: unknown) => log.debug(`wake-brain lane ${lane.id} stop: ${(e as Error).message}`));
+          };
           if (!ready.ready) {
-            await this.threads.pool.release(lane);
+            await stop();
             return undefined;
           }
           lane.runner.setLane("background");
-          return { brain: lane.brain, runner: lane.runner, release: () => this.threads.pool.release(lane) };
+          return { brain: lane.brain, runner: lane.runner, release: stop };
         },
-        // Asleep again: the pool closes so nothing boots behind Jarhead's back (awake, the wake path owns it).
+        // Asleep again — no session at all — the pool is closed and every spare stopped, so nothing stays booted behind
+        // Jarhead's back; with a session up, paused or reconnecting, the wake path owns the pool and it is left alone.
         after: async () => {
-          if (this.quiet) await this.threads.pool.stopAll();
+          if (!this.live) await this.threads.pool.stopAll();
         },
       },
       present: () => this.kevinPresent(),
@@ -4118,8 +4123,12 @@ export class Engine extends EventEmitter<EngineEvents> {
         return this.interrupt("interrupt command", cmd.how ?? "pressed");
       case "say-text":
         return this.sayText(cmd.text);
-      case "set-settings":
-        return this.updateSettings(cmd.patch);
+      case "set-settings": {
+        // The recipes' Trash is the engine's fact: a client's whole automations block (re-encoded without `trashedAt`) never
+        // un-trashes a recipe or drops the list — `recipe.restore` is the one way back. The engine's own writes skip this.
+        const auto = cmd.patch.automations;
+        return this.updateSettings(auto && typeof auto === "object" ? { ...cmd.patch, automations: keepRecipeTrash(this.settings.automations, auto) } : cmd.patch);
+      }
       case "clear-problems":
         this.problems = [];
         return this.scheduleSnapshot();
@@ -4225,6 +4234,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "automation.run":
       case "recipe.set":
       case "recipe.trash":
+      case "recipe.restore":
         return this.automations.command(cmd, (text, tone) => this.toast(text, tone ?? "info"));
       case "open-console":
       case "open-ledger":
