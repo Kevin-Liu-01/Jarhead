@@ -699,7 +699,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
         case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
         // Automations: the Trash fold open, the Downloads → Papers card pinned beside the row (it lands over the stream).
-        case "automations": defaultActions = "check-kit@0.3,fold:\(AutomationWords.trashFold):open@0.5,tipOpen:\(AutomationWords.tip(FakeData.papersId))@0.9,probe-floats@1.4,check-floats:\(AutomationWords.tip(FakeData.papersId))@1.5"
+        case "automations": defaultActions = "check-kit@0.3,fold:\(AutomationWords.trashFold):open@0.5,tipOpen:\(AutomationWords.tip(FakeData.papersId))@1.2,probe-floats@1.8,check-floats:\(AutomationWords.tip(FakeData.papersId))@1.9"
         // The ring row on the Ledger tab: its card pinned, then `ringing:off` (the row leaves) and back on for the shot.
         case "automations-ring": defaultActions = "check-kit@0.3,tipOpen:\(AutomationWords.ringTip)@0.8,probe-floats@1.2,ringing:off@1.5,probe-ring@1.7,ringing:\(FakeData.wakeId)@1.9,probe-ring@2.1"
         case "settings-automations": defaultActions = "check-kit@0.3,automationsFold@0.5,rail-scroll:640@0.9"
