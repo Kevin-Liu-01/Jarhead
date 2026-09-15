@@ -814,7 +814,7 @@ export class Automations implements AutomationSource {
       case "automation.set": {
         // The Console's form (and the CLI): the press on Add is Kevin's own hand on a control that says what it does — the
         // two-press idiom's second press — so a confirm-tier row arms with the question as what he heard. Free kinds arm at once.
-        const r = this.arm(cmd.automation as AutomationSetInput, "console", true, {});
+        const r = this.arm(cmd.automation as AutomationSetInput, cmd.by === "cli" ? "cli" : "console", true, {});
         toast(r.kind === "armed" ? r.text : r.kind === "confirm" ? `needs a yes: ${r.question}` : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
         return;
       }

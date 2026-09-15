@@ -13,6 +13,7 @@
  */
 
 import type { ToolResult } from "@jarhead/hands";
+import type { SystemSignal } from "@jarhead/protocol";
 
 export const FRAME_JSON = 1;
 export const FRAME_MIC = 2;
@@ -160,11 +161,12 @@ export type ClientMessage =
   /**
    * A signal the app observed on Kevin's behalf (design11): an app launched or quit
    * (`NSWorkspace`), the Mac slept or woke, the screen locked or unlocked, a display
-   * connected or disconnected, the clock changed. `signal` is a protocol SystemSignal;
-   * `at` is wall-clock ms. Data for the automations' watchers and their resync — never a
+   * connected or disconnected, the clock changed. `signal` is the protocol's SystemSignal
+   * (the parser types it; the engine still checks its shape — the wire is JSON); `at` is
+   * wall-clock ms. Data for the automations' watchers and their resync — never a
    * command, never a wake: the engine reads it, matches armed rows, and nothing else.
    */
-  | { readonly type: "system.signal"; readonly signal: unknown; readonly at: number }
+  | { readonly type: "system.signal"; readonly signal: SystemSignal; readonly at: number }
   /**
    * A clean quit is on its way: the app sends this right before it closes the daemon's
    * stdin (DaemonProcess.stop / applicationWillTerminate). Stdin closing *without* a

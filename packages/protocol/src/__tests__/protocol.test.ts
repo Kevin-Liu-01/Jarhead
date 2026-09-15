@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  type AutomationDraft,
+  type EngineCommand,
   MAIN_THREAD_ID,
   THREADS_MAX,
   THREAD_LINGER_MS,
@@ -286,6 +288,18 @@ test("isEngineCommand accepts exactly the twelve automation.* / recipe.* command
   for (const type of [...never, "automation.cancel", "automation.list", "automation_set", "automation_list", "automation_change", "recipe_list", "automation", "automations.set"]) {
     assert.equal(isEngineCommand({ type }), false, `${type} is not a command on the wire`);
   }
+});
+
+test("automation.set carries who sent it: `by` is console or cli (the brain's rows come through its tool, never this command) and the draft rides whole; the field is optional so an older Console still arms", () => {
+  const draft: AutomationDraft = { name: "Wake up", when: { kind: "at", at: 1_789_243_208_790 }, then: [{ kind: "chime", line: "Wake up, Kevin" }], clauses: { quiet: "override" }, echo: 'At 07:10, ring "Wake up, Kevin".' };
+  const fromCli: EngineCommand = { type: "automation.set", automation: draft, by: "cli" };
+  const fromConsole: EngineCommand = { type: "automation.set", automation: draft, by: "console" };
+  const older: EngineCommand = { type: "automation.set", automation: draft };
+  for (const cmd of [fromCli, fromConsole, older]) assert.ok(isEngineCommand(cmd));
+  // @ts-expect-error the brain never sends the surface command; its rows are stamped by the tool path
+  const never: EngineCommand = { type: "automation.set", automation: draft, by: "brain" };
+  assert.equal((never as { by?: string }).by, "brain", "spelt only to be refused by the type");
+  assert.equal(JSON.parse(JSON.stringify(fromCli)).by, "cli", "the stamp survives the wire");
 });
 
 test("SETTINGS_KEYS lists automations once and DEFAULT_SETTINGS.automations is the contract's default: on, five free kinds unattended, snooze 10, five brain minutes, no recipes, not opening at login", () => {

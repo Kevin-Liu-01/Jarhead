@@ -444,7 +444,8 @@ means the best fit on this Mac.
 
 The automations add the four frames above and nothing else on the wire: the rows themselves
 ride the snapshot (`automations`, `ringing`, `nextFire`; `settings.automations`), the presses
-are ordinary `EngineCommand`s (`automation.snooze {id,minutes}`, `automation.done {id}`,
+are ordinary `EngineCommand`s (`automation.set {automation, by?}` — the Console sends no `by` and is
+stamped `console`, the CLI sends `"cli"`; `automation.snooze {id,minutes}`, `automation.done {id}`,
 `automation.run`, `automation.trash` / `automation.restore` — never a deletion), and
 `Model/Protocol.swift` mirrors every type as small structs of optionals.
 

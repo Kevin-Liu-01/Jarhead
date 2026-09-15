@@ -644,7 +644,7 @@ async function automationsCommand(rest: string[]): Promise<void> {
       const draft = parseClockAutomation(words, Date.now());
       if ("error" in draft) throw new Error(`${draft.error}\n  usage: jarhead automations add "<when> <chime|say|notify|open> <what>"`);
       const wanted = draft.name.toLowerCase();
-      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft }, (s) => (s.automations ?? []).some((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli"), AUTOMATION_WAIT_MS);
+      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft, by: "cli" }, (s) => (s.automations ?? []).some((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli"), AUTOMATION_WAIT_MS);
       console.log(`\n  sent automation.set · ${draft.echo}`);
       for (const t of toasts) console.log(`  ${t}`);
       const row = snapshot?.automations.find((a) => a.name.toLowerCase() === wanted);

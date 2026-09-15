@@ -796,3 +796,22 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
     await engine.stop();
   }
 });
+
+// the wire's `by` (integration seam 2)
+test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy.by cli on the row and the ledger's automation.set; absent → console (an older Console); the brain's rows come through its tool and never this command", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    const draft = (name: string) => ({ name, when: { kind: "at" as const, at: clock.t + H }, then: [{ kind: "chime" as const, line: "up" }], clauses: { quiet: "override" as const }, echo: "In an hour, chime." });
+    await engine.command({ type: "automation.set", automation: draft("from the cli"), by: "cli" });
+    await engine.command({ type: "automation.set", automation: draft("from the console") });
+    const by = new Map(engine.snapshot().automations.map((a) => [a.name, a.createdBy.by]));
+    assert.equal(by.get("from the cli"), "cli");
+    assert.equal(by.get("from the console"), "console");
+    assert.deepEqual(rows<Extract<LedgerRow, { type: "automation.set" }>>(w, "automation.set").map((r) => r.by), ["cli", "console"]);
+  } finally {
+    await engine.stop();
+  }
+});

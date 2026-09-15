@@ -573,7 +573,12 @@ export type AutomationEvent = { readonly seq: number; readonly at: number; reado
 );
 export type MissedWhy = "daemon-down" | "mac-slept" | "quiet-hours" | "budget";
 
-/** A signal the app observes on Kevin's behalf and forwards; the daemon has no NSWorkspace. Data, never a command. */
+/**
+ * A signal the app observes on Kevin's behalf and forwards; the daemon has no NSWorkspace. Data,
+ * never a command. On the wire it is the app → daemon ClientMessage
+ * `{ type: "system.signal", signal: SystemSignal, at: number }` (daemon/src/wire.ts): the engine
+ * matches it against the armed watchers and resyncs on `mac.wake` / `clock.changed`; nothing wakes.
+ */
 export type SystemSignal =
   | { readonly kind: "app.launch" | "app.quit"; readonly app: string; readonly bundleId?: string }
   | { readonly kind: "mac.wake" | "mac.sleep" | "screen.unlock" | "screen.lock" | "display.connected" | "display.disconnected" | "clock.changed" };
@@ -1149,8 +1154,8 @@ export type EngineCommand =
   /** A follow-up turn on that thread's own brain, in Kevin's words. */
   | { readonly type: "thread.say"; readonly threadId: string; readonly text: string }
   // ---- automations (the Console's rail, the island's presses, the CLI). Never a deletion: Move to Trash / Restore.
-  /** Console form / CLI; the engine fills id, state, fires, createdAt, createdBy { by: "console" | "cli" }. */
-  | { readonly type: "automation.set"; readonly automation: AutomationDraft }
+  /** Console form / CLI; the engine fills id, state, fires, createdAt and stamps createdBy.by from `by` (absent = console; the CLI sends "cli"). */
+  | { readonly type: "automation.set"; readonly automation: AutomationDraft; readonly by?: "console" | "cli" }
   | { readonly type: "automation.snooze"; readonly id: string; readonly minutes: number }
   | { readonly type: "automation.done"; readonly id: string }
   /** repeater: roll the next occurrence · one-shot: done without firing */

@@ -150,7 +150,9 @@ pnpm jarhead status                         … automations 6 (5 armed · 1 paus
 
 Every verb is one `EngineCommand` over the daemon socket (`automation.set · snooze · done · skip
 · pause · resume · rename · trash · restore · run`, `recipe.set · trash`); the daemon owns the
-journal and `settings.json`. A name is looked up case-insensitively, live rows first; an `auto_…`
+journal and `settings.json`. `automation.set` carries `by: "cli"` from the CLI (the Console sends
+none and is stamped `console`; the brain's rows come through its tool as `brain`), so
+`createdBy.by` on the row and the ledger's `automation.set` say where each row came from. A name is looked up case-insensitively, live rows first; an `auto_…`
 id passes through even when unlisted, so Restore can name a trashed row.
 
 ## 9. doctor — group `automations`
