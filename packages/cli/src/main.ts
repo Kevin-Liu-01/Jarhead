@@ -677,7 +677,7 @@ async function automationVerb(verb: RowVerb, arg: string, extra: string): Promis
     case "rename": {
       const name = extra.trim();
       if (!name || name.length > 24) throw new Error('usage: jarhead automations rename <id|name> "<name>"  (24 chars at most)');
-      await sendCommand({ type: "automation.rename", id, name }, 800);
+      await sendCommand({ type: "automation.rename", id, name, by: "cli" }, 800);
       return;
     }
     case "run":

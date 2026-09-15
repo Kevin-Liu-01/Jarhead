@@ -1170,7 +1170,8 @@ export type EngineCommand =
   | { readonly type: "automation.skip"; readonly id: string }
   | { readonly type: "automation.pause"; readonly id: string }
   | { readonly type: "automation.resume"; readonly id: string }
-  | { readonly type: "automation.rename"; readonly id: string; readonly name: string }
+  /** `by` names the surface, as on automation.set (absent = console; the CLI sends "cli"); the ledger's automation.set row wears it. */
+  | { readonly type: "automation.rename"; readonly id: string; readonly name: string; readonly by?: "console" | "cli" }
   | { readonly type: "automation.trash"; readonly id: string }
   | { readonly type: "automation.restore"; readonly id: string }
   /** fire it now — refused unless a Live session is open (Kevin hears it) or the command came from the Console/CLI with Kevin present (presence.recent) */
