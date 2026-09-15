@@ -3514,6 +3514,15 @@ extension PreviewDelegate {
         let liveDefault = "\(ConsoleFoldStore.isOpen(unstoredId, default: false)) \(ConsoleFoldStore.isOpen(unstoredId, default: true))"
         ConsoleFoldStore.set(unstoredId, false)
         expect("fold store: nothing stored → the live default, a write wins", liveDefault + " \(ConsoleFoldStore.isOpen(unstoredId, default: true))", "false true false")
+        // ⌥-click by tier: Older (or a top-level day) folds Today · Yesterday · Older and never a day inside Older; a day inside folds its neighbours there.
+        let days = [0, 1, 2, 9].map(dayBack)
+        func short(_ id: String) -> String {
+            if let day = RailWords.day(ofId: id) { return "d\(ConsoleFormat.daysAgo(day, now: today))" }
+            return id
+        }
+        func sibs(_ id: String) -> String { RailFolds.siblings(keeping: id, days: days, now: today).map(short).joined(separator: " ") }
+        expect("fold siblings: Older → today · yesterday / Today → yesterday · Older / a day inside Older → its neighbours",
+               [sibs(RailWords.olderId), sibs(RailWords.dayId(dayBack(0))), sibs(RailWords.dayId(dayBack(2)))].joined(separator: " / "), "d0 d1 / d1 rail.older / d9")
         let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
         let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
                         ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]

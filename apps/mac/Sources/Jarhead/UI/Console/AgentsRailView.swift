@@ -202,6 +202,15 @@ enum RailFolds {
         if id.hasPrefix("agents.") { return hotTools.contains(String(id.dropFirst("agents.".count))) }
         return true
     }
+
+    /// ⌥-click's siblings, by tier: a top-level head (a day outside Older, or Older itself) folds the other
+    /// top-level heads and never the days inside Older; a day inside Older folds only its neighbours there.
+    static func siblings(keeping id: String, days: [String], now: Date) -> [String] {
+        let inside = RailWords.day(ofId: id).map { RailDayPlace.of(day: $0, now: now) == .older } ?? false
+        var out = days.filter { (RailDayPlace.of(day: $0, now: now) == .older) == inside }.map(RailWords.dayId)
+        if !inside { out.append(RailWords.olderId) }
+        return out.filter { $0 != id }
+    }
 }
 
 /// What the Now row says, sliced from the snapshot by the root so the rail stays a plain value.
@@ -664,14 +673,11 @@ struct AgentsRail: View, Equatable {
     /// → / ← on a head: the store posts, the disclosure (bound or remembered) or the group head follows.
     private func fold(_ id: String, _ open: Bool) { ConsoleFoldStore.set(id, open) }
 
-    /// ⌥-click on a day head: it opens and the other day heads (and Older, unless the day sits inside it) fold.
+    /// ⌥-click on a day head (or Older): it opens and its tier's other heads fold — the top-level heads never
+    /// touch the days inside Older, a day inside Older never touches Today or Yesterday (`RailFolds.siblings`).
     private func foldOtherDays(keeping id: String) {
-        let placed = placedDays(now: railNow)
-        var siblings = placed.map { RailWords.dayId($0.group.day) }
-        let inside = RailWords.day(ofId: id).map { RailDayPlace.of(day: $0, now: railNow) == .older } ?? false
-        if !inside { siblings.append(RailWords.olderId) }
         ConsoleFoldStore.set(id, true)
-        ConsoleFoldStore.foldSiblings(siblings, keeping: id)
+        ConsoleFoldStore.foldSiblings(RailFolds.siblings(keeping: id, days: days.map(\.day), now: railNow), keeping: id)
     }
 
     /// Esc: the search closes if it is open; else the highlight lets go.
