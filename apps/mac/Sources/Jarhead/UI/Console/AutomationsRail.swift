@@ -372,9 +372,10 @@ enum AutomationFormat {
 }
 
 extension ConsoleDisclosureSummary {
-    /// `6 armed · next 07:10` · `[off]` when the switch is off.
+    /// `6 armed · next 07:10` · `[off]` when the switch is off · nothing while nothing is set.
     static func automations(armed: Int, next: String?, enabled: Bool = true) -> [Summary] {
         guard enabled else { return [.badge(.off)] }
+        guard armed > 0 else { return [] }
         var parts = [AutomationWords.armed(armed)]
         if let next { parts.append(AutomationWords.next + " " + next) }
         return [.mono(parts.joined(separator: ConsoleDisclosureWords.joiner))]

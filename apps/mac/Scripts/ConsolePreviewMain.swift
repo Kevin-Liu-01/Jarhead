@@ -3605,8 +3605,8 @@ extension PreviewDelegate {
         expect("automations: toggle hints fit beside the toggle (≤ 112 pt at sans 11)", widest <= 112 ? "fits" : String(format: "%.0f pt", widest), "fits")
         expect("automations: state word", AutomationWords.states.map(AutomationWords.stateWord).joined(separator: ","), "armed,snoozed,firing,fired,deferred,off,done,failed,trashed")
         let text = ConsoleDisclosureSummary.text
-        expect("disclosure: Automations", text(ConsoleDisclosureSummary.automations(armed: 6, next: "07:10")) + " / " + text(ConsoleDisclosureSummary.automations(armed: 6, next: nil, enabled: false)),
-               "6 armed · next 07:10 / [off]")
+        expect("disclosure: Automations", text(ConsoleDisclosureSummary.automations(armed: 6, next: "07:10")) + " / " + text(ConsoleDisclosureSummary.automations(armed: 6, next: nil, enabled: false))
+               + " / " + text(ConsoleDisclosureSummary.automations(armed: 0, next: nil)), "6 armed · next 07:10 / [off] / ")
         expect("format: countdown", [ConsoleFormat.countdown(252_000), ConsoleFormat.countdown(3_723_000), ConsoleFormat.countdown(-5)].joined(separator: " / "), "4:12 / 1:02:03 / 0:00")
         guard let fake else { expect("automations: fixtures", "none", "fixtures"); return failed }
         let at0710 = fake.clock(7, 10)
