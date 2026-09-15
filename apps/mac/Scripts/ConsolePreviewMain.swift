@@ -129,6 +129,15 @@ import SwiftUI
 //                    (`settings.voice` · `settings.backend` · `settings.wakeWord`); `settings.model` is
 //                    LocalModelMenu's own. `check-kit` prints the pure placement / menu model / words /
 //                    tip / badge / copy pins. The kit's other scenarios (tip-* … agents-groups) are named
+//     automations  = the Now rail's Automations section (design11, Builder D): the mockup's six rows under
+//                    Clock 4 / Watchers 2, the Trash fold open (`fold:now.automations.trash:open`), the honest
+//                    line, the ring row `07:10 · Wake up, Kevin [Snooze] [Done]` under the tabs, the Downloads →
+//                    Papers card pinned (`tipOpen:now.automation.auto_papers`, `check-floats`); tall window.
+//     automations-ring = the ring row on the Ledger tab with its card pinned; `ringing:off` then
+//                    `ringing:<id>` (the `probe-ring:` lines say nil, then the id).
+//     settings-automations = Settings › Automations (`automationsFold`): the switch, the eight chips, quiet
+//                    hours, Snooze, Brain minutes, Recipes 3 (vpn-up `asks` via `recipesAsks:`), Open at login.
+//                    Keys: `ringing:<id|off>` · `recipesAsks:<a,b>` · `automationsFold` · `probe-ring`.
 //     memory-chips = the kit's memory rail (Builder C): the filter with `2 of 7`, the kind chips with
 //                    counts, `chip:fact` → the two fact rows (badge · meter · ⋯ at rest); Settings tab, tall.
 //     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
@@ -361,6 +370,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "empty": state.snapshot = fake.empty()
+        // Automations (design11, Builder D): the six rows of the mockup and one in the Trash, the alarm ringing,
+        // Settings › Automations with three recipes (vpn-up rated `asks` by the harness key).
+        case "automations", "automations-ring", "settings-automations":
+            state.snapshot = fake.automationsSnapshot()
+            if scenario == "settings-automations" { AutomationRecipeAsks.names = ["vpn-up"] }
         case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "list-verbs", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
@@ -544,6 +558,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "settings", "wake-locked", "memory", "memory-chips", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
              "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
+        case "settings-automations": console.selectTab(.settings)
+        // The ring line sits under the tabs on every tab: shot on Ledger to prove it.
+        case "automations-ring": console.selectTab(.ledger)
         case "durability":
             pendingAgentOpen = FakeData.endedId
             openPendingAgentAfterActivation()
@@ -681,6 +698,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
         case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
+        // Automations: the Trash fold open, the Downloads → Papers card pinned beside the row (it lands over the stream).
+        case "automations": defaultActions = "check-kit@0.3,fold:\(AutomationWords.trashFold):open@0.5,tipOpen:\(AutomationWords.tip(FakeData.papersId))@0.9,probe-floats@1.4,check-floats:\(AutomationWords.tip(FakeData.papersId))@1.5"
+        // The ring row on the Ledger tab: its card pinned, then `ringing:off` (the row leaves) and back on for the shot.
+        case "automations-ring": defaultActions = "check-kit@0.3,tipOpen:\(AutomationWords.ringTip)@0.8,probe-floats@1.2,ringing:off@1.5,probe-ring@1.7,ringing:\(FakeData.wakeId)@1.9,probe-ring@2.1"
+        case "settings-automations": defaultActions = "check-kit@0.3,automationsFold@0.5,rail-scroll:640@0.9"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -918,6 +940,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeGround(stamp: stamp)
             } else if action.hasPrefix("load-earlier:") || action == "history" {
                 loadEarlier(action, stamp: stamp)
+            } else if action.hasPrefix("ringing:") || action.hasPrefix("recipesAsks:") || action == "automationsFold" || action == "probe-ring" {
+                automationAction(action, stamp: stamp)
             } else if let info = kitAction(action) {
                 // The kit's keys (ConsolePreviewKey): the trigger with that id answers.
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
@@ -2737,6 +2761,108 @@ struct FakeData {
                  settings: settings, permissions: permissions(microphone: .unknown, screenRecording: .granted, accessibility: .granted), problems: [], brainReady: true, handsReady: true, setup: setup, marks: [], threads: [])
     }
 
+    // MARK: automations (design11, Builder D) — the mockup's six rows, one in the Trash, the ring, the recipes
+
+    static let wakeId = "auto_wake0710"
+    static let pastaId = "auto_pasta12"
+    static let mumId = "auto_callmum"
+    static let standupId = "auto_standup9"
+    static let papersId = "auto_papers"
+    static let buildRedId = "auto_buildred"
+    static let oldTimerId = "auto_oldtimer"
+
+    /// `HH:mm` on the local day `dayOffset` days from now, as wall-clock ms.
+    func clock(_ h: Int, _ m: Int, dayOffset: Int = 0) -> Double {
+        let cal = Calendar.current
+        let day = cal.date(byAdding: .day, value: dayOffset, to: Date(timeIntervalSince1970: now / 1000)) ?? Date()
+        return (cal.date(bySettingHour: h, minute: m, second: 0, of: day) ?? day).timeIntervalSince1970 * 1000
+    }
+
+    /// The next weekday's `HH:mm` after now (Friday evening → Monday).
+    func nextWeekday(_ h: Int, _ m: Int) -> Double {
+        for offset in 0...7 {
+            let at = clock(h, m, dayOffset: offset)
+            let weekday = Calendar.current.component(.weekday, from: Date(timeIntervalSince1970: at / 1000))
+            if at > now, (2...6).contains(weekday) { return at }
+        }
+        return clock(h, m, dayOffset: 1)
+    }
+
+    func action(_ kind: String, line: String? = nil, app: String? = nil, into: String? = nil, recipe: String? = nil) -> AutomationAction {
+        AutomationAction(kind: kind, line: line, sound: nil, title: nil, body: nil, open: nil, app: app, url: nil, path: nil, into: into, recipe: recipe,
+                         key: nil, prompt: nil, budget: nil, speak: nil)
+    }
+
+    func automation(_ id: String, _ name: String, when: AutomationWhen, then: [AutomationAction], echo: String, state: String, nextAt: Double?,
+                    quiet: String = "respect", fires: Int = 0, lastFiredAt: Double? = nil, lastDetail: String? = nil, snoozedUntil: Double? = nil,
+                    updatedAt: Double? = nil, cooldown: Double? = nil) -> Automation {
+        Automation(id: id, name: name, when: when, then: then,
+                   clauses: AutomationClauses(window: nil, days: nil, once: nil, cooldown: cooldown, until: nil, quiet: quiet), echo: echo, state: state,
+                   nextAt: nextAt, lastFiredAt: lastFiredAt, lastDetail: lastDetail, fires: fires, missed: 0, snoozedUntil: snoozedUntil,
+                   createdAt: ago(3 * 86_400), updatedAt: updatedAt ?? ago(3_600),
+                   createdBy: AutomationCreatedBy(by: "brain", chainId: nil, delegationId: nil, request: name), confirmed: nil)
+    }
+
+    func weekly(_ days: [String], _ at: String, phrase: String) -> AutomationWhen {
+        AutomationWhen(kind: "every", at: nil, ms: nil, every: Recurrence(kind: "weekly", days: days, at: at, everyMs: nil, anchorAt: nil, nth: nil, weekday: nil, day: nil), phrase: phrase, on: nil)
+    }
+
+    func watching(_ on: SystemEvent) -> AutomationWhen { AutomationWhen(kind: "on", at: nil, ms: nil, every: nil, phrase: nil, on: on) }
+
+    /// The mockup's rows: an alarm, a timer (4:12 left at the shot), a snoozed reminder, a routine, two watchers
+    /// (one paused two days), and a trashed timer for the Trash fold.
+    func automations(timerSettle: Double = 2_000) -> [Automation] {
+        let weekdays = ["mon", "tue", "wed", "thu", "fri"]
+        return [
+            automation(Self.wakeId, "Wake up, Kevin", when: weekly(weekdays, "07:10", phrase: "weekdays"),
+                       then: [action("chime", line: "Wake up, Kevin"), action("say", line: "It is ten past seven.")],
+                       echo: "Weekdays at 07:10, ring “Wake up, Kevin”.", state: "armed", nextAt: nextWeekday(7, 10), quiet: "override", fires: 41),
+            automation(Self.pastaId, "pasta", when: AutomationWhen(kind: "in", at: nil, ms: 12 * 60_000, every: nil, phrase: nil, on: nil),
+                       then: [action("chime", line: "pasta")], echo: "In 12:00, ring “pasta”.", state: "armed", nextAt: now + 252_000 + timerSettle),
+            automation(Self.mumId, "call mum", when: AutomationWhen(kind: "at", at: clock(15, 0), ms: nil, every: nil, phrase: nil, on: nil),
+                       then: [action("say", line: "call mum")], echo: "At 15:00, say “call mum”.", state: "snoozed", nextAt: now + 600_000, snoozedUntil: now + 600_000),
+            automation(Self.standupId, "standup notes", when: weekly(weekdays, "09:00", phrase: "weekdays"),
+                       then: [action("open", app: "Notes")], echo: "Weekdays at 09:00, open Notes.", state: "armed", nextAt: nextWeekday(9, 0)),
+            automation(Self.papersId, "Downloads → Papers",
+                       when: watching(SystemEvent(kind: "folder.file", path: "~/Downloads", glob: "*.pdf", settleMs: 3000, app: nil, recipe: nil, everySeconds: nil, agent: nil, status: nil)),
+                       then: [action("file", into: "~/Documents/Papers"), action("chime", line: "Filed")],
+                       echo: "When a PDF lands in Downloads, file it under ~/Documents/Papers and chime.", state: "armed", nextAt: nil,
+                       fires: 3, lastFiredAt: clock(14, 2), lastDetail: "filed invoice.pdf"),
+            automation(Self.buildRedId, "build red",
+                       when: watching(SystemEvent(kind: "recipe.red", path: nil, glob: nil, settleMs: nil, app: nil, recipe: "build-check", everySeconds: 60, agent: nil, status: nil)),
+                       then: [action("chime", line: "tests red")], echo: "Every 60 s run recipe “build-check”; when it goes red, chime “tests red”.",
+                       state: "paused", nextAt: nil, fires: 2, updatedAt: ago(2 * 86_400)),
+            automation(Self.oldTimerId, "old timer", when: AutomationWhen(kind: "in", at: nil, ms: 5 * 60_000, every: nil, phrase: nil, on: nil),
+                       then: [action("chime", line: "old timer")], echo: "In 5:00, ring “old timer”.", state: "trashed", nextAt: nil, fires: 1, updatedAt: ago(86_400)),
+        ]
+    }
+
+    /// The alarm ringing: `07:10 · Wake up, Kevin` with Snooze 10 · Done.
+    func ringLine() -> RingLine {
+        RingLine(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", line: "07:10 · Wake up, Kevin", calm: nil, at: ago(20), lateMs: nil,
+                 presses: [AutomationPress(kind: "snooze", minutes: 10, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)], more: 0)
+    }
+
+    /// Settings › Automations: the contract's defaults with quiet hours 23:00 → 07:00 and three recipes.
+    func automationSettings() -> AutomationSettings {
+        AutomationSettings(enabled: true, unattended: ["chime", "say", "notify", "open", "file"], quietHours: ClockSpan(from: "23:00", to: "07:00"),
+                           snoozeMinutes: 10, wakeBudgetMinutesPerDay: 5,
+                           recipes: [ShellRecipe(name: "backup", command: "/Users/kevinliu/bin/backup.sh", cwd: nil, timeoutSeconds: 120, approvedAt: ago(2 * 86_400)),
+                                     ShellRecipe(name: "build-check", command: "pnpm -C ~/gt test --silent", cwd: nil, timeoutSeconds: 300, approvedAt: ago(5 * 86_400)),
+                                     ShellRecipe(name: "vpn-up", command: "networksetup -connectpppoeservice VPN", cwd: nil, timeoutSeconds: 60, approvedAt: ago(9 * 86_400))],
+                           openAtLogin: false)
+    }
+
+    /// Asleep, the alarm ringing, six rows set, the foot's next fire the alarm.
+    func automationsSnapshot() -> Snapshot {
+        var s = asleep()
+        s.automations = automations()
+        s.ringing = ringLine()
+        s.nextFire = NextFire(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", at: nextWeekday(7, 10))
+        s.settings.automations = automationSettings()
+        return s
+    }
+
     // MARK: Jarhead's own sessions (the ledger's `sessions()` / `readSession()`)
 
     /// The paused → resumed chain the `jarhead` scenarios step into.
@@ -3156,6 +3282,7 @@ extension PreviewDelegate {
         checkKitMenu(expect)
         failed += checkKitLists()
         failed += checkKitRail()
+        failed += checkKitAutomations()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3352,8 +3479,8 @@ extension PreviewDelegate {
             print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
         }
         let text = ConsoleDisclosureSummary.text
-        expect("rail: the seven fold ids", SettingsWords.folds.joined(separator: ","),
-               "settings.audio,settings.brain,settings.leaves,settings.session,settings.memory,settings.retention,settings.wake")
+        expect("rail: the eight fold ids", SettingsWords.folds.joined(separator: ","),
+               "settings.audio,settings.brain,settings.leaves,settings.session,settings.automations,settings.memory,settings.retention,settings.wake")
         let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint]
         expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device")
         // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
@@ -3416,6 +3543,119 @@ extension PreviewDelegate {
         let summary = fake.memorySummary()
         expect("rail: learned word", SettingsPanel.learnedWord(summary, now: fake.now), "learned 12m")
         expect("rail: learned card", SettingsPanel.lastRunCard(summary, now: fake.now).spoken, "Last run, learned 12m ago, extractor responses, added +3, updated ~1, same 4, refused 1, took 1.8 s")
+        return failed
+    }
+}
+
+
+// MARK: - Automations (Builder D): the harness keys and the pure pins
+
+extension PreviewDelegate {
+    /// `ringing:<id>` sets AppState.ringing from that row (`ringing:off` clears it); `recipesAsks:<a,b>` names the recipes
+    /// the gate would question; `automationsFold` opens Settings › Automations; `probe-ring` prints what rings.
+    func automationAction(_ action: String, stamp: String) {
+        if action.hasPrefix("ringing:") {
+            let id = String(action.dropFirst("ringing:".count))
+            if id == "off" {
+                withAnimation(Motion.gentle) { state.ringing = nil }
+            } else if let row = state.automations.first(where: { $0.id == id }) {
+                let line = row.nextAt.map { ConsoleFormat.clock($0) + AutomationWords.dot + row.name } ?? row.name
+                let minutes = state.snapshot.settings.automationSettings.snoozeMinutes
+                withAnimation(Motion.gentle) {
+                    state.ringing = RingLine(id: row.id, kind: row.kind.rawValue, name: row.name, line: line, calm: nil, at: ConsoleFormat.nowMs, lateMs: nil,
+                                             presses: [AutomationPress(kind: "snooze", minutes: minutes, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)], more: 0)
+                }
+            }
+            print("action: \(action) at \(stamp)s → ringing=\(state.ringing?.id ?? "nil")")
+        } else if action.hasPrefix("recipesAsks:") {
+            AutomationRecipeAsks.names = Set(action.dropFirst("recipesAsks:".count).split(separator: ",").map(String.init))
+            print("action: \(action) at \(stamp)s")
+        } else if action == "automationsFold" {
+            console?.selectTab(.settings)
+            ConsoleFoldStore.set(SettingsWords.automationsFold, true)
+            print("action: automationsFold at \(stamp)s")
+        } else if action == "probe-ring" {
+            print("probe-ring: ringing=\(state.ringing?.id ?? "nil") line='\(state.ringing?.line ?? "")' rows=\(state.automations.count) at \(stamp)s")
+        }
+    }
+
+    /// `AutomationsRail`'s pure words — the badges, the words, the summary, the formats, a row's line, the card's
+    /// spoken form, the ring split, the recipe meta, the Add… parser — as `check:` lines; returns how many failed.
+    func checkKitAutomations() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func badge(_ w: ConsoleBadge.Word) -> String { "\(ConsoleBadge.text(w)) · \(ConsoleBadge.toneKind(w).rawValue)" }
+        expect("badge: automation words", [ConsoleBadge.Word.snoozed, .deferred, .billed, .ringing].map(badge).joined(separator: " / "),
+               "snoozed · rest / deferred · rest / billed · speaking / ringing · speaking")
+        let verbs = [AutomationWords.snooze, AutomationWords.done, AutomationWords.skip, AutomationWords.pause, AutomationWords.resume, AutomationWords.runNow,
+                     AutomationWords.rename, AutomationWords.moveToTrash, AutomationWords.restore, AutomationWords.add, AutomationWords.addRecipe]
+        expect("automations: the verbs", verbs.joined(separator: " · "), "Snooze · Done · Skip · Pause · Resume · Run now · Rename · Move to Trash · Restore · Add… · Add recipe…")
+        let forbidden = verbs.filter { $0.contains("Delete") || $0.contains("Cancel") }
+        expect("automations: never Delete, never Cancel", forbidden.isEmpty ? "none" : forbidden.joined(separator: ","), "none")
+        expect("automations: section · honest line · empty", [AutomationWords.section, AutomationWords.honest, AutomationWords.empty].joined(separator: " | "),
+               "Automations | Nothing fires while Jarhead is quit. | No automations yet. Say “wake me at 7:10”.")
+        expect("automations: chip words", AutomationWords.actionKinds.map(AutomationWords.actionWord).joined(separator: ","), "chime,say,notify,open,file,run recipe,press,wake brain")
+        // The two toggle hints beside a 60 pt toggle in the 182 pt column: the same 112 pt room checkKitRail measures.
+        let hints = [AutomationWords.enabledHint, AutomationWords.openAtLoginHint]
+        let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width }.max() ?? 0
+        expect("automations: toggle hints fit beside the toggle (≤ 112 pt at sans 11)", widest <= 112 ? "fits" : String(format: "%.0f pt", widest), "fits")
+        expect("automations: state word", AutomationWords.states.map(AutomationWords.stateWord).joined(separator: ","), "armed,snoozed,firing,fired,deferred,off,done,failed,trashed")
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Automations", text(ConsoleDisclosureSummary.automations(armed: 6, next: "07:10")) + " / " + text(ConsoleDisclosureSummary.automations(armed: 6, next: nil, enabled: false)),
+               "6 armed · next 07:10 / [off]")
+        expect("format: countdown", [ConsoleFormat.countdown(252_000), ConsoleFormat.countdown(3_723_000), ConsoleFormat.countdown(-5)].joined(separator: " / "), "4:12 / 1:02:03 / 0:00")
+        guard let fake else { expect("automations: fixtures", "none", "fixtures"); return failed }
+        let at0710 = fake.clock(7, 10)
+        expect("format: clock is HH:mm", ConsoleFormat.clock(at0710), "07:10")
+        let rows = fake.automations(timerSettle: 0)
+        let now = fake.now
+        func row(_ id: String) -> Automation { rows.first { $0.id == id } ?? rows[0] }
+        var wake = row(FakeData.wakeId); wake.nextAt = now + 6 * 3_600_000
+        expect("automations: alarm meta", AutomationFormat.meta(wake, now: now), "weekdays · chime + say · 6 h")
+        let pasta = row(FakeData.pastaId)
+        expect("automations: timer value · meta", (AutomationFormat.value(pasta, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(pasta, now: now),
+               "4:12 | 12:00 · chime · ends " + ConsoleFormat.clock(now + 252_000))
+        let mum = row(FakeData.mumId)
+        expect("automations: snoozed value · meta", (AutomationFormat.value(mum, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(mum, now: now),
+               ConsoleFormat.clock(now + 600_000) + " | " + AutomationFormat.dayWord(now + 600_000, now: now) + " · say · snoozed 10")
+        expect("automations: routine meta", AutomationFormat.meta(row(FakeData.standupId), now: now).hasPrefix("weekdays · open Notes · ") ? "weekdays · open Notes · …" : AutomationFormat.meta(row(FakeData.standupId), now: now),
+               "weekdays · open Notes · …")
+        let papers = row(FakeData.papersId)
+        expect("automations: watcher value · meta", (AutomationFormat.value(papers, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(papers, now: now), "3× | *.pdf · file + chime · 14:02")
+        let red = row(FakeData.buildRedId)
+        expect("automations: paused watcher value · meta", (AutomationFormat.value(red, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(red, now: now), "60 s | build-check · chime · paused 2d")
+        expect("automations: glyphs", rows.map(AutomationFormat.glyph).joined(separator: ","), "alarm.fill,timer,bell.fill,repeat,eye.fill,terminal.fill,timer")
+        expect("automations: resting verbs", rows.map(AutomationFormat.restingVerb).joined(separator: ","), "Pause,Done,Skip,Pause,Pause,Resume,Restore")
+        var billed = row(FakeData.standupId); billed.then = [fake.action("wake-brain")]
+        expect("automations: badges (resting rows wear none)", (rows + [billed]).map { AutomationFormat.badge($0).map(ConsoleBadge.text) ?? "-" }.joined(separator: ","), "-,-,snoozed,-,-,off,-,billed")
+        expect("tip card: automation spoken", ConsoleTipCard.automation(papers, now: now, cap: 5).spoken,
+               "Downloads → Papers, armed, When a PDF lands in Downloads, file it under ~/Documents/Papers and chime., next — · on a file, fires 3 · cooldown 30 s, last 14:02 · filed invoice.pdf, does file + chime · never overwrites, cost nothing billed, Opens its row ⏎")
+        var wakeBrain = row(FakeData.standupId); wakeBrain.then = [AutomationAction(kind: "wake-brain", line: nil, sound: nil, title: nil, body: nil, open: nil, app: nil, url: nil, path: nil, into: nil, recipe: nil, key: nil, prompt: "summarise", budget: AutomationBudget(steps: 25, seconds: 120), speak: true)]
+        expect("tip card: billed row", "\(ConsoleTipCard.automation(wakeBrain, now: now, cap: 5).badge.map(ConsoleBadge.text) ?? "-") · \(AutomationFormat.costWord(wakeBrain, cap: 5))", "billed · ≈ 2 brain min per fire · up to 5 a day")
+        let parts = AutomationFormat.ringParts("07:10 · Wake up, Kevin"), plain = AutomationFormat.ringParts("Filed · invoice.pdf → Papers")
+        expect("automations: ring split", "\(parts.figure ?? "-") | \(parts.words) / \(plain.figure ?? "-") | \(plain.words)", "07:10 | Wake up, Kevin / - | Filed · invoice.pdf → Papers")
+        let recipe = fake.automationSettings().recipes[0]
+        expect("automations: recipe meta", AutomationFormat.recipeMeta(recipe, home: "/Users/kevinliu"), "~/bin/backup.sh · 120 s · approved " + Date(timeIntervalSince1970: recipe.approvedAt / 1000).formatted(.dateTime.month(.abbreviated).day()))
+        expect("automations: chip flip keeps the contract's order", AutomationFormat.toggled(["chime", "file"], "say").joined(separator: ",") + " / " + AutomationFormat.toggled(["chime", "say"], "chime").joined(separator: ","), "chime,say,file / say")
+        expect("automations: quiet options", "\(AutomationFormat.quietOptions.count) · \(AutomationFormat.quietTitle("")) · \(AutomationFormat.quietTitle("23:00"))", "25 · Off · 23:00")
+        let weekly = AutomationForm.parseWhen("07:10 weekdays", now: now), timer = AutomationForm.parseWhen("12 min", now: now), once = AutomationForm.parseWhen("15:00", now: now)
+        // One statement per word (CI's older Swift gives up on `??` chains of interpolating closures).
+        func whenWord(_ w: AutomationWhen?) -> String {
+            guard let w else { return "nil" }
+            switch w.kind {
+            case "every": return "every \(w.every?.days?.count ?? 0) \(w.phrase ?? "")"
+            case "in": return "in \(Int(w.ms ?? 0))"
+            default: return "at " + ConsoleFormat.clock(w.at ?? 0)
+            }
+        }
+        expect("add form: parseWhen", [weekly, timer, once, AutomationForm.parseWhen("soonish", now: now)].map(whenWord).joined(separator: " / "),
+               "every 5 weekdays / in 720000 / at 15:00 / nil")
+        if let weekly { expect("add form: echo", AutomationForm.echo(name: "standup", when: weekly, kind: "chime"), "Weekdays at 07:10, ring “standup”.") }
+        expect("add form: draft quiet", AutomationForm.draft(name: "x", when: timer ?? weekly!, kind: "chime").clauses.quiet ?? "nil", "override")
         return failed
     }
 }
