@@ -497,23 +497,28 @@ export class Engine extends EventEmitter<EngineEvents> {
         warmUp: async () => {
           await this.brain?.warmUp?.();
         },
-        // One spare from the thread pool on the background lane: `pool.warm()` opens it (closed asleep), `take()` hands the lane over.
+        // ONE brain process for one headless turn, built cold outside the pool. The pool is never touched here: `warm()` would
+        // top up to Settings.warmThreads spares, and a `take()` or a `release()` tops up again — none of that is this turn's.
+        // Its release stops its own process only.
         lane: async () => {
-          this.threads.pool.warm();
-          const lane = this.threads.pool.take();
+          const lane = this.threads.coldLane();
           if (!lane) return undefined;
           lane.started ??= lane.brain.start();
           const ready = await lane.started.catch((e: unknown) => ({ ready: false, detail: (e as Error).message }));
+          const stop = async (): Promise<void> => {
+            await lane.brain.stop().catch((e: unknown) => log.debug(`wake-brain lane ${lane.id} stop: ${(e as Error).message}`));
+          };
           if (!ready.ready) {
-            await this.threads.pool.release(lane);
+            await stop();
             return undefined;
           }
           lane.runner.setLane("background");
-          return { brain: lane.brain, runner: lane.runner, release: () => this.threads.pool.release(lane) };
+          return { brain: lane.brain, runner: lane.runner, release: stop };
         },
-        // Asleep again: the pool closes so nothing boots behind Jarhead's back (awake, the wake path owns it).
+        // Asleep again — no session at all — the pool is closed and every spare stopped, so nothing stays booted behind
+        // Jarhead's back; with a session up, paused or reconnecting, the wake path owns the pool and it is left alone.
         after: async () => {
-          if (this.quiet) await this.threads.pool.stopAll();
+          if (!this.live) await this.threads.pool.stopAll();
         },
       },
       present: () => this.kevinPresent(),

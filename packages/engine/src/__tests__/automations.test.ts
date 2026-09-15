@@ -578,6 +578,9 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
     assert.match((asked as { question: string }).question, /about 1 brain minute per fire on Kevin's plan, up to 5 a day/, "the cost line is the question");
     const a = armed(w, engine.automations.arm(draft("rundown", clock.t + M), "brain", true));
     events.length = 0;
+    tick(engine); // the scheduler's own tick tops the (never yet closed) pool up; from here the fire must add no boot
+    const bootsBefore = engine.threads.pool.boots;
+    const madeBefore = threads.brains.length;
     clock.t += M;
     tick(engine);
     const f = await fired(w);
@@ -605,6 +608,10 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
     assert.equal(engine.snapshot().phase, "asleep");
     assert.equal(live.currentState, "idle", "connect() was never called");
     assert.equal(engine.threads.pool.isClosed, true);
+    assert.equal(engine.threads.pool.boots, bootsBefore, "no spare booted for the headless turn: one cold lane, never Settings.warmThreads");
+    assert.equal(threads.brains.length, madeBefore + 1, "exactly one brain process was made for the turn");
+    assert.deepEqual(engine.threads.pool.spareIds, [], "nothing left running: the pool's spares were stopped after the turn");
+    assert.ok(threads.brains.every((b) => b.stops >= 1), "every thread brain process is stopped, the turn's included");
 
     // A turn that asks: cancelled, failed "asked a question; nobody to answer" — no question anywhere.
     threads.script = async ({ sink }) => {
