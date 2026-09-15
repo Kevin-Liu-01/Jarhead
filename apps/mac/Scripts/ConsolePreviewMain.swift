@@ -3523,6 +3523,11 @@ extension PreviewDelegate {
         func sibs(_ id: String) -> String { RailFolds.siblings(keeping: id, days: days, now: today).map(short).joined(separator: " ") }
         expect("fold siblings: Older → today · yesterday / Today → yesterday · Older / a day inside Older → its neighbours",
                [sibs(RailWords.olderId), sibs(RailWords.dayId(dayBack(0))), sibs(RailWords.dayId(dayBack(2)))].joined(separator: " / "), "d0 d1 / d1 rail.older / d9")
+        // A hidden row is 28 with the word alone whatever its process does; visible, it is 44 with the dot or the badge.
+        func zone(_ status: AgentStatus, hidden: Bool) -> String { let z = RailAgentZone.of(status: status, hidden: hidden); return "\(z.tall ? 44 : 28)\(z.dot ? " dot" : "")\(z.asks ? " asks" : "")\(z.age ? " age" : "")" }
+        expect("zone: hidden working → 28 alone · hidden blocked → 28 alone · working → 44 dot · blocked → 44 asks · idle → 28 age",
+               [zone(.working, hidden: true), zone(.blocked, hidden: true), zone(.working, hidden: false), zone(.blocked, hidden: false), zone(.idle, hidden: false)].joined(separator: " · "),
+               "28 · 28 · 44 dot · 44 asks · 28 age")
         let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
         let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
                         ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]

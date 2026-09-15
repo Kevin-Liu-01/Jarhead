@@ -213,6 +213,21 @@ enum RailFolds {
     }
 }
 
+/// What an agent row's status zone shows, pure (pinned by check-kit). A hidden row wears the word alone
+/// at 28 — no badge, no dot, no age, no meta line — whatever its process does: the ladder says it is
+/// over, and colour belongs to rows that can still change.
+struct RailAgentZone: Equatable {
+    var tall = false
+    var asks = false
+    var dot = false
+    var age = false
+
+    static func of(status: AgentStatus, hidden: Bool) -> RailAgentZone {
+        if hidden { return RailAgentZone() }
+        return RailAgentZone(tall: status == .blocked || status == .working, asks: status == .blocked, dot: status == .working, age: status == .idle)
+    }
+}
+
 /// What the Now row says, sliced from the snapshot by the root so the rail stays a plain value.
 struct JarheadNowInfo: Equatable {
     var phase: Phase = .asleep
@@ -1944,8 +1959,10 @@ struct AgentRowView: View {
 
     private var tool: AgentTool { agent.resolvedTool }
 
-    /// The row is 44 with a meta line while a figure on it ticks (it asks or works); 28 otherwise.
-    private var tall: Bool { AgentsRail.hot(agent) }
+    /// What the status zone shows: 44 with a meta line while a figure ticks (it asks or works), 28
+    /// otherwise; a hidden row is 28 with the word alone.
+    private var zone: RailAgentZone { RailAgentZone.of(status: agent.status, hidden: hidden) }
+    private var tall: Bool { zone.tall }
 
     /// `project · 2m` — the 44 row's meta line.
     private var metaLine: String {
@@ -2019,8 +2036,8 @@ struct AgentRowView: View {
             Spacer(minLength: 4)
             // Room for the Unhide in the overlay.
             if hidden { Color.clear.frame(width: restoreWidth, height: 20) }
-            RailStatusZone(asks: agent.status == .blocked, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue,
-                           dot: agent.status == .working, age: agent.status == .idle ? ConsoleFormat.relative(agent.updatedAt, now: now) : nil)
+            RailStatusZone(asks: zone.asks, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue,
+                           dot: zone.dot, age: zone.age ? ConsoleFormat.relative(agent.updatedAt, now: now) : nil)
         }
         .frame(height: 20)
     }
