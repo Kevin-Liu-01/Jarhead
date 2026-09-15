@@ -726,3 +726,73 @@ test("rebuild-idempotent: a second engine over the same state dir rebuilds the s
     if (second) await second.engine.stop();
   }
 });
+
+// (16) timer-ticks-and-caffeinate
+test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `caffeinate -t 720` through the injected exec (a fixed argv, never a shell line); a viewer sees remainingMs ticks and nobody looking sees none; at 12:00 it rings 'pasta · 12:00 is up' with Snooze 5 · Done and the hold is killed; Snooze holds again for 5 min and Done kills that; a 90-minute timer holds nothing", async () => {
+  const { exec, holds, runs } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    tick(engine);
+    engine.setViewers(1);
+    const t0 = clock.t;
+    const a = armed(w, engine.automations.set({ name: "pasta", when: { kind: "in", ms: 12 * M }, then: [{ kind: "chime", line: "pasta is up", sound: "Glass" }], echo: "In 12 minutes, chime." }, "brain"));
+    assert.equal(a.nextAt, t0 + 12 * M);
+    assert.equal(engine.snapshot().nextFire?.kind, "timer");
+    assert.deepEqual(holds.map((h) => h.argv), [["/usr/bin/caffeinate", "-t", "720"]], "one hold, a fixed argv");
+    assert.equal(holds[0]!.killed, false);
+    assert.equal(runs.length, 0, "nothing else ran");
+
+    // A viewer looks: the countdown ticks.
+    events.length = 0;
+    clock.t += 1000;
+    tick(engine);
+    engine.automations.table.flush();
+    const ticks = events.flatMap((e) => (e.type === "automation.event" && e.event.kind === "tick" ? [e.event] : []));
+    assert.ok(ticks.length >= 1, "a viewer sees the countdown");
+    assert.equal(ticks[0]!.id, a.id);
+    assert.equal(ticks[0]!.remainingMs, 12 * M - 1000);
+
+    // Nobody looks: silence.
+    engine.setViewers(0);
+    engine.automations.table.flush();
+    events.length = 0;
+    clock.t += 1000;
+    tick(engine);
+    engine.automations.table.flush();
+    assert.equal(events.flatMap((e) => (e.type === "automation.event" && e.event.kind === "tick" ? [e.event] : [])).length, 0, "nobody looks: no ticks");
+
+    // 12:00 is up.
+    clock.t = t0 + 12 * M;
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f[0]!.id, a.id);
+    assert.equal(f[0]!.line, "pasta · 12:00 is up");
+    assert.equal(f[0]!.lateMs, undefined);
+    assert.equal(holds[0]!.killed, true, "the hold ends when the timer fires");
+    const snap = engine.snapshot();
+    assert.equal(snap.ringing?.kind, "timer");
+    assert.deepEqual(snap.ringing?.presses, [{ kind: "snooze", minutes: 5 }, { kind: "done" }], "timers snooze 5");
+    assert.deepEqual(events.filter((e) => e.type === "local.say"), [{ type: "local.say", sound: "Glass", automationId: a.id }]);
+    assert.equal(rows(w, "automation.missed").length, 0);
+
+    // Snooze (the timer's default, 5) holds the Mac again; Done kills that hold.
+    const snoozed = engine.automations.changeNow(a.id, "snooze");
+    assert.equal(snoozed.ok, true);
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.snoozedUntil, clock.t + 5 * M);
+    assert.deepEqual(holds.map((h) => h.argv), [["/usr/bin/caffeinate", "-t", "720"], ["/usr/bin/caffeinate", "-t", "300"]], "the snooze holds the Mac again");
+    assert.equal(holds[1]!.killed, false);
+    await engine.command({ type: "automation.done", id: a.id });
+    assert.equal(holds[1]!.killed, true, "Done kills the hold");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "done");
+
+    // Over an hour: nothing keeps the Mac awake (and nothing wakes it).
+    armed(w, engine.automations.set({ name: "long bake", when: { kind: "in", ms: 90 * M }, then: [{ kind: "chime", line: "bake is up" }], echo: "In 90 minutes, chime." }, "brain"));
+    assert.equal(holds.length, 2, "over an hour: no hold");
+    assert.equal(runs.length, 0);
+    assert.equal(rows(w, "session.started").length, 0);
+  } finally {
+    await engine.stop();
+  }
+});

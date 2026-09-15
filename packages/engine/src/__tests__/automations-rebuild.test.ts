@@ -61,7 +61,7 @@ test("rebuild: the newest journal row per id wins; a restart at nextAt + 5 min f
 
   const exec = { run: async () => ({ code: 0 }), hold: () => undefined };
   const w = world({ automations: { exec } }, { dir });
-  const { engine, clock, hands } = w;
+  const { engine, clock, hands, handsBg } = w;
   clock.t = now;
   try {
     await engine.start();
@@ -89,6 +89,24 @@ test("rebuild: the newest journal row per id wins; a restart at nextAt + 5 min f
     const problems = snap.problems.filter((p) => p.kind === "automation.missed");
     assert.equal(problems.length, 1);
     assert.deepEqual(problems[0]!.remedy, { label: "Run now", command: { type: "automation.run", id: "auto_missed" } });
+
+    // daemon-down-missed-run-now: Run now is Kevin's press — refused while nobody is at the Mac (never a question); with his
+    // hands on it the missed alarm rings now, on time, and the problem clears. Nothing here opens a session.
+    const away = await engine.automations.change("auto_missed", "run");
+    assert.equal(away.ok, false);
+    assert.match(away.text, /needs you at the Mac/);
+    assert.equal(rows<FiredRow>(w, "automation.fired").length, 1, "refused: nothing fired");
+    clock.t += 1000; // a second on: the press rings newest, so the island shows it
+    handsBg.kevinActed();
+    await engine.command({ type: "automation.run", id: "auto_missed" });
+    const rang = rows<FiredRow>(w, "automation.fired");
+    assert.equal(rang.length, 2);
+    assert.equal(rang[1]!.id, "auto_missed");
+    assert.equal(rang[1]!.lateMs, undefined, "Run now is on time");
+    assert.equal(by("auto_missed")?.state, "fired");
+    assert.equal(engine.snapshot().ringing?.id, "auto_missed");
+    assert.equal(engine.snapshot().ringing?.more, 1, "the five-minutes-late ring still waits behind it");
+    assert.equal(engine.snapshot().problems.filter((p) => p.kind === "automation.missed").length, 0, "the press clears the problem");
 
     // A row the dead daemon left `firing`: failed "the daemon restarted"; nothing acted.
     assert.equal(by("auto_firing")?.state, "failed");
