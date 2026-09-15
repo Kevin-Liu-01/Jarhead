@@ -694,8 +694,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
         // The left rail (design10): the ladder's pins, then each state staged by its fold id. `rail` is the
         // default state; `rail-expanded` opens Yesterday and Older and pins yesterday's card; `rail-agents`
-        // opens Claude Code's Ended sub-head (the ring on it), the dead Codex group and Hidden; `rail-search`
-        // is `codex` (Titles · Hits · the orphan day · Agents); `rail-keys` walks ↓ from the pinned row onto
+        // opens Claude Code's Ended sub-head (the ring on it), the dead Codex group (three over rows, no
+        // sub-head) and Hidden; `rail-search` is `codex` (`Hits n` · `Agents n` — a Titles head and an orphan
+        // day head appear only when a title matches without hits / a hit's session is off the rail, neither in
+        // this fixture); `rail-keys` walks ↓ from the pinned row onto
         // Yesterday's head and → opens it (`rail-probe:` before and after); `rail-asleep` is `rail` with
         // PREVIEW_PHASE=asleep (the .sh sets it).
         case "rail", "rail-asleep", "rail-midnight", "live", "light": defaultActions = "check-kit@0.3"

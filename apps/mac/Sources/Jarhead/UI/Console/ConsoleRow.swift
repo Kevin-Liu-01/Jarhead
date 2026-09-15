@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 // The Console's list row and what every dense list shares: `ConsoleRow` (28 one line · 40 with a
-// meta line · +16 per extra title line · 44 on the agents rail), `ConsoleGroupHead` (22, sticky),
+// meta line · +16 per extra title line · 44 on the agents rail while a figure ticks, 28 otherwise), `ConsoleGroupHead` (22, sticky),
 // `ConsoleRowOverflow` (the ⋯ drawn at rest — nothing is revealed under the pointer),
 // `ConsoleFocusRing` (the keyboard's one ring), `ConsoleListKeys` + `ConsoleListFocus` (↑↓ ⏎ → ←
 // Esc and type-ahead over a list's ids) and `ConsoleListModel` (pure: heights, stepping,

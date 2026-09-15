@@ -1,37 +1,42 @@
 import SwiftUI
 import AppKit
 
-// Left rail, two sections. **Jarhead** first — its own conversations: a "Now" row
-// (the live or paused session: elapsed · billed, or "paused · meter stopped";
-// "asleep" when there is none), then past conversations newest first under day
-// heads, one 44pt row per conversation — the Jarhead mark, the first thing Kevin
-// said (or the name he gave it) with the started clock as its right-hand stamp, and
-// one mono meta line: duration · billed · messages. A resume chain (`resumedFrom`
-// links) folds into one row with a "resumed ×n" badge beside the stamp. Pinned
-// conversations float above the days under a "Pinned" head with a solid pin glyph;
-// archived and trashed ones leave the days for two folded groups at the bottom,
-// "Archived (n)" and "Trash (n)", each row with Restore — never a Delete or an Empty:
-// the Trash head's folder reveals it in Finder, and emptying it is Kevin's, there.
-// Every row has a context menu and a ⋯ drawn at rest (the same `[ConsoleVerb]`): Rename (inline;
-// Return commits, Esc cancels, "" is back to the auto title), Pin, Archive, Move to Trash;
-// ⌘-click and ⇧-click select several and a strip under the head offers Archive ·
-// Move to Trash · Restore for all of them. The Now row's menu has New conversation
-// and Clear. Every action is undoable (the toast under the header, Edit › Undo).
-// The head holds the search (⌘F): hits from the ledger grouped by conversation (`k of n` in the
-// field, a type badge on every hit), each opening it scrolled to the row; ↑↓ walk the hits and
-// Return opens the focused one; an empty box is the rail again. Day heads are sticky
-// `ConsoleGroupHead`s; Archived, Trash and Hidden are `ConsoleDisclosure`s whose folded head says
-// what is inside; every list row takes `ConsoleListKeys` (↑↓ ⏎ → ← Esc, the keyboard's one ring).
-// Then **Agents**: sessions grouped by the tool that owns them (Claude Code, Codex,
-// Cursor…). A group is a `ConsoleDisclosure` (24pt head: the tool's name, a count, and while
-// folded the one exceptional word — the `[1 asks]` badge — with the resting count) and 44pt rows: the
-// mark on the icon column, the name with its status as a word in the trailing zone (a badge
-// only when it asks), and one mono meta line — project · messages · age. Hide takes a row
-// out of its group into a folded "Hidden (n)" at the end (never a file operation —
-// those tools own their stores). Groups are separated by a gap, never a rule; the
-// two sections by one rule and a head. A down connector keeps a head of its own so
-// its reason shows. Clicking a row steps into that conversation in the stream; the
-// selected row carries the accent bar. Now is the selection when nothing is stepped into.
+// Left rail, two sections on one ladder (design10): blue means alive, grey means over, dim means old,
+// a second line means a clock is still running. **Jarhead** first — its own conversations: a "Now" row
+// (the live or paused session: elapsed · billed, or "paused · meter stopped"; "asleep" when there is
+// none, its orb grey), then past conversations newest first under sticky folding `ConsoleGroupHead`s —
+// Today open, `› Yesterday n · Σ billed` closed, every earlier day inside one closed `› Older n · since …`
+// head (its days pin as they scroll once it opens). Each conversation is one 28pt row: the Jarhead mark
+// in the row's tone (`RailTone`: bright 1.0 while it ran today, quiet 0.72 with a grey orb once it is
+// over, back 0.48 for the crash litter and the archived / trashed), the first thing Kevin said (or the
+// name he gave it), a `×n` mono badge when a resume chain (`resumedFrom` links) folded into it, and the
+// started clock as its right-hand stamp; duration · billed · messages moved into the row's card
+// (`ran · started · sessions`), with `Pinned` as the card's status. Pinned conversations float above
+// the days under a "Pinned" head that never folds and carries no glyph; archived and trashed ones leave
+// the days for two folded `ConsoleDisclosure`s at the bottom, `Archived n · Σ billed` and `Trash n`, each
+// row with Restore — never a Delete or an Empty: the Trash head's folder reveals it in Finder, and
+// emptying it is Kevin's, there. Every row has a context menu and a ⋯ drawn at rest (the same
+// `[ConsoleVerb]`): Rename (inline; Return commits, Esc cancels, "" is back to the auto title), Pin,
+// Archive, Move to Trash; ⌘-click and ⇧-click select several and a strip under the head offers Archive ·
+// Move to Trash · Restore for all of them. The Now row's menu has New conversation and Clear. Every
+// action is undoable (the toast under the header, Edit › Undo). The head holds the search (⌘F): folds
+// are suspended, not changed — `Hits n` over each hit's row (a type badge on every hit), `Agents n` for
+// the sessions the query names, `k of n` in the field counting the rail's conversations; ↑↓ walk the
+// results and Return opens the focused one; Esc is the rail again, exactly. Every list row takes
+// `ConsoleListKeys` (↑↓ ⏎ → ← Esc, the keyboard's one ring; ← on a row rings its head; ⌥-click folds a
+// head's siblings by tier).
+// Then **Agents**, the same ladder: sessions grouped by the tool that owns them (Claude Code, Codex,
+// Cursor…). A group is a `ConsoleDisclosure` (24pt head: the tool's name, a count, and while folded the
+// one exceptional word — the `[1 asks]` badge — then the resting item, `2 working` · `3 idle` ·
+// `ended · 40m`), open by default iff a row of its asks or works. A row is 44 while it asks or works
+// (`[asks]` or the working dot + word, one mono meta line `project · age`) and 28 otherwise (`idle · 31m`
+// at 0.72, or the one word on a titanium mark at 0.48 once the process is gone); the over rows fold
+// under `› Ended n · newest age` beneath the live ones, or list directly when nothing is alive. Hide
+// takes a row out of its group into a folded "Hidden n" at the end, where it is 28 with the word alone
+// and `Unhide` (never a file operation — those tools own their stores). Groups are separated by a gap,
+// never a rule; the two sections by one rule and a head. A down connector keeps a head of its own so
+// its reason shows. Clicking a row steps into that conversation in the stream; the selected row carries
+// the accent bar. Now is the selection when nothing is stepped into.
 
 private let railInset: CGFloat = 12
 private let iconGap: CGFloat = 8

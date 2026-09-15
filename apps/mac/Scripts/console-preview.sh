@@ -18,10 +18,12 @@
 #   `1 idle`, Amp open. `rail-expanded` opens Yesterday (two grey rows, `—` last at 0.48) and Older (its sticky
 #   day heads) and pins yesterday's card (`ran · started`; `probe-floats:` names `rail.chain.<id>`). `rail-asleep`
 #   is the same asleep (PREVIEW_PHASE=asleep: the Now orb grey, today's rows bright, the header's mark blue).
-#   `rail-agents` (asleep) opens Claude Code's `Ended` (the ring on it), the dead Codex group (four over rows,
+#   `rail-agents` (asleep) opens Claude Code's `Ended` (the ring on it), the dead Codex group (three over rows,
 #   no sub-head) and Hidden (Unhide at full on a 0.48 row), the rail scrolled to the agents. `rail-search` is
-#   `codex`: `Titles n` · `Hits n` · an orphan day head · `Agents n`, every result at 1.0 with its tint
-#   (`rail-probe:` lists the walk). `rail-keys` rings the pinned row, ↓↓↓ onto Yesterday's head, → opens it
+#   `codex`: `Hits n` · `Agents n` (a Titles head and an orphan day head appear only when a title matches
+#   without hits / a hit's session is off the rail — not in this fixture), every result at 1.0 with its tint,
+#   the hidden agent the query names among them with its Unhide (`rail-probe:` lists the walk). `rail-keys`
+#   rings the pinned row, ↓↓↓ onto Yesterday's head, → opens it
 #   (`rail-probe:` before and after: two more ids). `rail-midnight` is reserved (PREVIEW_NOW is not built).
 #   Every one runs `check-kit@0.3` (the ladder's pins in checkKitLeftRail) and ends `check: all ok (kit)`.
 #   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
