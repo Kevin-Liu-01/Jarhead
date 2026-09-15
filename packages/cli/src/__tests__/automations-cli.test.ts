@@ -119,12 +119,14 @@ test("parseClockAutomation: the three ladder phrases become drafts with a name, 
   assert.deepEqual(alarm, {
     name: "Wake up",
     when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "07:10" }, phrase: "weekdays 07:10" },
+    whenPhrase: "at 7:10 weekdays", // the wire carries Kevin's words; the engine's parseWhen is the one grammar
     then: [{ kind: "chime", line: "Wake up" }],
     clauses: { quiet: "override" },
     echo: 'Weekdays 07:10, ring "Wake up".',
   });
   const timer = parseClockAutomation("in 12m chime pasta", NOW) as AutomationDraft;
   assert.deepEqual(timer.when, { kind: "in", ms: 12 * 60_000 });
+  assert.equal(timer.whenPhrase, "in 12m");
   assert.deepEqual(timer.then, [{ kind: "chime", line: "pasta" }]);
   assert.equal(timer.name, "pasta");
   assert.deepEqual(timer.clauses, { quiet: "respect" }, "a timer is not an alarm (automationKind): only alarms ring through quiet hours");
