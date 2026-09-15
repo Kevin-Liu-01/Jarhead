@@ -178,9 +178,9 @@ struct ConsoleRow: View {
         return []
     }
 
-    /// The 20 pt zone the ⋯ or the verb overlay takes; the ghost verb's width beside it.
+    /// The 20 pt zone the ⋯ or the verb overlay takes; the ghost verb's width beside it (`Resume` needs 58.7 pt).
     static let overflowWidth: CGFloat = 20
-    static let verbWidth: CGFloat = 58
+    static let verbWidth: CGFloat = 60
 
     var minHeight: CGFloat { ConsoleListModel.height(lines: lines, meta: meta != nil || meter != nil, rail: rail) }
 
@@ -252,7 +252,8 @@ struct ConsoleRowLabel: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(minHeight: 20)
                     if let badge = row.badge { ConsoleBadge(word: badge, width: row.badgeWidth).frame(height: 20) }
-                    Spacer(minLength: 4)
+                    // The stack's 6 pt gaps read as 3 on the Spacer's two sides: `call mum [snoozed] 15:10 [Skip]` fits at 296.
+                    Spacer(minLength: 4).padding(.horizontal, -3)
                     if let value = row.value {
                         Text(value).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1).frame(height: 20)
                     }
