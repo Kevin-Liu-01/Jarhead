@@ -228,6 +228,9 @@ export class AutomationExecutor {
   // ------------------------------------------------------------- actions
 
   private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined): Promise<StepOutcome> {
+    // The Settings › While asleep chip is a kill switch per kind: judged at set-up AND here, so a chip turned off after a row
+    // was armed stops that row's action at its next fire (a failed row with the reason; repeaters re-arm and say so).
+    if (!this.opts.settings().automations.unattended.includes(action.kind)) return { ok: false, detail: `${action.kind} is off in Settings › Automations › While asleep` };
     switch (action.kind) {
       case "chime":
         return this.chime(action, ctx, kind, what, nextAt);

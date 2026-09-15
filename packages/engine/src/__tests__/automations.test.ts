@@ -895,3 +895,39 @@ test("open-path-never-executes: an open of an executable file (no extension, mod
     await engine.stop();
   }
 });
+
+// the While asleep chips are a kill switch at fire, not only at set-up
+test("chip-off-at-fire: a run-recipe row armed with the chip on fails at fire once the chip is off ('run-recipe is off in Settings › Automations › While asleep'), the shell never runs and the repeater re-arms with the reason; the chip back on, the next fire runs", async () => {
+  const { exec } = fakeExec();
+  const sh = fakeShell();
+  const w = world({ automations: { exec, shell: sh.shell } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    const recipes = [{ name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t }];
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes });
+    const anchor = clock.t;
+    const a = armed(w, engine.automations.arm({ name: "tidy hourly", when: { kind: "every", every: { kind: "interval", everyMs: H, anchorAt: anchor }, phrase: "every 1 h" }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Every hour, run recipe tidy." }, "brain", true));
+    automations(w, { unattended: DEFAULT_AUTOMATIONS.unattended, recipes });
+    clock.t += H;
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f[0]!.ok, false);
+    assert.equal(f[0]!.detail, "run-recipe is off in Settings › Automations › While asleep");
+    assert.equal(sh.calls.length, 0, "the shell never ran");
+    let row = engine.snapshot().automations.find((x) => x.id === a.id)!;
+    assert.equal(row.state, "armed", "a repeater re-arms");
+    assert.equal(row.nextAt, anchor + 2 * H);
+    assert.equal(row.lastDetail, "run-recipe is off in Settings › Automations › While asleep");
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes });
+    clock.t += H;
+    tick(engine);
+    const g = await fired(w, 2);
+    assert.equal(g[1]!.ok, true, g[1]!.detail);
+    assert.deepEqual(sh.calls, ["echo tidy"]);
+    row = engine.snapshot().automations.find((x) => x.id === a.id)!;
+    assert.equal(row.state, "armed");
+  } finally {
+    await engine.stop();
+  }
+});
