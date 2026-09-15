@@ -83,7 +83,7 @@ export interface WakeBrainLane {
 export interface WakeBrainSeam {
   /** `brain.warmUp()` when it cooled at sleep (a local model reloads its weights — the cost line's "warm-up"). */
   warmUp(): Promise<void>;
-  /** `pool.warm()` then `take()`: one spare on the background lane, its boot awaited; undefined when no brain can run a thread. */
+  /** The thread pool opened and one spare taken on the background lane, its boot awaited; undefined when no brain can run a thread. */
   lane(): Promise<WakeBrainLane | undefined>;
   /** `pool.stopAll()`: asleep again, nothing boots behind Jarhead's back. */
   after(): Promise<void>;

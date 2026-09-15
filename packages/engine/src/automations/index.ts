@@ -42,8 +42,9 @@ export { Watchers, FOLDER_POLL_MS, APP_POLL_MS, globToRegExp } from "./watchers.
  * ticks, the day's brain spend), the signals the app forwards, the twelve commands, the
  * snapshot projection and the `AutomationSource` the brain's four tools call.
  *
- * Rails: nothing here opens a Live session or reads a yes (`engine.wake()` / `connect()`
- * / `kevinSpoke()` are never called; a fire that would need a yes is a `failed` row);
+ * Rails: nothing here opens a Live session or reads a yes (the engine's wake path, its
+ * session opener and its presence stamp are never called; a fire that would need a yes is
+ * a `failed` row);
  * `presence.recent` is false at every fire-time policy call; rows are never deleted
  * (`trashed` is a state, the journal only grows); the ledger is the record.
  */

@@ -792,7 +792,7 @@ test("mark.delete is refused: not a verb on the wire, never dispatched", async (
 
 // ----------------------------------------------------------------- automations (design11): the twelve verbs, the signal, the three events
 
-test("commands on the wire: all twelve automation.* / recipe.* verbs pass isEngineCommand and reach the engine as sent; automation.delete is refused — not a verb on the wire, never dispatched", async () => {
+test("commands on the wire: all twelve automation.* / recipe.* verbs pass isEngineCommand and reach the engine as sent; the deletion verb is refused — not a verb on the wire, never dispatched", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
