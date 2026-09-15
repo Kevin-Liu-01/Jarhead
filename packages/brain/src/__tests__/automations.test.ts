@@ -121,7 +121,7 @@ test("a free kind arms at once: the draft carries the parsed when, the alarm's q
   assert.equal(source.sets.length, 1);
   const { draft, ctx } = source.sets[0]!;
   assert.equal(draft.name, "Wake up");
-  assert.equal(draft.when.kind, "every");
+  assert.equal(draft.when?.kind, "every", "the tool hands the engine a parsed when, never a phrase");
   assert.deepEqual(draft.then, [{ kind: "chime", line: "Wake up, Kevin", sound: "Hero" }]);
   assert.equal(draft.clauses.quiet, "override", "an alarm rings through quiet hours by default");
   assert.equal(draft.echo, ALARM.echo);

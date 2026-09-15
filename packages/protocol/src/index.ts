@@ -633,8 +633,18 @@ export const DEFAULT_AUTOMATIONS: AutomationSettings = {
   openAtLogin: false,
 };
 
-/** A row as the Console form or the CLI sends it; the engine fills id, state, fires, missed, the stamps and createdBy. */
-export type AutomationDraft = Omit<Automation, "id" | "state" | "fires" | "missed" | "createdAt" | "updatedAt" | "createdBy" | "confirmed"> & { readonly id?: string };
+/**
+ * A row as the brain's tool, the Console form or the CLI sends it; the engine fills id, state, fires,
+ * missed, the stamps and createdBy. When it fires is either `when` (already normalised) or
+ * `whenPhrase` — Kevin's clock words ("7:10", "tomorrow 07:10", "in 12 minutes", "weekdays 09:00",
+ * "every 2 h"), parsed by the ENGINE with core's `parseWhen`, the one grammar; a phrase it does not
+ * catch is refused with parseWhen's own words. One of the two is required; `when` wins when both ride.
+ */
+export type AutomationDraft = Omit<Automation, "id" | "state" | "fires" | "missed" | "createdAt" | "updatedAt" | "createdBy" | "confirmed" | "when"> & {
+  readonly id?: string;
+  readonly when?: AutomationWhen;
+  readonly whenPhrase?: string;
+};
 
 // --------------------------------------------------------------- settings ---
 

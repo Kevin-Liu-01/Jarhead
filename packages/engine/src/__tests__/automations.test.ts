@@ -711,7 +711,7 @@ test("trash-restore-journal-grows: Move to Trash moves the row into the snapshot
     assert.ok((back.nextAt ?? 0) > clock.t, "a fresh nextAt");
     assert.equal(back.lastDetail, "restored");
     assert.ok(lines().length >= 5, "every change is a line; none was rewritten");
-    assert.equal(readdirSync(join(engine.config.stateDir, "automations")).length, 1, "one journal, nothing unlinked");
+    assert.deepEqual(readdirSync(join(engine.config.stateDir, "automations")).filter((f) => f.endsWith(".ndjson")), ["jobs.ndjson"], "one journal, nothing unlinked (the alive heartbeat sits beside it)");
   } finally {
     await engine.stop();
   }
@@ -1359,6 +1359,38 @@ test("fired-row-when-trashed-mid-run: a recipe that is still running when Kevin 
     assert.equal(paused.nextAt, undefined, "paused rows wait; nothing is in the heap for it");
   } finally {
     release?.();
+    await engine.stop();
+  }
+});
+
+// one `when` grammar: the wire may send Kevin's phrase and the engine parses it with core's parseWhen
+test("when-phrase-on-the-wire: automation.set with whenPhrase 'in 12 minutes' arms a timer parsed by the engine (nextAt = now + 12 min); 'tonight at seven' arms 19:00; a phrase the grammar does not catch is refused with parseWhen's own words as a toast, nothing armed; `when` wins when both ride", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, events } = w;
+  clock.t = new Date(2026, 8, 14, 9, 0, 0).getTime();
+  try {
+    await engine.start();
+    await engine.command({ type: "automation.set", automation: { name: "pasta", whenPhrase: "in 12 minutes", then: [{ kind: "chime", line: "pasta" }], clauses: { quiet: "override" }, echo: "In 12 minutes, chime pasta." }, by: "console" });
+    const pasta = engine.snapshot().automations.find((a) => a.name === "pasta")!;
+    assert.ok(pasta, "armed from the phrase");
+    assert.deepEqual(pasta.when, { kind: "in", ms: 12 * M });
+    assert.equal(pasta.nextAt, clock.t + 12 * M);
+    await engine.command({ type: "automation.set", automation: { name: "call mum", whenPhrase: "tonight at seven", then: [{ kind: "say", line: "call mum" }], clauses: { quiet: "respect" }, echo: "Tonight at seven, say call mum." } });
+    assert.equal(engine.snapshot().automations.find((a) => a.name === "call mum")?.nextAt, new Date(2026, 8, 14, 19, 0, 0).getTime());
+    events.length = 0;
+    await engine.command({ type: "automation.set", automation: { name: "whenever", whenPhrase: "whenever", then: [{ kind: "chime", line: "x" }], clauses: { quiet: "override" }, echo: "Whenever." }, by: "cli" });
+    assert.equal(engine.snapshot().automations.some((a) => a.name === "whenever"), false, "nothing armed");
+    const toast = events.find((e) => e.type === "toast");
+    assert.ok(toast && toast.type === "toast");
+    assert.equal(toast.tone, "warn");
+    assert.equal(toast.text, 'not armed: didn\'t catch "whenever" in "whenever"', "parseWhen's words, verbatim");
+    await engine.command({ type: "automation.set", automation: { name: "both", when: { kind: "at", at: clock.t + H }, whenPhrase: "in 5 minutes", then: [{ kind: "chime", line: "both" }], clauses: { quiet: "override" }, echo: "Both." } });
+    assert.equal(engine.snapshot().automations.find((a) => a.name === "both")?.nextAt, clock.t + H, "a normalised when wins over the phrase");
+    events.length = 0;
+    await engine.command({ type: "automation.set", automation: { name: "neither", then: [{ kind: "chime", line: "x" }], clauses: { quiet: "override" }, echo: "Neither." } as never });
+    assert.match((events.find((e) => e.type === "toast") as { text: string }).text, /^not armed: say when it fires/);
+  } finally {
     await engine.stop();
   }
 });

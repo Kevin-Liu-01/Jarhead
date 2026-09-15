@@ -1,5 +1,7 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { classifyAction, classifyAutomation, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
+import { dirname, join } from "node:path";
+import { classifyAction, classifyAutomation, clockOf, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, parseWhen, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
 import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
@@ -16,6 +18,7 @@ import {
   type AutomationDraft,
   type AutomationKind,
   type AutomationState,
+  type AutomationWhen,
   type EngineCommand,
   type EngineEvent,
   type MissedWhy,
@@ -622,13 +625,13 @@ export class Automations implements AutomationSource {
     }
     if (judged.verdict === "confirm" && !confirmed) return { kind: "confirm", question: judged.reason };
     const id = draft.id && typeof draft.id === "string" && !this.table.get(draft.id) ? draft.id : newId("auto");
-    const nextAt = nextFire(draft.when, now, now);
-    if (draft.when.kind !== "on" && nextAt === undefined) return { kind: "refused", reason: `${describe(draft.when)} is already past; say a time ahead` };
-    const echo = cut(this.opts.redact(String(draft.echo ?? "").replace(/\s+/g, " ").trim() || `${describe(draft.when)}: ${then.map((x) => x.kind).join(", ")}`), AUTOMATION_ECHO_CHARS);
+    const nextAt = nextFire(when, now, now);
+    if (when.kind !== "on" && nextAt === undefined) return { kind: "refused", reason: `${describe(when)} is already past; say a time ahead` };
+    const echo = cut(this.opts.redact(String(draft.echo ?? "").replace(/\s+/g, " ").trim() || `${describe(when)}: ${then.map((x) => x.kind).join(", ")}`), AUTOMATION_ECHO_CHARS);
     const a: Automation = {
       id,
       name,
-      when: draft.when,
+      when,
       then,
       clauses,
       echo,
@@ -644,7 +647,7 @@ export class Automations implements AutomationSource {
     // A recipe the brain handed in with the row is Kevin's once he said yes: the ENGINE writes it to settings (a tool never does).
     // It belongs to the run-recipe action, or to a recipe.red trigger naming a recipe not yet approved (the gate asked for both).
     const recipeAction = then.find((x) => x.kind === "run-recipe");
-    const recipeName = recipeAction?.kind === "run-recipe" ? recipeAction.recipe : draft.when.kind === "on" && draft.when.on.kind === "recipe.red" ? draft.when.on.recipe : undefined;
+    const recipeName = recipeAction?.kind === "run-recipe" ? recipeAction.recipe : when.kind === "on" && when.on.kind === "recipe.red" ? when.on.recipe : undefined;
     if (draft.recipeCommand && recipeName) this.saveRecipe(recipeName, draft.recipeCommand, by === "brain" ? "brain" : "kevin", now);
     let watchNote = "";
     if (a.when.kind === "on") {
@@ -1035,12 +1038,12 @@ function mutRecipe(r: ShellRecipe): ShellRecipe {
   return rest;
 }
 
-function whyWords(why: MissedWhy, sleptAt: number | undefined): string {
+function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: number): string {
   switch (why) {
     case "mac-slept":
       return sleptAt !== undefined ? `the Mac slept from ${describeInstant(sleptAt).slice(0, 5)}` : "the Mac slept";
     case "daemon-down":
-      return "Jarhead was off";
+      return downSince !== undefined ? `Jarhead was off from ${clockOf(downSince)}` : "Jarhead was off";
     case "quiet-hours":
       return "quiet hours";
     case "budget":
