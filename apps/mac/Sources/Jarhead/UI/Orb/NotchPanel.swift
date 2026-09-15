@@ -3292,10 +3292,18 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                      from: .zero, operation: .sourceOver, fraction: base, respectFlipped: true, hints: nil)
         }
         let y = z.foot.minY + 6 + a.dy
-        Self.drawShadowed("asleep" as NSString, in: NSRect(x: z.foot.minX + 18, y: y, width: max(0, z.bar.minX - 2 - (z.foot.minX + 18)), height: 16), Self.threadAttrs, shadow: Self.threadShadow)
+        // `asleep` is wider than the meter's 40 pt slot with the moon before it: the word runs on and the bar's
+        // track (empty asleep) starts after it — the zones hold, the track is what gives.
+        let word = "asleep" as NSString
+        let wordX = z.foot.minX + 18
+        let wordW = min(Self.textWidth(word, Self.threadAttrs) + 2, max(0, z.bar.maxX - 8 - wordX))
+        Self.drawShadowed(word, in: NSRect(x: wordX, y: y, width: wordW, height: 16), Self.threadAttrs, shadow: Self.threadShadow)
         Self.drawShadowed(Self.noticeText(n) as NSString, in: z.footRight.offsetBy(dx: 0, dy: a.dy), Self.threadAttrs, shadow: Self.threadShadow)
         cg.restoreGState()
-        drawBar(cg, rect: z.bar.offsetBy(dx: 0, dy: a.dy), fraction: 0, alpha: base)
+        let trackX = max(z.bar.minX, wordX + wordW + 6)
+        if z.bar.maxX - trackX >= 12 {
+            drawBar(cg, rect: NSRect(x: trackX, y: z.bar.minY + a.dy, width: z.bar.maxX - trackX, height: z.bar.height), fraction: 0, alpha: base)
+        }
     }
 
     /// "next Timer 12:00 · pasta" — the timer's clock counts down; every other kind names its fire time.
