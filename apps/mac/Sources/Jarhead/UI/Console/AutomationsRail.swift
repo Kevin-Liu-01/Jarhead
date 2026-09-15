@@ -123,8 +123,10 @@ enum AutomationWords {
     static let weekdays: [String] = ["mon", "tue", "wed", "thu", "fri"]
     static let weekend: [String] = ["sat", "sun"]
     static let everyDay: [String] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    static func trashedRecipe(_ day: String) -> String { "trashed \(day)" }
     // ids (fold · tips · fields)
     static let trashFold = "now.automations.trash"
+    static let recipeTrashFold = "settings.recipes.trash"
     static let ringTip = "now.ring"
     static let addId = "now.automations.add"
     static let whenId = "now.automations.when"
@@ -339,12 +341,19 @@ enum AutomationFormat {
         return (head, String(line[range.upperBound...]))
     }
 
-    /// A recipe's line 2: `~/bin/backup.sh · 120 s · approved Sep 12`.
+    /// A recipe's line 2: `~/bin/backup.sh · 120 s · approved Sep 12`; in the Trash, `~/bin/backup.sh · trashed Sep 14`.
     static func recipeMeta(_ r: ShellRecipe, home: String = NSHomeDirectory()) -> String {
         var command = r.command
         if command.hasPrefix(home) { command = "~" + command.dropFirst(home.count) }
-        let day = Date(timeIntervalSince1970: r.approvedAt / 1000).formatted(.dateTime.month(.abbreviated).day())
-        return [command, "\(Int(r.timeoutSeconds))" + AutomationWords.seconds, AutomationWords.approved(day)].joined(separator: AutomationWords.dot)
+        if let trashedAt = r.trashedAt {
+            return [command, AutomationWords.trashedRecipe(dayWord(trashedAt))].joined(separator: AutomationWords.dot)
+        }
+        return [command, "\(Int(r.timeoutSeconds))" + AutomationWords.seconds, AutomationWords.approved(dayWord(r.approvedAt))].joined(separator: AutomationWords.dot)
+    }
+
+    /// `Sep 12` — the day a stamp fell on.
+    static func dayWord(_ at: Double) -> String {
+        Date(timeIntervalSince1970: at / 1000).formatted(.dateTime.month(.abbreviated).day())
     }
 
     /// The clock the section's head and the fold's summary say: the earliest armed clock row.
@@ -971,25 +980,43 @@ struct RecipesList: View {
     @Binding var form: RecipeFormState?
 
     @Environment(\.consoleActions) private var actions
+    @State private var trashOpen = false
 
     private var asks: Set<String> { Set(asking) }
+    /// The rows: live recipes above, the Trash fold under them (a trashed recipe is never a pick, never a target).
+    private var live: [ShellRecipe] { recipes.filter { !$0.isTrashed } }
+    private var trashed: [ShellRecipe] { recipes.filter(\.isTrashed) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ConsoleGroupHead(title: AutomationWords.recipes, count: recipes.isEmpty ? nil : "\(recipes.count)", figure: AutomationWords.recipesFigure)
+            ConsoleGroupHead(title: AutomationWords.recipes, count: live.isEmpty ? nil : "\(live.count)", figure: AutomationWords.recipesFigure)
                 .padding(.horizontal, -12)
                 .padding(.top, 6)
             if let form { RecipeForm(state: form, save: save).transition(Motion.appear) }
-            ForEach(recipes) { r in
+            ForEach(live) { r in
                 RecipeRow(recipe: r, asks: asks.contains(r.name), edit: { self.form = RecipeFormState(editing: r.name, name: r.name, command: r.command) },
                           trash: { actions.send(.recipeTrash(name: r.name)) })
                     .padding(.horizontal, -12)
                     .transition(Motion.appear)
             }
-            if recipes.contains(where: { asks.contains($0.name) }) { ConsoleHint(AutomationWords.asksHint).padding(.top, 4) }
+            if live.contains(where: { asks.contains($0.name) }) { ConsoleHint(AutomationWords.asksHint).padding(.top, 4) }
+            if !trashed.isEmpty { trashFold.padding(.horizontal, -12).padding(.top, 4) }
         }
-        .animation(Motion.gentle, value: recipes.map(\.name))
+        .animation(Motion.gentle, value: recipes.map { $0.name + ($0.isTrashed ? "†" : "") })
         .animation(Motion.snappy, value: form)
+    }
+
+    /// `› Trash 1 · Restore in the row` — `.group`; the rows sit back with Restore as the verb, sending `recipe.restore`.
+    private var trashFold: some View {
+        ConsoleDisclosure(id: AutomationWords.recipeTrashFold, title: AutomationWords.trash, count: "\(trashed.count)",
+                          summary: [.words(AutomationWords.restoreInRow)], size: .group, open: $trashOpen) {
+            VStack(spacing: 0) {
+                ForEach(trashed) { r in
+                    RecipeRow(recipe: r, asks: false, edit: {}, trash: {}, restore: { actions.send(.recipeRestore(name: r.name)) })
+                        .transition(Motion.appear)
+                }
+            }
+        }
     }
 
     /// Save is the yes: `recipe.set` with Kevin's press as `approvedAt`; a rename trashes the old name first.
@@ -1004,13 +1031,25 @@ struct RecipesList: View {
 }
 
 /// `⌨ backup [Edit] ⋯` with `~/bin/backup.sh · 120 s · approved Sep 12` under it; `asks` amber sits back 0.62.
+/// In the Trash the row sits back with Restore as its one verb and no ⋯ (nothing to edit, nothing to pick).
 struct RecipeRow: View {
     let recipe: ShellRecipe
     let asks: Bool
     let edit: () -> Void
     let trash: () -> Void
+    var restore: (() -> Void)? = nil
 
     var body: some View {
+        if let restore, recipe.isTrashed {
+            ConsoleRow(title: recipe.name, icon: .glyph("terminal.fill", tint: ConsoleTheme.titanium), meta: AutomationFormat.recipeMeta(recipe),
+                       trailing: ConsoleRow.Trailing.none, verb: ConsoleRowVerb(title: AutomationWords.restore, help: HelpCopy.restoreTrash.hint, run: restore),
+                       mono: true, sitsBack: true, id: AutomationWords.recipeTip(recipe.name), primary: restore)
+        } else {
+            liveRow
+        }
+    }
+
+    private var liveRow: some View {
         ConsoleRow(title: recipe.name, icon: .glyph("terminal.fill", tint: ConsoleTheme.titanium), badge: asks ? .asks : nil,
                    meta: AutomationFormat.recipeMeta(recipe),
                    trailing: .ellipsis([ConsoleVerb(id: "edit", title: AutomationWords.edit, run: edit),

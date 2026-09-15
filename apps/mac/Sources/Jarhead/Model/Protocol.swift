@@ -1082,21 +1082,26 @@ public struct AutomationEvent: Codable, Equatable {
     public var remainingMs: Double?
 }
 
+/// A recipe is never deleted: `recipe.trash` stamps `trashedAt` (hidden from pickers, refused as a
+/// target, listed under Trash with Restore); `recipe.restore` clears it.
 public struct ShellRecipe: Codable, Equatable, Identifiable {
     public var name: String
     public var command: String
     public var cwd: String?
     public var timeoutSeconds: Double
     public var approvedAt: Double
+    public var trashedAt: Double?
     public var id: String { name }
+    public var isTrashed: Bool { trashedAt != nil }
 
-    public init(name: String, command: String, cwd: String?, timeoutSeconds: Double, approvedAt: Double) {
-        self.name = name; self.command = command; self.cwd = cwd; self.timeoutSeconds = timeoutSeconds; self.approvedAt = approvedAt
+    public init(name: String, command: String, cwd: String?, timeoutSeconds: Double, approvedAt: Double, trashedAt: Double? = nil) {
+        self.name = name; self.command = command; self.cwd = cwd; self.timeoutSeconds = timeoutSeconds; self.approvedAt = approvedAt; self.trashedAt = trashedAt
     }
 
     public var json: [String: Any] {
         var o: [String: Any] = ["name": name, "command": command, "timeoutSeconds": timeoutSeconds, "approvedAt": approvedAt]
         if let cwd { o["cwd"] = cwd }
+        if let trashedAt { o["trashedAt"] = trashedAt }
         return o
     }
 }
@@ -1321,6 +1326,7 @@ public enum EngineCommand: Equatable {
     case automationRun(id: String)
     case recipeSet(ShellRecipe)
     case recipeTrash(name: String)
+    case recipeRestore(name: String)
 
     public var json: [String: Any] {
         switch self {
@@ -1410,6 +1416,7 @@ public enum EngineCommand: Equatable {
         case .automationRun(let id): return ["type": "automation.run", "id": id]
         case .recipeSet(let recipe): return ["type": "recipe.set", "recipe": recipe.json]
         case .recipeTrash(let name): return ["type": "recipe.trash", "name": name]
+        case .recipeRestore(let name): return ["type": "recipe.restore", "name": name]
         }
     }
 }

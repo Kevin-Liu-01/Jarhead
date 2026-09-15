@@ -303,6 +303,8 @@ extension ConsoleFormat {
             return ("terminal.fill", "recipe", "recipe “\(r.name)” saved", truncPath(r.command, max: 40), row.by == "brain" ? "approved by voice" : nil)
         case "recipe.trashed":
             return ("trash.fill", "recipe", "recipe “\(row.name ?? "")” moved to Trash", nil, nil)
+        case "recipe.restored":
+            return ("arrow.uturn.backward", "recipe", "recipe “\(row.name ?? "")” back from the Trash", nil, nil)
         case "sleep":
             return ("moon.zzz.fill", "sleep", SleepCauseFormat.line(row.sleepCause ?? "command"), row.sessionId.map { shortId($0) }, row.quotedPhrase)
         case "thread.started":

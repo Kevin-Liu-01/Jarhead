@@ -57,8 +57,9 @@
 #   tab (it sits under the tabs on every tab) with its card pinned, then `ringing:off` / `ringing:<id>`
 #   (run.log's `probe-ring:` lines say nil, then the id). `settings-automations` is Settings › Automations
 #   (`automationsFold`): the On|Off switch, the eight chips (the run tier outlined), quiet hours 23:00 → 07:00,
-#   Snooze 10 min, Brain minutes 5 /day, Recipes 3 with vpn-up wearing `asks` (the `recipesAsks:<names>` key),
-#   Open at login. The harness keys: `ringing:<id|off>`, `recipesAsks:<a,b>`, `automationsFold`, `probe-ring`.
+#   Snooze 10 min, Brain minutes 5 /day, Recipes 3 with vpn-up wearing `asks` (the `recipesAsks:<names>` key) and
+#   the Trash fold open on old-sync with Restore (a recipe is never deleted), Open at login. The harness keys:
+#   `ringing:<id|off>`, `recipesAsks:<a,b>`, `automationsFold`, `probe-ring`.
 #   check-kit pins the four badge words, AutomationWords, the summary, ConsoleFormat.clock / countdown, a row's
 #   line per kind, the card's spoken form, the ring split, the recipe meta and the Add… parser (check-automations).
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up

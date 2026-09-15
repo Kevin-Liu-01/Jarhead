@@ -136,7 +136,8 @@ import SwiftUI
 //     automations-ring = the ring row on the Ledger tab with its card pinned; `ringing:off` then
 //                    `ringing:<id>` (the `probe-ring:` lines say nil, then the id).
 //     settings-automations = Settings › Automations (`automationsFold`): the switch, the eight chips, quiet
-//                    hours, Snooze, Brain minutes, Recipes 3 (vpn-up `asks` via `recipesAsks:`), Open at login.
+//                    hours, Snooze, Brain minutes, Recipes 3 (vpn-up `asks` via `recipesAsks:`) with the Trash fold
+//                    open on old-sync (Restore), Open at login.
 //                    Keys: `ringing:<id|off>` · `recipesAsks:<a,b>` · `automationsFold` · `probe-ring`.
 //     memory-chips = the kit's memory rail (Builder C): the filter with `2 of 7`, the kind chips with
 //                    counts, `chip:fact` → the two fact rows (badge · meter · ⋯ at rest); Settings tab, tall.
@@ -728,7 +729,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "automations": defaultActions = "check-kit@0.3,fold:\(AutomationWords.trashFold):open@0.5,tipOpen:\(AutomationWords.tip(FakeData.papersId))@1.2,probe-floats@1.8,check-floats:\(AutomationWords.tip(FakeData.papersId))@1.9"
         // The ring row on the Ledger tab: its card pinned, then `ringing:off` (the row leaves) and back on for the shot.
         case "automations-ring": defaultActions = "check-kit@0.3,tipOpen:\(AutomationWords.ringTip)@0.8,probe-floats@1.2,ringing:off@1.5,probe-ring@1.7,ringing:\(FakeData.wakeId)@1.9,probe-ring@2.1"
-        case "settings-automations": defaultActions = "check-kit@0.3,automationsFold@0.5,rail-scroll:640@0.9"
+        case "settings-automations": defaultActions = "check-kit@0.3,automationsFold@0.5,fold:\(AutomationWords.recipeTrashFold):open@0.7,rail-scroll:640@0.9"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
@@ -2906,7 +2907,9 @@ struct FakeData {
                            snoozeMinutes: 10, wakeBudgetMinutesPerDay: 5,
                            recipes: [ShellRecipe(name: "backup", command: "/Users/kevinliu/bin/backup.sh", cwd: nil, timeoutSeconds: 120, approvedAt: ago(2 * 86_400)),
                                      ShellRecipe(name: "build-check", command: "pnpm -C ~/gt test --silent", cwd: nil, timeoutSeconds: 300, approvedAt: ago(5 * 86_400)),
-                                     ShellRecipe(name: "vpn-up", command: "networksetup -connectpppoeservice VPN", cwd: nil, timeoutSeconds: 60, approvedAt: ago(9 * 86_400))],
+                                     ShellRecipe(name: "vpn-up", command: "networksetup -connectpppoeservice VPN", cwd: nil, timeoutSeconds: 60, approvedAt: ago(9 * 86_400)),
+                                     // In the Trash (never deleted): hidden from pickers, listed under the fold with Restore.
+                                     ShellRecipe(name: "old-sync", command: "/Users/kevinliu/bin/old-sync.sh", cwd: nil, timeoutSeconds: 120, approvedAt: ago(20 * 86_400), trashedAt: ago(2 * 86_400))],
                            openAtLogin: false)
     }
 
@@ -3821,6 +3824,13 @@ extension PreviewDelegate {
         expect("add form: parseWhen", [weekly, timer, once, AutomationForm.parseWhen("soonish", now: now)].map(whenWord).joined(separator: " / "),
                "every 5 weekdays / in 720000 / at 15:00 / nil")
         if let weekly { expect("add form: echo", AutomationForm.echo(name: "standup", when: weekly, kind: "chime"), "Weekdays at 07:10, ring “standup”.") }
+        // Recipes are never deleted: a trashed one keeps its row under Trash with Restore; recipe.restore is on the wire.
+        let recipes = fake.automationSettings().recipes
+        let trashedRecipe = recipes.first { $0.isTrashed }
+        expect("recipes: the trashed row's meta", trashedRecipe.map { AutomationFormat.recipeMeta($0, home: "/Users/kevinliu") } ?? "none",
+               "~/bin/old-sync.sh · trashed " + AutomationFormat.dayWord(trashedRecipe?.trashedAt ?? 0))
+        expect("recipes: trashedAt on the wire", "\(ShellRecipe(name: "a", command: "b", cwd: nil, timeoutSeconds: 1, approvedAt: 2).json["trashedAt"] == nil ? "absent" : "present") · \(trashedRecipe?.json["trashedAt"] == nil ? "absent" : "present")", "absent · present")
+        expect("recipe.restore on the wire", "\(EngineCommand.recipeRestore(name: "old-sync").json["type"] as? String ?? "") \(EngineCommand.recipeRestore(name: "old-sync").json["name"] as? String ?? "")", "recipe.restore old-sync")
         expect("add form: draft quiet", AutomationForm.draft(name: "x", when: timer ?? weekly!, kind: "chime").clauses.quiet ?? "nil", "override")
         return failed
     }
