@@ -661,7 +661,7 @@ export function automationChecks(input: AutomationCheckInput): Check[] {
   // banners: the grant; the island and the chime do not need it.
   if (input.notifications === "granted") add({ name: "banners", status: "ok", detail: "Notifications granted — Snooze · Done on the banner land the same row as the island's" });
   else if (input.notifications === undefined) add({ name: "banners", status: "warn", detail: "Notifications not read (no daemon answering) — the island and the chime still fire" });
-  else add({ name: "banners", status: "warn", detail: `Notifications ${input.notifications === "denied" ? "not granted" : "not asked yet"} — the island and the chime still fire`, fix: "Setup › Permissions › Notifications (the app asks; the automation.notifications problem's Request button does the same)" });
+  else add({ name: "banners", status: "warn", detail: `Notifications ${input.notifications === "denied" ? "not granted" : "not asked yet"} — the island and the chime still fire`, fix: "pnpm jarhead cmd request-permission notifications (the app puts up the system prompt; Setup › Permissions › Notifications and the automation.notifications problem's Request button do the same)" });
 
   // wake for HH:MM: the earliest armed alarm; a closed lid sleeps through it unless pmset says otherwise.
   const alarm = (rows ?? [])

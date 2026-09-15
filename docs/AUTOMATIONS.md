@@ -159,7 +159,7 @@ id passes through even when unlisted, so Restore can name a trashed row.
 automations   enabled          ok    6 set · 5 armed · next 07:10 Wake up, Kevin (in 6 h)
               journal          ok    ~/.jarhead/automations/jobs.ndjson · 6 live · 41 rows
               daemon           warn  nothing fires while Jarhead is quit — Open at login is off      (fix: Settings › Automations › Open at login)
-              banners          warn  Notifications not granted — the island and the chime still fire
+              banners          warn  Notifications not granted — the island and the chime still fire     (fix: pnpm jarhead cmd request-permission notifications)
               wake for 07:10   warn  a closed lid sleeps through 07:10 …   (fix: copy (root; never run by Jarhead): sudo pmset repeat wakeorpoweron MTWRF 07:05:00)
               quiet hours      ok    23:00–07:00 · alarms override; chime/say show silently; acting kinds wait
               missed           ok    0 in 7 days                                       warn: 2 missed in 7 days · the Mac slept

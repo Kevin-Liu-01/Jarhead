@@ -264,7 +264,7 @@ test("doctor automations: the trouble rows — Open at login off, banners denied
   assert.equal(r["daemon"]!.fix, "Settings › Automations › Open at login");
   assert.equal(r["banners"]!.status, "warn");
   assert.equal(r["banners"]!.detail, "Notifications not granted — the island and the chime still fire");
-  assert.match(r["banners"]!.fix ?? "", /^Setup › Permissions › Notifications/);
+  assert.match(r["banners"]!.fix ?? "", /^pnpm jarhead cmd request-permission notifications/);
   const wake = r[`wake for ${clock(wakeUp.nextAt ?? 0)}`]!;
   assert.equal(wake.status, "warn");
   assert.match(wake.detail, /^a closed lid sleeps through \d\d:\d\d — the alarm rings late \(within 15 min\) or is missed; the Mac is never woken by Jarhead$/);

@@ -15,7 +15,7 @@ import { ledgerSpeed, renderSpeed } from "./ledger-speed.ts";
 import { reflexMisses, renderMisses } from "./reflex-miss.ts";
 import { resolveThread, threadsLines } from "./threads-cli.ts";
 import { LIST_STATES, ROW_VERBS, automationLine, automationsLines, automationsSummary, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation, type RowVerb } from "./automations-cli.ts";
-import type { Automation, AutomationState, ShellRecipe } from "@jarhead/protocol";
+import { PERMISSION_KINDS, type Automation, type AutomationState, type PermissionKind, type ShellRecipe } from "@jarhead/protocol";
 
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
@@ -63,6 +63,7 @@ jarhead — voice-first computer use for Kevin's Mac
                                       with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|resume|stop|interrupt|mute|unmute|agent.refresh>   send a command to the running daemon (go opens the session)
+  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …) — the doctor's banners row names it; you answer macOS yourself
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
   pnpm jarhead cmd thread.stop <id|name>   stop one thread (its id or name from \`jarhead status\`; "main" parks the main turn); the others and the session carry on
   pnpm jarhead cmd thread.pause <id|name> | thread.resume <id|name>   hold one thread's brain turn and release its screen; run its continuation turn
@@ -887,6 +888,12 @@ try {
       }
       if (sub === "thread.stop" || sub === "thread.pause" || sub === "thread.resume") {
         await threadCommand(sub, arg);
+        break;
+      }
+      if (sub === "request-permission") {
+        // The app puts up macOS's own prompt for the grant; Kevin answers it there. The doctor's `banners` row names this for Notifications.
+        if (arg === undefined || (arg !== "all" && !(PERMISSION_KINDS as readonly string[]).includes(arg))) throw new Error(`usage: jarhead cmd request-permission <${PERMISSION_KINDS.join("|")}|all>`);
+        await sendCommand({ type: "request-permission", which: arg as PermissionKind | "all" }, 800);
         break;
       }
       if (!sub || !["go", "pause", "resume", "stop", "interrupt", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");
