@@ -174,6 +174,8 @@ export class Automations implements AutomationSource {
   /** Brain seconds `wake-brain` spent today and the day it was summed for. */
   private brainSpent = 0;
   private spendDay = "";
+  /** Budget seconds reserved by wake-brain fires in flight, by row: counted as spent until the fire settles. */
+  private readonly reservedBrain = new Map<string, number>();
   private loaded = false;
 
   constructor(private readonly opts: AutomationsOptions) {
@@ -198,7 +200,8 @@ export class Automations implements AutomationSource {
       home: this.home,
       repoRoot: opts.repoRoot,
       problem: opts.problem,
-      brainSpentToday: () => this.brainSpent,
+      brainSpentToday: () => this.brainSpent + [...this.reservedBrain.values()].reduce((a, b) => a + b, 0),
+      reserveBrain: (id, seconds) => this.reservedBrain.set(id, seconds),
     });
     this.watchers = new Watchers({ now: this.now, reader: opts.reader, shell, shellGate, settings: opts.settings, home: this.home, repoRoot: opts.repoRoot });
   }
@@ -442,9 +445,12 @@ export class Automations implements AutomationSource {
     try {
       outcome = await this.executor.fire({ a: started, now, lateMs, file: o.file, quiet: o.quiet, dueAt: o.dueAt }, next);
     } catch (e) {
-      outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: `failed: ${(e as Error).message}`, presses: [], ring: false, ms: 0 };
+      // The same redaction the executor gives its own details: an error carrying a path or a token reaches no surface.
+      outcome = { ok: false, actions: row.then.map((x) => x.kind), line: this.executor.line(row, o.dueAt), detail: cut(this.opts.redact(`failed: ${(e as Error).message}`), DETAIL_CHARS), presses: [], ring: false, ms: 0 };
     } finally {
       this.firing.delete(row.id);
+      // The reservation ends with the fire, in the same turn that adds the real spend below.
+      this.reservedBrain.delete(row.id);
     }
     const at = this.now();
     const current = this.table.get(row.id) ?? started;

@@ -112,8 +112,10 @@ export interface ExecutorOptions {
   readonly home: string;
   readonly repoRoot?: string | undefined;
   readonly problem: (kind: ProblemKind, text: string, remedy?: ProblemRemedy) => void;
-  /** Brain seconds `wake-brain` spent today (the ledger's `automation.fired { brainSeconds }` rows). */
+  /** Brain seconds `wake-brain` spent today (the ledger's `automation.fired { brainSeconds }` rows) plus what fires in flight have reserved. */
   readonly brainSpentToday: () => number;
+  /** A fire about to wake the brain reserves its budget under its row's id, so two rows due in one tick cannot both pass the cap; the façade clears it when the fire settles. */
+  readonly reserveBrain: (automationId: string, seconds: number) => void;
 }
 
 export interface FireContext {
@@ -436,6 +438,8 @@ export class AutomationExecutor {
       this.opts.problem("automation.budget", `brain minutes for automations are spent today (${Math.round(spent / 60)} of ${Math.round(cap / 60)} min)`);
       return { ok: false, detail: "budget" };
     }
+    // Reserved now, before anything awaits: the next row's check sees this turn's budget as spent.
+    this.opts.reserveBrain(a.id, action.budget.seconds);
     await this.opts.brain.warmUp().catch(() => undefined);
     const lane = await this.opts.brain.lane().catch(() => undefined);
     if (!lane) {
