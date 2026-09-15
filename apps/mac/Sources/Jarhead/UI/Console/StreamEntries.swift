@@ -303,6 +303,8 @@ extension ConsoleFormat {
             return ("terminal.fill", "recipe", "recipe “\(r.name)” saved", truncPath(r.command, max: 40), row.by == "brain" ? "approved by voice" : nil)
         case "recipe.trashed":
             return ("trash.fill", "recipe", "recipe “\(row.name ?? "")” moved to Trash", nil, nil)
+        case "recipe.restored":
+            return ("arrow.uturn.backward", "recipe", "recipe “\(row.name ?? "")” back from the Trash", nil, nil)
         case "sleep":
             return ("moon.zzz.fill", "sleep", SleepCauseFormat.line(row.sleepCause ?? "command"), row.sessionId.map { shortId($0) }, row.quotedPhrase)
         case "thread.started":
@@ -365,11 +367,18 @@ extension ConsoleFormat {
             return (symbol, word, "\(line) · \(row.ok == false ? "failed" : "fired")", row.lateMs.map { lateWords($0) }, row.detail)
         case "automation.state":
             guard let state = row.state, state != "firing" else { return nil }
-            return (symbol, word, "\(name.isEmpty ? "" : name + " · ")\(stateWords(state, until: row.until))", nil, row.detail)
+            var parts: [String] = []
+            if !name.isEmpty { parts.append(name) }
+            parts.append(stateWords(state, until: row.until))
+            return (symbol, word, parts.joined(separator: AutomationWords.dot), nil, row.detail)
         case "automation.missed":
-            let due = row.dueAt.map { clock($0) } ?? ""
-            let why = row.why.map { missedWhyWords($0) } ?? ""
-            return ("clock.badge.exclamationmark", word, "\(name.isEmpty ? "" : name + " · ")\(row.skipped == true ? "skipped" : "missed")\(due.isEmpty ? "" : " · due " + due)\(why.isEmpty ? "" : " · " + why)", row.lateMs.map { lateWords($0) }, nil)
+            // One statement per word (CI's older Swift gives up on ternaries concatenating inside one interpolation).
+            var parts: [String] = []
+            if !name.isEmpty { parts.append(name) }
+            parts.append(row.skipped == true ? "skipped" : "missed")
+            if let dueAt = row.dueAt { parts.append("due " + clock(dueAt)) }
+            if let why = row.why { parts.append(missedWhyWords(why)) }
+            return ("clock.badge.exclamationmark", word, parts.joined(separator: AutomationWords.dot), row.lateMs.map { lateWords($0) }, nil)
         default:
             return nil
         }

@@ -1082,21 +1082,26 @@ public struct AutomationEvent: Codable, Equatable {
     public var remainingMs: Double?
 }
 
+/// A recipe is never deleted: `recipe.trash` stamps `trashedAt` (hidden from pickers, refused as a
+/// target, listed under Trash with Restore); `recipe.restore` clears it.
 public struct ShellRecipe: Codable, Equatable, Identifiable {
     public var name: String
     public var command: String
     public var cwd: String?
     public var timeoutSeconds: Double
     public var approvedAt: Double
+    public var trashedAt: Double?
     public var id: String { name }
+    public var isTrashed: Bool { trashedAt != nil }
 
-    public init(name: String, command: String, cwd: String?, timeoutSeconds: Double, approvedAt: Double) {
-        self.name = name; self.command = command; self.cwd = cwd; self.timeoutSeconds = timeoutSeconds; self.approvedAt = approvedAt
+    public init(name: String, command: String, cwd: String?, timeoutSeconds: Double, approvedAt: Double, trashedAt: Double? = nil) {
+        self.name = name; self.command = command; self.cwd = cwd; self.timeoutSeconds = timeoutSeconds; self.approvedAt = approvedAt; self.trashedAt = trashedAt
     }
 
     public var json: [String: Any] {
         var o: [String: Any] = ["name": name, "command": command, "timeoutSeconds": timeoutSeconds, "approvedAt": approvedAt]
         if let cwd { o["cwd"] = cwd }
+        if let trashedAt { o["trashedAt"] = trashedAt }
         return o
     }
 }
@@ -1129,16 +1134,19 @@ public struct AutomationSettings: Codable, Equatable {
 }
 
 /// `automation.set`'s row as the Console form or the CLI sends it: the engine fills id, state, fires, the stamps and createdBy.
+/// One `when` grammar: the Console sends Kevin's words as `whenPhrase` and the engine parses them with core's
+/// `parseWhen` (a refusal carries its error text); `when` is given only by a sender that already holds the parsed form.
 public struct AutomationDraft: Encodable, Equatable {
     public var id: String?
     public var name: String
-    public var when: AutomationWhen
+    public var when: AutomationWhen?
+    public var whenPhrase: String?
     public var then: [AutomationAction]
     public var clauses: AutomationClauses
     public var echo: String
 
-    public init(id: String? = nil, name: String, when: AutomationWhen, then: [AutomationAction], clauses: AutomationClauses, echo: String) {
-        self.id = id; self.name = name; self.when = when; self.then = then; self.clauses = clauses; self.echo = echo
+    public init(id: String? = nil, name: String, when: AutomationWhen? = nil, whenPhrase: String? = nil, then: [AutomationAction], clauses: AutomationClauses, echo: String) {
+        self.id = id; self.name = name; self.when = when; self.whenPhrase = whenPhrase; self.then = then; self.clauses = clauses; self.echo = echo
     }
 
     /// The draft as a JSON object (nil fields left out), for `EngineCommand.json`.
@@ -1321,6 +1329,7 @@ public enum EngineCommand: Equatable {
     case automationRun(id: String)
     case recipeSet(ShellRecipe)
     case recipeTrash(name: String)
+    case recipeRestore(name: String)
 
     public var json: [String: Any] {
         switch self {
@@ -1410,6 +1419,7 @@ public enum EngineCommand: Equatable {
         case .automationRun(let id): return ["type": "automation.run", "id": id]
         case .recipeSet(let recipe): return ["type": "recipe.set", "recipe": recipe.json]
         case .recipeTrash(let name): return ["type": "recipe.trash", "name": name]
+        case .recipeRestore(let name): return ["type": "recipe.restore", "name": name]
         }
     }
 }
@@ -1661,7 +1671,18 @@ public struct LedgerRow: Codable, Identifiable {
     public var skipped: Bool?
     public var why: String?
     public var recipe: ShellRecipe?
-    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? threadId ?? rowId ?? "")" }
+    /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
+    /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).
+    public var id: String {
+        let tail: String
+        if let item { tail = item.id }
+        else if let step { tail = step.id }
+        else if let delegation { tail = delegation.id }
+        else if let threadId { tail = threadId }
+        else if let rowId { tail = rowId }
+        else { tail = "" }
+        return "\(type)-\(at)-\(tail)"
+    }
 
     /// Every stored column by its wire name; `rowId` reads the wire's `id` (the struct's own `id` is derived).
     enum CodingKeys: String, CodingKey {
