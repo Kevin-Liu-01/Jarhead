@@ -153,6 +153,8 @@ export class Automations implements AutomationSource {
   private readonly home: string;
   private readonly exec: AutomationExec;
   private lastTickAt = 0;
+  /** The master switch as the last tick saw it: the off→on edge resyncs what fell due while off. */
+  private wasEnabled: boolean | undefined;
   /** The app said the Mac is going to sleep: evidence for the missed row's detail. */
   private sleptAt: number | undefined;
   /** Alarms that self-snoozed once while unanswered. */
@@ -260,9 +262,19 @@ export class Automations implements AutomationSource {
    * rolled — the brain spend is re-summed.
    */
   tick(now = this.now()): void {
-    if (this.lastTickAt !== 0 && now - this.lastTickAt > AUTOMATION_SLEEP_GAP_MS) this.resync(now, "mac-slept");
+    const enabled = this.opts.settings().automations.enabled;
+    if (!enabled) {
+      // Off: nothing fires, nothing resyncs (a sleep gap while off is settled at the flip), every row stays.
+      this.lastTickAt = now;
+      this.wasEnabled = false;
+      return;
+    }
+    // The switch back on: what fell due while it was off goes through the missed table — grace for one-shots, skipped
+    // routines — never fired hours late. Otherwise a tick gap over AUTOMATION_SLEEP_GAP_MS means the Mac slept.
+    if (this.wasEnabled === false) this.resync(now, "daemon-down");
+    else if (this.lastTickAt !== 0 && now - this.lastTickAt > AUTOMATION_SLEEP_GAP_MS) this.resync(now, "mac-slept");
     this.lastTickAt = now;
-    if (!this.opts.settings().automations.enabled) return;
+    this.wasEnabled = true;
     this.fireDue(now);
     this.ringTick(now);
     void this.pollWatchers(now);
@@ -281,17 +293,24 @@ export class Automations implements AutomationSource {
         this.roll(a, dueAt, now, "outside its window");
         continue;
       }
-      const quiet = this.opts.settings().automations.quietHours;
-      if (a.clauses.quiet === "respect" && inQuiet(quiet, now) && a.state !== "deferred") {
-        if (a.then.some((x) => x.kind !== "chime" && x.kind !== "say" && x.kind !== "notify")) {
-          this.defer(a, now, dueAt);
-          continue;
-        }
-        void this.fire(a, now, Math.max(0, now - dueAt), { dueAt, quiet: true });
+      // Later than its grace (a tick's worth of slack): the missed table, never a late run — whatever let it get this late.
+      const lateMs = now - dueAt;
+      if (a.state !== "deferred" && lateMs > Math.max(graceFor(automationKind(a)), AUTOMATION_SLEEP_GAP_MS)) {
+        this.settleDue(a, now, "daemon-down");
         continue;
       }
-      void this.fire(a, now, Math.max(0, now - dueAt), { dueAt, quiet: false });
+      this.fireOrDefer(a, now, dueAt, lateMs);
     }
+  }
+
+  /** A due row fires now — unless quiet hours hold and it acts, then it waits for the quiet end (the one quiet rule, for the tick and the resync alike). */
+  private fireOrDefer(a: Automation, now: number, dueAt: number, lateMs: number): void {
+    const quiet = a.clauses.quiet === "respect" && a.state !== "deferred" && inQuiet(this.opts.settings().automations.quietHours, now);
+    if (quiet && a.then.some((x) => x.kind !== "chime" && x.kind !== "say" && x.kind !== "notify")) {
+      this.defer(a, now, dueAt);
+      return;
+    }
+    void this.fire(a, now, Math.max(0, lateMs), { dueAt, quiet });
   }
 
   /** An acting kind due inside quiet hours: it waits for the quiet end — unless the next regular occurrence comes sooner. */
@@ -364,9 +383,10 @@ export class Automations implements AutomationSource {
       this.sleptAt = at;
       return;
     }
+    // Off: the switch's own resync at the flip settles everything; a signal fires nothing meanwhile.
+    if (!this.opts.settings().automations.enabled) return;
     if (sig.kind === "mac.wake" || sig.kind === "clock.changed") this.resync(this.now(), "mac-slept");
     if (sig.kind === "screen.lock") return;
-    if (!this.opts.settings().automations.enabled) return;
     for (const f of this.watchers.signal(sig, this.armedWatchers())) this.watcherFire(f.id, this.now(), undefined, f.what);
   }
 
@@ -493,34 +513,7 @@ export class Automations implements AutomationSource {
   resync(now: number, why: MissedWhy): void {
     for (const a of this.table.due(now)) {
       if (a.nextAt === undefined || this.firing.has(a.id)) continue;
-      const dueAt = a.nextAt;
-      const lateMs = now - dueAt;
-      const kind = automationKind(a);
-      if (a.state === "deferred") {
-        void this.fire(a, now, lateMs, { dueAt, quiet: false });
-        continue;
-      }
-      if (lateMs <= graceFor(kind)) {
-        void this.fire(a, now, lateMs, { dueAt, quiet: a.clauses.quiet === "respect" && inQuiet(this.opts.settings().automations.quietHours, now) });
-        continue;
-      }
-      const routine = kind === "routine" || kind === "watcher";
-      this.missedRow(a, dueAt, why, routine);
-      if (routine) {
-        const next = nextFire(a.when, now, a.createdAt);
-        const detail = `skipped ${describeInstant(dueAt)} · ${whyWords(why, this.sleptAt)}`;
-        if (next === undefined) this.write(mut(a, { state: "done", nextAt: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-        else this.write(mut(a, { state: "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-        continue;
-      }
-      const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`;
-      this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
-      if (this.repeats(a)) {
-        const next = nextFire(a.when, now, a.createdAt);
-        this.write(mut(a, { state: next === undefined ? "done" : "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-      } else {
-        this.write(mut(a, { state: "failed", nextAt: undefined, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
-      }
+      this.settleDue(a, now, why);
     }
     const landed = this.watchers.rebaseline();
     for (const [id, n] of landed) {
@@ -530,6 +523,44 @@ export class Automations implements AutomationSource {
       this.write(mut(a, { missed: a.missed + n, lastDetail: detail, updatedAt: now }), "engine", detail, false);
     }
     this.sleptAt = undefined;
+  }
+
+  /**
+   * One waiting row whose `nextAt` passed (the missed table): a deferred row fires (its quiet
+   * end came); inside its kind's grace it fires late (deferring again if quiet hours hold);
+   * past the grace it is `missed` — routines and watchers skip to the next slot with a row,
+   * one-shots and alarms get ONE problem with Run now, repeaters roll, one-shots stay `failed`.
+   */
+  private settleDue(a: Automation, now: number, why: MissedWhy): void {
+    if (a.nextAt === undefined) return;
+    const dueAt = a.nextAt;
+    const lateMs = now - dueAt;
+    const kind = automationKind(a);
+    if (a.state === "deferred") {
+      void this.fire(a, now, lateMs, { dueAt, quiet: false });
+      return;
+    }
+    if (lateMs <= graceFor(kind)) {
+      this.fireOrDefer(a, now, dueAt, lateMs);
+      return;
+    }
+    const routine = kind === "routine" || kind === "watcher";
+    this.missedRow(a, dueAt, why, routine);
+    if (routine) {
+      const next = nextFire(a.when, now, a.createdAt);
+      const detail = `skipped ${describeInstant(dueAt)} · ${whyWords(why, this.sleptAt)}`;
+      if (next === undefined) this.write(mut(a, { state: "done", nextAt: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+      else this.write(mut(a, { state: "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+      return;
+    }
+    const detail = `missed ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`;
+    this.opts.problem("automation.missed", `missed ${a.name} ${describeInstant(dueAt).slice(0, 5)} · ${whyWords(why, this.sleptAt)}`, { label: "Run now", command: { type: "automation.run", id: a.id } });
+    if (this.repeats(a)) {
+      const next = nextFire(a.when, now, a.createdAt);
+      this.write(mut(a, { state: next === undefined ? "done" : "armed", nextAt: next, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+    } else {
+      this.write(mut(a, { state: "failed", nextAt: undefined, snoozedUntil: undefined, missed: a.missed + 1, lastDetail: detail, updatedAt: now }), "engine", detail);
+    }
   }
 
   private missedRow(a: Automation, dueAt: number, why: MissedWhy, skipped: boolean): void {
