@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { classifyAction, classifyAutomation, describe, describeInstant, expandPath, graceFor, inQuiet, inWindow, logger, newId, nextFire, quietEnds, snoozeDefault, Ledger, type ActionContext, type Decision } from "@jarhead/core";
-import { runShell } from "@jarhead/brain";
+import { runShell, type AutomationChangeResult, type AutomationSetContext, type AutomationSetResult, type AutomationSource, type AutomationVerb, type RecipeRow } from "@jarhead/brain";
 import type { NativeHands } from "@jarhead/hands";
 import {
   AUTOMATION_ACTIONS_MAX,
@@ -62,7 +62,8 @@ export const RESTART_DETAIL = "the daemon restarted";
 /** A recipe the brain hands in with a row is saved with this cap. */
 const RECIPE_TIMEOUT_DEFAULT_S = 120;
 
-export type ChangeVerb = "snooze" | "done" | "skip" | "pause" | "resume" | "trash" | "restore" | "run";
+/** The brain's `automation_change` verbs, one word each (packages/brain declares them; the surfaces send the same set). */
+export type ChangeVerb = AutomationVerb;
 export const CHANGE_VERBS: ReadonlySet<string> = new Set<ChangeVerb>(["snooze", "done", "skip", "pause", "resume", "trash", "restore", "run"]);
 
 export type ArmOrigin = "brain" | "console" | "cli";
@@ -81,25 +82,18 @@ export interface ArmContext {
   readonly delegationId?: string | undefined;
   /** A spawned thread is arming it (depth one: free kinds only). */
   readonly fromThread?: boolean | undefined;
+  /** The words Kevin heard when he said yes (the runner's outstanding question); absent, the gate's own reason is recorded. */
+  readonly heard?: string | undefined;
+  /** The runner knows the brain is local; absent, Settings decides. */
+  readonly localBrain?: boolean | undefined;
 }
 
 export type AutomationSetOutcome =
-  | { readonly kind: "armed"; readonly text: string; readonly automation: Automation }
+  /** `text` is the toast's whole line; `note` the part after the arm itself (quiet hours, a folder not readable yet) for a caller that writes its own line. */
+  | { readonly kind: "armed"; readonly text: string; readonly automation: Automation; readonly note?: string | undefined }
   /** The one set-up question (run-recipe · press · wake-brain): the runner asks it once and re-calls with `confirmed`. */
   | { readonly kind: "confirm"; readonly question: string }
   | { readonly kind: "refused"; readonly reason: string };
-
-/**
- * What the brain's four tools call (packages/brain defines the interface the runner
- * takes; this is the engine's implementation of that shape): set → armed line, the
- * set-up question, or a refusal with the nearest safe kind; list; change; recipes.
- */
-export interface AutomationSource {
-  set(draft: AutomationSetInput, by: ArmOrigin, confirmed?: boolean, ctx?: ArmContext): AutomationSetOutcome;
-  list(state?: AutomationState | "all"): string;
-  change(nameOrId: string, verb: ChangeVerb, minutes?: number): Promise<{ readonly ok: boolean; readonly text: string }>;
-  recipes(): string;
-}
 
 export interface AutomationsOptions {
   readonly stateDir: string;
@@ -552,7 +546,7 @@ export class Automations implements AutomationSource {
    * `confirmed` arms and records the words Kevin heard); `refuse` is the reason. A folder
    * watcher reads its folder now, so the TCC prompt shows while Kevin is here.
    */
-  set(draft: AutomationSetInput, by: ArmOrigin, confirmed = false, ctx: ArmContext = {}): AutomationSetOutcome {
+  arm(draft: AutomationSetInput, by: ArmOrigin, confirmed = false, ctx: ArmContext = {}): AutomationSetOutcome {
     const now = this.now();
     const name = String(draft.name ?? "").replace(/\s+/g, " ").trim();
     if (!name) return { kind: "refused", reason: "an automation needs a name Kevin will hear" };
@@ -572,7 +566,7 @@ export class Automations implements AutomationSource {
       confirmed: false,
       folderWatchers: this.table.folderWatchers(),
       fromThread: ctx.fromThread,
-      localBrain: this.opts.localBrain(),
+      localBrain: ctx.localBrain ?? this.opts.localBrain(),
       request: ctx.request,
       home: this.home,
       repoRoot: this.opts.repoRoot,
@@ -600,7 +594,7 @@ export class Automations implements AutomationSource {
       createdAt: now,
       updatedAt: now,
       createdBy: { by, ...(ctx.chainId ? { chainId: ctx.chainId } : {}), ...(ctx.delegationId ? { delegationId: ctx.delegationId } : {}), request: cut(this.opts.redact(ctx.request ?? echo), 200) },
-      ...(judged.verdict === "confirm" ? { confirmed: { at: now, heard: judged.reason } } : {}),
+      ...(judged.verdict === "confirm" ? { confirmed: { at: now, heard: ctx.heard ?? judged.reason } } : {}),
     };
     // A recipe the brain handed in with the row is Kevin's once he said yes: the ENGINE writes it to settings (a tool never does).
     const recipeAction = then.find((x) => x.kind === "run-recipe");
@@ -610,7 +604,7 @@ export class Automations implements AutomationSource {
       const err = this.watchers.watch(a);
       if (err) {
         this.watchProblem(a, err);
-        watchNote = ` · the folder could not be read yet (${err}); allow it in the Console`;
+        watchNote = `the folder could not be read yet (${err}); allow it in the Console`;
       }
     }
     this.table.put(a);
@@ -619,7 +613,9 @@ export class Automations implements AutomationSource {
     if (a.when.kind === "in") this.caffeinate(a, now);
     this.opts.onChange();
     log.info(`armed ${a.name} (${a.id}): ${describe(a.when)} → ${then.map((x) => x.kind).join(", ")}${nextAt !== undefined ? ` · next ${describeInstant(nextAt)}` : ""}`);
-    return { kind: "armed", automation: a, text: `armed: ${a.name} · ${describe(a.when)} · ${then.map((x) => x.kind).join(", ")}${nextAt !== undefined ? ` · next ${describeInstant(nextAt)}` : " · waiting for its signal"}${a.clauses.quiet === "override" && inQuiet(settings.quietHours, nextAt ?? now) ? " · it'll ring through quiet hours" : ""}${watchNote}` };
+    const notes = [a.clauses.quiet === "override" && inQuiet(settings.quietHours, nextAt ?? now) ? "it'll ring through quiet hours" : "", watchNote].filter(Boolean);
+    const text = `armed: ${a.name} · ${describe(a.when)} · ${then.map((x) => x.kind).join(", ")}${nextAt !== undefined ? ` · next ${describeInstant(nextAt)}` : " · waiting for its signal"}${notes.map((n) => ` · ${n}`).join("")}`;
+    return { kind: "armed", automation: a, text, ...(notes.length ? { note: notes.join(" · ") } : {}) };
   }
 
   private saveRecipe(name: string, command: string, by: "kevin" | "brain", now: number): void {
@@ -659,10 +655,13 @@ export class Automations implements AutomationSource {
 
   // ----------------------------------------------------------------- verbs
 
-  /** The Console's, the island's, the CLI's and the brain's verbs on one row, by name or id. */
-  async change(nameOrId: string, verb: ChangeVerb, minutes?: number): Promise<{ readonly ok: boolean; readonly text: string }> {
-    if (verb === "run") return this.runNow(nameOrId, "brain");
-    return this.changeNow(nameOrId, verb, minutes);
+  /** The brain's `automation_change`: one verb on one row by name or id; the row as it stands afterwards, with the engine's own words as `detail`. */
+  async change(nameOrId: string, verb: ChangeVerb, minutes?: number): Promise<AutomationChangeResult> {
+    const before = this.table.find(nameOrId);
+    const r = verb === "run" ? await this.runNow(nameOrId, "brain") : this.changeNow(nameOrId, verb, minutes);
+    const after = before ? this.table.get(before.id) : undefined;
+    if (!r.ok || !after) return { ok: false, reason: r.text };
+    return { ok: true, automation: after, detail: r.text };
   }
 
   /** The synchronous verbs (everything but `run`). */
@@ -815,7 +814,7 @@ export class Automations implements AutomationSource {
       case "automation.set": {
         // The Console's form (and the CLI): the press on Add is Kevin's own hand on a control that says what it does — the
         // two-press idiom's second press — so a confirm-tier row arms with the question as what he heard. Free kinds arm at once.
-        const r = this.set(cmd.automation as AutomationSetInput, "console", true, {});
+        const r = this.arm(cmd.automation as AutomationSetInput, "console", true, {});
         toast(r.kind === "armed" ? r.text : r.kind === "confirm" ? `needs a yes: ${r.question}` : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
         return;
       }
@@ -867,33 +866,49 @@ export class Automations implements AutomationSource {
 
   // ------------------------------------------------------------- the source
 
-  /** `automation_list`: the truth about what is set, never from memory. */
-  list(state?: AutomationState | "all"): string {
-    const rows = this.table.inState(state).filter((a) => state !== undefined || (a.state !== "done" && a.state !== "trashed"));
-    if (rows.length === 0) return state && state !== "all" ? `nothing is ${state}` : "nothing is set";
-    return rows
-      .map((a) => {
-        const kind = automationKind(a);
-        const next = a.nextAt !== undefined ? ` · next ${describeInstant(a.nextAt)}` : a.when.kind === "on" ? ` · ${describe(a.when)}` : "";
-        const last = a.lastFiredAt !== undefined ? ` · last ${describeInstant(a.lastFiredAt)}${a.lastDetail ? ` (${a.lastDetail})` : ""}` : a.lastDetail ? ` · ${a.lastDetail}` : "";
-        return `${a.name} · ${kind} · ${a.state}${next} · "${a.echo}"${last}`;
-      })
-      .join("\n");
+  /**
+   * The brain's `automation_set` (packages/brain's `AutomationSource`): the runner's context
+   * becomes the arm's origin, its confirmation and the words Kevin heard; the engine's outcome
+   * comes back in the shape the runner renders (`armed` with its note, `confirm` with the one
+   * question as the reason, `refused`).
+   */
+  async set(draft: AutomationDraft, ctx: AutomationSetContext): Promise<AutomationSetResult> {
+    const r = this.arm({ ...draft, ...(ctx.recipeCommand ? { recipeCommand: ctx.recipeCommand } : {}) }, ctx.by, ctx.confirmed, {
+      request: ctx.request,
+      delegationId: ctx.delegationId,
+      fromThread: ctx.fromThread,
+      heard: ctx.heard,
+      localBrain: ctx.localBrain,
+    });
+    switch (r.kind) {
+      case "armed":
+        return { kind: "armed", automation: r.automation, ...(r.note ? { note: r.note } : {}) };
+      case "confirm":
+        return { kind: "confirm", reason: r.question };
+      default:
+        return { kind: "refused", reason: r.reason };
+    }
+  }
+
+  /** `automation_list`: every non-trashed row in the snapshot's order — the truth about what is set, never from memory. */
+  async list(): Promise<readonly Automation[]> {
+    return this.table.rows();
   }
 
   /** `recipe_list`: the approved recipes, what uses them, and `asks` when the gate now rates one confirm. */
-  recipes(): string {
-    const recipes = this.opts.settings().automations.recipes;
-    if (recipes.length === 0) return "no recipes are approved; add one in Settings › Automations › Recipes, or give recipeCommand with a run-recipe row";
+  async recipes(): Promise<readonly RecipeRow[]> {
+    return this.recipeRows();
+  }
+
+  /** Settings' recipes with the shell gate's present verdict and the rows that name each; the snapshot's `recipesAsking` reads the same list. */
+  recipeRows(): readonly RecipeRow[] {
     const rows = this.table.inState("all");
-    return recipes
-      .map((r) => {
-        const users = rows.filter((a) => a.then.some((x) => x.kind === "run-recipe" && x.recipe.toLowerCase() === r.name.toLowerCase()) || (a.when.kind === "on" && a.when.on.kind === "recipe.red" && a.when.on.recipe.toLowerCase() === r.name.toLowerCase())).map((a) => a.name);
-        const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
-        const asks = d.verdict !== "run" ? ` · asks (${d.reason.replace(/; ask first$/, "")}) — cannot be picked` : "";
-        return `${r.name} · "${cut(r.command, 80)}" · approved ${describeInstant(r.approvedAt)}${users.length ? ` · used by ${users.join(", ")}` : ""}${asks}`;
-      })
-      .join("\n");
+    return this.opts.settings().automations.recipes.map((r) => {
+      const name = r.name.toLowerCase();
+      const usedBy = rows.filter((a) => a.then.some((x) => x.kind === "run-recipe" && x.recipe.toLowerCase() === name) || (a.when.kind === "on" && a.when.on.kind === "recipe.red" && a.when.on.recipe.toLowerCase() === name)).map((a) => a.name);
+      const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
+      return { recipe: r, asks: d.verdict !== "run", usedBy };
+    });
   }
 
   // -------------------------------------------------------------- snapshot

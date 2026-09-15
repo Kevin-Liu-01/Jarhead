@@ -94,7 +94,7 @@ test("rebuild: the newest journal row per id wins; a restart at nextAt + 5 min f
     // hands on it the missed alarm rings now, on time, and the problem clears. Nothing here opens a session.
     const away = await engine.automations.change("auto_missed", "run");
     assert.equal(away.ok, false);
-    assert.match(away.text, /needs you at the Mac/);
+    assert.match((away as { reason: string }).reason, /needs you at the Mac/);
     assert.equal(rows<FiredRow>(w, "automation.fired").length, 1, "refused: nothing fired");
     clock.t += 1000; // a second on: the press rings newest, so the island shows it
     handsBg.kevinActed();

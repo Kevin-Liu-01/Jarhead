@@ -74,7 +74,7 @@ async function fired(w: World, n = 1): Promise<FiredRow[]> {
   return rows<FiredRow>(w, "automation.fired");
 }
 
-function armed(w: World, r: ReturnType<Engine["automations"]["set"]>): Automation {
+function armed(w: World, r: ReturnType<Engine["automations"]["arm"]>): Automation {
   assert.equal(r.kind, "armed", JSON.stringify(r));
   return (r as { automation: Automation }).automation;
 }
@@ -91,11 +91,11 @@ test("alarm-fires-asleep: an alarm armed for +2 h rings when the clock gets ther
   try {
     await engine.start();
     const t0 = clock.t;
-    const a = armed(w, engine.automations.set(alarm("Wake up", t0 + 2 * H), "brain", false, { request: "wake me in two hours" }));
+    const a = armed(w, engine.automations.arm(alarm("Wake up", t0 + 2 * H), "brain", false, { request: "wake me in two hours" }));
     assert.equal(a.state, "armed");
     assert.equal(a.nextAt, t0 + 2 * H);
     assert.equal(a.clauses.quiet, "override", "alarms default override");
-    assert.match((engine.automations.set(alarm("Wake up", t0 + 3 * H), "brain") as { reason: string }).reason, /already set/, "names are unique");
+    assert.match((engine.automations.arm(alarm("Wake up", t0 + 3 * H), "brain") as { reason: string }).reason, /already set/, "names are unique");
     assert.equal(engine.snapshot().automations.length, 1);
     assert.deepEqual(engine.snapshot().nextFire, { id: a.id, kind: "alarm", name: "Wake up", at: t0 + 2 * H });
     assert.equal(rows(w, "automation.set").length, 1);
@@ -147,7 +147,7 @@ test("alarm-snooze-done: Snooze moves the ring to snoozedUntil (state row with u
   try {
     await engine.start();
     const t0 = clock.t;
-    const a = armed(w, engine.automations.set(alarm("Wake up", t0 + M), "brain"));
+    const a = armed(w, engine.automations.arm(alarm("Wake up", t0 + M), "brain"));
     clock.t += M;
     tick(engine);
     await fired(w);
@@ -175,14 +175,14 @@ test("alarm-snooze-done: Snooze moves the ring to snoozedUntil (state row with u
     assert.equal(engine.snapshot().nextFire, undefined);
 
     // skip: a weekday routine rolls to the next weekday; a one-shot ends "skipped" without a fire.
-    const routine = armed(w, engine.automations.set({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], at: "09:00" }, phrase: "daily 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Daily at 09:00, open Notes." }, "brain"));
+    const routine = armed(w, engine.automations.arm({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], at: "09:00" }, phrase: "daily 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Daily at 09:00, open Notes." }, "brain"));
     const first = routine.nextAt!;
     await engine.command({ type: "automation.skip", id: routine.id });
     const rolled = engine.snapshot().automations.find((x) => x.id === routine.id)!;
     assert.equal(rolled.state, "armed");
     assert.equal(rolled.nextAt, first + 24 * H);
     assert.equal(rolled.lastDetail?.startsWith("skipped"), true);
-    const once = armed(w, engine.automations.set(reminder("call mum", clock.t + H, "call mum"), "brain"));
+    const once = armed(w, engine.automations.arm(reminder("call mum", clock.t + H, "call mum"), "brain"));
     await engine.command({ type: "automation.skip", id: once.id });
     assert.equal(engine.snapshot().automations.find((x) => x.id === once.id)?.state, "done");
     assert.equal(rows<FiredRow>(w, "automation.fired").length, 2, "skips fire nothing");
@@ -198,7 +198,7 @@ test("alarm-linger-self-snooze: an unanswered alarm self-snoozes ONCE after the 
   const { engine, clock, events } = w;
   try {
     await engine.start();
-    const a = armed(w, engine.automations.set(alarm("Wake up", clock.t + M), "brain"));
+    const a = armed(w, engine.automations.arm(alarm("Wake up", clock.t + M), "brain"));
     clock.t += M;
     tick(engine);
     await fired(w);
@@ -238,7 +238,7 @@ test("weekly-walk: a weekdays 09:00 routine walked over nine days fires Monday t
   clock.t = new Date(2026, 8, 14, 8, 0, 0).getTime();
   try {
     await engine.start();
-    const a = armed(w, engine.automations.set({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "09:00" }, phrase: "weekdays 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Weekdays at 09:00, open Notes." }, "brain"));
+    const a = armed(w, engine.automations.arm({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "09:00" }, phrase: "weekdays 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Weekdays at 09:00, open Notes." }, "brain"));
     assert.equal(a.nextAt, new Date(2026, 8, 14, 9, 0, 0).getTime());
     const firedOn: number[] = [];
     for (let day = 0; day < 9; day++) {
@@ -272,8 +272,8 @@ test("mac-slept-gap: the clock jumps two hours — an alarm due at +10 min is mi
     await engine.start();
     tick(engine);
     const t0 = clock.t;
-    const early = armed(w, engine.automations.set(alarm("early", t0 + 10 * M), "brain"));
-    const late = armed(w, engine.automations.set(alarm("late", t0 + 110 * M), "brain"));
+    const early = armed(w, engine.automations.arm(alarm("early", t0 + 10 * M), "brain"));
+    const late = armed(w, engine.automations.arm(alarm("late", t0 + 110 * M), "brain"));
     clock.t += 2 * H;
     tick(engine);
     const f = await fired(w);
@@ -309,7 +309,7 @@ test("routine-never-late: an every-2-h routine whose slot passed by five minutes
     await engine.start();
     tick(engine);
     const t0 = clock.t;
-    const a = armed(w, engine.automations.set({ name: "backup", when: { kind: "every", every: { kind: "interval", everyMs: 2 * H, anchorAt: t0 }, phrase: "every 2 h" }, then: [{ kind: "open", app: "Notes" }], echo: "Every 2 h, open Notes." }, "brain"));
+    const a = armed(w, engine.automations.arm({ name: "backup", when: { kind: "every", every: { kind: "interval", everyMs: 2 * H, anchorAt: t0 }, phrase: "every 2 h" }, then: [{ kind: "open", app: "Notes" }], echo: "Every 2 h, open Notes." }, "brain"));
     assert.equal(a.nextAt, t0 + 2 * H);
     clock.t += 2 * H + 5 * M;
     tick(engine);
@@ -339,9 +339,9 @@ test("quiet-hours-respect-override: inside quiet hours a `respect` say is a sile
     await engine.start();
     automations(w, { quietHours: { from: "22:00", to: "07:00" } });
     const t0 = clock.t;
-    const say = armed(w, engine.automations.set(reminder("call mum", t0 + M, "call mum"), "brain"));
-    const open = armed(w, engine.automations.set(openAt("notes", t0 + M), "brain"));
-    const ring = armed(w, engine.automations.set(alarm("Wake up", t0 + M), "brain"));
+    const say = armed(w, engine.automations.arm(reminder("call mum", t0 + M, "call mum"), "brain"));
+    const open = armed(w, engine.automations.arm(openAt("notes", t0 + M), "brain"));
+    const ring = armed(w, engine.automations.arm(alarm("Wake up", t0 + M), "brain"));
     events.length = 0;
     clock.t += M;
     tick(engine);
@@ -380,10 +380,10 @@ test("confirm-at-fire-never: a recipe approved at set-up whose shell gate says `
     await engine.start();
     automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes: [{ name: "backup", command: "echo hi", timeoutSeconds: 5, approvedAt: clock.t }] });
     const draft: AutomationSetInput = { name: "nightly backup", when: { kind: "at", at: clock.t + M }, then: [{ kind: "run-recipe", recipe: "backup" }], echo: "In a minute, run recipe backup." };
-    const first = engine.automations.set(draft, "brain", false);
+    const first = engine.automations.arm(draft, "brain", false);
     assert.equal(first.kind, "confirm", "the set-up asks once");
     assert.match((first as { question: string }).question, /recipe backup .* unattended/);
-    const a = armed(w, engine.automations.set(draft, "brain", true));
+    const a = armed(w, engine.automations.arm(draft, "brain", true));
     assert.equal(a.confirmed?.heard, (first as { question: string }).question, "the yes records what Kevin heard");
     events.length = 0;
     clock.t += M;
@@ -411,7 +411,7 @@ test("press-not-in-front: a press with another app in front fails ('Cursor is no
     await engine.start();
     automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "press"] });
     const draft = (name: string, at: number): AutomationSetInput => ({ name, when: { kind: "at", at }, then: [{ kind: "press", app: "Cursor", key: "cmd+s" }], echo: "Press cmd+s in Cursor." });
-    const a = armed(w, engine.automations.set(draft("save", clock.t + M), "brain", true));
+    const a = armed(w, engine.automations.arm(draft("save", clock.t + M), "brain", true));
     hands.frontApp = "Notes";
     clock.t += M;
     tick(engine);
@@ -422,7 +422,7 @@ test("press-not-in-front: a press with another app in front fails ('Cursor is no
     assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "failed");
 
     hands.frontApp = "Cursor";
-    armed(w, engine.automations.set(draft("save again", clock.t + M), "brain", true));
+    armed(w, engine.automations.arm(draft("save again", clock.t + M), "brain", true));
     clock.t += M;
     tick(engine);
     const g = await fired(w, 2);
@@ -432,7 +432,7 @@ test("press-not-in-front: a press with another app in front fails ('Cursor is no
     assert.deepEqual(hands.named("key")[0]!.params, { combo: "cmd+s", repeat: 1, expectFront: { pid: 1 } });
 
     hands.secure = true;
-    armed(w, engine.automations.set(draft("save thrice", clock.t + M), "brain", true));
+    armed(w, engine.automations.arm(draft("save thrice", clock.t + M), "brain", true));
     clock.t += M;
     tick(engine);
     const h = await fired(w, 3);
@@ -460,7 +460,7 @@ test("folder-file-settle-no-overwrite: a partial never counts; a PDF that settle
   try {
     await engine.start();
     writeFileSync(join(downloads, "old.pdf"), "already here");
-    const a = armed(w, engine.automations.set({ name: "file papers", when: { kind: "on", on: { kind: "folder.file", path: downloads, glob: "*.pdf", settleMs: 12_000 } }, then: [{ kind: "file", into: papers }, { kind: "chime", line: "filed", sound: "Glass" }], clauses: { quiet: "respect", cooldown: 0 }, echo: "When a PDF lands in Downloads, file it under Papers and chime." }, "brain", false, { request: `when a pdf lands in ${downloads} file it under ${papers}` }));
+    const a = armed(w, engine.automations.arm({ name: "file papers", when: { kind: "on", on: { kind: "folder.file", path: downloads, glob: "*.pdf", settleMs: 12_000 } }, then: [{ kind: "file", into: papers }, { kind: "chime", line: "filed", sound: "Glass" }], clauses: { quiet: "respect", cooldown: 0 }, echo: "When a PDF lands in Downloads, file it under Papers and chime." }, "brain", false, { request: `when a pdf lands in ${downloads} file it under ${papers}` }));
     assert.equal(a.state, "armed");
     assert.equal(a.nextAt, undefined, "a watcher has no clock");
     assert.equal(engine.automations.watchers.folderCount, 1);
@@ -507,7 +507,7 @@ test("folder-file-settle-no-overwrite: a partial never counts; a PDF that settle
     // A burst under the default cooldown: one fire, the rest counted.
     const inbox = join(home, "Inbox");
     mkdirSync(inbox);
-    const b = armed(w, engine.automations.set({ name: "inbox chime", when: { kind: "on", on: { kind: "folder.file", path: inbox, settleMs: 1_000 } }, then: [{ kind: "chime", line: "landed" }], clauses: { quiet: "respect" }, echo: "When a file lands in Inbox, chime." }, "brain"));
+    const b = armed(w, engine.automations.arm({ name: "inbox chime", when: { kind: "on", on: { kind: "folder.file", path: inbox, settleMs: 1_000 } }, then: [{ kind: "chime", line: "landed" }], clauses: { quiet: "respect" }, echo: "When a file lands in Inbox, chime." }, "brain"));
     for (let i = 0; i < 5; i++) writeFileSync(join(inbox, `f${i}.txt`), `${i}`);
     step();
     step();
@@ -528,7 +528,7 @@ test("signal-app-quit: system.signal {app.quit Slack} fires the rule (the local 
   const { engine, clock, events } = w;
   try {
     await engine.start();
-    const a = armed(w, engine.automations.set({ name: "log hours", when: { kind: "on", on: { kind: "app.quit", app: "Slack" } }, then: [{ kind: "say", line: "log your hours" }], echo: "When Slack quits, say 'log your hours'." }, "brain"));
+    const a = armed(w, engine.automations.arm({ name: "log hours", when: { kind: "on", on: { kind: "app.quit", app: "Slack" } }, then: [{ kind: "say", line: "log your hours" }], echo: "When Slack quits, say 'log your hours'." }, "brain"));
     engine.systemSignal({ kind: "app.quit", app: "Figma" }, clock.t);
     engine.systemSignal({ kind: "app.quit", app: "slack" }, clock.t);
     const f = await fired(w);
@@ -564,10 +564,10 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
     automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 5 });
     threads.script = async () => ({ status: "done", summary: "Two agents finished. Both are green." });
     const draft = (name: string, at: number, seconds = 60): AutomationSetInput => ({ name, when: { kind: "at", at }, then: [{ kind: "wake-brain", prompt: "summarise what my agents did today", budget: { steps: 5, seconds }, speak: true }], echo: "Wake the brain: summarise the agents." });
-    const asked = engine.automations.set(draft("rundown", clock.t + M), "brain", false);
+    const asked = engine.automations.arm(draft("rundown", clock.t + M), "brain", false);
     assert.equal(asked.kind, "confirm");
     assert.match((asked as { question: string }).question, /about 1 brain minute per fire on Kevin's plan, up to 5 a day/, "the cost line is the question");
-    const a = armed(w, engine.automations.set(draft("rundown", clock.t + M), "brain", true));
+    const a = armed(w, engine.automations.arm(draft("rundown", clock.t + M), "brain", true));
     events.length = 0;
     clock.t += M;
     tick(engine);
@@ -602,7 +602,7 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
       sink.step({ kind: "confirm", text: "Send the summary to Ben?" });
       return undefined;
     };
-    const b = armed(w, engine.automations.set(draft("asker", clock.t + M), "brain", true));
+    const b = armed(w, engine.automations.arm(draft("asker", clock.t + M), "brain", true));
     clock.t += M;
     tick(engine);
     const g = await fired(w, 2);
@@ -617,7 +617,7 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
     automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 1 });
     threads.script = async () => ({ status: "done", summary: "never reached" });
     const brainsBefore = threads.brains.filter((x) => x.tasks.length > 0).length;
-    const c = armed(w, engine.automations.set(draft("greedy", clock.t + M, 120), "brain", true));
+    const c = armed(w, engine.automations.arm(draft("greedy", clock.t + M, 120), "brain", true));
     clock.t += M;
     tick(engine);
     const h = await fired(w, 3);
@@ -640,7 +640,7 @@ test("awake-delivery-appendInstructions: with a session open a fire is one instr
     await engine.ready();
     engine.updateSettings({ idleSleepMinutes: 0 });
     await engine.wake("test");
-    const a = armed(w, engine.automations.set(reminder("call mum", clock.t + M, "call mum"), "brain"));
+    const a = armed(w, engine.automations.arm(reminder("call mum", clock.t + M, "call mum"), "brain"));
     live.instructions.length = 0;
     events.length = 0;
     clock.t += M;
@@ -663,7 +663,7 @@ test("trash-restore-journal-grows: Move to Trash hides the row from the snapshot
   try {
     await engine.start();
     const journal = engine.automations.table.journalPath;
-    const a = armed(w, engine.automations.set({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "09:00" }, phrase: "weekdays 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Weekdays at 09:00, open Notes." }, "brain"));
+    const a = armed(w, engine.automations.arm({ name: "standup notes", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri"], at: "09:00" }, phrase: "weekdays 09:00" }, then: [{ kind: "open", app: "Notes" }], echo: "Weekdays at 09:00, open Notes." }, "brain"));
     const lines = (): string[] => readFileSync(journal, "utf8").split("\n").filter(Boolean);
     assert.equal(lines().length, 1);
     await engine.command({ type: "automation.trash", id: a.id });
@@ -674,7 +674,7 @@ test("trash-restore-journal-grows: Move to Trash hides the row from the snapshot
     assert.equal(engine.automations.table.get(a.id)?.state, "trashed", "kept for Restore");
     assert.equal(rows<StateRow>(w, "automation.state").at(-1)?.state, "trashed");
     // The name is free while it sits in the Trash.
-    armed(w, engine.automations.set({ name: "standup notes", when: { kind: "at", at: clock.t + H }, then: [{ kind: "chime", line: "standup" }], echo: "In an hour, chime." }, "brain"));
+    armed(w, engine.automations.arm({ name: "standup notes", when: { kind: "at", at: clock.t + H }, then: [{ kind: "chime", line: "standup" }], echo: "In an hour, chime." }, "brain"));
     const clash = await engine.automations.change(a.id, "restore");
     assert.equal(clash.ok, false, "restore refuses while another row wears the name");
     await engine.command({ type: "automation.trash", id: engine.snapshot().automations[0]!.id });
@@ -701,8 +701,8 @@ test("rebuild-idempotent: a second engine over the same state dir rebuilds the s
   const automationRows = (e: Engine): number => e.ledger.read(clock.t).filter((r) => r.type.startsWith("automation.")).length;
   try {
     await engine.start();
-    const a = armed(w, engine.automations.set(alarm("Wake up", clock.t + 2 * H), "brain"));
-    const b = armed(w, engine.automations.set({ name: "log hours", when: { kind: "on", on: { kind: "app.quit", app: "Slack" } }, then: [{ kind: "say", line: "log your hours" }], echo: "When Slack quits, say it." }, "brain"));
+    const a = armed(w, engine.automations.arm(alarm("Wake up", clock.t + 2 * H), "brain"));
+    const b = armed(w, engine.automations.arm({ name: "log hours", when: { kind: "on", on: { kind: "app.quit", app: "Slack" } }, then: [{ kind: "say", line: "log your hours" }], echo: "When Slack quits, say it." }, "brain"));
     await engine.command({ type: "automation.pause", id: b.id });
     await engine.stop();
     stopped = true;
@@ -737,7 +737,7 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
     tick(engine);
     engine.setViewers(1);
     const t0 = clock.t;
-    const a = armed(w, engine.automations.set({ name: "pasta", when: { kind: "in", ms: 12 * M }, then: [{ kind: "chime", line: "pasta is up", sound: "Glass" }], echo: "In 12 minutes, chime." }, "brain"));
+    const a = armed(w, engine.automations.arm({ name: "pasta", when: { kind: "in", ms: 12 * M }, then: [{ kind: "chime", line: "pasta is up", sound: "Glass" }], echo: "In 12 minutes, chime." }, "brain"));
     assert.equal(a.nextAt, t0 + 12 * M);
     assert.equal(engine.snapshot().nextFire?.kind, "timer");
     assert.deepEqual(holds.map((h) => h.argv), [["/usr/bin/caffeinate", "-t", "720"]], "one hold, a fixed argv");
@@ -788,7 +788,7 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
     assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "done");
 
     // Over an hour: nothing keeps the Mac awake (and nothing wakes it).
-    armed(w, engine.automations.set({ name: "long bake", when: { kind: "in", ms: 90 * M }, then: [{ kind: "chime", line: "bake is up" }], echo: "In 90 minutes, chime." }, "brain"));
+    armed(w, engine.automations.arm({ name: "long bake", when: { kind: "in", ms: 90 * M }, then: [{ kind: "chime", line: "bake is up" }], echo: "In 90 minutes, chime." }, "brain"));
     assert.equal(holds.length, 2, "over an hour: no hold");
     assert.equal(runs.length, 0);
     assert.equal(rows(w, "session.started").length, 0);

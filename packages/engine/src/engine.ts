@@ -476,49 +476,6 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.automations.agents(list);
       this.scheduleSnapshot();
     });
-    const runnerBase: Omit<RunnerOptions, "toolset"> = {
-      agents: this.agents,
-      stateDir: this.config.stateDir,
-      ledger: this.ledger,
-      overlay: (cmd) => this.emit("overlay", cmd),
-      // Self-edit: after a change to engine code passes its checks and Kevin confirms,
-      // the daemon restarts on the new code (exit 75 → the app respawns it).
-      requestRestart: (reason) => this.requestRestart(reason),
-      socketPath: this.config.socketPath,
-      selfEdit: {
-        ...(this.config.codexBin ? { codexBin: this.config.codexBin } : {}),
-        ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
-      },
-    };
-    // The table: what the last daemon left — a thread live when it died is ended `failed` with one row each,
-    // and nothing acts — plus the main thread's own record, idle. Every summary, event and status line reads from it.
-    const rebuilt = ThreadTable.rebuildFrom(this.ledger, { now: this.now });
-    const table = rebuilt.table;
-    if (!table.get(MAIN_THREAD_ID)) table.started(this.mainRecord());
-    // Threads get the same runner and toolset options over their own lane (hands, Screen, desk lane), the memory
-    // block and the composite look the main task gets, and the observer; the LIST of threads changing is the one
-    // time the scheduler asks for a snapshot — a step or a status is one `thread.event` on the wire.
-    this.threads = new ThreadScheduler({
-      now: this.now,
-      ledger: this.ledger,
-      desk: this.desk,
-      lease: this.lease,
-      hands: { focus: this.pool.focus, background: this.pool.background },
-      runnerOptions: () => runnerBase,
-      toolsetOptions: () => toolsetBase,
-      makeBrain: () => this.threadBrainFactory(),
-      parentFor: (task) => this.threadParentFor(task),
-      voice: () => this.threadVoice(),
-      enabled: () => this.settings.threads,
-      onChange: () => this.scheduleSnapshot(),
-      table,
-      onEvent: (e) => this.emit("event", { type: "thread.event", event: e }),
-      warmThreads: () => this.settings.warmThreads,
-      memory: (query, signal) => this.memory.brainBlock(query, signal),
-      look: () => this.compositeLook(),
-      observer: this.observer,
-    });
-    this.runner = new ThreadAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.threads, lease: this.lease, desk: this.desk, observer: this.observer, serializer: serializerLike(this.serializer) });
     // Automations (design11) beside the scheduler: the acting helper for `open_app` / `press`, the reading helper for the
     // app fallback poll, the runner's redactor on every line, the thread pool for one headless `wake-brain` turn — and
     // never `wake()`, `connect()` or `kevinSpoke()`: a fire is a thing the daemon does with the agent asleep.
@@ -569,6 +526,51 @@ export class Engine extends EventEmitter<EngineEvents> {
       home: opts.automations?.home ?? process.env["HOME"] ?? homedir(),
       repoRoot: REPO_ROOT,
     });
+    const runnerBase: Omit<RunnerOptions, "toolset"> = {
+      agents: this.agents,
+      // The automations table behind the brain's four tools, on the main runner and every lane runner alike.
+      automations: this.automations,
+      stateDir: this.config.stateDir,
+      ledger: this.ledger,
+      overlay: (cmd) => this.emit("overlay", cmd),
+      // Self-edit: after a change to engine code passes its checks and Kevin confirms,
+      // the daemon restarts on the new code (exit 75 → the app respawns it).
+      requestRestart: (reason) => this.requestRestart(reason),
+      socketPath: this.config.socketPath,
+      selfEdit: {
+        ...(this.config.codexBin ? { codexBin: this.config.codexBin } : {}),
+        ...(this.config.claudeBin ? { claudeBin: this.config.claudeBin } : {}),
+      },
+    };
+    // The table: what the last daemon left — a thread live when it died is ended `failed` with one row each,
+    // and nothing acts — plus the main thread's own record, idle. Every summary, event and status line reads from it.
+    const rebuilt = ThreadTable.rebuildFrom(this.ledger, { now: this.now });
+    const table = rebuilt.table;
+    if (!table.get(MAIN_THREAD_ID)) table.started(this.mainRecord());
+    // Threads get the same runner and toolset options over their own lane (hands, Screen, desk lane), the memory
+    // block and the composite look the main task gets, and the observer; the LIST of threads changing is the one
+    // time the scheduler asks for a snapshot — a step or a status is one `thread.event` on the wire.
+    this.threads = new ThreadScheduler({
+      now: this.now,
+      ledger: this.ledger,
+      desk: this.desk,
+      lease: this.lease,
+      hands: { focus: this.pool.focus, background: this.pool.background },
+      runnerOptions: () => runnerBase,
+      toolsetOptions: () => toolsetBase,
+      makeBrain: () => this.threadBrainFactory(),
+      parentFor: (task) => this.threadParentFor(task),
+      voice: () => this.threadVoice(),
+      enabled: () => this.settings.threads,
+      onChange: () => this.scheduleSnapshot(),
+      table,
+      onEvent: (e) => this.emit("event", { type: "thread.event", event: e }),
+      warmThreads: () => this.settings.warmThreads,
+      memory: (query, signal) => this.memory.brainBlock(query, signal),
+      look: () => this.compositeLook(),
+      observer: this.observer,
+    });
+    this.runner = new ThreadAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.threads, lease: this.lease, desk: this.desk, observer: this.observer, serializer: serializerLike(this.serializer) });
     // Durable memory (K: "jarhead preferences save across sessions"): built over the runner's
     // redactor (nothing reaches an extractor or the store unredacted), Kevin's OpenAI key when
     // there is one, and Settings.memory read live. Extraction runs from tick() only when quiet.
