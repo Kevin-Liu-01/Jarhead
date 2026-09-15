@@ -649,7 +649,11 @@ final class EngineClient: @unchecked Sendable {
             // One ≤ 200 B delta on one automation row (design11): `set` carries the row, the rest patch what
             // AppState holds; `fired` is what a crash report should know the app was doing.
             guard let sub = obj["event"], let e: AutomationEvent = decode(sub) else { return }
-            if e.kind == "fired" { CrashGuard.remember("automation → fired \(e.id)" + (e.line.map { " “\($0.prefix(40))”" } ?? "")) }
+            if e.kind == "fired" {
+                var note = "automation → fired \(e.id)"
+                if let line = e.line { note += " “\(line.prefix(40))”" }
+                CrashGuard.remember(note)
+            }
             onMain { $0.applyAutomationEvent(e) }
         case "local.say":
             // The daemon has no speaker: the app plays the earcon and reads the fixed line (never model text but a

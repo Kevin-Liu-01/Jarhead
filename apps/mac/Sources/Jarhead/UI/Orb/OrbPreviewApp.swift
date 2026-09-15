@@ -3218,8 +3218,10 @@ extension OrbPreviewDelegate {
         case "snooze":
             let minutes = Int(name.split(separator: ":").last.map(String.init) ?? "") ?? -1
             let ok = sent == ["automation.snooze"] && lastSnooze?.id == Self.ringId && lastSnooze?.minutes == minutes && counted.go == 0 && counted.sayText == 0 && counted.threadAnswer == 0
+            var snoozed = "none"
+            if let s = lastSnooze { snoozed = "\(s.id) \(s.minutes) min" }
             check(ok, "press snooze:10 → automation.snooze 1 (the ringing row, 10 minutes); go 0, say-text 0, thread.answer 0",
-                  "sent \(sent); snooze \(lastSnooze.map { "\($0.id) \($0.minutes) min" } ?? "none"); run totals go \(counted.go) say-text \(counted.sayText) thread.answer \(counted.threadAnswer)")
+                  "sent \(sent); snooze \(snoozed); run totals go \(counted.go) say-text \(counted.sayText) thread.answer \(counted.threadAnswer)")
         case "done":
             let ok = sent == ["automation.done"] && lastDone == Self.ringId && counted.go == 0 && counted.threadAnswer == 0
             check(ok, "press done → automation.done 1 (the ringing row); go 0, thread.answer 0",

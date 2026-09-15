@@ -86,7 +86,9 @@ final class SignalObserver {
     }
 
     private func forward(_ kind: String, app: String? = nil, bundleId: String? = nil) {
-        CrashGuard.remember("signal → \(kind)" + (app.map { " \($0)" } ?? ""))
+        var note = "signal → \(kind)"
+        if let app { note += " \(app)" }
+        CrashGuard.remember(note)
         state.systemSignal(SystemSignal(kind: kind, app: app, bundleId: bundleId))
     }
 }

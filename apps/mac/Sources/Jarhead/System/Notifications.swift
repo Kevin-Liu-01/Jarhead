@@ -82,8 +82,8 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // The banner even while Jarhead is frontmost; never a sound — the earcon rang.
-        completionHandler([.banner, .list])
+        // The banner even while Jarhead is frontmost; never a sound — the earcon rang (design11: `[.banner]`).
+        completionHandler([.banner])
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
