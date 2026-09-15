@@ -1113,9 +1113,11 @@ struct RecipeRow: View {
 
     var body: some View {
         if let restore, recipe.isTrashed {
+            // Restore is the row's one verb, pressed on its button (the automations Trash fold's idiom): a click
+            // on the row itself does nothing — a deed is never a click that landed anywhere.
             ConsoleRow(title: recipe.name, icon: .glyph("terminal.fill", tint: ConsoleTheme.titanium), meta: AutomationFormat.recipeMeta(recipe),
                        trailing: ConsoleRow.Trailing.none, verb: ConsoleRowVerb(title: AutomationWords.restore, help: HelpCopy.restoreTrash.hint, run: restore),
-                       mono: true, sitsBack: true, id: AutomationWords.recipeTip(recipe.name), primary: restore)
+                       mono: true, sitsBack: true, id: AutomationWords.recipeTip(recipe.name), primary: {})
         } else {
             liveRow
         }
