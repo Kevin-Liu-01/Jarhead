@@ -1661,7 +1661,18 @@ public struct LedgerRow: Codable, Identifiable {
     public var skipped: Bool?
     public var why: String?
     public var recipe: ShellRecipe?
-    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? threadId ?? rowId ?? "")" }
+    /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
+    /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).
+    public var id: String {
+        let tail: String
+        if let item { tail = item.id }
+        else if let step { tail = step.id }
+        else if let delegation { tail = delegation.id }
+        else if let threadId { tail = threadId }
+        else if let rowId { tail = rowId }
+        else { tail = "" }
+        return "\(type)-\(at)-\(tail)"
+    }
 
     /// Every stored column by its wire name; `rowId` reads the wire's `id` (the struct's own `id` is derived).
     enum CodingKeys: String, CodingKey {
