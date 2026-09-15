@@ -478,6 +478,9 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
     var markTraceHomeSeen = false
     /// The session a scripted Pause closed, for the resume (ORB_PAUSE_AT plays the engine).
     var pausedSession: SessionInfo?
+    /// The clock ORB_PAUSE_AT counts from (CACurrentMediaTime at its scheduling, late in launch): the meter's paused
+    /// reading is anchored here, not to `launchedAt`, so however long launch took it lands 0.3 s after the phase does.
+    var pauseScriptAt = -1.0
     /// Untagged `.stroke`s seen on state.overlayCommands (a tagged trace is re-stamped as exactly one), and the last one's point count.
     var strokesSeen = 0
     var lastStrokePoints = 0
@@ -1175,6 +1178,7 @@ final class OrbPreviewDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if let at = Double(env["ORB_PAUSE_AT"] ?? "") {
+            pauseScriptAt = CACurrentMediaTime()
             DispatchQueue.main.asyncAfter(deadline: .now() + at) { [weak self] in
                 guard let self else { return }
                 let was = self.state.snapshot.phase
@@ -4222,11 +4226,14 @@ extension OrbPreviewDelegate {
         let wantAsleep = "today \(TransportFormat.billed(v[2]))"
         let pauseAt = Double(env["ORB_PAUSE_AT"] ?? "") ?? -1
         let sleepAt = self.sleepAt ?? -1
-        let judgeAt = max(3.5, pauseAt + 0.7, sleepAt + 1.2) - (CACurrentMediaTime() - launchedAt)
+        // The Pause press counts from `pauseScriptAt` and the fake engine answers with the phase 0.1 s later: the
+        // paused reading is 0.4 s after the press on that clock (0.3 s into the paused content), never on `launchedAt`'s.
+        let pauseIn = pauseAt + 0.4 - (CACurrentMediaTime() - (pauseScriptAt >= 0 ? pauseScriptAt : launchedAt))
+        let judgeAt = max(3.5 - (CACurrentMediaTime() - launchedAt), pauseIn + 0.3, sleepAt + 1.2 - (CACurrentMediaTime() - launchedAt))
         var pausedNote = "paused: not exercised (ORB_PAUSE_AT)", pausedOK = pauseAt < 0
         var asleepNote = "asleep: not exercised (ORB_SLEEP_AT)", asleepOK = sleepAt < 0
         if pauseAt >= 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, pauseAt + 0.4 - (CACurrentMediaTime() - launchedAt))) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, pauseIn)) { [weak self] in
                 guard let self else { return }
                 let a = self.orb.previewNotchFootText
                 let dim = self.orb.previewNotchFootDim
