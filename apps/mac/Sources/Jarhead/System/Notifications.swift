@@ -1,5 +1,5 @@
 import AppKit
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// The macOS banner for a fired automation (design11 § macOS notification): one category, `jarhead.automation`,
 /// with `Snooze N` · `Done` (and `Open` when the ring carries a target); a press lands on the same row as the
@@ -59,18 +59,19 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
     /// without the grant — no prompt from here; the Permissions sweep asks.
     func post(_ n: NotifyMessage) {
         guard available, installed else { return }
-        let centre = UNUserNotificationCenter.current()
         let openTarget = n.presses.first { $0.kind == "open" }?.target
         let snooze = n.presses.first { $0.kind == "snooze" }?.minutes ?? snoozeMinutes
+        // Built here, on the actor; the settings callback only carries the request across.
+        let content = UNMutableNotificationContent()
+        content.title = n.title
+        if let body = n.body, !body.isEmpty { content.body = body }
+        content.categoryIdentifier = openTarget == nil ? Words.category : Words.categoryWithOpen
+        content.interruptionLevel = .active
+        content.userInfo = ["automationId": n.automationId, "snooze": snooze, "open": openTarget ?? ""]
+        let request = UNNotificationRequest(identifier: "automation-\(n.id)", content: content, trigger: nil)
+        let centre = UNUserNotificationCenter.current()
         centre.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
-            let content = UNMutableNotificationContent()
-            content.title = n.title
-            if let body = n.body, !body.isEmpty { content.body = body }
-            content.categoryIdentifier = openTarget == nil ? Words.category : Words.categoryWithOpen
-            content.interruptionLevel = .active
-            content.userInfo = ["automationId": n.automationId, "snooze": snooze, "open": openTarget ?? ""]
-            let request = UNNotificationRequest(identifier: "automation-\(n.id)", content: content, trigger: nil)
             centre.add(request) { error in
                 if let error { appLog("notifications: add failed — \(error.localizedDescription)") }
             }
