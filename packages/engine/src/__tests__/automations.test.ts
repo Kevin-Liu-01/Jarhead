@@ -647,7 +647,7 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
 });
 
 // (13) awake-delivery-appendInstructions
-test("awake-delivery-appendInstructions: with a session open a fire is one instruction to Live (say the line once, with its name) and no local.say; the island line still shows", async () => {
+test("awake-delivery-appendInstructions: with a session open a fire is one instruction to Live (say the line once, with its name) and no local.say; the island line still shows; a chime and a say on one row are still one instruction", async () => {
   const { exec } = fakeExec();
   const w = world({ automations: { exec } });
   const { engine, clock, events, live } = w;
@@ -666,6 +666,16 @@ test("awake-delivery-appendInstructions: with a session open a fire is one instr
     assert.equal(events.filter((e) => e.type === "local.say").length, 0, "the speaker stays quiet while the voice is up");
     assert.equal(engine.snapshot().ringing?.id, a.id);
     assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.lastDetail, "said by the voice");
+
+    // A chime AND a say on one row: Live is told ONCE for the fire, with both lines, never twice.
+    const both = armed(w, engine.automations.arm({ name: "standup", when: { kind: "at", at: clock.t + M }, then: [{ kind: "chime", line: "Standup", sound: "Ping" }, { kind: "say", line: "standup in five" }], clauses: { quiet: "override" }, echo: "In a minute, chime and say standup." }, "brain"));
+    live.instructions.length = 0;
+    clock.t += M;
+    tick(engine);
+    await fired(w, 2);
+    assert.equal(live.instructions.length, 1, "one instruction per fire, not one per line kind");
+    assert.equal(live.instructions[0], "Kevin's standup fired: say 'Standup; standup in five' once, with its name, and nothing more.");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === both.id)?.state, "fired");
   } finally {
     await engine.stop();
   }
@@ -1198,6 +1208,157 @@ test("exception-detail-redacted: a fire whose gate throws with a secret in its m
     assert.equal(sh.calls.length, 0);
   } finally {
     delete process.env["JARHEAD_BRAIN_API_KEY"];
+    await engine.stop();
+  }
+});
+
+// then[] runs in Kevin's order and stops at the first failure
+test("then-in-order: [say, run-recipe] with a failing shell says the line first (local.say) and then fails on the recipe — the say is not withheld; [chime, wake-brain] sounds the chime before the brain turn starts; [file, chime] still files first so the line can say what it did", async () => {
+  const { exec } = fakeExec();
+  const sh = fakeShell(1, "boom");
+  const w = world({ automations: { exec, shell: sh.shell } });
+  const { engine, clock, events, threads } = w;
+  try {
+    await engine.start();
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe", "wake-brain"], recipes: [{ name: "backup", command: "echo hi", timeoutSeconds: 5, approvedAt: clock.t }] });
+    const a = armed(w, engine.automations.arm({ name: "backup night", when: { kind: "at", at: clock.t + M }, then: [{ kind: "say", line: "starting backup" }, { kind: "run-recipe", recipe: "backup" }], echo: "Say it, then back up." }, "brain", true));
+    events.length = 0;
+    clock.t += M;
+    tick(engine);
+    const f = await fired(w);
+    assert.deepEqual(f[0]!.actions, ["say", "run-recipe"], "the order is Kevin's");
+    assert.equal(f[0]!.ok, false);
+    assert.match(f[0]!.detail ?? "", /recipe backup exit 1/);
+    const says = events.filter((e) => e.type === "local.say");
+    assert.deepEqual(says, [{ type: "local.say", text: "starting backup", automationId: a.id }], "the say went out before the recipe failed");
+    assert.deepEqual(sh.calls, ["echo hi"]);
+
+    // The chime sounds before the headless turn starts, not after it ends.
+    let chimeBeforeBrain: boolean | undefined;
+    threads.script = async () => {
+      chimeBeforeBrain = events.some((e) => e.type === "local.say" && "sound" in e && e.sound === "Glass");
+      return { status: "done", summary: "All quiet." };
+    };
+    events.length = 0;
+    const b = armed(w, engine.automations.arm({ name: "rundown", when: { kind: "at", at: clock.t + M }, then: [{ kind: "chime", line: "rundown", sound: "Glass" }, { kind: "wake-brain", prompt: "what happened", budget: { steps: 3, seconds: 60 }, speak: false }], clauses: { quiet: "override" }, echo: "Chime, then wake the brain." }, "brain", true));
+    clock.t += M;
+    tick(engine);
+    const g = await fired(w, 2);
+    assert.equal(g[1]!.id, b.id);
+    assert.equal(g[1]!.ok, true, g[1]!.detail);
+    assert.deepEqual(g[1]!.actions, ["chime", "wake-brain"]);
+    assert.equal(chimeBeforeBrain, true, "the chime's local.say preceded the brain turn");
+  } finally {
+    await engine.stop();
+  }
+});
+
+// an alarm's one self-snooze is per occurrence
+test("self-snooze-per-occurrence: a daily alarm self-snoozes once on day one, rings again, Kevin presses Done on the re-ring; on day two the unanswered ring self-snoozes once again ('unanswered · snoozed once') instead of ending 'unanswered' after ten minutes", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock } = w;
+  clock.t = new Date(2026, 8, 14, 7, 0, 0).getTime();
+  try {
+    await engine.start();
+    const a = armed(w, engine.automations.arm({ name: "Wake up", when: { kind: "every", every: { kind: "weekly", days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], at: "07:10" }, phrase: "daily 07:10" }, then: [{ kind: "chime", line: "Wake up, Kevin", sound: "Hero" }], clauses: { quiet: "override" }, echo: "Daily at 07:10, ring." }, "brain"));
+    const row = (): Automation => engine.snapshot().automations.find((x) => x.id === a.id)!;
+    // Day one: ring, self-snooze after the linger, ring again, Kevin's Done.
+    clock.t = new Date(2026, 8, 14, 7, 10, 0).getTime();
+    tick(engine);
+    await fired(w);
+    clock.t += AUTOMATION_LINGER_MS;
+    tick(engine);
+    assert.equal(row().state, "snoozed");
+    assert.equal(row().lastDetail, "unanswered · snoozed once");
+    clock.t += 10 * M;
+    tick(engine);
+    await fired(w, 2);
+    assert.equal(row().state, "fired");
+    clock.t += M;
+    await engine.command({ type: "automation.done", id: a.id });
+    assert.equal(row().state, "armed", "a repeater re-arms on Done");
+    assert.equal(row().nextAt, new Date(2026, 8, 15, 7, 10, 0).getTime());
+    // Day two: the same alarm, unanswered — it self-snoozes ONCE again, as the design says, rather than ending.
+    clock.t = new Date(2026, 8, 15, 7, 10, 0).getTime();
+    tick(engine);
+    await fired(w, 3);
+    assert.equal(row().state, "fired");
+    clock.t += AUTOMATION_LINGER_MS;
+    tick(engine);
+    assert.equal(row().state, "snoozed", "day two's first linger self-snoozes; the flag did not leak from day one");
+    assert.equal(row().lastDetail, "unanswered · snoozed once");
+    assert.equal(rows<StateRow>(w, "automation.state").filter((r) => r.state === "snoozed" && r.by === "engine").length, 1, "today's ledger file holds day two's self-snooze (day one's is in its own day file)");
+    // And Kevin's own Snooze on a ring resets it too: after his snooze, the re-ring's linger still gets the engine's one self-snooze.
+    clock.t += 10 * M;
+    tick(engine);
+    await fired(w, 4);
+    await engine.command({ type: "automation.snooze", id: a.id, minutes: 5 });
+    clock.t += 5 * M;
+    tick(engine);
+    await fired(w, 5);
+    clock.t += AUTOMATION_LINGER_MS;
+    tick(engine);
+    assert.equal(row().state, "snoozed", "Kevin's Snooze answered the ring; the engine's self-snooze is available again");
+  } finally {
+    await engine.stop();
+  }
+});
+
+// a fire's record stands even when Kevin moved the row while it ran
+test("fired-row-when-trashed-mid-run: a recipe that is still running when Kevin moves the row to the Trash finishes with ONE automation.fired row and a fired event; the row stays trashed with fires 1; a pause mid-run keeps it paused", async () => {
+  const { exec } = fakeExec();
+  let release: (() => void) | undefined;
+  const calls: string[] = [];
+  const shell: ShellRunner = async (o) => {
+    calls.push(o.command);
+    await new Promise<void>((r) => (release = r));
+    return { code: 0, signal: null, stdout: "done", stderr: "", timedOut: false, cancelled: false, ms: 1 };
+  };
+  const w = world({ automations: { exec, shell } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    const recipes = [{ name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t }];
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes });
+    const a = armed(w, engine.automations.arm({ name: "tidy once", when: { kind: "at", at: clock.t + M }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Run tidy." }, "brain", true));
+    clock.t += M;
+    tick(engine);
+    await until(() => calls.length === 1, 1500);
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "firing");
+    await engine.command({ type: "automation.trash", id: a.id });
+    assert.equal(engine.automations.table.get(a.id)?.state, "trashed");
+    events.length = 0;
+    release!();
+    const f = await fired(w);
+    assert.equal(f.length, 1, "the fire's record stands");
+    assert.equal(f[0]!.id, a.id);
+    assert.equal(f[0]!.ok, true);
+    assert.equal(f[0]!.line, "tidy once · recipe tidy exit 0 · done", "what the recipe did is the fire's line");
+    const row = engine.automations.table.get(a.id)!;
+    assert.equal(row.state, "trashed", "the state is Kevin's");
+    assert.equal(row.fires, 1);
+    assert.equal(row.lastFiredAt, f[0]!.at);
+    engine.automations.table.flush();
+    assert.ok(events.some((e) => e.type === "automation.event" && e.event.kind === "fired" && e.event.id === a.id), "the fired event went out");
+    assert.equal(engine.snapshot().nextFire, undefined);
+
+    // Paused mid-run: the same record, the row stays paused.
+    const anchor = clock.t;
+    const b = armed(w, engine.automations.arm({ name: "tidy hourly", when: { kind: "every", every: { kind: "interval", everyMs: H, anchorAt: anchor }, phrase: "every 1 h" }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Every hour, tidy." }, "brain", true));
+    clock.t += H;
+    tick(engine);
+    await until(() => calls.length === 2, 1500);
+    await engine.command({ type: "automation.pause", id: b.id });
+    release!();
+    const g = await fired(w, 2);
+    assert.equal(g[1]!.id, b.id);
+    const paused = engine.automations.table.get(b.id)!;
+    assert.equal(paused.state, "paused");
+    assert.equal(paused.fires, 1);
+    assert.equal(paused.nextAt, undefined, "paused rows wait; nothing is in the heap for it");
+  } finally {
+    release?.();
     await engine.stop();
   }
 });

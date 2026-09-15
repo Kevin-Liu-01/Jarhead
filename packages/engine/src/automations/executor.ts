@@ -189,8 +189,10 @@ export class AutomationExecutor {
   }
 
   /**
-   * Run the row's actions in order; the first failure stops the chain. The line, the
-   * calm second line and the presses are the island's; every text is redacted.
+   * Run the row's actions in Kevin's order; the first failure stops the chain (a line kind
+   * before a failing acting kind has already rung — that is the order he set). The line, the
+   * calm second line and the presses are the island's; every text is redacted. Awake, the
+   * line kinds are one instruction to Live for the whole fire.
    */
   async fire(ctx: FireContext, nextAt: number | undefined): Promise<FireOutcome> {
     const t0 = this.opts.now();
@@ -204,12 +206,12 @@ export class AutomationExecutor {
     let delegationId: string | undefined;
     let brainSeconds: number | undefined;
     let ok = true;
-    // The acting kind runs first when the row has one, so the line can say what it did ("filed invoice.pdf → Papers").
-    const order = [...a.then].sort((x, y) => Number(isLine(x)) - Number(isLine(y)));
-    for (const action of order) {
+    // Awake, the line kinds are ONE instruction to Live for the whole fire, appended after the loop; each chime/say adds its line here.
+    const spoken: string[] = [];
+    // The actions run in the order Kevin set them — `then` is his sequence — and the first failure stops the chain.
+    for (const action of a.then) {
       actions.push(action.kind);
-      const r = await this.one(action, ctx, kind, what, nextAt);
-      // The acting kind's failure ends the chain before any line kind rings for it.
+      const r = await this.one(action, ctx, kind, what, nextAt, spoken);
       if (r.what) what = r.what;
       if (r.open) openTarget = r.open;
       if (r.ring) ring = true;
@@ -224,20 +226,22 @@ export class AutomationExecutor {
     }
     const line = this.line(a, ctx.dueAt, what);
     const presses = this.presses(a, openTarget);
+    const live = this.opts.live();
+    if (live && spoken.length > 0) live.appendInstructions(null, `Kevin's ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`);
     return { ok, actions, line, calm: this.calm(a, nextAt), detail: detail ? cut(this.opts.redact(detail), DETAIL_CHARS) : undefined, presses, ring, delegationId, brainSeconds, ms: this.opts.now() - t0 };
   }
 
   // ------------------------------------------------------------- actions
 
-  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined): Promise<StepOutcome> {
+  private async one(action: AutomationAction, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): Promise<StepOutcome> {
     // The Settings › While asleep chip is a kill switch per kind: judged at set-up AND here, so a chip turned off after a row
     // was armed stops that row's action at its next fire (a failed row with the reason; repeaters re-arm and say so).
     if (!this.opts.settings().automations.unattended.includes(action.kind)) return { ok: false, detail: `${action.kind} is off in Settings › Automations › While asleep` };
     switch (action.kind) {
       case "chime":
-        return this.chime(action, ctx, kind, what, nextAt);
+        return this.chime(action, ctx, kind, what, nextAt, spoken);
       case "say":
-        return this.say(action, ctx, what);
+        return this.say(action, ctx, what, spoken);
       case "notify":
         return this.notify(action, ctx);
       case "open":
@@ -260,32 +264,30 @@ export class AutomationExecutor {
     this.opts.emit({ type: "notify", id: newId("ntf"), title: cut(this.opts.redact(title), AUTOMATION_LINE_CHARS), ...(body ? { body: cut(this.opts.redact(body), AUTOMATION_LINE_CHARS) } : {}), presses: this.presses(a, open), automationId: a.id });
   }
 
-  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined): StepOutcome {
+  private chime(action: Extract<AutomationAction, { kind: "chime" }>, ctx: FireContext, kind: AutomationKind, what: string | undefined, nextAt: number | undefined, spoken: string[]): StepOutcome {
     const { a } = ctx;
     const line = this.line(a, ctx.dueAt, what);
-    const spoken = cut(this.opts.redact(action.line.trim() || a.name), AUTOMATION_LINE_CHARS);
-    const live = this.opts.live();
+    const said = cut(this.opts.redact(action.line.trim() || a.name), AUTOMATION_LINE_CHARS);
     let detail: string | undefined;
-    if (live) {
-      // Awake: the island line only; the chime is skipped (the mic would hear it) and Live is told once.
-      live.appendInstructions(null, `Kevin's ${a.name} fired: say '${spoken}' once, with its name, and nothing more.`);
+    if (this.opts.live()) {
+      // Awake: the island line only; the chime is skipped (the mic would hear it) and Live is told once per fire, after the loop.
+      spoken.push(said);
       detail = "said by the voice";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
     } else {
       this.opts.emit({ type: "local.say", sound: action.sound ?? (kind === "alarm" ? "Hero" : "Glass"), automationId: a.id });
     }
-    this.banner(a, line, spoken !== line ? spoken : this.calm(a, nextAt), undefined);
+    this.banner(a, line, said !== line ? said : this.calm(a, nextAt), undefined);
     return { ok: true, ring: true, detail };
   }
 
-  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined): StepOutcome {
+  private say(action: Extract<AutomationAction, { kind: "say" }>, ctx: FireContext, what: string | undefined, spoken: string[]): StepOutcome {
     const { a } = ctx;
     const text = cut(this.opts.redact(action.line.trim()), AUTOMATION_LINE_CHARS);
-    const live = this.opts.live();
     let detail: string | undefined;
-    if (live) {
-      live.appendInstructions(null, `Kevin's ${a.name} fired: say '${text}' once, with its name, and nothing more.`);
+    if (this.opts.live()) {
+      spoken.push(text);
       detail = "said by the voice";
     } else if (ctx.quiet) {
       detail = "quiet hours: shown, not said";
@@ -538,10 +540,6 @@ interface StepOutcome {
   readonly ring?: boolean | undefined;
   readonly delegationId?: string | undefined;
   readonly brainSeconds?: number | undefined;
-}
-
-function isLine(a: AutomationAction): boolean {
-  return a.kind === "chime" || a.kind === "say" || a.kind === "notify";
 }
 
 function isUnder(p: string, root: string): boolean {
