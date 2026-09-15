@@ -367,9 +367,13 @@ extension ConsoleFormat {
             guard let state = row.state, state != "firing" else { return nil }
             return (symbol, word, "\(name.isEmpty ? "" : name + " · ")\(stateWords(state, until: row.until))", nil, row.detail)
         case "automation.missed":
-            let due = row.dueAt.map { clock($0) } ?? ""
-            let why = row.why.map { missedWhyWords($0) } ?? ""
-            return ("clock.badge.exclamationmark", word, "\(name.isEmpty ? "" : name + " · ")\(row.skipped == true ? "skipped" : "missed")\(due.isEmpty ? "" : " · due " + due)\(why.isEmpty ? "" : " · " + why)", row.lateMs.map { lateWords($0) }, nil)
+            // One statement per word (CI's older Swift gives up on ternaries concatenating inside one interpolation).
+            var parts: [String] = []
+            if !name.isEmpty { parts.append(name) }
+            parts.append(row.skipped == true ? "skipped" : "missed")
+            if let dueAt = row.dueAt { parts.append("due " + clock(dueAt)) }
+            if let why = row.why { parts.append(missedWhyWords(why)) }
+            return ("clock.badge.exclamationmark", word, parts.joined(separator: AutomationWords.dot), row.lateMs.map { lateWords($0) }, nil)
         default:
             return nil
         }
