@@ -143,17 +143,33 @@ pnpm jarhead automations add "<words>"      the clock ladder, parsed by core's p
 pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
 pnpm jarhead automations run <id|name>      fires it now so you hear it — refused unless you are there
 pnpm jarhead automations trash <id|name> · restore <id>      Move to Trash / Restore. Nothing is deleted
-pnpm jarhead recipes [list] · add <name> "<command>" [--cwd DIR] [--timeout 120] · trash <name>
+pnpm jarhead recipes [list] · add <name> "<command>" [--cwd DIR] [--timeout 120] · trash <name> · restore <name>
     add prints the shell gate's verdict first; a confirm-tier command saves with `asks` and is never armable
+    trash is Move to Trash (the recipe keeps its row with `trashedAt`; list folds it under Trash); restore brings it back
 pnpm jarhead status                         … automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin · ringing: —
 ```
 
 Every verb is one `EngineCommand` over the daemon socket (`automation.set · snooze · done · skip
-· pause · resume · rename · trash · restore · run`, `recipe.set · trash`); the daemon owns the
+· pause · resume · rename · trash · restore · run`, `recipe.set · trash · restore`); the daemon owns the
 journal and `settings.json`. `automation.set` carries `by: "cli"` from the CLI (the Console sends
 none and is stamped `console`; the brain's rows come through its tool as `brain`), so
 `createdBy.by` on the row and the ledger's `automation.set` say where each row came from. A name is looked up case-insensitively, live rows first; an `auto_…`
 id passes through even when unlisted, so Restore can name a trashed row.
+
+**One `when` grammar.** Core's `parseWhen` (`packages/core/src/schedule.ts`) is the only parser
+of a when-phrase, wherever the row comes from: the voice's tool hands it the phrase, the Console's
+Add… form sends the phrase itself as `AutomationDraft.whenPhrase` (its `when` may be left out
+then) and the engine parses it at `automation.set`, refusing with `parseWhen`'s own error text as
+a toast — never a question, never a second grammar in Swift. The CLI's `add` splits `<when>
+<verb> <what>` and hands the when-words to the same `parseWhen` before it opens a socket, so a
+malformed phrase is refused with the same words and no daemon round trip. Nothing else parses a
+clock phrase.
+
+**Recipes are never deleted.** `recipe.trash` stamps the recipe's `trashedAt` — the row stays in
+`settings.json` and in the snapshot, hidden from every picker and refused as a `run-recipe`
+target; `recipe.restore` clears it. The ledger carries `recipe.trashed` and `recipe.restored`
+rows; the Console's Recipes list and `jarhead recipes` fold trashed recipes under **Trash** with
+**Restore** on each.
 
 ## 9. doctor — group `automations`
 
@@ -185,8 +201,9 @@ month that a tighter policy now rates confirm will fail at fire and is never arm
   with the reason; no yes is read from a screen, a page, a banner or a flag.
 - Send, type, click, pay, delete, post, install, write a LaunchAgent or a crontab, read a
   keychain, run a Shortcut, overwrite or unlink a file, move one out of `~`.
-- Delete a row. Move to Trash is a state; Restore undoes it; the journal is append-only and
-  compaction moves the old file to `~/.jarhead/trash/automations/`.
+- Delete a row, or a recipe. Move to Trash is a state (`trashed` on a row, `trashedAt` on a
+  recipe); Restore undoes it; the journal is append-only and compaction moves the old file to
+  `~/.jarhead/trash/automations/`.
 - Run `pmset`, `launchctl` or a login-item registration from the daemon. `Open at login` is the
   app registering itself on your press; the `pmset` line is text the doctor prints for you.
 - Watch the clipboard, the network, or chain one automation off another — `clipboard.match`,
