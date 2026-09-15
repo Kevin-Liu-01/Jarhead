@@ -363,8 +363,8 @@ export function zodShape(spec: ToolSpec): Record<string, z.ZodTypeAny> {
     if (prop.enum) t = z.enum(prop.enum as [string, ...string[]]);
     else if (type === "number" || type === "integer") t = z.number();
     else if (type === "boolean") t = z.boolean();
-    // Arrays of numbers (coordinates), of [x, y] pairs (show_stroke), or of strings.
-    else if (type === "array") t = z.array(prop.items?.type === "number" ? z.number() : prop.items?.type === "array" ? z.array(z.number()) : z.string());
+    // Arrays of numbers (coordinates), of [x, y] pairs (show_stroke), of objects (automation_set's `then`), or of strings.
+    else if (type === "array") t = z.array(prop.items?.type === "number" ? z.number() : prop.items?.type === "array" ? z.array(z.number()) : prop.items?.type === "object" ? z.object({}).passthrough() : z.string());
     else if (Array.isArray(prop.type)) t = z.union([z.string(), z.number()]);
     // A nested object (thread_start's `budget`): its own shape, extra keys allowed — the bridge and the
     // Responses/Anthropic brains pass the JSON schema through untouched; only this SDK path needs zod.

@@ -236,12 +236,12 @@ test("delegator: a slow lookup is cut at MEMORY_RECALL_MS with its signal aborte
   }
 });
 
-test("tools: `remember` says it is for this session and points facts about Kevin at the durable memory; the tool table is unchanged (67, no memory tool — the engine hook does that work)", () => {
+test("tools: `remember` says it is for this session and points facts about Kevin at the durable memory; the tool table is unchanged by memory (71 with the automations, no memory tool — the engine hook does that work)", () => {
   const remember = specByName("remember")!;
   assert.match(remember.description, /later in this session/);
   assert.match(remember.description, /Not for facts about Kevin/);
   assert.match(remember.description, /durable memory learns those from the conversation on its own/);
-  assert.equal(ALL_TOOL_SPECS.length, 67);
+  assert.equal(ALL_TOOL_SPECS.length, 71);
   assert.equal(specByName("memory_add"), undefined);
   assert.equal(specByName("memory_forget"), undefined);
 });

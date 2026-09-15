@@ -283,10 +283,98 @@ export const BROWSER_SPECS: readonly ToolSpec[] = [
   { name: "browser_tabs", description: "List the tabs of the front browser window: index, title, URL, and which is active. One Apple event; use it instead of applescript for tabs.", parameters: { type: "object", properties: { app: { type: "string" } } } },
 ];
 
+const clockTime = { type: "string", description: "'HH:mm', 24 h, local" };
+
+/**
+ * Automations (design11, 2026-09-14): `when <trigger> then <actions>`, armed here while
+ * Kevin is awake and carried out by the daemon from its tick with the agent asleep — no
+ * Live session, no brain turn, nothing billed, except `wake-brain`, opted into per row with
+ * its cost said first. The descriptions carry the rules the standing orders do not repeat:
+ * the policy judges NOW (a kind off in Settings, a non-https URL, a hands-off app, a recipe
+ * that would need a yes when it runs, a send/type/click/delete/pay are refused with the
+ * reason and the nearest safe action); run-recipe, press and wake-brain return
+ * needs_confirmation once, here, and the identical re-call after Kevin's yes arms them.
+ * The runner answers these through an `AutomationSource` (automations.ts); a brain without
+ * one gets "not available here". Rows are never deleted: `trash` is Move to Trash.
+ */
+export const AUTOMATION_SPECS: readonly ToolSpec[] = [
+  {
+    name: "automation_set",
+    description:
+      "Arm one automation for the daemon: 'when X then Y', carried out later with Jarhead asleep — no session, no brain turn, nothing billed. Give `when` (a clock phrase: '7:10', 'tomorrow 07:10', 'in 12 minutes', 'weekdays 09:00', 'daily 18:00', 'every 2 h') or `on` (a signal: a file landing in a folder, a download finishing, an app launching or quitting, the Mac waking, the screen unlocking, a display connecting, a recipe going red, an agent's status) — one of the two. `then` is 1–3 actions in order, at most one that acts (open, file, run-recipe, press, wake-brain) plus any of chime, say, notify; a chime or say line is one fixed sentence you write now (≤ 160 chars), never a briefing. Write `echo`: one terse line in Kevin's words saying exactly when and what, and say it to him. The policy judges NOW, at set-up: a kind off in Settings, a non-https URL, a hands-off app, a recipe that would need a yes when it runs, a send/type/click/delete/pay, are refused with the reason and the nearest safe action — offer that, never a shell recipe that does the same thing. run-recipe, press and wake-brain return needs_confirmation once, here — ask Kevin in his words (for wake-brain the question carries its cost: brain minutes per fire and the daily cap; relay it exactly), and after his yes call again with exactly the same arguments; from then on it fires silently. A new recipe arrives as `recipeCommand` with the run-recipe action and is approved by that same yes. Times are local; say the time back. Returns `armed: <name> · <when> · <actions> · next <local time>`.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "≤ 24 characters, spoken as-is, unique: 'Wake up', 'pasta', 'standup notes', 'file PDFs'" },
+        when: { type: "string", description: "a clock phrase: '7:10' · 'tomorrow 07:10' · 'in 12 minutes' · 'weekdays 09:00' · 'daily 18:00' · 'weekends 10:30' · 'mon,wed 07:10' · 'every 2 h' (monthly dates are not yet)" },
+        on: {
+          type: "object",
+          description: "a signal instead of a clock: { kind, … }",
+          properties: {
+            kind: { type: "string", enum: ["folder.file", "download.done", "app.launch", "app.quit", "mac.wake", "screen.unlock", "display.connected", "display.disconnected", "recipe.red", "agent.status"] },
+            path: { type: "string", description: "folder.file: the folder to watch (~ expands)" },
+            glob: { type: "string", description: "folder.file / download.done: narrow by name, e.g. '*.pdf'" },
+            app: { type: "string", description: "app.launch / app.quit: the app's name" },
+            recipe: { type: "string", description: "recipe.red: an approved recipe's name" },
+            everySeconds: { type: "integer", minimum: 30, description: "recipe.red: poll period (≥ 30)" },
+            agent: { type: "string", description: "agent.status: which agent session (absent = any)" },
+            status: { type: "string", enum: ["working", "idle", "blocked", "done", "ended", "unknown", "offline"], description: "agent.status: the status to fire on" },
+          },
+        },
+        then: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          description: "the actions, in order: { kind: 'chime', line, sound? (Pop, Glass, Ping, Hero) } · { kind: 'say', line } · { kind: 'notify', title, body?, open? } · { kind: 'open', app? | url? (https) | path? } · { kind: 'file', into } (folder triggers only; never overwrites, never deletes) · { kind: 'run-recipe', recipe } · { kind: 'press', app, key } · { kind: 'wake-brain', prompt, budget? { steps, seconds }, speak? }",
+          items: { type: "object", properties: { kind: { type: "string", enum: ["chime", "say", "notify", "open", "file", "run-recipe", "press", "wake-brain"] } }, required: ["kind"] },
+        },
+        clauses: {
+          type: "object",
+          description: "optional narrowing",
+          properties: {
+            window: { type: "object", description: "fires only inside these local hours (wraps midnight)", properties: { from: clockTime, to: clockTime }, required: ["from", "to"] },
+            days: { type: "array", items: { type: "string" }, description: "watchers only: mon…sun" },
+            once: { type: "string", enum: ["once", "day"], description: "'once': a one-shot watcher · 'day': at most once a day" },
+            cooldown: { type: "integer", minimum: 0, description: "seconds between fires (watchers default 30)" },
+            until: { type: "number", description: "ms since the epoch after which a repeater stops" },
+            quiet: { type: "string", enum: ["respect", "override"], description: "quiet hours: wait for them to end (default) or ring through (alarms default override)" },
+          },
+        },
+        echo: { type: "string", description: "≤ 120 characters, Kevin's words: 'Weekdays at 07:10, ring \"Wake up, Kevin\".'" },
+        recipeCommand: { type: "string", description: "with a run-recipe action whose recipe is new: the shell text to approve" },
+      },
+      required: ["name", "then", "echo"],
+    },
+  },
+  {
+    name: "automation_list",
+    description: "What is set: each automation's name, kind (alarm, timer, reminder, routine, watcher), state, when it fires (local time), its echo line and its last fire. Answer 'what alarms do I have' and 'what is watching' from this, never from memory. `state` narrows (default: everything not done); 'all' includes done. The Trash is the Console's.",
+    parameters: { type: "object", properties: { state: { type: "string", enum: ["armed", "snoozed", "deferred", "paused", "fired", "failed", "done", "all"] } } },
+  },
+  {
+    name: "automation_change",
+    description: "One verb on one automation, by name or id: snooze (minutes, default Settings' 10; timers 5), done (dismiss a ring), skip (the next occurrence, or a one-shot without firing), pause, resume, trash (Move to Trash — it will not fire; Kevin can restore it here or in the Console; nothing is deleted), restore, run (fire it now — only while Kevin is awake to hear it). The island's Snooze · Done presses do the same.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "the automation's name or id" },
+        verb: { type: "string", enum: ["snooze", "done", "skip", "pause", "resume", "trash", "restore", "run"] },
+        minutes: { type: "integer", minimum: 1, maximum: 720, description: "snooze only" },
+      },
+      required: ["name", "verb"],
+    },
+  },
+  {
+    name: "recipe_list",
+    description: "The shell recipes Kevin approved for automations: name, command, when approved, which automations use it, and `asks` when the policy would now question it (such a recipe cannot be armed until it is edited). A recipe is approved through automation_set's recipeCommand and its one yes; nothing here writes settings.",
+    parameters: { type: "object", properties: {} },
+  },
+];
+
 export const COMPUTER_TOOL_SPECS: readonly ToolSpec[] = COMPUTER_MEMBERS.map((m) => COMPUTER_SPECS[m]);
 export const DESKTOP_TOOL_SPECS: readonly ToolSpec[] = DESKTOP_TOOLS.map((t) => DESKTOP_SPECS[t]);
-/** 17 + 8 + 6 + 5 + 4 (threads) + 4 + 11 + 6 + 6 = 67 (pinned in brain.test.ts, mcp-bridge.test.ts and tools.test.ts). */
-export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...THREAD_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS];
+/** 17 + 8 + 6 + 5 + 4 (threads) + 4 + 11 + 6 + 6 + 4 (automations) = 71 (pinned in brain.test.ts, mcp-bridge.test.ts, tools.test.ts and local.test.ts). */
+export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...DESKTOP_TOOL_SPECS, ...BROWSER_SPECS, ...AGENT_SPECS, ...THREAD_SPECS, ...MISC_SPECS, ...SYSTEM_SPECS, ...SELF_SPECS, ...DRAW_SPECS, ...AUTOMATION_SPECS];
 
 export function specByName(name: string): ToolSpec | undefined {
   return ALL_TOOL_SPECS.find((t) => t.name === name);
