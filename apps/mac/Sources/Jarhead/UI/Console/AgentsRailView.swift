@@ -1509,12 +1509,12 @@ struct ThreadRow: View {
             }
             .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // A finished thread sits back (the ladder's quiet step); the words stay legible.
+        // A finished thread sits back (the ladder's quiet step); the words stay legible, the hover ground stays at full.
         .opacity(RailTone.thread(thread.status).alpha)
+        .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
         .overlay(alignment: .topTrailing) {
             ConsoleRowOverflow(verbs: verbs).padding(.top, 4).padding(.trailing, railInset)
         }
