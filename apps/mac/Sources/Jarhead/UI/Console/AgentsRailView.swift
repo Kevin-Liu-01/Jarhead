@@ -67,6 +67,8 @@ enum AgentsRailWords {
     static let hiddenId = "rail.hidden"
     static func threadId(_ id: String) -> String { "thread:\(id)" }
     static func chainId(_ id: String) -> String { "chain:\(id)" }
+    /// A row id the rail draws (a chain, an agent or a thread) — what `highlight:` from outside may name.
+    static func ownsRow(_ id: String) -> Bool { id.hasPrefix("chain:") || id.hasPrefix("agent:") || id.hasPrefix("thread:") }
     static func agentId(_ id: String) -> String { "agent:\(id)" }
     static func hitId(_ id: String) -> String { "hit:\(id)" }
     static func groupId(_ tool: AgentTool) -> String { "agents.\(tool.rawValue)" }
@@ -475,6 +477,15 @@ struct AgentsRail: View, Equatable {
         guard let info = note.userInfo else { return }
         if let id = info[ConsolePreviewKey.fold] as? String, let open = info[ConsolePreviewKey.foldOpen] as? Bool, RailWords.ownsFold(id) {
             fold(id, open)
+        }
+        // `highlight:<id>` from outside: a row inside a folded day or tool opens its fold first (reveal),
+        // so the keys that follow (⌘↓ for its verbs) find a rendered row — the same rule a card link obeys.
+        if let id = info[ConsolePreviewKey.highlight] as? String, AgentsRailWords.ownsRow(id) {
+            reveal(id)
+            // The keys' own listener checks the id against the walk it saw before the fold opened, so the
+            // rail places the highlight itself once the fold's rows are in the tree, and hands the list
+            // the keys (`claim`) the way a click does — ⌘↓ on the revealed row floats its verbs.
+            DispatchQueue.main.async { focus.set(id, keyboard: true, why: "highlight"); focus.claim() }
         }
         if info["probeRail"] as? Bool == true {
             let ids = walkIds
