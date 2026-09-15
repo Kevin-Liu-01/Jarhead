@@ -6,7 +6,7 @@ import SwiftUI
 // the last hide a tip shows at once and a warm re-anchor is a jump, not a re-appear. `?` on a
 // focused control pins its tip. Every trigger keeps what `.help` gave VoiceOver: the spoken form
 // goes on `.accessibilityHint`; the bubble itself is hidden and never hit-tested. No file in
-// UI/Console or UI/Onboarding says `.help(`.
+// UI/Console or UI/Onboarding uses the system tooltip modifier.
 
 enum ConsoleTipWords {
     static let opensPane = "Opens its pane"
