@@ -598,10 +598,11 @@ struct AgentsRail: View, Equatable {
         return out
     }
 
-    /// Agents the search matches by name, project, the connector's detail or the tool's label — in the rail's order.
+    /// Agents the search matches by name, project, the connector's detail or the tool's label — in the rail's
+    /// order, the hidden ones last (search suspends the Hidden fold too: a hidden row is found, lifted, with its Unhide).
     private func agentMatches(_ q: String) -> [AgentInfo] {
         guard !q.isEmpty else { return [] }
-        return groups.flatMap(\.agents).filter { agent in
+        return (groups.flatMap(\.agents) + hiddenRows).filter { agent in
             [agent.name, ConsoleFormat.projectName(agent.cwd) ?? "", agent.detail ?? "", agent.resolvedTool.label].contains { $0.lowercased().contains(q) }
         }
     }
