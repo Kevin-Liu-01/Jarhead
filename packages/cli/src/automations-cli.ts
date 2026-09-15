@@ -124,15 +124,19 @@ export function ringWords(ring: RingLine | undefined): string {
 export function automationsLines(rows: readonly Automation[], pointers: Pointers, now: number, state: AutomationState | "all" = "all"): string[] {
   const picked = filterByState(rows, state);
   const lines = [automationsSummary(rows, pointers, now)];
-  if (rows.every((a) => a.state === "trashed")) {
+  // `--state trashed` lists the snapshot's Trash tail even when nothing live is set.
+  if (picked.length > 0) {
+    for (const a of picked) lines.push(automationLine(a, now));
+    return lines;
+  }
+  const trashed = rows.filter((a) => a.state === "trashed");
+  if (trashed.length === rows.length) {
     lines.push("    nothing set — say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"");
+    if (trashed.length > 0) lines.push(`    ${trashed.length} in the Trash — jarhead automations list --state trashed · restore <id>`);
     return lines;
   }
-  if (picked.length === 0) {
-    lines.push(`    nothing ${state}${byStateWords(rows) ? ` — set: ${byStateWords(rows)}` : ""}`);
-    return lines;
-  }
-  for (const a of picked) lines.push(automationLine(a, now));
+  const live = rows.filter((a) => a.state !== "trashed");
+  lines.push(`    nothing ${state} — set: ${byStateWords(live)}`);
   return lines;
 }
 

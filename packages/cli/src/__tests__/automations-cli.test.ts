@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_AUTOMATIONS, type Automation, type AutomationDraft, type LedgerRow, type ShellRecipe } from "@jarhead/protocol";
 import { describe } from "@jarhead/core";
-import { AUTOMATION_STATES, LIST_STATES, ROW_VERBS, automationGlyph, automationsLines, automationsSummary, byStateWords, filterByState, inWords, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation } from "../automations-cli.ts";
+import { automationLine, AUTOMATION_STATES, LIST_STATES, ROW_VERBS, automationGlyph, automationsLines, automationsSummary, byStateWords, filterByState, inWords, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation } from "../automations-cli.ts";
 import { automationChecks, pmsetCopy, readAutomationLedger, readJournal, type AutomationCheckInput, type Check } from "../doctor.ts";
 
 /**
@@ -102,6 +102,11 @@ test("automationsLines: --state filters; an empty table says how to set one; an 
   assert.deepEqual(filterByState([...table, binned], "trashed").map((a) => a.id), ["auto_9"]);
   assert.equal(automationsSummary([...table, binned], pointers, NOW), automationsSummary(table, pointers, NOW));
   assert.equal(automationsLines([binned], {}, NOW)[1], automationsLines([], {}, NOW)[1], "only the Trash: nothing is set");
+  assert.equal(automationsLines([binned], {}, NOW)[2], "    1 in the Trash — jarhead automations list --state trashed · restore <id>", "…and the Trash is named");
+  assert.equal(automationsLines([binned], {}, NOW).length, 3);
+  assert.deepEqual(automationsLines([binned], {}, NOW, "trashed"), [automationsSummary([binned], {}, NOW), automationLine(binned, NOW)], "--state trashed lists the tail with nothing live");
+  assert.deepEqual(automationsLines([...table, binned], pointers, NOW, "trashed").slice(1), [automationLine(binned, NOW)], "…and beside live rows");
+  assert.equal(automationsLines([...table, binned], pointers, NOW, "snoozed")[1], "    nothing snoozed — set: 3 armed · 1 paused · 1 done · 1 failed", "an empty filter counts the live rows, never the Trash");
   assert.deepEqual(resolveAutomation([...table, binned], "old alarm").id, "auto_9", "Restore by name reaches the tail");
   assert.deepEqual(automationsLines(table, pointers, NOW, "snoozed"), [automationsSummary(table, pointers, NOW), "    nothing snoozed — set: 3 armed · 1 paused · 1 done · 1 failed"]);
   const empty = automationsLines([], {}, NOW);
