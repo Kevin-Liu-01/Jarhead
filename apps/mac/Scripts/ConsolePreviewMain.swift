@@ -3528,6 +3528,9 @@ extension PreviewDelegate {
         expect("zone: hidden working → 28 alone · hidden blocked → 28 alone · working → 44 dot · blocked → 44 asks · idle → 28 age",
                [zone(.working, hidden: true), zone(.blocked, hidden: true), zone(.working, hidden: false), zone(.blocked, hidden: false), zone(.idle, hidden: false)].joined(separator: " · "),
                "28 · 28 · 44 dot · 44 asks · 28 age")
+        // k of n: a trashed chain's hits list, but the figure counts the rail's conversations on both sides (Now once).
+        let searched: Set<String> = [AgentsRailWords.nowId, AgentsRailWords.chainId(FakeData.chainPausedId), AgentsRailWords.chainId(FakeData.archivedAId), AgentsRailWords.chainId(FakeData.trashedBId)]
+        expect("search count: Now + active + archived (+ a trashed hit) of 9 chains + Now", AgentsRail.searchCount(matched: searched, chains: chains), "3 of 10")
         let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
         let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
                         ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]

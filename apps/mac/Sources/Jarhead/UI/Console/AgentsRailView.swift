@@ -641,11 +641,19 @@ struct AgentsRail: View, Equatable {
         return out
     }
 
-    /// `k of n`: conversations the search matched, of every conversation on the rail (Now and the active and archived chains).
+    /// `k of n`: the rail's conversations the search matched, of every one of them (`searchCount`).
     private var hitCount: String? {
         guard session.isSearching, session.searchHits != nil else { return nil }
         let matched = Set(searchWalk.filter { !$0.hasPrefix("hit:") && !$0.hasPrefix("agent:") })
-        return ConsoleRowWords.count(shown: matched.count, of: jarhead.filter { !$0.isTrashed }.count + 1)
+        return Self.searchCount(matched: matched, chains: jarhead)
+    }
+
+    /// `k of n` under search, one set on both sides: Now and the active and archived chains. A trashed
+    /// chain's hits still list (with Restore), but the figure names the rail's conversations, so it counts
+    /// in neither k nor n.
+    static func searchCount(matched: Set<String>, chains: [JarheadChain]) -> String {
+        let trashed = Set(chains.filter(\.isTrashed).map { AgentsRailWords.chainId($0.id) })
+        return ConsoleRowWords.count(shown: matched.subtracting(trashed).count, of: chains.count - trashed.count + 1)
     }
 
     /// A row's title for type-ahead.
