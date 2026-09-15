@@ -124,7 +124,12 @@ struct ConsoleDisclosure<Content: View>: View {
     var inset = false
     private let external: Binding<Bool>?
     private let content: () -> Content
-    @State private var stored: Bool
+    /// What an unbound head shows while the store holds nothing for its id — read live, so a default that
+    /// follows the data (a tool open iff a row of its asks or works) moves the head the moment the rail's
+    /// `isFoldOpen` moves; the two never disagree.
+    private let defaultOpen: Bool
+    /// The last state the store posted for this id: written so the body re-reads the store.
+    @State private var applied: Bool
 
     init(id: String, title: String, count: String? = nil, summary: [Summary] = [], size: Size = .group, defaultOpen: Bool = false,
          open: Binding<Bool>? = nil, trailing: AnyView? = nil, siblings: [String] = [], focused: Bool = false, inset: Bool = false,
@@ -140,10 +145,12 @@ struct ConsoleDisclosure<Content: View>: View {
         self.inset = inset
         self.external = open
         self.content = content
-        _stored = State(initialValue: open?.wrappedValue ?? ConsoleFoldStore.isOpen(id, default: defaultOpen))
+        self.defaultOpen = defaultOpen
+        _applied = State(initialValue: open?.wrappedValue ?? ConsoleFoldStore.isOpen(id, default: defaultOpen))
     }
 
-    private var isOpen: Bool { external?.wrappedValue ?? stored }
+    /// The binding, else the store with the live default — the same read the rail's `isFoldOpen` makes.
+    private var isOpen: Bool { external?.wrappedValue ?? ConsoleFoldStore.isOpen(id, default: defaultOpen) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -187,7 +194,7 @@ struct ConsoleDisclosure<Content: View>: View {
 
     private func apply(_ open: Bool) {
         withAnimation(Motion.snappy) {
-            if let external { external.wrappedValue = open } else { stored = open }
+            if let external { external.wrappedValue = open } else { applied = open }
         }
     }
 }

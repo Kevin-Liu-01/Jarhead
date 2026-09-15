@@ -3509,6 +3509,11 @@ extension PreviewDelegate {
         let dayKey = ConsoleFoldStore.key(RailWords.dayId("1999-12-31"))
         ConsoleFoldStore.set(RailWords.dayId("1999-12-31"), true)
         expect("fold store: rail.day.* is memory only", "\(ConsoleFoldStore.isOpen(RailWords.dayId("1999-12-31"), default: false)) \(UserDefaults.standard.object(forKey: dayKey) == nil)", "true true")
+        // Nothing stored → the live default (what an unbound disclosure and the rail's isFoldOpen both read); a write wins over it.
+        let unstoredId = "kit.unstored"
+        let liveDefault = "\(ConsoleFoldStore.isOpen(unstoredId, default: false)) \(ConsoleFoldStore.isOpen(unstoredId, default: true))"
+        ConsoleFoldStore.set(unstoredId, false)
+        expect("fold store: nothing stored → the live default, a write wins", liveDefault + " \(ConsoleFoldStore.isOpen(unstoredId, default: true))", "false true false")
         let hot = Set(fake.agents().filter(AgentsRail.hot).map { $0.resolvedTool.rawValue })
         let defaults = [(RailWords.dayId(dayBack(0)), "today"), (RailWords.dayId(dayBack(1)), "yesterday"), (RailWords.olderId, "older"),
                         ("agents.claude", "claude"), ("agents.codex", "codex"), (RailWords.endedId(.claude), "claude.ended")]
