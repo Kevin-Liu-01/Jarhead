@@ -102,9 +102,13 @@ happens, a Swift helper owns the Mac.
   `engine.requestRestart`. The rails are files as a whole (policy.ts, core's
   index.ts and any new core module, brain.ts, instructions.ts,
   `apps/mac/.../Wake`, selfedit.ts, runner.ts, shell.ts, files.ts, brain's
-  index.ts) or, for mostly-ordinary files, changed lines (the handshake in
-  toolset.ts, build-mac signing, `permission()` in claude.ts, the Codex sandbox
-  flags, `SECRET_KEYS`); a touched rail applies only when Kevin's own words name
+  index.ts, the automations executor `packages/engine/src/automations/executor.ts`
+  — the one place that acts with nobody there, so it never asks, never wakes,
+  never deletes — and the notification category
+  `apps/mac/.../System/Notifications.swift`, whose two buttons are the island's
+  Snooze · Done and never a yes) or, for mostly-ordinary files, changed lines (the
+  handshake in toolset.ts, build-mac signing, `permission()` in claude.ts, the
+  Codex sandbox flags, `SECRET_KEYS`); a touched rail applies only when Kevin's own words name
   it by whole word or file name. Do not add a hunk-narrowed rail for a
   security-critical file: hunk regexes are dodged by editing the lines around
   them. Bump `SYSTEM_PROMPT_VERSION` when the standing orders change;
@@ -134,6 +138,8 @@ pnpm jarheadd                 # engine daemon alone; JARHEAD_AUTO_WAKE=0 keeps i
 pnpm jarhead status | say "…" | probe "…" | agents | hands | live | doctor | cmd go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop|thread.pause|thread.resume   # thread.* take <id|name>
 pnpm jarhead ledger --speed [--days N] | reflex-miss [--days N]   # where the time went (acting→screenshot share, now: lines, round trips by class, generation gaps); the short commands the grammar missed
 pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] | search "…" | forget <id> | restore <id> | add "…" [--kind k] | run   # over the daemon; forget is a state, nothing is deleted
+pnpm jarhead automations [list] [--state s] | add "<when> <chime|say|notify|open> <what>" | snooze|done|skip|pause|resume|run|trash|restore <id|name> | rename <id|name> "<name>"   # over the daemon; add arms the free kinds only (no flag is a yes); trash is Move to Trash, nothing is deleted
+pnpm jarhead recipes [list] | add <name> "<cmd>" [--cwd D] [--timeout N] | trash <name>   # the approved shell recipes; add prints the shell gate's word first (run · asks · refused · fronts)
 pnpm jarhead bench [--fake-hands] # the tool path and the ear's 250 ms path (+ read during a type, acting call incl. observation, status reflex, targeted stop); exit 1 when p95 to dispatch > 250 ms with the real helper
 pnpm jarhead bench --brain [--runs N] [--effort low] [--observe off] [--compare F] [--no-reflex] [--json --out F] # the five representative commands on the real brain (Codex: Kevin's ChatGPT plan, no dollars; canned hands, no real actions); refuses when Codex is not signed in unless --allow-api-spend
 pnpm build:hands              # Swift helper → build/jarhead-hands
@@ -702,3 +708,12 @@ to his microphone and bills per second.
 - **A bench row that is a tally is not a latency.** `bench` files every sample with a `unit` (`ms`, or `count` for "brain generations spent"); a count row prints `(count, not ms)` in the table and `unit: "count"` in `--json`, so a `1` in the median column is never read as 1 ms. `bench.test.ts` runs the fake-hands bench once and asserts the row SET, because a row that silently skips (a regex that stopped matching the helper's answer) only shows as a missing line nobody reads.
 - **A gate the composer can trust is computed from the listing's own snapshot, synchronously.** `AgentInfo.send` reads what `statusFor` and `canContinue` read (archived, live owners minus our own pids, degraded detection, the Codex CLI's `usable()` — taken WITH the process snapshot so a listing costs no extra await — and a cached `statSync` of the session's folder); the reason is a short phrase the composer shows verbatim ("open in a terminal", "Codex not signed in", "folder is gone"). `SendResult.mode` (`queue | resume | answer`) says how an accepted line travelled; the wire's `AgentInfo.send.mode` vocabulary is `queue | resume` only, so a pending permission shows as `resume` with `pendingPermission` carrying the question.
 - **Typed lines are transcript items, emitted once.** `Transcript.pushTyped` closes any open utterance first (its `final` is what writes the `heard` row) and emits the typed item as a single `final` — an item born final never "starts", and a second emission would write the ledger row twice.
+
+## Learnings (2026-09-14, automations pass — CLI, doctor, docs)
+
+- **A CLI verb is never a yes.** `jarhead automations add` arms `chime · say · notify · open` only, and refuses `run`, `press`, `file` and `wake` by name with where the yes is heard (voice, or the Console's two-press idiom); there is no flag that stands in for a spoken yes, and the acceptance grep pins that the string `--yes` never appears under `packages/cli/src` — write the doc comment around it ("no flag stands in for a yes"), not with it. The draft still goes through `classifyAutomation` in the engine; the CLI's parser (`parseClockAutomation`) only splits `<when> <verb> <what>` and hands the when-phrase to core's `parseWhen`, so the voice's tool, the Console's form and the CLI parse one grammar.
+- **`pmset` is text.** The doctor READS `pmset -g sched` (no root) to see whether a wake is already scheduled and prints `sudo pmset repeat wakeorpoweron MTWRF 07:05:00` (five minutes early, pmset's weekday letters M T W R F S U) as the row's `fix` for Kevin to copy. The pure `automationChecks(input)` takes the read as a string, so the test's child_process spy proves the group spawns nothing; `pmset` appears in the repo's TypeScript only in `cli/src/doctor.ts`.
+- **A row that acts unattended is counted by kind, not by state alone.** `automationKind` derives alarm · timer · reminder · routine · watcher from `when` and the first action — a chime at `in` is a timer, not an alarm, so it does not ring through quiet hours (`quiet: "respect"`); only `at`/`every` + chime is an alarm (`override`). The CLI's `add` sets the clause from the derived kind, never from the verb.
+- **The snapshot's `automations` is non-trashed only.** Restore must take an id, so `resolveAutomation` lets any `auto_…` (newId: base-36 time + six chars, so ≥ 6 chars after the prefix) pass through unlisted; a name resolves live rows before a lingering `done` one, case-insensitively, and an unknown name throws naming what IS set — the `threads-cli` resolver's rules, reused rather than re-derived.
+- **`packages/cli` had no `test` script** (core and protocol got theirs in the contract pass); `pnpm -C packages/cli test` runs `node --import tsx --test 'src/**/*.test.ts'` now. There is still no `pnpm lint` script in the repo: the check line to trust is `pnpm typecheck` + the package tests.
+
