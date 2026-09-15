@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AutomationAction, AutomationClauses, AutomationSettings, AutomationWhen } from "@jarhead/protocol";
-import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, openPathReason, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
+import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, openPathReason, pressKeyReason, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
 
 // The set-up gate, row by row from the design's policy table. Every fixture names the home so
 // the machine's real ~ is never read; the repo root is a folder nothing here writes into.
@@ -182,6 +182,23 @@ test("press: Keychain Access and 1Password refuse; a malformed key refuses; cmd+
   assert.equal(ok.verdict, "confirm");
   assert.equal(ok.reason, "`cmd+s` will be pressed in Notes unattended, only while it is in front and no password field has focus");
   assert.equal(classifyAutomation({ ...press("Notes", "cmd+s"), confirmed: true }).verdict, "run");
+});
+
+test("press never deletes, quits, logs out, force-quits, powers off or ejects: cmd+shift+delete, cmd+delete, delete, backspace, forwarddelete, fn+delete, cmd+q, 'Cmd + Q', cmd+shift+q, cmd+opt+esc, cmd+alt+escape, power and eject refuse at set-up even with confirmed; cmd+s, space, return, the arrows and media keys confirm", () => {
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
+  const press = (key: string, confirmed = false): AutomationContext => ctx({ then: [{ kind: "press", app: "Finder", key }], settings, confirmed });
+  for (const key of ["cmd+shift+delete", "cmd+delete", "delete", "Delete", "backspace", "forwarddelete", "fn+delete", "cmd+q", "Cmd + Q", "q+cmd", "cmd+shift+q", "command+q", "cmd+opt+esc", "cmd+alt+escape", "cmd+option+esc", "power", "eject", "shift+delete"]) {
+    const d = classifyAutomation(press(key));
+    assert.equal(d.verdict, "refuse", key);
+    assert.match(d.reason, /never pressed unattended/, key);
+    assert.equal(classifyAutomation(press(key, true)).verdict, "refuse", `${key}: a yes does not open it`);
+    assert.match(pressKeyReason(key) ?? "", /never pressed unattended/, key);
+  }
+  for (const key of ["cmd+s", "space", "return", "down", "cmd+shift+r", "cmd+r", "cmd+l", "play", "cmd+w", "esc", "cmd+opt+s"]) {
+    assert.equal(classifyAutomation(press(key)).verdict, "confirm", key);
+    assert.equal(pressKeyReason(key), undefined, key);
+  }
+  assert.match(pressKeyReason("cmd+shift+§") ?? "", /not a key or chord/);
 });
 
 test("wake-brain: budget 0 refuses naming the setting; otherwise confirms with the cost line ('brain minute'); a spawned thread and an empty or 400+ prompt refuse; a local brain says warm-up", () => {

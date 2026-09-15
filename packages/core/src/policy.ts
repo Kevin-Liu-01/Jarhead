@@ -1248,6 +1248,23 @@ const AUTOMATION_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "downlo
 const FOLDER_TRIGGERS: ReadonlySet<string> = new Set(["folder.file", "download.done"]);
 /** A key or chord a `press` may name: letters, digits, `+` and spaces ("cmd+s", "space", "cmd+shift+r"). */
 const PRESS_KEY = /^[a-z0-9+ ]{1,32}$/i;
+/** Keys that delete, quit, log out, force-quit, power off or eject: never pressed unattended, with or without a yes (the trash rule and IRREVERSIBLE, for a chord). */
+const PRESS_NEVER_KEYS: ReadonlySet<string> = new Set(["delete", "del", "backspace", "forwarddelete", "power", "eject"]);
+const PRESS_MODIFIERS: Readonly<Record<string, string>> = { cmd: "cmd", command: "cmd", meta: "cmd", opt: "opt", option: "opt", alt: "opt", ctrl: "ctrl", control: "ctrl", shift: "shift", fn: "fn" };
+
+/**
+ * Why a `press` combo may not be pressed unattended, if it may not: malformed, or a key that
+ * deletes / quits / logs out / force-quits / powers off / ejects — `cmd+shift+delete` empties
+ * the Trash for good, `cmd+q` discards state, `cmd+shift+q` logs out, `cmd+opt+esc` force-quits.
+ * Judged at set-up and again by the executor before the key goes, so an older row cannot slip by.
+ */
+export function pressKeyReason(key: string): string | undefined {
+  if (!PRESS_KEY.test(key)) return `"${key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`;
+  const parts = key.toLowerCase().split("+").map((w) => w.trim()).filter(Boolean).map((w) => PRESS_MODIFIERS[w] ?? w);
+  const has = (k: string): boolean => parts.includes(k);
+  const never = parts.some((w) => PRESS_NEVER_KEYS.has(w)) || (has("cmd") && has("q")) || (has("cmd") && has("opt") && (has("esc") || has("escape")));
+  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask Kevin to press it` : undefined;
+}
 const WAKE_PROMPT_CHARS = 400;
 const UNATTENDED_HINT = "a notify or a chime is";
 
@@ -1546,7 +1563,8 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
     case "press": {
       if (!action.app.trim()) return refuse("press needs the app it lands in");
       if (HANDS_OFF_APPS.test(action.app)) return refuse(`${action.app} is hands-off; nothing is pressed there unattended`);
-      if (!PRESS_KEY.test(action.key)) return refuse(`"${action.key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`);
+      const never = pressKeyReason(action.key);
+      if (never) return refuse(never);
       return confirm(`\`${action.key}\` will be pressed in ${action.app} unattended, only while it is in front and no password field has focus`);
     }
     case "wake-brain": {

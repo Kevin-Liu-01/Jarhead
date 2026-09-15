@@ -438,6 +438,15 @@ test("press-not-in-front: a press with another app in front fails ('Cursor is no
     const h = await fired(w, 3);
     assert.equal(h[2]!.detail, "a password field has focus");
     assert.equal(hands.named("key").length, 1, "nothing pressed into a password field");
+
+    // The combo is re-read at fire: a row an older journal armed with cmd+shift+delete never reaches the hands.
+    hands.secure = false;
+    const refused = engine.automations.arm({ ...draft("empty trash", clock.t + M), then: [{ kind: "press", app: "Finder", key: "cmd+shift+delete" }] }, "brain", true);
+    assert.equal(refused.kind, "refused", "set-up refuses the combo even with the yes");
+    const old = await (engine.automations.executor as unknown as { press(action: { kind: "press"; app: string; key: string }): Promise<{ ok: boolean; detail?: string }> }).press({ kind: "press", app: "Cursor", key: "cmd+shift+delete" });
+    assert.equal(old.ok, false);
+    assert.match(old.detail ?? "", /never pressed unattended/);
+    assert.equal(hands.named("key").length, 1, "the hands saw no delete");
   } finally {
     await engine.stop();
   }

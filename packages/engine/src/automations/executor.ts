@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
 import type { FocusedText, FrontmostInfo, NativeHands } from "@jarhead/hands";
 import { AUTOMATION_LINE_CHARS, automationKind, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
@@ -390,6 +390,9 @@ export class AutomationExecutor {
   /** `press`: the front app and the focused field are probed; only the named app in front with no secure field gets the key. */
   private async press(action: Extract<AutomationAction, { kind: "press" }>): Promise<StepOutcome> {
     if (HANDS_OFF_APPS.test(action.app)) return { ok: false, detail: `${action.app} is hands-off; nothing is pressed there` };
+    // The combo itself, re-read at fire: a delete, a quit, a log-out, a force-quit never goes, whatever an older journal row says.
+    const never = pressKeyReason(action.key);
+    if (never) return { ok: false, detail: never };
     let front: FrontmostInfo | undefined;
     let focused: FocusedText | undefined;
     try {
