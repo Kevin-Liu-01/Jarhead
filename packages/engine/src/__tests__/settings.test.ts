@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_SETTINGS, SETTINGS_KEYS } from "@jarhead/protocol";
+import { DEFAULT_AUTOMATIONS, DEFAULT_SETTINGS, SETTINGS_KEYS } from "@jarhead/protocol";
 import { readConfig } from "@jarhead/core";
 import { Engine } from "../engine.ts";
 import { FakeMemoryService } from "./world.ts";
@@ -120,4 +120,23 @@ test("brain `local` round-trips through settings.json with an empty model (best 
     ["accent", "autoWake", "automations", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
   );
   assert.ok(!SETTINGS_KEYS.some((k) => /local/i.test(k)));
+});
+
+test("set-settings-migration: a settings.json from before the automations block loads DEFAULT_AUTOMATIONS and is not rewritten; a patch to the block persists whole and null keeps the default", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-automations-"));
+  const path = join(stateDir, "settings.json");
+  const before = JSON.stringify({ voice: "marin", wake: { enabled: false } }); // before 2026-09-14: no `automations`
+  writeFileSync(path, before);
+  const engine = bare(stateDir);
+  assert.deepEqual(engine.snapshot().settings.automations, DEFAULT_AUTOMATIONS);
+  assert.deepEqual(DEFAULT_AUTOMATIONS.unattended, ["chime", "say", "notify", "open", "file"], "run-recipe, press and wake-brain are opt-in chips");
+  assert.equal(readFileSync(path, "utf8"), before, "reading the default writes nothing");
+  assert.deepEqual(engine.snapshot().automations, [], "and no row exists");
+  engine.updateSettings({ automations: { ...DEFAULT_AUTOMATIONS, quietHours: { from: "22:00", to: "07:00" }, recipes: [{ name: "backup", command: "echo hi", timeoutSeconds: 5, approvedAt: 1 }] } });
+  const saved = JSON.parse(readFileSync(path, "utf8")) as { automations: typeof DEFAULT_AUTOMATIONS };
+  assert.deepEqual(saved.automations.quietHours, { from: "22:00", to: "07:00" });
+  assert.equal(saved.automations.recipes.length, 1);
+  assert.deepEqual(bare(stateDir).snapshot().settings.automations.quietHours, { from: "22:00", to: "07:00" });
+  engine.updateSettings({ automations: null });
+  assert.deepEqual(engine.snapshot().settings.automations.recipes.length, 1, "null on a required block keeps its value");
 });

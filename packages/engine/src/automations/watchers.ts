@@ -193,7 +193,11 @@ export class Watchers {
     return fires;
   }
 
-  /** One folder's poll: new entries that settled fire once; gone entries leave the maps. */
+  /**
+   * One folder's poll: an entry the baseline does not hold — by name AND by size and mtime,
+   * so a file that replaces one already filed away under the same name is a new landing —
+   * fires once it settled; gone entries leave the maps.
+   */
   private pollFolder(f: FolderState, now: number): string[] {
     let names: string[];
     try {
@@ -207,9 +211,11 @@ export class Watchers {
     for (const name of [...f.pending.keys()]) if (!seen.has(name)) f.pending.delete(name);
     const fired: string[] = [];
     for (const name of names) {
-      if (f.baseline.has(name) || IGNORED.test(name)) continue;
+      if (IGNORED.test(name)) continue;
       const e = this.entry(f.path, name);
       if (!e) continue;
+      const known = f.baseline.get(name);
+      if (known && known.size === e.size && known.mtime === e.mtime) continue;
       const p = f.pending.get(name);
       if (p && p.size === e.size && p.mtime === e.mtime) {
         if (now - p.since >= f.settleMs) {

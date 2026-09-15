@@ -384,7 +384,8 @@ export class Automations implements AutomationSource {
   /** A watcher saw its signal: the clauses (days / window / once / cooldown) admit or count it, then it fires. */
   private watcherFire(id: string, now: number, file: string | undefined, what: string | undefined): void {
     const a = this.table.get(id);
-    if (!a || a.state !== "armed") return;
+    // Armed rows fire; a row whose fire is in flight counts the signal (a storm is one fire and a number).
+    if (!a || (a.state !== "armed" && a.state !== "firing")) return;
     if (!inWindow(a.clauses, now)) return;
     if (a.clauses.once === "day" && a.lastFiredAt !== undefined && Ledger.dayFor(a.lastFiredAt) === Ledger.dayFor(now)) return;
     const cooldownMs = (a.clauses.cooldown ?? AUTOMATION_WATCH_COOLDOWN_S) * 1000;
@@ -432,7 +433,9 @@ export class Automations implements AutomationSource {
     if (current.state === "trashed" || current.state === "paused") return; // Kevin moved it while it ran; the fire's record stands, the state is his.
     const late = lateMs > 60_000 ? `${Math.round(lateMs / 60_000)} min late` : undefined;
     const quietNote = o.quiet && outcome.ok && outcome.ring ? "quiet hours: shown, not said" : undefined;
-    const detail = [outcome.detail, quietNote, late].filter((s): s is string => typeof s === "string" && s.length > 0).join(" · ") || (o.what ?? undefined);
+    // Signals counted inside the cooldown while this fire ran stay on the row ("+4 in cooldown").
+    const cooled = /\+\d+ in cooldown$/.exec(current.lastDetail ?? "")?.[0];
+    const detail = [...[outcome.detail, quietNote, late].filter((s): s is string => typeof s === "string" && s.length > 0), ...(outcome.detail || quietNote || late ? [] : o.what ? [o.what] : []), ...(cooled ? [cooled] : [])].join(" · ") || undefined;
     if (outcome.brainSeconds) this.brainSpent += outcome.brainSeconds;
     this.opts.ledger.append({
       at,

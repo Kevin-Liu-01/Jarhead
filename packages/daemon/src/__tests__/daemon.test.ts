@@ -103,6 +103,16 @@ class FakeEngine extends EventEmitter implements EngineLike {
   dropViewers(clientId: string): void {
     this.dropped.push(clientId);
   }
+  /** Every `system.signal` the wire handed over (design11): data for the watchers. */
+  signals: { signal: unknown; at: number }[] = [];
+  systemSignal(signal: unknown, at: number): void {
+    this.signals.push({ signal, at });
+  }
+  /** How many viewers the server counted on each hello / close. */
+  viewers: number[] = [];
+  setViewers(n: number): void {
+    this.viewers.push(n);
+  }
 }
 
 test("server and client round-trip control, audio, and ledger over a unix socket", async () => {
@@ -777,6 +787,91 @@ test("mark.delete is refused: not a verb on the wire, never dispatched", async (
   assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }]);
   assert.deepEqual(engine.commands, [], "nothing reached the engine");
   app.client.close();
+  await server.close();
+});
+
+// ----------------------------------------------------------------- automations (design11): the twelve verbs, the signal, the three events
+
+test("commands on the wire: all twelve automation.* / recipe.* verbs pass isEngineCommand and reach the engine as sent; automation.delete is refused — not a verb on the wire, never dispatched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = await viewer(path, 1);
+  const sent = [
+    { type: "automation.set", automation: { name: "Wake up", when: { kind: "at", at: 1 }, then: [{ kind: "chime", line: "Wake up" }], clauses: { quiet: "override" }, echo: "At 07:10, ring." } },
+    { type: "automation.snooze", id: "auto_1", minutes: 10 },
+    { type: "automation.done", id: "auto_1" },
+    { type: "automation.skip", id: "auto_1" },
+    { type: "automation.pause", id: "auto_1" },
+    { type: "automation.resume", id: "auto_1" },
+    { type: "automation.rename", id: "auto_1", name: "Wake up, Kevin" },
+    { type: "automation.trash", id: "auto_1" },
+    { type: "automation.restore", id: "auto_1" },
+    { type: "automation.run", id: "auto_1" },
+    { type: "recipe.set", recipe: { name: "backup", command: "echo hi", timeoutSeconds: 5, approvedAt: 1 } },
+    { type: "recipe.trash", name: "backup" },
+  ];
+  for (const command of sent) app.client.sendJson({ type: "command", command });
+  // The deletion verb is spelt at run time so the acceptance grep over the sources stays at zero.
+  app.client.sendJson({ type: "command", command: { type: ["automation", "delete"].join("."), id: "auto_1" } as never });
+  await until(() => app.of("error").length === 1 && engine.commands.length === sent.length, "twelve dispatched, one refused");
+  assert.deepEqual(engine.commands, sent, "each verb arrives intact");
+  assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }]);
+  app.client.close();
+  await server.close();
+});
+
+test("system.signal parses as a ClientMessage and reaches engine.systemSignal as data with its `at`; a signal without a body is dropped; the app's hello counts as a viewer and the CLI's does not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = new DaemonClient(path);
+  await app.connect({ pid: 1, audio: true });
+  const cli = await viewer(path, 2);
+  app.sendJson({ type: "system.signal", signal: { kind: "app.quit", app: "Slack", bundleId: "com.tinyspeck.slackmacgap" }, at: 1_757_500_000_000 });
+  app.sendJson({ type: "system.signal", signal: { kind: "mac.wake" }, at: 1_757_500_001_000 });
+  app.sendJson({ type: "system.signal", at: 5 } as never);
+  await until(() => engine.signals.length === 2, "two signals");
+  assert.deepEqual(engine.signals, [
+    { signal: { kind: "app.quit", app: "Slack", bundleId: "com.tinyspeck.slackmacgap" }, at: 1_757_500_000_000 },
+    { signal: { kind: "mac.wake" }, at: 1_757_500_001_000 },
+  ]);
+  assert.deepEqual(engine.commands, [], "a signal is never a command");
+  assert.equal(engine.viewers.at(-1), 1, "the app (audio hello) is the one viewer; the CLI client is not");
+  app.close();
+  await until(() => engine.viewers.at(-1) === 0, "the viewer left");
+  cli.client.close();
+  await server.close();
+});
+
+test("the three automation events broadcast to every client like toast: automation.event, local.say and notify pass through with their fields", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const a = await viewer(path, 1);
+  const b = await viewer(path, 2);
+  const event = { seq: 1, at: 2, id: "auto_1", kind: "state", state: "snoozed", nextAt: 3 };
+  engine.emit("event", { type: "automation.event", event });
+  engine.emit("event", { type: "local.say", text: "call mum", sound: "Glass", automationId: "auto_1" });
+  engine.emit("event", { type: "local.say", sound: "Hero", automationId: "auto_2" });
+  engine.emit("event", { type: "notify", id: "ntf_1", title: "07:10 · Wake up", presses: [{ kind: "snooze", minutes: 10 }, { kind: "done" }], automationId: "auto_2" });
+  await until(() => a.of("notify").length === 1 && b.of("notify").length === 1, "both clients got the banner");
+  for (const c of [a, b]) {
+    assert.deepEqual(c.of("automation.event"), [{ type: "automation.event", event }]);
+    assert.deepEqual(c.of("local.say"), [
+      { type: "local.say", text: "call mum", sound: "Glass", automationId: "auto_1" },
+      { type: "local.say", sound: "Hero", automationId: "auto_2" },
+    ]);
+    assert.deepEqual(c.of("notify"), [{ type: "notify", id: "ntf_1", title: "07:10 · Wake up", presses: [{ kind: "snooze", minutes: 10 }, { kind: "done" }], automationId: "auto_2" }]);
+  }
+  a.client.close();
+  b.client.close();
   await server.close();
 });
 

@@ -166,11 +166,10 @@ export function freeName(dir: string, name: string): string {
 export class AutomationExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
 
-  /** The island's line for a row: alarm "07:10 · name", timer "name · 12:00 is up", reminder "name", routine / watcher "name · what". */
+  /** The island's line for a row: alarm "07:10 · name", timer "name · 12:00 is up", reminder "name", routine / watcher "name · what it did" (a reminder whose acting kind did something says so too). */
   line(a: Automation, dueAt: number, what?: string): string {
     const kind = automationKind(a);
-    const raw =
-      kind === "alarm" ? `${clockOf(dueAt)} · ${a.name}` : kind === "timer" ? `${a.name} · ${clockLength(a.when.kind === "in" ? a.when.ms : 0)} is up` : kind === "reminder" ? a.name : what ? `${a.name} · ${what}` : a.name;
+    const raw = kind === "alarm" ? `${clockOf(dueAt)} · ${a.name}` : kind === "timer" ? `${a.name} · ${clockLength(a.when.kind === "in" ? a.when.ms : 0)} is up` : what ? `${a.name} · ${what}` : a.name;
     return cut(this.opts.redact(raw), AUTOMATION_LINE_CHARS);
   }
 

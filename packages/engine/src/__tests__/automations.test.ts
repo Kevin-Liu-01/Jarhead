@@ -250,8 +250,10 @@ test("weekly-walk: a weekdays 09:00 routine walked over nine days fires Monday t
       assert.equal(n, firedOn.length);
     }
     assert.deepEqual(firedOn, [1, 2, 3, 4, 5, 1, 2], "Mon–Fri, then Mon, Tue");
-    assert.equal(rows<FiredRow>(w, "automation.fired").length, 7);
-    assert.equal(rows<MissedRow>(w, "automation.missed").length, 0, "a fire exactly on time is never late");
+    // The rows sit in nine day files: read each day.
+    const across = (type: string): LedgerRow[] => Array.from({ length: 9 }, (_, day) => engine.ledger.read(new Date(2026, 8, 14 + day, 12, 0, 0).getTime())).flat().filter((r) => r.type === type);
+    assert.equal(across("automation.fired").length, 7);
+    assert.equal(across("automation.missed").length, 0, "a fire exactly on time is never late");
     const row = engine.snapshot().automations.find((x) => x.id === a.id)!;
     assert.equal(row.state, "armed");
     assert.equal(row.fires, 7);
@@ -499,7 +501,7 @@ test("folder-file-settle-no-overwrite: a partial never counts; a PDF that settle
     assert.ok(existsSync(join(papers, "a (2).pdf")));
     assert.equal(readFileSync(join(papers, "a.pdf"), "utf8"), "partial", "the first file is untouched");
     assert.equal(readFileSync(join(papers, "a (2).pdf"), "utf8"), "second");
-    assert.equal(files().length, before.length, "moved, never unlinked");
+    assert.equal(files().length, before.length + 1, "the new file moved, nothing unlinked");
     await engine.command({ type: "automation.done", id: a.id });
 
     // A burst under the default cooldown: one fire, the rest counted.
