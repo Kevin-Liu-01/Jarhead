@@ -12,7 +12,7 @@ import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
-import { Automations, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
+import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
 import {
   BRAIN_KINDS,
   DEFAULT_SETTINGS,
@@ -4123,8 +4123,12 @@ export class Engine extends EventEmitter<EngineEvents> {
         return this.interrupt("interrupt command", cmd.how ?? "pressed");
       case "say-text":
         return this.sayText(cmd.text);
-      case "set-settings":
-        return this.updateSettings(cmd.patch);
+      case "set-settings": {
+        // The recipes' Trash is the engine's fact: a client's whole automations block (re-encoded without `trashedAt`) never
+        // un-trashes a recipe or drops the list — `recipe.restore` is the one way back. The engine's own writes skip this.
+        const auto = cmd.patch.automations;
+        return this.updateSettings(auto && typeof auto === "object" ? { ...cmd.patch, automations: keepRecipeTrash(this.settings.automations, auto) } : cmd.patch);
+      }
       case "clear-problems":
         this.problems = [];
         return this.scheduleSnapshot();

@@ -1110,6 +1110,38 @@ test("recipe-trash-restore: recipe.trash keeps the recipe in Settings with trash
   }
 });
 
+// a client's whole settings block never un-trashes a recipe: the Trash is the engine's fact
+test("recipe-trash-survives-set-settings: a Console chip toggle sends the whole automations block re-encoded without trashedAt — the trashed recipe stays in the Trash (trashedAt kept, still unpickable), a block with no recipes array keeps the stored recipes, and recipe.restore is still the one way back", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.command({ type: "recipe.set", recipe: { name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t } });
+    await engine.command({ type: "recipe.set", recipe: { name: "purge", command: "echo purge", timeoutSeconds: 5, approvedAt: clock.t } });
+    await engine.command({ type: "recipe.trash", name: "tidy" });
+    const block = (): AutomationSettings => engine.snapshot().settings.automations;
+    assert.equal(block().recipes[0]?.trashedAt, clock.t);
+    // The Console's write(): the block as its ShellRecipe knows it — every field but trashedAt — with one chip flipped.
+    const stripped = block().recipes.map(({ trashedAt: _gone, ...r }) => r);
+    await engine.command({ type: "set-settings", patch: { automations: { ...block(), unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes: stripped } } });
+    assert.deepEqual(block().unattended.includes("run-recipe"), true, "the chip landed");
+    assert.deepEqual(block().recipes.map((r) => [r.name, r.trashedAt]), [["tidy", clock.t], ["purge", undefined]], "the Trash survived the round trip");
+    assert.deepEqual((await engine.automations.recipes()).map((r) => r.recipe.name), ["purge"], "still unpickable");
+    // An older client's block with no recipes at all: the stored list stays.
+    const { recipes: _none, ...noRecipes } = block();
+    await engine.command({ type: "set-settings", patch: { automations: noRecipes as AutomationSettings } });
+    assert.equal(block().recipes.length, 2, "nothing dropped");
+    assert.equal(block().recipes[0]?.trashedAt, clock.t);
+    // Restore is the engine's own write and still works.
+    await engine.command({ type: "recipe.restore", name: "tidy" });
+    assert.deepEqual(block().recipes.map((r) => "trashedAt" in r), [false, false]);
+    assert.deepEqual((await engine.automations.recipes()).map((r) => r.recipe.name), ["tidy", "purge"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
 // two wake-brain rows in one tick share one budget
 test("wake-brain-budget-reserved: two wake-brain rows due in the same tick against a 2-minute cap with 90 s budgets each — the first reserves its budget before anything awaits, the second fails 'budget' before any brain runs; after the first settles its spend stands and the reservation is gone", async () => {
   const { exec } = fakeExec();

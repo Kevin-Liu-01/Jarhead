@@ -27,6 +27,7 @@ import {
   type RingLine,
   type Settings,
   type SettingsPatch,
+  type AutomationSettings,
   type ShellRecipe,
   type Snapshot,
   type SystemSignal,
@@ -1085,6 +1086,22 @@ export class Automations implements AutomationSource {
 function mutRecipe(r: ShellRecipe): ShellRecipe {
   const { trashedAt: _gone, ...rest } = r;
   return rest;
+}
+
+/**
+ * A client's `set-settings { automations }` block, with the Trash kept: the Console re-encodes the whole
+ * block from its own ShellRecipe (an older app, or one from before `trashedAt`), so a recipe that arrives
+ * under a trashed name without `trashedAt` keeps the stored one, and a block with no `recipes` array keeps
+ * the stored recipes. Only `recipe.restore` brings a recipe back — never a chip toggle. Pure.
+ */
+export function keepRecipeTrash(stored: AutomationSettings, incoming: AutomationSettings): AutomationSettings {
+  const kept = Array.isArray(incoming.recipes) ? incoming.recipes : stored.recipes;
+  const recipes = kept.map((r) => {
+    if (r.trashedAt !== undefined) return r;
+    const was = recipeNamed(stored.recipes, r.name, "any");
+    return was?.trashedAt !== undefined ? { ...r, trashedAt: was.trashedAt } : r;
+  });
+  return { ...incoming, recipes };
 }
 
 function whyWords(why: MissedWhy, sleptAt: number | undefined, downSince?: number): string {
