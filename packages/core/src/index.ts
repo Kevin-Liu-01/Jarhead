@@ -10,7 +10,7 @@ export { Trash } from "./trash.ts";
 export type { SweepResult } from "./trash.ts";
 export { classifyAction, classifyPath, classifyAppleScript, classifyUrl, riskyUrlReason, expandPath, namedPaths, secretPathReason, secretEnvReason, shellCwdReason, isLoopbackHost, isPrivateHost, HANDS_OFF_APPS, grantClassOf, presenceGated, presenceReason, PRESENCE_WINDOW_MS, PRESENCE_ABSENT, TRASH_REASON } from "./policy.ts";
 export type { ActionContext, Decision, Presence, Verdict } from "./policy.ts";
-export { classifyAutomation, triggerReason, actionReason, costLine, shellSteals, AUTOMATION_RESERVED_TRIGGERS, BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG } from "./policy.ts";
+export { classifyAutomation, triggerReason, actionReason, costLine, shellSteals, openPathReason, AUTOMATION_RESERVED_TRIGGERS, BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, OPEN_EXECUTABLE_EXT } from "./policy.ts";
 export type { AutomationContext } from "./policy.ts";
 export { parseWhen, nextFire, describe, describeEvent, describeInstant, inQuiet, quietEnds, inWindow, graceFor, snoozeDefault, clockOf, weekdayOf, atClock, WEEKDAYS, PARSE_LEAD_MS, INTERVAL_MIN_MS } from "./schedule.ts";
 export type { ParsedWhen } from "./schedule.ts";

@@ -1446,6 +1446,35 @@ function lineReason(line: string, what: string): string | undefined {
   return undefined;
 }
 
+/**
+ * A path `/usr/bin/open` would RUN rather than show: an app bundle, a shell or script file,
+ * an AppleScript, an Automator workflow, an installer, a disk image, a Terminal profile. An
+ * `open` is a free kind (armed silently, no yes), so none of these is ever its target — a
+ * `run-recipe` executes things, behind its one yes.
+ */
+export const OPEN_EXECUTABLE_EXT = /\.(app|command|tool|sh|zsh|bash|py|rb|pl|scpt|applescript|workflow|pkg|mpkg|dmg|terminal)$/i;
+
+/**
+ * Why an `open { path }` may not be armed or fired, if it may not: an executable or bundle
+ * by extension (the hands-off apps by their bundle name), anything inside an app bundle, or a
+ * path the read gate does not rate `run` (a secret store). Lexical: the executor adds the
+ * execute-bit check at fire. Shared by the set-up gate and the executor so the two agree.
+ */
+export function openPathReason(path: string, home: string = homedir()): string | undefined {
+  const p = expandPath(path.trim(), home).replace(/\/+$/, "");
+  if (!p) return "open needs an app, an https URL or a path";
+  const base = basename(p);
+  if (/\.app$/i.test(base)) {
+    const app = base.replace(/\.app$/i, "");
+    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; Kevin opens it himself`;
+    return `${base} is an app bundle; open the app by name instead (open { app: "${app}" })`;
+  }
+  if (/\.app(\/|$)/i.test(p)) return `${base} is inside an app bundle; nothing runs from an open`;
+  if (OPEN_EXECUTABLE_EXT.test(base)) return `${base} would run when opened; an open never executes anything — a run-recipe does, with a yes`;
+  const d = classifyPath({ path: p, access: "read", home });
+  return d.verdict === "run" ? undefined : d.reason;
+}
+
 /** An `open` target judged lexically, as the executor will judge it again at fire. */
 function openReason(a: { readonly app?: string; readonly url?: string; readonly path?: string }, ctx: AutomationContext, home: string): string | undefined {
   if (a.app) {
@@ -1459,10 +1488,7 @@ function openReason(a: { readonly app?: string; readonly url?: string; readonly 
     if (risky) return `${risky}; Kevin opens those himself`;
     return undefined;
   }
-  if (a.path) {
-    const d = classifyPath({ path: a.path, access: "read", home });
-    return d.verdict === "run" ? undefined : d.reason;
-  }
+  if (a.path) return openPathReason(a.path, home);
   return "open needs an app, an https URL or a path";
 }
 

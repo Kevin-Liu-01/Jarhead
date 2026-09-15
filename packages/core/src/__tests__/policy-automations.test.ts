@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AutomationAction, AutomationClauses, AutomationSettings, AutomationWhen } from "@jarhead/protocol";
-import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
+import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, openPathReason, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
 
 // The set-up gate, row by row from the design's policy table. Every fixture names the home so
 // the machine's real ~ is never read; the repo root is a folder nothing here writes into.
@@ -65,6 +65,31 @@ test("open: an ordinary app, an https page and a readable path run; 1Password, h
   const empty = ctx({ then: [{ kind: "open" }] });
   assert.equal(verdict(empty), "refuse");
   assert.match(reason(empty), /needs an app, an https URL or a path/);
+});
+
+test("open { path }: a .command, a .sh, a .py, a .scpt, a .workflow, a .pkg, a .dmg, a .terminal and any .app refuse (nothing runs from a free open); 1Password.app names the hands-off app; a path inside a bundle refuses; a PDF and a folder run; a banner's Open target is judged the same", () => {
+  for (const path of ["~/scripts/deploy.command", "~/bin/tidy.sh", "~/x.zsh", "~/x.bash", "~/tools/report.py", "~/x.rb", "~/x.pl", "~/x.scpt", "~/x.applescript", "~/x.workflow", "~/Downloads/x.pkg", "~/Downloads/x.mpkg", "~/Downloads/x.dmg", "~/x.tool", "~/x.terminal", "~/Downloads/DEPLOY.COMMAND"]) {
+    const d = classifyAutomation(ctx({ then: [{ kind: "open", path }] }));
+    assert.equal(d.verdict, "refuse", path);
+    assert.match(d.reason, /would run when opened|never executes/, path);
+    assert.match(d.reason, /run-recipe/, `${path}: the safe kind is named`);
+  }
+  const bundle = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/Notes.app" }] }));
+  assert.equal(bundle.verdict, "refuse");
+  assert.match(bundle.reason, /app bundle; open the app by name/);
+  const hands = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/1Password.app/" }] }));
+  assert.equal(hands.verdict, "refuse");
+  assert.match(hands.reason, /1Password is hands-off/);
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "/Applications/Keychain Access.app" }] })), "refuse");
+  const inside = classifyAutomation(ctx({ then: [{ kind: "open", path: "/Applications/Slack.app/Contents/MacOS/Slack" }] }));
+  assert.equal(inside.verdict, "refuse");
+  assert.match(inside.reason, /inside an app bundle/);
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/report.pdf" }] })), "run");
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/Papers/" }] })), "run");
+  assert.equal(verdict(ctx({ then: [{ kind: "open", path: "~/Documents/apples.txt" }] })), "run", "'app' inside a name is not a bundle");
+  assert.equal(verdict(ctx({ then: [{ kind: "notify", title: "Deploy", open: "~/scripts/deploy.command" }] })), "refuse", "a banner's Open target is judged like open");
+  assert.equal(openPathReason("~/scripts/deploy.command", HOME)?.includes("deploy.command"), true);
+  assert.equal(openPathReason("~/Documents/report.pdf", HOME), undefined);
 });
 
 test("file: into a folder inside ~ with a folder trigger runs; outside ~, into ~/.jarhead, into a secret store, or with a clock trigger refuses", () => {

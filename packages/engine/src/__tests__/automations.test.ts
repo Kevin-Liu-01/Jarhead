@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clockOf } from "@jarhead/core";
@@ -853,6 +853,44 @@ test("snapshot: the live rows come first, then the Trash's newest eight as trash
     assert.equal(ring.more, 1);
     assert.equal(ring.lateMs, 2 * M);
     assert.equal(ring.calm, ring.id === first.id ? first.echo : second.echo, "a one-shot's calm line is its echo");
+  } finally {
+    await engine.stop();
+  }
+});
+
+// open never executes: the lexical gate at fire, then the execute bit the lexicon cannot see
+test("open-path-never-executes: an open of an executable file (no extension, mode 755) that passed the lexical set-up gate fails at fire ('is executable') and /usr/bin/open is never spawned; a .command armed through an older journal is refused at fire too; a plain document opens", async () => {
+  const home = mkdtempSync(join(tmpdir(), "jh-auto-open-"));
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "hook"), "#!/bin/sh\necho hi\n");
+  chmodSync(join(bin, "hook"), 0o755);
+  writeFileSync(join(home, "notes.txt"), "plain");
+  const { exec, runs } = fakeExec();
+  const w = world({ automations: { exec, home } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    const a = armed(w, engine.automations.arm({ name: "hook", when: { kind: "at", at: clock.t + M }, then: [{ kind: "open", path: join(bin, "hook") }], echo: "In a minute, open hook." }, "brain"));
+    const refused = engine.automations.arm({ name: "deploy", when: { kind: "at", at: clock.t + M }, then: [{ kind: "open", path: join(bin, "deploy.command") }], echo: "In a minute, open deploy." }, "brain");
+    assert.equal(refused.kind, "refused", "the lexical gate refuses at set-up");
+    assert.match((refused as { reason: string }).reason, /would run when opened/);
+    const doc = armed(w, engine.automations.arm({ name: "notes", when: { kind: "at", at: clock.t + M }, then: [{ kind: "open", path: join(home, "notes.txt") }], echo: "In a minute, open notes." }, "brain"));
+    clock.t += M;
+    tick(engine);
+    const f = await fired(w, 2);
+    const hook = f.find((r) => r.id === a.id)!;
+    assert.equal(hook.ok, false);
+    assert.match(hook.detail ?? "", /hook is executable; an open never runs anything/);
+    const notes = f.find((r) => r.id === doc.id)!;
+    assert.equal(notes.ok, true, notes.detail);
+    assert.deepEqual(runs, [["/usr/bin/open", join(home, "notes.txt")]], "only the document reached /usr/bin/open");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "failed");
+    // A row an older journal armed with a .command path: the executor's own gate refuses it at fire.
+    const detail = await (engine.automations.executor as unknown as { open(action: { kind: "open"; path: string }, id: string): Promise<{ ok: boolean; detail?: string }> }).open({ kind: "open", path: join(bin, "deploy.command") }, "auto_old");
+    assert.equal(detail.ok, false);
+    assert.match(detail.detail ?? "", /would run when opened/);
+    assert.equal(runs.length, 1, "still only the document");
   } finally {
     await engine.stop();
   }

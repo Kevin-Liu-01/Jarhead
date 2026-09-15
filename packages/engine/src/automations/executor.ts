@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, classifyPath, classifyUrl, clockOf, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
+import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
 import type { FocusedText, FrontmostInfo, NativeHands } from "@jarhead/hands";
 import { AUTOMATION_LINE_CHARS, automationKind, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
@@ -322,8 +322,10 @@ export class AutomationExecutor {
     }
     if (action.path) {
       const p = expandPath(action.path, this.opts.home);
-      const d = classifyPath({ path: p, access: "read", home: this.opts.home });
-      if (d.verdict !== "run") return { ok: false, detail: d.reason };
+      // The same lexical gate as set-up (an app bundle, a script, an installer would RUN), then the bit the lexicon cannot see.
+      const why = openPathReason(p, this.opts.home);
+      if (why) return { ok: false, detail: why };
+      if (isExecutableFile(p)) return { ok: false, detail: `${basename(p)} is executable; an open never runs anything — a run-recipe does, with a yes` };
       const r = await this.opts.exec.run("/usr/bin/open", [p], OPEN_TIMEOUT_MS);
       if (r.code !== 0) return { ok: false, detail: `could not open ${cut(action.path, 60)}${r.error ? `: ${r.error}` : ` (exit ${r.code ?? "?"})`}` };
       this.opts.emit({ type: "local.say", sound: "Pop", automationId });
@@ -547,6 +549,16 @@ export function firstSentence(text: string): string {
 export function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** A regular file with any execute bit set: `/usr/bin/open` would run it, so an automation never opens one. */
+export function isExecutableFile(path: string): boolean {
+  try {
+    const s = statSync(path);
+    return s.isFile() && (s.mode & 0o111) !== 0;
   } catch {
     return false;
   }
