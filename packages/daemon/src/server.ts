@@ -60,6 +60,10 @@ export interface EngineLike {
   readonly memory: { list(state?: string, limit?: number): unknown[]; search(query: string, limit?: number): Promise<unknown[]> };
   /** A client's socket closed: its conversation viewers leave (no leaked tails). */
   dropViewers(clientId: string): void;
+  /** A `system.signal` the app forwarded (design11): data for the automations' watchers; optional so a tool-only host and the older fakes need none. */
+  systemSignal?(signal: unknown, at: number): void;
+  /** How many clients look at the island / Console (the app's `hello { audio: true }`): running timers tick only while > 0. Optional, as above. */
+  setViewers?(n: number): void;
   readonly config: { readonly stateDir: string };
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
@@ -182,6 +186,13 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
           return this.broadcast({ type: "thread.event", event: e.event });
         case "thread.transcript":
           return this.route({ type: "thread.transcript", transcript: e.transcript, mode: e.mode }, conversationKey("thread", pageId(e.transcript, "threadId")));
+        // ---- automations (design11): small and every surface reads them — the island's ring, the banner, the rail; broadcast like toast.
+        case "automation.event":
+          return this.broadcast({ type: "automation.event", event: e.event });
+        case "local.say":
+          return this.broadcast({ type: "local.say", ...(e.text !== undefined ? { text: e.text } : {}), ...(e.sound !== undefined ? { sound: e.sound } : {}), automationId: e.automationId });
+        case "notify":
+          return this.broadcast({ type: "notify", id: e.id, title: e.title, ...(e.body !== undefined ? { body: e.body } : {}), presses: e.presses, automationId: e.automationId });
       }
     });
     this.engine.on("audio", (pcm) => {
@@ -247,6 +258,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         log.debug(`dropViewers(${client.id}): ${(e as Error).message}`);
       }
       log.info(`client left (${this.clients.size} remaining)`);
+      this.tellViewers();
       this.emit("leave", this.clients.size);
     });
     log.info(`client joined (${this.clients.size})`);
@@ -265,6 +277,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "hello":
         client.audio = msg.audio === true;
         if (Number.isInteger(msg.pid)) this.engine.registerOwnPid(msg.pid);
+        this.tellViewers();
         return;
       case "command": {
         if (!isEngineCommand(msg.command)) return this.send(client, { type: "error", message: "malformed command" });
@@ -294,6 +307,10 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       case "permission":
         this.engine.setPermission(msg.which, msg.state, msg.detail);
         break;
+      case "system.signal":
+        // Data, never a command: the engine matches it against the armed watchers and resyncs; nothing here can wake it.
+        if (typeof msg.signal === "object" && msg.signal !== null) this.engine.systemSignal?.(msg.signal, Number(msg.at) || Date.now());
+        return;
       case "permissions":
         if (Array.isArray(msg.all)) this.engine.setPermissions(msg.all);
         return;
@@ -405,6 +422,17 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       result = { kind: "error", message: (e as Error).message };
     }
     answer(result);
+  }
+
+  /** The app (the client that said `hello { audio: true }`) is the one looking at the island and the Console; the CLI's join/leave clients are not viewers. */
+  private tellViewers(): void {
+    let n = 0;
+    for (const c of this.clients) if (c.audio) n++;
+    try {
+      this.engine.setViewers?.(n);
+    } catch (e) {
+      log.debug(`setViewers: ${(e as Error).message}`);
+    }
   }
 
   private send(client: Client, message: DaemonMessage): void {
