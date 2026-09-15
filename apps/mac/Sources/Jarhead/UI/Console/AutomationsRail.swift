@@ -110,19 +110,16 @@ enum AutomationWords {
     static func approved(_ day: String) -> String { "approved \(day)" }
     static let recipeTimeout: Double = 120
     static func armed(_ n: Int) -> String { "\(n) armed" }
-    // the Add… form
+    // the Add… form — the When field takes the words the voice takes (core's parseWhen is the one grammar)
     static let nameField = "name"
-    static let whenField = "07:10 weekdays · 12 min · 15:00"
+    static let whenField = "weekdays 09:00 · in 12 min · tomorrow 07:10"
     static let doesField = "Does"
-    static let whenRule = "HH:mm [weekdays · daily · weekends] · N min"
-    // the echo line the Add… form reads back (the brain's echo lives in core; this one is the Console's)
-    static let echoIn = "In"
-    static let echoAt = "At"
-    static let echoAtWord = "at"
+    static let whenRule = "When, in the voice's words: a clock, weekdays · daily · weekends, tomorrow, in 12 min, every 2 h"
+    // the echo line the Add… form reads back from Kevin's own words (the brain's echo lives in core)
     static let echoRing = "ring"
-    static let weekdays: [String] = ["mon", "tue", "wed", "thu", "fri"]
-    static let weekend: [String] = ["sat", "sun"]
-    static let everyDay: [String] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    /// The second press of a confirm-tier kind: the word becomes the deed, the question above it is the yes.
+    static func arm(_ name: String) -> String { "Arm “\(name)”" }
+    static let letGo = "Keep it unarmed"
     static func trashedRecipe(_ day: String) -> String { "trashed \(day)" }
     // ids (fold · tips · fields)
     static let trashFold = "now.automations.trash"
@@ -437,7 +434,11 @@ struct AutomationsSection: View {
         if state.snapshot.automations != nil {
             VStack(alignment: .leading, spacing: 0) {
                 head
-                if adding { AutomationAddForm(unattended: settings.unattended, close: { adding = false }).transition(Motion.appear) }
+                if adding {
+                    AutomationAddForm(settings: settings, asking: state.snapshot.recipesAsking ?? [], localBrain: state.snapshot.settings.brain == .local,
+                                      close: { adding = false })
+                        .transition(Motion.appear)
+                }
                 if rows.isEmpty, trashed.isEmpty {
                     ConsoleEmpty(AutomationWords.empty)
                 } else {
@@ -644,116 +645,185 @@ struct AutomationRenameRow: View {
 
 // MARK: - Add… (the Console form: name · when · does)
 
-/// The phrase the When field takes, parsed here alone (the brain's `parseWhen` lives in core): `07:10`
-/// (a one-shot at the next 07:10), `07:10 weekdays` / `daily` / `weekends` (a repeater), `12 min` (a timer).
+/// The When field is Kevin's words, sent as `whenPhrase`: core's `parseWhen` is the one grammar (the
+/// voice's tool, the CLI and this form), so the Console parses nothing — the engine refuses with
+/// parseWhen's own text as the toast. A confirm-tier kind (run recipe · wake brain) is the two-press
+/// idiom: the first press puts the engine's question on screen — mirrored word for word from core's
+/// policy (the cost line, the recipe line) — and turns Save into the deed; the second press sends.
+/// Nothing is recorded as heard that was not on screen.
 enum AutomationForm {
-    static func parseWhen(_ text: String, now: Double, calendar: Calendar = .current) -> AutomationWhen? {
-        let words = text.lowercased().split(separator: " ").map(String.init)
-        guard let first = words.first else { return nil }
-        if let minutes = minutes(words) {
-            guard minutes > 0 else { return nil }
-            return AutomationWhen(kind: "in", at: nil, ms: Double(minutes) * 60_000, every: nil, phrase: nil, on: nil)
+    static let doesKinds = ["chime", "say", "notify", "open", "run-recipe", "wake-brain"]
+    /// The kinds the engine confirms: the form shows their question before the second press.
+    static let confirmKinds: Set<String> = ["run-recipe", "wake-brain"]
+    /// A wake-brain row from the form: 25 steps, two minutes — the cost line says so.
+    static let wakeBudget = AutomationBudget(steps: 25, seconds: 120)
+
+    /// The one line the row reads back, from Kevin's own words: `Weekdays 09:00, ring “standup”.` ·
+    /// `In 12 min, ring “pasta”.` — nothing parsed, the phrase capitalised.
+    static func echo(name: String, phrase: String, kind: String) -> String {
+        let verb = kind == "chime" ? AutomationWords.echoRing : AutomationWords.actionWord(kind)
+        let words = phrase.trimmingCharacters(in: .whitespaces)
+        guard let first = words.first else { return "" }
+        return String(first).uppercased() + words.dropFirst() + ", " + verb + " “" + name + "”."
+    }
+
+    /// The draft `automation.set` sends: Kevin's phrase as `whenPhrase` (no `when`), one action of `kind`
+    /// carrying the name — a chime's line, a banner's title, an app to open, a recipe's name, a wake-brain's
+    /// prompt — and quiet hours respected unless it is an alarm (a chime on a clock).
+    static func draft(name: String, phrase: String, kind: String) -> AutomationDraft {
+        let clean = String(name.prefix(24))
+        // Named lets, one switch — not six inline ternaries in one init (CI's older Swift).
+        var line: String?
+        var title: String?
+        var app: String?
+        var recipe: String?
+        var prompt: String?
+        var budget: AutomationBudget?
+        var speak: Bool?
+        switch kind {
+        case "notify": title = clean
+        case "open": app = clean
+        case "run-recipe": recipe = clean
+        case "wake-brain":
+            prompt = clean
+            budget = wakeBudget
+            speak = true
+        default: line = clean
         }
-        guard let clock = clockParts(first) else { return nil }
-        if words.count == 1 {
-            return AutomationWhen(kind: "at", at: nextOccurrence(hour: clock.h, minute: clock.m, now: now, calendar: calendar), ms: nil, every: nil, phrase: nil, on: nil)
-        }
-        guard words.count == 2, let days = days(words[1]) else { return nil }
-        let every = Recurrence(kind: "weekly", days: days, at: first, everyMs: nil, anchorAt: nil, nth: nil, weekday: nil, day: nil)
-        return AutomationWhen(kind: "every", at: nil, ms: nil, every: every, phrase: words[1], on: nil)
+        let action = AutomationAction(kind: kind, line: line, sound: nil, title: title, body: nil, open: nil, app: app, url: nil, path: nil, into: nil,
+                                      recipe: recipe, key: nil, prompt: prompt, budget: budget, speak: speak)
+        let clauses = AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: kind == "chime" ? "override" : "respect")
+        return AutomationDraft(name: clean, whenPhrase: phrase, then: [action], clauses: clauses, echo: echo(name: clean, phrase: phrase, kind: kind))
     }
 
-    /// `12m` · `12 min` · `12 minutes` → 12; anything else nil.
-    static func minutes(_ words: [String]) -> Int? {
-        guard let first = words.first else { return nil }
-        if words.count == 1, first.hasSuffix("m"), let n = Int(first.dropLast()) { return n }
-        if words.count == 2, words[1] == "min" || words[1] == "minutes", let n = Int(first) { return n }
-        return nil
+    /// core's `costLine`, word for word — what the engine records as `confirmed.heard` for a wake-brain row,
+    /// so what Kevin read is what the ledger says he heard. N = ⌈seconds / 60⌉, M = Brain minutes a day.
+    static func costLine(_ budget: AutomationBudget, cap: Int, local: Bool) -> String {
+        let n = max(1, Int((budget.seconds / 60).rounded(.up)))
+        let minutes = n == 1 ? "brain minute" : "brain minutes"
+        let whereWord = local ? "a model warm-up on this Mac" : "on Kevin's plan"
+        return "this wakes the brain — not the voice — while Jarhead is asleep: about \(n) \(minutes) per fire \(whereWord), up to \(cap) a day; its one-line answer is spoken by the local speaker / shown as a banner"
     }
 
-    static func clockParts(_ s: String) -> (h: Int, m: Int)? {
-        let parts = s.split(separator: ":")
-        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]), (0..<24).contains(h), (0..<60).contains(m) else { return nil }
-        return (h, m)
+    /// core's run-recipe question, word for word: `recipe backup (~/bin/backup.sh) will run unattended, without a yes each time`.
+    static func recipeLine(_ recipe: ShellRecipe) -> String {
+        let command = recipe.command.count > 80 ? String(recipe.command.prefix(77)) + "…" : recipe.command
+        return "recipe \(recipe.name) (\(command)) will run unattended, without a yes each time"
     }
 
-    static func days(_ word: String) -> [String]? {
-        switch word {
-        case "weekdays": return AutomationWords.weekdays
-        case "weekends": return AutomationWords.weekend
-        case "daily": return AutomationWords.everyDay
+    /// The recipes the form may name: live (not in the Trash) and not rated `asks` by the shell gate.
+    static func pickable(_ recipes: [ShellRecipe], asking: [String]) -> [ShellRecipe] {
+        let asks = Set(asking.map { $0.lowercased() })
+        return recipes.filter { !$0.isTrashed && !asks.contains($0.name.lowercased()) }
+    }
+
+    /// The question the engine will ask for this draft — shown before the second press — or nil for a free kind
+    /// (and for a recipe the form may not name: then there is nothing to arm).
+    static func question(kind: String, name: String, recipes: [ShellRecipe], asking: [String], cap: Int, local: Bool) -> String? {
+        switch kind {
+        case "wake-brain": return costLine(wakeBudget, cap: cap, local: local)
+        case "run-recipe":
+            let wanted = name.lowercased()
+            return pickable(recipes, asking: asking).first { $0.name.lowercased() == wanted }.map(recipeLine)
         default: return nil
         }
     }
 
-    /// The next `HH:mm` after `now` (today if still ahead, else tomorrow), as wall-clock ms.
-    static func nextOccurrence(hour: Int, minute: Int, now: Double, calendar: Calendar) -> Double {
-        let today = Date(timeIntervalSince1970: now / 1000)
-        guard let at = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: today) else { return now }
-        let next = at.timeIntervalSince1970 * 1000 > now ? at : (calendar.date(byAdding: .day, value: 1, to: at) ?? at)
-        return next.timeIntervalSince1970 * 1000
-    }
-
-    /// The one line the row reads back: `Weekdays at 07:10, chime “standup”.` · `In 12:00, ring “pasta”.`
-    static func echo(name: String, when: AutomationWhen, kind: String) -> String {
-        let verb = kind == "chime" ? AutomationWords.echoRing : AutomationWords.actionWord(kind)
-        let deed = ", " + verb + " “" + name + "”."
-        switch when.kind {
-        case "in": return AutomationWords.echoIn + " " + ConsoleFormat.countdown(when.ms ?? 0) + deed
-        case "every":
-            let phrase = (when.phrase ?? "").capitalized
-            let at = when.every?.at ?? ""
-            return phrase + " " + AutomationWords.echoAtWord + " " + at + deed
-        default: return AutomationWords.echoAt + " " + ConsoleFormat.clock(when.at ?? 0) + deed
+    /// A kind the Does menu offers greyed: wake brain until its chip is on and Brain minutes is above 0;
+    /// run recipe until its chip is on and a recipe can be named. Off in Settings is refused by the engine, not asked.
+    static func disabled(kind: String, settings: AutomationSettings, asking: [String]) -> Bool {
+        switch kind {
+        case "wake-brain": return !settings.unattended.contains(kind) || settings.wakeBudgetMinutesPerDay <= 0
+        case "run-recipe": return !settings.unattended.contains(kind) || pickable(settings.recipes, asking: asking).isEmpty
+        default: return false
         }
     }
-
-    /// The draft `automation.set` sends: one action of `kind` carrying the name as its line; quiet
-    /// hours respected unless it is an alarm (a chime on a clock).
-    static func draft(name: String, when: AutomationWhen, kind: String) -> AutomationDraft {
-        let action = AutomationAction(kind: kind, line: kind == "open" || kind == "run-recipe" || kind == "wake-brain" ? nil : name, sound: nil, title: kind == "notify" ? name : nil,
-                                      body: nil, open: nil, app: kind == "open" ? name : nil, url: nil, path: nil, into: nil, recipe: kind == "run-recipe" ? name : nil,
-                                      key: nil, prompt: kind == "wake-brain" ? name : nil, budget: kind == "wake-brain" ? AutomationBudget(steps: 25, seconds: 120) : nil, speak: kind == "wake-brain" ? true : nil)
-        let clauses = AutomationClauses(window: nil, days: nil, once: nil, cooldown: nil, until: nil, quiet: kind == "chime" ? "override" : "respect")
-        return AutomationDraft(name: String(name.prefix(24)), when: when, then: [action], clauses: clauses, echo: echo(name: name, when: when, kind: kind))
-    }
-
-    static let doesKinds = ["chime", "say", "notify", "open", "run-recipe", "wake-brain"]
 }
 
 struct AutomationAddForm: View {
-    let unattended: [String]
+    let settings: AutomationSettings
+    /// `snapshot.recipesAsking`: the recipes the gate would question — never named here.
+    let asking: [String]
+    let localBrain: Bool
     let close: () -> Void
 
     @Environment(\.consoleActions) private var actions
     @State private var name = ""
     @State private var when = ""
     @State private var kind = "chime"
+    @State private var armed = false
 
-    private var parsed: AutomationWhen? { AutomationForm.parseWhen(when, now: ConsoleFormat.nowMs) }
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty && parsed != nil }
+    private var cleanName: String { String(name.trimmingCharacters(in: .whitespaces).prefix(24)) }
+    private var phrase: String { when.trimmingCharacters(in: .whitespaces) }
+    private var needsYes: Bool { AutomationForm.confirmKinds.contains(kind) }
+    private var question: String? {
+        AutomationForm.question(kind: kind, name: cleanName, recipes: settings.recipes, asking: asking, cap: settings.wakeBudgetMinutesPerDay, local: localBrain)
+    }
+    /// A name and a phrase; a confirm-tier kind also needs the question it will show (a recipe the form may name).
+    private var valid: Bool { !cleanName.isEmpty && !phrase.isEmpty && (!needsYes || question != nil) }
+    /// The preview under the fields echoes the phrase as the row will read it back; it computes nothing.
+    private var preview: String? { cleanName.isEmpty || phrase.isEmpty ? nil : AutomationForm.echo(name: cleanName, phrase: phrase, kind: kind) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ConsoleField(text: $name, placeholder: AutomationWords.nameField, size: .row, id: AutomationWords.addId + ".name", accessibilityLabel: AutomationWords.nameField)
-            ConsoleField(text: $when, placeholder: AutomationWords.whenField, size: .row, mono: true, error: !when.isEmpty && parsed == nil,
-                         id: AutomationWords.whenId, accessibilityLabel: AutomationWords.whenRule)
+            ConsoleField(text: $when, placeholder: AutomationWords.whenField, size: .row, mono: true, id: AutomationWords.whenId, accessibilityLabel: AutomationWords.whenRule)
             HStack(spacing: 8) {
                 ConsoleMenuField(value: kind, options: AutomationForm.doesKinds, title: AutomationWords.actionWord, pick: { kind = $0 },
                                  id: AutomationWords.doesId, label: AutomationWords.doesField,
-                                 badge: { $0 == "wake-brain" ? [.billed] : [] }, disabled: { $0 == "wake-brain" && !unattended.contains("wake-brain") })
-                Button(AutomationWords.save, action: save)
-                    .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
-                    .disabled(!valid)
+                                 badge: { $0 == "wake-brain" ? [.billed] : [] },
+                                 disabled: { AutomationForm.disabled(kind: $0, settings: settings, asking: asking) })
+                if !armed {
+                    Button(AutomationWords.save, action: firstPress)
+                        .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
+                        .disabled(!valid)
+                        .transition(.opacity)
+                }
             }
+            if let preview { ConsoleHint(preview, indent: 0).transition(Motion.appear) }
+            if armed, let question { deed(question).transition(Motion.appear) }
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+        .animation(Motion.snappy, value: armed)
+        // A changed field lets go of the first press: the question on screen must be this draft's.
+        .onChange(of: kind) { _, _ in armed = false }
+        .onChange(of: name) { _, _ in armed = false }
+        .onChange(of: when) { _, _ in armed = false }
     }
 
-    private func save() {
-        guard let parsed, valid else { return }
-        actions.send(.automationSet(AutomationForm.draft(name: name.trimmingCharacters(in: .whitespaces), when: parsed, kind: kind)))
+    /// Save: a free kind sends at once; a confirm-tier kind puts the question on screen and waits for the second press.
+    private func firstPress() {
+        guard valid else { return }
+        if needsYes { withAnimation(Motion.snappy) { armed = true } } else { send() }
+    }
+
+    /// The question the engine will record as heard — on screen, verbatim — and the deed under it with × beside;
+    /// left alone it lets go after 8 s. Return is never the yes: a click alone presses it.
+    private func deed(_ question: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ConsoleHint(question, tone: ConsoleTheme.speaking, indent: 0)
+            HStack(spacing: 4) {
+                Button(AutomationWords.arm(cleanName), action: send)
+                    .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
+                Button { withAnimation(Motion.snappy) { armed = false } } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 26))
+                .consoleHelp(AutomationWords.letGo)
+                .accessibilityLabel(AutomationWords.letGo)
+            }
+        }
+        .task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            withAnimation(Motion.snappy) { armed = false }
+        }
+    }
+
+    private func send() {
+        guard valid else { return }
+        actions.send(.automationSet(AutomationForm.draft(name: cleanName, phrase: phrase, kind: kind)))
+        armed = false
         close()
     }
 }

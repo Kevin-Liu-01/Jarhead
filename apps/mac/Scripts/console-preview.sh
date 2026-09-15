@@ -61,7 +61,9 @@
 #   the Trash fold open on old-sync with Restore (a recipe is never deleted), Open at login. The harness keys:
 #   `ringing:<id|off>`, `recipesAsks:<a,b>`, `automationsFold`, `probe-ring`.
 #   check-kit pins the four badge words, AutomationWords, the summary, ConsoleFormat.clock / countdown, a row's
-#   line per kind, the card's spoken form, the ring split, the recipe meta and the Add… parser (check-automations).
+#   line per kind, the card's spoken form, the ring split, the recipe meta, and the Add… form: the phrase rides as
+#   `whenPhrase` (core's parseWhen is the one grammar; the form parses nothing), the cost line and the recipe line
+#   verbatim from core's policy (the two-press shows them before the yes), the trashed recipe row (check-automations).
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
 #   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,

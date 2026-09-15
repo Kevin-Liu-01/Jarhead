@@ -3811,27 +3811,41 @@ extension PreviewDelegate {
         expect("automations: recipe meta", AutomationFormat.recipeMeta(recipe, home: "/Users/kevinliu"), "~/bin/backup.sh · 120 s · approved " + Date(timeIntervalSince1970: recipe.approvedAt / 1000).formatted(.dateTime.month(.abbreviated).day()))
         expect("automations: chip flip keeps the contract's order", AutomationFormat.toggled(["chime", "file"], "say").joined(separator: ",") + " / " + AutomationFormat.toggled(["chime", "say"], "chime").joined(separator: ","), "chime,say,file / say")
         expect("automations: quiet options", "\(AutomationFormat.quietOptions.count) · \(AutomationFormat.quietTitle("")) · \(AutomationFormat.quietTitle("23:00"))", "25 · Off · 23:00")
-        let weekly = AutomationForm.parseWhen("07:10 weekdays", now: now), timer = AutomationForm.parseWhen("12 min", now: now), once = AutomationForm.parseWhen("15:00", now: now)
-        // One statement per word (CI's older Swift gives up on `??` chains of interpolating closures).
-        func whenWord(_ w: AutomationWhen?) -> String {
-            guard let w else { return "nil" }
-            switch w.kind {
-            case "every": return "every \(w.every?.days?.count ?? 0) \(w.phrase ?? "")"
-            case "in": return "in \(Int(w.ms ?? 0))"
-            default: return "at " + ConsoleFormat.clock(w.at ?? 0)
-            }
-        }
-        expect("add form: parseWhen", [weekly, timer, once, AutomationForm.parseWhen("soonish", now: now)].map(whenWord).joined(separator: " / "),
-               "every 5 weekdays / in 720000 / at 15:00 / nil")
-        if let weekly { expect("add form: echo", AutomationForm.echo(name: "standup", when: weekly, kind: "chime"), "Weekdays at 07:10, ring “standup”.") }
-        // Recipes are never deleted: a trashed one keeps its row under Trash with Restore; recipe.restore is on the wire.
+        // The Add… form parses nothing: the phrase rides as `whenPhrase` (core's parseWhen is the one grammar); the echo is
+        // Kevin's words read back; a wake-brain draft carries the prompt, the 25/120 budget and speak — named lets, one switch.
+        let chime = AutomationForm.draft(name: "standup", phrase: "weekdays 09:00", kind: "chime")
+        expect("add form: whenPhrase rides, nothing parsed", "\(chime.whenPhrase ?? "nil") | \(chime.when == nil ? "no when" : "when") | \(chime.clauses.quiet ?? "nil")", "weekdays 09:00 | no when | override")
+        expect("add form: echo", chime.echo + " / " + AutomationForm.echo(name: "pasta", phrase: "in 12 min", kind: "chime"), "Weekdays 09:00, ring “standup”. / In 12 min, ring “pasta”.")
+        let wakeDraft = AutomationForm.draft(name: "summarise", phrase: "daily 18:00", kind: "wake-brain").then[0]
+        expect("add form: wake-brain draft", "\(wakeDraft.prompt ?? "-") · \(wakeDraft.budget?.steps ?? 0)/\(Int(wakeDraft.budget?.seconds ?? 0)) · \(wakeDraft.speak == true ? "speaks" : "-") · line \(wakeDraft.line ?? "-")",
+               "summarise · 25/120 · speaks · line -")
+        expect("add form: wire has no when key", "\(chime.json["when"] == nil ? "absent" : "present") · \(chime.json["whenPhrase"] as? String ?? "-")", "absent · weekdays 09:00")
+        // The cost line and the recipe line are core's policy words, verbatim: what the form shows is what the ledger records as heard.
+        expect("add form: cost line (core's costLine, verbatim)", AutomationForm.costLine(AutomationForm.wakeBudget, cap: 5, local: false),
+               "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on Kevin's plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner")
+        expect("add form: cost line · local · one minute", AutomationForm.costLine(AutomationBudget(steps: 5, seconds: 60), cap: 3, local: true),
+               "this wakes the brain — not the voice — while Jarhead is asleep: about 1 brain minute per fire a model warm-up on this Mac, up to 3 a day; its one-line answer is spoken by the local speaker / shown as a banner")
         let recipes = fake.automationSettings().recipes
+        expect("add form: recipe line (core's, verbatim)", AutomationForm.recipeLine(recipes[0]), "recipe backup (/Users/kevinliu/bin/backup.sh) will run unattended, without a yes each time")
+        expect("add form: pickable recipes (never trashed, never asks)", AutomationForm.pickable(recipes, asking: ["vpn-up"]).map(\.name).joined(separator: ","), "backup,build-check")
+        let asked = AutomationForm.question(kind: "run-recipe", name: "vpn-up", recipes: recipes, asking: ["vpn-up"], cap: 5, local: false)
+        let free = AutomationForm.question(kind: "chime", name: "x", recipes: recipes, asking: [], cap: 5, local: false)
+        expect("add form: an asks recipe and a free kind have no question", "\(asked ?? "nil") / \(free ?? "nil")", "nil / nil")
+        let off = fake.automationSettings()
+        var on = off; on.unattended += ["run-recipe", "wake-brain"]
+        var spent = on; spent.wakeBudgetMinutesPerDay = 0
+        expect("add form: confirm kinds greyed until their chip is on (and minutes above 0)",
+               [AutomationForm.disabled(kind: "wake-brain", settings: off, asking: []), AutomationForm.disabled(kind: "wake-brain", settings: on, asking: []),
+                AutomationForm.disabled(kind: "wake-brain", settings: spent, asking: []), AutomationForm.disabled(kind: "run-recipe", settings: off, asking: []),
+                AutomationForm.disabled(kind: "run-recipe", settings: on, asking: []), AutomationForm.disabled(kind: "chime", settings: off, asking: [])].map { $0 ? "off" : "on" }.joined(separator: ","),
+               "off,on,off,off,on,on")
+        expect("add form: the deed and the let-go", AutomationWords.arm("standup") + " · " + AutomationWords.letGo, "Arm “standup” · Keep it unarmed")
+        // Recipes are never deleted: a trashed one keeps its row under Trash with Restore; recipe.restore is on the wire.
         let trashedRecipe = recipes.first { $0.isTrashed }
         expect("recipes: the trashed row's meta", trashedRecipe.map { AutomationFormat.recipeMeta($0, home: "/Users/kevinliu") } ?? "none",
                "~/bin/old-sync.sh · trashed " + AutomationFormat.dayWord(trashedRecipe?.trashedAt ?? 0))
         expect("recipes: trashedAt on the wire", "\(ShellRecipe(name: "a", command: "b", cwd: nil, timeoutSeconds: 1, approvedAt: 2).json["trashedAt"] == nil ? "absent" : "present") · \(trashedRecipe?.json["trashedAt"] == nil ? "absent" : "present")", "absent · present")
         expect("recipe.restore on the wire", "\(EngineCommand.recipeRestore(name: "old-sync").json["type"] as? String ?? "") \(EngineCommand.recipeRestore(name: "old-sync").json["name"] as? String ?? "")", "recipe.restore old-sync")
-        expect("add form: draft quiet", AutomationForm.draft(name: "x", when: timer ?? weekly!, kind: "chime").clauses.quiet ?? "nil", "override")
         return failed
     }
 }

@@ -1134,16 +1134,19 @@ public struct AutomationSettings: Codable, Equatable {
 }
 
 /// `automation.set`'s row as the Console form or the CLI sends it: the engine fills id, state, fires, the stamps and createdBy.
+/// One `when` grammar: the Console sends Kevin's words as `whenPhrase` and the engine parses them with core's
+/// `parseWhen` (a refusal carries its error text); `when` is given only by a sender that already holds the parsed form.
 public struct AutomationDraft: Encodable, Equatable {
     public var id: String?
     public var name: String
-    public var when: AutomationWhen
+    public var when: AutomationWhen?
+    public var whenPhrase: String?
     public var then: [AutomationAction]
     public var clauses: AutomationClauses
     public var echo: String
 
-    public init(id: String? = nil, name: String, when: AutomationWhen, then: [AutomationAction], clauses: AutomationClauses, echo: String) {
-        self.id = id; self.name = name; self.when = when; self.then = then; self.clauses = clauses; self.echo = echo
+    public init(id: String? = nil, name: String, when: AutomationWhen? = nil, whenPhrase: String? = nil, then: [AutomationAction], clauses: AutomationClauses, echo: String) {
+        self.id = id; self.name = name; self.when = when; self.whenPhrase = whenPhrase; self.then = then; self.clauses = clauses; self.echo = echo
     }
 
     /// The draft as a JSON object (nil fields left out), for `EngineCommand.json`.
