@@ -52,6 +52,8 @@
 #                                               (PREVIEW_WINDOW_SIZE=1180x1040 so all four problems are in frame)
 #     cleanup         console-cleanup.jpg       Pinned above the days, Archived folded, Trash open with Restore
 #     light           console-light.jpg         the live scenario in the aqua appearance
+#     automations     console-automations.jpg   design11: the Automations rail — the ring line under the tabs, the six rows
+#                                               with no resting badge, the Trash fold open
 #
 #   onboarding (apps/mac/Scripts/onboarding-preview.sh <step>; the 620x520 content + title bar, shot @2x → 1240x1104 px)
 #     welcome         onboarding-welcome.png
@@ -84,6 +86,8 @@
 #                                               read by NotchPanel.swift (`previewWorkingFollowsPhase`), not by
 #                                               OrbPreviewApp.swift — without it the counter is not drawn;
 #                                               ORB_NOTCH_SHOT_TAG=working names the file
+#     notch alarm     notch-island-alarm.png    design11: asleep, an alarm rings — ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING +
+#                                               ORB_NOTCH_NEXT, Snooze 10 · Done in the consent rects, the foot's next timer
 #     eyes            blob-eyes.jpg             every ASCII face, labelled: phases, gate states, poke
 #     trace           blob-trace.png            orb.trace: the blob as the pen, the line it drew, the label
 #     fly             blob-fly.png              orb.fly: parked beside its target ring
@@ -247,6 +251,7 @@ if want console; then
   console problems      console-problems   1180x1040
   console cleanup       console-cleanup
   console light         console-light
+  console automations   console-automations
 fi
 
 # ------------------------------------------------------------- onboarding
@@ -297,6 +302,11 @@ if want orb; then
     ORB_NOTCH_SHOT_TAG=working ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=4.5
   crop_notch "$TMP/orb-notch-working/preview-blob-notch-island-working.png"
   place "$TMP/orb-notch-working/preview-blob-notch-island-working.png" notch-island-working
+  # The ring while asleep (design11): the alarm fires at 1.5 s, the island opens pinned with Snooze 10 · Done, the foot's next timer.
+  orb notch-alarm ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" \
+    ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_SHOT_TAG=alarm ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full ORB_EXIT_AFTER=4.5
+  crop_notch "$TMP/orb-notch-alarm/preview-blob-notch-island-alarm.png"
+  place "$TMP/orb-notch-alarm/preview-blob-notch-island-alarm.png" notch-island-alarm
   # The films: three marks (oldest first: used, capturing, pending) as 84x60 films, the caption in the head, Clear in the strip.
   orb notch-marks ORB_NOTCH=1 ORB_NOTCH_NO_POINTER=1 ORB_FLY_AT=99 ORB_NO_WINDOWS=1 ORB_BACKDROP=full \
     ORB_FLEET="Slack:screen:working;Spotify:background:working" \

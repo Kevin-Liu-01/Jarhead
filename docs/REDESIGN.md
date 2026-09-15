@@ -35,7 +35,7 @@ The **Claude Agent SDK** runs Claude Code headless with in-process MCP tools,
 streaming input, and a permission callback, and Kevin's Claude Code login is what
 authenticates it — no API key needed. Current Claude models point at pixel
 coordinates off a screenshot well enough that Jarhead's own computer family (§10)
-is all the Claude brains get: every brain drives the same 67 tools, and no vendor's
+is all the Claude brains get: every brain drives the same 71 tools, and no vendor's
 own computer-use toolset is mounted beside them.
 
 ## 3. The shape of v2
@@ -63,7 +63,7 @@ stop`), chosen in Setup or the Console and swappable mid-run, with a backend per
 `BrainKind`: `codex` (the Codex CLI with Kevin's ChatGPT login, Jarhead's tools
 over MCP), `claude-code` (the Agent SDK with his Claude login; inherits his skills
 and CLAUDE.md), `anthropic-api` (the Messages API with `ANTHROPIC_API_KEY`, the
-67 tools as plain tool definitions), `openai-compatible` (Chat Completions at
+71 tools as plain tool definitions), `openai-compatible` (Chat Completions at
 `Settings.brainBaseUrl` / `JARHEAD_BRAIN_BASE_URL` with `JARHEAD_BRAIN_API_KEY`:
 OpenAI, OpenRouter, vLLM, a hosted server…), `openai-responses` (Live's own
 Responses delegation, same tools as function tools) and `local` (a model on this
@@ -77,7 +77,7 @@ what earns a `problem()` line and which explicit kinds fall back to Responses is
 §6c's rule. Each `session.delegation.created` becomes one
 turn for whichever brain runs: the transcript window since the last delegation,
 the current screen context, and the running task ledger. Every backend drives
-the same 67 tools through `ToolRunner` — the hands (below), the agent
+the same 71 tools through `ToolRunner` — the hands (below), the agent
 connectors, web search, shell — and streams progress back as `thinking.append`
 and results as `commentary.append`.
 
@@ -262,7 +262,7 @@ first snapshot) and the menu-bar item *Set Up…* open a wizard
 
 Kevin: "why isnt it connecting to our codex? i have one locally. be vendor
 agnostic, dont just enforce claude code". The brain is a setting, not a vendor.
-`Settings.brain` is one of seven `BrainKind`s; every one drives the same 67 tools
+`Settings.brain` is one of seven `BrainKind`s; every one drives the same 71 tools
 through `ToolRunner`, so policy, ledger, screenshots and the confirmation
 handshake are identical whichever model is thinking.
 

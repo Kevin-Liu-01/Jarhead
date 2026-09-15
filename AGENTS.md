@@ -112,7 +112,8 @@ happens, a Swift helper owns the Mac.
   it by whole word or file name. Do not add a hunk-narrowed rail for a
   security-critical file: hunk regexes are dodged by editing the lines around
   them. Bump `SYSTEM_PROMPT_VERSION` when the standing orders change;
-  `brain.test.ts` pins the prompt's order, budget (1100 words, v3.2) and tool names.
+  `brain.test.ts` pins the prompt's order, budget (1250 words, v3.3 — the automations
+  pass moved it from 1100; the voice's orders sit at 1450, `instructions.test.ts`) and tool names.
   The memory pass touched one rail by one optional field — `BrainTask.memory?:
   string` in `brain.ts`, no prompt text, no version bump — because Kevin asked for
   the memory module by name; `# Language` lives in the engine-assembled
