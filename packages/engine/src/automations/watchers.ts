@@ -99,9 +99,11 @@ export class Watchers {
   /**
    * Start watching for a row. A folder is read NOW — while Kevin is at the Mac, so the
    * per-folder TCC prompt shows at set-up, never at 3 a.m. Returns the read error when
-   * the folder cannot be listed (EPERM, ENOENT); the caller raises the problem.
+   * the folder cannot be listed (EPERM, ENOENT); the caller raises the problem. `asOf`
+   * (a restart) is the daemon's last heartbeat: files newer than it stay out of the
+   * baseline for the resync to count.
    */
-  watch(a: Automation): string | undefined {
+  watch(a: Automation, asOf?: number): string | undefined {
     if (a.when.kind !== "on") return undefined;
     const on = a.when.on;
     const folder = folderOf(on, this.opts.home);
@@ -109,7 +111,9 @@ export class Watchers {
       const glob = on.kind === "folder.file" || on.kind === "download.done" ? on.glob : undefined;
       const settleMs = on.kind === "folder.file" && on.settleMs !== undefined ? Math.max(500, on.settleMs) : SETTLE_DEFAULT_MS;
       const state: FolderState = { path: folder, glob: glob ? globToRegExp(glob) : undefined, settleMs, baseline: new Map(), pending: new Map(), unhandled: 0 };
-      const err = this.baseline(state);
+      // At a restart the baseline is the listing AS OF the last heartbeat: what landed since is left out, so the resync that
+      // follows counts it ("not watching … · N new files not handled") instead of the fresh listing hiding it. Never replayed.
+      const err = this.baseline(state, asOf);
       this.folders.set(a.id, state);
       return err;
     }
@@ -138,12 +142,14 @@ export class Watchers {
     return out;
   }
 
-  private baseline(f: FolderState): string | undefined {
+  private baseline(f: FolderState, asOf?: number): string | undefined {
     try {
       f.baseline.clear();
       for (const name of readdirSync(f.path)) {
         const e = this.entry(f.path, name);
-        if (e) f.baseline.set(name, e);
+        if (!e) continue;
+        if (asOf !== undefined && e.mtime > asOf && !IGNORED.test(name) && (!f.glob || f.glob.test(name))) continue;
+        f.baseline.set(name, e);
       }
       return undefined;
     } catch (e) {
