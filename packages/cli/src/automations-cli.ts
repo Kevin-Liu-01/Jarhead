@@ -185,6 +185,18 @@ function tokens(text: string): string[] {
   return out;
 }
 
+/**
+ * The row `jarhead automations add` created, found in one post-command snapshot — or undefined.
+ * The `landedAfter` idiom: the row must be the CLI's, live (armed, or already snoozed) and
+ * stamped at or after `sentAt` (a `Date.now()` taken before the send). A `done` row from an
+ * earlier `add` — which also makes the engine refuse the new one, since done rows keep their
+ * name — or a trashed row in the snapshot's tail never passes for the one this command set.
+ */
+export function landedAutomation(rows: readonly Automation[], name: string, sentAt: number): Automation | undefined {
+  const wanted = name.toLowerCase();
+  return rows.find((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli" && (a.state === "armed" || a.state === "snoozed") && a.createdAt >= sentAt);
+}
+
 const USAGE = "say when, then what: chime 'Wake up' · say 'call mum' · notify 'stand-up' · open Notes — e.g. \"at 7:10 weekdays chime 'Wake up'\", \"in 12m chime pasta\", \"weekdays 09:00 open Notes\"";
 
 /**
@@ -281,16 +293,31 @@ function agoShort(at: number, now: number): string {
   return `${Math.round(s / 86_400)} d ago`;
 }
 
-/** One row per recipe: name · the gate's word · command · approved · cwd · timeout; `asks` rows carry the reason. */
-export function recipesLines(recipes: readonly ShellRecipe[], now: number, home?: string): string[] {
-  if (recipes.length === 0) return ["  no recipes — jarhead recipes add <name> \"<command>\" [--cwd DIR] [--timeout 120]; a recipe runs unattended only when the shell gate says run"];
+/** A recipe as the CLI lists it; `trashedAt` (Move to Trash — `recipe.trash` sets it, `recipe.restore` clears it) until `ShellRecipe` carries the field. */
+export type RecipeRow = ShellRecipe & { readonly trashedAt?: number };
+
+/**
+ * One row per live recipe: name · the gate's word · command · approved · cwd · timeout; `asks`
+ * rows carry the reason. Trashed recipes are folded after the count line under `Trash`, each
+ * with its Restore verb — hidden from the pickers, never deleted.
+ */
+export function recipesLines(recipes: readonly RecipeRow[], now: number, home?: string): string[] {
+  const live = recipes.filter((r) => r.trashedAt === undefined);
+  const trashed = recipes.filter((r) => r.trashedAt !== undefined);
   const lines: string[] = [];
-  for (const r of recipes) {
+  if (live.length === 0) lines.push("  no recipes — jarhead recipes add <name> \"<command>\" [--cwd DIR] [--timeout 120]; a recipe runs unattended only when the shell gate says run");
+  for (const r of live) {
     const v = recipeVerdict(r, home);
     lines.push(`  ${cut(r.name, 24).padEnd(24)} ${v.word.padEnd(8)} ${cut(r.command, 60).padEnd(60)} · approved ${agoShort(r.approvedAt, now)}${r.cwd ? ` · cwd ${r.cwd}` : ""} · ${r.timeoutSeconds} s${v.word === "run" ? "" : ` · ${v.reason}`}`);
   }
-  const asks = recipes.filter((r) => recipeVerdict(r, home).word !== "run").length;
-  lines.push(`  ${recipes.length} recipe${recipes.length === 1 ? "" : "s"} · ${recipes.length - asks} run-tier${asks ? ` · ${asks} cannot fire unattended (edit the command, or Move to Trash)` : ""}`);
+  if (live.length > 0) {
+    const asks = live.filter((r) => recipeVerdict(r, home).word !== "run").length;
+    lines.push(`  ${live.length} recipe${live.length === 1 ? "" : "s"} · ${live.length - asks} run-tier${asks ? ` · ${asks} cannot fire unattended (edit the command, or Move to Trash)` : ""}`);
+  }
+  if (trashed.length > 0) {
+    lines.push(`  Trash ${trashed.length} · jarhead recipes restore <name>`);
+    for (const r of trashed) lines.push(`    ${cut(r.name, 24).padEnd(24)} trashed  ${cut(r.command, 60).padEnd(60)} · ${agoShort(r.trashedAt ?? now, now)}`);
+  }
   return lines;
 }
 

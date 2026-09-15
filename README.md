@@ -275,8 +275,20 @@ never the voice — opted into per row with its cost said before your yes. A rec
 brain wake asks **once, at set-up**; anything that would need a yes when it fires is refused
 then, with the nearest safe kind offered. Nothing fires while Jarhead is quit; `Open at login`
 (your press) brings it back with you, and missed fires say so honestly with `Run now`. Rows are
-never deleted — Move to Trash, Restore. `pnpm jarhead automations`, `pnpm jarhead recipes`, a
-`doctor` group, [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
+never deleted — Move to Trash, Restore. `pnpm jarhead automations`, `pnpm jarhead recipes`
+(a recipe has the same Trash and `restore`), a `doctor` group,
+[`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/console-automations.jpg" alt="The Console's Automations section: the summary line and Add…, one row per alarm, timer, reminder, routine and watcher with its next fire and verb, a snoozed badge, a paused row with Resume, the Trash folded with Restore"></td>
+    <td width="50%"><img src="docs/media/notch-island-alarm.png" alt="The island ringing: the alarm's line as the hero on the black pool, Snooze 10 · Done where Allow · Deny usually sit"></td>
+  </tr>
+  <tr>
+    <td>Automations in the Console: one row each, the Trash folded with Restore. Nothing is deleted.</td>
+    <td>An alarm on the island: the line as the hero, Snooze 10 · Done.</td>
+  </tr>
+</table>
 
 ## Numbers
 
@@ -305,7 +317,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 | your hands | a key, click or scroll of yours holds the helper `busy` for 1500 ms |
 | liveness | ping every 2 s · two unanswered → drop, reconnect, kick |
 | crash | relaunch ≤ 3 in 10 min · daemon lingers 90 s |
-| tools · permissions · brains | 67 · 16 (7 required) · 5 + auto |
+| tools · permissions · brains | 71 · 16 (7 required) · 5 + auto |
 | retention | ledger forever (default) · screenshots 14 days · disk preflight 500 MB |
 
 ## Safety rails
@@ -425,7 +437,7 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` (English; the accent is a setting) |
 | `JARHEAD_MEMORY_MODEL` | the Responses model that reads closed conversations for memory; unset, the memory module's default mini-class id runs (`jarhead doctor` checks it against your key's list and names the best `*-mini` to pin) |
 | `JARHEAD_IDLE_SLEEP_MINUTES` | idle sleep (10) |
-| *(automations)* | no env knob: the master switch, the kinds allowed while asleep, quiet hours, Snooze minutes, Brain minutes per day, the recipes and Open at login live under `automations` in `~/.jarhead/settings.json` (Console › Settings › Automations; `pnpm jarhead recipes` for the recipes) |
+| *(automations)* | no env knob: the master switch, the kinds allowed while asleep, quiet hours, Snooze minutes, Brain minutes per day, the recipes and Open at login live under `automations` in `~/.jarhead/settings.json` (Console › Settings › Automations; `pnpm jarhead recipes` for the recipes — `trash` is Move to Trash, `restore` undoes it, nothing is deleted) |
 | `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN`, `JARHEAD_CURSOR_AGENT_BIN` | the CLIs when they are not on PATH |
 | `JARHEAD_CODEX_SIMPLE_EFFORT`, `JARHEAD_CODEX_SERVICE_TIER`, `JARHEAD_CODEX_PRIME`, `JARHEAD_CODEX_BASE` | Codex tuning, all opt-in |
 | `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start — **every test launch** |
