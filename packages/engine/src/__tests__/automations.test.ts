@@ -940,3 +940,79 @@ test("chip-off-at-fire: a run-recipe row armed with the chip on fails at fire on
     await engine.stop();
   }
 });
+
+// the master switch off → on: the missed table, never a late run
+test("switch-off-on-resync: with Automations off nothing fires — not even across a sleep gap; flipping it back on three hours later skips the every-2-h routine (missed {skipped, daemon-down}, nothing opened, the next slot armed), fails the alarm past its grace with ONE Run now problem, and rings the alarm inside its grace late with lateMs", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, hands } = w;
+  try {
+    await engine.start();
+    tick(engine);
+    const t0 = clock.t;
+    const routine = armed(w, engine.automations.arm({ name: "backup", when: { kind: "every", every: { kind: "interval", everyMs: 2 * H, anchorAt: t0 }, phrase: "every 2 h" }, then: [{ kind: "open", app: "Notes" }], echo: "Every 2 h, open Notes." }, "brain"));
+    const early = armed(w, engine.automations.arm(alarm("early", t0 + 10 * M), "brain"));
+    const late = armed(w, engine.automations.arm(alarm("late", t0 + 3 * H - 5 * M), "brain"));
+    automations(w, { enabled: false });
+    clock.t += 20 * M;
+    tick(engine);
+    clock.t += 2 * H;
+    tick(engine);
+    await settle(30);
+    assert.equal(rows<FiredRow>(w, "automation.fired").length, 0, "off: nothing fires, sleep gap or not");
+    assert.equal(rows<MissedRow>(w, "automation.missed").length, 0, "off: nothing is settled either; the rows wait");
+    clock.t = t0 + 3 * H;
+    automations(w, { enabled: true });
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f.length, 1);
+    assert.equal(f[0]!.id, late.id, "inside the alarm's 15-min grace: rang late");
+    assert.equal(f[0]!.lateMs, 5 * M);
+    await settle(30);
+    assert.equal(hands.named("open_app").length, 0, "never a late run");
+    const missed = rows<MissedRow>(w, "automation.missed");
+    assert.deepEqual(missed.map((m) => [m.id, m.why, m.skipped ?? false]).sort(), [[early.id, "daemon-down", false], [routine.id, "daemon-down", true]].sort());
+    const r = engine.snapshot().automations.find((x) => x.id === routine.id)!;
+    assert.equal(r.state, "armed");
+    assert.equal(r.nextAt, t0 + 4 * H);
+    assert.equal(r.missed, 1);
+    const e = engine.snapshot().automations.find((x) => x.id === early.id)!;
+    assert.equal(e.state, "failed");
+    assert.match(e.lastDetail ?? "", /^missed .* · Jarhead was off$/);
+    const problems = engine.snapshot().problems.filter((p) => p.kind === "automation.missed");
+    assert.equal(problems.length, 1);
+    assert.deepEqual(problems[0]!.remedy, { label: "Run now", command: { type: "automation.run", id: early.id } });
+  } finally {
+    await engine.stop();
+  }
+});
+
+// quiet hours hold on the resync's late fire too
+test("resync-respects-quiet-hours: a `respect` reminder that opens Notes, due while the Mac slept inside quiet hours and still inside its grace, is deferred to the quiet end on wake — not opened at 23:40; the deferred open runs at 07:00", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, hands } = w;
+  clock.t = new Date(2026, 8, 14, 23, 0, 0).getTime();
+  try {
+    await engine.start();
+    automations(w, { quietHours: { from: "22:00", to: "07:00" } });
+    tick(engine);
+    const a = armed(w, engine.automations.arm(openAt("notes", clock.t + 10 * M), "brain"));
+    clock.t += 40 * M; // the Mac slept through 23:10: a tick gap → resync, 30 min late, inside the reminder's hour
+    tick(engine);
+    await settle(30);
+    assert.equal(hands.named("open_app").length, 0, "quiet hours hold on the late fire");
+    assert.equal(rows<FiredRow>(w, "automation.fired").length, 0);
+    const row = engine.snapshot().automations.find((x) => x.id === a.id)!;
+    assert.equal(row.state, "deferred");
+    assert.equal(row.nextAt, new Date(2026, 8, 15, 7, 0, 0).getTime());
+    assert.equal(row.lastDetail, "deferred to 07:00");
+    clock.t = new Date(2026, 8, 15, 7, 0, 0).getTime();
+    tick(engine);
+    await fired(w);
+    assert.equal(hands.named("open_app").length, 1, "runs at the quiet end");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "done");
+  } finally {
+    await engine.stop();
+  }
+});
