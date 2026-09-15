@@ -74,6 +74,21 @@ test("an ambiguous 'at seven' is the next seven at least a minute away: 19:00 to
   assert.match(error("today 07:10"), /has passed today/);
 });
 
+test("a bare hour with today / tonight / this evening: 'tonight at seven' is 19:00 today, 'today at nine' said at 14:00 is 21:00 (and 09:00 from 06:00), 'this evening at 8' is 20:00, 'tomorrow at seven' stays 07:00; an exact time on a named day is what it says", () => {
+  assert.deepEqual(when("tonight at seven"), { kind: "at", at: local(2026, 9, 14, 19, 0) });
+  assert.deepEqual(when("tonight at 8"), { kind: "at", at: local(2026, 9, 14, 20, 0) });
+  assert.deepEqual(when("tonight at 11"), { kind: "at", at: local(2026, 9, 14, 23, 0) });
+  assert.deepEqual(when("this evening at 8"), { kind: "at", at: local(2026, 9, 14, 20, 0) });
+  assert.deepEqual(when("today at nine", local(2026, 9, 14, 14, 0)), { kind: "at", at: local(2026, 9, 14, 21, 0) });
+  assert.deepEqual(when("today at nine", local(2026, 9, 14, 6, 0)), { kind: "at", at: local(2026, 9, 14, 9, 0) }, "the earliest twin still ahead");
+  assert.deepEqual(when("today at 9"), { kind: "at", at: local(2026, 9, 14, 21, 0) }, "09:00 is now: under the minute's lead, so 21:00");
+  assert.deepEqual(when("tomorrow at seven"), { kind: "at", at: local(2026, 9, 15, 7, 0) });
+  assert.deepEqual(when("tonight at 7pm"), { kind: "at", at: local(2026, 9, 14, 19, 0) });
+  assert.match(error("tonight 07:00"), /07:00 has passed today/, "a colon form is exact: no evening twin");
+  assert.match(error("today at nine", local(2026, 9, 14, 21, 30)), /21:00 has passed today/, "both twins gone: the refusal names the last one tried");
+  assert.match(error("tonight at seven", local(2026, 9, 14, 19, 30)), /19:00 has passed today/);
+});
+
 test("refusals name the word they did not catch; monthly is 'not yet — say the date'; too-short intervals, a missing time and a bare 'weekdays' are refused", () => {
   assert.match(error(""), /say when/);
   assert.match(error("   "), /say when/);

@@ -95,7 +95,7 @@ const UNIT_MS: Readonly<Record<string, number>> = {
   m: 60_000, min: 60_000, mins: 60_000, minute: 60_000, minutes: 60_000,
   h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
 };
-const SKIP_WORDS = new Set(["at", "on", "every", "each", "and", "the", "a", "an", "o'clock", "oclock", "please", "alarm", "for", "me", "wake", "up"]);
+const SKIP_WORDS = new Set(["at", "on", "every", "each", "and", "the", "a", "an", "o'clock", "oclock", "please", "alarm", "for", "me", "wake", "up", "this"]);
 const NOT_YET = /\b(monthly|month|months|1st|2nd|3rd|\d+th|first|second|third|fourth|last|year|yearly|annually)\b/;
 const err = (error: string): { readonly error: string } => ({ error });
 
@@ -209,7 +209,7 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
   const words = p.split(" ");
   const days = new Set<Weekday>();
   let clock: Clock | undefined;
-  let date: "today" | "tomorrow" | undefined;
+  let date: "today" | "tonight" | "tomorrow" | undefined;
   for (let i = 0; i < words.length; i++) {
     const w = words[i] ?? "";
     if (SKIP_WORDS.has(w)) continue;
@@ -217,8 +217,12 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
       date = "tomorrow";
       continue;
     }
-    if (w === "today" || w === "tonight") {
+    if (w === "today") {
       date = "today";
+      continue;
+    }
+    if (w === "tonight" || w === "evening") {
+      date = "tonight";
       continue;
     }
     if (w === "weekdays" || w === "weekday") {
@@ -258,9 +262,18 @@ export function parseWhen(phrase: string, now: number): ParsedWhen {
 
   const lead = now + PARSE_LEAD_MS;
   if (date === "tomorrow") return { kind: "at", at: atClock(dayStart(now, 1), clockTime(clock)) };
-  if (date === "today") {
-    const at = atClock(dayStart(now), clockTime(clock));
-    return at >= lead ? { kind: "at", at } : err(`${clockTime(clock)} has passed today`);
+  if (date === "today" || date === "tonight") {
+    // A bare hour on a named day has its 12-hour twin too: "today at nine" said at 14:00 is 21:00; "tonight at seven" is 19:00 —
+    // tonight takes the evening reading outright. An exact time ("today 07:10", "tonight 7am") is what it says.
+    const twin = !clock.exact && clock.hh <= 12;
+    const evening = date === "tonight" && twin && clock.hh < 12;
+    const clocks: ClockTime[] = evening ? [clockTime({ ...clock, hh: clock.hh + 12 })] : twin ? [clockTime(clock), clockTime({ ...clock, hh: (clock.hh + 12) % 24 })] : [clockTime(clock)];
+    let best: number | undefined;
+    for (const t of clocks) {
+      const at = atClock(dayStart(now), t);
+      if (at >= lead && (best === undefined || at < best)) best = at;
+    }
+    return best !== undefined ? { kind: "at", at: best } : err(`${clocks[clocks.length - 1] ?? clockTime(clock)} has passed today`);
   }
   // No date: the next occurrence at least a minute away — of the hour said, or (no am/pm, a bare hour) its 12-hour twin too.
   const clocks: ClockTime[] = clock.exact || clock.hh > 12 ? [clockTime(clock)] : [clockTime(clock), clockTime({ ...clock, hh: (clock.hh + 12) % 24 })];
