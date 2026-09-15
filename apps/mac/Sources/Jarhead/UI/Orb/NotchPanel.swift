@@ -219,6 +219,49 @@ struct DockContent: Equatable {
         var sleepsIn: TimeInterval?
     }
 
+    /// A press a ring offers (the wire's `AutomationPress`): `kind` snooze (minutes) · done · open (target).
+    struct RingPress: Equatable {
+        var kind: String
+        var minutes: Int?
+        var target: String?
+    }
+
+    /// The one line ringing while an automation is `fired` — the island's one dominant element while it is up
+    /// (design11 § Island). `kindLabel` is the anchor's word ("Alarm"); `head` the source line under the bell
+    /// ("Alarm · weekdays"); `chip` the peek chip's figure ("07:10"); `snoozeMinutes` the Snooze box's word.
+    struct RingRow: Equatable {
+        var id: String
+        var kind: String
+        var kindLabel: String
+        var name: String
+        var line: String
+        var calm: String?
+        var head: String
+        var chip: String
+        var lateMs: Double?
+        var presses: [RingPress]
+        var more: Int
+        var snoozeMinutes: Int
+        /// The `open` press's target when the ring offers one: `Open · Done` in the boxes instead of `Snooze · Done`.
+        var openTarget: String? { presses.first { $0.kind == "open" }?.target }
+        var offersSnooze: Bool { presses.contains { $0.kind == "snooze" } || openTarget == nil }
+    }
+
+    /// The foot's notice while asleep: `next Timer 12:00 · pasta`. `until` is set for a timer: the clock counts down.
+    struct NextRow: Equatable {
+        var kindLabel: String
+        var clock: String
+        var name: String
+        var until: Date?
+    }
+
+    /// A running timer (the soonest armed one): a chip awake, the pill under the lip while tucked.
+    struct TimerRow: Equatable {
+        var id: String
+        var name: String
+        var until: Date
+    }
+
     var awake: Bool
     var inSession: Bool
     var typedWakes: Bool
@@ -237,6 +280,10 @@ struct DockContent: Equatable {
     var meter: Meter
     var marking: Bool
     var screenRecordingGranted: Bool
+    /// The ring up right now (`Snapshot.ringing`), the next fire while asleep, the soonest running timer.
+    var ring: RingRow?
+    var next: NextRow?
+    var timer: TimerRow?
     var pendingMarks: Int { marks.filter { !$0.consumed }.count }
 
     static let empty = DockContent(awake: false, inSession: false, typedWakes: false, request: nil, lastLine: nil, gateLabel: nil,
@@ -294,6 +341,7 @@ final class NotchDock {
             if !parked {
                 hovered = false
                 pinned = false
+                ringPinned = false
                 releaseKey(keepText: true)
             } else if pinAfterMark, !marking {
                 pinned = true
@@ -352,6 +400,14 @@ final class NotchDock {
     var remedy: (DockContent.ProblemRow) -> Void = { _ in }
     /// Return in the Say field.
     var say: (String) -> Void = { _ in }
+    /// The ring's presses (design11): Snooze N / Done in the consent boxes, Open when the ring offers a target,
+    /// the head's source line → the Console. The controller routes them to `automation.snooze` /
+    /// `automation.done` / `openConsole` — nothing here opens a paid session.
+    var snooze: (String, Int) -> Void = { _, _ in }
+    var done: (String) -> Void = { _ in }
+    var ringOpen: (String, String) -> Void = { _, _ in }
+    /// The island pinned open by a ring's arrival (not Kevin's pin): let go when the ring leaves.
+    private var ringPinned = false
 
     init(sim: BlobSim, geometry: NotchGeometry) {
         self.geometry = geometry
@@ -417,8 +473,13 @@ final class NotchDock {
         case .window: window()
         case .ask: ask()
         case .clear: clear()
-        case .allow: if let q = view.content.question { allow(q.threadId) }
-        case .deny: if let q = view.content.question { deny(q.threadId) }
+        // The consent boxes' rects double as Snooze · Done: for 500 ms after a kind change a press in them lands
+        // nowhere (`NotchView.pressIsDead`), whichever path brought it — the mouse, an AX action, the harness.
+        case .allow: if let q = view.content.question, !view.pressIsDead(which) { allow(q.threadId) }
+        case .deny: if let q = view.content.question, !view.pressIsDead(which) { deny(q.threadId) }
+        case .snooze(let minutes): if let r = view.content.ring, !view.pressIsDead(which) { snooze(r.id, minutes) }
+        case .done: if let r = view.content.ring, !view.pressIsDead(which) { done(r.id) }
+        case .ringOpen(let target): if let r = view.content.ring, !view.pressIsDead(which) { ringOpen(r.id, target) }
         case .mark(let i): if let id = view.markId(atSlot: i) { openMark(id) }
         case .markForget(let i): if let id = view.markId(atSlot: i) { forgetMark(id) }
         case .thread(let id): openThread(id)
@@ -467,6 +528,7 @@ final class NotchDock {
         contractTimer?.cancel(); contractTimer = nil
         hovered = false
         pinned = false
+        ringPinned = false
         pointerNear = false
         releaseKey(keepText: true)
         refreshMouseAcceptance()
@@ -521,8 +583,30 @@ final class NotchDock {
 
     /// Everything else the dock shows, in one value.
     func setContent(_ c: DockContent) {
+        let hadRing = view.content.ring != nil
         view.content = c
         view.lastLine = c.lastLine ?? ""
+        ringChanged(from: hadRing, to: c.ring != nil)
+    }
+
+    /// A ring arriving while the blob is in the notch opens the island pinned (as `focusField` pins) — the blob
+    /// never un-tucks; the pin lets go when the ring leaves (Done, Snooze, the linger). Kevin's own pin, and a
+    /// mark in progress, are left alone.
+    private func ringChanged(from had: Bool, to has: Bool) {
+        guard had != has else { return }
+        if has {
+            guard parked, !marking, !pinned else { return }
+            pinned = true
+            ringPinned = true
+        } else {
+            guard ringPinned else { return }
+            ringPinned = false
+            pinned = false
+            releaseKey(keepText: true)
+        }
+        contractTimer?.cancel(); contractTimer = nil
+        view.setMode(mode, animated: true)
+        refreshMouseAcceptance()
     }
 
     /// A toast (1.5 s: "Stopped", "Cleared · 3", "Captured Safari · 1280×800"), or —
@@ -604,6 +688,8 @@ final class NotchDock {
     func toggleIsland() {
         guard !marking else { return }
         pinned.toggle()
+        // Kevin folding a ring's island is his pin from here: the ring's leaving unpins nothing.
+        if !pinned { ringPinned = false }
         if pinned { contractTimer?.cancel(); contractTimer = nil } else { releaseKey(keepText: true) }
         view.setMode(mode, animated: true)
         refreshMouseAcceptance()
@@ -785,6 +871,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         case pause, stop, mute, face, circle, window, ask, clear, allow, deny
         case mark(Int), markForget(Int), thread(String), threadStop(String)
         case console, sleep, remedy, field
+        /// The ring's (design11): Snooze N in the Allow rect (and the minis), Done in the Deny rect,
+        /// Open (a target) in the Allow rect, and the head's source line (`"console"`) → the Console.
+        case snooze(Int), done, ringOpen(String)
     }
 
     private let sim: BlobSim
@@ -882,6 +971,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         didSet {
             guard content != oldValue else { return }
             contentAt = CACurrentMediaTime()
+            if (content.ring != nil) != (oldValue.ring != nil) { ringFaceChangedAt = window == nil ? -1 : contentAt }
             let before = chips.map(\.figure)
             relayoutChips()
             if chips.map(\.figure) != before || content.marking != oldValue.marking {
@@ -896,6 +986,23 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     }
     /// When `content` last changed (CACurrentMediaTime): the meter's elapsed keeps counting from it.
     private var contentAt = 0.0
+    /// When a ring arrived or left: the eyes crossfade `- -` ↔ `o o` over `Motion.base` from here (< 0: snapped).
+    private var ringFaceChangedAt = -1.0
+    /// Until when the Snooze minis stay up after the pointer was last on a Snooze press (CACurrentMediaTime).
+    private var ringMinisUntil = -1.0
+
+    /// The Allow / Deny rects double as Snooze / Done: for 500 ms after any kind change (`canvasChangedAt`) a press
+    /// in them lands nowhere — a double-click on Done, or a click arriving as the kind flips back to `question`,
+    /// never reaches a thread's Allow. The dock asks before routing; `mouseUp` asks before flashing.
+    static let middleDeadTime = 0.5
+    func pressIsDead(_ p: Press, now: Double = CACurrentMediaTime()) -> Bool {
+        switch p {
+        case .allow, .deny, .snooze, .done: break
+        case .ringOpen(let target): if target == "console" { return false }
+        default: return false
+        }
+        return canvasChangedAt >= 0 && now - canvasChangedAt < Self.middleDeadTime
+    }
 
     /// The display's kind last frame, and when it changed with the island open: beats 1–4
     /// leave over `Motion.quick` and re-enter with their stagger (the anchor and the foot hold).
@@ -1117,6 +1224,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// The hero at its three steps — 0.92 (the request, the last line), 1.0 (a question), 0.72 (the gate's words) — each tail-truncating, with an ink shadow.
     private static let heroAttrs: [NSAttributedString.Key: Any] = [.font: heroFont, .foregroundColor: NSColor(white: 1, alpha: 0.92), .paragraphStyle: truncating]
     private static let heroBrightAttrs: [NSAttributedString.Key: Any] = [.font: heroFont, .foregroundColor: NSColor.white, .paragraphStyle: truncating]
+    /// The ring's clock: 18 pt mono at 1.0, beside the sans line.
+    private static let heroMonoFont = NSFont.monospacedSystemFont(ofSize: 18, weight: .regular)
+    private static let heroMonoAttrs: [NSAttributedString.Key: Any] = [.font: heroMonoFont, .foregroundColor: NSColor.white, .paragraphStyle: truncating]
     private static let heroCalmAttrs: [NSAttributedString.Key: Any] = [.font: heroFont, .foregroundColor: NSColor(white: 1, alpha: 0.72), .paragraphStyle: truncating]
     private static let heroShadow: [NSAttributedString.Key: Any] = [.font: heroFont, .foregroundColor: NSColor(white: 0, alpha: 0.6), .paragraphStyle: truncating]
     /// Allow · Deny, the remedy's label: 12 medium at 0.92.
@@ -1519,6 +1629,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         if traceLive { return true }
         if toastPill != nil || markLandedPill != nil { return true }
         if let until = gatePill?.until, until.timeIntervalSinceNow > 0 { return true }
+        // A ring's bell pulses and its minis linger; a timer counts down on the chip, the foot or the pill.
+        if parked, content.ring != nil, !reduced { return true }
+        if parked, content.timer != nil || content.next?.until != nil { return true }
         return false
     }
 
@@ -1659,13 +1772,15 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// What the display shows under the hero: tiles (or the chip line) for live threads,
     /// Allow · Deny with the minis while a question waits, films while circles are pending.
-    enum CanvasKind: String { case plain, question, marks }
+    enum CanvasKind: String { case ring, plain, question, marks }
 
-    /// The kind is a pure function of the content (the harness reads it): the question is
-    /// the hero and Allow · Deny the only big actions; pending circles take the middle;
-    /// otherwise the hero with the threads' tiles. Consumed-only marks do not switch it —
-    /// they are a dim `◎ N` in the head.
+    /// The kind is a pure function of the content (the harness reads it): a ring outranks
+    /// everything while it is up (a thread's ask waits in its peek chip and returns as a kind
+    /// change the moment Done or Snooze lands); the question is the hero and Allow · Deny the
+    /// only big actions; pending circles take the middle; otherwise the hero with the threads'
+    /// tiles. Consumed-only marks do not switch it — they are a dim `◎ N` in the head.
     static func canvasKind(_ c: DockContent) -> CanvasKind {
+        if c.ring != nil { return .ring }
         if c.question != nil { return .question }
         if c.pendingMarks > 0 { return .marks }
         return .plain
@@ -1782,6 +1897,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// The question kind has no `◎ N`: the minis and the `+n` slot carry the count, and
     /// the question is the one dominant element.
     private func headRightWidth(kind: CanvasKind) -> CGFloat {
+        if kind == .ring {
+            guard let text = ringHeadRight() else { return 0 }
+            return min(Self.headCaptionMaxWidth, Self.textWidth(text as NSString, Self.headDimAttrs) + 4)
+        }
         if kind == .marks {
             guard let caption = headCaption() else { return 0 }
             return min(Self.headCaptionMaxWidth, Self.textWidth(caption as NSString, Self.headDimAttrs) + 4)
@@ -1792,6 +1911,24 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// The head caption's span, the figures and their 4 pt of air.
     static let headCaptionMaxWidth: CGFloat = 180
+
+    /// The ring's head-right words: `12 min late` when the fire was over a minute late, else `· +1` when more
+    /// rings wait behind this one, else nothing.
+    private func ringHeadRight() -> String? {
+        guard let r = content.ring else { return nil }
+        if let late = r.lateMs, late.isFinite, late > 60_000 { return "\(Int(late / 60_000)) min late" }
+        if r.more > 0 { return "· +\(r.more)" }
+        return nil
+    }
+
+    /// The Snooze minis (the other two presets) show while the pointer is on a Snooze press and for a
+    /// moment after, so the hand can cross the hero to them.
+    private func ringMinisShown(now: Double) -> Bool {
+        if case .snooze = hoveredNow { ringMinisUntil = now + 1.5; return true }
+        return now < ringMinisUntil
+    }
+    static let snoozePresets = [5, 10, 30]
+    private func ringMiniMinutes(_ r: DockContent.RingRow) -> [Int] { Array(Self.snoozePresets.filter { $0 != r.snoozeMinutes }.prefix(2)) }
 
     /// The caption in the head while films show: the hovered film's, else the newest's —
     /// its figures (`640×400 · 14:03 · pending`) without the leading kind word, which the
@@ -1852,10 +1989,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// Which text is the one big line, in priority: a thread's question, the running
     /// delegation's request, the last thing said, the gate's words asleep, nothing.
-    enum Hero { case question, request, lastLine, gate, none }
+    enum Hero { case ring, question, request, lastLine, gate, none }
 
     /// The hero's text and face this frame (`previewLineText` mirrors it).
     private func heroChoice() -> (hero: Hero, text: String, attrs: [NSAttributedString.Key: Any]) {
+        if let r = content.ring { return (.ring, r.line, Self.heroBrightAttrs) }
         if let q = content.question { return (.question, q.text, Self.heroBrightAttrs) }
         if workingSince != nil, let r = content.request, !r.isEmpty { return (.request, r, Self.heroAttrs) }
         if !lastLine.isEmpty { return (.lastLine, lastLine, Self.heroAttrs) }
@@ -1867,7 +2005,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private static func heroLines(kind: CanvasKind, threads: Int) -> Int {
         switch kind {
         case .marks: return 1
-        case .question: return 2
+        case .ring, .question: return 2
         case .plain: return threads > 0 ? 2 : 3
         }
     }
@@ -2052,6 +2190,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             out.append((.allow, z.allow))
             out.append((.deny, z.deny))
         }
+        if z.kind == .ring, let r = content.ring {
+            // Snooze N (or Open) in the Allow rect, Done in the Deny rect; the minis while Snooze is hovered.
+            if r.offersSnooze { out.append((.snooze(r.snoozeMinutes), z.allow)) } else if let t = r.openTarget { out.append((.ringOpen(t), z.allow)) }
+            out.append((.done, z.deny))
+            if r.offersSnooze, ringMinisShown(now: CACurrentMediaTime()) {
+                for (i, m) in ringMiniMinutes(r).enumerated() where i < z.mini.count { out.append((.snooze(m), z.mini[i])) }
+            }
+        }
         let thumbs = thumbSlots(z)
         for s in thumbs.slots {
             out.append((.markForget(s.index), Self.forgetRect(s.rect)))
@@ -2068,6 +2214,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
         // The head row and the remedy draw 18 tall; their hit rects take a point more each way, so every press is ≥ 20 pt.
         if z.kind == .question, let q = content.question { out.append((.thread(q.threadId), z.headLeft.insetBy(dx: 0, dy: -1))) }
+        if z.kind == .ring, content.ring != nil { out.append((.ringOpen("console"), z.headLeft.insetBy(dx: 0, dy: -1))) }
         // `◎ N` is the plain kind's: the question kind counts its marks in the minis and the `+n` slot.
         if z.kind == .plain, !content.marks.isEmpty, z.headRight.width > 0 { out.append((.console, z.headRight.insetBy(dx: 0, dy: -1))) }
         out.append((.console, z.console))
@@ -2081,7 +2228,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// One glance chip on the peek: a glyph (tinted) and a figure, never a sentence.
     private struct Chip {
-        enum Kind { case question, marks, problem, meter, marking }
+        enum Kind { case ring, question, marks, timer, problem, meter, marking }
         let kind: Kind
         let glyph: String?
         let tint: NSColor
@@ -2115,6 +2262,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let figure = "Circle something · Esc"
             list.append(Chip(kind: .marking, glyph: "pencil.and.outline", tint: Self.markTone, figure: figure, tooltip: "Circling — draw around something, Esc to cancel", alpha: 0.72, width: measure("scope", figure)))
         } else {
+            if let r = c.ring {
+                list.append(Chip(kind: .ring, glyph: "bell.fill", tint: Self.markTone, figure: r.chip, tooltip: Self.ringTooltip(r), alpha: 0.72, width: measure("bell.fill", r.chip)))
+            }
             if let q = c.question {
                 let name = q.name.count > 10 ? String(q.name.prefix(10)) : q.name
                 let figure = name + " asks"
@@ -2125,6 +2275,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             if pending > 0 {
                 let figure = "\(pending)"
                 list.append(Chip(kind: .marks, glyph: "scope", tint: Self.markTone, figure: figure, tooltip: "\(pending) circled — waiting for the next task", alpha: 0.72, width: measure("scope", figure)))
+            }
+            if c.awake, let t = c.timer {
+                // The figure is redrawn live (`timerFigure`); the width is a mono-digit figure's, measured once here.
+                let figure = Self.timerFigure(t)
+                list.append(Chip(kind: .timer, glyph: "timer", tint: NSColor(white: 1, alpha: 0.72), figure: figure, tooltip: "\(t.name) · \(figure) left", alpha: 0.72, width: measure("timer", figure)))
             }
             if let p = c.problem {
                 list.append(Chip(kind: .problem, glyph: p.symbol, tint: p.warn ? Self.markTone : Self.errorTone, figure: "", tooltip: p.text, alpha: 0.72, width: measure(p.symbol, "")))
@@ -2183,14 +2338,30 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private enum Slot {
         case gate(OrbPill)
         case pill(SlotPill)
+        case ring(DockContent.RingRow)
+        case timer(DockContent.TimerRow)
     }
 
+    /// The slot's priority: a ring folded away (never under the open island, where it is the display) > the gate
+    /// asleep > a toast > a running timer (tucked) > the mark-landed line (tucked). A problem is never a pill.
     private func slot(now: Double, open: CGFloat) -> Slot? {
+        if let r = content.ring, mode != .island { return .ring(r) }
         if !awake, let g = gatePill { return .gate(g) }
         if let t = toastPill, now < t.until { return .pill(t) }
         if let m = markLandedPill, now < m.until, mode == .tucked, open < 0.5 { return .pill(m) }
+        if let t = content.timer, mode == .tucked, open < 0.5 { return .timer(t) }
         return nil
     }
+
+    /// "Wake up, Kevin · Snooze ⌥⇧S": the line without its clock, and the one press a hotkey reaches.
+    static func ringPillText(_ r: DockContent.RingRow) -> String {
+        RingWords.body(of: r.line) + (r.offersSnooze ? " · Snooze ⌥⇧S" : " · Done")
+    }
+    /// The chip's and the pill's tooltip: the whole line, then the way to answer it.
+    static func ringTooltip(_ r: DockContent.RingRow) -> String { r.line + (r.offersSnooze ? " — Snooze ⌥⇧S" : " — Done") }
+    /// "pasta · 4:12" under the lip; "4:12" on the chip.
+    static func timerFigure(_ t: DockContent.TimerRow) -> String { OrbStyle.mmss(max(0, t.until.timeIntervalSinceNow)) }
+    static func timerPillText(_ t: DockContent.TimerRow) -> String { "\(t.name) · \(timerFigure(t))" }
 
     // MARK: drawing
 
@@ -2341,8 +2512,20 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         // while it listens or asks). Peeking: the phase colour a step up, centred.
         // Island: the face as the anchor's head at (57, 40). It slides with the spring; its
         // ground under-copy (`drawEye`) keeps it readable over the gradient's light end.
-        let face = sim.face
+        // A ring lifts the eyes to `o o` (the asleep brown, 85 % lifted) on the island and the peek — never at
+        // the lip, where the pill says it — crossfading with the sim's face over `Motion.base` as it comes and goes.
+        var face = sim.face
         let lipFace = mode == .tucked && open < 0.5
+        let ringing = content.ring != nil && !lipFace
+        var ringFade: CGFloat = 1
+        if ringFaceChangedAt >= 0, !lipFace {
+            // A dip crossfade: the old pair fades out to the midpoint, the new one fades in from it.
+            let t = finite01((now - ringFaceChangedAt) / seconds(Motion.base))
+            ringFade = CGFloat(abs(2 * Double(t) - 1))
+            if ringing == (t >= 0.5) { face = BlobSim.Face("o") }
+        } else if ringing {
+            face = BlobSim.Face("o")
+        }
         // Working in the peek: the face gives half the counter's width (and the dots', and the chips') to keep the pair centred.
         let peekShift: CGFloat = lipFace ? 0 : -(Self.workExtraWidth * work + peekDotsExtraWidth + chipsExtraWidth) / 2
         let fl = faceLayout(island: island, open: open, lipFace: lipFace, shift: peekShift)
@@ -2355,13 +2538,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         } else if lipFace {
             ink = color.mixed(with: RGB(1, 1, 1), 0.35)
         } else {
-            ink = color.mixed(with: RGB(1, 1, 1), sim.eyeLift)
+            ink = color.mixed(with: RGB(1, 1, 1), ringing ? 0.85 : sim.eyeLift)
         }
         let left = CGPoint(x: fl.centre.x - fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
         let right = CGPoint(x: fl.centre.x + fl.gap / 2 + shiftX, y: fl.centre.y + shiftY)
         cg.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        cg.saveGState()
+        if ringFade < 1 { cg.setAlpha(finite01(park * ringFade)) }
         BlobFieldView.drawEye(cg, glyph: face.left, size: fl.size, at: left, ink: ink, glyphs: glyphs)
         BlobFieldView.drawEye(cg, glyph: face.right, size: fl.size, at: right, ink: ink, glyphs: glyphs)
+        cg.restoreGState()
 
         // The phase colour: a hairline along the island's bottom edge (peeking, island),
         // a one-pixel glow that breathes along the lip (tucked) — in the mark tone while
@@ -2451,6 +2637,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             let left = p.until - now
             let fade = finite01(left / seconds(Motion.base))
             pillRect = drawSlotPill(cg, text: p.text, symbol: p.symbol, tone: p.tone, below: island, alpha: fade)
+        case .ring(let r):
+            // The bell amber, the words white: the ring's line and its one hotkey.
+            pillRect = drawSlotPill(cg, text: Self.ringPillText(r), symbol: "bell.fill", tone: .info, below: island, alpha: 1, symbolTint: Self.markTone)
+        case .timer(let t):
+            pillRect = drawSlotPill(cg, text: Self.timerPillText(t), symbol: "timer", tone: .info, below: island, alpha: 1)
         case nil:
             break
         }
@@ -2644,12 +2835,15 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let base = finite01(s.park * a.alpha)
         cg.saveGState()
         cg.setAlpha(base)
-        let word = OrbStyle.label(sim.phase) as NSString
+        // The anchor's word is the ring's kind while one is up (`Alarm`); the phase, the snapshot and the ledger still say asleep.
+        let word = (content.ring?.kindLabel ?? OrbStyle.label(sim.phase)) as NSString
         let ww = Self.textWidth(word, Self.phaseAttrs)
         let wr = NSRect(x: z.word.midX - min(ww, z.word.width) / 2, y: z.word.minY + a.dy, width: min(ww + 2, z.word.width), height: z.word.height)
         Self.drawShadowed(word, in: wr, Self.phaseAttrs, shadow: Self.phaseShadow)
         let left = z.headLeft.offsetBy(dx: 0, dy: a.dy)
-        if z.kind == .question, let q = content.question {
+        if z.kind == .ring, let r = content.ring {
+            drawRingHead(cg, r, in: left, hot: s.hovered == .ringOpen("console"), base: base, now: s.now)
+        } else if z.kind == .question, let q = content.question {
             drawSource(cg, q, in: left, hot: s.hovered == .thread(q.threadId), base: base, now: s.now)
         } else {
             let work = workLevel(s.now)
@@ -2683,11 +2877,34 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
     }
 
+    /// `⏰ Alarm · weekdays` — the bell 10 pt amber pulsing on `Motion.pulse`, the words mono 0.72 (a step up
+    /// under the pointer): the `drawSource` shape; it names the source and never repeats the hero.
+    private func drawRingHead(_ cg: CGContext, _ r: DockContent.RingRow, in rect: NSRect, hot: Bool, base: CGFloat, now: Double) {
+        var x = rect.minX
+        if let img = Self.symbol("alarm.fill", pointSize: 10, tint: Self.markTone) {
+            img.draw(in: NSRect(x: x, y: rect.midY - img.size.height / 2, width: img.size.width, height: img.size.height),
+                     from: .zero, operation: .sourceOver, fraction: finite01(base * (0.55 + 0.45 * pulse(now))), respectFlipped: true, hints: nil)
+            x += img.size.width + 5
+        }
+        cg.saveGState()
+        if hot { cg.setAlpha(finite01(base * 0.92 / 0.72)) }
+        Self.drawShadowed(r.head as NSString, in: NSRect(x: x, y: rect.minY + 1, width: max(0, rect.maxX - x), height: rect.height), Self.threadAttrs, shadow: Self.threadShadow)
+        cg.restoreGState()
+    }
+
     /// The head's right end: the hovered (else newest) film's caption at 0.46 while films
-    /// show; otherwise `◎ N` — amber while any is pending, 0.46 once all are used.
+    /// show; the ring's `12 min late` / `· +1` at 0.46; otherwise `◎ N` — amber while any is
+    /// pending, 0.46 once all are used.
     private func drawHeadRight(_ cg: CGContext, _ z: Zones, _ a: Beat, _ base: CGFloat, hot: Bool) {
         let rect = z.headRight.offsetBy(dx: 0, dy: a.dy)
         guard rect.width > 0 else { return }
+        if z.kind == .ring {
+            guard let text = ringHeadRight() else { return }
+            let ns = text as NSString
+            let w = min(Self.textWidth(ns, Self.headDimAttrs) + 2, rect.width)
+            Self.drawShadowed(ns, in: NSRect(x: rect.maxX - w, y: rect.minY + 1, width: w, height: rect.height), Self.headDimAttrs, shadow: Self.threadShadow)
+            return
+        }
         if z.kind == .marks {
             guard let caption = headCaption() else { return }
             let ns = caption as NSString
@@ -2716,6 +2933,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// re-animates it (`heroKey`). Nothing when there is nothing to say.
     private func drawHero(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
         let base = finite01(s.park * a.alpha)
+        if z.kind == .ring, let r = content.ring {
+            drawRingHero(cg, r, z, a, base: base)
+            return
+        }
         let hero = heroLinesNow(z)
         var arrive: Beat = (1, 0)
         if heroChangedAt >= 0, s.now - heroChangedAt < seconds(Motion.quick) + seconds(Motion.base) {
@@ -2734,6 +2955,44 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         drawHeroLines(cg, hero.lines, hero.attrs, in: z.hero, beat: (arrive.alpha, a.dy + arrive.dy), base: base)
     }
 
+    /// The ring's hero: `07:10 · Wake up, Kevin` — the clock mono, the line sans, 18 pt at 1.0 — and one calm
+    /// second line at 0.72 (the echo's tail or the next fire). Its identity is the ring's line, so a re-chime
+    /// never re-animates it; a swap into or out of a ring rides the kind change (no second motion).
+    private func drawRingHero(_ cg: CGContext, _ r: DockContent.RingRow, _ z: Zones, _ a: Beat, base: CGFloat) {
+        heroPrevious = nil
+        guard base > 0.005 else { return }
+        cg.saveGState()
+        cg.setAlpha(base)
+        let first = NSRect(x: z.hero.minX, y: z.hero.minY + a.dy, width: z.hero.width, height: Self.heroPitch)
+        Self.drawAttributedShadowed(Self.ringHeroLine(r.line), in: first)
+        if let calm = r.calm, !calm.isEmpty {
+            Self.drawShadowed(calm as NSString, in: first.offsetBy(dx: 0, dy: Self.heroPitch), Self.heroCalmAttrs, shadow: Self.heroShadow)
+        }
+        cg.restoreGState()
+    }
+
+    /// The clock in mono digits, the rest in the hero's sans: one tail-truncating string.
+    static func ringHeroLine(_ line: String) -> NSAttributedString {
+        let s = NSMutableAttributedString()
+        var body = line
+        if let clock = RingWords.clock(in: line) {
+            s.append(NSAttributedString(string: clock, attributes: heroMonoAttrs))
+            body = String(line.dropFirst(clock.count))
+        }
+        s.append(NSAttributedString(string: body, attributes: heroBrightAttrs))
+        return s
+    }
+
+    /// `drawShadowed` for an attributed string: the same glyphs in ink one point down, then the string.
+    private static func drawAttributedShadowed(_ text: NSAttributedString, in rect: NSRect) {
+        guard !textDrawFailed else { return }
+        guard rect.isFiniteRect, rect.width > 0, rect.height > 0 else { BadNumber.noteOnce("notch text rect", "\(rect)"); return }
+        let shadow = NSMutableAttributedString(attributedString: text)
+        shadow.addAttribute(.foregroundColor, value: NSColor(white: 0, alpha: 0.6), range: NSRange(location: 0, length: shadow.length))
+        typeset("draw(in:)") { shadow.draw(in: rect.offsetBy(dx: 0, dy: 1)) }
+        typeset("draw(in:)") { text.draw(in: rect) }
+    }
+
     private func drawHeroLines(_ cg: CGContext, _ lines: [NSString], _ attrs: [NSAttributedString.Key: Any], in slot: NSRect, beat: Beat, base: CGFloat) {
         let alpha = finite01(base * beat.alpha)
         guard alpha > 0.005 else { return }
@@ -2750,6 +3009,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     private func drawMiddle(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
         switch z.kind {
+        case .ring:
+            drawRingActions(cg, z, a, s)
         case .plain:
             if content.threads.count >= 3 { drawChipLine(cg, z, a, s) } else { drawTiles(cg, z, a, s) }
         case .question:
@@ -2824,6 +3085,21 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             }
         }
         cg.restoreGState()
+    }
+
+    /// `Snooze 10` in the Allow rect · `Done` in the Deny rect (`Open · Done` when the ring offers a target) — the
+    /// consent boxes' rects through `drawBox(word:)`, so nothing moves; the minis read the other two presets
+    /// while Snooze is hovered, so any preset is one press.
+    private func drawRingActions(_ cg: CGContext, _ z: Zones, _ a: Beat, _ s: DrawState) {
+        guard let r = content.ring else { return }
+        let base = finite01(s.park * a.alpha)
+        let first: (press: Press, word: String) = r.offersSnooze ? (.snooze(r.snoozeMinutes), "Snooze \(r.snoozeMinutes)") : (.ringOpen(r.openTarget ?? ""), "Open")
+        drawBox(cg, which: first.press, rect: z.allow.offsetBy(dx: 0, dy: a.dy), symbol: nil, word: first.word, enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        drawBox(cg, which: .done, rect: z.deny.offsetBy(dx: 0, dy: a.dy), symbol: nil, word: "Done", enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        guard r.offersSnooze, ringMinisShown(now: s.now) else { return }
+        for (i, m) in ringMiniMinutes(r).enumerated() where i < z.mini.count {
+            drawBox(cg, which: .snooze(m), rect: z.mini[i].offsetBy(dx: 0, dy: a.dy), symbol: nil, word: "\(m)", enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        }
     }
 
     /// Allow · Deny under the question's first word: ghost word boxes, 12 medium.
@@ -2973,6 +3249,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
         if let p = content.problem {
             drawProblemRow(cg, p, z, a, s, base: base)
+        } else if !awake, let n = content.next {
+            drawNoticeRow(cg, n, z, a, base: base, now: s.now)
         } else {
             drawMeter(cg, z, a, base: base, now: s.now)
         }
@@ -2997,6 +3275,33 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         cg.restoreGState()
         drawBar(cg, rect: z.bar.offsetBy(dx: 0, dy: a.dy), fraction: meterFill(now), alpha: finite01(base * (f.dim ? 0.48 / 0.72 : 1)))
     }
+
+    /// The notice row in the meter's place while asleep: `☾ asleep` mono 0.72 at the left, the bar as a
+    /// track only, `next Timer 12:00 · pasta` mono 0.72 at the right (a timer counts down). The meter's
+    /// words wait in the foot's tooltip. A problem row still wins the foot.
+    private func drawNoticeRow(_ cg: CGContext, _ n: DockContent.NextRow, _ z: Zones, _ a: Beat, base: CGFloat, now: Double) {
+        cg.saveGState()
+        cg.setAlpha(base)
+        let glyphCentre = CGPoint(x: z.foot.minX + 7, y: z.foot.minY + 14 + a.dy)
+        if let img = Self.symbol("moon.fill", pointSize: 10, tint: NSColor(white: 1, alpha: 0.72)) {
+            img.draw(in: NSRect(x: glyphCentre.x - img.size.width / 2, y: glyphCentre.y - img.size.height / 2, width: img.size.width, height: img.size.height),
+                     from: .zero, operation: .sourceOver, fraction: base, respectFlipped: true, hints: nil)
+        }
+        let y = z.foot.minY + 6 + a.dy
+        Self.drawShadowed("asleep" as NSString, in: NSRect(x: z.foot.minX + 18, y: y, width: max(0, z.bar.minX - 2 - (z.foot.minX + 18)), height: 16), Self.threadAttrs, shadow: Self.threadShadow)
+        Self.drawShadowed(Self.noticeText(n) as NSString, in: z.footRight.offsetBy(dx: 0, dy: a.dy), Self.threadAttrs, shadow: Self.threadShadow)
+        cg.restoreGState()
+        drawBar(cg, rect: z.bar.offsetBy(dx: 0, dy: a.dy), fraction: 0, alpha: base)
+    }
+
+    /// "next Timer 12:00 · pasta" — the timer's clock counts down; every other kind names its fire time.
+    static func noticeText(_ n: DockContent.NextRow) -> String {
+        let clock = n.until.map { OrbStyle.mmss(max(0, $0.timeIntervalSinceNow)) } ?? n.clock
+        return "next \(n.kindLabel) \(clock) · \(n.name)"
+    }
+
+    /// The notice row shows: asleep, a next fire known, no problem in the foot.
+    private var noticeShown: Bool { !awake && content.problem == nil && content.next != nil }
 
     /// The problem row in the meter's place: the kind's glyph (amber for a missing grant,
     /// red else), the noun at 0.92 and the clause at 0.62 (split at the first `: `), `· +n`
@@ -3117,6 +3422,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// "No session. Nothing billed." The whole line is the foot's tooltip and the
     /// harness's `previewFootText`; `meterFigures` splits it for the instrument.
     private func footText(now: Double) -> (text: String, dim: Bool) {
+        if noticeShown, let n = content.next { return ("asleep · " + Self.noticeText(n), false) }
         let f = meterFigures(now: now)
         var parts: [String] = []
         if let l = f.left { parts.append(l) }
@@ -3356,7 +3662,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// A pill with a solid symbol (or a tone dot) and its words: the gate's, a toast's,
     /// the mark-landed line. Returns the rect it covered.
-    private func drawSlotPill(_ cg: CGContext, text: String, symbol: String?, tone: PillTone, below island: NSRect, alpha: CGFloat) -> NSRect? {
+    private func drawSlotPill(_ cg: CGContext, text: String, symbol: String?, tone: PillTone, below island: NSRect, alpha: CGFloat, symbolTint: NSColor? = nil) -> NSRect? {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -3370,7 +3676,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let iconW: CGFloat = symbol != nil ? 15 : (dot ? 10 : 0)
         guard let rect = pillGround(cg, width: tw + iconW + 16, below: island) else { return nil }
         var x = rect.minX + 8
-        if let symbol, let img = Self.symbol(symbol, pointSize: 10, tint: Self.pillTint(tone)) {
+        if let symbol, let img = Self.symbol(symbol, pointSize: 10, tint: symbolTint ?? Self.pillTint(tone)) {
             img.draw(in: NSRect(x: x, y: rect.midY - img.size.height / 2, width: img.size.width, height: img.size.height), from: .zero, operation: .sourceOver, fraction: finite01(alpha), respectFlipped: true, hints: nil)
             x += 15
         } else if dot {
@@ -3440,6 +3746,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             return p.text + (p.remedyLabel.map { " — " + $0 } ?? "")
         case .field:
             return fieldPlaceholder()
+        case .snooze(let m):
+            return "Snooze — rings again in \(m) min"
+        case .done:
+            return "Done — stops the \(c.ring?.kind ?? "ring")"
+        case .ringOpen(let target):
+            guard let r = c.ring else { return "" }
+            return target == "console" ? "\(r.head) — Console" : "Open — \(target)"
         }
     }
 
@@ -3465,6 +3778,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             return which == .console ? consoleHelp(rect: rect, zones: z) : helpText(for: which)
         }
         for (rect, text) in chipRects where rect.insetBy(dx: -2, dy: -2).contains(p) { return text }
+        if z.kind == .ring, let r = content.ring, z.hero.contains(p) { return r.line + (r.calm.map { " · " + $0 } ?? "") }
         if let q = content.question, z.hero.contains(p) { return q.text }
         if z.kind == .marks, z.headRight.width > 0, z.headRight.insetBy(dx: -2, dy: -2).contains(p), let caption = headCaptionFull() { return caption }
         if z.foot.contains(p) {
@@ -3473,6 +3787,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             if let b = m.billedSeconds { parts.append("Billed " + TransportFormat.billed(b)) }
             if let t = m.todaySeconds, t > 0 { parts.append("today " + TransportFormat.billed(t)) }
             let foot = footText(now: CACurrentMediaTime()).text
+            // The notice row took the meter's place: the meter's own words wait here.
+            if noticeShown, parts.isEmpty { parts.append(meterFigures(now: CACurrentMediaTime()).right) }
             return parts.isEmpty ? foot : foot + " — " + parts.joined(separator: " · ")
         }
         return ""
@@ -3630,6 +3946,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
         let p = convert(event.locationInWindow, from: nil)
         if let b = pressing, button(at: p) == b {
+            // Inside the consent boxes' dead-time the click lands nowhere: no flash, no route.
+            if pressIsDead(b) { return }
             // The press is felt: the accent stays on the button and lets go over `Motion.base`.
             if b != .field {
                 flashPress = b
@@ -3732,6 +4050,8 @@ extension NotchView {
         switch slot(now: CACurrentMediaTime(), open: finite01(CGFloat(openSpring.value))) {
         case .gate(let g): return g.text
         case .pill(let p): return p.text
+        case .ring(let r): return Self.ringPillText(r)
+        case .timer(let t): return Self.timerPillText(t)
         case nil: return ""
         }
     }
@@ -3739,6 +4059,8 @@ extension NotchView {
         switch slot(now: CACurrentMediaTime(), open: finite01(CGFloat(openSpring.value))) {
         case .gate: return "gate"
         case .pill(let p): return p.tone == .mark ? "mark-landed" : "toast"
+        case .ring: return "ring"
+        case .timer: return "timer"
         case nil: return ""
         }
     }
@@ -3855,18 +4177,30 @@ extension NotchView {
         case .sleep: return "sleep"
         case .remedy: return "remedy"
         case .field: return "field"
+        case .snooze(let m): return "snooze:\(m)"
+        case .done: return "done"
+        case .ringOpen(let target): return target == "console" ? "ringOpen" : "ringOpen:\(target)"
         }
     }
 
     private static func previewName(of k: Chip.Kind) -> String {
         switch k {
+        case .ring: return "ring"
         case .question: return "question"
         case .marks: return "marks"
+        case .timer: return "timer"
         case .problem: return "problem"
         case .meter: return "meter"
         case .marking: return "marking"
         }
     }
+
+    /// The anchor's word as drawn (the ring's kind while one is up, else the phase).
+    var previewAnchorWord: String { content.ring?.kindLabel ?? OrbStyle.label(sim.phase) }
+    /// The Snooze minis are in the hit list right now.
+    var previewRingMinisShown: Bool { ringMinisShown(now: CACurrentMediaTime()) }
+    /// The consent boxes' dead-time is on right now (a kind change inside the last 500 ms with the island open).
+    var previewMiddleDead: Bool { pressIsDead(.done) }
 
     /// The working strip's alphas, measured rather than read off the code: the strip
     /// alone is rendered into a bitmap at forced park / work levels, and the hairline
@@ -3927,6 +4261,8 @@ extension NotchView.Press {
             case "forget": guard let i = Int(tail) else { return nil }; self = .markForget(i)
             case "thread": self = .thread(tail)
             case "threadstop": self = .threadStop(tail)
+            case "snooze": guard let m = Int(tail) else { return nil }; self = .snooze(m)
+            case "ringopen": self = .ringOpen(tail)
             default: return nil
             }
             return
@@ -3946,11 +4282,64 @@ extension NotchView.Press {
         case "sleep": self = .sleep
         case "remedy": self = .remedy
         case "field": self = .field
+        case "done": self = .done
+        case "ringopen": self = .ringOpen("console")
         default: return nil
         }
     }
 }
 #endif
+
+/// The ring's words, once, for the island, the controller and the harness (design11 § Island).
+enum RingWords {
+    /// A leading "07:10" / "7:10" on a line, or nil.
+    static func clock(in line: String) -> String? {
+        let head = line.prefix { $0 != " " }
+        guard head.count >= 4, head.count <= 5, head.contains(":"), head.allSatisfy({ $0.isNumber || $0 == ":" }) else { return nil }
+        return String(head)
+    }
+
+    /// "07:10 · Wake up, Kevin" → "Wake up, Kevin": the line without its clock.
+    static func body(of line: String) -> String {
+        guard let clock = clock(in: line) else { return line }
+        var rest = String(line.dropFirst(clock.count))
+        if rest.hasPrefix(" · ") { rest = String(rest.dropFirst(3)) } else { rest = rest.trimmingCharacters(in: .whitespaces) }
+        return rest.isEmpty ? line : rest
+    }
+
+    /// The peek chip's figure: the line's clock, else the name cut to ten.
+    static func chip(line: String, name: String) -> String {
+        clock(in: line) ?? (name.count > 10 ? String(name.prefix(10)) : name)
+    }
+
+    /// "Alarm · weekdays": the kind's word and the trigger's — the recurrence phrase without its clock, `once`
+    /// for a one-shot, the signal's last word for a watcher.
+    static func head(kindLabel: String, whenKind: String?, phrase: String?, eventKind: String?) -> String {
+        let tail: String
+        switch whenKind {
+        case "every": tail = phraseWords(phrase ?? "")
+        case "on": tail = (eventKind ?? "").split(separator: ".").last.map(String.init) ?? ""
+        case "at", "in": tail = "once"
+        default: tail = ""
+        }
+        return tail.isEmpty ? kindLabel : kindLabel + " · " + tail
+    }
+
+    /// "weekdays at 07:10" / "daily 18:00" → "weekdays" / "daily": the first two words that are not the clock.
+    static func phraseWords(_ phrase: String) -> String {
+        let words = phrase.split(separator: " ").map(String.init).filter { $0.lowercased() != "at" && clock(in: $0) == nil }
+        return words.prefix(2).joined(separator: " ")
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    /// A local wall-clock "HH:mm".
+    static func clock(_ date: Date) -> String { clockFormatter.string(from: date) }
+}
 
 private extension NSImage {
     /// A template symbol in one colour.
