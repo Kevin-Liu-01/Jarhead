@@ -570,8 +570,12 @@ public struct Settings: Codable, Equatable {
     public var threadOverflow: String
     /// Warm codex app-server processes kept ready for threads (0..3).
     public var warmThreads: Int
+    /// Automations: the switch, the unattended kinds, quiet hours, the recipes. nil from a daemon before the field.
+    public var automations: AutomationSettings?
 
     public var livesInNotch: Bool { orbHome == "notch" }
+    /// The block, or the contract's default when the daemon predates it.
+    public var automationSettings: AutomationSettings { automations ?? .standard }
 }
 
 // MARK: - Local model servers (mirror of LocalFlavor / LocalFit / LocalModel / LocalServerStatus / DataPath)
@@ -880,6 +884,307 @@ public struct TrashInfo: Codable, Equatable {
     public var bytes: Double
 }
 
+
+// MARK: - Automations (mirror of Automation / AutomationWhen / AutomationAction / AutomationClauses /
+// RingLine / AutomationPress / AutomationEvent / AutomationSettings / ShellRecipe — design11).
+//
+// Flat structs of optionals: every `kind` stays a String so a kind this app does not know (a newer
+// daemon, a later pass) decodes and shows with the default glyph instead of failing the snapshot.
+
+/// A local wall-clock recurrence. `kind`: weekly (days, at) · interval (everyMs, anchorAt) · monthly (nth, weekday, at) · monthday (day, at).
+public struct Recurrence: Codable, Equatable {
+    public var kind: String
+    public var days: [String]?
+    public var at: String?
+    public var everyMs: Double?
+    public var anchorAt: Double?
+    public var nth: Int?
+    public var weekday: String?
+    public var day: Int?
+}
+
+/// A signal the daemon sees without a brain. `kind`: folder.file · download.done · app.launch · app.quit ·
+/// mac.wake · screen.unlock · display.connected · display.disconnected · recipe.red · agent.status.
+public struct SystemEvent: Codable, Equatable {
+    public var kind: String
+    public var path: String?
+    public var glob: String?
+    public var settleMs: Double?
+    public var app: String?
+    public var recipe: String?
+    public var everySeconds: Double?
+    public var agent: String?
+    public var status: String?
+}
+
+/// When a row fires. `kind`: at (at) · in (ms) · every (every, phrase) · on (on).
+public struct AutomationWhen: Codable, Equatable {
+    public var kind: String
+    public var at: Double?
+    public var ms: Double?
+    public var every: Recurrence?
+    public var phrase: String?
+    public var on: SystemEvent?
+}
+
+public struct AutomationBudget: Codable, Equatable {
+    public var steps: Int
+    public var seconds: Double
+}
+
+/// What happens. `kind`: chime (line, sound) · say (line) · notify (title, body, open) · open (app, url, path) ·
+/// file (into) · run-recipe (recipe) · press (app, key) · wake-brain (prompt, budget, speak).
+public struct AutomationAction: Codable, Equatable {
+    public var kind: String
+    public var line: String?
+    public var sound: String?
+    public var title: String?
+    public var body: String?
+    public var open: String?
+    public var app: String?
+    public var url: String?
+    public var path: String?
+    public var into: String?
+    public var recipe: String?
+    public var key: String?
+    public var prompt: String?
+    public var budget: AutomationBudget?
+    public var speak: Bool?
+
+    /// The kinds that act on the Mac (a row carries at most one).
+    public static let actingKinds: Set<String> = ["open", "file", "run-recipe", "press", "wake-brain"]
+    public var isActing: Bool { AutomationAction.actingKinds.contains(kind) }
+}
+
+/// "HH:mm" to "HH:mm", local; wraps midnight when `to` is before `from`.
+public struct ClockSpan: Codable, Equatable {
+    public var from: String
+    public var to: String
+    public init(from: String, to: String) { self.from = from; self.to = to }
+    public var json: [String: Any] { ["from": from, "to": to] }
+}
+
+public struct AutomationClauses: Codable, Equatable {
+    public var window: ClockSpan?
+    public var days: [String]?
+    /// `true` (a one-shot watcher) or "day" (at most once per local day); a JSON bool or string.
+    public var once: JSONValue?
+    public var cooldown: Double?
+    public var until: Double?
+    /// "respect" or "override" (alarms default override); optional so a bare row decodes.
+    public var quiet: String?
+}
+
+public struct AutomationCreatedBy: Codable, Equatable {
+    public var by: String
+    public var chainId: String?
+    public var delegationId: String?
+    public var request: String
+}
+
+/// The set-up yes for run-recipe / press / wake-brain: when, and the words Kevin heard (the cost line).
+public struct AutomationConfirmed: Codable, Equatable {
+    public var at: Double
+    public var heard: String
+}
+
+/// The Console's word for a row, derived as the contract's `automationKind()` derives it.
+public enum AutomationKindWord: String {
+    case alarm, timer, reminder, routine, watcher
+
+    public init(when: AutomationWhen, then: [AutomationAction]) {
+        let first = then.first?.kind
+        switch when.kind {
+        case "in": self = .timer
+        case "on": self = .watcher
+        case "every": self = first == "chime" ? .alarm : .routine
+        default: self = first == "chime" ? .alarm : .reminder
+        }
+    }
+
+    /// Capitalised, for a head or an anchor word: "Alarm".
+    public var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+}
+
+public struct Automation: Codable, Identifiable, Equatable {
+    public var id: String
+    public var name: String
+    public var when: AutomationWhen
+    public var then: [AutomationAction]
+    public var clauses: AutomationClauses
+    public var echo: String
+    /// armed · snoozed · firing · fired · deferred · paused · done · failed · trashed (a String: a newer state still decodes).
+    public var state: String
+    public var nextAt: Double?
+    public var lastFiredAt: Double?
+    public var lastDetail: String?
+    public var fires: Int
+    public var missed: Int
+    public var snoozedUntil: Double?
+    public var createdAt: Double
+    public var updatedAt: Double
+    public var createdBy: AutomationCreatedBy
+    public var confirmed: AutomationConfirmed?
+
+    public var kind: AutomationKindWord { AutomationKindWord(when: when, then: then) }
+    public var isTerminal: Bool { state == "done" || state == "trashed" }
+    /// A wake-brain row spends brain minutes: the `billed` badge.
+    public var isBilled: Bool { then.contains { $0.kind == "wake-brain" } }
+}
+
+/// A press a ring offers. `kind`: snooze (minutes) · done · open (target).
+public struct AutomationPress: Codable, Equatable {
+    public var kind: String
+    public var minutes: Int?
+    public var target: String?
+}
+
+/// The one line the island shows while a row is `fired`.
+public struct RingLine: Codable, Equatable {
+    public var id: String
+    public var kind: String
+    public var name: String
+    public var line: String
+    public var calm: String?
+    public var at: Double
+    public var lateMs: Double?
+    public var presses: [AutomationPress]
+    public var more: Int
+}
+
+/// The foot's "next Timer 12:00 · pasta".
+public struct NextFire: Codable, Equatable {
+    public var id: String
+    public var kind: String
+    public var name: String
+    public var at: Double
+}
+
+/// One change on one row (`automation.event`). `kind`: set (automation) · fired (actions, line, ok, detail,
+/// lateMs, presses) · state (state, nextAt, detail) · missed (dueAt, lateMs, skipped, why) · tick (remainingMs).
+public struct AutomationEvent: Codable, Equatable {
+    public var seq: Int
+    public var at: Double
+    public var id: String
+    public var kind: String
+    public var automation: Automation?
+    public var actions: [String]?
+    public var line: String?
+    public var ok: Bool?
+    public var detail: String?
+    public var lateMs: Double?
+    public var presses: [AutomationPress]?
+    public var state: String?
+    public var nextAt: Double?
+    public var dueAt: Double?
+    public var skipped: Bool?
+    public var why: String?
+    public var remainingMs: Double?
+}
+
+public struct ShellRecipe: Codable, Equatable, Identifiable {
+    public var name: String
+    public var command: String
+    public var cwd: String?
+    public var timeoutSeconds: Double
+    public var approvedAt: Double
+    public var id: String { name }
+
+    public init(name: String, command: String, cwd: String?, timeoutSeconds: Double, approvedAt: Double) {
+        self.name = name; self.command = command; self.cwd = cwd; self.timeoutSeconds = timeoutSeconds; self.approvedAt = approvedAt
+    }
+
+    public var json: [String: Any] {
+        var o: [String: Any] = ["name": name, "command": command, "timeoutSeconds": timeoutSeconds, "approvedAt": approvedAt]
+        if let cwd { o["cwd"] = cwd }
+        return o
+    }
+}
+
+/// Settings.automations: the master switch, the kinds that may fire while asleep, quiet hours, the recipes.
+public struct AutomationSettings: Codable, Equatable {
+    public var enabled: Bool
+    public var unattended: [String]
+    public var quietHours: ClockSpan?
+    public var snoozeMinutes: Int
+    public var wakeBudgetMinutesPerDay: Int
+    public var recipes: [ShellRecipe]
+    public var openAtLogin: Bool
+
+    public init(enabled: Bool, unattended: [String], quietHours: ClockSpan?, snoozeMinutes: Int, wakeBudgetMinutesPerDay: Int, recipes: [ShellRecipe], openAtLogin: Bool) {
+        self.enabled = enabled; self.unattended = unattended; self.quietHours = quietHours; self.snoozeMinutes = snoozeMinutes
+        self.wakeBudgetMinutesPerDay = wakeBudgetMinutesPerDay; self.recipes = recipes; self.openAtLogin = openAtLogin
+    }
+
+    /// The contract's DEFAULT_SETTINGS.automations.
+    public static let standard = AutomationSettings(enabled: true, unattended: ["chime", "say", "notify", "open", "file"], quietHours: nil, snoozeMinutes: 10, wakeBudgetMinutesPerDay: 5, recipes: [], openAtLogin: false)
+
+    /// The whole block as a `set-settings` patch value (the engine replaces it whole).
+    public var json: [String: Any] {
+        var o: [String: Any] = ["enabled": enabled, "unattended": unattended, "snoozeMinutes": snoozeMinutes, "wakeBudgetMinutesPerDay": wakeBudgetMinutesPerDay,
+                                "recipes": recipes.map { $0.json }, "openAtLogin": openAtLogin]
+        if let quietHours { o["quietHours"] = quietHours.json }
+        return o
+    }
+}
+
+/// `automation.set`'s row as the Console form or the CLI sends it: the engine fills id, state, fires, the stamps and createdBy.
+public struct AutomationDraft: Encodable, Equatable {
+    public var id: String?
+    public var name: String
+    public var when: AutomationWhen
+    public var then: [AutomationAction]
+    public var clauses: AutomationClauses
+    public var echo: String
+
+    public init(id: String? = nil, name: String, when: AutomationWhen, then: [AutomationAction], clauses: AutomationClauses, echo: String) {
+        self.id = id; self.name = name; self.when = when; self.then = then; self.clauses = clauses; self.echo = echo
+    }
+
+    /// The draft as a JSON object (nil fields left out), for `EngineCommand.json`.
+    public var json: [String: Any] {
+        guard let data = try? JSONEncoder().encode(self), let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return ["name": name, "echo": echo] }
+        return o
+    }
+}
+
+// MARK: - Automation frames (daemon → app: `local.say`, `notify`; app → daemon: `system.signal`).
+
+/// `local.say`: the app plays the earcon and the local speaker reads `text` — never model text except a redacted wake-brain line.
+public struct LocalSayMessage: Codable, Equatable {
+    public var text: String?
+    public var sound: String?
+    public var automationId: String
+}
+
+/// `notify`: a banner with the ring's presses; a press lands on the same row as the island's.
+public struct NotifyMessage: Codable, Equatable {
+    public var id: String
+    public var title: String
+    public var body: String?
+    public var presses: [AutomationPress]
+    public var automationId: String
+}
+
+/// A signal the app observes on Kevin's behalf and forwards (`system.signal`): data, never a command.
+/// `kind`: app.launch · app.quit (app, bundleId) · mac.wake · mac.sleep · screen.unlock · screen.lock ·
+/// display.connected · display.disconnected · clock.changed.
+public struct SystemSignal: Equatable {
+    public var kind: String
+    public var app: String?
+    public var bundleId: String?
+
+    public init(kind: String, app: String? = nil, bundleId: String? = nil) { self.kind = kind; self.app = app; self.bundleId = bundleId }
+
+    /// The wire's ClientMessage: `{type: "system.signal", signal, at}`.
+    public func json(at: Double) -> [String: Any] {
+        var signal: [String: Any] = ["kind": kind]
+        if let app { signal["app"] = app }
+        if let bundleId { signal["bundleId"] = bundleId }
+        return ["type": "system.signal", "signal": signal, "at": at]
+    }
+}
+
 public struct Snapshot: Codable, Equatable {
     public var phase: Phase
     public var session: SessionInfo?
@@ -906,7 +1211,16 @@ public struct Snapshot: Codable, Equatable {
     public var memory: MemorySummary?
     /// Every live thread (main first) and those finished within the linger.
     public var threads: [WorkThread]
+    /// The live automation rows (armed first), then the Trash's newest eight (`state == "trashed"`); nil from a daemon before the field.
+    public var automations: [Automation]?
+    /// The newest `fired` row with a line, while one is up.
+    public var ringing: RingLine?
+    /// The foot's "next Timer 12:00 · pasta".
+    public var nextFire: NextFire?
+    /// The recipes the shell gate now rates confirm, by name: the `asks` badge, never pickable. nil from a daemon before the field.
+    public var recipesAsking: [String]?
 
+    public var automationRows: [Automation] { automations ?? [] }
     public var liveThreads: [WorkThread] { threads.filter { $0.status.isLive } }
     public var spawnedLiveThreads: [WorkThread] { liveThreads.filter { $0.id != "main" } }
 
@@ -992,6 +1306,21 @@ public enum EngineCommand: Equatable {
     case setSecrets([String: String?])
     /// Re-check the OpenAI key and the brain; results arrive in snapshot.setup.
     case probeSetup
+    // Automations (the Console's rail, the island's presses, the CLI). Never a deletion: Move to Trash / Restore.
+    case automationSet(AutomationDraft)
+    case automationSnooze(id: String, minutes: Int)
+    case automationDone(id: String)
+    /// A repeater rolls to its next occurrence; a one-shot is done without firing.
+    case automationSkip(id: String)
+    case automationPause(id: String)
+    case automationResume(id: String)
+    case automationRename(id: String, name: String)
+    case automationTrash(id: String)
+    case automationRestore(id: String)
+    /// Fire it now (refused by the engine unless Kevin is there to hear it).
+    case automationRun(id: String)
+    case recipeSet(ShellRecipe)
+    case recipeTrash(name: String)
 
     public var json: [String: Any] {
         switch self {
@@ -1069,6 +1398,18 @@ public enum EngineCommand: Equatable {
             for (k, v) in secrets { o[k] = v ?? NSNull() }
             return ["type": "config.set-secrets", "secrets": o]
         case .probeSetup: return ["type": "config.probe"]
+        case .automationSet(let draft): return ["type": "automation.set", "automation": draft.json]
+        case .automationSnooze(let id, let minutes): return ["type": "automation.snooze", "id": id, "minutes": minutes]
+        case .automationDone(let id): return ["type": "automation.done", "id": id]
+        case .automationSkip(let id): return ["type": "automation.skip", "id": id]
+        case .automationPause(let id): return ["type": "automation.pause", "id": id]
+        case .automationResume(let id): return ["type": "automation.resume", "id": id]
+        case .automationRename(let id, let name): return ["type": "automation.rename", "id": id, "name": name]
+        case .automationTrash(let id): return ["type": "automation.trash", "id": id]
+        case .automationRestore(let id): return ["type": "automation.restore", "id": id]
+        case .automationRun(let id): return ["type": "automation.run", "id": id]
+        case .recipeSet(let recipe): return ["type": "recipe.set", "recipe": recipe.json]
+        case .recipeTrash(let name): return ["type": "recipe.trash", "name": name]
         }
     }
 }
@@ -1100,6 +1441,8 @@ public struct SettingsPatch: Equatable {
     public var typedWakes: Bool?
     public var threadOverflow: String?
     public var warmThreads: Int?
+    /// Replaces the whole automations block (Settings › Automations writes it via `set-settings`).
+    public var automations: AutomationSettings?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
@@ -1143,6 +1486,7 @@ public struct SettingsPatch: Equatable {
         if let v = typedWakes { o["typedWakes"] = v }
         if let v = threadOverflow { o["threadOverflow"] = v }
         if let v = warmThreads { o["warmThreads"] = v }
+        if let v = automations { o["automations"] = v.json }
         return o
     }
 }
@@ -1301,7 +1645,32 @@ public struct LedgerRow: Codable, Identifiable {
     /// The thread's own status word on `thread.status` / `thread.ended` rows (`status` above is the delegation's), and the change's detail.
     public var threadStatus: ThreadStatus?
     public var detail: String?
-    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? threadId ?? "")" }
+    /// `automation.*` rows: the wire's `id` (the automation's), the row at `set`, what a fire ran and said, how late, how long,
+    /// the brain seconds a wake-brain turn spent; `automation.state`: the new state; `automation.missed`: when it was due and why;
+    /// `recipe.set`: the recipe. `by` above says who (brain · console · cli · kevin · engine); `until` above is a snooze's end.
+    public var rowId: String?
+    public var automation: Automation?
+    public var actions: [String]?
+    public var ok: Bool?
+    public var line: String?
+    public var lateMs: Double?
+    public var ms: Double?
+    public var brainSeconds: Double?
+    public var state: String?
+    public var dueAt: Double?
+    public var skipped: Bool?
+    public var why: String?
+    public var recipe: ShellRecipe?
+    public var id: String { "\(type)-\(at)-\(item?.id ?? step?.id ?? delegation?.id ?? threadId ?? rowId ?? "")" }
+
+    /// Every stored column by its wire name; `rowId` reads the wire's `id` (the struct's own `id` is derived).
+    enum CodingKeys: String, CodingKey {
+        case at, type, item, delegation, delegationId, step, status, timings, summary, text, sessionId, voice, language, accent, reason, usageSeconds, agent
+        case how, cancelled, resumedFrom, pausedMs, chainId, by, name, pinned, day, what, to, path, agentId, hidden, app, actionClass, until
+        case cause, phrase, farewell, thread, threadId, steps, seconds, threadStatus, detail
+        case rowId = "id"
+        case automation, actions, ok, line, lateMs, ms, brainSeconds, state, dueAt, skipped, why, recipe
+    }
 }
 
 // MARK: - A JSON value for tool inputs/outputs of unknown shape.

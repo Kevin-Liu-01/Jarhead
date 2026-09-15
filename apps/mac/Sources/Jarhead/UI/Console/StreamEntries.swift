@@ -77,6 +77,8 @@ enum StreamBuilder {
         var transport: String?
         // A thread's name, from its `thread.started` row, for the rows that carry only its id.
         var threadNames: [String: String] = [:]
+        // An automation, from its `automation.set` row, for the fired / state / missed rows that carry only its id (design11).
+        var automationRows: [String: Automation] = [:]
 
         for (index, row) in rows.enumerated() {
             switch row.type {
@@ -164,6 +166,14 @@ enum StreamBuilder {
                 transport = "sleep:" + (row.sleepCause ?? "command")
                 if row.sleepCause != "stop", let t = ConsoleFormat.tombstone(row) {
                     out.append(.system(SystemEntry(id: "zz:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing)))
+                }
+            case "automation.set", "automation.fired", "automation.state", "automation.missed":
+                // The record of what the daemon carried out asleep: "07:10 · Wake up · fired · 12 min late", "snoozed until 07:20",
+                // "done"; a miss wears the problem tone. The set row names the row for the ones after it.
+                if let a = row.automation { automationRows[a.id] = a }
+                if let t = ConsoleFormat.tombstone(row, automation: row.rowId.flatMap { automationRows[$0] }) {
+                    out.append(.system(SystemEntry(id: "au:\(row.at):\(index)", at: row.at, symbol: t.symbol, text: ConsoleFormat.sentence(t.text), mono: t.mono, trailing: t.trailing,
+                                                   tone: row.type == "automation.missed" ? .problem : .normal)))
                 }
             default:
                 // The cleanup's tombstone rows read as terse system lines: "Moved to Trash", "Restored",
@@ -284,8 +294,15 @@ extension ConsoleFormat {
     /// the day, what moved and where. The `sleep` row is the moon: "asleep · said" with the
     /// cue in quotes. A `thread.started` / `thread.ended` row is "Spotify · started" / "Spotify ·
     /// done" with its lane in mono.
-    static func tombstone(_ row: LedgerRow) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
+    static func tombstone(_ row: LedgerRow, automation: Automation? = nil) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
         switch row.type {
+        case "automation.set", "automation.fired", "automation.state", "automation.missed":
+            return automationTombstone(row, automation: row.automation ?? automation)
+        case "recipe.set":
+            guard let r = row.recipe else { return nil }
+            return ("terminal.fill", "recipe", "recipe “\(r.name)” saved", truncPath(r.command, max: 40), row.by == "brain" ? "approved by voice" : nil)
+        case "recipe.trashed":
+            return ("trash.fill", "recipe", "recipe “\(row.name ?? "")” moved to Trash", nil, nil)
         case "sleep":
             return ("moon.zzz.fill", "sleep", SleepCauseFormat.line(row.sleepCause ?? "command"), row.sessionId.map { shortId($0) }, row.quotedPhrase)
         case "thread.started":
@@ -327,6 +344,71 @@ extension ConsoleFormat {
             return ("checkmark.seal.fill", "grant", "granted \(row.app ?? "app") · \(row.actionClass ?? "action") for this conversation\(until)", nil, nil)
         default:
             return nil
+        }
+    }
+
+    /// The automation rows as one line each (design11): the kind's glyph and word when the row is known (its `set`
+    /// row went by, or the row itself carries it), else the plain automation glyph and word; `fired` reads the line the
+    /// daemon rang with, how late, and what it did; `state` the new state (`snoozed until 07:20`, `done`, `moved to
+    /// Trash`); `missed` when it was due and why. A `firing` state row is bookkeeping and yields no line.
+    static func automationTombstone(_ row: LedgerRow, automation: Automation?) -> (symbol: String, kind: String, text: String, mono: String?, trailing: String?)? {
+        let kind = automation?.kind
+        let symbol = automationSymbol(kind)
+        let word = kind?.rawValue ?? "automation"
+        let name = automation?.name ?? row.line ?? ""
+        switch row.type {
+        case "automation.set":
+            guard let a = row.automation else { return nil }
+            return (symbol, word, "\(a.name) · armed", nil, a.echo)
+        case "automation.fired":
+            let line = row.line ?? name
+            return (symbol, word, "\(line) · \(row.ok == false ? "failed" : "fired")", row.lateMs.map { lateWords($0) }, row.detail)
+        case "automation.state":
+            guard let state = row.state, state != "firing" else { return nil }
+            return (symbol, word, "\(name.isEmpty ? "" : name + " · ")\(stateWords(state, until: row.until))", nil, row.detail)
+        case "automation.missed":
+            let due = row.dueAt.map { clock($0) } ?? ""
+            let why = row.why.map { missedWhyWords($0) } ?? ""
+            return ("clock.badge.exclamationmark", word, "\(name.isEmpty ? "" : name + " · ")\(row.skipped == true ? "skipped" : "missed")\(due.isEmpty ? "" : " · due " + due)\(why.isEmpty ? "" : " · " + why)", row.lateMs.map { lateWords($0) }, nil)
+        default:
+            return nil
+        }
+    }
+
+    /// The kind's glyph (the rail's), or the plain clock for a row whose kind the log does not know.
+    static func automationSymbol(_ kind: AutomationKindWord?) -> String {
+        switch kind {
+        case .alarm: return "alarm.fill"
+        case .timer: return "timer"
+        case .reminder: return "bell.fill"
+        case .routine: return "repeat"
+        case .watcher: return "eye.fill"
+        case nil: return "clock.fill"
+        }
+    }
+
+    /// `snoozed until 07:20` · `done` · `paused` · `moved to Trash` · `failed` — the state's word, Kevin's vocabulary.
+    static func stateWords(_ state: String, until: Double?) -> String {
+        switch state {
+        case "snoozed": return until.map { "snoozed until \(clock($0))" } ?? "snoozed"
+        case "trashed": return "moved to Trash"
+        default: return state
+        }
+    }
+
+    /// `12 min late` · `40 s late`.
+    static func lateWords(_ ms: Double) -> String {
+        ms >= 60_000 ? "\(Int((ms / 60_000).rounded())) min late" : "\(Int((ms / 1000).rounded())) s late"
+    }
+
+    /// The MissedWhy words: `Jarhead was off` · `the Mac slept` · `quiet hours` · `the brain budget was spent`.
+    static func missedWhyWords(_ why: String) -> String {
+        switch why {
+        case "daemon-down": return "Jarhead was off"
+        case "mac-slept": return "the Mac slept"
+        case "quiet-hours": return "quiet hours"
+        case "budget": return "the brain budget was spent"
+        default: return why
         }
     }
 }

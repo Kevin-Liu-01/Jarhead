@@ -131,6 +131,15 @@
 #     strip      ORB_NOTCH_WORKING=1 ORB_NOTCH_PHASE=acting ORB_NOTCH_STRIP_PROBE=2.5 ORB_EXIT_AFTER=3
 #     fleet      ORB_FLEET="…three…" ORB_EXIT_AFTER=4.5                                                # → fleet-notch-{peek,island}.png at 184 (three threads: the chip line)
 #     reduce-*   marks / question / circle again with ORB_REDUCE_MOTION=1                              # + the reduce-motion check line
+#     ring       ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_PRESS="snooze:10@5.3"
+#                ORB_NOTCH_SHOT_TAG=alarm                                                             # design11: the ring asleep — kind ring, word Alarm, Snooze 10 · Done in the consent rects, the
+#                                                                                                     # minis on hover, the asleep foot notice; press snooze:10 → automation.snooze 1 → notch-island-alarm.png
+#     ring-folded ORB_NOTCH_RING=… ORB_NOTCH_NEXT=… ORB_NOTCH_RING_FOLD_AT=1.9 ORB_NOTCH_WAKE_AT=2.2 ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_MARKS=…
+#                                                                                                     # the timer's lip pill, the ring's pill "Wake up, Kevin · Snooze ⌥⇧S" once folded (→ notch-island-alarm-folded.png),
+#                                                                                                     # then awake: the chip order ring > question > marks > timer > problem
+#     ring-dead-time ORB_NOTCH_RING=… ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_QUESTION_AT=ring-end ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
+#                                                                                                     # Done ends the ring and the question lands in the same turn: a deny 150 ms later sends nothing
+#                                                                                                     # (the consent boxes' 500 ms dead-time), the one at +850 ms is the thread's answer
 #     kind-*     ORB_NOTCH_KIND=plain|question|marks forces the display's kind, ORB_NOTCH_KIND_AT="kind@4.2" swaps it with the
 #                island open: the tooltip lines (the foot, the hero's question, the film caption) and the kind-change beats;
 #                kind-plain lands a line after the swap's window (the hero still animates), kind-marks → plain reads the
@@ -213,6 +222,12 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe kind-question 5.5 ORB_NOTCH_KIND=question ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION='Slack:Send "shipping Friday" to #general?' \
     ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-question
   recipe kind-marks 5.5 ORB_NOTCH_KIND=marks ORB_NOTCH_MARKS="$MARKS" ORB_NOTCH_KIND_AT="plain@4.2" ORB_NOTCH_SHOT_TAG=kind-marks
+  # design11 — the ring while asleep (Snooze · Done in the consent rects, the 500 ms dead-time, the folded chip and pill).
+  recipe ring 5.8 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_PRESS="snooze:10@5.3" ORB_NOTCH_SHOT_TAG=alarm
+  recipe ring-folded 5.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_RING_FOLD_AT=1.9 ORB_NOTCH_WAKE_AT=2.2 \
+    ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_PROBLEM=permission.screenRecording
+  recipe ring-dead-time 5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_QUESTION_AT=ring-end \
+    ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
   echo
   echo "summary (every check: line, deduplicated by text):"
   cat "$ROOT"/*/run.log | grep -E "check:" | sed -E 's/^ *[0-9.]+ s //' | sed -E 's/ (OK|FAIL)( \(.*| :.*)?$/ \1/' | sort -u

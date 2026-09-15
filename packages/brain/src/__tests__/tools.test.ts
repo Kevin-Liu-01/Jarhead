@@ -348,11 +348,11 @@ test("tool table: the new specs are complete, zod-shaped, and have progress line
   assert.ok(!/\b1280\b/.test(JSON.stringify(specByName("screenshot"))), "no stale quick-shot size in the screenshot spec");
 });
 
-test("tool table: the four thread specs follow the agents (67 stays), carry the split rule, the same-turn rule and 'do not thread_wait', cap thread_wait at 240 s, have progress lines, and are not the runner's without a scheduler", async () => {
+test("tool table: the four thread specs follow the agents (71 with the automations), carry the split rule, the same-turn rule and 'do not thread_wait', cap thread_wait at 240 s, have progress lines, and are not the runner's without a scheduler", async () => {
   assert.deepEqual(THREAD_SPECS.map((s) => s.name), ["thread_start", "thread_wait", "thread_read", "thread_stop"]);
   const names = ALL_TOOL_SPECS.map((s) => s.name);
   assert.equal(names.indexOf("thread_start"), names.indexOf("agent_start") + 1, "THREAD_SPECS follow AGENT_SPECS in the table");
-  assert.equal(ALL_TOOL_SPECS.length, 67);
+  assert.equal(ALL_TOOL_SPECS.length, 71);
   assert.equal(AGENT_SPECS.length, 5, "a Thread is not an Agent: the agent tools are unchanged");
   assert.ok(!("kind" in (specByName("agent_start")!.parameters.properties as Record<string, unknown>)), "agent_start takes `tool`; no second spelling");
   // The rule the standing orders do not carry: one thread per independent app, in the same turn as the

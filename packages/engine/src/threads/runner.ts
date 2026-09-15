@@ -380,6 +380,8 @@ export class LaneRunner extends LeasedRunner {
     const started = this.clock();
     const args = argsOf(input);
     if (DENIED_FOR_THREADS.has(name)) return this.answer(name, args, { kind: "error", message: `refused: ${name} is not a spawned thread's (depth one: a thread never spawns or edits Jarhead)` }, started);
+    // design11: a headless `wake-brain` turn runs on this lane; a briefing never arms more automations or edits the recipes.
+    if (this.lane === "background" && /^(automation|recipe)_/.test(name)) return this.answer(name, args, { kind: "error", message: `refused: ${name} is not a background lane's (an automation is set in the conversation, never by a headless turn)` }, started);
     const focus = needsFocus(name, args);
     if (focus && this.lane === "background") return this.answer(name, args, { kind: "error", message: LANE_REFUSAL }, started);
     if (!focus) return this.finish(name, await this.runBase(name, input));

@@ -26,6 +26,7 @@
 #   rings the pinned row, ↓↓↓ onto Yesterday's head, → opens it
 #   (`rail-probe:` before and after: two more ids). `rail-midnight` is reserved (PREVIEW_NOW is not built).
 #   Every one runs `check-kit@0.3` (the ladder's pins in checkKitLeftRail) and ends `check: all ok (kit)`.
+#           automations | automations-ring | settings-automations (default live)
 #   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
 #   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
 #   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
@@ -48,6 +49,18 @@
 #   `check: … (tips)`), `tip-thumb` opens Slack's pane and pins the header thumb's preview; `menu-escape` /
 #   `menu-outside` drive the layer's closing contract on the Voice popup (Esc; a click at (300,300)) and end
 #   `check: … (floats)`. Every one runs `check-kit@0.3` and ends `check: all ok (kit)`.
+#   The automations pass (design11, Builder D): `automations` is the Now rail with the mockup's six rows —
+#   Clock 4 (the alarm, the pasta timer ticking, call mum snoozed, the standup routine) · Watchers 2
+#   (Downloads → Papers, build red paused) · the Trash fold open with one row · the honest line — under the
+#   ring row `07:10 · Wake up, Kevin [Snooze] [Done]`, with the Downloads → Papers card pinned over the
+#   stream (`check-floats:now.automation.auto_papers`). `automations-ring` is the same ring row on the Ledger
+#   tab (it sits under the tabs on every tab) with its card pinned, then `ringing:off` / `ringing:<id>`
+#   (run.log's `probe-ring:` lines say nil, then the id). `settings-automations` is Settings › Automations
+#   (`automationsFold`): the On|Off switch, the eight chips (the run tier outlined), quiet hours 23:00 → 07:00,
+#   Snooze 10 min, Brain minutes 5 /day, Recipes 3 with vpn-up wearing `asks` (the `recipesAsks:<names>` key),
+#   Open at login. The harness keys: `ringing:<id|off>`, `recipesAsks:<a,b>`, `automationsFold`, `probe-ring`.
+#   check-kit pins the four badge words, AutomationWords, the summary, ConsoleFormat.clock / countdown, a row's
+#   line per kind, the card's spoken form, the ring split, the recipe meta and the Add… parser (check-automations).
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
 #   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,
@@ -161,6 +174,8 @@ case "$SCENARIO" in
   menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|list-verbs|agents-groups) ;;
   # The left rail (design10).
   rail|rail-expanded|rail-asleep|rail-agents|rail-search|rail-keys|rail-midnight) ;;
+  # Automations (design11): the Now section with the ring row, the ring on the Ledger tab, Settings › Automations.
+  automations|automations-ring|settings-automations) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -215,6 +230,10 @@ if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WIN
 if [[ "$SCENARIO" == "memory-chips" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
 if [[ "$SCENARIO" == "list-keys" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
 if [[ "$SCENARIO" == "list-verbs" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
+# Automations: the Now rail with six rows and the Trash fold is tall; the card and the probes run to 1.5 s.
+# Settings › Automations sits under Session and holds the recipes: the tall window, scrolled to it.
+case "$SCENARIO" in automations|automations-ring) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+if [[ "$SCENARIO" == "settings-automations" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac

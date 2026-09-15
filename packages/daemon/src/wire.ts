@@ -13,6 +13,7 @@
  */
 
 import type { ToolResult } from "@jarhead/hands";
+import type { SystemSignal } from "@jarhead/protocol";
 
 export const FRAME_JSON = 1;
 export const FRAME_MIC = 2;
@@ -95,6 +96,12 @@ export type DaemonMessage =
   | { readonly type: "thread.event"; readonly event: unknown }
   /** A page of a thread's conversation (a ThreadTranscript): sent only to the clients that opened that thread (`thread.open`). */
   | { readonly type: "thread.transcript"; readonly transcript: unknown; readonly mode: "replace" | "append" | "prepend" }
+  /** One change on one automation row (an AutomationEvent; ≤ 200 B, `fired` ≈ 270 B with its presses): broadcast, like `thread.event`. */
+  | { readonly type: "automation.event"; readonly event: unknown }
+  /** Engine → app: play an earcon and/or have the LocalSpeaker read a FIXED line on-device; never model text except a redacted wake-brain line. Broadcast. */
+  | { readonly type: "local.say"; readonly text?: string; readonly sound?: string; readonly automationId: string }
+  /** Engine → app: a banner with the ring's presses (Snooze · Done / Open · Done); a press comes back as an `automation.*` command. Broadcast. */
+  | { readonly type: "notify"; readonly id: string; readonly title: string; readonly body?: string; readonly presses: readonly unknown[]; readonly automationId: string }
   /**
    * Answer to `tool.run`, sent only to the client that asked. `result` is the
    * ToolResult as the runner produced it (text / image {pngBase64, width, height,
@@ -151,6 +158,15 @@ export type ClientMessage =
    * recogniser produced it. The engine's reflex layer acts on unambiguous commands.
    */
   | { readonly type: "ear"; readonly text: string; readonly isFinal: boolean; readonly segment: number; readonly at: number }
+  /**
+   * A signal the app observed on Kevin's behalf (design11): an app launched or quit
+   * (`NSWorkspace`), the Mac slept or woke, the screen locked or unlocked, a display
+   * connected or disconnected, the clock changed. `signal` is the protocol's SystemSignal
+   * (the parser types it; the engine still checks its shape — the wire is JSON); `at` is
+   * wall-clock ms. Data for the automations' watchers and their resync — never a
+   * command, never a wake: the engine reads it, matches armed rows, and nothing else.
+   */
+  | { readonly type: "system.signal"; readonly signal: SystemSignal; readonly at: number }
   /**
    * A clean quit is on its way: the app sends this right before it closes the daemon's
    * stdin (DaemonProcess.stop / applicationWillTerminate). Stdin closing *without* a

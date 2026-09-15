@@ -179,9 +179,9 @@ struct ConsoleRow: View {
         return []
     }
 
-    /// The 20 pt zone the ⋯ or the verb overlay takes; the ghost verb's width beside it.
+    /// The 20 pt zone the ⋯ or the verb overlay takes; the ghost verb's width beside it (`Resume` needs 58.7 pt).
     static let overflowWidth: CGFloat = 20
-    static let verbWidth: CGFloat = 58
+    static let verbWidth: CGFloat = 60
 
     var minHeight: CGFloat { ConsoleListModel.height(lines: lines, meta: meta != nil || meter != nil, rail: rail) }
 
@@ -246,19 +246,23 @@ struct ConsoleRowLabel: View {
         HStack(alignment: .top, spacing: 8) {
             if let icon = row.icon { ConsoleRowIconView(icon: icon) }
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .top, spacing: 6) {
+                // 3 pt of air on the Spacer's two sides (its own minimum is 0: the two gaps are the 6 between badge and
+                // value), 6 everywhere else — the badge and the controls' zone carry their own 3. `call mum [snoozed]
+                // 15:10 [Skip]` fits at 296.
+                HStack(alignment: .top, spacing: 3) {
                     Text(row.title.isEmpty ? "—" : row.title)
                         .font(titleFont).foregroundStyle(ConsoleTheme.fg).lineSpacing(2)
                         .lineLimit(row.lines).truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(minHeight: 20)
-                    if let badge = row.badge { ConsoleBadge(word: badge, width: row.badgeWidth).frame(height: 20) }
-                    Spacer(minLength: 4)
+                    // The badge is the one word that never clips; the title is the elastic part of the line.
+                    if let badge = row.badge { ConsoleBadge(word: badge, width: row.badgeWidth).fixedSize(horizontal: true, vertical: false).frame(height: 20).padding(.leading, 3) }
+                    Spacer(minLength: 0)
                     if let value = row.value {
                         Text(value).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1).frame(height: 20)
                     }
                     ConsoleRowInlineTrailing(trailing: row.trailing)
-                    if reserved > 0 { Color.clear.frame(width: reserved, height: 20) }
+                    if reserved > 0 { Color.clear.frame(width: reserved + 3, height: 20) }
                 }
                 if row.meta != nil || row.meter != nil { ConsoleRowMetaLine(meta: row.meta, meter: row.meter) }
             }

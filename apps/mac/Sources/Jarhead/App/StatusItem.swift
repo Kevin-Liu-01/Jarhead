@@ -13,6 +13,11 @@ struct AppActions {
     var summonOrb: () -> Void = {}
     var openLedgerFolder: () -> Void = {}
     var quit: () -> Void = {}
+    /// The automations (design11): the ring's two presses — `automation.snooze` (id, minutes) / `automation.done`
+    /// (id) — and the Console opened on its Automations section. Never a session, never a brain turn.
+    var snoozeRing: (String, Int) -> Void = { _, _ in }
+    var doneRing: (String) -> Void = { _ in }
+    var openAutomations: () -> Void = {}
 }
 
 /// The menu-bar item: a template orb glyph drawn in code, a tooltip with the phase,
@@ -67,6 +72,15 @@ final class StatusItem: NSObject {
             .store(in: &cancellables)
         // The last crash's row comes and goes with the notice (CrashGuard → AppState.lastCrash).
         state.$lastCrash
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        // The ring rows and the Next row follow the automations (design11).
+        state.$ringing
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        state.$nextFire
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
@@ -170,6 +184,28 @@ final class StatusItem: NSObject {
             menu.addItem(gate)
         }
 
+        // The automations (design11): while one rings, the crash-row pattern — two hot rows, Snooze N (⌥⇧S) and Done;
+        // otherwise the next fire as one informational row. Both read AppState, which the daemon feeds.
+        if let ring = state.ringing {
+            let minutes = StatusItem.snoozeMinutes(for: ring, settings: state.snapshot.settings.automationSettings)
+            let snooze = NSMenuItem(title: "\(ring.line) · Snooze \(minutes)", action: #selector(doSnoozeRing), keyEquivalent: "s")
+            snooze.keyEquivalentModifierMask = [.option, .shift]
+            snooze.target = self
+            snooze.image = StatusItem.symbol("bell.fill")
+            snooze.toolTip = "Snooze — rings again in \(minutes) min (⌥⇧S)"
+            menu.addItem(snooze)
+            let done = NSMenuItem(title: "Done", action: #selector(doDoneRing), keyEquivalent: "")
+            done.target = self
+            done.image = StatusItem.symbol("checkmark.circle.fill")
+            done.toolTip = "Done — stops the \(ring.kind)"
+            menu.addItem(done)
+        } else if let next = state.nextFire {
+            let row = NSMenuItem(title: StatusItem.nextLabel(next), action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            row.image = StatusItem.symbol("alarm.fill")
+            menu.addItem(row)
+        }
+
         let mute = NSMenuItem(title: phase == .muted ? "Unmute" : "Mute", action: #selector(doToggleMute), keyEquivalent: "m")
         mute.keyEquivalentModifierMask = [.option, .shift]
         mute.target = self
@@ -204,6 +240,12 @@ final class StatusItem: NSObject {
         ledger.target = self
         ledger.image = StatusItem.symbol("list.bullet.rectangle.fill")
         menu.addItem(ledger)
+
+        let automations = NSMenuItem(title: "Automations…", action: #selector(doOpenAutomations), keyEquivalent: "")
+        automations.target = self
+        automations.image = StatusItem.symbol("alarm.fill")
+        automations.toolTip = "What is set to fire while Jarhead sleeps — the Console's Automations section"
+        menu.addItem(automations)
 
         menu.addItem(.separator())
 
@@ -255,6 +297,28 @@ final class StatusItem: NSObject {
     @objc private func doPermissions() { state.openPermissionsSetup() }
     @objc private func doAskAll() { state.requestAll() }
     @objc private func doRevealCrash() { state.revealCrash() }
+    @objc private func doSnoozeRing() {
+        guard let ring = state.ringing else { return }
+        actions.snoozeRing(ring.id, StatusItem.snoozeMinutes(for: ring, settings: state.snapshot.settings.automationSettings))
+    }
+    @objc private func doDoneRing() {
+        guard let ring = state.ringing else { return }
+        actions.doneRing(ring.id)
+    }
+    @objc private func doOpenAutomations() { actions.openAutomations() }
+
+    // MARK: - automations rows
+
+    /// The ring's own snooze press, else Settings' minutes (timers five) — the island's rule.
+    static func snoozeMinutes(for ring: RingLine, settings: AutomationSettings) -> Int {
+        ring.presses.first { $0.kind == "snooze" }?.minutes ?? (ring.kind == "timer" ? 5 : settings.snoozeMinutes)
+    }
+
+    /// "Next · 07:10 Wake up, Kevin".
+    static func nextLabel(_ next: NextFire) -> String {
+        guard next.at.isFinite else { return "Next · \(next.name)" }
+        return "Next · \(RingWords.clock(Date(timeIntervalSince1970: next.at / 1000))) \(next.name)"
+    }
 
     // MARK: - crash row
 

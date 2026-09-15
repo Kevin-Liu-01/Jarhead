@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -21,6 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menus: Menus!
     private var hotkeys: Hotkeys!
     private var permissions: PermissionsCenter!
+    /// The automations' app half (design11): the signals the daemon cannot see, and the banner with Snooze · Done.
+    private var signals: SignalObserver!
+    private var notifications: Notifications!
+    /// `Settings.automations.openAtLogin` as last seen from a real snapshot: the SMAppService call is made on a flip, never on arrival.
+    private var openAtLoginSeen: Bool?
     private var cancellables = Set<AnyCancellable>()
 
     private var micGrant: Grant = .unknown
@@ -134,10 +140,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // the daemon's own flush arrives — speech dies at the press.
                 self.audio.flush()
                 self.client.send(cmd)
+            case .automationSnooze(let id, let minutes):
+                // A ring's press, from the island, the banner, the menu or ⌥⇧S: what a crash report should know.
+                CrashGuard.remember("automation → snooze \(id) \(minutes) min")
+                self.client.send(cmd)
+            case .automationDone(let id):
+                CrashGuard.remember("automation → done \(id)")
+                self.client.send(cmd)
             default:
                 self.client.send(cmd)
             }
         }
+        // The signals the app observes for the daemon's watchers ride the socket as `system.signal` — data, never a command.
+        state.signalHandler = { [weak self] signal in self?.client.sendSignal(signal) }
+        // A fire while asleep: the earcon and the fixed line through the gate's speaker (never while a session is
+        // open — the awake path speaks through Live), and the banner with Snooze · Done.
+        client.onLocalSay = { [weak self] msg in
+            guard let self, !self.state.inSession else { return }
+            self.state.localSpeaker.earcon(msg.sound ?? "Pop")
+            if let text = msg.text, !text.isEmpty { self.state.localSpeaker.speak(String(text.prefix(160))) }
+        }
+        client.onNotify = { [weak self] msg in self?.notifications.post(msg) }
         state.ledgerDaysHandler = { [weak self] in await self?.client.ledgerDays() ?? [] }
         state.ledgerReadHandler = { [weak self] day in await self?.client.ledgerRows(day: day) ?? [] }
         // The rail's search: full text over the live ledger through the daemon (titles only without it).
@@ -208,6 +231,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.register()
         orb.show()
         overlay.start()
+
+        // The automations' banner: the category with Snooze N · Done, the delegate; a press lands on the same row as
+        // the island's presses. Bundle-only — a `swift build` binary skips it.
+        notifications = Notifications()
+        notifications.install(snoozeMinutes: state.snapshot.settings.automationSettings.snoozeMinutes)
+        notifications.onSnooze = { [weak self] id, minutes in self?.state.send(.automationSnooze(id: id, minutes: minutes)) }
+        notifications.onDone = { [weak self] id in self?.state.send(.automationDone(id: id)) }
+        notifications.onOpen = { [weak self] _, _ in self?.state.openConsole() }
+        notifications.onTap = { [weak self] _ in self?.state.openConsole() }
+        state.$snapshot
+            .map { (s: Snapshot) -> Int in s.settings.automationSettings.snoozeMinutes }
+            .removeDuplicates()
+            .sink { [weak self] (minutes: Int) in MainActor.assumeIsolated { self?.notifications.setSnoozeMinutes(minutes) } }
+            .store(in: &cancellables)
+        // The signals: app launch / quit, sleep / wake, lock / unlock, displays, the clock.
+        signals = SignalObserver(state: state)
+        signals.start()
+        // `Open at login`: the app registers itself with SMAppService on Kevin's flip in Settings › Automations
+        // (D writes the setting; this acts on the change). Never on arrival: Kevin may have removed the login
+        // item in System Settings, and a launch must not put it back.
+        state.$snapshot
+            .filter { $0 != .empty }
+            .compactMap { (s: Snapshot) -> Bool? in s.settings.automations?.openAtLogin }
+            .removeDuplicates()
+            .sink { [weak self] (on: Bool) in MainActor.assumeIsolated { self?.openAtLoginChanged(on) } }
+            .store(in: &cancellables)
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.overlay.screensChanged() }
@@ -345,7 +394,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(dir)
         }
         a.quit = { NSApp.terminate(nil) }
+        // The automations (design11): the status menu's ring rows and Automations… — the row's commands, the Console.
+        a.snoozeRing = { [weak self] id, minutes in self?.state.send(.automationSnooze(id: id, minutes: minutes)) }
+        a.doneRing = { [weak self] id in self?.state.send(.automationDone(id: id)) }
+        a.openAutomations = { [weak self] in
+            self?.console.show()
+            NSApp.activate(ignoringOtherApps: true)
+        }
         return a
+    }
+
+    /// ⌥⇧S, the menu row, the banner: the ring's own snooze press, else Settings' minutes (timers five).
+    private func snoozeRinging() {
+        guard let ring = state.ringing else { return }
+        let minutes = StatusItem.snoozeMinutes(for: ring, settings: state.snapshot.settings.automationSettings)
+        state.send(.automationSnooze(id: ring.id, minutes: minutes))
+    }
+
+    /// `Settings.automations.openAtLogin` flipped: register or unregister this app as a login item. The first
+    /// value seen is remembered, not acted on.
+    private func openAtLoginChanged(_ on: Bool) {
+        defer { openAtLoginSeen = on }
+        guard let seen = openAtLoginSeen, seen != on else { return }
+        guard PermissionsKit.runsAsBundle else {
+            appLog("open at login: not a bundle, SMAppService skipped")
+            return
+        }
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            CrashGuard.remember("open at login → \(on ? "registered" : "unregistered")")
+            appLog("open at login: \(on ? "registered" : "unregistered") (status \(SMAppService.mainApp.status.rawValue))")
+        } catch {
+            appLog("open at login: SMAppService failed — \(error.localizedDescription)")
+            state.toast("Open at login could not be set: \(error.localizedDescription)", tone: .warn)
+        }
     }
 
     private func handle(hotkey: Hotkeys.Action) {
@@ -366,6 +448,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .transportToggle:
             // ⌥⇧Space: go when asleep or paused, pause in session.
             state.transportToggle()
+        case .snooze:
+            // ⌥⇧S: snooze the ring; nothing rings, nothing happens — never a Go.
+            snoozeRinging()
         }
     }
 
@@ -433,6 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the transport's stop interrupts whatever runs, closes the session and sleeps.
         if state.connected { client.send(.stop) }
         hotkeys?.unregister()
+        signals?.stop()
         overlay?.stop()
         ear?.setVoiceAudioActive(false)
         audio?.stop()

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { EngineCommand, LocalModel, LocalServerStatus, Snapshot } from "@jarhead/protocol";
+import { DEFAULT_SETTINGS, type EngineCommand, type LocalModel, type LocalServerStatus, type Snapshot } from "@jarhead/protocol";
 import { BRAIN_WAIT_MS, DAEMON_PREDATES_LOCAL, NO_DAEMON_FOR_BRAIN, brainLines, brainPatch, landedAfter, localStatusLine, modelsLines, parseBrainArgs, runBrain, runModels, type BrainDaemon } from "../local-cli.ts";
 
 /**
@@ -107,7 +107,7 @@ test("localStatusLine: flavor · version · N models (M fit), then `brain <the s
 /** A snapshot with just what `jarhead brain` reads. `noLocal` leaves out `setup.local`, as a daemon from before the field answers. */
 function snapshotOf(over: { brain?: Snapshot["settings"]["brain"]; brainModel?: string; brainBaseUrl?: string; resolved?: Snapshot["setup"]["brainResolved"]; ready?: boolean; setupBrain?: Snapshot["setup"]["brain"]; brainDetail?: string; local?: LocalServerStatus; noLocal?: boolean; dataPaths?: Snapshot["setup"]["dataPaths"] } = {}): Pick<Snapshot, "settings" | "setup" | "brainReady" | "memory"> {
   return {
-    settings: { voice: "ballad", brain: over.brain ?? "local", brainModel: over.brainModel ?? "", ...(over.brainBaseUrl ? { brainBaseUrl: over.brainBaseUrl } : {}), effort: "medium", onboarded: true, idleSleepMinutes: 10, autoWake: true, wake: { enabled: true, phrases: ["jarhead"], auth: "touch-id" }, reflexes: true, orbHome: "notch", ledgerRetentionDays: 0, shotsRetentionDays: 14, threads: true, language: "en", accent: "british", memory: true, observe: true, typedWakes: false, threadOverflow: "supersede", warmThreads: 2 },
+    settings: { voice: "ballad", brain: over.brain ?? "local", brainModel: over.brainModel ?? "", ...(over.brainBaseUrl ? { brainBaseUrl: over.brainBaseUrl } : {}), effort: "medium", onboarded: true, idleSleepMinutes: 10, autoWake: true, wake: { enabled: true, phrases: ["jarhead"], auth: "touch-id" }, reflexes: true, orbHome: "notch", ledgerRetentionDays: 0, shotsRetentionDays: 14, threads: true, language: "en", accent: "british", memory: true, observe: true, typedWakes: false, threadOverflow: "supersede", warmThreads: 2, automations: DEFAULT_SETTINGS.automations },
     setup: {
       openaiKey: "ok",
       brain: over.setupBrain ?? "ok",

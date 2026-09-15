@@ -5,7 +5,9 @@ import Combine
 /// `UI/` talks to a socket. Everything is main-actor so SwiftUI can observe it.
 @MainActor
 public final class AppState: ObservableObject {
-    @Published public var snapshot: Snapshot = .empty
+    @Published public var snapshot: Snapshot = .empty {
+        didSet { syncAutomations(from: snapshot) }
+    }
     @Published public var levels: AudioLevels = .silent
     @Published public var connected: Bool = false
     @Published public var daemonDetail: String = "starting"
@@ -365,6 +367,22 @@ public final class AppState: ObservableObject {
         return AgentTranscript.TranscriptCursor(startOffset: min(a.startOffset, b.startOffset), endOffset: max(a.endOffset, b.endOffset))
     }
 
+    // MARK: automations (design11: set while awake, carried out by the daemon while asleep)
+
+    /// The rows as the daemon holds them — the live ones, then the Trash's newest (`state == "trashed"`; the Trash fold
+    /// reads those, every rail filters by state): `snapshot.automations` replaces the list, `automation.event` deltas patch one.
+    @Published public var automations: [Automation] = []
+    /// The newest `fired` row with a line, while one is up — the island's ring and the Console's ring row.
+    @Published public var ringing: RingLine?
+    /// The foot's "next Timer 12:00 · pasta".
+    @Published public var nextFire: NextFire?
+    /// A running timer's remaining ms by row id (`tick` events, ≤ 1/s while a client views it).
+    @Published public var timerRemaining: [String: Double] = [:]
+    /// The newest event seq applied per row (a replay is dropped). On the main actor.
+    var automationLastSeq: [String: Int] = [:]
+    /// Installed by the daemon client: forwards a `system.signal` frame. UI and observers only ever call `systemSignal`.
+    public var signalHandler: (SystemSignal) -> Void = { _ in }
+
     /// Installed by the daemon client. UI code only ever calls `send`.
     public var sendHandler: (EngineCommand) -> Void = { _ in }
     public var ledgerDaysHandler: () async -> [String] = { [] }
@@ -377,6 +395,8 @@ public final class AppState: ObservableObject {
     public init() {}
 
     public func send(_ command: EngineCommand) { sendHandler(command) }
+    /// A signal the app observed on Kevin's behalf (an app quit, the Mac woke): data for the daemon's watchers, never a command.
+    public func systemSignal(_ signal: SystemSignal) { signalHandler(signal) }
     public func ledgerDays() async -> [String] { await ledgerDaysHandler() }
     public func ledgerRows(day: String) async -> [LedgerRow] { await ledgerReadHandler(day) }
     public func openConsole() { openConsoleHandler() }
@@ -760,6 +780,81 @@ extension ThreadStatus {
         case .failed: return "failed"
         case .stopped: return "stopped"
         }
+    }
+}
+
+// MARK: - Automations
+
+extension AppState {
+    /// A snapshot's `automations` / `ringing` / `nextFire` replace what deltas built; a daemon before the field leaves them alone.
+    func syncAutomations(from s: Snapshot) {
+        if let rows = s.automations {
+            automations = rows
+            let live = Set(rows.map { $0.id })
+            timerRemaining = timerRemaining.filter { live.contains($0.key) }
+            automationLastSeq = automationLastSeq.filter { live.contains($0.key) }
+            ringing = s.ringing
+            nextFire = s.nextFire
+        }
+    }
+
+    /// One `automation.event` (the wire's ≤ 200 B delta): `set` brings the whole row, the rest patch the one we hold.
+    /// A delta for a row we do not know (other than `set`) is dropped — the next snapshot brings it whole.
+    /// Out-of-order events (a seq at or below the last applied for that row) are dropped: the socket is ordered,
+    /// so this only ever catches a replay.
+    public func applyAutomationEvent(_ e: AutomationEvent) {
+        if let last = automationLastSeq[e.id], e.seq <= last { return }
+        automationLastSeq[e.id] = e.seq
+        switch e.kind {
+        case "set":
+            guard let row = e.automation else { return }
+            upsertAutomation(row)
+        case "state":
+            guard var row = automationAt(e.id) else { return }
+            if let state = e.state { row.state = state }
+            row.nextAt = e.nextAt
+            if let detail = e.detail { row.lastDetail = detail }
+            row.updatedAt = max(row.updatedAt, e.at)
+            upsertAutomation(row)
+            if ringing?.id == e.id, row.state != "fired" { ringing = nil }
+            if row.state != "armed" { timerRemaining[e.id] = nil }
+        case "fired":
+            guard var row = automationAt(e.id) else { return }
+            row.state = "fired"
+            row.lastFiredAt = e.at
+            row.fires += 1
+            if let detail = e.detail { row.lastDetail = detail }
+            row.updatedAt = max(row.updatedAt, e.at)
+            upsertAutomation(row)
+            timerRemaining[e.id] = nil
+            let line = e.line ?? ""
+            if !line.isEmpty {
+                let others = automations.filter { $0.state == "fired" && $0.id != e.id }.count
+                ringing = RingLine(id: row.id, kind: row.kind.rawValue, name: row.name, line: line, calm: nil, at: e.at, lateMs: e.lateMs, presses: e.presses ?? [], more: others)
+            }
+        case "missed":
+            guard var row = automationAt(e.id) else { return }
+            row.missed += 1
+            if let why = e.why { row.lastDetail = e.skipped == true ? "skipped · \(why)" : "missed · \(why)" }
+            row.updatedAt = max(row.updatedAt, e.at)
+            upsertAutomation(row)
+        case "tick":
+            if let remaining = e.remainingMs { timerRemaining[e.id] = remaining }
+        default:
+            break
+        }
+    }
+
+    func automationAt(_ id: String) -> Automation? { automations.first { $0.id == id } }
+
+    /// Replace the row by id or append it. A row moved to the Trash stays, as `trashed`, for the Trash fold (the next
+    /// snapshot keeps the newest eight); its timer and its ring end here.
+    func upsertAutomation(_ row: Automation) {
+        if row.state == "trashed" {
+            timerRemaining[row.id] = nil
+            if ringing?.id == row.id { ringing = nil }
+        }
+        if let i = automations.firstIndex(where: { $0.id == row.id }) { automations[i] = row } else { automations.append(row) }
     }
 }
 

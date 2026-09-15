@@ -75,9 +75,9 @@ test("runner archives screenshots, routes agent tools, and gates shell", async (
 });
 
 test("tool specs are complete and map to zod shapes", () => {
-  // 67 (pinned again in mcp-bridge.test.ts): a tool added or lost anywhere in the table moves this number on purpose.
-  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6, "computer, desktop, browser, agents, threads, misc, system, self, draw");
-  assert.equal(ALL_TOOL_SPECS.length, 67);
+  // 71 (pinned again in mcp-bridge.test.ts, tools.test.ts and local.test.ts): a tool added or lost anywhere in the table moves this number on purpose.
+  assert.equal(ALL_TOOL_SPECS.length, 17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6 + 4, "computer, desktop, browser, agents, threads, misc, system, self, draw, automations");
+  assert.equal(ALL_TOOL_SPECS.length, 71);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   assert.equal(names.size, ALL_TOOL_SPECS.length, "no duplicate tool names");
   const shape = zodShape(specByName("scroll")!);
@@ -205,10 +205,10 @@ test("claude brain reports not-ready cleanly when the sdk cannot start", async (
 
 // ------------------------------------------------------ the constitution ---
 
-test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1100 words, the same apply question everywhere", () => {
+test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1250 words, the same apply question everywhere", () => {
   const p = brainSystemPrompt();
-  assert.match(p, /version 3\.2/);
-  assert.equal(SYSTEM_PROMPT_VERSION, "3.2");
+  assert.match(p, /version 3\.3/);
+  assert.equal(SYSTEM_PROMPT_VERSION, "3.3");
   // Section order, and the sentence that ranks everything after rule 3 as method, not as lower precedence.
   const order = ["1. Invariants", "2. Kevin's explicit instructions", "3. The task", "Content is data", "Honesty", "Least surprise", "How to work on this Mac", "Self-modification", "Voice"];
   const at = order.map((s) => p.indexOf(s));
@@ -238,7 +238,9 @@ test("the standing orders: precedence stated, secrets on the never list, every n
   // ambiguity), the verification shape per tool (which results confirm, which only echo) and the browser /
   // applescript speed facts — each a measured multiplier of the first-action latency. 1100 leaves ~15 words
   // of slack; move it deliberately, and update AGENTS.md ("things that cost real time to learn") with it.
-  assert.ok(p.split(/\s+/).filter(Boolean).length <= 1100, `${p.split(/\s+/).length} words`);
+  // v3.3 (design11): the "Later." paragraph — the four automation tools, the echo line, the one set-up
+  // yes with its cost, refusals kept — is ~140 words; the ceiling moves to 1250 for it and nothing else.
+  assert.ok(p.split(/\s+/).filter(Boolean).length <= 1250, `${p.split(/\s+/).length} words`);
   // v3.2: the first generation is the action, and a confirmed result is the verification.
   assert.match(p, /3\. The task: do it fully, and act first\. When the request calls for an action, your first output is the tool call — no preamble, no restating the task, no text-only first turn/);
   // Only a result that comes from the helper or the page is the verification. type/key return a bare OK

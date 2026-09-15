@@ -10,6 +10,7 @@ import Carbon
 ///   ⌥⇧Space  go / pause (AppState.transportToggle: wake or resume · pause)
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
 ///   ⌥⇧⏎      type to Jarhead (the notch's field while the blob is parked there, else the Console)
+///   ⌥⇧S      snooze the ringing automation (nothing while none rings)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
@@ -20,6 +21,7 @@ final class Hotkeys {
         case markScreen = 5
         /// 6 is retired and never reused (ids are stable across builds).
         case sayLine = 7
+        case snooze = 8
 
         var keyCode: UInt32 {
             switch self {
@@ -29,12 +31,13 @@ final class Hotkeys {
             case .transportToggle: return UInt32(kVK_Space)
             case .markScreen: return UInt32(kVK_ANSI_C)
             case .sayLine: return UInt32(kVK_Return)
+            case .snooze: return UInt32(kVK_ANSI_S)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine, .snooze: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -48,6 +51,7 @@ final class Hotkeys {
             case .transportToggle: return (" ", [.option, .shift])
             case .markScreen: return ("c", [.option, .shift])
             case .sayLine: return ("\r", [.option, .shift])
+            case .snooze: return ("s", [.option, .shift])
             }
         }
     }

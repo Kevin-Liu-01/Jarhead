@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
+  },
   "dependencies": {
     "@jarhead/agents": "workspace:*",
     "@jarhead/brain": "workspace:*",

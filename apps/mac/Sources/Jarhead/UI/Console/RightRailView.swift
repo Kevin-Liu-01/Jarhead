@@ -36,7 +36,9 @@ enum SettingsWords {
     static let memoryFold = "settings.memory"
     static let retentionFold = "settings.retention"
     static let wakeFold = "settings.wake"
-    static let folds = [audioFold, brainFold, leavesFold, sessionFold, memoryFold, retentionFold, wakeFold]
+    /// Automations (design11): the eighth head, after Session.
+    static let automationsFold = "settings.automations"
+    static let folds = [audioFold, brainFold, leavesFold, sessionFold, automationsFold, memoryFold, retentionFold, wakeFold]
     // row keys
     static let voiceKeyLabel = "Voice"
     static let language = "Language"
@@ -343,6 +345,8 @@ struct RightRail: View, Equatable {
                 .frame(height: 40)
             ConsoleHairline()
             CrashNoticeRow()
+            // A ringing automation's line (AppState.ringing): the same slot, on every tab, until Done.
+            AutomationRingRow()
             ScrollView(.vertical) {
                 // The three panels switch behind the curtain (Motion.curtain) as the tab's thumb
                 // glides: the panel swaps at once and the ground-coloured cells over it go rank
@@ -601,6 +605,9 @@ struct NowPanel: View {
 
             RailSection(NowWords.audio) { AudioMeters() }
             circled
+            // What Kevin set to fire while asleep (AppState.automations): between Circled and Threads,
+            // both "what Jarhead is holding for you".
+            AutomationsSection()
             if !threads.isEmpty { threadsSection.transition(Motion.appear) }
             // What the last delegation was given from Jarhead's memory of Kevin — the rows, not
             // the counts — so a misheard "fact" steering the voice is seen the turn it happens.
@@ -1447,6 +1454,7 @@ struct SettingsPanel: View {
             brain
             LeavesSection(paths: setup.dataPaths)
             sessionSection
+            AutomationsFold(settings: settings)
             memorySection
             retention
             wakeSection

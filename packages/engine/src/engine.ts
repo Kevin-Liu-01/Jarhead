@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
-import { totalmem } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { HANDS_OFF_APPS, classifyAction, dataPaths, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
+import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, classifyAction, dataPaths, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
-import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type WindowInfo } from "@jarhead/hands";
+import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
 import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
@@ -12,6 +12,7 @@ import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
+import { Automations, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
 import {
   BRAIN_KINDS,
   DEFAULT_SETTINGS,
@@ -52,6 +53,7 @@ import {
   type SetupStatus,
   type SleepCause,
   type Snapshot,
+  type SystemSignal,
   type Thread,
   type ThreadEntry,
   type TranscriptItem,
@@ -131,6 +133,13 @@ export interface EngineOptions {
   readonly memory?: MemoryBridgeSeams;
   /** Test seam: answers the local model server discovery instead of the three loopback ports. */
   readonly discoverLocal?: (o: { baseUrl?: string | undefined; ramBytes: number }) => Promise<LocalServerStatus>;
+  /**
+   * The automations' own seams (design11): the processes a fire starts (`open`, the
+   * `caffeinate` hold — fixed argv, recorded by the tests' fake), the shell a recipe runs
+   * through, the shell gate re-run on a recipe at fire (a test scripts `confirm`), and the
+   * event coalescer's window.
+   */
+  readonly automations?: { readonly exec?: AutomationExec | undefined; readonly shell?: ShellRunner | undefined; readonly shellGate?: ShellGate | undefined; readonly coalesceMs?: number | undefined; readonly home?: string | undefined } | undefined;
 }
 
 /** Where a page's messages sit in the session file (`TranscriptPage.cursor`); "Load earlier" reads backward from `startOffset`. */
@@ -227,6 +236,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the snapshot: one `thread.event` per change, their conversations over `thread.transcript` to viewers.
    */
   readonly threads: ThreadScheduler;
+  /**
+   * Automations (design11): set while awake, carried out by the daemon while asleep from
+   * `tick()` and the app's signals — never through `wake()` / `connect()`. Also the
+   * `AutomationSource` the brain's four tools call (`automation_set` / `_list` / `_change`, `recipe_list`).
+   */
+  readonly automations: Automations;
   /** The main toolset's hands: reads on the reading helper, acts on the acting one — a look never queues behind a `type`. */
   readonly splitHands: SplitHands;
   /** What the screen is like right now, from the reading helper: the observer's `now:` line reads it, the composite look reads it, the AX tick feeds it. */
@@ -457,10 +472,64 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.agentsList = list;
       // An open conversation whose process is gone: its running calls read `interrupted`, once.
       this.settleEndedConversations(list);
+      // `agent.status` watchers read the same listing (zero new polling).
+      this.automations.agents(list);
       this.scheduleSnapshot();
+    });
+    // Automations (design11) beside the scheduler: the acting helper for `open_app` / `press`, the reading helper for the
+    // app fallback poll, the runner's redactor on every line, the thread pool for one headless `wake-brain` turn — and
+    // never `wake()`, `connect()` or `kevinSpoke()`: a fire is a thing the daemon does with the agent asleep.
+    this.automations = new Automations({
+      stateDir: this.config.stateDir,
+      now: this.now,
+      ledger: this.ledger,
+      settings: () => this.settings,
+      updateSettings: (patch) => this.updateSettings(patch),
+      hands: this.pool.focus,
+      reader: this.pool.background,
+      redact: (s) => this.runner.redactor.redact(s),
+      emit: (e) => this.emit("event", e),
+      problem: (kind, text, remedy) => this.problemOf(kind, text, remedy),
+      clearProblems: (kind, where) => this.clearProblems(kind, where),
+      // Awake: a fire is delivered through the open session (one instruction), not the speaker.
+      live: () => (this.live && !this.connecting && this.live.currentState === "started" ? this.live : undefined),
+      brain: {
+        warmUp: async () => {
+          await this.brain?.warmUp?.();
+        },
+        // One spare from the thread pool on the background lane: `pool.warm()` opens it (closed asleep), `take()` hands the lane over.
+        lane: async () => {
+          this.threads.pool.warm();
+          const lane = this.threads.pool.take();
+          if (!lane) return undefined;
+          lane.started ??= lane.brain.start();
+          const ready = await lane.started.catch((e: unknown) => ({ ready: false, detail: (e as Error).message }));
+          if (!ready.ready) {
+            await this.threads.pool.release(lane);
+            return undefined;
+          }
+          lane.runner.setLane("background");
+          return { brain: lane.brain, runner: lane.runner, release: () => this.threads.pool.release(lane) };
+        },
+        // Asleep again: the pool closes so nothing boots behind Jarhead's back (awake, the wake path owns it).
+        after: async () => {
+          if (this.quiet) await this.threads.pool.stopAll();
+        },
+      },
+      present: () => this.kevinPresent(),
+      localBrain: () => this.settings.brain === "local",
+      onChange: () => this.scheduleSnapshot(),
+      exec: opts.automations?.exec,
+      shell: opts.automations?.shell,
+      shellGate: opts.automations?.shellGate,
+      coalesceMs: opts.automations?.coalesceMs,
+      home: opts.automations?.home ?? process.env["HOME"] ?? homedir(),
+      repoRoot: REPO_ROOT,
     });
     const runnerBase: Omit<RunnerOptions, "toolset"> = {
       agents: this.agents,
+      // The automations table behind the brain's four tools, on the main runner and every lane runner alike.
+      automations: this.automations,
       stateDir: this.config.stateDir,
       ledger: this.ledger,
       overlay: (cmd) => this.emit("overlay", cmd),
@@ -735,6 +804,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     // What the previous process left behind: a pause to hold again, a session it was cut
     // from, a crash report to point at, a disk with no room for shots (the K3 region below).
     this.restoreFromLedger();
+    // The schedule: the journal rebuilt, a `firing` row failed "the daemon restarted", whatever was due while down resolved (late fire or missed + Run now).
+    this.automations.load(this.now());
     this.noteCrashReports();
     this.checkDisk();
     // Retention (K1): days past the windows move to the Trash — listed in the log first; 0 = never.
@@ -4141,6 +4212,20 @@ export class Engine extends EventEmitter<EngineEvents> {
         return this.hideAgent(String(cmd.agentId), cmd.hidden === true);
       case "problem.retry":
         return this.retryProblem(cmd.kind);
+      // ---- automations (design11): the Console's rail, the island's Snooze · Done, a banner's buttons, the CLI. Never a deletion.
+      case "automation.set":
+      case "automation.snooze":
+      case "automation.done":
+      case "automation.skip":
+      case "automation.pause":
+      case "automation.resume":
+      case "automation.rename":
+      case "automation.trash":
+      case "automation.restore":
+      case "automation.run":
+      case "recipe.set":
+      case "recipe.trash":
+        return this.automations.command(cmd, (text, tone) => this.toast(text, tone ?? "info"));
       case "open-console":
       case "open-ledger":
         return; // the shell handles window commands
@@ -4160,8 +4245,40 @@ export class Engine extends EventEmitter<EngineEvents> {
     for (const t of this.closeTimers) clearTimeout(t);
     this.closeTimers.clear();
     this.lease.cancelAll("shutdown");
+    this.automations.dispose();
     await this.brain?.stop();
     this.pool.stop();
+  }
+
+  /**
+   * A signal the app observed on Kevin's behalf (`system.signal` on the wire): an app
+   * quit or launched, the Mac slept or woke, the screen locked or unlocked, a display
+   * came or went, the clock changed. Data for the watchers and the resync — never a
+   * command, never a wake.
+   */
+  systemSignal(signal: SystemSignal, at: number): void {
+    if (typeof signal !== "object" || signal === null || typeof (signal as { readonly kind?: unknown }).kind !== "string") return;
+    this.automations.signal(signal, Number.isFinite(at) ? at : this.now());
+  }
+
+  /** How many clients look at the island / Console right now (the app's `hello { audio: true }`): running timers tick only while > 0. */
+  setViewers(n: number): void {
+    this.automations.setViewers(n);
+  }
+
+  /**
+   * Kevin is here, for `automation.run`: a session is open (he hears it), he spoke within
+   * the presence window, or his hands moved on the machine (the reading helper's `user_idle`).
+   */
+  private async kevinPresent(): Promise<boolean> {
+    if (this.live && !this.connecting) return true;
+    if (this.now() - this.lastKevinAt < PRESENCE_WINDOW_MS) return true;
+    try {
+      const idle = await this.pool.background.request<UserIdle>("user_idle", {}, 800);
+      return idle.foreignMs < PRESENCE_WINDOW_MS;
+    } catch {
+      return false;
+    }
   }
 
   // ----------------------------------------------------------------- state
@@ -4204,6 +4321,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     const busy = this.delegator?.active !== undefined || this.threads.running() > 0;
     // The table's clock: acting→thinking after 4 s without a step, the spares topped up, the idle threads ended.
     this.threads.tick(now);
+    // The schedule's clock: a tick gap means the Mac slept (resync), due rows fire, rings linger, the watchers poll.
+    this.automations.tick(now);
     // Five seconds before the idle sleep, one clause ("going to sleep") — and the sleep then
     // falls due on a fixed deadline, so the announcement (Jarhead's own speech moves
     // lastAddressedAt) cannot postpone it; only Kevin's input does (kevinSpoke).
@@ -5045,6 +5164,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       memory: this.memory.summary(),
       // Every live thread (main first) and those finished within THREAD_LINGER_MS, ≤ THREADS_MAX summaries.
       threads: this.threads.threads(),
+      // Automations (design11): the non-trashed rows, the ring the island shows, the foot's next fire.
+      ...this.automations.snapshot(),
     };
   }
 

@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, type AgentInfo, type AgentStatus, type BrainKind, type DataPath, type LocalServerStatus, type MemorySummary, type PermissionInfo, type Permissions, type Problem, type SetupStatus, type WakeSettings } from "@jarhead/protocol";
-import { REPO_ROOT, dataPaths, keySource, readConfig, secretsPresent } from "@jarhead/core";
+import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type Automation, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
+import { Ledger, REPO_ROOT, clockOf, dataPaths, expandPath, keySource, readConfig, secretsPresent } from "@jarhead/core";
+import { inWords, recipeVerdict } from "./automations-cli.ts";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
 import { defaultConnectors } from "@jarhead/agents";
 import { EMBED_PREFERENCE, LOCAL_NUM_CTX_MAX, LOCAL_NUM_CTX_MIN, browserJsDoctor, discoverLocalServer, probeCodex, resolveLocalModel, selfEditDoctorRow, serverLabel, suggestedPull } from "@jarhead/brain";
@@ -57,9 +58,14 @@ interface DaemonRead {
   readonly ms: number;
   /** `snapshot.memory` — the durable memory's counts and last run. */
   readonly memory: MemorySummary | undefined;
+  /** `snapshot.automations` and the two pointers; undefined from a daemon before the field. */
+  readonly automations: readonly Automation[] | undefined;
+  readonly nextFire: Snapshot["nextFire"] | undefined;
+  /** `snapshot.settings.automations` — the daemon's view of the block (settings.json is the doctor's fallback). */
+  readonly automationSettings: AutomationSettings | undefined;
 }
 
-/** A running daemon's first snapshot (`permissions.all`, the problems, the memory summary); undefined when none answers within 1.5 s. */
+/** A running daemon's first snapshot (`permissions.all`, the problems, the memory summary, the automations); undefined when none answers within 1.5 s. */
 async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
   if (!existsSync(socketPath)) return undefined;
   const client = new DaemonClient(socketPath);
@@ -68,8 +74,8 @@ async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
     const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
-        const snap = m.snapshot as { permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary };
-        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory });
+        const snap = m.snapshot as { permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary; automations?: readonly Automation[]; nextFire?: Snapshot["nextFire"]; settings?: { automations?: AutomationSettings } };
+        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory, automations: snap.automations, nextFire: snap.nextFire, automationSettings: snap.settings?.automations });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -539,6 +545,239 @@ export function privacyChecks(paths: readonly DataPath[]): Check[] {
   return paths.map((p) => ({ group: "privacy", name: p.what, status: "ok" as const, detail: `${p.where} · ${p.detail}`, required: false }));
 }
 
+// ---- automations: what the daemon carries out while asleep, and what stands in its way
+
+/** The schedule's journal as the doctor read it: present with its counts, absent, or unreadable. */
+export type JournalRead =
+  | { readonly path: string; readonly rows: number; readonly live: number }
+  | { readonly path: string; readonly missing: true }
+  | { readonly path: string; readonly error: string };
+
+/** What the `automations` rows need from the world, so they run in a test without a daemon, a journal or a Mac. */
+export interface AutomationCheckInput {
+  /** `Settings.automations` — the daemon's when one answers, else settings.json over the defaults. */
+  readonly settings: AutomationSettings;
+  /** The running daemon's non-trashed rows; undefined = no daemon answering (or one from before the field). */
+  readonly rows: readonly Automation[] | undefined;
+  readonly nextFire: Snapshot["nextFire"] | undefined;
+  readonly journal: JournalRead;
+  /** The Notifications grant as the app read it; undefined = no daemon answering. */
+  readonly notifications: Grant | undefined;
+  /** The three folder grants as the app read them (absent = not read). */
+  readonly folderGrants: Partial<Record<"filesDesktop" | "filesDocuments" | "filesDownloads", Grant>>;
+  /** `automation.missed` rows over the last seven day files, and why. */
+  readonly missed: { readonly count: number; readonly why: readonly MissedWhy[] };
+  /** Today's `automation.fired { brainSeconds }` summed. */
+  readonly brainSecondsToday: number;
+  /** Whether entitlements.plist carries the time-sensitive key. */
+  readonly timeSensitive: boolean;
+  /** `pmset -g sched` as READ (a read needs no root); undefined = not read. Nothing here ever runs a `pmset` that changes anything. */
+  readonly pmsetSched: string | undefined;
+  readonly now: number;
+  readonly home: string;
+}
+
+/** Why a fire was missed, in words. */
+const MISSED_WORDS: Readonly<Record<MissedWhy, string>> = { "mac-slept": "the Mac slept", "daemon-down": "Jarhead was off", "quiet-hours": "quiet hours", budget: "brain minutes were spent" };
+
+/** pmset's weekday letters: M T W R F S U. */
+const PMSET_DAY: Readonly<Record<Weekday, string>> = { mon: "M", tue: "T", wed: "W", thu: "R", fri: "F", sat: "S", sun: "U" };
+const WEEKDAY_ORDER: readonly Weekday[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/** How long before the alarm the Mac should be awake. */
+const PMSET_LEAD_MS = 5 * 60_000;
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+/** The alarm grace in minutes, for the wake row's words. */
+const AUTOMATION_GRACE_ALARM_MIN = AUTOMATION_GRACE_MS.alarm / 60_000;
+/** States a watcher is not watching in: the terminal set plus paused. */
+const NOT_WATCHING = new Set<Automation["state"]>(["done", "trashed", "paused"]);
+
+/**
+ * The `pmset` line that would wake a closed lid for an alarm — printed as a `copy`, never run
+ * (root; `pmset` is confirm-tier for the brain and never a surface's to execute). A weekly
+ * alarm is `repeat wakeorpoweron <days> HH:mm:ss`; a one-shot is `schedule wake "MM/dd/yy HH:mm:ss"`.
+ * Both five minutes early. Exported so the test pins the exact text.
+ */
+export function pmsetCopy(a: Pick<Automation, "when" | "nextAt">): string | undefined {
+  if (a.when.kind === "every" && a.when.every.kind === "weekly") {
+    const r = a.when.every;
+    const days = WEEKDAY_ORDER.filter((d) => r.days.includes(d)).map((d) => PMSET_DAY[d]).join("");
+    const [hh, mm] = r.at.split(":").map(Number);
+    const total = ((hh ?? 0) * 60 + (mm ?? 0) - 5 + 1440) % 1440;
+    return `sudo pmset repeat wakeorpoweron ${days} ${pad2(Math.floor(total / 60))}:${pad2(total % 60)}:00`;
+  }
+  if (a.nextAt === undefined) return undefined;
+  const d = new Date(a.nextAt - PMSET_LEAD_MS);
+  return `sudo pmset schedule wake "${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}/${String(d.getFullYear()).slice(2)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:00"`;
+}
+
+/** Whether a folder path sits under one of the three TCC-guarded folders. */
+function guardedFolder(path: string, home: string): "filesDesktop" | "filesDocuments" | "filesDownloads" | undefined {
+  const p = expandPath(path, home);
+  for (const [folder, kind] of [["Desktop", "filesDesktop"], ["Documents", "filesDocuments"], ["Downloads", "filesDownloads"]] as const) {
+    const root = join(home, folder);
+    if (p === root || p.startsWith(`${root}/`)) return kind;
+  }
+  return undefined;
+}
+
+/**
+ * The `automations` group — advisory throughout (`required: false`; a Mac with nothing set is
+ * not broken). Every row is a function of one input; every fix is a press or a command Kevin
+ * makes himself. The `wake for HH:MM` row carries the `pmset` line as text to copy — the doctor
+ * READS `pmset -g sched` to see whether one is already scheduled and never runs one that
+ * changes anything. The standing line: nothing fires while Jarhead is quit.
+ */
+export function automationChecks(input: AutomationCheckInput): Check[] {
+  const out: Check[] = [];
+  const g = "automations";
+  const add = (c: Omit<Check, "group" | "required">): void => void out.push({ group: g, required: false, ...c });
+  const { settings, rows, now } = input;
+
+  // enabled: the master switch, the counts and the next fire.
+  const journalLive = "live" in input.journal ? input.journal.live : undefined;
+  if (!settings.enabled) {
+    add({ name: "enabled", status: "warn", detail: `off (Settings › Automations) — nothing fires; every row stays${rows ? ` (${rows.length} set)` : ""}`, fix: "Settings › Automations › the switch, when you want them back" });
+  } else if (rows === undefined) {
+    add({ name: "enabled", status: "ok", detail: `on · ${journalLive === undefined ? "no daemon answering" : `${journalLive} live in the journal`} — the rows and the next fire come from a running daemon` });
+  } else if (rows.length === 0) {
+    add({ name: "enabled", status: "ok", detail: "on · nothing set — say \"wake me at 7:10 on weekdays\", or pnpm jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"" });
+  } else {
+    const armed = rows.filter((a) => a.state === "armed" || a.state === "snoozed" || a.state === "deferred").length;
+    const next = input.nextFire ? ` · next ${clockOf(input.nextFire.at)} ${input.nextFire.name} (${inWords(input.nextFire.at, now)})` : rows.some((a) => a.when.kind === "on") ? " · watching" : "";
+    add({ name: "enabled", status: "ok", detail: `${rows.length} set · ${armed} armed${next}` });
+  }
+
+  // journal: the schedule on disk (append-only; last row per id wins).
+  const j = input.journal;
+  if ("error" in j) add({ name: "journal", status: "fail", detail: `${j.path} unreadable (${j.error}) → nothing fires until it is`, fix: "Open Console — the Now rail says what the daemon could load; a journal the daemon cannot read is never rewritten by it" });
+  else if ("missing" in j) add({ name: "journal", status: "ok", detail: `no journal yet at ${j.path} (it appears with the first automation)` });
+  else add({ name: "journal", status: "ok", detail: `${j.path} · ${j.live} live · ${j.rows} row${j.rows === 1 ? "" : "s"}` });
+
+  // daemon: the honest line.
+  if (settings.openAtLogin) add({ name: "daemon", status: "ok", detail: "Open at login is on — Jarhead and its daemon come back at login; nothing fires while Jarhead is quit" });
+  else add({ name: "daemon", status: "warn", detail: "nothing fires while Jarhead is quit — Open at login is off", fix: "Settings › Automations › Open at login" });
+
+  // banners: the grant; the island and the chime do not need it.
+  if (input.notifications === "granted") add({ name: "banners", status: "ok", detail: "Notifications granted — Snooze · Done on the banner land the same row as the island's" });
+  else if (input.notifications === undefined) add({ name: "banners", status: "warn", detail: "Notifications not read (no daemon answering) — the island and the chime still fire" });
+  else add({ name: "banners", status: "warn", detail: `Notifications ${input.notifications === "denied" ? "not granted" : "not asked yet"} — the island and the chime still fire`, fix: "pnpm jarhead cmd request-permission notifications (the app puts up the system prompt; Setup › Permissions › Notifications and the automation.notifications problem's Request button do the same)" });
+
+  // wake for HH:MM: the earliest armed alarm; a closed lid sleeps through it unless pmset says otherwise.
+  const alarm = (rows ?? [])
+    .filter((a) => automationKind(a) === "alarm" && (a.state === "armed" || a.state === "snoozed") && a.nextAt !== undefined)
+    .sort((x, y) => (x.nextAt ?? 0) - (y.nextAt ?? 0))[0];
+  if (alarm && alarm.nextAt !== undefined) {
+    const at = clockOf(alarm.nextAt);
+    const scheduled = input.pmsetSched !== undefined && /wake/i.test(input.pmsetSched);
+    const copy = pmsetCopy(alarm);
+    if (scheduled) add({ name: `wake for ${at}`, status: "ok", detail: `pmset schedules a wake (pmset -g sched: ${input.pmsetSched?.trim().split("\n").find((l) => /wake/i.test(l))?.trim() ?? "a wake"}) — check it covers ${at}` });
+    else add({ name: `wake for ${at}`, status: "warn", detail: `a closed lid sleeps through ${at} — the alarm rings late (within ${AUTOMATION_GRACE_ALARM_MIN} min) or is missed; the Mac is never woken by Jarhead`, ...(copy ? { fix: `copy (root; never run by Jarhead): ${copy}` } : {}) });
+  }
+
+  // quiet hours.
+  const q = settings.quietHours;
+  add({ name: "quiet hours", status: "ok", detail: q ? `${q.from}–${q.to} · alarms override; chime/say show silently; acting kinds wait` : "none set — everything fires as set" });
+
+  // missed: the last seven day files.
+  if (input.missed.count === 0) add({ name: "missed", status: "ok", detail: "0 in 7 days" });
+  else {
+    const why = [...new Set(input.missed.why)].map((w) => MISSED_WORDS[w]).join(", ");
+    add({ name: "missed", status: "warn", detail: `${input.missed.count} missed in 7 days${why ? ` · ${why}` : ""}`, fix: "Run now on the row (Console › Now · the automation.missed problem · pnpm jarhead automations run <id|name>)" });
+  }
+
+  // brain budget: wake-brain minutes today.
+  const cap = settings.wakeBudgetMinutesPerDay;
+  const usedMin = Math.ceil(input.brainSecondsToday / 60);
+  const wakeRows = (rows ?? []).filter((a) => a.then.some((t) => t.kind === "wake-brain")).length;
+  if (cap <= 0) add({ name: "brain budget", status: "ok", detail: "wake-brain off (Brain minutes 0) — no automation wakes the brain; nothing is billed asleep" });
+  else if (usedMin >= cap) add({ name: "brain budget", status: "warn", detail: `spent — ${usedMin} of ${cap} min used today; wake-brain rows fail until midnight (a failed row, never a question)`, fix: "Settings › Automations › Brain minutes, or wait for midnight" });
+  else add({ name: "brain budget", status: "ok", detail: `${wakeRows === 0 ? "wake-brain unused" : `${wakeRows} wake-brain row${wakeRows === 1 ? "" : "s"}`} · ${usedMin} of ${cap} min used today` });
+
+  // recipes: the gate's word for each, now.
+  const recipes = settings.recipes;
+  if (recipes.length === 0) add({ name: "recipes", status: "ok", detail: "none — a recipe is a shell command you approved once; the gate re-judges it at every fire" });
+  else {
+    const judged = recipes.map((r) => ({ r, v: recipeVerdict(r, input.home) }));
+    const asks = judged.filter((x) => x.v.word !== "run");
+    const names = asks.map((x) => `${x.r.name}: ${x.v.word === "asks" ? "would need a yes when it runs" : x.v.reason}`).join("; ");
+    add({ name: "recipes", status: asks.length ? "warn" : "ok", detail: `${recipes.length} · ${recipes.length - asks.length} run-tier${asks.length ? ` · ${asks.length} ${asks.length === 1 ? "asks" : "ask"} (${names})` : ""}`, ...(asks.length ? { fix: "a recipe the gate now rates confirm or refuse fails at fire; edit it so the gate says run (no destructive verb, mv/cp -n), or Move to Trash" } : {}) });
+  }
+
+  // time-sensitive banners: pass 1 notes it.
+  add(input.timeSensitive ? { name: "time-sensitive", status: "ok", detail: "entitlement present — alarm banners may break through Focus" } : { name: "time-sensitive", status: "warn", detail: "entitlement absent — alarm banners honour Focus like any banner (the island and the chime still fire)" });
+
+  // folder grant: a watched Downloads/Desktop/Documents needs its grant.
+  if (rows) {
+    const watched = new Map<"filesDesktop" | "filesDocuments" | "filesDownloads", string>();
+    for (const a of rows) {
+      if (a.when.kind !== "on" || NOT_WATCHING.has(a.state)) continue;
+      const path = a.when.on.kind === "folder.file" ? a.when.on.path : a.when.on.kind === "download.done" ? "~/Downloads" : undefined;
+      const kind = path ? guardedFolder(path, input.home) : undefined;
+      if (kind && !watched.has(kind)) watched.set(kind, path ?? "");
+    }
+    if (watched.size === 0) add({ name: "folder grant", status: "ok", detail: "no guarded folder watched" });
+    for (const [kind, path] of watched) {
+      const grant = input.folderGrants[kind];
+      const folder = kind.replace(/^files/, "");
+      if (grant === "granted") add({ name: "folder grant", status: "ok", detail: `watching ${path} · the ${folder} folder grant is on` });
+      else add({ name: "folder grant", status: "warn", detail: `watching ${path} needs the ${folder} folder grant${grant === undefined ? " (not read)" : ""} — a denied read is the automation.watch problem, never a silent watcher`, fix: "Ask (the automation.watch problem's button; Setup › Permissions)" });
+    }
+  }
+  return out;
+}
+
+/** The journal on disk: rows, and live rows by last-row-per-id with state ≠ trashed. Never rewritten here. */
+export function readJournal(path: string): JournalRead {
+  if (!existsSync(path)) return { path, missing: true };
+  try {
+    const text = readFileSync(path, "utf8");
+    const last = new Map<string, string>();
+    let rows = 0;
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      rows++;
+      try {
+        const row = JSON.parse(line) as { id?: unknown; state?: unknown };
+        if (typeof row.id === "string" && typeof row.state === "string") last.set(row.id, row.state);
+      } catch {
+        // a torn last line is not a broken journal
+      }
+    }
+    return { path, rows, live: [...last.values()].filter((s) => s !== "trashed").length };
+  } catch (e) {
+    return { path, error: (e as Error).message };
+  }
+}
+
+/** The automations block as settings.json has it, over the defaults; the defaults alone when the file is missing or torn. */
+export function readAutomationSettings(stateDir: string): AutomationSettings {
+  try {
+    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as { automations?: Partial<AutomationSettings> };
+    return { ...DEFAULT_AUTOMATIONS, ...(saved.automations ?? {}) };
+  } catch {
+    return DEFAULT_AUTOMATIONS;
+  }
+}
+
+/** The ledger's automation rows over `days` day files: missed count and why, and today's wake-brain seconds. Read-only. */
+export function readAutomationLedger(ledger: Pick<Ledger, "read">, now: number, days = 7): { missed: { count: number; why: MissedWhy[] }; brainSecondsToday: number } {
+  const why: MissedWhy[] = [];
+  let count = 0;
+  let brainSecondsToday = 0;
+  for (let d = 0; d < days; d++) {
+    for (const row of ledger.read(now - d * 86_400_000)) {
+      if (row.type === "automation.missed") {
+        count++;
+        why.push(row.why);
+      } else if (d === 0 && row.type === "automation.fired" && row.brainSeconds) {
+        brainSecondsToday += row.brainSeconds;
+      }
+    }
+  }
+  return { missed: { count, why }, brainSecondsToday };
+}
+
 // ---- words shared with `jarhead status` (main.ts runs on import, so they live here, where a test can reach them)
 
 /** Every AgentStatus, checked against the protocol's union so a new status cannot go unlisted on `jarhead status`. */
@@ -826,6 +1065,38 @@ export async function runChecks(): Promise<Check[]> {
         fix: remedyLine(p),
       });
     }
+  }
+  // ---- automations: what the daemon carries out asleep — the daemon's rows when one answers, settings.json and the journal otherwise; the ledger's missed rows; pmset READ, never run
+  {
+    const automationSettings = daemon?.automationSettings ?? readAutomationSettings(cfg.stateDir);
+    const grant = (kind: PermissionInfo["kind"]): Grant | undefined => appPerms?.find((p) => p.kind === kind)?.grant;
+    const folderGrants: AutomationCheckInput["folderGrants"] = {};
+    for (const kind of ["filesDesktop", "filesDocuments", "filesDownloads"] as const) {
+      const g = grant(kind);
+      if (g) folderGrants[kind] = g;
+    }
+    const fromLedger = readAutomationLedger(new Ledger(cfg.stateDir), Date.now());
+    let timeSensitive = false;
+    try {
+      timeSensitive = readFileSync(join(REPO_ROOT, "apps", "mac", "Resources", "entitlements.plist"), "utf8").includes("com.apple.developer.usernotifications.time-sensitive");
+    } catch {
+      timeSensitive = false;
+    }
+    for (const c of automationChecks({
+      settings: automationSettings,
+      rows: daemon?.automations,
+      nextFire: daemon?.nextFire,
+      journal: readJournal(join(cfg.stateDir, "automations", "jobs.ndjson")),
+      notifications: appPerms ? (grant("notifications") ?? "unknown") : undefined,
+      folderGrants,
+      missed: fromLedger.missed,
+      brainSecondsToday: fromLedger.brainSecondsToday,
+      timeSensitive,
+      // A read of the schedule (no root); the row's fix is the line Kevin copies. Nothing here runs a pmset that changes anything.
+      pmsetSched: sh("pmset", ["-g", "sched"]),
+      now: Date.now(),
+      home: homedir(),
+    })) add(c);
   }
   // ---- self-edit: worktrees the brain made of this repo and the last one it applied
   try {

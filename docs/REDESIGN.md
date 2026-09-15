@@ -35,7 +35,7 @@ The **Claude Agent SDK** runs Claude Code headless with in-process MCP tools,
 streaming input, and a permission callback, and Kevin's Claude Code login is what
 authenticates it — no API key needed. Current Claude models point at pixel
 coordinates off a screenshot well enough that Jarhead's own computer family (§10)
-is all the Claude brains get: every brain drives the same 67 tools, and no vendor's
+is all the Claude brains get: every brain drives the same 71 tools, and no vendor's
 own computer-use toolset is mounted beside them.
 
 ## 3. The shape of v2
@@ -63,7 +63,7 @@ stop`), chosen in Setup or the Console and swappable mid-run, with a backend per
 `BrainKind`: `codex` (the Codex CLI with Kevin's ChatGPT login, Jarhead's tools
 over MCP), `claude-code` (the Agent SDK with his Claude login; inherits his skills
 and CLAUDE.md), `anthropic-api` (the Messages API with `ANTHROPIC_API_KEY`, the
-67 tools as plain tool definitions), `openai-compatible` (Chat Completions at
+71 tools as plain tool definitions), `openai-compatible` (Chat Completions at
 `Settings.brainBaseUrl` / `JARHEAD_BRAIN_BASE_URL` with `JARHEAD_BRAIN_API_KEY`:
 OpenAI, OpenRouter, vLLM, a hosted server…), `openai-responses` (Live's own
 Responses delegation, same tools as function tools) and `local` (a model on this
@@ -77,7 +77,7 @@ what earns a `problem()` line and which explicit kinds fall back to Responses is
 §6c's rule. Each `session.delegation.created` becomes one
 turn for whichever brain runs: the transcript window since the last delegation,
 the current screen context, and the running task ledger. Every backend drives
-the same 67 tools through `ToolRunner` — the hands (below), the agent
+the same 71 tools through `ToolRunner` — the hands (below), the agent
 connectors, web search, shell — and streams progress back as `thinking.append`
 and results as `commentary.append`.
 
@@ -262,7 +262,7 @@ first snapshot) and the menu-bar item *Set Up…* open a wizard
 
 Kevin: "why isnt it connecting to our codex? i have one locally. be vendor
 agnostic, dont just enforce claude code". The brain is a setting, not a vendor.
-`Settings.brain` is one of seven `BrainKind`s; every one drives the same 67 tools
+`Settings.brain` is one of seven `BrainKind`s; every one drives the same 71 tools
 through `ToolRunner`, so policy, ledger, screenshots and the confirmation
 handshake are identical whichever model is thinking.
 
@@ -539,14 +539,15 @@ code. but make its system prompt super strong and robust too".
 
 The brain's tool table (`packages/brain/src/tools.ts`, one table for every
 `BrainKind`) now covers the whole Mac, and what used to be "not a tool" is
-"a tool with a gate". Sixty-seven tools in nine families: the computer family
+"a tool with a gate". Seventy-one tools in ten families: the computer family
 (17), desktop (8), browser (6), agents (5), threads (4: `thread_start`,
 `thread_wait`, `thread_read`, `thread_stop`), misc (`run_shell`, `speak_progress`,
 `remember`, `recall`), **system** (11: `read_file`, `write_file`, `edit_file`,
 `list_dir`, `search_files`, `web_fetch`, `web_search`, `applescript`, `open_url`,
 `clipboard_read`, `clipboard_write`), **self** (`self_edit`, `self_check`,
-`self_review`, `self_apply`, `self_discard`, `self_status`) and the drawing
-shapes (6). Every one runs through `ToolRunner`, in-process or over the daemon
+`self_review`, `self_apply`, `self_discard`, `self_status`), the drawing
+shapes (6) and **automations** (4: `automation_set`, `automation_list`,
+`automation_change`, `recipe_list` — §21). Every one runs through `ToolRunner`, in-process or over the daemon
 socket (Codex), so the ledger, the screenshot archive and the confirmation
 handshake are the same for every model.
 
@@ -3140,3 +3141,81 @@ a question beginning with a thread's name is that thread's); `codexAddendum` in 
 Not touched: `policy.ts`, `core/index.ts`, `runner.ts` (subclassed), the `toolset.ts`
 handshake hunk, `Wake/**`, `selfedit.ts`, `shell.ts`, `files.ts`, `mcp-bridge.ts`,
 `codex-config.ts`, the signing lines of `build-mac.ts`, `SECRET_KEYS`, `Engine.stop()`.
+
+## 21. Automations: on system, with the agent asleep (2026-09-14)
+
+Kevin, verbatim: "add a bunnch of cool features that jarhead can set up and spin up like alarms,
+automatioons and more that dont requite the agent to be fully awake but can just be on system
+basically." The design is `docs/AUTOMATIONS.md` for the reader and this section for the record;
+three candidates were drawn and judged (watchers-and-rules as the spine, clockwork's engineering
+grafted in whole, system-native's small pieces — `mac.sleep`/`clock.changed` signals, `Run now`
+as the missed problem's remedy, one self-snooze, `pmset` printed by `doctor` only).
+
+### The object
+
+One protocol type, `Automation`: `when <trigger> then <actions>` with clauses, an `echo` line
+(the one sentence Jarhead read back), a state machine (`armed · snoozed · firing · fired ·
+deferred · paused · done · failed · trashed`; `trashed` is a state, never a deletion), and
+`confirmed { at, heard }` for the three kinds that asked once. `automationKind` is derived, never
+stored: alarm · timer · reminder · routine · watcher. Triggers: `at`, `in`, `every`
+(a normalised `Recurrence`: weekly, interval; monthly and monthday typed now and refused with
+"not yet — say the date" so the wire does not change later), `on` a `SystemEvent`
+(`folder.file`, `download.done`, `app.launch/quit`, `mac.wake`, `screen.unlock`, `display.*`,
+`recipe.red`, `agent.status`; `clipboard.match`, `network.changed` and `automation.fired` are
+reserved words, refused by name). Actions: `chime · say · notify · open · file · run-recipe ·
+press · wake-brain`, 1–3 per row, at most one acting kind. Settings gain one block
+(`automations` in `SETTINGS_KEYS`); the snapshot gains `automations`, `ringing`, `nextFire`; the
+engine gains three events (`automation.event`, `local.say`, `notify`), twelve commands (never a
+deletion) and six ledger rows in `META_TYPES`; the app→daemon wire gains `system.signal`.
+
+### The two moments
+
+Everything hinges on judging at **set-up**, once, awake, and never at fire. `classifyAutomation`
+sits in `policy.ts` beside the four classifiers: the master switch, the action count and the one
+acting kind, the trigger (reserved kinds, secret or guarded folders, the folder cap, the poll
+floor, a recipe the shell gate would question, `file` without a folder trigger, a brain-waking
+watcher without a ten-minute cooldown), then per action its `unattended` chip and its own reason.
+Free kinds arm silently; `run-recipe`, `press` and `wake-brain` are `confirm` — the ordinary
+`ToolRunner.ask` handshake, once, the identical re-call consumed — and for `wake-brain` the
+question IS the cost line, said word for word by the voice and recorded as `confirmed.heard`.
+Anything the shell gate would rate `confirm` when it runs is **refused now**: nobody is there
+then. At fire the executor re-judges lexically (`classifyUrl`, `classifyPath`, the shell gate
+on the saved text, the front app for a press) and any `needs-confirmation` or hold is a `failed`
+row with its reason. `engine.wake()`, `connect()` and `kevinSpoke()` are never called from the
+automations code; the wake-word gate and `JARHEAD_AUTO_WAKE` are not read; the meter stays at
+zero. The acceptance greps pin each of these at zero over `packages/engine/src/automations`.
+
+### The clock, honestly
+
+One line in `Engine.tick()`; no long `setTimeout`. A tick gap over 5 s means the Mac slept and
+`resync` decides each due row by kind: one-shots fire within their grace (alarm 15 min, timer 10,
+reminder 60) with `· 12 min late` in the head, later ones are `missed` with the `automation.missed`
+problem and **Run now**; routines never fire late (a 01:00 backup at 09:14 is a surprise);
+watchers re-baseline and do not replay. The daemon is the app's child and dies ~90 s after the
+app quits, so the standing line is **Nothing fires while Jarhead is quit.** The one mitigation is
+`Open at login` — the app registering itself with `SMAppService` on Kevin's press, a different
+actor from the brain's hands (which policy treats as confirm for a login item). No launchd
+mirror, no cold path, no `pmset` from the daemon: the doctor prints the `pmset` line as text.
+
+### The surfaces built in this pass (F)
+
+`pnpm jarhead automations [list|add|snooze|done|skip|pause|resume|rename|run|trash|restore]` and
+`pnpm jarhead recipes [list|add|trash]` over the twelve commands; a pure `automations-cli.ts`
+(the listing, `parseClockAutomation` through core's `parseWhen` for the free kinds only,
+`resolveAutomation` by id-or-name, the shell gate's word for a recipe) pinned by
+`automations-cli.test.ts` without a daemon; the `automations` line of `jarhead status`; the
+`doctor` group `automations` (eleven advisory rows over one input; `pmset -g sched` read, the
+wake line printed to copy); `docs/AUTOMATIONS.md`; this section; the README's `### Automations`,
+the Safety-rails bullet **Unattended means the run tier**, the `⌥⇧S` hotkey row and the Knobs
+row; the app README's wire section (`local.say`, `notify`, `automation.event`, `system.signal`,
+the notification category). Where the design's prose and the contract on disk differed, the
+contract won: the Swift mirror keeps `Settings.automations` and `Snapshot.automations` optional
+with non-optional views, and `AutomationContext` carries `localBrain` and `request` so the cost
+line says warm-up for a local brain and `file`/`open` see Kevin's words.
+
+**Rails touched, by name:** the trash rule's words (Move to Trash · Restore; `trash` and
+`restore` are the CLI's verbs, never delete) and the policy rail's `pmset` line — printed by the
+doctor, never run. Not touched: `policy.ts`, `core/index.ts`, `runner.ts`, `instructions.ts`,
+`brain.ts`, `Wake/**`, `selfedit.ts`, `shell.ts`, `files.ts`, the `toolset.ts` handshake hunk,
+the signing lines of `build-mac.ts`, `SECRET_KEYS`.
+

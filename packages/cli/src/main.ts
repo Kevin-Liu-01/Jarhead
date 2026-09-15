@@ -14,6 +14,8 @@ import { benchBrain } from "./bench-brain.ts";
 import { ledgerSpeed, renderSpeed } from "./ledger-speed.ts";
 import { reflexMisses, renderMisses } from "./reflex-miss.ts";
 import { resolveThread, threadsLines } from "./threads-cli.ts";
+import { LIST_STATES, ROW_VERBS, automationLine, automationsLines, automationsSummary, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation, type RowVerb } from "./automations-cli.ts";
+import { PERMISSION_KINDS, type Automation, type AutomationState, type PermissionKind, type ShellRecipe } from "@jarhead/protocol";
 
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
@@ -44,11 +46,24 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead brain                    the brain setting, what runs now, and where words go (the four data-path rows)
   pnpm jarhead brain local [<model>] [--server URL]   pick a local model as the brain through the running daemon (memory follows); empty model = best fit; prints the status line when it lands
   pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
+  pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]   what is set to fire while Jarhead is asleep, over the daemon: one row each —
+                                      glyph · name · when · actions · id · next fire (or snoozed / paused / failed: why); nothing is billed for any of it
+  pnpm jarhead automations add "<words>"   arm one from the clock ladder, parsed by core's parseWhen without a brain: "at 7:10 weekdays chime 'Wake up'", "in 12m chime pasta",
+                                      "weekdays 09:00 open Notes", "tomorrow 15:00 say 'call mum'". Free kinds only (chime · say · notify · open); run recipe, press and wake the brain
+                                      are set up by voice or in the Console, where the yes is heard. The policy judges the draft before it is armed; a refusal comes back as a toast
+  pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
+  pnpm jarhead automations run <id|name>   fire it now so you hear it — the daemon refuses unless you are there (a session open, or presence recent)
+  pnpm jarhead automations trash <id|name> · restore <id|name>   Move to Trash / Restore (the newest eight trashed rows are under --state trashed; an older one restores by its id). Nothing is deleted
+  pnpm jarhead recipes [list]         the approved shell recipes: name · the gate's word (run · asks · refused · fronts) · command · approved · cwd · timeout
+  pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first —
+                                      a confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
+  pnpm jarhead recipes trash <name>   Move to Trash (a recipe.trashed row); a row that names it fails at its next fire and says so
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status —
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
-                                      with name · status · lane · steps · id; memory: counts and the last learn)
+                                      with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing)
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|resume|stop|interrupt|mute|unmute|agent.refresh>   send a command to the running daemon (go opens the session)
+  pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …) — the doctor's banners row names it; you answer macOS yourself
   pnpm jarhead cmd sleep [cause]      go to sleep: return to the notch and close the session (cause: said|idle|pause-decayed|brain-changed|dock|command|stop|shutdown; default command)
   pnpm jarhead cmd thread.stop <id|name>   stop one thread (its id or name from \`jarhead status\`; "main" parks the main turn); the others and the session carry on
   pnpm jarhead cmd thread.pause <id|name> | thread.resume <id|name>   hold one thread's brain turn and release its screen; run its continuation turn
@@ -80,14 +95,17 @@ flags
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
   --shots / --both   (ledger trash) move the day's screenshots instead of / as well as its ledger file
   --limit N      (ledger search, memory list/search) how many hits (default 50 / 50 / 30, at most 200)
-  --state S      (memory list) live (default) | forgotten | archived | merged | all
+  --state S      (memory list) live (default) | forgotten | archived | merged | all; (automations list) armed | snoozed | deferred | paused | fired | failed | done | trashed | all (default; the Trash tail only under trashed)
   --kind K       (memory add) preference | fact | episode | procedure | contact | place (the store classifies when absent)
+  --minutes N    (automations snooze) how long (default Settings.automations.snoozeMinutes, 10)
+  --cwd DIR      (recipes add) the recipe's working directory (never inside ~/.jarhead)
+  --timeout N    (recipes add) seconds before the recipe is stopped (default 120, at most 600)
   --server URL   (models, brain) the local server's root instead of the three loopback ports (a second Ollama, a LAN box); (brain) pins it in Settings
   --debug        verbose logs
 `;
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind", "--days", "--compare", "--observe", "--server"]);
+const VALUE_FLAGS = new Set(["--timeout", "--runs", "--effort", "--out", "--only", "--limit", "--state", "--kind", "--days", "--compare", "--observe", "--server", "--minutes", "--cwd"]);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const positional: string[] = [];
 for (let i = 0; i < args.length; i++) {
@@ -502,7 +520,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string } };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string }; automations?: Automation[]; nextFire?: Snapshot["nextFire"]; ringing?: Snapshot["ringing"] };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
@@ -521,6 +539,8 @@ async function status(): Promise<void> {
   console.log(`  memory     ${memoryLine(s.memory)}`);
   // Threads are the lines of work (not agents: those are Kevin's coding sessions): main and the spawned ones, live and those finished within the linger window.
   for (const line of threadsLines(s.threads)) console.log(line);
+  // Automations: what fires while asleep (nothing billed) — count by state, the next fire, the ring. A daemon from before the field has none.
+  console.log(automationsSummary(s.automations ?? [], { ...(s.nextFire ? { nextFire: s.nextFire } : {}), ...(s.ringing ? { ringing: s.ringing } : {}) }, Date.now()));
   // The Trash: whole day files Jarhead moved out of the way; emptying it is Kevin's, in Finder.
   if (s.trash) console.log(`  trash      ${s.trash.days === 0 ? "empty" : `${s.trash.days} ${s.trash.days === 1 ? "day" : "days"} · ${human(s.trash.bytes)}`} · ${s.trash.path}`);
   for (const t of s.transcript.slice(-6)) console.log(`    ${t.speaker === "kevin" ? "you    " : "jarhead"}: ${t.text}`);
@@ -558,6 +578,161 @@ async function threadCommand(sub: "thread.stop" | "thread.pause" | "thread.resum
   const { threadId, target } = resolveThread((snap["threads"] as Thread[] | undefined) ?? [], arg);
   if (target) console.log(`  ${target.name} · ${target.status} · ${threadId}`);
   await sendCommand({ type: sub, threadId }, 800);
+}
+
+/** How long `automations add` and `recipes add` wait for the daemon to echo the row it armed or saved. */
+const AUTOMATION_WAIT_MS = 5000;
+
+/**
+ * Send one command and wait for the snapshot that shows it landed (`until`), collecting the
+ * toasts meanwhile — a refusal from the set-up gate arrives as a toast, never as a question.
+ * The `landedAfter` idiom of `jarhead brain`: only snapshots AFTER the command count.
+ */
+async function commandThenSnapshot(cmd: EngineCommand, until: (s: Snapshot) => boolean, waitMs: number): Promise<{ snapshot: Snapshot | undefined; toasts: string[] }> {
+  const client = await daemon();
+  const toasts: string[] = [];
+  try {
+    const landed = new Promise<Snapshot | undefined>((resolve) => {
+      let sent = false;
+      const timer = setTimeout(() => resolve(undefined), waitMs);
+      client.on("message", (m) => {
+        if (m.type === "toast") toasts.push(`${m.tone === "info" ? "·" : "!"} ${m.text}`);
+        if (m.type !== "snapshot" || !sent) return;
+        const snap = m.snapshot as Snapshot;
+        if (!until(snap)) return;
+        clearTimeout(timer);
+        resolve(snap);
+      });
+      client.sendJson({ type: "command", command: cmd });
+      sent = true;
+    });
+    return { snapshot: await landed, toasts };
+  } finally {
+    client.close();
+  }
+}
+
+/** The daemon's automation rows from one snapshot; a daemon from before the field has none. */
+async function readAutomations(): Promise<{ rows: Automation[]; snapshot: Snapshot }> {
+  const snap = (await readSnapshot()) as unknown as Snapshot;
+  return { rows: [...(snap.automations ?? [])], snapshot: snap };
+}
+
+/**
+ * `jarhead automations …`: what the daemon carries out while asleep. `list` is a read of the
+ * snapshot; `add` parses the clock ladder here (core's `parseWhen`, no brain), sends
+ * `automation.set` and waits for the row to appear; every other verb resolves an id-or-name
+ * through the pure `resolveAutomation` and sends its one EngineCommand. Words: Snooze · Done ·
+ * Skip · Pause · Resume · Rename · Run now · Move to Trash · Restore — never delete, and no flag
+ * stands in for a yes: the free kinds need none and the asking kinds are set up where the yes is heard.
+ */
+async function automationsCommand(rest: string[]): Promise<void> {
+  const [verb, ...args] = rest;
+  switch (verb) {
+    case undefined:
+    case "list": {
+      const state = flagValue("state") ?? "all";
+      if (!LIST_STATES.includes(state as AutomationState | "all")) throw new Error(`usage: jarhead automations list [--state ${LIST_STATES.join("|")}]`);
+      const { rows, snapshot } = await readAutomations();
+      console.log("");
+      for (const line of automationsLines(rows, snapshot, Date.now(), state as AutomationState | "all")) console.log(line);
+      console.log("");
+      return;
+    }
+    case "add": {
+      const words = args.join(" ").trim();
+      const draft = parseClockAutomation(words, Date.now());
+      if ("error" in draft) throw new Error(`${draft.error}\n  usage: jarhead automations add "<when> <chime|say|notify|open> <what>"`);
+      const wanted = draft.name.toLowerCase();
+      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft, by: "cli" }, (s) => (s.automations ?? []).some((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli"), AUTOMATION_WAIT_MS);
+      console.log(`\n  sent automation.set · ${draft.echo}`);
+      for (const t of toasts) console.log(`  ${t}`);
+      const row = snapshot?.automations.find((a) => a.name.toLowerCase() === wanted);
+      if (row) console.log(automationLine(row, Date.now()));
+      else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s — \`jarhead automations\` lists what is set`);
+      console.log("");
+      return;
+    }
+    default: {
+      if (!(ROW_VERBS as readonly string[]).includes(verb)) throw new Error(`unknown automations verb: ${verb} — list | add | ${ROW_VERBS.join(" | ")}`);
+      const arg = args[0];
+      if (!arg) throw new Error(`usage: jarhead automations ${verb} <id|name>${verb === "snooze" ? " [--minutes 10]" : verb === "rename" ? ' "<name>"' : ""}  (both are on \`jarhead automations\`${verb === "restore" ? "; `--state trashed` lists the newest eight, an older row by its id" : ""})`);
+      await automationVerb(verb as RowVerb, arg, args.slice(1).join(" ").trim());
+    }
+  }
+}
+
+/** One row verb → one EngineCommand; the row is named back before the send when the table knows it. */
+async function automationVerb(verb: RowVerb, arg: string, extra: string): Promise<void> {
+  const { rows, snapshot } = await readAutomations();
+  const { id, target } = resolveAutomation(rows, arg);
+  if (target) console.log(`  ${target.name} · ${target.state} · ${id}`);
+  switch (verb) {
+    case "snooze": {
+      const minutes = flagValue("minutes") === undefined ? snapshot.settings?.automations?.snoozeMinutes ?? 10 : Number(flagValue("minutes"));
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 720) throw new Error(`--minutes is whole minutes, 1 to 720 (got ${flagValue("minutes")})`);
+      await sendCommand({ type: "automation.snooze", id, minutes }, 800);
+      return;
+    }
+    case "rename": {
+      const name = extra.trim();
+      if (!name || name.length > 24) throw new Error('usage: jarhead automations rename <id|name> "<name>"  (24 chars at most)');
+      await sendCommand({ type: "automation.rename", id, name }, 800);
+      return;
+    }
+    case "run":
+      // The daemon fires it only with Kevin there (a session open, or presence recent); otherwise a toast says so.
+      await sendCommand({ type: "automation.run", id }, 2500);
+      return;
+    case "trash":
+      console.log("  Move to Trash: the row is hidden and restorable (jarhead automations restore <id>); nothing is deleted");
+      await sendCommand({ type: `automation.${verb}`, id }, 800);
+      return;
+    default:
+      await sendCommand({ type: `automation.${verb}`, id }, 800);
+  }
+}
+
+/**
+ * `jarhead recipes …`: the approved shell recipes in Settings, over the daemon (it owns
+ * settings.json; a tool never writes it). `add` prints the shell gate's verdict before it sends
+ * — a confirm-tier command is saved with `asks` and can never be armed. `trash` is a
+ * `recipe.trashed` row; nothing here deletes anything.
+ */
+async function recipesCommand(rest: string[]): Promise<void> {
+  const [verb, ...args] = rest;
+  const recipesOf = (s: Snapshot): readonly ShellRecipe[] => s.settings?.automations?.recipes ?? [];
+  switch (verb) {
+    case undefined:
+    case "list": {
+      const snap = (await readSnapshot()) as unknown as Snapshot;
+      console.log("");
+      for (const line of recipesLines(recipesOf(snap), Date.now())) console.log(line);
+      console.log("");
+      return;
+    }
+    case "add": {
+      const recipe = parseRecipeArgs(args[0], args.slice(1).join(" "), flagValue("cwd"), flagValue("timeout"), Date.now());
+      const v = recipeVerdict(recipe);
+      console.log(`\n  shell gate: ${v.word} — ${v.reason}`);
+      if (v.word !== "run") console.log(`  saved with \`asks\`: a row that names it is refused at set-up and fails at fire; nobody is there to say yes`);
+      const { snapshot, toasts } = await commandThenSnapshot({ type: "recipe.set", recipe }, (s) => recipesOf(s).some((r) => r.name === recipe.name && r.command === recipe.command), AUTOMATION_WAIT_MS);
+      console.log(`  sent recipe.set ${recipe.name}`);
+      for (const t of toasts) console.log(`  ${t}`);
+      if (snapshot) for (const line of recipesLines(recipesOf(snapshot).filter((r) => r.name === recipe.name), Date.now())) console.log(line);
+      else if (toasts.length === 0) console.log(`  the daemon did not show the recipe within ${AUTOMATION_WAIT_MS / 1000} s — \`jarhead recipes\` lists what is saved`);
+      console.log("");
+      return;
+    }
+    case "trash": {
+      const name = args[0];
+      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; a recipe.trashed row — nothing is deleted)");
+      await sendCommand({ type: "recipe.trash", name }, 800);
+      return;
+    }
+    default:
+      throw new Error(`unknown recipes verb: ${verb} — list | add | trash`);
+  }
 }
 
 /** Every SleepCause, checked against the protocol's union so a new cause cannot go unlisted here. */
@@ -679,6 +854,12 @@ try {
     case "status":
       await status();
       break;
+    case "automations":
+      await automationsCommand(rest);
+      break;
+    case "recipes":
+      await recipesCommand(rest);
+      break;
     case "say":
       if (rest.length === 0) throw new Error('usage: jarhead say "hello there"');
       await sendCommand({ type: "say-text", text: rest.join(" ") });
@@ -707,6 +888,12 @@ try {
       }
       if (sub === "thread.stop" || sub === "thread.pause" || sub === "thread.resume") {
         await threadCommand(sub, arg);
+        break;
+      }
+      if (sub === "request-permission") {
+        // The app puts up macOS's own prompt for the grant; Kevin answers it there. The doctor's `banners` row names this for Notifications.
+        if (arg === undefined || (arg !== "all" && !(PERMISSION_KINDS as readonly string[]).includes(arg))) throw new Error(`usage: jarhead cmd request-permission <${PERMISSION_KINDS.join("|")}|all>`);
+        await sendCommand({ type: "request-permission", which: arg as PermissionKind | "all" }, 800);
         break;
       }
       if (!sub || !["go", "pause", "resume", "stop", "interrupt", "mute", "unmute", "agent.refresh"].includes(sub)) throw new Error("usage: jarhead cmd <go|pause|resume|stop|interrupt|sleep [cause]|mute|unmute|agent.refresh|thread.stop <id|name>|thread.pause <id|name>|thread.resume <id|name>>  (stop closes the voice session — the meter stops; interrupt cancels the work but keeps listening)");

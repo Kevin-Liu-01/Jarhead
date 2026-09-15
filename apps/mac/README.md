@@ -382,6 +382,17 @@ Daemon → app:
   `thread.transcript {transcript,mode}` — a page of a thread's conversation, to the
   clients that opened it.
 - `tool.result {id,result}` — the answer to a `tool.run`, to the client that asked.
+- `automation.event {event}` — one change on one automation row (an `AutomationEvent`:
+  `set · fired · state · missed · tick`), broadcast like `thread.event` and coalesced 50 ms per
+  id; `fired` carries the presses the island and the banner offer (Snooze · Done · Open).
+- `local.say {text?,sound?,automationId}` — an earcon (`Pop · Glass · Ping · Hero`) and/or a
+  FIXED line for the app's `LocalSpeaker` — the wake gate's own instance, so the wake listener
+  never hears the line as the word. Never model text, except a redacted `wake-brain` answer ≤ 160
+  chars. The daemon has no speaker.
+- `notify {id,title,body?,presses,automationId}` — a banner for `UNUserNotificationCenter`
+  under the `jarhead.automation` category; the app posts it silently (the earcon already rang —
+  two sounds is a bug) and degrades silently without the grant (the `automation.notifications`
+  problem says so once).
 - `bye` — the daemon has read the app's `bye`; the app closes the socket only after this.
 - `error {message}`.
 
@@ -403,6 +414,12 @@ App → daemon:
 - `ear {text,isFinal,segment,at}` — the on-device ear's partial or final transcript while
   awake; the engine's reflex layer acts on the unambiguous ones.
 - `ping {id}`.
+- `system.signal {signal,at}` — a signal the app observes on Kevin's behalf and forwards as
+  data, never a command: `app.launch` / `app.quit {app,bundleId?}` (`NSWorkspace`), `mac.wake`,
+  `mac.sleep`, `screen.unlock`, `screen.lock`, `display.connected`, `display.disconnected`,
+  `clock.changed`. The daemon has no `NSWorkspace`; the automations table fires its watchers on
+  these and treats `mac.sleep` / `mac.wake` / `clock.changed` as evidence for a resync (a tick gap
+  over 5 s says the same on its own).
 - `ledger.read {id,date}`, `ledger.days {id}`, `ledger.sessions {id}`,
   `ledger.session {id,sessionId}`, `ledger.chain {id,rootId}` (a whole conversation,
   oldest first; answered with `ledger.rows` + `truncated`), `ledger.search {id,query,limit?}`.
@@ -424,6 +441,25 @@ server found, its tool-capable models with fit and capabilities, the engine's pi
 fields on the snapshot, mirrored in `Protocol.swift`. Picking the local brain is the
 same `set-settings` patch as every other kind: `{ brain: "local", brainModel: "" }`
 means the best fit on this Mac.
+
+The automations add the four frames above and nothing else on the wire: the rows themselves
+ride the snapshot (`automations`, `ringing`, `nextFire`; `settings.automations`), the presses
+are ordinary `EngineCommand`s (`automation.set {automation, by?}` — the Console sends no `by` and is
+stamped `console`, the CLI sends `"cli"`; `automation.snooze {id,minutes}`, `automation.done {id}`,
+`automation.run`, `automation.trash` / `automation.restore` — never a deletion), and
+`Model/Protocol.swift` mirrors every type as small structs of optionals.
+
+### The notification category
+
+`UNNotificationCategory("jarhead.automation")` is registered at launch with the actions
+`Snooze 10` (no foreground) · `Done` · `Open` (only when a press carries a target).
+`AppDelegate` is the `UNUserNotificationCenterDelegate`: `didReceive` runs the same closures as
+the island's presses (`automation.snooze { minutes: settings.snoozeMinutes }` / `automation.done`
+/ open the Console), `willPresent` returns `[.banner]` with no sound. Title = the row's name,
+body = its line; a `wake-brain` answer's body is its redacted one line. `interruptionLevel` is
+`.active`: the time-sensitive entitlement is not in `entitlements.plist` (the doctor's
+`time-sensitive` row says so), so an alarm banner honours Focus like any banner — the island and
+the chime still fire. Bundle-only (`runsAsBundle`); the harness scripts skip it.
 
 ## Audio
 
