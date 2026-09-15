@@ -255,6 +255,9 @@ apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wa
 
 ### Automations
 
+  <img src="docs/media/console-automations.jpg" width="920" alt="The Console's Automations section: a ringing alarm under the tabs, the rows with their verbs, the Trash fold">
+    <td><img src="docs/media/notch-island-alarm.png" alt="The island ringing an alarm while asleep: 07:10 · Wake up, Kevin with Snooze 10 and Done"></td>
+
 Say it once while Jarhead is awake — "wake me at seven ten on weekdays", "twelve-minute timer
 for the pasta", "when a PDF lands in Downloads, file it under Papers and tell me", "run the
 backup script every night at eleven" — and it reads one line back. Then say night. The daemon
