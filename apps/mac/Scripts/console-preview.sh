@@ -9,7 +9,23 @@
 #           local | local-empty |
 #           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
-#           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups (default live)
+#           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
+#           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight (default live)
+#   The left rail (design10): `rail` is the threads fixture with the Trash and one hidden agent — Now bright with
+#   its dot, `Threads 3 · 1 asks`, the pinned over conversation on a grey orb at 0.72, Today open (bright, `×1`),
+#   `› Yesterday n … min`, `› Older 3 … since <day>`, Archived `2 · 15 min`, Claude Code open with `[asks]`,
+#   `● working` ×2, `kevin-wiki idle · 31m` at 28 and `› Ended 1 … 7m`, Codex folded to `ended · 40m`, Cursor to
+#   `1 idle`, Amp open. `rail-expanded` opens Yesterday (two grey rows, `—` last at 0.48) and Older (its sticky
+#   day heads) and pins yesterday's card (`ran · started`; `probe-floats:` names `rail.chain.<id>`). `rail-asleep`
+#   is the same asleep (PREVIEW_PHASE=asleep: the Now orb grey, today's rows bright, the header's mark blue).
+#   `rail-agents` (asleep) opens Claude Code's `Ended` (the ring on it), the dead Codex group (three over rows,
+#   no sub-head) and Hidden (Unhide at full on a 0.48 row), the rail scrolled to the agents. `rail-search` is
+#   `codex`: `Hits n` · `Agents n` (a Titles head and an orphan day head appear only when a title matches
+#   without hits / a hit's session is off the rail — not in this fixture), every result at 1.0 with its tint,
+#   the hidden agent the query names among them with its Unhide (`rail-probe:` lists the walk). `rail-keys`
+#   rings the pinned row, ↓↓↓ onto Yesterday's head, → opens it
+#   (`rail-probe:` before and after: two more ids). `rail-midnight` is reserved (PREVIEW_NOW is not built).
+#   Every one runs `check-kit@0.3` (the ladder's pins in checkKitLeftRail) and ends `check: all ok (kit)`.
 #   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
 #   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
 #   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
@@ -143,6 +159,8 @@ case "$SCENARIO" in
   live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
   # The component kit's scenarios (design9): the dropdowns, the tips, the toggle, the folds, the lists.
   menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|list-verbs|agents-groups) ;;
+  # The left rail (design10).
+  rail|rail-expanded|rail-asleep|rail-agents|rail-search|rail-keys|rail-midnight) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -182,6 +200,13 @@ if [[ "$SCENARIO" == "tip-thumb" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_
 # Its run.log: `send: {"type":"thread.history",…,"before":2}`, `action: thread-history main … orphans 4→0 … complete false→true`,
 # and two `geometry` lines whose `distance` agree (the row Kevin was reading stayed put while the page grew above it).
 if [[ "$SCENARIO" == "thread-history" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.9}"; fi
+# The left rail's scenarios: a tall window so the rail is whole; `rail-asleep` and `rail-agents` with nothing live;
+# the staged ones run their folds, tips and keys to 1.3–2.0 s before the shot.
+case "$SCENARIO" in rail|rail-expanded|rail-asleep|rail-agents|rail-search|rail-keys|rail-midnight) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
+case "$SCENARIO" in rail-asleep|rail-agents) PREVIEW_PHASE="${PREVIEW_PHASE:-asleep}";; esac
+case "$SCENARIO" in rail-expanded|rail-search) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.2}";; esac
+case "$SCENARIO" in rail-agents) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}";; esac
+case "$SCENARIO" in rail-keys) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.6}";; esac
 if [[ -n "${PREVIEW_PHASE:-}" ]]; then export PREVIEW_PHASE; fi
 # The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
 # its default actions run to 2.3 s (the verbs), so the shot waits for them.

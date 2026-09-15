@@ -1,7 +1,8 @@
 import SwiftUI
+import AppKit
 
 // The Console's list row and what every dense list shares: `ConsoleRow` (28 one line · 40 with a
-// meta line · +16 per extra title line · 44 on the agents rail), `ConsoleGroupHead` (22, sticky),
+// meta line · +16 per extra title line · 44 on the agents rail while a figure ticks, 28 otherwise), `ConsoleGroupHead` (22, sticky),
 // `ConsoleRowOverflow` (the ⋯ drawn at rest — nothing is revealed under the pointer),
 // `ConsoleFocusRing` (the keyboard's one ring), `ConsoleListKeys` + `ConsoleListFocus` (↑↓ ⏎ → ←
 // Esc and type-ahead over a list's ids) and `ConsoleListModel` (pure: heights, stepping,
@@ -374,23 +375,32 @@ struct ConsoleRowGlide: ViewModifier {
 struct ConsoleGroupHead: View {
     let title: String
     var count: String? = nil
+    /// Shown while the head is closed (or does not fold): one mono figure, the summary of what is inside.
     var figure: String? = nil
     var badge: ConsoleBadge.Word? = nil
     var folded: Bool? = nil
     var toggle: () -> Void = {}
+    /// ⌥-click (NSApp.currentEvent holds .option): the caller folds the siblings.
+    var altToggle: (() -> Void)? = nil
+    /// The list draws the keyboard's ring on its focused folding head.
+    var focused = false
+    /// A tier-1 tip on the head: the full date, the newest title inside.
+    var tip: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             ConsoleHairline(weight: .row)
             if folded != nil {
-                Button(action: toggle) { line.contentShape(Rectangle()) }.buttonStyle(.plain)
+                ConsoleGroupHeadButton(toggle: toggle, altToggle: altToggle) { line }
             } else {
                 line
             }
         }
         .background(ConsoleTheme.ground)
+        .modifier(ConsoleFocusRing(on: focused))
+        .modifier(ConsoleOptionalTip(tip: tip))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([title, count].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([title, count, folded == true ? figure : nil].compactMap { $0 }.joined(separator: ", "))
     }
 
     private var line: some View {
@@ -409,6 +419,38 @@ struct ConsoleGroupHead: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 22)
+    }
+}
+
+/// A folding group head's button: the hover fill, a plain click toggles, ⌥-click runs `altToggle`
+/// (the siblings fold) when the caller gave one.
+private struct ConsoleGroupHeadButton<Line: View>: View {
+    let toggle: () -> Void
+    var altToggle: (() -> Void)? = nil
+    @ViewBuilder let line: () -> Line
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: press) { line().contentShape(Rectangle()) }
+            .buttonStyle(.plain)
+            .background(hovering ? ConsoleTheme.hover : Color.clear)
+            .onHover { hovering = $0 }
+            .animation(ConsoleMotion.hover, value: hovering)
+    }
+
+    private func press() {
+        let option = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
+        if option, let altToggle { altToggle() } else { toggle() }
+    }
+}
+
+/// `.consoleHelp` when there is a line to say, the view untouched when there is none.
+struct ConsoleOptionalTip: ViewModifier {
+    let tip: String?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let tip { content.consoleHelp(tip) } else { content }
     }
 }
 
@@ -519,6 +561,8 @@ struct ConsoleListKeys: ViewModifier {
     let primary: (String) -> Void
     var fold: (String, Bool) -> Void = { _, _ in }
     var escape: () -> Void = {}
+    /// The head a row sits under, when it sits inside a fold: ← on the row rings that head.
+    var parentHead: (String) -> String? = { _ in nil }
 
     @FocusState private var focused: Bool
 
@@ -548,7 +592,9 @@ struct ConsoleListKeys: ViewModifier {
         case .step(let delta): move(to: ConsoleListModel.step(focus.id, by: delta, in: ids), why: delta > 0 ? "down" : "up")
         case .jump(let toEnd): move(to: toEnd ? ids.last : ids.first, why: toEnd ? "end" : "home")
         case .primary: if let id = focus.id { primary(id) }
-        case .fold(let open): if let id = focus.id, heads.contains(id) { fold(id, open) }
+        case .fold(let open):
+            guard let id = focus.id else { break }
+            if heads.contains(id) { fold(id, open) } else if !open, let head = parentHead(id) { move(to: head, why: "parent") }
         case .verbs: if let id = focus.id { focus.openVerbs(id) }
         case .escape: escape()
         case .type(let ch):
@@ -574,12 +620,13 @@ enum ConsoleListModel {
     /// Which rail's rhythm: the right rail's 28 / 40, the agents rail's 44.
     enum Rail { case right, agents }
 
-    /// 28 one line · 40 with a meta line · +16 per extra title line; the agents rail 44 (+16 per extra line).
+    /// 28 one line · 40 with a meta line · +16 per extra title line; the agents rail 44 when a figure
+    /// on the row ticks (its meta line), 28 otherwise (+16 per extra line).
     static func height(lines: Int, meta: Bool, rail: Rail = .right) -> CGFloat {
         let extra = CGFloat(max(0, lines - 1)) * 16
         switch rail {
         case .right: return (meta ? 40 : 28) + extra
-        case .agents: return 44 + extra
+        case .agents: return (meta ? 44 : 28) + extra
         }
     }
 

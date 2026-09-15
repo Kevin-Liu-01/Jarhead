@@ -553,12 +553,29 @@ enum ConsoleFormat {
     /// "2026-09-10" → "Today" / "Yesterday" / "Tue, Sep 8"
     static func day(_ s: String, now: Date = Date()) -> String {
         guard let date = dayParser.date(from: s) else { return s }
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: now)
-        let days = cal.dateComponents([.day], from: cal.startOfDay(for: date), to: today).day ?? 0
+        let days = daysAgo(s, now: now)
         if days == 0 { return "Today" }
         if days == 1 { return "Yesterday" }
         return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+
+    /// Whole days from a ledger day to `now`'s day: 0 today, 1 yesterday; `Int.max` for a string that is not a day.
+    static func daysAgo(_ s: String, now: Date = Date()) -> Int {
+        guard let date = dayParser.date(from: s) else { return Int.max }
+        let cal = Calendar.current
+        return cal.dateComponents([.day], from: cal.startOfDay(for: date), to: cal.startOfDay(for: now)).day ?? 0
+    }
+
+    /// "2026-08-02" → "Aug 2" — a folded head's figure.
+    static func shortDay(_ s: String) -> String {
+        guard let date = dayParser.date(from: s) else { return s }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// "2026-09-12" → "Saturday, 12 September 2026" — a day head's tip inside Older.
+    static func fullDay(_ s: String) -> String {
+        guard let date = dayParser.date(from: s) else { return s }
+        return date.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
     }
 
     /// Middle-ellipsize a path, keeping the tail: "~/…/apps/mac/Scripts"
@@ -642,9 +659,11 @@ enum ConsoleFormat {
         return parts.joined(separator: " · ")
     }
 
-    /// The Threads head's count: "3 · 2 running" — how many are on the rail, how many are busy.
-    static func threadsCount(total: Int, busy: Int) -> String {
-        busy > 0 ? "\(total) · \(busy) running" : "\(total)"
+    /// The Threads head's count: how many are on the rail, then the one figure that matters most —
+    /// "3 · 1 asks" while any waits on Kevin, else "3 · 2 running" while any is busy, else "3".
+    static func threadsCount(total: Int, busy: Int, asks: Int = 0) -> String {
+        if asks > 0 { return "\(total) · \(asks) asks" }
+        return busy > 0 ? "\(total) · \(busy) running" : "\(total)"
     }
 }
 

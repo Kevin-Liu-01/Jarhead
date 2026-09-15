@@ -1,44 +1,47 @@
 import SwiftUI
 import AppKit
 
-// Left rail, two sections. **Jarhead** first — its own conversations: a "Now" row
-// (the live or paused session: elapsed · billed, or "paused · meter stopped";
-// "asleep" when there is none), then past conversations newest first under day
-// heads, one 44pt row per conversation — the Jarhead mark, the first thing Kevin
-// said (or the name he gave it) with the started clock as its right-hand stamp, and
-// one mono meta line: duration · billed · messages. A resume chain (`resumedFrom`
-// links) folds into one row with a "resumed ×n" badge beside the stamp. Pinned
-// conversations float above the days under a "Pinned" head with a solid pin glyph;
-// archived and trashed ones leave the days for two folded groups at the bottom,
-// "Archived (n)" and "Trash (n)", each row with Restore — never a Delete or an Empty:
-// the Trash head's folder reveals it in Finder, and emptying it is Kevin's, there.
-// Every row has a context menu and a ⋯ drawn at rest (the same `[ConsoleVerb]`): Rename (inline;
-// Return commits, Esc cancels, "" is back to the auto title), Pin, Archive, Move to Trash;
-// ⌘-click and ⇧-click select several and a strip under the head offers Archive ·
-// Move to Trash · Restore for all of them. The Now row's menu has New conversation
-// and Clear. Every action is undoable (the toast under the header, Edit › Undo).
-// The head holds the search (⌘F): hits from the ledger grouped by conversation (`k of n` in the
-// field, a type badge on every hit), each opening it scrolled to the row; ↑↓ walk the hits and
-// Return opens the focused one; an empty box is the rail again. Day heads are sticky
-// `ConsoleGroupHead`s; Archived, Trash and Hidden are `ConsoleDisclosure`s whose folded head says
-// what is inside; every list row takes `ConsoleListKeys` (↑↓ ⏎ → ← Esc, the keyboard's one ring).
-// Then **Agents**: sessions grouped by the tool that owns them (Claude Code, Codex,
-// Cursor…). A group is a `ConsoleDisclosure` (24pt head: the tool's name, a count, and while
-// folded the one exceptional word — the `[1 asks]` badge — with the resting count) and 44pt rows: the
-// mark on the icon column, the name with its status as a word in the trailing zone (a badge
-// only when it asks), and one mono meta line — project · messages · age. Hide takes a row
-// out of its group into a folded "Hidden (n)" at the end (never a file operation —
-// those tools own their stores). Groups are separated by a gap, never a rule; the
-// two sections by one rule and a head. A down connector keeps a head of its own so
-// its reason shows. Clicking a row steps into that conversation in the stream; the
-// selected row carries the accent bar. Now is the selection when nothing is stepped into.
+// Left rail, two sections on one ladder (design10): blue means alive, grey means over, dim means old,
+// a second line means a clock is still running. **Jarhead** first — its own conversations: a "Now" row
+// (the live or paused session: elapsed · billed, or "paused · meter stopped"; "asleep" when there is
+// none, its orb grey), then past conversations newest first under sticky folding `ConsoleGroupHead`s —
+// Today open, `› Yesterday n · Σ billed` closed, every earlier day inside one closed `› Older n · since …`
+// head (its days pin as they scroll once it opens). Each conversation is one 28pt row: the Jarhead mark
+// in the row's tone (`RailTone`: bright 1.0 while it ran today, quiet 0.72 with a grey orb once it is
+// over, back 0.48 for the crash litter and the archived / trashed), the first thing Kevin said (or the
+// name he gave it), a `×n` mono badge when a resume chain (`resumedFrom` links) folded into it, and the
+// started clock as its right-hand stamp; duration · billed · messages moved into the row's card
+// (`ran · started · sessions`), with `Pinned` as the card's status. Pinned conversations float above
+// the days under a "Pinned" head that never folds and carries no glyph; archived and trashed ones leave
+// the days for two folded `ConsoleDisclosure`s at the bottom, `Archived n · Σ billed` and `Trash n`, each
+// row with Restore — never a Delete or an Empty: the Trash head's folder reveals it in Finder, and
+// emptying it is Kevin's, there. Every row has a context menu and a ⋯ drawn at rest (the same
+// `[ConsoleVerb]`): Rename (inline; Return commits, Esc cancels, "" is back to the auto title), Pin,
+// Archive, Move to Trash; ⌘-click and ⇧-click select several and a strip under the head offers Archive ·
+// Move to Trash · Restore for all of them. The Now row's menu has New conversation and Clear. Every
+// action is undoable (the toast under the header, Edit › Undo). The head holds the search (⌘F): folds
+// are suspended, not changed — `Hits n` over each hit's row (a type badge on every hit), `Agents n` for
+// the sessions the query names, `k of n` in the field counting the rail's conversations; ↑↓ walk the
+// results and Return opens the focused one; Esc is the rail again, exactly. Every list row takes
+// `ConsoleListKeys` (↑↓ ⏎ → ← Esc, the keyboard's one ring; ← on a row rings its head; ⌥-click folds a
+// head's siblings by tier).
+// Then **Agents**, the same ladder: sessions grouped by the tool that owns them (Claude Code, Codex,
+// Cursor…). A group is a `ConsoleDisclosure` (24pt head: the tool's name, a count, and while folded the
+// one exceptional word — the `[1 asks]` badge — then the resting item, `2 working` · `3 idle` ·
+// `ended · 40m`), open by default iff a row of its asks or works. A row is 44 while it asks or works
+// (`[asks]` or the working dot + word, one mono meta line `project · age`) and 28 otherwise (`idle · 31m`
+// at 0.72, or the one word on a titanium mark at 0.48 once the process is gone); the over rows fold
+// under `› Ended n · newest age` beneath the live ones, or list directly when nothing is alive. Hide
+// takes a row out of its group into a folded "Hidden n" at the end, where it is 28 with the word alone
+// and `Unhide` (never a file operation — those tools own their stores). Groups are separated by a gap,
+// never a rule; the two sections by one rule and a head. A down connector keeps a head of its own so
+// its reason shows. Clicking a row steps into that conversation in the stream; the selected row carries
+// the accent bar. Now is the selection when nothing is stepped into.
 
 private let railInset: CGFloat = 12
 private let iconGap: CGFloat = 8
 /// Where text starts: the inset, the 20pt icon column and its gap.
 private let textInset: CGFloat = railInset + 20 + iconGap
-/// The title row's right-hand zone: the clock stamp at rest, the ⋯ while hovering.
-private let trailingZone: CGFloat = 40
 /// The Restore / Unhide button on an archived, trashed or hidden row, left of that zone.
 private let restoreWidth: CGFloat = 58
 /// How many hits a conversation shows under search before "+n more".
@@ -94,6 +97,140 @@ enum AgentsRailWords {
     /// The Threads head's tip and the rename field's — ≤ 60 characters, no "you", no "Kevin".
     static let threadsHelp = "Threads asking first, then busy, then finished (5 min kept)"
     static let renameHelp = "Return keeps the name; Esc cancels; empty is the auto title"
+}
+
+/// What a rail row wears: bright (it can still change), quiet (over — 0.72, the text ladder's fg2),
+/// back (empty, archived, trashed, hidden, an agent whose process is gone — 0.48, fg3). Placement
+/// (Pinned, a day, Older, Archived, Trash, Ended, Hidden) is where a row sits; the tone is its own.
+/// The open (stepped-into) row and a search result lift their alpha to 1.0 and keep the tone's mark.
+enum RailTone: Equatable {
+    case bright, quiet, back
+
+    /// The row's alpha: the text ladder's own figures (fg · fg2 · fg3), never a new colour.
+    var alpha: CGFloat {
+        switch self {
+        case .bright: return 1
+        case .quiet: return 0.72
+        case .back: return 0.48
+        }
+    }
+
+    /// The mark in titanium's ramp (`Dither.markQuietStops`) for every tone but bright.
+    var quietMark: Bool { self != .bright }
+
+    /// A past conversation: archived / trashed → back; the crash litter → back; ended today or never
+    /// closed → bright; ended before today → quiet. Judged by the END day (the start day groups it).
+    static func conversation(_ chain: JarheadChain, now: Double) -> RailTone {
+        if !chain.isActive || chain.isEmptyConversation { return .back }
+        if chain.isOpen { return .bright }
+        if let ended = chain.endedAt, ConsoleFormat.dayString(ended) == ConsoleFormat.dayString(now) { return .bright }
+        return .quiet
+    }
+
+    /// An agent: hidden → back; asks / working → bright; idle (a process, quiet) → quiet; over → back.
+    static func agent(status: AgentStatus, hidden: Bool) -> RailTone {
+        if hidden { return .back }
+        switch status {
+        case .blocked, .working: return .bright
+        case .idle: return .quiet
+        case .done, .ended, .unknown, .offline: return .back
+        }
+    }
+
+    /// A thread: live → bright; finished (≤ 5 min on the rail) → quiet. Never back: it is recent by construction.
+    static func thread(_ status: ThreadStatus) -> RailTone { status.isLive ? .bright : .quiet }
+}
+
+/// Where a day's head sits: Today (open), Yesterday (closed), or inside the one closed `Older` head.
+enum RailDayPlace: Equatable {
+    case today, yesterday, older
+
+    static func of(day: String, now: Date) -> RailDayPlace {
+        let ago = ConsoleFormat.daysAgo(day, now: now)
+        if ago <= 0 { return .today }
+        return ago == 1 ? .yesterday : .older
+    }
+}
+
+/// The rail's fold ids, figures and tips (pinned by check-kit).
+enum RailWords {
+    static let olderId = "rail.older"
+    /// The card's key for what the row lost: `ran  34:00 · 7.5 min · 10 msgs`.
+    static let ran = "ran"
+    static let hits = "Hits"
+    static let agents = "Agents"
+    /// The card's status while the conversation is pinned (the row carries no pin glyph).
+    static let pinnedStatus = "Pinned"
+    static let dayPrefix = "rail.day."
+    static let endedSuffix = ".ended"
+    static let olderTipLead = "Every day before yesterday"
+    static func dayId(_ day: String) -> String { dayPrefix + day }
+    static func endedId(_ tool: AgentTool) -> String { AgentsRailWords.groupId(tool) + endedSuffix }
+    /// `rail.day.2026-09-13` → `2026-09-13`; nil for any other id.
+    static func day(ofId id: String) -> String? { id.hasPrefix(dayPrefix) ? String(id.dropFirst(dayPrefix.count)) : nil }
+    /// The folds the rail draws as group heads (the disclosures listen for their own ids).
+    static func ownsFold(_ id: String) -> Bool { id.hasPrefix(dayPrefix) || id == olderId || id.hasSuffix(endedSuffix) }
+    /// `×1` — the chain row's mono figure badge.
+    static func resumedFigure(_ n: Int) -> String { "×\(n)" }
+    /// `resumed once` · `resumed 3×` — the badge's tip.
+    static func resumedTip(_ n: Int) -> String { n == 1 ? "resumed once" : "resumed \(n)×" }
+    /// A folded day's tip: `Yesterday · 5 · 26 min · newest "Hello"`; a day inside Older leads with its full date.
+    static func dayTip(title: String, count: Int, billed: Double, newest: String?) -> String {
+        var parts = [title, "\(count)", ConsoleFormat.billedShort(billed)]
+        if let newest, !newest.isEmpty { parts.append("newest “\(ConversationFormat.oneLine(newest, max: 24))”") }
+        return parts.joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `Every day before yesterday · 31 · since Aug 2`
+    static func olderTip(count: Int, since: String) -> String {
+        [olderTipLead, "\(count)", ConsoleDisclosureWords.since(since)].joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `7 conversations · 2 archived · 2 in the Trash`
+    static func jarheadTip(active: Int, archived: Int, trashed: Int) -> String {
+        var parts = [active == 1 ? "1 conversation" : "\(active) conversations"]
+        if archived > 0 { parts.append("\(archived) archived") }
+        if trashed > 0 { parts.append("\(trashed) in the Trash") }
+        return parts.joined(separator: ConsoleDisclosureWords.joiner)
+    }
+    /// `7 alive · 6 over`
+    static func agentsTip(alive: Int, over: Int) -> String { "\(alive) alive · \(over) over" }
+    /// The newest conversation's title in a day (the list is newest first), skipping the crash litter.
+    static func newestTitle(_ chains: [JarheadChain]) -> String? { chains.first { !$0.isEmptyConversation }?.displayTitle }
+}
+
+/// The folds' defaults, pure: Today and every day inside Older open, Yesterday closed, Older closed,
+/// a tool open iff a process of its asks or works, its Ended sub-head closed. Read only when the
+/// store holds nothing for the id (`ConsoleFoldStore.isOpen(_:default:)`).
+enum RailFolds {
+    static func defaultOpen(_ id: String, now: Date, hotTools: Set<String>) -> Bool {
+        if let day = RailWords.day(ofId: id) { return RailDayPlace.of(day: day, now: now) != .yesterday }
+        if id == RailWords.olderId || id.hasSuffix(RailWords.endedSuffix) { return false }
+        if id.hasPrefix("agents.") { return hotTools.contains(String(id.dropFirst("agents.".count))) }
+        return true
+    }
+
+    /// ⌥-click's siblings, by tier: a top-level head (a day outside Older, or Older itself) folds the other
+    /// top-level heads and never the days inside Older; a day inside Older folds only its neighbours there.
+    static func siblings(keeping id: String, days: [String], now: Date) -> [String] {
+        let inside = RailWords.day(ofId: id).map { RailDayPlace.of(day: $0, now: now) == .older } ?? false
+        var out = days.filter { (RailDayPlace.of(day: $0, now: now) == .older) == inside }.map(RailWords.dayId)
+        if !inside { out.append(RailWords.olderId) }
+        return out.filter { $0 != id }
+    }
+}
+
+/// What an agent row's status zone shows, pure (pinned by check-kit). A hidden row wears the word alone
+/// at 28 — no badge, no dot, no age, no meta line — whatever its process does: the ladder says it is
+/// over, and colour belongs to rows that can still change.
+struct RailAgentZone: Equatable {
+    var tall = false
+    var asks = false
+    var dot = false
+    var age = false
+
+    static func of(status: AgentStatus, hidden: Bool) -> RailAgentZone {
+        if hidden { return RailAgentZone() }
+        return RailAgentZone(tall: status == .blocked || status == .working, asks: status == .blocked, dot: status == .working, age: status == .idle)
+    }
 }
 
 /// What the Now row says, sliced from the snapshot by the root so the rail stays a plain value.
@@ -213,12 +350,20 @@ struct AgentsRail: View, Equatable {
         }
     }
 
-    private static func rank(_ s: AgentStatus) -> Int {
+    /// The ladder's order inside a group: asks (0) → working (1) → idle (2) → over (3).
+    static func rank(_ s: AgentStatus) -> Int {
         switch s {
-        case .working, .blocked, .idle: return 0
-        case .done, .ended, .unknown, .offline: return 1
+        case .blocked: return 0
+        case .working: return 1
+        case .idle: return 2
+        case .done, .ended, .unknown, .offline: return 3
         }
     }
+
+    /// A row a process owns and that can still change: it asks or works. A tool group opens by default for one.
+    static func hot(_ agent: AgentInfo) -> Bool { agent.status == .blocked || agent.status == .working }
+    /// A row a process still owns (asks · working · idle).
+    static func live(_ agent: AgentInfo) -> Bool { rank(agent.status) < 3 }
 
     private var pinnedChains: [JarheadChain] { jarhead.filter { $0.isActive && $0.pinned } }
     private var archived: [JarheadChain] { jarhead.filter(\.isArchived) }
@@ -236,14 +381,40 @@ struct AgentsRail: View, Equatable {
         return order.map { DayGroup(day: $0, chains: map[$0] ?? []) }
     }
 
-    /// Every chain row on screen, top to bottom — what a ⇧-click ranges over.
+    /// A day placed on the rail: Today · Yesterday, or one of the days inside Older.
+    private struct PlacedDay: Identifiable {
+        let group: DayGroup
+        let place: RailDayPlace
+        var id: String { group.day }
+    }
+
+    /// The rail's clock for the day places and the fold defaults; the drawn rows take the TimelineView's `now`.
+    private var railNow: Date { Date(timeIntervalSince1970: ConsoleFormat.nowMs / 1000) }
+
+    /// The days placed, newest first; inside a day the crash litter (`isEmptyConversation`) sorts last.
+    private func placedDays(now: Date) -> [PlacedDay] {
+        days.map { group in
+            let chains = group.chains.filter { !$0.isEmptyConversation } + group.chains.filter(\.isEmptyConversation)
+            return PlacedDay(group: DayGroup(day: group.day, chains: chains), place: RailDayPlace.of(day: group.day, now: now))
+        }
+    }
+
+    /// The tools with a row that asks or works: their groups open by default.
+    private var hotTools: Set<String> { Set(groups.filter { $0.agents.contains(where: AgentsRail.hot) }.map { $0.tool.rawValue }) }
+
+    /// Every chain row on screen, top to bottom — what a ⇧-click ranges over; folded days leave theirs out.
     private var visibleOrder: [String] {
         var out = pinnedChains.map(\.id)
-        for group in days { out += group.chains.map(\.id) }
+        let placed = placedDays(now: railNow)
+        for day in placed where day.place != .older { out += dayRows(day).map(\.id) }
+        if isFoldOpen(RailWords.olderId) { for day in placed where day.place == .older { out += dayRows(day).map(\.id) } }
         if session.archivedOpen { out += archived.map(\.id) }
         if session.trashOpen { out += trashed.map(\.id) }
         return out
     }
+
+    /// A day's rows while its head is open, none while it is folded.
+    private func dayRows(_ day: PlacedDay) -> [JarheadChain] { isFoldOpen(RailWords.dayId(day.group.day)) ? day.group.chains : [] }
 
     private var selectedChains: [JarheadChain] { jarhead.filter { session.selectedChainIds.contains($0.id) } }
 
@@ -253,15 +424,16 @@ struct AgentsRail: View, Equatable {
             + connectors.filter { !$0.ok && !ConsoleTheme.kindOrder.contains($0.kind) }
     }
 
-    /// The rows reflow when a chain changes place — a pin, an archive, a trash, a restore, a rename.
+    /// The rows reflow when a chain changes place — a pin, an archive, a trash, a restore, a rename — or a fold turns.
     private var layoutKey: [String] {
-        jarhead.map { "\($0.id)|\($0.state)|\($0.pinned)|\($0.displayTitle)" }
+        jarhead.map { "\($0.id)|\($0.state)|\($0.pinned)|\($0.displayTitle)" } + ["fold:\(foldTick)"]
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // The head owns its bottom rule; it meets the right rail's tab row at the same height.
-            JarheadRailHead(count: jarhead.isEmpty ? nil : jarhead.count, hitCount: hitCount, move: { step($0) }, openFocused: openFocusedHit)
+            JarheadRailHead(count: jarhead.isEmpty ? nil : jarhead.filter(\.isActive).count, hitCount: hitCount, move: { step($0) }, openFocused: openFocusedHit,
+                            tip: RailWords.jarheadTip(active: jarhead.filter(\.isActive).count, archived: archived.count, trashed: trashed.count))
                 .frame(height: 40)
             ConsoleHairline()
             if selectedChains.count > 1 {
@@ -280,7 +452,7 @@ struct AgentsRail: View, Equatable {
                         }
                         .padding(.top, 8).padding(.bottom, 24)
                         .consoleListKeys(ConsoleListKeys(focus: focus, ids: walkIds, heads: headIds, title: rowTitle, typeAhead: !session.searchOpen,
-                                                         primary: primary, fold: fold, escape: escape))
+                                                         primary: primary, fold: fold, escape: escape, parentHead: parentHead))
                         .modifier(railAnimations)
                         .onChange(of: focus.id) { _, id in
                             if let id, focus.keyboard { withAnimation(Motion.snappy) { proxy.scrollTo(id, anchor: nil) } }
@@ -290,8 +462,32 @@ struct AgentsRail: View, Equatable {
                 .thinScrollers()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ConsoleFoldStore.changed)) { _ in foldTick += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleFoldStore.changed)) { _ in withAnimation(Motion.snappy) { foldTick += 1 } }
+        .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: preview)
+        .onChange(of: session.openJarheadSessionId) { _, id in if let id { reveal(AgentsRailWords.chainId(id)) } }
+        .onChange(of: session.openAgentId) { _, id in if let id { reveal(AgentsRailWords.agentId(id)) } }
         .modifier(railHousekeeping)
+    }
+
+    /// The harness's `fold:<id>:<open|closed>` for the folds the rail draws as group heads (the day heads,
+    /// Older, a tool's Ended), and `probe-rail`: the focus and the walk, one line into run.log.
+    private func preview(_ note: Notification) {
+        guard let info = note.userInfo else { return }
+        if let id = info[ConsolePreviewKey.fold] as? String, let open = info[ConsolePreviewKey.foldOpen] as? Bool, RailWords.ownsFold(id) {
+            fold(id, open)
+        }
+        if info["probeRail"] as? Bool == true {
+            let ids = walkIds
+            print("rail-probe: focus=\(focus.id ?? "nil") walk=\(ids.count) \(ids.joined(separator: " "))")
+        }
+    }
+
+    /// A row stepped into from outside the rail (a card link, the harness) never hides inside a fold:
+    /// its head opens first — and Older's, when the head is a day inside it.
+    private func reveal(_ id: String) {
+        guard let head = parentHead(id) else { return }
+        if let day = RailWords.day(ofId: head), RailDayPlace.of(day: day, now: railNow) == .older, !isFoldOpen(RailWords.olderId) { fold(RailWords.olderId, true) }
+        if !isFoldOpen(head) { fold(head, true) }
     }
 
     /// The rail's rows: the search's hits, or the Jarhead section and the Agents section.
@@ -326,8 +522,10 @@ struct AgentsRail: View, Equatable {
         }
     }
 
+    /// `Agents 7` — the rows a process owns (asks · working · idle); the tip says how many are over.
     private var agentsHead: some View {
-        ConsoleSectionHead("Agents", count: visibleAgents.isEmpty ? nil : visibleAgents.count) {
+        let alive = visibleAgents.filter(AgentsRail.live).count
+        return ConsoleSectionHead("Agents", count: visibleAgents.isEmpty ? nil : alive) {
             Button {
                 actions.send(.agentRefresh)
                 if !Motion.reduced { withAnimation(Motion.gentle) { refreshSpin += 360 } }
@@ -339,6 +537,7 @@ struct AgentsRail: View, Equatable {
             .consoleHelp("Refresh")
             .accessibilityLabel("Refresh agents")
         }
+        .modifier(ConsoleOptionalTip(tip: visibleAgents.isEmpty ? nil : RailWords.agentsTip(alive: alive, over: visibleAgents.count - alive)))
     }
 
     /// Rows arriving and leaving (a new session, a conversation closing, one moved to the Trash)
@@ -346,7 +545,7 @@ struct AgentsRail: View, Equatable {
     /// wherever it moved, click or not.
     private var railAnimations: RailAnimations {
         RailAnimations(agents: agents.map(\.id), layout: layoutKey, threads: threadsKey, down: down.map(\.kind), hidden: hiddenAgents,
-                       folds: [session.archivedOpen, session.trashOpen, session.hiddenAgentsOpen, session.isSearching], selection: selectionKey)
+                       folds: [session.archivedOpen, session.trashOpen, session.hiddenAgentsOpen, session.isSearching], foldTick: foldTick, selection: selectionKey)
     }
 
     private var railHousekeeping: RailHousekeeping {
@@ -355,24 +554,66 @@ struct AgentsRail: View, Equatable {
 
     // MARK: - keys (ConsoleListKeys)
 
-    /// Every row and head on screen, top to bottom — what ↑↓ walk; folded groups leave their rows out.
+    /// Every row and head on screen, top to bottom — what ↑↓ walk; folded heads leave their rows out.
     private var walkIds: [String] {
         _ = foldTick
         if session.isSearching { return searchWalk }
         var out = [AgentsRailWords.nowId] + threads.map { AgentsRailWords.threadId($0.id) }
         out += pinnedChains.map { AgentsRailWords.chainId($0.id) }
-        for group in days { out += group.chains.map { AgentsRailWords.chainId($0.id) } }
+        let placed = placedDays(now: railNow)
+        for day in placed where day.place != .older { out += dayWalk(day) }
+        let older = placed.filter { $0.place == .older }
+        if !older.isEmpty {
+            out.append(RailWords.olderId)
+            if isFoldOpen(RailWords.olderId) { for day in older { out += dayWalk(day) } }
+        }
         if !archived.isEmpty { out.append(AgentsRailWords.archivedId); if session.archivedOpen { out += archived.map { AgentsRailWords.chainId($0.id) } } }
         if !trashed.isEmpty { out.append(AgentsRailWords.trashId); if session.trashOpen { out += trashed.map { AgentsRailWords.chainId($0.id) } } }
         for group in groups {
             out.append(AgentsRailWords.groupId(group.tool))
-            if ConsoleFoldStore.isOpen(AgentsRailWords.groupId(group.tool), default: true) { out += group.agents.map { AgentsRailWords.agentId($0.id) } }
+            if isFoldOpen(AgentsRailWords.groupId(group.tool)) { out += groupWalk(group) }
         }
         if !hiddenRows.isEmpty { out.append(AgentsRailWords.hiddenId); if session.hiddenAgentsOpen { out += hiddenRows.map { AgentsRailWords.agentId($0.id) } } }
         return out
     }
 
-    /// The search's rows: the title matches, then each group's row and its hits.
+    /// A day's head, then its rows while it is open.
+    private func dayWalk(_ day: PlacedDay) -> [String] {
+        [RailWords.dayId(day.group.day)] + dayRows(day).map { AgentsRailWords.chainId($0.id) }
+    }
+
+    /// An open tool group's walk: the live rows, then the Ended head (and its rows while open) — or the
+    /// over rows directly when nothing is alive (a fold never holds only a fold).
+    private func groupWalk(_ group: Group) -> [String] {
+        let live = group.agents.filter(AgentsRail.live), over = group.agents.filter { !AgentsRail.live($0) }
+        var out = live.map { AgentsRailWords.agentId($0.id) }
+        if !live.isEmpty, !over.isEmpty {
+            let id = RailWords.endedId(group.tool)
+            out.append(id)
+            if isFoldOpen(id) { out += over.map { AgentsRailWords.agentId($0.id) } }
+        } else {
+            out += over.map { AgentsRailWords.agentId($0.id) }
+        }
+        return out
+    }
+
+    /// The head a row inside a fold sits under (← rings it; stepping into the row opens it).
+    private func parentHead(_ id: String) -> String? {
+        if let chain = jarhead.first(where: { AgentsRailWords.chainId($0.id) == id }) {
+            if chain.isArchived { return AgentsRailWords.archivedId }
+            if chain.isTrashed { return AgentsRailWords.trashId }
+            return chain.pinned ? nil : RailWords.dayId(chain.day)
+        }
+        if let agent = agents.first(where: { AgentsRailWords.agentId($0.id) == id }) {
+            if hiddenAgents.contains(agent.id) { return AgentsRailWords.hiddenId }
+            guard let group = groups.first(where: { $0.tool == agent.resolvedTool }) else { return nil }
+            if !AgentsRail.live(agent), group.agents.contains(where: AgentsRail.live) { return RailWords.endedId(group.tool) }
+            return AgentsRailWords.groupId(group.tool)
+        }
+        return nil
+    }
+
+    /// The search's rows: the title matches, then each group's row and its hits, then the agents that match.
     private var searchWalk: [String] {
         let q = ConsoleSession.searchKey(session.searchQuery)
         let groups = SearchGroups.build(hits: session.searchHits ?? [], chains: jarhead, liveSessionId: self.now.sessionId)
@@ -382,18 +623,42 @@ struct AgentsRail: View, Equatable {
             if let chain = group.chain { out.append(AgentsRailWords.chainId(chain.id)) } else if group.isNow { out.append(AgentsRailWords.nowId) }
             out += group.hits.prefix(hitsPerChain).map { AgentsRailWords.hitId($0.id) }
         }
+        out += agentMatches(q).map { AgentsRailWords.agentId($0.id) }
         return out
     }
 
-    private var headIds: Set<String> {
-        Set([AgentsRailWords.archivedId, AgentsRailWords.trashId, AgentsRailWords.hiddenId] + groups.map { AgentsRailWords.groupId($0.tool) })
+    /// Agents the search matches by name, project, the connector's detail or the tool's label — in the rail's
+    /// order, the hidden ones last (search suspends the Hidden fold too: a hidden row is found, lifted, with its Unhide).
+    private func agentMatches(_ q: String) -> [AgentInfo] {
+        guard !q.isEmpty else { return [] }
+        return (groups.flatMap(\.agents) + hiddenRows).filter { agent in
+            [agent.name, ConsoleFormat.projectName(agent.cwd) ?? "", agent.detail ?? "", agent.resolvedTool.label].contains { $0.lowercased().contains(q) }
+        }
     }
 
-    /// `k of n`: conversations the search matched, of every conversation on the rail.
+    private var headIds: Set<String> {
+        var out = Set([AgentsRailWords.archivedId, AgentsRailWords.trashId, AgentsRailWords.hiddenId, RailWords.olderId])
+        out.formUnion(days.map { RailWords.dayId($0.day) })
+        for group in groups {
+            out.insert(AgentsRailWords.groupId(group.tool))
+            if group.agents.contains(where: AgentsRail.live), group.agents.contains(where: { !AgentsRail.live($0) }) { out.insert(RailWords.endedId(group.tool)) }
+        }
+        return out
+    }
+
+    /// `k of n`: the rail's conversations the search matched, of every one of them (`searchCount`).
     private var hitCount: String? {
         guard session.isSearching, session.searchHits != nil else { return nil }
-        let matched = Set(searchWalk.filter { !$0.hasPrefix("hit:") })
-        return ConsoleRowWords.count(shown: matched.count, of: jarhead.count + 1)
+        let matched = Set(searchWalk.filter { !$0.hasPrefix("hit:") && !$0.hasPrefix("agent:") })
+        return Self.searchCount(matched: matched, chains: jarhead)
+    }
+
+    /// `k of n` under search, one set on both sides: Now and the active and archived chains. A trashed
+    /// chain's hits still list (with Restore), but the figure names the rail's conversations, so it counts
+    /// in neither k nor n.
+    static func searchCount(matched: Set<String>, chains: [JarheadChain]) -> String {
+        let trashed = Set(chains.filter(\.isTrashed).map { AgentsRailWords.chainId($0.id) })
+        return ConsoleRowWords.count(shown: matched.subtracting(trashed).count, of: chains.count - trashed.count + 1)
     }
 
     /// A row's title for type-ahead.
@@ -410,6 +675,7 @@ struct AgentsRail: View, Equatable {
         if id == AgentsRailWords.nowId { withAnimation(Motion.snappy) { actions.showNow() }; return }
         if headIds.contains(id) { fold(id, !isFoldOpen(id)); return }
         if let chain = jarhead.first(where: { AgentsRailWords.chainId($0.id) == id }) {
+            reveal(id)
             withAnimation(Motion.snappy) { if session.openJarheadSessionId == chain.id { actions.showNow() } else { actions.openJarheadConversation(chain) } }
         } else if let agent = agents.first(where: { AgentsRailWords.agentId($0.id) == id }) {
             withAnimation(Motion.wipeAnimation) { if session.openAgentId == agent.id { actions.showNow() } else { session.openAgent(agent.id) } }
@@ -420,17 +686,27 @@ struct AgentsRail: View, Equatable {
         }
     }
 
+    /// A fold's state: the three bound ones from the window; every other id from the store, its default
+    /// the ladder's (`RailFolds`: Today and the days inside Older open, Yesterday, Older and Ended closed,
+    /// a tool open iff a row of its asks or works).
     private func isFoldOpen(_ id: String) -> Bool {
         switch id {
         case AgentsRailWords.archivedId: return session.archivedOpen
         case AgentsRailWords.trashId: return session.trashOpen
         case AgentsRailWords.hiddenId: return session.hiddenAgentsOpen
-        default: return ConsoleFoldStore.isOpen(id, default: true)
+        default: return ConsoleFoldStore.isOpen(id, default: RailFolds.defaultOpen(id, now: railNow, hotTools: hotTools))
         }
     }
 
-    /// → / ← on a head: the store posts, the disclosure (bound or remembered) follows.
+    /// → / ← on a head: the store posts, the disclosure (bound or remembered) or the group head follows.
     private func fold(_ id: String, _ open: Bool) { ConsoleFoldStore.set(id, open) }
+
+    /// ⌥-click on a day head (or Older): it opens and its tier's other heads fold — the top-level heads never
+    /// touch the days inside Older, a day inside Older never touches Today or Yesterday (`RailFolds.siblings`).
+    private func foldOtherDays(keeping id: String) {
+        ConsoleFoldStore.set(id, true)
+        ConsoleFoldStore.foldSiblings(RailFolds.siblings(keeping: id, days: days.map(\.day), now: railNow), keeping: id)
+    }
 
     /// Esc: the search closes if it is open; else the highlight lets go.
     private func escape() {
@@ -487,7 +763,7 @@ struct AgentsRail: View, Equatable {
         // thread's pane (its own cards, steps, screenshots, Allow / Deny, composer); the main
         // thread's row is the same conversation as Now seen as a thread. Stop per row.
         if showsThreads {
-            threadsHead(total: threads.count, busy: threads.filter { $0.status.isBusy }.count).padding(.top, 8)
+            threadsHead(total: threads.count, busy: threads.filter { $0.status.isBusy }.count, asks: threads.filter { $0.status == .waitingKevin }.count).padding(.top, 8)
                 .transition(Motion.appear)
             ForEach(threads) { thread in threadRow(thread, now: now) }
         }
@@ -501,18 +777,22 @@ struct AgentsRail: View, Equatable {
             .transition(Motion.appear)
         }
 
-        // A day's rows under a sticky head: the day in words, its count, the date in mono.
-        ForEach(days) { group in
-            Section {
-                ForEach(group.chains) { chain in chainRow(chain, now: now) }
-            } header: {
-                ConsoleGroupHead(title: ConsoleFormat.day(group.day), count: "\(group.chains.count)", figure: group.day).padding(.top, 8)
+        // Today (open) and Yesterday (closed) under sticky folding heads; every older day inside one closed
+        // `Older` head, its days top-level Sections after it so each still pins while it scrolls.
+        let placed = placedDays(now: Date(timeIntervalSince1970: now / 1000))
+        ForEach(placed.filter { $0.place != .older }) { day in daySection(day, now: now) }
+        let older = placed.filter { $0.place == .older }
+        if !older.isEmpty {
+            Section { EmptyView() } header: { olderHead(older).padding(.top, 8) }
+                .transition(Motion.appear)
+            if isFoldOpen(RailWords.olderId) {
+                ForEach(older) { day in daySection(day, now: now) }
             }
-            .transition(Motion.appear)
         }
 
         if !archived.isEmpty {
             ConsoleDisclosure(id: AgentsRailWords.archivedId, title: ConsoleDisclosureWords.archived, count: "\(archived.count)",
+                              summary: ConsoleDisclosureSummary.chains(count: archived.count, billedSeconds: archived.reduce(0) { $0 + $1.usageSeconds }),
                               open: $session.archivedOpen, focused: focus.ringOn(AgentsRailWords.archivedId)) {
                 ForEach(archived) { chain in chainRow(chain, now: now) }
             }
@@ -530,6 +810,45 @@ struct AgentsRail: View, Equatable {
             .padding(.top, 8)
             .transition(Motion.appear)
         }
+    }
+
+    /// A day's rows under its sticky head while the head is open; the head alone while it is folded.
+    private func daySection(_ day: PlacedDay, now: Double) -> some View {
+        let id = RailWords.dayId(day.group.day)
+        let open = isFoldOpen(id)
+        return Section {
+            if open { ForEach(day.group.chains) { chain in chainRow(chain, now: now) } }
+        } header: {
+            dayHead(day, id: id, open: open, now: now).padding(.top, 8)
+        }
+        .transition(Motion.appear)
+    }
+
+    /// `⌄ Today 2` · `› Yesterday 5 … 26 min`: the word, the count, the billed figure while closed; the tip
+    /// carries the full date (inside Older) and the newest title.
+    private func dayHead(_ day: PlacedDay, id: String, open: Bool, now: Double) -> some View {
+        let chains = day.group.chains
+        let billed = chains.reduce(0) { $0 + $1.usageSeconds }
+        let title = ConsoleFormat.day(day.group.day, now: Date(timeIntervalSince1970: now / 1000))
+        let tipTitle = day.place == .older ? ConsoleFormat.fullDay(day.group.day) : title
+        return ConsoleGroupHead(title: title, count: "\(chains.count)",
+                                figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.day(billedSeconds: billed)),
+                                folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
+                                tip: RailWords.dayTip(title: tipTitle, count: chains.count, billed: billed, newest: RailWords.newestTitle(chains)))
+            .id(id)
+    }
+
+    /// `› Older 31 … since Aug 2`: every day before yesterday behind one head; the figure is the oldest day inside.
+    private func olderHead(_ older: [PlacedDay]) -> some View {
+        let id = RailWords.olderId
+        let open = isFoldOpen(id)
+        let count = older.reduce(0) { $0 + $1.group.chains.count }
+        let oldest = older.last?.group.day ?? ""
+        return ConsoleGroupHead(title: ConsoleDisclosureWords.older, count: "\(count)",
+                                figure: open ? nil : ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.older(since: oldest)),
+                                folded: !open, toggle: { fold(id, !open) }, altToggle: { foldOtherDays(keeping: id) }, focused: focus.ringOn(id),
+                                tip: RailWords.olderTip(count: count, since: ConsoleFormat.shortDay(oldest)))
+            .id(id)
     }
 
     private func trashFolder(_ trash: TrashInfo) -> some View {
@@ -560,9 +879,9 @@ struct AgentsRail: View, Equatable {
             .transition(Motion.appear)
     }
 
-    /// 24pt: the section's symbol, "Threads", and "3 · 2 running" in mono.
-    private func threadsHead(total: Int, busy: Int) -> some View {
-        let count = ConsoleFormat.threadsCount(total: total, busy: busy)
+    /// 24pt: the section's symbol, "Threads", and "3 · 1 asks" (else "3 · 2 running", else "3") in mono.
+    private func threadsHead(total: Int, busy: Int, asks: Int) -> some View {
+        let count = ConsoleFormat.threadsCount(total: total, busy: busy, asks: asks)
         return HStack(spacing: iconGap) {
             ConsoleIcon(name: ConsoleTheme.threadsSymbol)
             Text("Threads").font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
@@ -580,13 +899,15 @@ struct AgentsRail: View, Equatable {
     }
 
     /// One past conversation's row, wired: open on a plain click, select on ⌘ / ⇧, the menus' verbs, the inline rename.
-    private func chainRow(_ chain: JarheadChain, now: Double) -> some View {
+    /// `lifted` (a search result) brings a quiet or back row to full alpha; the open row lifts on its own.
+    private func chainRow(_ chain: JarheadChain, now: Double, lifted: Bool = false) -> some View {
         let open = session.openJarheadSessionId == chain.id
         let picked = session.selectedChainIds.contains(chain.id)
         // One of several picked: its menu acts on the whole selection (Finder's rule).
         let multi = picked && selectedChains.count > 1 ? selectionVerbs(selectedChains) : (ChainVerbs(), SelectionMenu())
         let id = AgentsRailWords.chainId(chain.id)
-        return JarheadChainRow(chain: chain, now: now, open: open, picked: picked, renaming: session.renamingChainId == chain.id,
+        return JarheadChainRow(chain: chain, now: now, open: open, tone: RailTone.conversation(chain, now: now), lifted: lifted || open,
+                               picked: picked, renaming: session.renamingChainId == chain.id,
                                focused: focus.ringOn(id), verbs: verbs(chain), selection: multi.1, selectionVerbs: multi.0,
                                hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                                pick: { flags in
@@ -658,16 +979,23 @@ struct AgentsRail: View, Equatable {
                 .transition(.opacity)
         }
 
+        // Folds are suspended, not changed: every result is flat, lifted to 1.0, and keeps its orb's tint.
         if !titleOnly.isEmpty {
             ConsoleGroupHead(title: AgentsRailWords.titles, count: "\(titleOnly.count)")
                 .transition(Motion.appear)
-            ForEach(titleOnly) { chain in chainRow(chain, now: now) }
+            ForEach(titleOnly) { chain in chainRow(chain, now: now, lifted: true) }
         }
 
+        let owned = groups.filter { $0.chain != nil || $0.isNow }.count
+        if owned > 0 {
+            ConsoleGroupHead(title: RailWords.hits, count: "\(owned)")
+                .padding(.top, titleOnly.isEmpty ? 0 : 8)
+                .transition(Motion.appear)
+        }
         ForEach(groups) { group in
             VStack(alignment: .leading, spacing: 0) {
                 if let chain = group.chain {
-                    chainRow(chain, now: now)
+                    chainRow(chain, now: now, lifted: true)
                 } else if group.isNow {
                     JarheadNowRow(info: self.now, now: now, on: session.showsNow,
                                   focused: focus.ringOn(AgentsRailWords.nowId), hovered: hover(AgentsRailWords.nowId),
@@ -676,7 +1004,7 @@ struct AgentsRail: View, Equatable {
                                   newConversation: { actions.cleanup(.newConversation) },
                                   clear: { actions.cleanup(.clearNow(at: ConsoleFormat.nowMs)) })
                 } else {
-                    ConsoleGroupHead(title: ConsoleFormat.day(group.day), figure: group.day)
+                    ConsoleGroupHead(title: ConsoleFormat.day(group.day))
                 }
                 ForEach(group.hits.prefix(hitsPerChain)) { hit in
                     SearchHitRow(hit: hit, focused: focus.ringOn(AgentsRailWords.hitId(hit.id)), hovered: hover(AgentsRailWords.hitId(hit.id))) { actions.openJarheadHit(hit) }
@@ -697,24 +1025,47 @@ struct AgentsRail: View, Equatable {
             .padding(.top, 8)
             .transition(Motion.appear)
         }
+
+        // The agents the query names (name · project · detail · tool), as 28 rows in their tone, lifted.
+        let matched = agentMatches(q)
+        if !matched.isEmpty {
+            ConsoleHairline().padding(.top, 12)
+            ConsoleSectionHead(RailWords.agents, count: matched.count).padding(.top, 4)
+                .transition(Motion.appear)
+            ForEach(matched) { agent in agentRow(agent, now: now, hidden: hiddenAgents.contains(agent.id), lifted: true) }
+        }
     }
 
     // MARK: - Agents
 
     /// A tool's sessions under a fold whose closed head carries the count and the one exceptional
-    /// word — the `[1 asks]` badge — then the resting count (`2 working`); open by default, remembered per tool.
+    /// word — the `[1 asks]` badge — then the resting item (`2 working` · `3 idle` · `ended · 40m`); open by
+    /// default iff a row of its asks or works, remembered per tool. Inside: the live rows, then the over
+    /// rows folded under `Ended n` — or listed directly when nothing is alive (a fold never holds only a fold).
     private func groupView(_ group: Group, now: Double) -> some View {
         let id = AgentsRailWords.groupId(group.tool)
-        return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents),
-                                 defaultOpen: true, siblings: groups.map { AgentsRailWords.groupId($0.tool) }, focused: focus.ringOn(id)) {
-            ForEach(group.agents) { agent in agentRow(agent, now: now, hidden: false) }
+        let live = group.agents.filter(AgentsRail.live), over = group.agents.filter { !AgentsRail.live($0) }
+        let endedId = RailWords.endedId(group.tool)
+        return ConsoleDisclosure(id: id, title: group.tool.label, count: "\(group.agents.count)", summary: Self.groupSummary(group.agents, now: now),
+                                 defaultOpen: group.agents.contains(where: AgentsRail.hot), siblings: groups.map { AgentsRailWords.groupId($0.tool) }, focused: focus.ringOn(id)) {
+            ForEach(live) { agent in agentRow(agent, now: now, hidden: false) }
+            if !live.isEmpty, !over.isEmpty {
+                EndedFold(id: endedId, count: over.count, newestAge: over.first.map { ConsoleFormat.relative($0.updatedAt, now: now) },
+                          open: isFoldOpen(endedId), focused: focus.ringOn(endedId), toggle: { fold(endedId, !isFoldOpen(endedId)) }) {
+                    ForEach(over) { agent in agentRow(agent, now: now, hidden: false) }
+                }
+            } else {
+                ForEach(over) { agent in agentRow(agent, now: now, hidden: false) }
+            }
         }
     }
 
-    /// The folded head's words: how many ask, then how many work (else idle, else done).
-    static func groupSummary(_ agents: [AgentInfo]) -> [ConsoleDisclosureSummaryItem] {
-        ConsoleDisclosureSummary.agents(asks: agents.filter { $0.status == .blocked }.count, working: agents.filter { $0.status == .working }.count,
-                                        idle: agents.filter { $0.status == .idle }.count, done: agents.filter { $0.status == .done }.count)
+    /// The folded head's words: how many ask, then how many work (else idle); nothing alive → `ended` and the newest over row's age.
+    static func groupSummary(_ agents: [AgentInfo], now: Double) -> [ConsoleDisclosureSummaryItem] {
+        let over = agents.filter { rank($0.status) == 3 }
+        return ConsoleDisclosureSummary.agents(asks: agents.filter { $0.status == .blocked }.count, working: agents.filter { $0.status == .working }.count,
+                                               idle: agents.filter { $0.status == .idle }.count, ended: over.count,
+                                               newestEndedAge: over.first.map { ConsoleFormat.relative($0.updatedAt, now: now) })
     }
 
     /// "Hidden (n)", folded: the rows Kevin took off the rail, each with Unhide.
@@ -725,10 +1076,11 @@ struct AgentsRail: View, Equatable {
         }
     }
 
-    private func agentRow(_ agent: AgentInfo, now: Double, hidden: Bool) -> some View {
+    private func agentRow(_ agent: AgentInfo, now: Double, hidden: Bool, lifted: Bool = false) -> some View {
         let open = session.openAgentId == agent.id
         let id = AgentsRailWords.agentId(agent.id)
-        return AgentRowView(agent: agent, now: now, open: open, hidden: hidden, focused: focus.ringOn(id),
+        return AgentRowView(agent: agent, now: now, open: open, tone: RailTone.agent(status: agent.status, hidden: hidden), lifted: lifted || open,
+                            hidden: hidden, focused: focus.ringOn(id),
                             hovered: hover(id), verbsOpen: focus.verbsOpen == id, closeVerbs: focus.closeVerbs,
                             toggle: {
                                 // The pane switch in the wipe's own animation (Motion.wipeAnimation): the
@@ -766,6 +1118,32 @@ struct AgentsRail: View, Equatable {
     }
 }
 
+/// `› Ended 1 … 7m` inside an open tool group: the over rows behind one closed sub-head (22, a
+/// `ConsoleGroupHead`), the newest row's age as its figure while closed; drawn only under live rows.
+private struct EndedFold<Content: View>: View {
+    let id: String
+    let count: Int
+    let newestAge: String?
+    let open: Bool
+    var focused = false
+    let toggle: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ConsoleGroupHead(title: ConsoleDisclosureWords.ended, count: "\(count)", figure: open ? nil : newestAge, folded: !open, toggle: toggle,
+                             focused: focused, tip: ConsoleDisclosureWords.ended(count))
+                .padding(.top, 4)
+            if open {
+                content()
+                    .transition(Motion.appear)
+            }
+        }
+        .animation(Motion.snappy, value: open)
+        .id(id)
+    }
+}
+
 // MARK: - The head: the title, or the search box
 
 /// 40pt. At rest the section head — "Jarhead", the count, a magnifier; while searching the
@@ -780,6 +1158,8 @@ private struct JarheadRailHead: View {
     /// ↑↓ from the field: the hits' highlight moves.
     var move: (Int) -> Void = { _ in }
     let openFocused: () -> Void
+    /// `7 conversations · 2 archived · 2 in the Trash` — what the count leaves out.
+    var tip: String? = nil
 
     @EnvironmentObject private var session: ConsoleSession
     @Environment(\.consoleActions) private var actions
@@ -813,6 +1193,7 @@ private struct JarheadRailHead: View {
                     .consoleHelp(HelpCopy.search.hint, key: HelpCopy.search.key)
                     .accessibilityLabel(HelpCopy.search.name)
                 }
+                .modifier(ConsoleOptionalTip(tip: tip))
                 .padding(.trailing, -4)
                 .transition(Motion.swap)
             }
@@ -931,26 +1312,43 @@ private struct RailSelection: View {
     }
 }
 
-/// A row's trailing status: the word sans 11 fg3, or the `asks` badge while it waits on Kevin;
+/// A row's trailing status: the word sans 11 fg3 — with the glyph table's working dot (cyan, pulsing)
+/// before it, or an age in mono after it (`idle · 31m`) — or the `asks` badge while it waits on Kevin;
 /// the two crossfade. Room for the ⋯ at rest follows it.
 private struct RailStatusZone: View {
     let asks: Bool
     let word: String
     let key: String
+    /// The working dot before the word.
+    var dot = false
+    /// `31m` after the word, mono titanium.
+    var age: String? = nil
 
     var body: some View {
         ZStack {
             if asks {
                 ConsoleBadge(word: .asks).transition(.opacity)
             } else {
-                Text(word).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
-                    .contentTransition(.opacity)
-                    .transition(.opacity)
+                HStack(spacing: 6) {
+                    if dot { ConsoleDot(color: ConsoleTheme.status(.working).color, live: true, size: 6).transition(.opacity) }
+                    wordText
+                }
+                .transition(.opacity)
             }
         }
         .layoutPriority(1)
         .animation(Motion.fade, value: key)
         Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
+    }
+
+    /// `idle` · `idle · 31m`: the word sans fg3, the dot and the age in mono titanium.
+    private var wordText: some View {
+        var text = Text(word).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+        if let age {
+            text = text + Text(ConsoleDisclosureWords.joiner).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3)
+                + Text(age).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+        }
+        return text.lineLimit(1).contentTransition(.opacity)
     }
 }
 
@@ -962,6 +1360,7 @@ private struct RailAnimations: ViewModifier {
     let down: [AgentKind]
     let hidden: Set<String>
     let folds: [Bool]
+    let foldTick: Int
     let selection: String
 
     func body(content: Content) -> some View {
@@ -972,6 +1371,7 @@ private struct RailAnimations: ViewModifier {
             .animation(Motion.gentle, value: down)
             .animation(Motion.gentle, value: hidden)
             .animation(Motion.gentle, value: folds)
+            .animation(Motion.snappy, value: foldTick)
             .animation(Motion.snappy, value: selection)
     }
 }
@@ -1040,8 +1440,12 @@ struct JarheadNowRow: View {
     /// The mark, "Now", the id stamp, the phase dot (or the pause glyph), the meta line.
     private var label: some View {
         let meta = info.meta(now: now)
+        let quiet = info.sessionId == nil
         return HStack(alignment: .top, spacing: iconGap) {
-            JarheadMark()
+            // Blue while a session runs or a pause holds one; titanium's grey while nothing is live.
+            ZStack { JarheadMark(quiet: quiet).id(quiet).transition(.opacity) }
+                .frame(width: 20, height: 20)
+                .animation(Motion.fade, value: quiet)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(AgentsRailWords.now)
@@ -1140,12 +1544,12 @@ struct ThreadRow: View {
             }
             .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // A finished thread sits back; the words stay legible.
-        .opacity(thread.status.isLive ? 1 : 0.62)
+        // A finished thread sits back (the ladder's quiet step); the words stay legible, the hover ground stays at full.
+        .opacity(RailTone.thread(thread.status).alpha)
+        .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
         .overlay(alignment: .topTrailing) {
             ConsoleRowOverflow(verbs: verbs).padding(.top, 4).padding(.trailing, railInset)
         }
@@ -1217,13 +1621,19 @@ struct SelectionMenu: Equatable {
     var active: Bool { count > 1 }
 }
 
-/// One past conversation — a session, or a resume chain folded into it. `picked` is the
-/// multi-selection (the mark becomes a check on the active ground); `renaming` swaps the
-/// title for a field. An archived or trashed row sits back (dimmed) and carries Restore.
+/// One past conversation at 28 — a session, or a resume chain folded into it: the mark (blue
+/// while it can still change, titanium's grey once it is over), the title, a `×n` figure when it
+/// was resumed, the started clock, the ⋯. The tone (`RailTone`) sets the mark and the row's alpha;
+/// `lifted` (stepped into, or a search result) brings the alpha to 1.0 and keeps the mark. `picked`
+/// is the multi-selection (the mark becomes a check on the active ground); `renaming` swaps the
+/// title for a field. An archived or trashed row carries Restore. The meta (`ran · billed · msgs`)
+/// is the card's now.
 struct JarheadChainRow: View {
     let chain: JarheadChain
     let now: Double
     let open: Bool
+    var tone: RailTone = .bright
+    var lifted = false
     var picked = false
     var renaming = false
     var focused = false
@@ -1241,18 +1651,22 @@ struct JarheadChainRow: View {
 
     private var title: String { chain.displayTitle.isEmpty ? "—" : chain.displayTitle }
 
-    /// `12:34 · 2.3 min · 8 msgs` — duration, billed, heard + said. The started clock
-    /// sits on the title row: four mono items and their dots do not fit the rail.
+    /// `12:34 · 2.3 min · 8 msgs` — duration, billed, heard + said: spoken (AX) and on the card, not drawn.
     private var metaLine: String {
         ConsoleFormat.jarheadMeta(chain)
     }
 
-    /// The story of a chain in one card: the name, the first line heard, `date · reason`, the
-    /// sessions a → b → c, and where it sits (the Trash since …, Archived).
+    /// The row's alpha: the tone's, lifted to 1.0 while Kevin reads it or found it.
+    private var alpha: CGFloat { lifted ? 1 : tone.alpha }
+
+    /// The story of a chain in one card: the name, the first line heard, `ran · billed · msgs`,
+    /// `date · reason`, the sessions a → b → c, and where it sits (Pinned, the Trash since …, Archived).
     static func card(_ chain: JarheadChain) -> ConsoleTipCard {
         var card = ConsoleTipCard(title: chain.name ?? (chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title))
         if chain.name != nil { card.lines.append(chain.title.isEmpty ? AgentsRailWords.nothingHeard : chain.title) }
         if chain.resumes > 0 { card.badge = .word(AgentsRailWords.resumed(chain.resumes)) }
+        if chain.pinned && chain.isActive { card.status = RailWords.pinnedStatus }
+        card.foot.append(ConsoleTipCard.Row(key: RailWords.ran, value: ConsoleFormat.jarheadMeta(chain)))
         card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.started, value: ConsoleFormat.fullDate(chain.startedAt) + " · " + (chain.isOpen ? "open" : ConsoleFormat.closeReason(chain.reason))))
         if chain.resumes > 0 {
             card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.sessions, value: "\(chain.sessions.count): " + chain.sessions.map { ConsoleFormat.shortId($0.id) }.joined(separator: " → ")))
@@ -1277,70 +1691,18 @@ struct JarheadChainRow: View {
     private var row: some View {
         Button(action: { pick(NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []) }) {
             HStack(alignment: .top, spacing: iconGap) {
-                // The mark, or a check while the row is one of several picked.
-                ZStack {
-                    if picked {
-                        ConsoleIcon(name: "checkmark.circle.fill", tint: ConsoleTheme.accent).transition(.opacity)
-                    } else {
-                        JarheadMark().transition(.opacity)
-                    }
-                }
-                .frame(width: 20, height: 20)
-                .animation(Motion.fade, value: picked)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text(title)
-                            .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
-                            .lineLimit(1).truncationMode(.tail)
-                            .contentTransition(.opacity)
-                            .animation(Motion.fade, value: title)
-                        Spacer(minLength: 4)
-                        if chain.pinned && chain.isActive {
-                            ConsoleIcon(name: "pin.fill", size: 10)
-                                .frame(width: 12, height: 20)
-                                .consoleHelp("Pinned")
-                                .accessibilityLabel("pinned")
-                                .layoutPriority(1)
-                                .transition(.opacity)
-                        }
-                        if chain.resumes > 0 {
-                            ConsoleBadge(word: .word(AgentsRailWords.resumed(chain.resumes)))
-                                .layoutPriority(1)
-                        } else if chain.isOpen && chain.isActive {
-                            ConsoleDot(color: ConsoleTheme.muted, live: false, size: 6)
-                                .frame(width: 20, height: 20)
-                                .consoleHelp("Never closed")
-                                .accessibilityLabel("open")
-                        }
-                        if !chain.isActive {
-                            // Room for the Restore in the overlay (its width, left of the trailing zone).
-                            Color.clear.frame(width: restoreWidth, height: 20)
-                        }
-                        // When it began, right-aligned as a stamp; the day head says which day.
-                        // The ⋯ sits after it at rest (the overlay, above the button).
-                        Text(ConsoleFormat.clock(chain.startedAt))
-                            .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                        Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
-                    }
-                    .frame(height: 20)
-                    Text(metaLine)
-                        .font(ConsoleTheme.mono(11)).monospacedDigit()
-                        .foregroundStyle(ConsoleTheme.fg3)
-                        .lineLimit(1).truncationMode(.tail)
-                        .contentTransition(ConsoleMotion.numeric)
-                        .animation(Motion.snappy, value: metaLine)
-                }
+                mark
+                titleRow
             }
-            .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(picked ? ConsoleTheme.active : (!open && hovering ? ConsoleTheme.hover : Color.clear))
+            .padding(EdgeInsets(top: 4, leading: railInset, bottom: 4, trailing: railInset))
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Archived and trashed rows sit back; the words stay legible.
-        .opacity(chain.isActive ? 1 : 0.62)
+        // The tone's alpha (over 0.72 · back 0.48), lifted while read; the grounds, the verbs and the ring stay at full.
+        .opacity(alpha)
+        .animation(Motion.fade, value: alpha)
+        .background(picked ? ConsoleTheme.active : (!open && hovering ? ConsoleTheme.hover : Color.clear))
         .overlay(alignment: .topTrailing) {
             // The same columns as the label's title row: Restore where the label left room, the
             // stamp (the label's own), then the ⋯ at rest.
@@ -1368,23 +1730,61 @@ struct JarheadChainRow: View {
         .accessibilityAddTraits(open || picked ? .isSelected : [])
     }
 
-    /// The title as a field, the meta line under it as before. Return commits, Esc cancels,
-    /// an empty field is back to the auto title; the focus leaving commits too.
-    private var renameRow: some View {
-        HStack(alignment: .top, spacing: iconGap) {
-            JarheadMark()
-            VStack(alignment: .leading, spacing: 2) {
-                RenameField(initial: chain.name ?? "", placeholder: chain.title.isEmpty ? "Name" : chain.title,
-                            commit: verbs.commitRename, cancel: verbs.cancelRename)
-                    .frame(height: 20)
-                Text(metaLine)
-                    .font(ConsoleTheme.mono(11)).monospacedDigit()
-                    .foregroundStyle(ConsoleTheme.fg3)
-                    .lineLimit(1).truncationMode(.tail)
+    /// The mark in the tone's ramp, or a check while the row is one of several picked; each swap crossfades.
+    private var mark: some View {
+        ZStack {
+            if picked {
+                ConsoleIcon(name: "checkmark.circle.fill", tint: ConsoleTheme.accent).transition(.opacity)
+            } else {
+                JarheadMark(quiet: tone.quietMark).id(tone.quietMark).transition(.opacity)
             }
         }
-        .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .frame(width: 20, height: 20)
+        .animation(Motion.fade, value: picked)
+        .animation(Motion.fade, value: tone.quietMark)
+    }
+
+    /// The title, the `×n` figure, room for Restore, the started clock, room for the ⋯ — 20 tall.
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1).truncationMode(.tail)
+                .contentTransition(.opacity)
+                .animation(Motion.fade, value: title)
+            Spacer(minLength: 4)
+            if chain.resumes > 0 {
+                ConsoleBadge(word: .figure(RailWords.resumedFigure(chain.resumes)))
+                    .consoleHelp(RailWords.resumedTip(chain.resumes))
+                    .accessibilityLabel(RailWords.resumedTip(chain.resumes))
+                    .layoutPriority(1)
+            }
+            if !chain.isActive {
+                // Room for the Restore in the overlay (its width, left of the trailing zone).
+                Color.clear.frame(width: restoreWidth, height: 20)
+            }
+            // When it began, right-aligned as a stamp; the day head says which day.
+            // The ⋯ sits after it at rest (the overlay, above the button).
+            Text(ConsoleFormat.clock(chain.startedAt))
+                .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Color.clear.frame(width: ConsoleRow.overflowWidth, height: 20)
+        }
+        .frame(height: 20)
+    }
+
+    /// The title as a field in the 28 row. Return commits, Esc cancels, an empty field is back
+    /// to the auto title; the focus leaving commits too.
+    private var renameRow: some View {
+        HStack(alignment: .top, spacing: iconGap) {
+            JarheadMark(quiet: tone.quietMark)
+            RenameField(initial: chain.name ?? "", placeholder: chain.title.isEmpty ? "Name" : chain.title,
+                        commit: verbs.commitRename, cancel: verbs.cancelRename)
+                .frame(height: 20)
+        }
+        .padding(EdgeInsets(top: 4, leading: railInset, bottom: 4, trailing: railInset))
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .background(ConsoleTheme.active)
         .transition(.opacity)
         .accessibilityLabel("Renaming \(title)")
@@ -1547,14 +1947,18 @@ struct SearchGroups: Identifiable {
 
 // MARK: - Agent rows
 
-/// One agent session at 44: the tool's mark on the icon column, the name, the status as a word in
-/// the trailing zone (the `asks` badge while blocked), the ⋯ at rest, one mono meta line. The
-/// connector's detail and the working directory are the row's card.
+/// One agent session: 44 while it asks or works (the brand mark, the name, `[asks]` or the working
+/// dot + word, the ⋯, one mono meta line `project · age`), 28 otherwise (the mark — titanium once the
+/// process is gone — the name, `idle · 31m` or the one word, the ⋯). The tone (`RailTone`) sets the
+/// mark and the row's alpha; `lifted` (its pane open, or a search result) brings the alpha to 1.0.
+/// The connector's detail, the message count, the hint and the working directory are the row's card.
 struct AgentRowView: View {
     let agent: AgentInfo
     let now: Double
     let open: Bool
-    /// In the folded "Hidden" group: dimmed, with Unhide.
+    var tone: RailTone = .bright
+    var lifted = false
+    /// In the folded "Hidden" group: with Unhide.
     var hidden = false
     var focused = false
     var hovered: (Bool) -> Void = { _ in }
@@ -1568,16 +1972,25 @@ struct AgentRowView: View {
 
     private var tool: AgentTool { agent.resolvedTool }
 
-    /// project · 42 msgs · 2m — whichever parts the connector gave.
+    /// What the status zone shows: 44 with a meta line while a figure ticks (it asks or works), 28
+    /// otherwise; a hidden row is 28 with the word alone.
+    private var zone: RailAgentZone { RailAgentZone.of(status: agent.status, hidden: hidden) }
+    private var tall: Bool { zone.tall }
+
+    /// `project · 2m` — the 44 row's meta line.
     private var metaLine: String {
-        ConsoleFormat.agentMeta(agent, now: now)
+        ConsoleFormat.agentMetaShort(agent, now: now)
     }
 
-    /// `name [asks] · detail · cwd`.
-    static func card(_ agent: AgentInfo) -> ConsoleTipCard {
+    /// The row's alpha: the tone's, lifted to 1.0 while its pane is open or the search found it.
+    private var alpha: CGFloat { lifted ? 1 : tone.alpha }
+
+    /// `name [asks] · detail · 42 msgs · 31m · quiet · cwd`.
+    static func card(_ agent: AgentInfo, now: Double) -> ConsoleTipCard {
         var card = ConsoleTipCard(title: agent.name)
         if agent.status == .blocked { card.badge = .asks } else { card.status = AgentsRailWords.status(agent.status) }
         if let d = agent.detail, !d.isEmpty { card.lines.append(d) }
+        card.lines.append(ConsoleFormat.agentCardLine(agent, now: now))
         if let cwd = agent.cwd, !cwd.isEmpty { card.foot.append(ConsoleTipCard.Row(key: AgentsRailWords.cwd, value: ConsoleFormat.truncPath(cwd, max: 48))) }
         card.last = ConsoleTipCard.Row(key: ConsoleRowWords.opensPane, value: ConsoleRowWords.returnKey)
         return card
@@ -1586,48 +1999,60 @@ struct AgentRowView: View {
     var body: some View {
         Button(action: toggle) {
             label
-                .padding(EdgeInsets(top: 4, leading: railInset, bottom: 6, trailing: railInset))
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
+                .padding(EdgeInsets(top: 4, leading: railInset, bottom: tall ? 6 : 4, trailing: railInset))
+                .frame(maxWidth: .infinity, minHeight: tall ? 44 : 28, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(hidden ? 0.62 : 1)
+        // The tone's alpha (idle 0.72 · over 0.48), lifted while read; the hover ground, the verbs and the ring stay at full.
+        .opacity(alpha)
+        .animation(Motion.fade, value: alpha)
+        .background(!open && hovering ? ConsoleTheme.hover : Color.clear)
         .overlay(alignment: .topTrailing) { controls.padding(.top, 4).padding(.trailing, railInset) }
         .modifier(ConsoleFocusRing(on: focused))
         .contextMenu { ConsoleVerbMenu(verbs: verbs) }
         .onHover { hovering = $0; hovered($0) }
         .animation(ConsoleMotion.hover, value: hovering)
-        .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent), edge: .trailing)
+        .animation(Motion.snappy, value: tall)
+        .consoleHelp(id: AgentsRailWords.agentTip(agent.id), card: Self.card(agent, now: now), edge: .trailing)
         .modifier(ConsoleVerbFloat(id: AgentsRailWords.agentTip(agent.id), verbs: verbs, open: verbsOpen, close: closeVerbs))
         .accessibilityLabel("\(agent.name), \(tool.label), \(agent.status.rawValue)" + (hidden ? ", hidden" : ""))
         .accessibilityHint(open ? "Open in the stream" : "Opens the conversation")
         .accessibilityAddTraits(open ? .isSelected : [])
     }
 
-    /// The mark, the name, the status zone, the meta line.
+    /// The mark (titanium while the tone is back), the name, the status zone, and on a tall row the meta line.
     private var label: some View {
         HStack(alignment: .top, spacing: iconGap) {
-            BrandMark(tool: tool)
+            BrandMark(tool: tool, quiet: tone == .back)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(agent.name)
-                        .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                titleRow
+                if tall {
+                    Text(metaLine)
+                        .font(ConsoleTheme.mono(11)).monospacedDigit()
+                        .foregroundStyle(ConsoleTheme.fg3)
                         .lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 4)
-                    // Room for the Unhide in the overlay.
-                    if hidden { Color.clear.frame(width: restoreWidth, height: 20) }
-                    RailStatusZone(asks: agent.status == .blocked, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue)
+                        .contentTransition(ConsoleMotion.numeric)
+                        .animation(Motion.snappy, value: metaLine)
+                        .transition(.opacity)
                 }
-                .frame(height: 20)
-                Text(metaLine)
-                    .font(ConsoleTheme.mono(11)).monospacedDigit()
-                    .foregroundStyle(ConsoleTheme.fg3)
-                    .lineLimit(1).truncationMode(.tail)
-                    .contentTransition(ConsoleMotion.numeric)
-                    .animation(Motion.snappy, value: metaLine)
             }
         }
+    }
+
+    /// The name, room for Unhide, then the status zone: `[asks]` · `● working` · `idle · 31m` · the word alone.
+    private var titleRow: some View {
+        HStack(spacing: 8) {
+            Text(agent.name)
+                .font(ConsoleTheme.sans(13, open ? .medium : .regular)).foregroundStyle(ConsoleTheme.fg)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            // Room for the Unhide in the overlay.
+            if hidden { Color.clear.frame(width: restoreWidth, height: 20) }
+            RailStatusZone(asks: zone.asks, word: AgentsRailWords.status(agent.status), key: agent.status.rawValue,
+                           dot: zone.dot, age: zone.age ? ConsoleFormat.relative(agent.updatedAt, now: now) : nil)
+        }
+        .frame(height: 20)
     }
 
     /// Above the button: Unhide where the label left room, then the ⋯ at rest.
@@ -1645,7 +2070,11 @@ struct AgentRowView: View {
     }
 
     /// Roughly what the status word takes, so a hidden row's Unhide sits left of it.
-    private var statusWidth: CGFloat { agent.status == .blocked ? 44 : CGFloat(AgentsRailWords.status(agent.status).count) * 6 + 8 }
+    private var statusWidth: CGFloat {
+        if agent.status == .blocked { return 44 }
+        let word = AgentsRailWords.status(agent.status).count + (agent.status == .idle ? 6 : 0)
+        return CGFloat(word) * 6 + 8
+    }
 
     private var verbs: [ConsoleVerb] {
         [ConsoleVerb(id: "hide", title: hidden ? AgentsRailWords.unhide : AgentsRailWords.hide, run: hide)]
@@ -1677,6 +2106,31 @@ extension ConsoleFormat {
         if hint == "running", agent.status == .working { return nil }
         if hint == "quiet", agent.status == .idle { return nil }
         return hint
+    }
+
+    /// The 28 row's meta: `project · age` — the count and the hint moved to the card.
+    static func agentMetaShort(_ agent: AgentInfo, now: Double) -> String {
+        var parts: [String] = []
+        if let project = projectName(agent.cwd) { parts.append(project) }
+        parts.append(relative(agent.updatedAt, now: now))
+        return parts.joined(separator: " · ")
+    }
+
+    /// What the row lost, as one card line: `42 msgs · 31m · quiet` (the hint whole, even when it repeats the word).
+    static func agentCardLine(_ agent: AgentInfo, now: Double) -> String {
+        var parts: [String] = []
+        if let n = agent.messageCount { parts.append(messageCount(n)) }
+        parts.append(relative(agent.updatedAt, now: now))
+        if let hint = agent.hint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !hint.isEmpty { parts.append(hint) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// A folded head's billed figure: `7.5 min` under ten, `26 min` under an hour, `1.4 h` past it.
+    static func billedShort(_ seconds: Double) -> String {
+        let m = max(0, seconds.isFinite ? seconds : 0) / 60
+        if m < 10 { return String(format: "%.1f min", m) }
+        if m < 60 { return "\(Int(m.rounded())) min" }
+        return String(format: "%.1f h", m / 60)
     }
 
     /// A Jarhead conversation's meta line: `12:34 · 2.3 min · 8 msgs` — how long it ran

@@ -46,6 +46,14 @@ func brandColor(_ tool: AgentTool) -> Color { ConsoleBrand.color(tool) }
 struct BrandMark: View {
     let tool: AgentTool
     var size: CGFloat = 14
+    /// The session is over (done · ended · unknown · offline · hidden): the glyph in titanium,
+    /// the brand colour gone with the process. Codex's chip stays raised ink with its hairline.
+    var quiet = false
+
+    /// The glyph's fill: the brand's colour, or titanium while quiet.
+    private var ink: Color { quiet ? ConsoleTheme.titanium : ConsoleBrand.color(tool) }
+    /// Codex's blossom: paper on the chip, titanium while quiet.
+    private var paper: Color { quiet ? ConsoleTheme.titanium : ConsoleBrand.paper }
 
     var body: some View {
         glyph
@@ -53,14 +61,14 @@ struct BrandMark: View {
             .frame(width: 20, height: 20)
             .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 5 }
             .alignmentGuide(.lastTextBaseline) { d in d[.bottom] - 5 }
-            .accessibilityLabel(tool.label)
+            .accessibilityLabel(quiet ? "\(tool.label), over" : tool.label)
     }
 
     @ViewBuilder
     private var glyph: some View {
         switch tool {
         case .claude:
-            SVGShape(glyph: BrandLogos.claudeCode).fill(ConsoleBrand.claude, style: FillStyle(eoFill: true))
+            SVGShape(glyph: BrandLogos.claudeCode).fill(ink, style: FillStyle(eoFill: true))
         case .codex:
             // The blossom in paper on the ink chip; its `>_` is the chip showing
             // through, fattened a hair so it reads at 14pt (the logo's strokes are 0.85
@@ -68,22 +76,22 @@ struct BrandMark: View {
             ZStack {
                 RoundedRectangle(cornerRadius: size * 0.22).fill(ConsoleBrand.chip)
                 RoundedRectangle(cornerRadius: size * 0.22).stroke(ConsoleTheme.hair, lineWidth: 1)
-                SVGShape(glyph: BrandLogos.codexBody).fill(ConsoleBrand.paper).padding(size * 0.1)
+                SVGShape(glyph: BrandLogos.codexBody).fill(paper).padding(size * 0.1)
                 SVGShape(glyph: BrandLogos.codexCuts).fill(ConsoleBrand.chip).padding(size * 0.1)
                 SVGShape(glyph: BrandLogos.codexCuts)
                     .stroke(ConsoleBrand.chip, style: StrokeStyle(lineWidth: size * 0.05, lineCap: .round, lineJoin: .round))
                     .padding(size * 0.1)
             }
         case .cursor:
-            SVGShape(glyph: BrandLogos.cursor).fill(ConsoleTheme.fg, style: FillStyle(eoFill: true))
+            SVGShape(glyph: BrandLogos.cursor).fill(ink, style: FillStyle(eoFill: true))
         case .gemini:
-            SVGShape(glyph: BrandLogos.gemini).fill(ConsoleBrand.gemini)
+            SVGShape(glyph: BrandLogos.gemini).fill(ink)
         case .opencode:
-            SVGShape(glyph: BrandLogos.opencode).fill(ConsoleBrand.opencode, style: FillStyle(eoFill: true))
+            SVGShape(glyph: BrandLogos.opencode).fill(ink, style: FillStyle(eoFill: true))
         case .pi:
-            SVGShape(glyph: BrandLogos.pi).fill(ConsoleTheme.titanium, style: FillStyle(eoFill: true))
+            SVGShape(glyph: BrandLogos.pi).fill(ink, style: FillStyle(eoFill: true))
         case .amp:
-            AmpBolt().fill(ConsoleBrand.amp)
+            AmpBolt().fill(ink)
         case .droid:
             monogram("D")
         case .hermes:
@@ -97,7 +105,7 @@ struct BrandMark: View {
     private func monogram(_ letter: String) -> some View {
         Text(letter)
             .font(.system(size: size * 0.9, weight: .semibold, design: .rounded))
-            .foregroundStyle(ConsoleTheme.titanium)
+            .foregroundStyle(ink)
     }
 }
 
@@ -432,13 +440,16 @@ private struct AmpBolt: Shape {
 /// across, the 64 px icon's grain) in a disc carrying the blob's highlight — at 14pt like
 /// the tool marks, so Jarhead's conversations sit beside the agents' as siblings. Not a
 /// ring (the working status glyph is one) and not an SF Symbol the stream uses for a row
-/// kind. One 28×28 px image in `Dither.Cache`, shared by every mark.
+/// kind. One 28×28 px image in `Dither.Cache`, shared by every mark; `quiet` swaps the stops for
+/// `Dither.markQuietStops` — the same crosshatch in titanium's hue for a conversation that is over
+/// (and the Now row while nothing is live) — one more cached image, shared by every quiet mark.
 struct JarheadMark: View {
     var size: CGFloat = 14
+    var quiet = false
 
     var body: some View {
         ZStack {
-            DitheredGradient(stops: Dither.orbStops, direction: .diagonal, bands: Dither.bands, cellPoints: 1)
+            DitheredGradient(stops: quiet ? Dither.markQuietStops : Dither.orbStops, direction: .diagonal, bands: Dither.bands, cellPoints: 1)
                 .clipShape(Circle())
             // The highlight the blob wears: a faint paper disc, up and to the left.
             Circle().fill(Color.white.opacity(0.34))
@@ -449,7 +460,7 @@ struct JarheadMark: View {
         .frame(width: 20, height: 20)
         .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 5 }
         .alignmentGuide(.lastTextBaseline) { d in d[.bottom] - 5 }
-        .accessibilityLabel("Jarhead")
+        .accessibilityLabel(quiet ? "Jarhead, over" : "Jarhead")
     }
 }
 
