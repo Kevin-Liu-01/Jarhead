@@ -10,7 +10,8 @@
 #           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
-#           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight (default live)
+#           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
+#           automations | automations-ring | settings-automations (default live)
 #   The left rail (design10): `rail` is the threads fixture with the Trash and one hidden agent — Now bright with
 #   its dot, `Threads 3 · 1 asks`, the pinned over conversation on a grey orb at 0.72, Today open (bright, `×1`),
 #   `› Yesterday n … min`, `› Older 3 … since <day>`, Archived `2 · 15 min`, Claude Code open with `[asks]`,
@@ -26,7 +27,6 @@
 #   rings the pinned row, ↓↓↓ onto Yesterday's head, → opens it
 #   (`rail-probe:` before and after: two more ids). `rail-midnight` is reserved (PREVIEW_NOW is not built).
 #   Every one runs `check-kit@0.3` (the ladder's pins in checkKitLeftRail) and ends `check: all ok (kit)`.
-#           automations | automations-ring | settings-automations (default live)
 #   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
 #   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
 #   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
