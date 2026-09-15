@@ -45,7 +45,7 @@ export { Watchers, FOLDER_POLL_MS, APP_POLL_MS, globToRegExp } from "./watchers.
  * The Automations façade the engine constructs beside the ThreadScheduler: arming (the
  * set-up gate, judged once, awake), the clock (`tick(now)` from the engine's 1 s tick —
  * sleep detection by the tick gap, the due loop, the rings, the watchers, the timer
- * ticks, the day's brain spend), the signals the app forwards, the twelve commands, the
+ * ticks, the day's brain spend), the signals the app forwards, the thirteen commands, the
  * snapshot projection and the `AutomationSource` the brain's four tools call.
  *
  * Rails: nothing here opens a Live session or reads a yes (the engine's wake path, its
