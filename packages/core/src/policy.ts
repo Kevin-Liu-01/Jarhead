@@ -1597,6 +1597,16 @@ export function classifyAutomation(ctx: AutomationContext): Decision {
   const trigger = triggerReason(ctx);
   if (trigger) return refuse(trigger);
   const asks: string[] = [];
+  // A recipe.red trigger naming a recipe not yet approved, with its text arriving as `recipeCommand`: the poll is a shell
+  // running unattended every `everySeconds`, so it needs the one set-up yes exactly as run-recipe does (the engine then
+  // saves the recipe after that yes). One recipeCommand names one recipe: a run-recipe action under another new name refuses.
+  if (ctx.when.kind === "on" && ctx.when.on.kind === "recipe.red" && ctx.recipeCommand && !recipeNamed(ctx.settings.recipes, ctx.when.on.recipe)) {
+    const red = ctx.when.on;
+    const other = ctx.then.find((a) => a.kind === "run-recipe" && a.recipe.trim().toLowerCase() !== red.recipe.trim().toLowerCase() && !recipeNamed(ctx.settings.recipes, a.recipe));
+    if (other?.kind === "run-recipe") return refuse(`one recipeCommand names one recipe: the trigger polls "${red.recipe}" and the action runs "${other.recipe}", both new — approve one at a time`);
+    const command = ctx.recipeCommand.trim();
+    asks.push(`recipe ${red.recipe} (${command.length > 80 ? `${command.slice(0, 77)}…` : command}) will be run every ${red.everySeconds} s unattended to watch its exit code, without a yes each time`);
+  }
   for (const action of ctx.then) {
     const kind = String((action as { readonly kind?: unknown }).kind ?? "");
     if (!(AUTOMATION_ACTION_KINDS as readonly string[]).includes(kind)) return refuse(`unknown action kind "${kind}"; not armed`);

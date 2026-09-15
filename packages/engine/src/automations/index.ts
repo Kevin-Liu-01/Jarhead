@@ -637,8 +637,10 @@ export class Automations implements AutomationSource {
       ...(judged.verdict === "confirm" ? { confirmed: { at: now, heard: ctx.heard ?? judged.reason } } : {}),
     };
     // A recipe the brain handed in with the row is Kevin's once he said yes: the ENGINE writes it to settings (a tool never does).
+    // It belongs to the run-recipe action, or to a recipe.red trigger naming a recipe not yet approved (the gate asked for both).
     const recipeAction = then.find((x) => x.kind === "run-recipe");
-    if (draft.recipeCommand && recipeAction?.kind === "run-recipe") this.saveRecipe(recipeAction.recipe, draft.recipeCommand, by === "brain" ? "brain" : "kevin", now);
+    const recipeName = recipeAction?.kind === "run-recipe" ? recipeAction.recipe : draft.when.kind === "on" && draft.when.on.kind === "recipe.red" ? draft.when.on.recipe : undefined;
+    if (draft.recipeCommand && recipeName) this.saveRecipe(recipeName, draft.recipeCommand, by === "brain" ? "brain" : "kevin", now);
     let watchNote = "";
     if (a.when.kind === "on") {
       const err = this.watchers.watch(a);

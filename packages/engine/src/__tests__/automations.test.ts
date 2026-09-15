@@ -1099,3 +1099,105 @@ test("recipe-trash-restore: recipe.trash keeps the recipe in Settings with trash
     await engine.stop();
   }
 });
+
+// two wake-brain rows in one tick share one budget
+test("wake-brain-budget-reserved: two wake-brain rows due in the same tick against a 2-minute cap with 90 s budgets each — the first reserves its budget before anything awaits, the second fails 'budget' before any brain runs; after the first settles its spend stands and the reservation is gone", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock, threads } = w;
+  try {
+    await engine.start();
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "wake-brain"], wakeBudgetMinutesPerDay: 2 });
+    threads.script = async () => ({ status: "done", summary: "Fine." });
+    const draft = (name: string): AutomationSetInput => ({ name, when: { kind: "at", at: clock.t + M }, then: [{ kind: "wake-brain", prompt: "how are the agents", budget: { steps: 3, seconds: 90 }, speak: false }], echo: "Wake the brain." });
+    const a = armed(w, engine.automations.arm(draft("first"), "brain", true));
+    const b = armed(w, engine.automations.arm(draft("second"), "brain", true));
+    clock.t += M;
+    tick(engine);
+    const f = await fired(w, 2);
+    const ok = f.filter((r) => r.ok);
+    const budget = f.filter((r) => !r.ok);
+    assert.equal(ok.length, 1, "one turn ran");
+    assert.equal(budget.length, 1, "the other never started");
+    assert.equal(budget[0]!.detail, "budget");
+    assert.ok([a.id, b.id].includes(ok[0]!.id) && [a.id, b.id].includes(budget[0]!.id));
+    assert.equal(threads.brains.filter((x) => x.tasks.length > 0).length, 1, "one brain took a turn");
+    assert.equal(engine.automations.brainSecondsToday, ok[0]!.brainSeconds, "the real spend stands; no reservation lingers");
+    assert.ok(engine.snapshot().problems.some((p) => p.kind === "automation.budget"));
+  } finally {
+    await engine.stop();
+  }
+});
+
+// recipe.red with a new recipe: the yes approves the recipe the poll runs
+test("recipe-red-saves-recipe: arming a recipe.red watcher on a recipe not yet approved, with recipeCommand, asks once and — with the yes — saves the recipe to Settings (a recipe.set row by brain) so the poll has something to run; the watcher then fires on the flip to red", async () => {
+  const { exec } = fakeExec();
+  const calls: string[] = [];
+  // Green on the first poll (the baseline), red from the second: the flip is the fire.
+  const shell: ShellRunner = async (o) => {
+    calls.push(o.command);
+    return { code: calls.length === 1 ? 0 : 1, signal: null, stdout: calls.length === 1 ? "ok" : "FAIL", stderr: "", timedOut: false, cancelled: false, ms: 1 };
+  };
+  const w = world({ automations: { exec, shell } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    const draft: AutomationSetInput = { name: "ci red", when: { kind: "on", on: { kind: "recipe.red", recipe: "ci", everySeconds: 60 } }, then: [{ kind: "notify", title: "CI is red" }], echo: "When ci goes red, notify.", recipeCommand: "echo checking" };
+    const asked = engine.automations.arm(draft, "brain", false);
+    assert.equal(asked.kind, "confirm");
+    assert.match((asked as { question: string }).question, /recipe ci .* every 60 s unattended/);
+    assert.deepEqual(engine.snapshot().settings.automations.recipes, [], "nothing saved before the yes");
+    const a = armed(w, engine.automations.arm(draft, "brain", true, { heard: (asked as { question: string }).question }));
+    assert.deepEqual(engine.snapshot().settings.automations.recipes.map((r) => [r.name, r.command]), [["ci", "echo checking"]]);
+    assert.deepEqual(rows<Extract<LedgerRow, { type: "recipe.set" }>>(w, "recipe.set").map((r) => r.by), ["brain"]);
+    clock.t += 61_000;
+    tick(engine);
+    await until(() => calls.length === 1, 1500);
+    await settle(20);
+    assert.equal(rows(w, "automation.fired").length, 0, "the first poll is the baseline");
+    clock.t += 61_000;
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f[0]!.id, a.id);
+    assert.equal(f[0]!.ok, true, f[0]!.detail);
+    assert.match(f[0]!.detail ?? "", /recipe ci red · exit 1/);
+    assert.deepEqual(calls, ["echo checking", "echo checking"], "the poll ran the approved text");
+  } finally {
+    await engine.stop();
+  }
+});
+
+// an executor exception is redacted before it reaches lastDetail, the ledger and the event
+test("exception-detail-redacted: a fire whose gate throws with a secret in its message records 'failed: …' with the secret replaced — in the automation.fired row, the row's lastDetail and the fired event", async () => {
+  const secret = "shh-brain-key-0123456789";
+  process.env["JARHEAD_BRAIN_API_KEY"] = secret;
+  const { exec } = fakeExec();
+  const sh = fakeShell();
+  const shellGate: ShellGate = () => {
+    throw new Error(`gate exploded reading ${secret} from the env`);
+  };
+  const w = world({ automations: { exec, shell: sh.shell, shellGate } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"], recipes: [{ name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t }] });
+    const a = armed(w, engine.automations.arm({ name: "tidy once", when: { kind: "at", at: clock.t + M }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Run tidy." }, "brain", true));
+    events.length = 0;
+    clock.t += M;
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f[0]!.ok, false);
+    assert.match(f[0]!.detail ?? "", /^failed: gate exploded reading \[redacted secret\] from the env$/);
+    assert.equal((f[0]!.detail ?? "").includes(secret), false);
+    const row = engine.snapshot().automations.find((x) => x.id === a.id)!;
+    assert.equal(row.state, "failed");
+    assert.equal((row.lastDetail ?? "").includes(secret), false);
+    assert.match(row.lastDetail ?? "", /\[redacted secret\]/);
+    engine.automations.table.flush();
+    assert.equal(JSON.stringify(events).includes(secret), false, "no event carries it");
+    assert.equal(sh.calls.length, 0);
+  } finally {
+    delete process.env["JARHEAD_BRAIN_API_KEY"];
+    await engine.stop();
+  }
+});

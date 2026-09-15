@@ -283,6 +283,21 @@ test("the 9th folder watcher refuses (download.done counts as one); a watched fo
   assert.equal(verdict(ctx({ when: { kind: "on", on: { kind: "mac.wake" } }, then: [{ kind: "open", app: "Notes" }] })), "run");
 });
 
+test("recipe.red naming a recipe not yet approved, with recipeCommand: the poll asks once ('will be run every 60 s unattended') and runs with confirmed; the same trigger on an approved recipe runs at once; a run-recipe action under a second new name refuses", () => {
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
+  const RED: AutomationWhen = { kind: "on", on: { kind: "recipe.red", recipe: "ci", everySeconds: 60 } };
+  const asks = classifyAutomation(ctx({ when: RED, then: [notify], settings, recipeCommand: "pnpm test" }));
+  assert.equal(asks.verdict, "confirm");
+  assert.match(asks.reason, /^recipe ci \(pnpm test\) will be run every 60 s unattended/);
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings, recipeCommand: "pnpm test", confirmed: true })).verdict, "run");
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings: { ...settings, recipes: recipes({ name: "ci", command: "pnpm test" }) } })).verdict, "run", "an approved recipe needs no second yes");
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [notify], settings })).verdict, "refuse", "no recipe and no text: refused, as before");
+  const two = classifyAutomation(ctx({ when: RED, then: [{ kind: "run-recipe", recipe: "deploy" }], settings, recipeCommand: "pnpm test" }));
+  assert.equal(two.verdict, "refuse");
+  assert.match(two.reason, /one recipeCommand names one recipe/);
+  assert.equal(classifyAutomation(ctx({ when: RED, then: [{ kind: "run-recipe", recipe: "ci" }], settings, recipeCommand: "pnpm test" })).verdict, "confirm", "the same new name on both is one recipe, one yes");
+});
+
 test("a watcher whose action wakes the brain needs cooldown ≥ 600; with it the row confirms on the cost line", () => {
   const wake: AutomationAction = { kind: "wake-brain", prompt: "summarise what Slack left open", budget: { steps: 8, seconds: 120 }, speak: false };
   const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [] };
