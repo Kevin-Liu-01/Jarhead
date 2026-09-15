@@ -454,7 +454,8 @@ export class Automations implements AutomationSource {
     }
     const at = this.now();
     const current = this.table.get(row.id) ?? started;
-    if (current.state === "trashed" || current.state === "paused") return; // Kevin moved it while it ran; the fire's record stands, the state is his.
+    // Kevin trashed or paused it while it ran: the fire's record (the ledger row, the event) still stands; the state stays his.
+    const moved = current.state === "trashed" || current.state === "paused";
     const late = lateMs > 60_000 ? `${Math.round(lateMs / 60_000)} min late` : undefined;
     const quietNote = o.quiet && outcome.ok && outcome.ring ? "quiet hours: shown, not said" : undefined;
     // Signals counted inside the cooldown while this fire ran stay on the row ("+4 in cooldown").
@@ -476,7 +477,10 @@ export class Automations implements AutomationSource {
     });
     const base: Automation = mut(current, { fires: current.fires + 1, lastFiredAt: at, ...(detail ? { lastDetail: cut(detail, DETAIL_CHARS) } : { lastDetail: undefined }), snoozedUntil: undefined, updatedAt: at });
     const oneShotDone = row.clauses.once === true || row.when.kind === "at" || row.when.kind === "in";
-    if (!outcome.ok) {
+    if (moved) {
+      // The count and the detail are the fire's; the state is what Kevin set (trashed rows leave the heap, paused rows wait).
+      this.write(mut(base, { state: current.state, nextAt: undefined }), "engine", undefined, false);
+    } else if (!outcome.ok) {
       if (this.repeats(row) && !oneShotDone) this.write(this.rearmed(base, next, at), "engine", detail);
       else this.write(mut(base, { state: "failed", nextAt: undefined }), "engine", detail);
     } else if (outcome.ring) {
