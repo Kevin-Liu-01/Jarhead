@@ -67,9 +67,9 @@ test("mcp bridge: tool specs become MCP tools verbatim and results become MCP co
   assert.equal(scroll.inputSchema.type, "object");
   assert.deepEqual(scroll.inputSchema.required, ["scroll_direction", "scroll_amount"]);
   assert.deepEqual((scroll.inputSchema.properties as Record<string, { enum?: string[] }>)["scroll_direction"]?.enum, ["up", "down", "left", "right"]);
-  // Pinned at 67 (17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6, the four thread specs among them; brain.test.ts pins the same sum).
+  // Pinned at 71 (17 + 8 + 6 + 5 + 4 + 4 + 11 + 6 + 6 + 4, the four thread specs and the four automation specs among them; brain.test.ts pins the same sum).
   // A tool added or lost anywhere in the table moves this number on purpose.
-  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 67);
+  assert.equal(ALL_TOOL_SPECS.map(toMcpTool).length, 71);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
   for (const n of THREAD_TOOLS) assert.ok(names.has(n), `${n} is in the table the bridge serves`);
 
