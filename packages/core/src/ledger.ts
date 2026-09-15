@@ -68,7 +68,7 @@ const META_TYPES: ReadonlySet<string> = new Set([
   "conversation.trashed", "conversation.restored", "conversation.archived", "conversation.renamed", "conversation.pinned",
   "now.cleared", "now.restored", "ledger.moved", "agent.hidden", "grant",
   "memory.added", "memory.updated", "memory.forgotten", "memory.restored", "memory.run",
-  "automation.set", "automation.fired", "automation.state", "automation.missed", "recipe.set", "recipe.trashed",
+  "automation.set", "automation.fired", "automation.state", "automation.missed", "recipe.set", "recipe.trashed", "recipe.restored",
 ]);
 
 /**

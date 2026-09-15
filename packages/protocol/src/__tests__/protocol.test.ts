@@ -38,6 +38,8 @@ import {
   automationKind,
   grantOf,
   isEngineCommand,
+  liveRecipes,
+  recipeNamed,
   type Automation,
   type AutomationEvent,
   type AutomationSettings,
@@ -46,6 +48,7 @@ import {
   type Permissions,
   type Settings,
   type SetupStatus,
+  type ShellRecipe,
   type Thread,
   type ThreadEvent,
   type ThreadStatus,
@@ -275,15 +278,15 @@ test("isEngineCommand accepts mark.remove and mark.window (the notch panel's ver
 
 // ----------------------------------------------------------------- automations (design11)
 
-/** The twelve surface verbs over automations and recipes: every one a state change or a Move to Trash, never a deletion. */
+/** The thirteen surface verbs over automations and recipes: every one a state change or a Move to Trash / Restore, never a deletion. */
 const AUTOMATION_COMMANDS = [
   "automation.set", "automation.snooze", "automation.done", "automation.skip", "automation.pause", "automation.resume",
-  "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash",
+  "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash", "recipe.restore",
 ] as const;
 
-test("isEngineCommand accepts exactly the twelve automation.* / recipe.* commands and refuses a deletion verb on any of them, cancel, and the brain tools' names", () => {
-  assert.equal(AUTOMATION_COMMANDS.length, 12);
-  assert.equal(new Set(AUTOMATION_COMMANDS).size, 12, "no verb twice");
+test("isEngineCommand accepts exactly the thirteen automation.* / recipe.* commands and refuses a deletion verb on any of them, cancel, and the brain tools' names", () => {
+  assert.equal(AUTOMATION_COMMANDS.length, 13);
+  assert.equal(new Set(AUTOMATION_COMMANDS).size, 13, "no verb twice");
   for (const type of AUTOMATION_COMMANDS) assert.ok(isEngineCommand({ type, id: "auto_1" }), `${type} is a surface command`);
   // The verb that is never on the wire, spelt at run time so the acceptance grep for it over the tree stays at zero.
   const never = ["automation", "rule", "recipe"].map((noun) => [noun, "delete"].join("."));
@@ -383,8 +386,20 @@ test("the six automation ledger rows type-check as LedgerRow and a reader that d
     { at: 4, type: "automation.missed", id: a.id, dueAt: 2, why: "daemon-down" },
     { at: 5, type: "recipe.set", recipe: { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: 5 }, by: "kevin" },
     { at: 6, type: "recipe.trashed", name: "tests" },
+    { at: 7, type: "recipe.restored", name: "tests" },
   ];
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 7);
   const sessionRows = rows.filter((r) => r.type === "heard" || r.type === "said");
   assert.deepEqual(sessionRows, [], "none of them is a session's own row");
+});
+
+test("a recipe is never deleted: ShellRecipe carries trashedAt for Move to Trash; liveRecipes hides the Trash, recipeNamed finds a live one by name (case-insensitive) and a trashed one only when asked for any", () => {
+  const tests: ShellRecipe = { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: 5 };
+  const binned: ShellRecipe = { name: "purge", command: "rm -rf ~/x", timeoutSeconds: 5, approvedAt: 5, trashedAt: 9 };
+  assert.deepEqual(liveRecipes([tests, binned]), [tests]);
+  assert.equal(recipeNamed([tests, binned], "TESTS"), tests);
+  assert.equal(recipeNamed([tests, binned], "purge"), undefined, "the Trash is no picker's");
+  assert.equal(recipeNamed([tests, binned], "purge", "any"), binned);
+  assert.equal(recipeNamed([tests, binned], " tests "), tests, "the name is trimmed");
+  assert.ok(isEngineCommand({ type: "recipe.restore", name: "purge" }));
 });

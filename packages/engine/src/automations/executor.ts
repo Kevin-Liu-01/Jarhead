@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { HANDS_OFF_APPS, classifyAction, classifyUrl, clockOf, openPathReason, pressKeyReason, describeInstant, expandPath, newId, riskyUrlReason, secretPathReason, snoozeDefault, type ActionContext, type Decision, type Ledger } from "@jarhead/core";
 import { runShell, type Brain, type BrainResult, type BrainSink, type BrainTask } from "@jarhead/brain";
 import type { FocusedText, FrontmostInfo, NativeHands } from "@jarhead/hands";
-import { AUTOMATION_LINE_CHARS, automationKind, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
+import { AUTOMATION_LINE_CHARS, automationKind, recipeNamed, type Automation, type AutomationAction, type AutomationActionKind, type AutomationKind, type AutomationPress, type Delegation, type EngineEvent, type ProblemKind, type ProblemRemedy, type Settings } from "@jarhead/protocol";
 import type { LaneRunner } from "../threads/runner.ts";
 
 /**
@@ -368,8 +368,9 @@ export class AutomationExecutor {
 
   /** `run-recipe`: the saved text re-judged by the shell gate at every fire — anything but `run` is a failure, never a question. */
   private async recipe(action: Extract<AutomationAction, { kind: "run-recipe" }>, ctx: FireContext): Promise<StepOutcome> {
-    const recipe = this.opts.settings().automations.recipes.find((r) => r.name.toLowerCase() === action.recipe.trim().toLowerCase());
-    if (!recipe) return { ok: false, detail: `no recipe named "${action.recipe}"` };
+    const recipes = this.opts.settings().automations.recipes;
+    const recipe = recipeNamed(recipes, action.recipe);
+    if (!recipe) return { ok: false, detail: recipeNamed(recipes, action.recipe, "any") ? `recipe ${action.recipe} is in the Trash; restore it first` : `no recipe named "${action.recipe}"` };
     const cwd = recipe.cwd ? expandPath(recipe.cwd, this.opts.home) : this.opts.home;
     const d = this.opts.shellGate({ kind: "run_shell", text: recipe.command, confirmed: false, cwd, home: this.opts.home, presence: { recent: false }, ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
     if (d.verdict === "confirm") return { ok: false, detail: `recipe ${recipe.name} would need a yes; nobody to ask (${d.reason.replace(/; ask first$/, "")})` };

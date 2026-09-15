@@ -790,9 +790,9 @@ test("mark.delete is refused: not a verb on the wire, never dispatched", async (
   await server.close();
 });
 
-// ----------------------------------------------------------------- automations (design11): the twelve verbs, the signal, the three events
+// ----------------------------------------------------------------- automations (design11): the thirteen verbs, the signal, the three events
 
-test("commands on the wire: all twelve automation.* / recipe.* verbs pass isEngineCommand and reach the engine as sent; the deletion verb is refused — not a verb on the wire, never dispatched", async () => {
+test("commands on the wire: all thirteen automation.* / recipe.* verbs pass isEngineCommand and reach the engine as sent; the deletion verb is refused — not a verb on the wire, never dispatched", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
   const path = join(dir, "d.sock");
   const engine = new FakeEngine();
@@ -812,11 +812,12 @@ test("commands on the wire: all twelve automation.* / recipe.* verbs pass isEngi
     { type: "automation.run", id: "auto_1" },
     { type: "recipe.set", recipe: { name: "backup", command: "echo hi", timeoutSeconds: 5, approvedAt: 1 } },
     { type: "recipe.trash", name: "backup" },
+    { type: "recipe.restore", name: "backup" },
   ];
   for (const command of sent) app.client.sendJson({ type: "command", command });
   // The deletion verb is spelt at run time so the acceptance grep over the sources stays at zero.
   app.client.sendJson({ type: "command", command: { type: ["automation", "delete"].join("."), id: "auto_1" } as never });
-  await until(() => app.of("error").length === 1 && engine.commands.length === sent.length, "twelve dispatched, one refused");
+  await until(() => app.of("error").length === 1 && engine.commands.length === sent.length, "thirteen dispatched, one refused");
   assert.deepEqual(engine.commands, sent, "each verb arrives intact");
   assert.deepEqual(app.of("error"), [{ type: "error", message: "malformed command" }]);
   app.client.close();

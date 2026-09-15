@@ -4225,6 +4225,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "automation.run":
       case "recipe.set":
       case "recipe.trash":
+      case "recipe.restore":
         return this.automations.command(cmd, (text, tone) => this.toast(text, tone ?? "info"));
       case "open-console":
       case "open-ledger":

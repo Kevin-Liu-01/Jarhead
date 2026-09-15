@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
-import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
+import { AUTOMATION_ACTING_KINDS, AUTOMATION_ACTION_KINDS, AUTOMATION_ACTIONS_MAX, AUTOMATION_FOLDER_WATCHERS_MAX, AUTOMATION_LINE_CHARS, AUTOMATION_POLL_MIN_S, AUTOMATION_WAKE_COOLDOWN_MIN_S, recipeNamed, type AutomationAction, type AutomationActionKind, type AutomationClauses, type AutomationSettings, type AutomationWhen } from "@jarhead/protocol";
 import { REPO_ROOT } from "./env.ts";
 
 /**
@@ -1382,18 +1382,19 @@ export function costLine(budget: { readonly steps: number; readonly seconds: num
   return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
 }
 
-/** The recipe a row names, or the text that arrived with it. */
+/** The recipe a row names (never one in the Trash), or the text that arrived with it. */
 function recipeCommandOf(name: string, ctx: AutomationContext): string | undefined {
-  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
-  return known?.command ?? ctx.recipeCommand;
+  return recipeNamed(ctx.settings.recipes, name)?.command ?? ctx.recipeCommand;
 }
 
 /** Why a recipe may not run unattended, if it may not: the shell gate must say `run` on its own, with nobody to ask. */
 function recipeReason(name: string, ctx: AutomationContext, home: string): string | undefined {
+  const trashed = recipeNamed(ctx.settings.recipes, name, "any");
+  if (trashed?.trashedAt !== undefined) return `recipe "${trashed.name}" is in the Trash; restore it (Settings › Automations › Recipes, or \`jarhead recipes restore\`) or pick another name`;
   const command = recipeCommandOf(name, ctx);
   if (!command || !command.trim()) return `no recipe named "${name}"; add it in Settings › Automations › Recipes, or give its command`;
   if (shellSteals(command)) return `the recipe fronts an app (open / osascript); use the open action instead`;
-  const known = ctx.settings.recipes.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
+  const known = recipeNamed(ctx.settings.recipes, name);
   if (known?.cwd) {
     const cwd = shellCwdReason(known.cwd, home);
     if (cwd) return cwd;

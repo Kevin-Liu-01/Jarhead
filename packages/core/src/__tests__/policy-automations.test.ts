@@ -161,6 +161,21 @@ test("run-recipe: mv or cp without -n refuses (never overwrite), with -n confirm
   assert.equal(verdict(cwd), "refuse");
 });
 
+test("a recipe in the Trash is refused as a target by name — run-recipe and recipe.red alike, even with a recipeCommand or a yes — and the refusal says Restore; the same name live confirms", () => {
+  const binned = { name: "tests", command: "pnpm test", timeoutSeconds: 120, approvedAt: 1, trashedAt: 2 };
+  const settings = { enabled: true, unattended: ALL, wakeBudgetMinutesPerDay: 5, recipes: [binned] };
+  const row = classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "Tests" }], settings }));
+  assert.equal(row.verdict, "refuse");
+  assert.match(row.reason, /recipe "tests" is in the Trash; restore it/);
+  assert.equal(classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], settings, recipeCommand: "pnpm test", confirmed: true })).verdict, "refuse", "a new text under the trashed name does not revive it");
+  const red = classifyAutomation(ctx({ when: { kind: "on", on: { kind: "recipe.red", recipe: "tests", everySeconds: 60 } }, then: [notify], settings }));
+  assert.equal(red.verdict, "refuse");
+  assert.match(red.reason, /in the Trash/);
+  const { trashedAt: _gone, ...alive } = binned;
+  const live = { ...settings, recipes: [alive] };
+  assert.equal(classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], settings: live })).verdict, "confirm");
+});
+
 test("a kind off in Settings › While asleep is refused, not asked, naming the chip and the nearest safe kind — run-recipe under the default chips, and a chime under an empty list", () => {
   const d = classifyAutomation(ctx({ then: [{ kind: "run-recipe", recipe: "tests" }], recipeCommand: "pnpm test" }));
   assert.equal(d.verdict, "refuse");

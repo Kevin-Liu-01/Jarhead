@@ -57,7 +57,8 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead recipes [list]         the approved shell recipes: name · the gate's word (run · asks · refused · fronts) · command · approved · cwd · timeout
   pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first —
                                       a confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
-  pnpm jarhead recipes trash <name>   Move to Trash (a recipe.trashed row); a row that names it fails at its next fire and says so
+  pnpm jarhead recipes trash <name>   Move to Trash (kept in Settings with trashedAt; a recipe.trashed row); a row that names it fails at its next fire and says so
+  pnpm jarhead recipes restore <name> Restore it from the Trash (a recipe.restored row); nothing is ever deleted
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status —
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
                                       with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing)
@@ -697,7 +698,7 @@ async function automationVerb(verb: RowVerb, arg: string, extra: string): Promis
  * `jarhead recipes …`: the approved shell recipes in Settings, over the daemon (it owns
  * settings.json; a tool never writes it). `add` prints the shell gate's verdict before it sends
  * — a confirm-tier command is saved with `asks` and can never be armed. `trash` is a
- * `recipe.trashed` row; nothing here deletes anything.
+ * `recipe.trashed` row that keeps the recipe in Settings with `trashedAt`; `restore` brings it back. Nothing here deletes anything.
  */
 async function recipesCommand(rest: string[]): Promise<void> {
   const [verb, ...args] = rest;
@@ -726,12 +727,18 @@ async function recipesCommand(rest: string[]): Promise<void> {
     }
     case "trash": {
       const name = args[0];
-      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; a recipe.trashed row — nothing is deleted)");
+      if (!name) throw new Error("usage: jarhead recipes trash <name>  (Move to Trash; the recipe stays in Settings with trashedAt and `recipes restore <name>` brings it back — nothing is deleted)");
       await sendCommand({ type: "recipe.trash", name }, 800);
       return;
     }
+    case "restore": {
+      const name = args[0];
+      if (!name) throw new Error("usage: jarhead recipes restore <name>  (Restore a recipe from the Trash; rows that name it run again at their next fire)");
+      await sendCommand({ type: "recipe.restore", name }, 800);
+      return;
+    }
     default:
-      throw new Error(`unknown recipes verb: ${verb} — list | add | trash`);
+      throw new Error(`unknown recipes verb: ${verb} — list | add | trash | restore`);
   }
 }
 

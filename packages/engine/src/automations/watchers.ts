@@ -2,7 +2,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { expandPath, logger, type ActionContext, type Decision } from "@jarhead/core";
 import type { NativeHands, WindowInfo } from "@jarhead/hands";
-import { AUTOMATION_POLL_MIN_S, type AgentInfo, type Automation, type Settings, type SystemEvent, type SystemSignal } from "@jarhead/protocol";
+import { AUTOMATION_POLL_MIN_S, recipeNamed, type AgentInfo, type Automation, type Settings, type SystemEvent, type SystemSignal } from "@jarhead/protocol";
 import type { ShellRunner } from "./executor.ts";
 
 /**
@@ -251,7 +251,7 @@ export class Watchers {
 
   /** One recipe.red run through the shell gate; the flip is the fire. */
   private async pollRecipe(a: Automation, name: string, r: RecipeState): Promise<string | undefined> {
-    const recipe = this.opts.settings().automations.recipes.find((x) => x.name.toLowerCase() === name.trim().toLowerCase());
+    const recipe = recipeNamed(this.opts.settings().automations.recipes, name);
     if (!recipe) return undefined;
     const cwd = recipe.cwd ? expandPath(recipe.cwd, this.opts.home) : this.opts.home;
     const d = this.opts.shellGate({ kind: "run_shell", text: recipe.command, confirmed: false, cwd, home: this.opts.home, presence: { recent: false }, ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });

@@ -9,6 +9,8 @@ import {
   AUTOMATION_SLEEP_GAP_MS,
   AUTOMATION_WATCH_COOLDOWN_S,
   automationKind,
+  liveRecipes,
+  recipeNamed,
   type Automation,
   type AutomationClauses,
   type AutomationDraft,
@@ -652,7 +654,8 @@ export class Automations implements AutomationSource {
 
   private saveRecipe(name: string, command: string, by: "kevin" | "brain", now: number): void {
     const recipes = this.opts.settings().automations.recipes;
-    if (!name || recipes.some((r) => r.name.toLowerCase() === name.toLowerCase())) return;
+    // A name in use — live or in the Trash — is never overwritten; the gate refused a trashed name before this ran.
+    if (!name || recipeNamed(recipes, name, "any")) return;
     const recipe: ShellRecipe = { name: cut(name, AUTOMATION_NAME_CHARS), command, timeoutSeconds: RECIPE_TIMEOUT_DEFAULT_S, approvedAt: now };
     this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: [...recipes, recipe] } });
     this.opts.ledger.append({ at: now, type: "recipe.set", recipe, by });
@@ -840,7 +843,7 @@ export class Automations implements AutomationSource {
 
   // -------------------------------------------------------------- commands
 
-  /** The twelve surface commands. Never a deletion: `trash` is Move to Trash, `restore` brings it back. */
+  /** The thirteen surface commands. Never a deletion: `trash` is Move to Trash (rows and recipes alike), `restore` brings it back. */
   async command(cmd: EngineCommand, toast: (text: string, tone?: "info" | "warn") => void): Promise<void> {
     switch (cmd.type) {
       case "automation.set": {
@@ -877,18 +880,36 @@ export class Automations implements AutomationSource {
         if (!name || !String(recipe?.command ?? "").trim()) return toast("a recipe needs a name and a command", "warn");
         const now = this.now();
         const clean: ShellRecipe = { name: cut(name, AUTOMATION_NAME_CHARS), command: String(recipe.command), ...(recipe.cwd ? { cwd: recipe.cwd } : {}), timeoutSeconds: Math.min(600, Math.max(1, Math.round(Number(recipe.timeoutSeconds) || RECIPE_TIMEOUT_DEFAULT_S))), approvedAt: now };
-        const rest = this.opts.settings().automations.recipes.filter((r) => r.name.toLowerCase() !== clean.name.toLowerCase());
+        const all = this.opts.settings().automations.recipes;
+        const trashed = recipeNamed(all, clean.name, "any");
+        if (trashed?.trashedAt !== undefined) return toast(`recipe ${trashed.name} is in the Trash; restore it, or pick another name`, "warn");
+        const rest = all.filter((r) => r.name.toLowerCase() !== clean.name.toLowerCase());
         this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: [...rest, clean] } });
         this.opts.ledger.append({ at: now, type: "recipe.set", recipe: clean, by: "kevin" });
         return toast(`recipe ${clean.name} saved`);
       }
       case "recipe.trash": {
+        // Move to Trash: the recipe stays in Settings with `trashedAt` — hidden from pickers, refused as a target, restorable. Nothing is deleted.
         const name = String(cmd.name ?? "").trim();
-        const recipes = this.opts.settings().automations.recipes;
-        if (!recipes.some((r) => r.name.toLowerCase() === name.toLowerCase())) return toast(`no recipe named "${name}"`, "warn");
-        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: recipes.filter((r) => r.name.toLowerCase() !== name.toLowerCase()) } });
-        this.opts.ledger.append({ at: this.now(), type: "recipe.trashed", name });
-        return toast(`recipe ${name} moved to the Trash (its row is in the ledger)`);
+        const all = this.opts.settings().automations.recipes;
+        const found = recipeNamed(all, name, "any");
+        if (!found) return toast(`no recipe named "${name}"`, "warn");
+        if (found.trashedAt !== undefined) return toast(`recipe ${found.name} is already in the Trash`);
+        const now = this.now();
+        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: all.map((r) => (r === found ? { ...r, trashedAt: now } : r)) } });
+        this.opts.ledger.append({ at: now, type: "recipe.trashed", name: found.name });
+        return toast(`recipe ${found.name} moved to the Trash · Restore brings it back`);
+      }
+      case "recipe.restore": {
+        const name = String(cmd.name ?? "").trim();
+        const all = this.opts.settings().automations.recipes;
+        const found = recipeNamed(all, name, "any");
+        if (!found) return toast(`no recipe named "${name}"`, "warn");
+        if (found.trashedAt === undefined) return toast(`recipe ${found.name} is not in the Trash`);
+        const now = this.now();
+        this.opts.updateSettings({ automations: { ...this.opts.settings().automations, recipes: all.map((r) => (r === found ? mutRecipe(r) : r)) } });
+        this.opts.ledger.append({ at: now, type: "recipe.restored", name: found.name });
+        return toast(`recipe ${found.name} restored`);
       }
       default:
         return;
@@ -935,10 +956,10 @@ export class Automations implements AutomationSource {
     return this.recipeRows();
   }
 
-  /** Settings' recipes with the shell gate's present verdict and the rows that name each; the snapshot's `recipesAsking` reads the same list. */
+  /** Settings' live recipes (never the Trash's) with the shell gate's present verdict and the rows that name each; the snapshot's `recipesAsking` reads the same list. */
   recipeRows(): readonly RecipeRow[] {
     const rows = this.table.inState("all");
-    return this.opts.settings().automations.recipes.map((r) => {
+    return liveRecipes(this.opts.settings().automations.recipes).map((r) => {
       const name = r.name.toLowerCase();
       const usedBy = rows.filter((a) => a.then.some((x) => x.kind === "run-recipe" && x.recipe.toLowerCase() === name) || (a.when.kind === "on" && a.when.on.kind === "recipe.red" && a.when.on.recipe.toLowerCase() === name)).map((a) => a.name);
       const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
@@ -991,6 +1012,12 @@ export class Automations implements AutomationSource {
     }
     return row;
   }
+}
+
+/** A recipe out of the Trash: the same row with `trashedAt` gone (the contract's optionals are absent, never undefined). */
+function mutRecipe(r: ShellRecipe): ShellRecipe {
+  const { trashedAt: _gone, ...rest } = r;
+  return rest;
 }
 
 function whyWords(why: MissedWhy, sleptAt: number | undefined): string {

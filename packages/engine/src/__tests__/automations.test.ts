@@ -1041,3 +1041,54 @@ test("resync-respects-quiet-hours: a `respect` reminder that opens Notes, due wh
     await engine.stop();
   }
 });
+
+// recipes are never deleted: Move to Trash keeps the text, Restore brings it back
+test("recipe-trash-restore: recipe.trash keeps the recipe in Settings with trashedAt (a recipe.trashed row), hides it from recipe_list and recipesAsking, refuses it as a row's target, fails the row that names it at fire without running the shell, and refuses recipe.set under its name; recipe.restore clears trashedAt (a recipe.restored row) and the next fire runs", async () => {
+  const { exec } = fakeExec();
+  const sh = fakeShell();
+  const w = world({ automations: { exec, shell: sh.shell } });
+  const { engine, clock, events } = w;
+  try {
+    await engine.start();
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"] });
+    await engine.command({ type: "recipe.set", recipe: { name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t } });
+    await engine.command({ type: "recipe.set", recipe: { name: "purge", command: "rm -rf ~/Downloads/old", timeoutSeconds: 5, approvedAt: clock.t } });
+    const anchor = clock.t;
+    const a = armed(w, engine.automations.arm({ name: "tidy hourly", when: { kind: "every", every: { kind: "interval", everyMs: H, anchorAt: anchor }, phrase: "every 1 h" }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Every hour, run recipe tidy." }, "brain", true));
+    events.length = 0;
+    await engine.command({ type: "recipe.trash", name: "tidy" });
+    const recipes = (): readonly { name: string; trashedAt?: number }[] => engine.snapshot().settings.automations.recipes;
+    assert.deepEqual(recipes().map((r) => [r.name, r.trashedAt !== undefined]), [["tidy", true], ["purge", false]], "kept in Settings, marked");
+    assert.equal(recipes()[0]!.trashedAt, clock.t);
+    assert.deepEqual(rows(w, "recipe.trashed").length, 1);
+    assert.match((events.find((e) => e.type === "toast") as { text: string }).text, /moved to the Trash · Restore brings it back/);
+    assert.deepEqual((await engine.automations.recipes()).map((r) => r.recipe.name), ["purge"], "recipe_list never lists the Trash");
+    assert.deepEqual(engine.snapshot().recipesAsking, ["purge"]);
+    const refused = engine.automations.arm({ name: "tidy again", when: { kind: "at", at: clock.t + M }, then: [{ kind: "run-recipe", recipe: "tidy" }], echo: "Run tidy." }, "brain", true);
+    assert.equal(refused.kind, "refused");
+    assert.match((refused as { reason: string }).reason, /in the Trash; restore it/);
+    events.length = 0;
+    await engine.command({ type: "recipe.set", recipe: { name: "tidy", command: "echo other", timeoutSeconds: 5, approvedAt: clock.t } });
+    assert.match((events.find((e) => e.type === "toast") as { text: string }).text, /tidy is in the Trash; restore it, or pick another name/);
+    assert.equal(recipes()[0]!.trashedAt, clock.t, "the trashed text was not overwritten");
+    clock.t += H;
+    tick(engine);
+    const f = await fired(w);
+    assert.equal(f[0]!.ok, false);
+    assert.equal(f[0]!.detail, "recipe tidy is in the Trash; restore it first");
+    assert.equal(sh.calls.length, 0, "the shell never ran");
+    assert.equal(engine.snapshot().automations.find((x) => x.id === a.id)?.state, "armed", "the repeater re-arms and says so");
+    await engine.command({ type: "recipe.restore", name: "TIDY" });
+    assert.deepEqual(recipes().map((r) => [r.name, "trashedAt" in r]), [["tidy", false], ["purge", false]], "trashedAt is gone, not undefined");
+    assert.equal(rows(w, "recipe.restored").length, 1);
+    assert.deepEqual((await engine.automations.recipes()).map((r) => r.recipe.name), ["tidy", "purge"]);
+    clock.t += H;
+    tick(engine);
+    const g = await fired(w, 2);
+    assert.equal(g[1]!.ok, true, g[1]!.detail);
+    assert.deepEqual(sh.calls, ["echo tidy"]);
+    assert.equal(recipes().length, 2, "nothing was ever deleted");
+  } finally {
+    await engine.stop();
+  }
+});

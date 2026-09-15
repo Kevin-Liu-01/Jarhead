@@ -594,6 +594,19 @@ export interface ShellRecipe {
   readonly timeoutSeconds: number;
   /** Kevin's yes (voice set-up or the Console's Add); the shell gate re-judges the text at every fire anyway */
   readonly approvedAt: number;
+  /** Moved to the Trash at this instant: kept in Settings for Restore, hidden from every picker, refused as a row's target. Never deleted. */
+  readonly trashedAt?: number;
+}
+
+/** The recipes that are not in the Trash: what pickers list, what a row may name, what fires. */
+export function liveRecipes(recipes: readonly ShellRecipe[]): readonly ShellRecipe[] {
+  return recipes.filter((r) => r.trashedAt === undefined);
+}
+
+/** The recipe a row names, by case-insensitive name — `live` (the default) skips the Trash; `any` finds a trashed one too (Restore, the refusal's wording). */
+export function recipeNamed(recipes: readonly ShellRecipe[], name: string, which: "live" | "any" = "live"): ShellRecipe | undefined {
+  const wanted = name.trim().toLowerCase();
+  return (which === "live" ? liveRecipes(recipes) : recipes).find((r) => r.name.toLowerCase() === wanted);
 }
 
 export interface AutomationSettings {
@@ -1178,7 +1191,9 @@ export type EngineCommand =
   | { readonly type: "automation.run"; readonly id: string }
   /** the Console's Recipes list; the engine writes settings.json */
   | { readonly type: "recipe.set"; readonly recipe: ShellRecipe }
+  /** Move to Trash: the recipe stays in Settings with `trashedAt`, hidden and unpickable; `recipe.restore` clears it. Never a deletion. */
   | { readonly type: "recipe.trash"; readonly name: string }
+  | { readonly type: "recipe.restore"; readonly name: string }
   /** Older turns before message `before`. */
   | { readonly type: "agent.history"; readonly agentId: string; readonly before: string }
   /** Kevin circled a region of the screen for Jarhead (global points; `path` is his stroke). */
@@ -1300,7 +1315,8 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "automation.state"; readonly id: string; readonly state: AutomationState; readonly by: "kevin" | "brain" | "engine"; readonly until?: number; readonly detail?: string }
   | { readonly at: number; readonly type: "automation.missed"; readonly id: string; readonly dueAt: number; readonly lateMs?: number; readonly skipped?: boolean; readonly why: MissedWhy }
   | { readonly at: number; readonly type: "recipe.set"; readonly recipe: ShellRecipe; readonly by: "kevin" | "brain" }
-  | { readonly at: number; readonly type: "recipe.trashed"; readonly name: string };
+  | { readonly at: number; readonly type: "recipe.trashed"; readonly name: string }
+  | { readonly at: number; readonly type: "recipe.restored"; readonly name: string };
 
 // ------------------------------------------------------------ type guards ---
 
@@ -1310,7 +1326,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   "conversation.trash", "conversation.restore", "conversation.archive", "conversation.rename", "conversation.pin", "conversation.new", "now.clear", "now.restore", "ledger.trash-day", "ledger.restore-day", "ledger.sweep", "agent.hide", "problem.retry",
   "voice.reopen", "memory.forget", "memory.restore", "memory.edit", "memory.add", "memory.run",
   "thread.open", "thread.close", "thread.history", "thread.stop", "thread.pause", "thread.resume", "thread.answer", "thread.say",
-  "automation.set", "automation.snooze", "automation.done", "automation.skip", "automation.pause", "automation.resume", "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash",
+  "automation.set", "automation.snooze", "automation.done", "automation.skip", "automation.pause", "automation.resume", "automation.rename", "automation.trash", "automation.restore", "automation.run", "recipe.set", "recipe.trash", "recipe.restore",
 ]);
 
 export function isEngineCommand(value: unknown): value is EngineCommand {
