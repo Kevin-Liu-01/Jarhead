@@ -318,7 +318,7 @@ export const AUTOMATION_SPECS: readonly ToolSpec[] = [
             recipe: { type: "string", description: "recipe.red: an approved recipe's name" },
             everySeconds: { type: "integer", minimum: 30, description: "recipe.red: poll period (≥ 30)" },
             agent: { type: "string", description: "agent.status: which agent session (absent = any)" },
-            status: { type: "string", enum: ["working", "idle", "blocked", "done", "ended", "unknown"], description: "agent.status: the status to fire on" },
+            status: { type: "string", enum: ["working", "idle", "blocked", "done", "ended", "unknown", "offline"], description: "agent.status: the status to fire on" },
           },
         },
         then: {

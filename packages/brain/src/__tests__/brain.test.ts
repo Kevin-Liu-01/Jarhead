@@ -205,7 +205,7 @@ test("claude brain reports not-ready cleanly when the sdk cannot start", async (
 
 // ------------------------------------------------------ the constitution ---
 
-test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1100 words, the same apply question everywhere", () => {
+test("the standing orders: precedence stated, secrets on the never list, every named tool exists, under 1250 words, the same apply question everywhere", () => {
   const p = brainSystemPrompt();
   assert.match(p, /version 3\.3/);
   assert.equal(SYSTEM_PROMPT_VERSION, "3.3");
