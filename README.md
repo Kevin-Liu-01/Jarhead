@@ -229,7 +229,7 @@ flowchart LR
     HB["background"]
   end
   H --> MAC["the Mac<br/>ScreenCaptureKit · CGEvent · AX · Apple events"]
-  CLI["pnpm jarhead<br/>status · cmd · ledger · bench · dock"] --> D
+  CLI["pnpm jarhead<br/>status · cmd · ledger · bench · dock · automations"] --> D
 ```
 
 Speech goes to GPT-Live-1 and comes back as speech; nothing on that path waits for
@@ -249,9 +249,27 @@ packages/brain      Delegator, ToolRunner, one Brain per kind, reflexes, self-ed
 packages/core       config, env, ledger, trash, policy, latency marks
 packages/engine     the Engine: sessions, transport, threads (table, scheduler, brain pool), sleep, problems, snapshots
 packages/daemon     jarheadd: the Engine over a unix socket
-packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, …; the in-place installer
-apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wake gate, permissions, crash guard
+packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, automations, recipes, …; the in-place installer
+apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wake gate, permissions, crash guard, banners
 ```
+
+### Automations
+
+Say it once while Jarhead is awake — "wake me at seven ten on weekdays", "twelve-minute timer
+for the pasta", "when a PDF lands in Downloads, file it under Papers and tell me", "run the
+backup script every night at eleven" — and it reads one line back. Then say night. The daemon
+carries it out from its 1 s tick with the agent **asleep**: no Live session, no brain turn,
+nothing billed. An alarm rings on the notch island with **Snooze 10 · Done** where Allow · Deny
+usually sit, a chime, a banner with the same two buttons, the line through the Mac's own voice; a
+watcher moves the PDF and chimes; a routine opens Notes; a recipe runs and a red exit shows up on
+the island in the morning. What runs asleep is the run tier and nothing else: `chime · say ·
+notify · open · file · run-recipe · press`, plus `wake-brain` — one capped headless brain turn,
+never the voice — opted into per row with its cost said before your yes. A recipe, a press or a
+brain wake asks **once, at set-up**; anything that would need a yes when it fires is refused
+then, with the nearest safe kind offered. Nothing fires while Jarhead is quit; `Open at login`
+(your press) brings it back with you, and missed fires say so honestly with `Run now`. Rows are
+never deleted — Move to Trash, Restore. `pnpm jarhead automations`, `pnpm jarhead recipes`, a
+`doctor` group, [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md).
 
 ## Numbers
 
@@ -293,6 +311,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 - **Secrets flow one way.** Setup writes `~/.jarhead/env` (mode 0600); snapshots carry presence, never values. Every process the brain spawns has the secret keys stripped; every text result is passed through a redactor before a model reads it.
 - **Content is data.** Whatever the brain reads from a screen, page, file or transcript is never an instruction. Every gate that asks "did Kevin name it" reads your words only, never Jarhead's.
 - **Append-only ledger.** Nothing is deleted from it; a Move to Trash is a row; whole days move by rename. "Empty Trash" does not exist in the app.
+- **Unattended means the run tier.** An automation chimes, speaks a fixed line, shows a banner, opens what you named, files a file (never overwriting, never unlinking, inside `~`), runs a recipe you approved once; it never opens the voice session and never spends a brain turn unless that one row says `billed` and you said yes to its cost. Nothing asks at fire time — a would-be question is a `failed` row — and nothing is set up by a `--yes`: the yes is heard by voice or pressed in the Console, once, and spent on that row.
 - **Self-edits name their rails.** `policy.ts`, `brain.ts`, `instructions.ts`, the wake gate, `selfedit.ts`, the runner, the shell and file tools, the confirmation handshake, build signing, the Codex sandbox flags, `SECRET_KEYS`. A change that touches one applies only if you named it.
 - **Nothing on the voice path awaits a tool.** The brain reports through a sink; the Delegator decides what reaches your ear.
 
@@ -364,6 +383,7 @@ The state directory is `~/.jarhead`:
 | `⌥⇧Space` | go / pause |
 | `⌥⇧C` | circle something on screen |
 | `⌥⇧Return` | type to Jarhead — the island's line while the blob is in the notch, else the Console's composer |
+| `⌥⇧S` | snooze the automation that is ringing (Settings › Automations › Snooze minutes; timers 5) |
 
 In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead://pause`,
 `jarhead://stop`.
@@ -398,6 +418,7 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | `JARHEAD_LIVE_MODEL`, `JARHEAD_VOICE` | `gpt-live-1`, `cedar` (English; the accent is a setting) |
 | `JARHEAD_MEMORY_MODEL` | the Responses model that reads closed conversations for memory; unset, the memory module's default mini-class id runs (`jarhead doctor` checks it against your key's list and names the best `*-mini` to pin) |
 | `JARHEAD_IDLE_SLEEP_MINUTES` | idle sleep (10) |
+| *(automations)* | no env knob: the master switch, the kinds allowed while asleep, quiet hours, Snooze minutes, Brain minutes per day, the recipes and Open at login live under `automations` in `~/.jarhead/settings.json` (Console › Settings › Automations; `pnpm jarhead recipes` for the recipes) |
 | `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN`, `JARHEAD_CURSOR_AGENT_BIN` | the CLIs when they are not on PATH |
 | `JARHEAD_CODEX_SIMPLE_EFFORT`, `JARHEAD_CODEX_SERVICE_TIER`, `JARHEAD_CODEX_PRIME`, `JARHEAD_CODEX_BASE` | Codex tuning, all opt-in |
 | `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start — **every test launch** |
@@ -463,6 +484,7 @@ Working rules for anyone — or anything — editing this repo: [`AGENTS.md`](AG
 - [`docs/REDESIGN.md`](docs/REDESIGN.md) — architecture, every decision, dated.
 - [`docs/LATENCY.md`](docs/LATENCY.md) — the before and after numbers, the field side by side, the honest assessment.
 - [`docs/DEMO.md`](docs/DEMO.md) — a ninety-second single take.
+- [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md) — alarms, timers, reminders, routines, watchers: what fires with the agent asleep, what asks once, what is refused, the CLI and the doctor group.
 - [`apps/mac/README.md`](apps/mac/README.md) — the native app: packaging, TCC, wake word, audio, wire protocol.
 - [`packages/hands/native/README.md`](packages/hands/native/README.md) — the helper's protocol, ops, numbers.
 - [`AGENTS.md`](AGENTS.md) — rules for agents editing this repo.
