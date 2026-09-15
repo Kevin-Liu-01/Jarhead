@@ -699,7 +699,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Yesterday's head and → opens it (`rail-probe:` before and after); `rail-asleep` is `rail` with
         // PREVIEW_PHASE=asleep (the .sh sets it).
         case "rail", "rail-asleep", "rail-midnight", "live", "light": defaultActions = "check-kit@0.3"
-        case "rail-expanded": defaultActions = "check-kit@0.3,fold:rail.day.\(fake.day(fake.ago(26 * 3600 + 12 * 60))):open@0.5,fold:rail.older:open@0.7,"
+        case "rail-expanded": defaultActions = "check-kit@0.3,fold:rail.day.\(fake.day(fake.yesterdayStart)):open@0.5,fold:rail.older:open@0.7,"
             + "tipOpen:rail.chain.\(FakeData.yesterdayId)@1.2,probe-floats@1.6"
         case "rail-agents": defaultActions = "check-kit@0.3,fold:agents.claude.ended:open@0.5,fold:agents.codex:open@0.7,hidden-open@0.9,"
             + "highlight:agents.claude.ended@1.1,left-rail-scroll:300@1.3"
@@ -2111,6 +2111,13 @@ struct FakeData {
     let shot: String
     let now = Date().timeIntervalSince1970 * 1000
     func ago(_ s: Double) -> Double { now - s * 1000 }
+    /// Yesterday's local midnight in ms. The fixture's yesterday chains hang off it, not off `ago(26 h)`,
+    /// so they sit under Yesterday at any hour of the run (26 h before 01:00 is two days ago).
+    var yesterdayStart: Double {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date(timeIntervalSince1970: now / 1000))
+        return (cal.date(byAdding: .day, value: -1, to: today) ?? today).timeIntervalSince1970 * 1000
+    }
 
     var settings: Settings {
         Settings(voice: "cedar", brain: .claudeCode, brainModel: "claude-opus-5", brainBaseUrl: nil, effort: "medium", onboarded: true, micDeviceId: nil,
@@ -2867,8 +2874,9 @@ struct FakeData {
         let live = session()
         let a0 = ago(3 * 3600 + 5 * 60), aClosed = ago(3 * 3600 - 3 * 60)
         let b0 = ago(3 * 3600 - 3 * 60 - 8 * 60), bClosed = ago(2 * 3600 + 31 * 60)
-        let y0 = ago(26 * 3600 + 12 * 60), yClosed = ago(26 * 3600 + 2 * 60)
-        let l0 = ago(27 * 3600 + 40 * 60)
+        // Yesterday's two, anchored to yesterday's clock (14:00 and 12:32) so the day holds whatever the hour.
+        let y0 = yesterdayStart + 14 * 3_600_000, yClosed = y0 + 10 * 60_000
+        let l0 = y0 - 88 * 60_000
         // The cleanup scenarios' chains, older still: a pinned one Kevin named, two archived, two trashed.
         let p0 = ago(30 * 3600), pClosed = ago(30 * 3600 - 14 * 60)
         let d0 = ago(50 * 3600), dClosed = ago(50 * 3600 - 6 * 60)
@@ -3479,15 +3487,22 @@ extension PreviewDelegate {
         let liveId = fake.session().id
         let chains = JarheadChain.build(fake.jarheadSessions()).filter { !$0.contains(liveId) }
         func chain(_ id: String) -> JarheadChain? { chains.first { $0.id == id } }
-        func tone(_ id: String) -> String {
-            guard let c = chain(id) else { return "no chain \(id)" }
+        func tone(_ c: JarheadChain?) -> String {
+            guard let c else { return "no chain" }
             let t = RailTone.conversation(c, now: now)
             return "\(t) \(t.alpha) \(Int(ConsoleListModel.height(lines: 1, meta: false, rail: .agents)))"
         }
-        expect("tone: recent chain → bright 1.0 28", tone(FakeData.chainPausedId), "bright 1.0 28")
-        expect("tone: over chain → quiet 0.72 28", tone(FakeData.yesterdayId), "quiet 0.72 28")
-        expect("tone: empty chain → back 0.48", tone(FakeData.lostId), "back 0.48 28")
-        expect("tone: archived chain → back 0.48", tone(FakeData.archivedAId), "back 0.48 28")
+        // Recent is judged by the end day, so the two tone pins close their own chains: one a minute ago (today
+        // at any hour), one a millisecond before today began (yesterday at any hour) — the fixture's clock is the wall's.
+        func closed(_ id: String, at end: Double) -> JarheadChain? {
+            JarheadChain.build([JarheadSessionSummary(id: id, day: ConsoleFormat.dayString(end - 60_000), startedAt: end - 60_000, closedAt: end, reason: "stopped",
+                                                      usageSeconds: 60, heard: 1, said: 1, delegations: 0, title: "Kit.", resumedFrom: nil)]).first
+        }
+        let startOfToday = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: now / 1000)).timeIntervalSince1970 * 1000
+        expect("tone: recent chain → bright 1.0 28", tone(closed("kit.today", at: now - 60_000)), "bright 1.0 28")
+        expect("tone: over chain → quiet 0.72 28", tone(closed("kit.yesterday", at: startOfToday - 1)), "quiet 0.72 28")
+        expect("tone: empty chain → back 0.48", tone(chain(FakeData.lostId)), "back 0.48 28")
+        expect("tone: archived chain → back 0.48", tone(chain(FakeData.archivedAId)), "back 0.48 28")
         let agentTones = [AgentStatus.blocked, .working, .idle, .ended].map { "\(RailTone.agent(status: $0, hidden: false))" } + ["\(RailTone.agent(status: .idle, hidden: true))"]
         expect("tone: blocked agent → bright · working → bright · idle → quiet · ended → back · hidden → back", agentTones.joined(separator: " · "), "bright · bright · quiet · back · back")
         expect("tone: finished thread → quiet", "\(RailTone.thread(.done)) · \(RailTone.thread(.acting))", "quiet · bright")
