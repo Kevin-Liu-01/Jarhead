@@ -807,10 +807,10 @@ test("timer-ticks-and-caffeinate: a 12-minute timer holds the Mac awake with `ca
 });
 
 // the wire's `by` (integration seam 2)
-test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy.by cli on the row and the ledger's automation.set; absent → console (an older Console); the brain's rows come through its tool and never this command", async () => {
+test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy.by cli on the row and the ledger's automation.set; absent → console (an older Console); the brain's rows come through its tool and never this command; a rename wears its surface; the CLI's set is never a yes", async () => {
   const { exec } = fakeExec();
   const w = world({ automations: { exec } });
-  const { engine, clock } = w;
+  const { engine, clock, events } = w;
   try {
     await engine.start();
     const draft = (name: string) => ({ name, when: { kind: "at" as const, at: clock.t + H }, then: [{ kind: "chime" as const, line: "up" }], clauses: { quiet: "override" as const }, echo: "In an hour, chime." });
@@ -820,6 +820,31 @@ test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy
     assert.equal(by.get("from the cli"), "cli");
     assert.equal(by.get("from the console"), "console");
     assert.deepEqual(rows<Extract<LedgerRow, { type: "automation.set" }>>(w, "automation.set").map((r) => r.by), ["cli", "console"]);
+
+    // A rename from the wire wears its surface too: the CLI's rename is a cli row, the Console's (or an older client's) a console row.
+    const cliRow = engine.snapshot().automations.find((a) => a.name === "from the cli")!;
+    await engine.command({ type: "automation.rename", id: cliRow.id, name: "cli renamed", by: "cli" });
+    await engine.command({ type: "automation.rename", id: cliRow.id, name: "console renamed" });
+    assert.deepEqual(rows<Extract<LedgerRow, { type: "automation.set" }>>(w, "automation.set").slice(2).map((r) => [r.automation.name, r.by]), [["cli renamed", "cli"], ["console renamed", "console"]]);
+
+    // The wire is never a yes for the CLI: a confirm-tier row (run-recipe with a new recipeCommand) is refused, not armed, and
+    // no recipe lands in settings as "approved by Kevin"; the Console's Add is the two-press idiom and arms it.
+    automations(w, { unattended: [...DEFAULT_AUTOMATIONS.unattended, "run-recipe"] });
+    events.length = 0;
+    const recipeDraft = (name: string) => ({ name, when: { kind: "at" as const, at: clock.t + H }, then: [{ kind: "run-recipe" as const, recipe: "tests" }], clauses: { quiet: "respect" as const }, echo: "In an hour, run tests.", recipeCommand: "pnpm test" });
+    await engine.command({ type: "automation.set", automation: recipeDraft("cli tests") as never, by: "cli" });
+    assert.equal(engine.snapshot().automations.some((a) => a.name === "cli tests"), false, "nothing armed");
+    assert.deepEqual(engine.snapshot().settings.automations.recipes, [], "no recipe approved behind Kevin's back");
+    const refusal = events.find((e) => e.type === "toast");
+    assert.ok(refusal && refusal.type === "toast");
+    assert.equal(refusal.tone, "warn");
+    assert.match(refusal.text, /^not armed: recipe tests .* the CLI hears none/);
+    assert.equal(rows(w, "recipe.set").length, 0);
+    await engine.command({ type: "automation.set", automation: recipeDraft("console tests") as never, by: "console" });
+    const consoleRow = engine.snapshot().automations.find((a) => a.name === "console tests")!;
+    assert.ok(consoleRow, "the Console's Add arms it");
+    assert.match(consoleRow.confirmed?.heard ?? "", /recipe tests/);
+    assert.equal(engine.snapshot().settings.automations.recipes[0]?.name, "tests");
   } finally {
     await engine.stop();
   }

@@ -823,8 +823,8 @@ export class Automations implements AutomationSource {
     return { ok: after?.state !== "failed", text: `${a.name}: ${after?.lastDetail ?? (after?.state === "fired" ? "rang" : "ran")}` };
   }
 
-  /** `automation.rename`: ≤ 24 chars, unique among the non-trashed rows. */
-  rename(id: string, name: string): { readonly ok: boolean; readonly text: string } {
+  /** `automation.rename`: ≤ 24 chars, unique among the non-trashed rows; `by` is the surface that sent it (the ledger's `automation.set` row wears it). */
+  rename(id: string, name: string, by: Exclude<ArmOrigin, "brain"> = "console"): { readonly ok: boolean; readonly text: string } {
     const a = this.table.get(id);
     if (!a) return { ok: false, text: `no automation ${id}` };
     const clean = name.replace(/\s+/g, " ").trim();
@@ -832,7 +832,7 @@ export class Automations implements AutomationSource {
     if (clean.length > AUTOMATION_NAME_CHARS) return { ok: false, text: `"${cut(clean, 30)}" is too long (${AUTOMATION_NAME_CHARS} at most)` };
     if (this.table.nameTaken(clean, a.id)) return { ok: false, text: `another automation is named "${clean}"` };
     const row = this.table.put(mut(a, { name: clean, updatedAt: this.now() }));
-    this.opts.ledger.append({ at: this.now(), type: "automation.set", automation: row, by: "console" });
+    this.opts.ledger.append({ at: this.now(), type: "automation.set", automation: row, by });
     this.table.push(row.id, { kind: "set", automation: row });
     this.opts.onChange();
     return { ok: true, text: `renamed to ${clean}` };
@@ -844,10 +844,13 @@ export class Automations implements AutomationSource {
   async command(cmd: EngineCommand, toast: (text: string, tone?: "info" | "warn") => void): Promise<void> {
     switch (cmd.type) {
       case "automation.set": {
-        // The Console's form (and the CLI): the press on Add is Kevin's own hand on a control that says what it does — the
-        // two-press idiom's second press — so a confirm-tier row arms with the question as what he heard. Free kinds arm at once.
-        const r = this.arm(cmd.automation as AutomationSetInput, cmd.by === "cli" ? "cli" : "console", true, {});
-        toast(r.kind === "armed" ? r.text : r.kind === "confirm" ? `needs a yes: ${r.question}` : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
+        // The Console's form: the press on Add is Kevin's own hand on a control that says what it does — the two-press
+        // idiom's second press — so a confirm-tier row arms with the question as what he heard. The CLI (or any process on
+        // the socket saying `by: "cli"`) is never a yes: its free kinds arm at once and a confirm-tier row is refused, not asked.
+        const by: ArmOrigin = cmd.by === "cli" ? "cli" : "console";
+        const r = this.arm(cmd.automation as AutomationSetInput, by, by === "console", {});
+        if (r.kind === "confirm") return toast(by === "cli" ? `not armed: ${r.question} — that needs a yes, and the CLI hears none; set it up by voice or in the Console` : `needs a yes: ${r.question}`, "warn");
+        toast(r.kind === "armed" ? r.text : `not armed: ${r.reason}`, r.kind === "armed" ? "info" : "warn");
         return;
       }
       case "automation.snooze":
@@ -861,7 +864,7 @@ export class Automations implements AutomationSource {
       case "automation.resume":
         return toast(...this.said(this.changeNow(cmd.id, "resume")));
       case "automation.rename":
-        return toast(...this.said(this.rename(cmd.id, String(cmd.name ?? ""))));
+        return toast(...this.said(this.rename(cmd.id, String(cmd.name ?? ""), cmd.by === "cli" ? "cli" : "console")));
       case "automation.trash":
         return toast(...this.said(this.changeNow(cmd.id, "trash")));
       case "automation.restore":
