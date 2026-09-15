@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logger } from "@jarhead/core";
-import { AUTOMATIONS_MAX, AUTOMATION_TERMINAL, automationKind, type Automation, type AutomationEvent, type AutomationKind, type AutomationState, type RingLine } from "@jarhead/protocol";
+import { AUTOMATIONS_MAX, AUTOMATIONS_TRASHED_MAX, AUTOMATION_TERMINAL, automationKind, type Automation, type AutomationEvent, type AutomationKind, type AutomationState, type RingLine } from "@jarhead/protocol";
 
 /**
  * The automations table: every row by id and by name, a min-heap over the rows that
@@ -380,7 +380,7 @@ export class AutomationTable {
   // ------------------------------------------------------------- snapshot
 
   /**
-   * The snapshot's rows: non-trashed, ≤ AUTOMATIONS_MAX — the waiting rows by `nextAt`
+   * The snapshot's live rows: non-trashed, ≤ AUTOMATIONS_MAX — the waiting rows by `nextAt`
    * (watchers, with no clock, after the clocked ones in that group by name), then the rest
    * by `updatedAt`, newest first.
    */
@@ -394,6 +394,14 @@ export class AutomationTable {
     waiting.sort((x, y) => (x.nextAt ?? Number.MAX_SAFE_INTEGER) - (y.nextAt ?? Number.MAX_SAFE_INTEGER) || x.name.localeCompare(y.name));
     rest.sort((x, y) => y.updatedAt - x.updatedAt);
     return [...waiting, ...rest].slice(0, AUTOMATIONS_MAX);
+  }
+
+  /** The snapshot's Trash: trashed rows, newest first, at most `max` (the journal keeps every one for Restore). */
+  trashed(max = AUTOMATIONS_TRASHED_MAX): readonly Automation[] {
+    return this.all()
+      .filter((a) => a.state === "trashed")
+      .sort((x, y) => y.updatedAt - x.updatedAt)
+      .slice(0, max);
   }
 
   /** The foot's next fire: the soonest waiting clocked row. */

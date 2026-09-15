@@ -96,6 +96,13 @@ test("automationsLines: the summary line, then one row each — glyph · name ·
 test("automationsLines: --state filters; an empty table says how to set one; an empty filter names the states present", () => {
   assert.deepEqual(filterByState(table, "paused").map((a) => a.id), ["auto_3"]);
   assert.equal(filterByState(table, "all").length, 6);
+  // The snapshot's Trash tail rides after the live rows: `all` and the summary leave it out, `--state trashed` lists it.
+  const binned = row({ id: "auto_9", name: "old alarm", when: { kind: "at", at: NOW - H }, then: [{ kind: "chime", line: "up" }], state: "trashed" });
+  assert.equal(filterByState([...table, binned], "all").length, 6);
+  assert.deepEqual(filterByState([...table, binned], "trashed").map((a) => a.id), ["auto_9"]);
+  assert.equal(automationsSummary([...table, binned], pointers, NOW), automationsSummary(table, pointers, NOW));
+  assert.equal(automationsLines([binned], {}, NOW)[1], automationsLines([], {}, NOW)[1], "only the Trash: nothing is set");
+  assert.deepEqual(resolveAutomation([...table, binned], "old alarm").id, "auto_9", "Restore by name reaches the tail");
   assert.deepEqual(automationsLines(table, pointers, NOW, "snoozed"), [automationsSummary(table, pointers, NOW), "    nothing snoozed — set: 3 armed · 1 paused · 1 done · 1 failed"]);
   const empty = automationsLines([], {}, NOW);
   assert.equal(empty.length, 2);

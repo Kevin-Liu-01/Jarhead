@@ -153,13 +153,6 @@ enum AutomationWords {
     static let quietToLabel = "Quiet hours to"
 }
 
-/// The names the `recipe_list` tool rates `asks` (a command the shell gate would question now).
-/// The snapshot carries no such field yet; the harness sets it, the app leaves it empty until the
-/// engine names them (a problem row or a Settings field — Builder B / the integrator).
-enum AutomationRecipeAsks {
-    nonisolated(unsafe) static var names: Set<String> = []
-}
-
 // MARK: - Formats (pure, check-kit)
 
 extension ConsoleFormat {
@@ -865,7 +858,7 @@ struct AutomationsFold: View {
                 chipsRow
                 quietRow
                 stepperRows
-                RecipesList(recipes: block.recipes, form: $recipeForm)
+                RecipesList(recipes: block.recipes, asking: state.snapshot.recipesAsking ?? [], form: $recipeForm)
                 loginRow
             }
             .animation(Motion.gentle, value: block)
@@ -973,11 +966,13 @@ struct RecipeFormState: Equatable {
 /// being added or edited.
 struct RecipesList: View {
     let recipes: [ShellRecipe]
+    /// `snapshot.recipesAsking`: the names the shell gate would question now (the `asks` badge, never pickable).
+    let asking: [String]
     @Binding var form: RecipeFormState?
 
     @Environment(\.consoleActions) private var actions
 
-    private var asks: Set<String> { AutomationRecipeAsks.names }
+    private var asks: Set<String> { Set(asking) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

@@ -1211,12 +1211,14 @@ public struct Snapshot: Codable, Equatable {
     public var memory: MemorySummary?
     /// Every live thread (main first) and those finished within the linger.
     public var threads: [WorkThread]
-    /// Non-trashed automation rows (armed first); nil from a daemon before the field.
+    /// The live automation rows (armed first), then the Trash's newest eight (`state == "trashed"`); nil from a daemon before the field.
     public var automations: [Automation]?
     /// The newest `fired` row with a line, while one is up.
     public var ringing: RingLine?
     /// The foot's "next Timer 12:00 · pasta".
     public var nextFire: NextFire?
+    /// The recipes the shell gate now rates confirm, by name: the `asks` badge, never pickable. nil from a daemon before the field.
+    public var recipesAsking: [String]?
 
     public var automationRows: [Automation] { automations ?? [] }
     public var liveThreads: [WorkThread] { threads.filter { $0.status.isLive } }

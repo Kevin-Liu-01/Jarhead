@@ -86,9 +86,9 @@ export function automationLine(a: Automation, now: number): string {
   return `    ${automationGlyph(automationKind(a))} ${cut(a.name, 24).padEnd(24)} ${cut(describe(a.when), 26).padEnd(26)} ${cut(actionsWords(a.then), 20).padEnd(20)} ${a.id} · ${tailWords(a, now)}`;
 }
 
-/** The rows a `--state` picks: `all` keeps every row the snapshot carries (it never carries trashed ones). */
+/** The rows a `--state` picks: `all` is every live row (the snapshot's trashed tail shows only under `--state trashed`). */
 export function filterByState(rows: readonly Automation[], state: AutomationState | "all"): Automation[] {
-  return state === "all" ? [...rows] : rows.filter((a) => a.state === state);
+  return state === "all" ? rows.filter((a) => a.state !== "trashed") : rows.filter((a) => a.state === state);
 }
 
 /** "5 armed · 1 paused" — the states present, in AUTOMATION_STATES order; "" when none. */
@@ -103,7 +103,8 @@ export function byStateWords(rows: readonly Pick<Automation, "state">[]): string
 type Pointers = Pick<Snapshot, "nextFire" | "ringing">;
 
 /** The `automations` line of `jarhead status`: count, states, the next fire and the ring. */
-export function automationsSummary(rows: readonly Automation[], pointers: Pointers, now: number): string {
+export function automationsSummary(all: readonly Automation[], pointers: Pointers, now: number): string {
+  const rows = all.filter((a) => a.state !== "trashed");
   const states = byStateWords(rows);
   const next = pointers.nextFire ? `${clockOf(pointers.nextFire.at)} ${pointers.nextFire.name} (${inWords(pointers.nextFire.at, now)})` : "—";
   return `  automations ${rows.length}${states ? ` (${states})` : ""} · next ${next} · ringing: ${ringWords(pointers.ringing)}`;
@@ -123,7 +124,7 @@ export function ringWords(ring: RingLine | undefined): string {
 export function automationsLines(rows: readonly Automation[], pointers: Pointers, now: number, state: AutomationState | "all" = "all"): string[] {
   const picked = filterByState(rows, state);
   const lines = [automationsSummary(rows, pointers, now)];
-  if (rows.length === 0) {
+  if (rows.every((a) => a.state === "trashed")) {
     lines.push("    nothing set — say \"wake me at 7:10 on weekdays\", or: jarhead automations add \"at 7:10 weekdays chime 'Wake up'\"");
     return lines;
   }
@@ -146,9 +147,10 @@ export const AUTOMATION_ID = /^auto_[a-z0-9]{6,40}$/i;
 
 /**
  * An id is sent as it is; a name is looked up case-insensitively, live rows first (a `done`
- * "pasta" may linger while a new one is armed). Any `auto_…` passes through even when the
- * snapshot does not list it — a trashed row is not in the snapshot, and Restore needs its id.
- * Anything else unknown throws, naming what IS set.
+ * "pasta" may linger while a new one is armed), the snapshot's trashed tail last (Restore by
+ * name). Any `auto_…` passes through even when the snapshot does not list it — the Trash tail
+ * is the newest eight; an older trashed row is restored by its id (the journal under
+ * ~/.jarhead/automations keeps every one). Anything else unknown throws, naming what IS set.
  */
 export function resolveAutomation(rows: readonly Automation[], arg: string): ResolvedAutomation {
   const wanted = arg.trim().toLowerCase();

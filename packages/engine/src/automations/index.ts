@@ -23,6 +23,7 @@ import {
   type Settings,
   type SettingsPatch,
   type ShellRecipe,
+  type Snapshot,
   type SystemSignal,
   type AgentInfo,
 } from "@jarhead/protocol";
@@ -913,11 +914,12 @@ export class Automations implements AutomationSource {
 
   // -------------------------------------------------------------- snapshot
 
-  /** The snapshot's three fields. */
-  snapshot(): { readonly automations: readonly Automation[]; readonly ringing?: RingLine; readonly nextFire?: { readonly id: string; readonly kind: AutomationKind; readonly name: string; readonly at: number } } {
+  /** The snapshot's automation fields: the live rows then the Trash's newest, the ring, the next fire, the recipes the gate would now question. */
+  snapshot(): Pick<Snapshot, "automations" | "ringing" | "nextFire" | "recipesAsking"> {
     const ringing = this.table.ringing(this.rings);
     const next = this.table.nextFire();
-    return { automations: this.table.rows(), ...(ringing ? { ringing } : {}), ...(next ? { nextFire: next } : {}) };
+    const recipesAsking = this.recipeRows().filter((r) => r.asks).map((r) => r.recipe.name);
+    return { automations: [...this.table.rows(), ...this.table.trashed()], ...(ringing ? { ringing } : {}), ...(next ? { nextFire: next } : {}), recipesAsking };
   }
 
   /** Clients looking at the island / Console right now: running timers tick only while > 0. */

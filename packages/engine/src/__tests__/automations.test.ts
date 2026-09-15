@@ -656,7 +656,7 @@ test("awake-delivery-appendInstructions: with a session open a fire is one instr
 });
 
 // (14) trash-restore-journal-grows
-test("trash-restore-journal-grows: Move to Trash hides the row from the snapshot and frees its name, the journal keeps every line and only grows; Restore arms it again with a fresh nextAt; nothing is ever deleted", async () => {
+test("trash-restore-journal-grows: Move to Trash moves the row into the snapshot's Trash tail and frees its name, the journal keeps every line and only grows; Restore arms it again with a fresh nextAt; nothing is ever deleted", async () => {
   const { exec } = fakeExec();
   const w = world({ automations: { exec } });
   const { engine, clock } = w;
@@ -667,7 +667,7 @@ test("trash-restore-journal-grows: Move to Trash hides the row from the snapshot
     const lines = (): string[] => readFileSync(journal, "utf8").split("\n").filter(Boolean);
     assert.equal(lines().length, 1);
     await engine.command({ type: "automation.trash", id: a.id });
-    assert.equal(engine.snapshot().automations.length, 0, "hidden from the rail");
+    assert.deepEqual(engine.snapshot().automations.map((x) => x.state), ["trashed"], "off the rails, in the snapshot's Trash tail for the fold");
     assert.equal(engine.snapshot().nextFire, undefined);
     assert.equal(lines().length, 2, "the journal grew by one full row");
     assert.equal(JSON.parse(lines()[1]!).state, "trashed");
@@ -811,6 +811,48 @@ test("automation.set from the wire stamps who sent it: by: \"cli\" → createdBy
     assert.equal(by.get("from the cli"), "cli");
     assert.equal(by.get("from the console"), "console");
     assert.deepEqual(rows<Extract<LedgerRow, { type: "automation.set" }>>(w, "automation.set").map((r) => r.by), ["cli", "console"]);
+  } finally {
+    await engine.stop();
+  }
+});
+
+// the snapshot's Trash tail, recipesAsking and the ring's second line (integration seam 3)
+test("snapshot: the live rows come first, then the Trash's newest eight as trashed (the Console's fold; every rail filters by state); recipesAsking names the recipes the shell gate now rates confirm; a ring carries calm, lateMs and more", async () => {
+  const { exec } = fakeExec();
+  const w = world({ automations: { exec } });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    automations(w, { recipes: [{ name: "tidy", command: "echo tidy", timeoutSeconds: 5, approvedAt: clock.t }, { name: "purge", command: "rm -rf ~/Downloads/old", timeoutSeconds: 5, approvedAt: clock.t }] });
+    assert.deepEqual(engine.snapshot().recipesAsking, ["purge"], "the gate's present verdict, by name");
+    const t0 = clock.t;
+    const kept = armed(w, engine.automations.arm(alarm("kept", t0 + 3 * H), "brain"));
+    const binned: Automation[] = [];
+    for (let i = 0; i < 10; i++) {
+      const a = armed(w, engine.automations.arm(alarm(`bin ${i}`, t0 + 4 * H), "brain"));
+      clock.t += 1000;
+      await engine.command({ type: "automation.trash", id: a.id });
+      binned.push(a);
+    }
+    const snap = engine.snapshot();
+    assert.equal(snap.automations[0]!.id, kept.id, "live first");
+    const tail = snap.automations.slice(1);
+    assert.equal(tail.length, 8, "the Trash tail is capped at eight");
+    assert.ok(tail.every((a) => a.state === "trashed"));
+    assert.deepEqual(tail.map((a) => a.name), binned.slice(2).reverse().map((a) => a.name), "newest first; the two oldest fell off the tail, never out of the journal");
+    assert.equal(engine.automations.table.get(binned[0]!.id)?.state, "trashed", "still in the table for Restore");
+    // Two alarms due in the same tick, two minutes late: the newest is the ring; more counts the other; calm is the one-shot's echo.
+    const first = armed(w, engine.automations.arm(alarm("first", clock.t + M), "brain"));
+    const second = armed(w, engine.automations.arm(alarm("second", clock.t + M), "brain"));
+    clock.t += 3 * M;
+    tick(engine);
+    await fired(w, 2);
+    const ring = engine.snapshot().ringing;
+    assert.ok(ring);
+    assert.ok([first.id, second.id].includes(ring.id));
+    assert.equal(ring.more, 1);
+    assert.equal(ring.lateMs, 2 * M);
+    assert.equal(ring.calm, ring.id === first.id ? first.echo : second.echo, "a one-shot's calm line is its echo");
   } finally {
     await engine.stop();
   }

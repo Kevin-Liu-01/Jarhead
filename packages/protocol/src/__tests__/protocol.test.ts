@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   type AutomationDraft,
   type EngineCommand,
+  type Snapshot,
   MAIN_THREAD_ID,
   THREADS_MAX,
   THREAD_LINGER_MS,
@@ -21,6 +22,7 @@ import {
   AUTOMATION_ACTING_KINDS,
   AUTOMATION_TERMINAL,
   AUTOMATIONS_MAX,
+  AUTOMATIONS_TRASHED_MAX,
   AUTOMATION_ACTIONS_MAX,
   AUTOMATION_LINGER_MS,
   AUTOMATION_REPEAT_CHIME_MS,
@@ -321,6 +323,10 @@ test("the action vocabulary: eight kinds, five of them acting; the terminal stat
 
 test("the constants the daemon and the surfaces size themselves by", () => {
   assert.equal(AUTOMATIONS_MAX, 32);
+  assert.equal(AUTOMATIONS_TRASHED_MAX, 8, "the snapshot's Trash tail: the newest eight trashed rows after the live ones");
+  // The snapshot's automation fields, by name — a rename or a drop fails here, not in a Swift decoder.
+  const fields: readonly (keyof Snapshot)[] = ["automations", "ringing", "nextFire", "recipesAsking"];
+  assert.equal(fields.length, 4);
   assert.equal(AUTOMATION_ACTIONS_MAX, 3);
   assert.equal(AUTOMATION_LINGER_MS, 10 * 60_000);
   assert.equal(AUTOMATION_REPEAT_CHIME_MS, 30_000);

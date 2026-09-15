@@ -369,7 +369,8 @@ public final class AppState: ObservableObject {
 
     // MARK: automations (design11: set while awake, carried out by the daemon while asleep)
 
-    /// Non-trashed rows as the daemon holds them: `snapshot.automations` replaces the list, `automation.event` deltas patch one.
+    /// The rows as the daemon holds them — the live ones, then the Trash's newest (`state == "trashed"`; the Trash fold
+    /// reads those, every rail filters by state): `snapshot.automations` replaces the list, `automation.event` deltas patch one.
     @Published public var automations: [Automation] = []
     /// The newest `fired` row with a line, while one is up — the island's ring and the Console's ring row.
     @Published public var ringing: RingLine?
@@ -846,13 +847,12 @@ extension AppState {
 
     func automationAt(_ id: String) -> Automation? { automations.first { $0.id == id } }
 
-    /// Replace the row by id or append it; a trashed row leaves the list (the snapshot never lists one).
+    /// Replace the row by id or append it. A row moved to the Trash stays, as `trashed`, for the Trash fold (the next
+    /// snapshot keeps the newest eight); its timer and its ring end here.
     func upsertAutomation(_ row: Automation) {
         if row.state == "trashed" {
-            automations.removeAll { $0.id == row.id }
             timerRemaining[row.id] = nil
             if ringing?.id == row.id { ringing = nil }
-            return
         }
         if let i = automations.firstIndex(where: { $0.id == row.id }) { automations[i] = row } else { automations.append(row) }
     }

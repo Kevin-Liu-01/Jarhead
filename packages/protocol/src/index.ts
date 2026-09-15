@@ -523,7 +523,10 @@ export interface Automation {
 }
 
 /** rows in one snapshot (armed first; trashed never) */
+/** Live (non-trashed) rows in one snapshot: armed / snoozed / deferred by nextAt, then the rest by updatedAt. */
 export const AUTOMATIONS_MAX = 32;
+/** Trashed rows after them, newest first, for the Console's Trash fold (Restore); the journal keeps every one. */
+export const AUTOMATIONS_TRASHED_MAX = 8;
 export const AUTOMATION_ACTIONS_MAX = 3;
 /** a ring stays up this long; alarms then self-snooze ONCE, others count as Done ("unanswered") */
 export const AUTOMATION_LINGER_MS = 10 * 60_000;
@@ -962,12 +965,18 @@ export interface Snapshot {
   readonly memory?: MemorySummary;
   /** Every live thread (main first) and those finished within THREAD_LINGER_MS; ≤ THREADS_MAX. */
   readonly threads: readonly Thread[];
-  /** Non-trashed rows, ≤ AUTOMATIONS_MAX: armed/snoozed/deferred by nextAt, then the rest by updatedAt. */
+  /**
+   * The live rows, ≤ AUTOMATIONS_MAX (armed/snoozed/deferred by nextAt, then the rest by updatedAt), then
+   * the trashed rows, ≤ AUTOMATIONS_TRASHED_MAX newest first, `state: "trashed"` — the Console's Trash fold
+   * reads those and every rail filters by state; nothing else lists a trashed row.
+   */
   readonly automations: readonly Automation[];
-  /** The newest `fired` row with a line, while one is up. */
+  /** The newest `fired` row with a line, while one is up (`calm`, `lateMs` and `more` filled by the projection). */
   readonly ringing?: RingLine;
   /** The foot's "next Timer 12:00 · pasta". */
   readonly nextFire?: { readonly id: string; readonly kind: AutomationKind; readonly name: string; readonly at: number };
+  /** The recipes the shell gate now rates `confirm` (by name): the Console's `asks` badge, never pickable for a row. Re-judged at every snapshot. */
+  readonly recipesAsking: readonly string[];
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */

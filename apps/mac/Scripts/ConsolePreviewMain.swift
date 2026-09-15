@@ -371,10 +371,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         switch scenario {
         case "empty": state.snapshot = fake.empty()
         // Automations (design11, Builder D): the six rows of the mockup and one in the Trash, the alarm ringing,
-        // Settings › Automations with three recipes (vpn-up rated `asks` by the harness key).
+        // Settings › Automations with three recipes (vpn-up rated `asks` through snapshot.recipesAsking).
         case "automations", "automations-ring", "settings-automations":
             state.snapshot = fake.automationsSnapshot()
-            if scenario == "settings-automations" { AutomationRecipeAsks.names = ["vpn-up"] }
+            if scenario == "settings-automations" { state.snapshot.recipesAsking = ["vpn-up"] }
         case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "list-verbs", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
@@ -3568,7 +3568,7 @@ extension PreviewDelegate {
             }
             print("action: \(action) at \(stamp)s → ringing=\(state.ringing?.id ?? "nil")")
         } else if action.hasPrefix("recipesAsks:") {
-            AutomationRecipeAsks.names = Set(action.dropFirst("recipesAsks:".count).split(separator: ",").map(String.init))
+            state.snapshot.recipesAsking = action.dropFirst("recipesAsks:".count).split(separator: ",").map(String.init)
             print("action: \(action) at \(stamp)s")
         } else if action == "automationsFold" {
             console?.selectTab(.settings)
