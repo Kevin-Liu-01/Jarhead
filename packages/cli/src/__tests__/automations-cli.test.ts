@@ -247,9 +247,11 @@ test("doctor automations: a healthy Mac — every row ok but the two pass-1 note
 });
 
 test("doctor automations: the trouble rows — Open at login off, banners denied, no pmset wake (the copy line, never run), missed fires with why, budget spent, a recipe that asks, the Downloads grant missing", () => {
+  // `quietHours` must be absent, not undefined (exactOptionalPropertyTypes): rebuild the block without it.
+  const { quietHours: _quiet, ...noQuiet } = healthy.settings;
   const trouble = automationChecks({
     ...healthy,
-    settings: { ...healthy.settings, openAtLogin: false, quietHours: undefined, recipes: [recipe("tests", "pnpm test"), recipe("vpn-up", "sudo rm -rf /var/run/vpn"), recipe("notes", "open -a Notes")], wakeBudgetMinutesPerDay: 5 } as AutomationCheckInput["settings"],
+    settings: { ...noQuiet, openAtLogin: false, recipes: [recipe("tests", "pnpm test"), recipe("vpn-up", "sudo rm -rf /var/run/vpn"), recipe("notes", "open -a Notes")], wakeBudgetMinutesPerDay: 5 },
     notifications: "denied",
     folderGrants: {},
     missed: { count: 2, why: ["mac-slept", "mac-slept"] },
