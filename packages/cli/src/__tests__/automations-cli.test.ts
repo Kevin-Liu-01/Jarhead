@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_AUTOMATIONS, type Automation, type AutomationDraft, type LedgerRow, type ShellRecipe } from "@jarhead/protocol";
 import { describe } from "@jarhead/core";
-import { automationLine, AUTOMATION_STATES, LIST_STATES, ROW_VERBS, automationGlyph, automationsLines, automationsSummary, byStateWords, filterByState, inWords, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation } from "../automations-cli.ts";
+import { automationLine, AUTOMATION_STATES, LIST_STATES, ROW_VERBS, automationGlyph, automationsLines, automationsSummary, byStateWords, filterByState, inWords, landedAutomation, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation } from "../automations-cli.ts";
 import { automationChecks, pmsetCopy, readAutomationLedger, readJournal, type AutomationCheckInput, type Check } from "../doctor.ts";
 
 /**
@@ -178,6 +178,20 @@ test("resolveAutomation: an id is sent as it is; a name finds the LIVE row befor
   assert.throws(() => resolveAutomation([], "coffee"), /nothing is set/);
 });
 
+test("landedAutomation: only the row this `add` created — the CLI's, armed or snoozed, stamped at or after the send; a lingering done row or a trashed one with the same name never passes for it, nor a row from before the stamp", () => {
+  const sentAt = NOW;
+  const donePasta = row({ id: "auto_0", name: "pasta", when: { kind: "in", ms: 600_000 }, then: [{ kind: "chime", line: "pasta" }], state: "done", createdBy: { by: "cli", request: "" }, createdAt: NOW - H });
+  const trashedPasta = row({ id: "auto_7", name: "pasta", when: { kind: "in", ms: 600_000 }, then: [{ kind: "chime", line: "pasta" }], state: "trashed", createdBy: { by: "cli", request: "" }, createdAt: NOW + 5 });
+  const earlierPasta = row({ id: "auto_8", name: "pasta", when: { kind: "in", ms: 600_000 }, then: [{ kind: "chime", line: "pasta" }], createdBy: { by: "cli", request: "" }, createdAt: NOW - 1 });
+  const consolePasta = row({ id: "auto_9", name: "pasta", when: { kind: "in", ms: 600_000 }, then: [{ kind: "chime", line: "pasta" }], createdBy: { by: "console", request: "" }, createdAt: NOW + 10 });
+  const fresh = row({ id: "auto_6", name: "Pasta", when: { kind: "in", ms: 720_000 }, then: [{ kind: "chime", line: "pasta" }], createdBy: { by: "cli", request: "" }, createdAt: NOW + 3 });
+  assert.equal(landedAutomation([wakeUp, donePasta, trashedPasta, earlierPasta, consolePasta], "pasta", sentAt), undefined, "a refused `add` leaves the old rows; none of them is what this command set");
+  assert.equal(landedAutomation([wakeUp, donePasta, fresh, trashedPasta], "pasta", sentAt)?.id, "auto_6", "the fresh armed row, whatever the case of its name");
+  assert.equal(landedAutomation([{ ...fresh, state: "snoozed" }], "pasta", sentAt)?.id, "auto_6", "snoozed already is still the row that landed");
+  assert.equal(landedAutomation([{ ...fresh, createdAt: sentAt }], "pasta", sentAt)?.id, "auto_6", "stamped in the same millisecond as the send counts");
+  assert.equal(landedAutomation([], "pasta", sentAt), undefined);
+});
+
 const recipe = (name: string, command: string, over: Partial<ShellRecipe> = {}): ShellRecipe => ({ name, command, timeoutSeconds: 120, approvedAt: NOW - 3 * 24 * H, ...over });
 
 test("recipeVerdict: the shell gate's word — run for a plain script, asks for a destructive verb (nobody there to say yes), refused for the never list, fronts for open/osascript", () => {
@@ -200,6 +214,19 @@ test("recipesLines: one row per recipe with the gate's word; the count line says
   assert.match(lines[1] ?? "", /^  clean                    asks     rm -rf ~\/Downloads\/old {38} · approved 2 min ago · 120 s · .*would need a yes when it runs; nobody is there then$/);
   assert.equal(lines[2], "  2 recipes · 1 run-tier · 1 cannot fire unattended (edit the command, or Move to Trash)");
   assert.match(recipesLines([], NOW, HOME)[0] ?? "", /^  no recipes — jarhead recipes add/);
+});
+
+test("recipesLines: a trashed recipe (trashedAt set) leaves the live rows and the count, and folds under Trash with the Restore verb — hidden, never deleted", () => {
+  const trashed = { ...recipe("vpn-up", "sudo wg-quick up wg0"), trashedAt: NOW - 2 * H };
+  const lines = recipesLines([recipe("tests", "pnpm test", { cwd: "~/jarvis" }), trashed], NOW, HOME);
+  assert.equal(lines.length, 4);
+  assert.match(lines[0] ?? "", /^  tests {20}run /);
+  assert.equal(lines[1], "  1 recipe · 1 run-tier");
+  assert.equal(lines[2], "  Trash 1 · jarhead recipes restore <name>");
+  assert.equal(lines[3], `    vpn-up                   trashed  ${"sudo wg-quick up wg0".padEnd(60)} · 2 h ago`);
+  const only = recipesLines([trashed], NOW, HOME);
+  assert.match(only[0] ?? "", /^  no recipes — jarhead recipes add/, "a Trash with nothing live still says how to add one");
+  assert.equal(only[1], "  Trash 1 · jarhead recipes restore <name>");
 });
 
 test("parseRecipeArgs: a name ≤ 24, a command, cwd and a whole-second timeout 1–600 (default 120); anything else is refused before a socket is opened", () => {

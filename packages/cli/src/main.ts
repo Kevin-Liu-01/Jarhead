@@ -14,7 +14,7 @@ import { benchBrain } from "./bench-brain.ts";
 import { ledgerSpeed, renderSpeed } from "./ledger-speed.ts";
 import { reflexMisses, renderMisses } from "./reflex-miss.ts";
 import { resolveThread, threadsLines } from "./threads-cli.ts";
-import { LIST_STATES, ROW_VERBS, automationLine, automationsLines, automationsSummary, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation, type RowVerb } from "./automations-cli.ts";
+import { LIST_STATES, ROW_VERBS, automationLine, landedAutomation, automationsLines, automationsSummary, parseClockAutomation, parseRecipeArgs, recipeVerdict, recipesLines, resolveAutomation, type RowVerb } from "./automations-cli.ts";
 import { PERMISSION_KINDS, type Automation, type AutomationState, type PermissionKind, type ShellRecipe } from "@jarhead/protocol";
 
 const HELP = `
@@ -596,7 +596,14 @@ async function commandThenSnapshot(cmd: EngineCommand, until: (s: Snapshot) => b
       let sent = false;
       const timer = setTimeout(() => resolve(undefined), waitMs);
       client.on("message", (m) => {
-        if (m.type === "toast") toasts.push(`${m.tone === "info" ? "·" : "!"} ${m.text}`);
+        if (m.type === "toast") {
+          toasts.push(`${m.tone === "info" ? "·" : "!"} ${m.text}`);
+          // A warn after the send is the refusal ("not armed: …"); nothing landed, so the wait ends here.
+          if (sent && m.tone !== "info") {
+            clearTimeout(timer);
+            resolve(undefined);
+          }
+        }
         if (m.type !== "snapshot" || !sent) return;
         const snap = m.snapshot as Snapshot;
         if (!until(snap)) return;
@@ -643,11 +650,12 @@ async function automationsCommand(rest: string[]): Promise<void> {
       const words = args.join(" ").trim();
       const draft = parseClockAutomation(words, Date.now());
       if ("error" in draft) throw new Error(`${draft.error}\n  usage: jarhead automations add "<when> <chime|say|notify|open> <what>"`);
-      const wanted = draft.name.toLowerCase();
-      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft, by: "cli" }, (s) => (s.automations ?? []).some((a) => a.name.toLowerCase() === wanted && a.createdBy.by === "cli"), AUTOMATION_WAIT_MS);
+      // The stamp before the send: only a row created after it — armed, the CLI's — is the one this command set (`landedAutomation`).
+      const sentAt = Date.now();
+      const { snapshot, toasts } = await commandThenSnapshot({ type: "automation.set", automation: draft, by: "cli" }, (s) => landedAutomation(s.automations ?? [], draft.name, sentAt) !== undefined, AUTOMATION_WAIT_MS);
       console.log(`\n  sent automation.set · ${draft.echo}`);
       for (const t of toasts) console.log(`  ${t}`);
-      const row = snapshot?.automations.find((a) => a.name.toLowerCase() === wanted);
+      const row = snapshot ? landedAutomation(snapshot.automations ?? [], draft.name, sentAt) : undefined;
       if (row) console.log(automationLine(row, Date.now()));
       else if (toasts.length === 0) console.log(`  the daemon did not show the row within ${AUTOMATION_WAIT_MS / 1000} s — \`jarhead automations\` lists what is set`);
       console.log("");
