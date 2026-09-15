@@ -503,10 +503,11 @@ export class Automations implements AutomationSource {
     return mut(base, { state: "armed", nextAt: next });
   }
 
-  /** A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm. */
+  /** A ring ends (Done, unanswered, a restart): one-shots are done, repeaters re-arm; the alarm's one self-snooze is per ring, so it resets here. */
   private finishRing(a: Automation, now: number, detail: string | undefined): void {
     this.rings.delete(a.id);
     this.lastChimeAt.delete(a.id);
+    this.selfSnoozed.delete(a.id);
     const next = a.nextAt !== undefined && a.nextAt > now ? a.nextAt : this.repeats(a) ? nextFire(a.when, now, a.createdAt) : undefined;
     const base: Automation = mut(a, { snoozedUntil: undefined, ...(detail ? { lastDetail: detail } : {}), updatedAt: now });
     if (this.repeats(a) && a.clauses.once !== true) this.write(this.rearmed(base, next, now), "engine", detail);
@@ -800,6 +801,8 @@ export class Automations implements AutomationSource {
     this.releaseHold(a.id);
     this.rings.delete(a.id);
     this.lastChimeAt.delete(a.id);
+    // Kevin's own Snooze answers the ring: the engine's one self-snooze is available again for this occurrence's re-ring.
+    if (by !== "engine") this.selfSnoozed.delete(a.id);
     const until = now + minutes * 60_000;
     const row = this.write(mut(a, { state: "snoozed", snoozedUntil: until, nextAt: until, ...(detail ? { lastDetail: detail } : {}), updatedAt: now }), by, detail, true, until);
     if (row.when.kind === "in") this.caffeinate(mut(row, { nextAt: until }), now);
