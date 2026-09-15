@@ -133,7 +133,7 @@ recent) — it fires so you hear it.
 ## 8. CLI
 
 ```
-pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|all]
+pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]
     automations 6 (5 armed · 1 paused) · next 07:10 Wake up, Kevin (in 6 h) · ringing: —
     ⏰ Wake up, Kevin           weekdays 07:10             chime + say          auto_… · next in 6 h
 pnpm jarhead automations add "<words>"      the clock ladder, parsed by core's parseWhen without a brain:
