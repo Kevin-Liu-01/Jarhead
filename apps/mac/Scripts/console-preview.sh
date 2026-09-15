@@ -6,7 +6,45 @@
 #           cleanup | cleanup-select | cleanup-rename | cleanup-undo | cleanup-undo-toast | cleanup-log |
 #           search | search-hit | problems | cleared | loading | wipe | timing |
 #           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending |
-#           local | local-empty (default live)
+#           local | local-empty |
+#           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
+#           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
+#           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
+#           automations | automations-ring | settings-automations (default live)
+#   The component kit (design9): `menu-voice` / `menu-voice-filter` / `menu-model` / `menu-backend` are the
+#   rebuilt dropdowns open on the ConsoleFloatLayer (the popup under its field, groups, the badge column,
+#   the filter strip, the foot; keys through the responder chain: `keyDown:m+a`, `keyDown:down+return`),
+#   `menu-escape` / `menu-outside` the layer's contract, `toggle` the Wake word `On | Off` flipped by Space.
+#   run.log ends with the `probe-floats:` rects and `check: all ok (kit)` (placement, the menu model, the
+#   sites' words, tips, badges, copy). The Settings-tab fields answer their ids: `settings.voice`,
+#   `settings.mic`, `settings.backend`, `settings.model` (LocalModelMenu; `menu-model` ends
+#   `check-floats:settings.model`, so a popup that never reached the layer fails the run), `settings.effort`,
+#   `settings.wakeWord`, `settings.check`. `settings-index` is Settings as seven folded heads carrying their
+#   summary (Memory opened by id); `permissions-groups` the Now rail's Permissions areas Senses / Hands / Files
+#   (rows 40 with the why on line 2); `problems-groups` the Problems kinds Grants / Engine (Engine folded);
+#   `ledger-months` the Ledger's forty days by month, two August days and Sep 10 read, then ↓ ⏎ over the list;
+#   `memory-chips` the memory rail's kind chips (`chip:fact`) and a row's card; `list-keys` the left rail's
+#   search with ↑↓ ⏎ over the hits; `agents-groups` the agents per tool with Codex folded (`1 asks`).
+#   `list-verbs` rings yesterday's conversation row and presses ⌘↓: its verbs float under the row
+#   (`check-floats:rail.chain.<id>.verbs`). The tips: `tip-thread` pins the thread card beside the right rail's
+#   Slack row (the same ConsoleTipCard.thread the stream's chip and the left rail draw), `tip-key` gives the
+#   Brain section's Check focus and presses `?` (the pinned bubble and the one key ring), `tip-warm` runs the
+#   real 350 ms delay (hover Go, leave, hover Mute within 400 ms → at once; run.log's `tip:` trail and
+#   `check: … (tips)`), `tip-thumb` opens Slack's pane and pins the header thumb's preview; `menu-escape` /
+#   `menu-outside` drive the layer's closing contract on the Voice popup (Esc; a click at (300,300)) and end
+#   `check: … (floats)`. Every one runs `check-kit@0.3` and ends `check: all ok (kit)`.
+#   The automations pass (design11, Builder D): `automations` is the Now rail with the mockup's six rows —
+#   Clock 4 (the alarm, the pasta timer ticking, call mum snoozed, the standup routine) · Watchers 2
+#   (Downloads → Papers, build red paused) · the Trash fold open with one row · the honest line — under the
+#   ring row `07:10 · Wake up, Kevin [Snooze] [Done]`, with the Downloads → Papers card pinned over the
+#   stream (`check-floats:now.automation.auto_papers`). `automations-ring` is the same ring row on the Ledger
+#   tab (it sits under the tabs on every tab) with its card pinned, then `ringing:off` / `ringing:<id>`
+#   (run.log's `probe-ring:` lines say nil, then the id). `settings-automations` is Settings › Automations
+#   (`automationsFold`): the On|Off switch, the eight chips (the run tier outlined), quiet hours 23:00 → 07:00,
+#   Snooze 10 min, Brain minutes 5 /day, Recipes 3 with vpn-up wearing `asks` (the `recipesAsks:<names>` key),
+#   Open at login. The harness keys: `ringing:<id|off>`, `recipesAsks:<a,b>`, `automationsFold`, `probe-ring`.
+#   check-kit pins the four badge words, AutomationWords, the summary, ConsoleFormat.clock / countdown, a row's
+#   line per kind, the card's spoken form, the ring split, the recipe meta and the Add… parser (check-automations).
 #   The Local brain pass: `local` is Settings › Brain with Backend → Local model and Ollama 0.34.0 up
 #   with six models — the Model row a menu whose collapsed title says `best fit · qwen3.5:27b`, no
 #   Server row (the server was found, nothing is pinned), no Key row, the Status line `Local · …`,
@@ -105,7 +143,7 @@
 #   scripts clicks and feed changes, each with an optional `@seconds` — see ConsolePreviewMain.
 #   PREVIEW_REDUCE_MOTION=1 pins Motion.reduced on (plain fades, halved durations, no
 #   rise/slide), so the Reduce Motion path can be shot without touching the Mac's setting.
-# Compiles Model + UI/Console + Scripts/ConsolePreviewMain.swift into its own
+# Compiles Model + Permissions (the kinds' words) + UI + UI/Console + Scripts/ConsolePreviewMain.swift into its own
 # output directory (never the shared .build products), shows the window,
 # screenshots it (if out.png given) and exits; without out.png it stays open.
 # Shots taken while the Mac is locked (loginwindow frontmost) render the window
@@ -116,6 +154,10 @@ SCENARIO="${1:-live}"
 OUT="${2:-}"
 case "$SCENARIO" in
   live|confirm|empty|settings|wake-locked|ledger|light|conversation|conversation-codex|jarhead|jarhead-log|paused|switch|cleanup|cleanup-select|cleanup-rename|cleanup-undo|cleanup-undo-toast|cleanup-log|search|search-hit|problems|cleared|loading|wipe|timing|memory|durability|threads|thread-pane|thread-answer|thread-history|typed-row|agent-pending|local|local-empty) ;;
+  # The component kit's scenarios (design9): the dropdowns, the tips, the toggle, the folds, the lists.
+  menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|tip-thread|tip-key|tip-warm|tip-thumb|toggle|settings-index|permissions-groups|problems-groups|ledger-months|memory-chips|list-keys|list-verbs|agents-groups) ;;
+  # Automations (design11): the Now section with the ring row, the ring on the Ledger tab, Settings › Automations.
+  automations|automations-ring|settings-automations) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -124,7 +166,7 @@ mkdir -p "$BUILD"
 if [[ "${PREVIEW_SKIP_BUILD:-}" != "1" || ! -x "$BUILD/console-preview" ]]; then
   swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macosx14.0 \
     -o "$BUILD/console-preview" \
-    Sources/Jarhead/Model/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
+    Sources/Jarhead/Model/*.swift Sources/Jarhead/Permissions/*.swift Sources/Jarhead/UI/*.swift Sources/Jarhead/UI/Console/*.swift Scripts/ConsolePreviewMain.swift
 fi
 export PREVIEW_SCENARIO="$SCENARIO"
 export PREVIEW_STATE_DIR="${PREVIEW_STATE_DIR:-$(cd Scripts/fixtures && pwd)}"
@@ -137,8 +179,20 @@ if [[ "$SCENARIO" == "switch" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; 
 if [[ "$SCENARIO" == "wipe" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-8}"; export PREVIEW_WIPE_SECONDS="${PREVIEW_WIPE_SECONDS:-2}"; fi
 if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; fi
 if [[ "$SCENARIO" == "durability" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
+# The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it);
+# `menu-model` is shot tall so the Model popup's eight rows and its foot are whole (the 760 window scrolls them).
+case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
+if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
+# The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
+case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
+# The right rail's scenarios (Builder D): `ledger-months` picks two August days and Sep 10, then ↓ ⏎ on the list
+# (to 2.4 s); the Permissions areas and Problems kinds open their folds by id (to 0.8 s).
+if [[ "$SCENARIO" == "ledger-months" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+case "$SCENARIO" in permissions-groups|problems-groups|settings-index) PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.8}";; esac
 # The Threads pass's scenarios run their actions to 1.8 s (an `ended` event, an Allow, a landed turn).
-case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+case "$SCENARIO" in threads|thread-pane|thread-answer|typed-row|agent-pending|tip-thumb) PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+# The pane header keeps its buttons and figures before the thumb (ViewThatFits): a wider window holds the thumb the preview hangs from.
+if [[ "$SCENARIO" == "tip-thumb" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1400x760}"; fi
 # `thread-history` (the paged main pane: scroll up, Load earlier, the page lands, geometry after) runs to 2.3 s.
 # Its run.log: `send: {"type":"thread.history",…,"before":2}`, `action: thread-history main … orphans 4→0 … complete false→true`,
 # and two `geometry` lines whose `distance` agree (the row Kevin was reading stayed put while the page grew above it).
@@ -147,6 +201,14 @@ if [[ -n "${PREVIEW_PHASE:-}" ]]; then export PREVIEW_PHASE; fi
 # The Memory section sits under Session: a taller window shows it whole once the rail scrolls to it;
 # its default actions run to 2.3 s (the verbs), so the shot waits for them.
 if [[ "$SCENARIO" == "memory" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+# The kit's memory rail (the chips, a row's card) sits in the same tall window; `list-keys` runs its keys to 2.4 s.
+if [[ "$SCENARIO" == "memory-chips" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
+if [[ "$SCENARIO" == "list-keys" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}"; fi
+if [[ "$SCENARIO" == "list-verbs" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}"; fi
+# Automations: the Now rail with six rows and the Trash fold is tall; the card and the probes run to 1.5 s.
+# Settings › Automations sits under Session and holds the recipes: the tall window, scrolled to it.
+case "$SCENARIO" in automations|automations-ring) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+if [[ "$SCENARIO" == "settings-automations" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
 case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac

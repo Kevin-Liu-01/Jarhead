@@ -116,6 +116,38 @@ import SwiftUI
 //     local-empty  = the Now tab with Ollama up but nothing on it that can call tools: the amber
 //                    `brain.local` row with Retry and Copy (`ollama pull qwen3.5:27b`, copied, never
 //                    run), the Ready row naming the fallback `openai-responses`. Runs `check-local`.
+//     menu-voice   = Settings › Audio › Voice open on the float layer (`menuOpen:settings.voice`): the
+//                    popup under the field, Default / Also / All voices, the 2 pt bar on the pick, the
+//                    filter strip `Filter 22 voices` with the count `22`. `menu-voice-filter` types `ma`
+//                    (`2 of 22`, Marin and Meridian), snaps, then ↓ Return: run.log's `send:` carries
+//                    Meridian. `menu-model` is the `local` fixture with `qwen3:8b` saved and unlisted:
+//                    the Model popup's `size · fit` columns, `tight` amber, `too big` red on a dim row,
+//                    `no tools` at 0.45, `Saved, not listed`, the foot following ↑. `menu-backend` opens
+//                    Backend (rows 40 with `needs` on line 2; ↓ moves the foot). `toggle` focuses the
+//                    Wake word `On | Off` (`focus:settings.wakeWord`) and presses Space: `send:` carries
+//                    wakeEnabled=false. The Settings sites answer once Builder D passes the ids
+//                    (`settings.voice` · `settings.backend` · `settings.wakeWord`); `settings.model` is
+//                    LocalModelMenu's own. `check-kit` prints the pure placement / menu model / words /
+//                    tip / badge / copy pins. The kit's other scenarios (tip-* … agents-groups) are named
+//     automations  = the Now rail's Automations section (design11, Builder D): the mockup's six rows under
+//                    Clock 4 / Watchers 2, the Trash fold open (`fold:now.automations.trash:open`), the honest
+//                    line, the ring row `07:10 · Wake up, Kevin [Snooze] [Done]` under the tabs, the Downloads →
+//                    Papers card pinned (`tipOpen:now.automation.auto_papers`, `check-floats`); tall window.
+//     automations-ring = the ring row on the Ledger tab with its card pinned; `ringing:off` then
+//                    `ringing:<id>` (the `probe-ring:` lines say nil, then the id).
+//     settings-automations = Settings › Automations (`automationsFold`): the switch, the eight chips, quiet
+//                    hours, Snooze, Brain minutes, Recipes 3 (vpn-up `asks` via `recipesAsks:`), Open at login.
+//                    Keys: `ringing:<id|off>` · `recipesAsks:<a,b>` · `automationsFold` · `probe-ring`.
+//     memory-chips = the kit's memory rail (Builder C): the filter with `2 of 7`, the kind chips with
+//                    counts, `chip:fact` → the two fact rows (badge · meter · ⋯ at rest); Settings tab, tall.
+//     list-keys    = the kit's search with ↑↓: `search:codex`, three ↓ (`list-focus:` lines name the
+//                    ring's row — the third hit), Return opens it (`probe:` says which conversation).
+//     agents-groups = the kit's agents per tool as folds: Codex folded (`fold:agents.codex:closed`) with
+//                    `[1 asks] · 1 done` as its head; two Claude Code rows open above it.
+//     list-verbs   = the kit's ⌘↓ float (Builder E): `highlight:chain:<id>` rings yesterday's row and gives
+//                    the list the keys, `keyDown:cmd-down` floats its verbs (Rename · Pin · Archive · Move to
+//                    Trash) as ConsoleMenuRows under the row; `probe-floats:` names `rail.chain.<id>.verbs`.
+//                    in console-preview.sh and render today's UI until their builder lands.
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
 //   PREVIEW_SHOT_PNG                the screenshot step's file inside that dir
@@ -207,8 +239,29 @@ import SwiftUI
 //                          undo-toast presses the toast's Undo (AppState.undoCleanup(id:)); redo
 //                          runs the manager's redo once — the toast-then-⌘Z sequence must not
 //                          re-perform the action (undo after undo-toast: canUndo=false, nothing sent)
+//     keyDown:<name>       post a real key-down (and up) through window.sendEvent — the responder chain's
+//                          path to a focused SwiftUI view (a popup, a list), where `key:` reaches only
+//                          performKeyEquivalent. Names: escape up down left right return space tab ? a…z;
+//                          several joined with `+` land 40 ms apart (keyDown:m+a, keyDown:down+return)
+//     click:(x,y)          a left click at that point of the content view (points from its top-left),
+//                          down and up through sendEvent; prints the first responder before and after
+//     focus:<id> · menuOpen:<id> · tipOpen:<id> · chip:<kind> · highlight:<id> · fold:<id>:<open|closed>
+//                          the kit's previewNotification keys (ConsolePreviewKey): the control with that
+//                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
+//                          is highlighted / the disclosure folds or opens
+//     hover:<id> · leave:<id>  the pointer entering / leaving a tip's trigger: the real delay runs (with
+//                          ConsoleTip.delayOverride nil, `tip-warm`); the tip's trail prints as `tip:` lines
+//     check-tips           the timing pins from the `tip:` trail: the cold tip waited ≥ 300 ms, the warm one
+//                          (within 400 ms of the last hide) showed within 120 ms (a run-loop hop under load)
+//     check-floats:<none|id[+id]>  what the layer holds right now must be exactly that (`none` = nothing
+//                          open) — and the first responder is not the composer's text
+//     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
+//     check-kit            the kit's pure pins as `check:` lines: placement (below · flips · clamps · trailing
+//                          · arrow ≥ r + 4 · max list height · size == .zero), ConsoleTip.delay, every badge
+//                          word and tone, check-copy over HelpCopy — ends `check: all ok (kit)`
 //     Every action may carry `@<seconds>` (from launch): "open-jarhead@1.2,shot:mid@1.36";
-//     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s).
+//     without it the old cadence holds (the first at 1.2 s, then one every 0.8 s). The list splits
+//     on commas outside parentheses, so `click:(300,300)` is one action.
 
 @main
 struct ConsolePreviewMain {
@@ -234,6 +287,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     let launchedAt = Date()
     /// How many `append` actions have run (they alternate Kevin / Jarhead).
     var appended = 0
+    /// Every `probe-floats` result, in order.
+    var floatProbes: [[String: CGRect]] = []
+    /// The tips' trail (`tip:` lines: armed · shown after n ms · hidden · pinned), read by `check-tips`.
+    var tipLog: [String] = []
     /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
     lazy var trace = MainThreadTrace(launchedAt: launchedAt)
     /// The conversation scenarios' pane, opened once the app is active (`openPendingAgentAfterActivation`).
@@ -281,6 +338,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         state.memorySearchHandler = { query, limit in fake.memorySearch(query, limit: limit) }
         state.ledgerDaysHandler = { ["2026-09-10", "2026-09-09", "2026-09-08", "2026-09-07"] }
         state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : [] }
+        // `ledger-months` (Builder D): forty days from `Scripts/fixtures/ledger-days.json` (September 1–10,
+        // August 2–31), every one readable — the month heads sum the days the harness picks before the shot.
+        if scenario == "ledger-months", let days = Self.fixtureDays(state.stateDir) {
+            state.ledgerDaysHandler = { days }
+            state.ledgerReadHandler = { day in days.contains(day) ? fake.ledgerRows() : [] }
+        }
         // Jarhead's own sessions, as `ledger.sessions` / `ledger.session` would answer:
         // the list is set outright so the rail has it before the window opens.
         state.jarheadSessions = fake.jarheadSessions()
@@ -289,23 +352,58 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // The rail's search, as `ledger.search` would answer: a scan of the fake rows.
         state.ledgerSearchHandler = { query, limit in Array(fake.searchHits(query).prefix(limit)) }
 
+        // The kit's floats: the tip delay pinned to 0 in every shot but `tip-warm`; floats held while
+        // the window is inactive (a shot behind the lock screen).
+        ConsoleTip.delayOverride = scenario == "tip-warm" ? nil : 0
+        ConsoleFloatLayer.holdWhileInactive = true
+        // The folds live in memory alone here (a previous run's UserDefaults never leak into a shot);
+        // every list's focus move is a `list-focus:` line.
+        ConsoleFoldStore.persists = false
+        // Settings is an index of seven closed heads (Builder D); every scenario but `settings-index`
+        // opens them all, so the shots that drive a control inside a section still see it.
+        if scenario != "settings-index" { for id in SettingsWords.folds { ConsoleFoldStore.set(id, true) } }
+        ConsoleListFocus.report = { line in print("list-focus: \(line)") }
+        ConsoleTip.report = { [weak self] line in
+            self?.tipLog.append(line)
+            print("tip: \(line)")
+        }
+
         switch scenario {
         case "empty": state.snapshot = fake.empty()
-        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared":
+        // Automations (design11, Builder D): the six rows of the mockup and one in the Trash, the alarm ringing,
+        // Settings › Automations with three recipes (vpn-up rated `asks` by the harness key).
+        case "automations", "automations-ring", "settings-automations":
+            state.snapshot = fake.automationsSnapshot()
+            if scenario == "settings-automations" { AutomationRecipeAsks.names = ["vpn-up"] }
+        case "cleanup", "cleanup-select", "cleanup-rename", "cleanup-undo", "cleanup-undo-toast", "cleanup-log", "search", "search-hit", "cleared", "list-keys", "list-verbs", "agents-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.hiddenAgents = ["sessions:codex:thread-9"]
+            // The kit's `agents-groups`: two Claude Code rows and the Codex group, one of whose sessions
+            // asks — so the folded Codex head reads `[1 asks] · 1 done` above the fold.
+            if scenario == "agents-groups" {
+                let keep: Set<String> = ["sessions:cc:1", "sessions:claude:w1p2", "sessions:codex:1", FakeData.endedId, "sessions:codex:w2p2", "sessions:codex:thread-9"]
+                state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
+                if let i = state.snapshot.agents.firstIndex(where: { $0.id == "sessions:codex:w2p2" }) {
+                    state.snapshot.agents[i].status = .blocked
+                    state.snapshot.agents[i].hint = "blocked"
+                }
+            }
             // Fewer sessions in the `cleanup` shot, so the Agents section's "Hidden (1)" is on screen.
             if scenario == "cleanup" {
                 let keep: Set<String> = ["sessions:cc:1", "sessions:codex:thread-9"]
                 state.snapshot.agents = fake.agents().filter { keep.contains($0.id) }
             }
-        case "problems":
+        case "problems", "problems-groups":
             state.snapshot = fake.live()
             state.snapshot.marks = fake.marks()
             state.snapshot.trash = fake.trash
             state.snapshot.problems = fake.problems()
+        case "permissions-groups":
+            // Screen Recording not asked, Accessibility denied: `Senses 5 of 6` and `Hands 2 of 3 · [1 missing]`.
+            state.snapshot = fake.live()
+            state.snapshot.permissions = fake.permissions(microphone: .granted, screenRecording: .unknown, accessibility: .denied)
         case "paused":
             state.snapshot = fake.live()
             state.snapshot.phase = .paused
@@ -313,7 +411,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.session = nil
             state.snapshot.problems = []
         case "confirm": state.snapshot = fake.confirm()
-        case "settings":
+        case "settings", "menu-voice", "menu-voice-filter", "menu-backend", "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index":
             state.snapshot = fake.asleep()
             // The gate is listening and has just heard the phrase: the "does it hear me?" readout.
             state.wakeGate = .listening
@@ -334,13 +432,15 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.marks = fake.marks()
             // The transcripts the engine would have sent for the two sessions we step into.
             state.transcripts = fake.transcripts()
-        case "memory":
+        case "memory", "memory-chips":
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
-        case "local":
-            // Backend → Local model, Ollama up, the engine's best fit; the Settings tab.
+        case "local", "menu-model":
+            // Backend → Local model, Ollama up, the engine's best fit; the Settings tab. `menu-model`
+            // saves an id the server no longer lists, so the popup's `Saved, not listed` head shows.
             state.snapshot = fake.localSnapshot()
+            if scenario == "menu-model" { state.snapshot.settings.brainModel = "qwen3:8b" }
             state.wakeGate = .listening
             state.wakeHeard = "hey jarhead"
             state.wakePassphraseSet = true
@@ -356,7 +456,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // and says `complete: false`, so "Load earlier" offers the rest and a `load-earlier:` action
             // prepends into the same cap the app has (the view's own ceiling is the pure check).
             state.applyTranscript(fake.longTranscript(agentId: FakeData.endedId, count: 1_200), mode: "replace")
-        case "threads", "thread-pane", "thread-answer":
+        case "threads", "thread-pane", "thread-answer", "tip-thread", "tip-thumb":
             // Jarhead's threads under one running delegation: the snapshot's summaries land the way
             // EngineClient publishes them (applySnapshotThreads), each thread's conversation the way
             // its `thread.open` page would (applyThreadTranscript replace).
@@ -455,8 +555,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         }
 
         switch scenario {
-        case "settings", "wake-locked", "memory", "local": console.selectTab(.settings)
+        case "settings", "wake-locked", "memory", "memory-chips", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
+             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
+        case "settings-automations": console.selectTab(.settings)
+        // The ring line sits under the tabs on every tab: shot on Ledger to prove it.
+        case "automations-ring": console.selectTab(.ledger)
         case "durability":
             pendingAgentOpen = FakeData.endedId
             openPendingAgentAfterActivation()
@@ -516,7 +620,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             + "trace:tab-now@7.8,tab:now@8.0,trace-stop@8.8,"
             + "trace:pick-day@9.0,pick-day:2026-09-10@9.2,trace-stop@10.2,"
             + "trace:show-now-3@10.4,show-now@10.6,trace-stop@11.4"
-        case "cleanup": defaultActions = "trash-open@0.4,hidden-open@0.4"
+        case "cleanup": defaultActions = "check-kit@0.3,trash-open@0.4,hidden-open@0.4"
         // A chain's id is its root session's (the paused one), not the resumed session's.
         case "cleanup-select": defaultActions = "trash-open@0.4,select:\(FakeData.chainPausedId)+\(FakeData.yesterdayId)@0.6"
         case "cleanup-rename": defaultActions = "rename:\(FakeData.pinnedId)@0.5"
@@ -555,10 +659,54 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (No comma in the text: "," separates the actions.)
         case "agent-pending": defaultActions = "probe-pending@0.4,agent-echo:sessions:claude:w1p2:yes please run it@0.5,probe-pending@0.6,"
             + "snap:preview-console-agent-pending-mid@1.0,agent-land:sessions:claude:w1p2:yes please run it@1.6,probe-pending@1.8"
+        // The kit's tips (Builder A): a thread's card on the stream's chip (the same ConsoleTipCard.thread the rails
+        // draw), `?` pinning the composer's Stop after `focus:`, the warm re-show timed from the trail, the pane
+        // Retargeted (Builder D): the card beside the right rail's Slack row; `?` on the Brain section's Check.
+        case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:\(NowWords.threadTip(FakeData.slackId))@0.8,probe-floats@1.3"
+        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4"
+        // The right rail (Builder D): Settings as seven folded heads with Memory opened by its id; the Now rail's
+        // Permissions areas (Senses open) and Problems kinds (Engine folded); the Ledger's forty days by month —
+        // two August days read first so the folded head sums them, then Sep 10 picked, the list given the
+        // keyboard and ↓ ⏎ picking the next day (`list-focus:` lines say which).
+        case "settings-index": defaultActions = "check-kit@0.3,snap:preview-console-settings-index-closed@0.7,fold:\(SettingsWords.memoryFold):open@0.9"
+        case "permissions-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.permissionsFold):open@0.5,fold:\(NowWords.sensesFold):open@0.8,rail-scroll:460@1.2"
+        case "problems": defaultActions = "fold:\(NowWords.problemsFold):open@0.4,rail-scroll:520@0.8"
+        case "problems-groups": defaultActions = "check-kit@0.3,fold:\(NowWords.problemsFold):open@0.5,fold:\(NowWords.engineFold):closed@0.8,rail-scroll:520@1.2"
+        case "ledger-months": defaultActions = "check-kit@0.3,pick-day:2026-08-31@0.4,pick-day:2026-08-28@0.6,pick-day:2026-09-10@0.9,"
+            + "focus:\(LedgerWords.listId)@1.4,keyDown:down+return@1.7,probe@2.4"
+        case "tip-warm": defaultActions = "check-kit@0.3,hover:stream.go@0.5,leave:stream.go@1.2,hover:stream.mute@1.3,probe-floats@1.5,check-tips@1.6"
+        case "tip-thumb": defaultActions = "check-kit@0.3,thread-open:\(FakeData.slackId)@0.3,tipOpen:thread.shot.\(FakeData.slackId)@1.0,probe-floats@1.6"
+        // The kit's dropdowns (Builder B): the pure pins, then the popup opened by its id on the layer.
+        case "menu-voice": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.4"
+        // `ma` typed into the filter (2 of 22: Marin, Meridian), a snap with the filter up, then ↓ Return
+        // picks Meridian — run.log's `send:` line must carry "meridian".
+        case "menu-voice-filter": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,keyDown:m+a@1.0,"
+            + "snap:preview-console-menu-voice-filter-typed@1.6,keyDown:down+return@2.0,probe-floats@2.6"
+        // The saved row is highlighted on open (the bottom); ↑↑ lands on gpt-oss:120b, whose foot says why it is tight.
+        case "menu-model": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,keyDown:up+up@1.2,probe-floats@2.0,check-floats:settings.model@2.1"
+        // ↓ moves the highlight and the foot to the next kind's `needs` sentence.
+        case "menu-backend": defaultActions = "check-kit@0.3,menuOpen:settings.backend@0.6,keyDown:down@1.2,probe-floats@2.0"
+        // Esc closes unchanged; an outside click closes and does not focus the composer.
+        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8"
+        case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8"
+        // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
+        case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
+        // The kit (Builder C): the memory rail's kind chips (`chip:fact` → 2 rows) and a row's card;
+        // the left rail's search with ↑↓ (the third hit takes the ring, Return opens it — `probe` says
+        // which); the agents grouped per tool with Codex folded (`1 asks`); `cleanup` re-shot with the folds.
+        case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
+        case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
+        case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
+        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
+        // Automations: the Trash fold open, the Downloads → Papers card pinned beside the row (it lands over the stream).
+        case "automations": defaultActions = "check-kit@0.3,fold:\(AutomationWords.trashFold):open@0.5,tipOpen:\(AutomationWords.tip(FakeData.papersId))@0.9,probe-floats@1.4,check-floats:\(AutomationWords.tip(FakeData.papersId))@1.5"
+        // The ring row on the Ledger tab: its card pinned, then `ringing:off` (the row leaves) and back on for the shot.
+        case "automations-ring": defaultActions = "check-kit@0.3,tipOpen:\(AutomationWords.ringTip)@0.8,probe-floats@1.2,ringing:off@1.5,probe-ring@1.7,ringing:\(FakeData.wakeId)@1.9,probe-ring@2.1"
+        case "settings-automations": defaultActions = "check-kit@0.3,automationsFold@0.5,rail-scroll:640@0.9"
         default: defaultActions = nil
         }
         if let actions = env["PREVIEW_ACTION"] ?? defaultActions {
-            for (index, spec) in actions.split(separator: ",").enumerated() {
+            for (index, spec) in Self.splitActions(actions).enumerated() {
                 let parts = spec.split(separator: "@", maxSplits: 1).map(String.init)
                 let action = parts[0]
                 let at = parts.count == 2 ? (Double(parts[1]) ?? 0) : 1.2 + 0.8 * Double(index)
@@ -792,6 +940,24 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeGround(stamp: stamp)
             } else if action.hasPrefix("load-earlier:") || action == "history" {
                 loadEarlier(action, stamp: stamp)
+            } else if action.hasPrefix("ringing:") || action.hasPrefix("recipesAsks:") || action == "automationsFold" || action == "probe-ring" {
+                automationAction(action, stamp: stamp)
+            } else if let info = kitAction(action) {
+                // The kit's keys (ConsolePreviewKey): the trigger with that id answers.
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: info)
+                print("action: \(action) at \(stamp)s")
+            } else if action.hasPrefix("keyDown:") {
+                keyDown(String(action.dropFirst("keyDown:".count)), stamp: stamp)
+            } else if action.hasPrefix("click:") {
+                click(String(action.dropFirst("click:".count)), stamp: stamp)
+            } else if action == "probe-floats" {
+                probeFloats(stamp: stamp)
+            } else if action == "check-kit" {
+                checkKit(stamp: stamp)
+            } else if action == "check-tips" {
+                checkTips(stamp: stamp)
+            } else if action.hasPrefix("check-floats:") {
+                checkFloats(String(action.dropFirst("check-floats:".count)), stamp: stamp)
             } else if let info = memoryAction(action) {
                 // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
                 // `send:` line is the command, the `memory-rail:` line what the list holds after.
@@ -1386,6 +1552,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         let extracted = items.first { $0.id == "m_kev" }!
         expect("memory meta: extracted says nothing of its origin", MemoryFormat.meta(extracted, now: fake.now), "seen 5× · 12h")
         expect("memory tooltip: kind, scores, the sources", MemoryFormat.tooltip(pref).components(separatedBy: "\n").first ?? "", "preference · importance 0.9 · confidence 0.9")
+        // The card's source rows are terse: the clock today, the day this year, the year only when it differs.
+        let noon = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14, hour: 12))!.timeIntervalSince1970 * 1000
+        let sourceNow = { (h: Double) in MemoryFormat.source(MemorySource(sessionId: "s", at: noon - h * 3_600_000, type: "heard"), now: noon) }
+        expect("memory card: source today is the clock", sourceNow(1.75), "10:15 · heard")
+        expect("memory card: source this year is the day", sourceNow(48), "Sep 12 · heard")
+        expect("memory card: source another year says the year", sourceNow(24 * 400), "Aug 10, 2025 · heard")
+        expect("memory card: foot is terse (≤ 60, no year today)", MemoryFormat.card(pref, now: fake.now).foot.filter { $0.key == MemoryWords.source }.allSatisfy { $0.value.count <= 60 && !$0.value.contains("2026") } ? "terse" : "long", "terse")
         expect("memory empty: live", MemoryFormat.emptyLine(state: .live, query: ""), "Nothing remembered yet.")
         expect("memory empty: forgotten", MemoryFormat.emptyLine(state: .forgotten, query: ""), "Nothing forgotten.")
         expect("memory empty: a query", MemoryFormat.emptyLine(state: .live, query: " dentist "), "No memory matches “dentist”.")
@@ -1785,6 +1958,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The right rail's scroll view: the one whose width is the rail's.
+    /// `Scripts/fixtures/ledger-days.json` (PREVIEW_STATE_DIR): the `ledger-months` days, newest first.
+    static func fixtureDays(_ dir: URL) -> [String]? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("ledger-days.json")),
+              let days = try? JSONDecoder().decode([String].self, from: data), !days.isEmpty else { return nil }
+        return days
+    }
+
     private static func railScrollView(in view: NSView?) -> NSScrollView? {
         guard let view = view else { return nil }
         var found: [NSScrollView] = []
@@ -1923,14 +2103,16 @@ struct FakeData {
     }
 
     /// Every permission row (Snapshot.permissions.all) with the three the hands and the voice need
-    /// set as given and the rest granted; the harness compiles without Permissions/, so the rows
-    /// carry their own short labels.
+    /// set as given and the rest granted; the label and the why are the app's own table
+    /// (`PermissionsKit.meta`, compiled in beside the Console), so the rail reads `Screen Recording
+    /// / so the hands can see the screen`, never a kind's raw id.
     func permissions(microphone: Grant, screenRecording: Grant, accessibility: Grant) -> Permissions {
         let required: [PermissionKind: Grant] = [.microphone: microphone, .speechRecognition: .granted, .screenRecording: screenRecording, .accessibility: accessibility]
         let settingsOnly: Set<PermissionKind> = [.screenRecording, .accessibility, .inputMonitoring, .fullDiskAccess]
         return Permissions(all: PermissionKind.allCases.map { kind in
-            PermissionInfo(kind: kind, grant: required[kind] ?? .granted, ask: kind == .automation ? .perApp : (settingsOnly.contains(kind) ? .settings : .prompt),
-                           required: required[kind] != nil, label: kind.rawValue, why: "", checkedAt: ago(90))
+            let m = PermissionsKit.meta(kind)
+            return PermissionInfo(kind: kind, grant: required[kind] ?? .granted, ask: kind == .automation ? .perApp : (settingsOnly.contains(kind) ? .settings : .prompt),
+                                  required: required[kind] != nil, label: m.label, why: m.why, checkedAt: ago(90))
         })
     }
 
@@ -2579,6 +2761,108 @@ struct FakeData {
                  settings: settings, permissions: permissions(microphone: .unknown, screenRecording: .granted, accessibility: .granted), problems: [], brainReady: true, handsReady: true, setup: setup, marks: [], threads: [])
     }
 
+    // MARK: automations (design11, Builder D) — the mockup's six rows, one in the Trash, the ring, the recipes
+
+    static let wakeId = "auto_wake0710"
+    static let pastaId = "auto_pasta12"
+    static let mumId = "auto_callmum"
+    static let standupId = "auto_standup9"
+    static let papersId = "auto_papers"
+    static let buildRedId = "auto_buildred"
+    static let oldTimerId = "auto_oldtimer"
+
+    /// `HH:mm` on the local day `dayOffset` days from now, as wall-clock ms.
+    func clock(_ h: Int, _ m: Int, dayOffset: Int = 0) -> Double {
+        let cal = Calendar.current
+        let day = cal.date(byAdding: .day, value: dayOffset, to: Date(timeIntervalSince1970: now / 1000)) ?? Date()
+        return (cal.date(bySettingHour: h, minute: m, second: 0, of: day) ?? day).timeIntervalSince1970 * 1000
+    }
+
+    /// The next weekday's `HH:mm` after now (Friday evening → Monday).
+    func nextWeekday(_ h: Int, _ m: Int) -> Double {
+        for offset in 0...7 {
+            let at = clock(h, m, dayOffset: offset)
+            let weekday = Calendar.current.component(.weekday, from: Date(timeIntervalSince1970: at / 1000))
+            if at > now, (2...6).contains(weekday) { return at }
+        }
+        return clock(h, m, dayOffset: 1)
+    }
+
+    func action(_ kind: String, line: String? = nil, app: String? = nil, into: String? = nil, recipe: String? = nil) -> AutomationAction {
+        AutomationAction(kind: kind, line: line, sound: nil, title: nil, body: nil, open: nil, app: app, url: nil, path: nil, into: into, recipe: recipe,
+                         key: nil, prompt: nil, budget: nil, speak: nil)
+    }
+
+    func automation(_ id: String, _ name: String, when: AutomationWhen, then: [AutomationAction], echo: String, state: String, nextAt: Double?,
+                    quiet: String = "respect", fires: Int = 0, lastFiredAt: Double? = nil, lastDetail: String? = nil, snoozedUntil: Double? = nil,
+                    updatedAt: Double? = nil, cooldown: Double? = nil) -> Automation {
+        Automation(id: id, name: name, when: when, then: then,
+                   clauses: AutomationClauses(window: nil, days: nil, once: nil, cooldown: cooldown, until: nil, quiet: quiet), echo: echo, state: state,
+                   nextAt: nextAt, lastFiredAt: lastFiredAt, lastDetail: lastDetail, fires: fires, missed: 0, snoozedUntil: snoozedUntil,
+                   createdAt: ago(3 * 86_400), updatedAt: updatedAt ?? ago(3_600),
+                   createdBy: AutomationCreatedBy(by: "brain", chainId: nil, delegationId: nil, request: name), confirmed: nil)
+    }
+
+    func weekly(_ days: [String], _ at: String, phrase: String) -> AutomationWhen {
+        AutomationWhen(kind: "every", at: nil, ms: nil, every: Recurrence(kind: "weekly", days: days, at: at, everyMs: nil, anchorAt: nil, nth: nil, weekday: nil, day: nil), phrase: phrase, on: nil)
+    }
+
+    func watching(_ on: SystemEvent) -> AutomationWhen { AutomationWhen(kind: "on", at: nil, ms: nil, every: nil, phrase: nil, on: on) }
+
+    /// The mockup's rows: an alarm, a timer (4:12 left at the shot), a snoozed reminder, a routine, two watchers
+    /// (one paused two days), and a trashed timer for the Trash fold.
+    func automations(timerSettle: Double = 2_000) -> [Automation] {
+        let weekdays = ["mon", "tue", "wed", "thu", "fri"]
+        return [
+            automation(Self.wakeId, "Wake up, Kevin", when: weekly(weekdays, "07:10", phrase: "weekdays"),
+                       then: [action("chime", line: "Wake up, Kevin"), action("say", line: "It is ten past seven.")],
+                       echo: "Weekdays at 07:10, ring “Wake up, Kevin”.", state: "armed", nextAt: nextWeekday(7, 10), quiet: "override", fires: 41),
+            automation(Self.pastaId, "pasta", when: AutomationWhen(kind: "in", at: nil, ms: 12 * 60_000, every: nil, phrase: nil, on: nil),
+                       then: [action("chime", line: "pasta")], echo: "In 12:00, ring “pasta”.", state: "armed", nextAt: now + 252_000 + timerSettle),
+            automation(Self.mumId, "call mum", when: AutomationWhen(kind: "at", at: clock(15, 0), ms: nil, every: nil, phrase: nil, on: nil),
+                       then: [action("say", line: "call mum")], echo: "At 15:00, say “call mum”.", state: "snoozed", nextAt: now + 600_000, snoozedUntil: now + 600_000),
+            automation(Self.standupId, "standup notes", when: weekly(weekdays, "09:00", phrase: "weekdays"),
+                       then: [action("open", app: "Notes")], echo: "Weekdays at 09:00, open Notes.", state: "armed", nextAt: nextWeekday(9, 0)),
+            automation(Self.papersId, "Downloads → Papers",
+                       when: watching(SystemEvent(kind: "folder.file", path: "~/Downloads", glob: "*.pdf", settleMs: 3000, app: nil, recipe: nil, everySeconds: nil, agent: nil, status: nil)),
+                       then: [action("file", into: "~/Documents/Papers"), action("chime", line: "Filed")],
+                       echo: "When a PDF lands in Downloads, file it under ~/Documents/Papers and chime.", state: "armed", nextAt: nil,
+                       fires: 3, lastFiredAt: clock(14, 2), lastDetail: "filed invoice.pdf"),
+            automation(Self.buildRedId, "build red",
+                       when: watching(SystemEvent(kind: "recipe.red", path: nil, glob: nil, settleMs: nil, app: nil, recipe: "build-check", everySeconds: 60, agent: nil, status: nil)),
+                       then: [action("chime", line: "tests red")], echo: "Every 60 s run recipe “build-check”; when it goes red, chime “tests red”.",
+                       state: "paused", nextAt: nil, fires: 2, updatedAt: ago(2 * 86_400)),
+            automation(Self.oldTimerId, "old timer", when: AutomationWhen(kind: "in", at: nil, ms: 5 * 60_000, every: nil, phrase: nil, on: nil),
+                       then: [action("chime", line: "old timer")], echo: "In 5:00, ring “old timer”.", state: "trashed", nextAt: nil, fires: 1, updatedAt: ago(86_400)),
+        ]
+    }
+
+    /// The alarm ringing: `07:10 · Wake up, Kevin` with Snooze 10 · Done.
+    func ringLine() -> RingLine {
+        RingLine(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", line: "07:10 · Wake up, Kevin", calm: nil, at: ago(20), lateMs: nil,
+                 presses: [AutomationPress(kind: "snooze", minutes: 10, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)], more: 0)
+    }
+
+    /// Settings › Automations: the contract's defaults with quiet hours 23:00 → 07:00 and three recipes.
+    func automationSettings() -> AutomationSettings {
+        AutomationSettings(enabled: true, unattended: ["chime", "say", "notify", "open", "file"], quietHours: ClockSpan(from: "23:00", to: "07:00"),
+                           snoozeMinutes: 10, wakeBudgetMinutesPerDay: 5,
+                           recipes: [ShellRecipe(name: "backup", command: "/Users/kevinliu/bin/backup.sh", cwd: nil, timeoutSeconds: 120, approvedAt: ago(2 * 86_400)),
+                                     ShellRecipe(name: "build-check", command: "pnpm -C ~/gt test --silent", cwd: nil, timeoutSeconds: 300, approvedAt: ago(5 * 86_400)),
+                                     ShellRecipe(name: "vpn-up", command: "networksetup -connectpppoeservice VPN", cwd: nil, timeoutSeconds: 60, approvedAt: ago(9 * 86_400))],
+                           openAtLogin: false)
+    }
+
+    /// Asleep, the alarm ringing, six rows set, the foot's next fire the alarm.
+    func automationsSnapshot() -> Snapshot {
+        var s = asleep()
+        s.automations = automations()
+        s.ringing = ringLine()
+        s.nextFire = NextFire(id: Self.wakeId, kind: "alarm", name: "Wake up, Kevin", at: nextWeekday(7, 10))
+        s.settings.automations = automationSettings()
+        return s
+    }
+
     // MARK: Jarhead's own sessions (the ledger's `sessions()` / `readSession()`)
 
     /// The paused → resumed chain the `jarhead` scenarios step into.
@@ -2837,5 +3121,541 @@ struct FakeData {
         r = row(ago(61), "sleep"); r.sessionId = "sess_7f3a9c2e41b0"; r.cause = "idle"; rows.append(r)
         r = row(ago(60), "session.closed"); r.sessionId = "sess_7f3a9c2e41b0"; r.reason = "close_requested"; r.usageSeconds = 1020; rows.append(r)
         return rows
+    }
+}
+
+// MARK: - The kit (step 0): keys through the responder chain, clicks, floats, the pure pins
+
+extension PreviewDelegate {
+    /// PREVIEW_ACTION's list, split on commas outside parentheses (`click:(300,300)` is one action).
+    static func splitActions(_ list: String) -> [String] {
+        var out: [String] = [], current = "", depth = 0
+        for ch in list {
+            if ch == "(" { depth += 1 } else if ch == ")" { depth = max(0, depth - 1) }
+            if ch == ",", depth == 0 { out.append(current); current = "" } else { current.append(ch) }
+        }
+        out.append(current)
+        return out.filter { !$0.isEmpty }
+    }
+
+    private var jarheadWindow: NSWindow? { NSApp.windows.first(where: { $0.title == "Jarhead" }) }
+
+    /// `focus:` `menuOpen:` `tipOpen:` `chip:` `highlight:` `fold:<id>:<open|closed>` → userInfo.
+    func kitAction(_ action: String) -> [String: Any]? {
+        let plain = [ConsolePreviewKey.focus, ConsolePreviewKey.menuOpen, ConsolePreviewKey.tipOpen, ConsolePreviewKey.chip, ConsolePreviewKey.highlight,
+                     ConsolePreviewKey.hover, ConsolePreviewKey.leave]
+        for key in plain where action.hasPrefix(key + ":") { return [key: String(action.dropFirst(key.count + 1))] }
+        if action.hasPrefix("fold:") {
+            let parts = action.dropFirst("fold:".count).split(separator: ":").map(String.init)
+            guard parts.count == 2 else { return nil }
+            return [ConsolePreviewKey.fold: parts[0], ConsolePreviewKey.foldOpen: parts[1] == "open"]
+        }
+        return nil
+    }
+
+    /// A key's virtual code, characters and modifiers, by the name `keyDown:` takes.
+    static func keySpec(_ name: String) -> (code: UInt16, chars: String, flags: NSEvent.ModifierFlags)? {
+        switch name {
+        case "escape": return (53, "\u{1b}", [])
+        case "return": return (36, "\r", [])
+        case "space": return (49, " ", [])
+        case "tab": return (48, "\t", [])
+        case "up": return (126, "\u{F700}", .function)
+        case "down": return (125, "\u{F701}", .function)
+        case "left": return (123, "\u{F702}", .function)
+        case "right": return (124, "\u{F703}", .function)
+        case "?": return (44, "?", .shift)
+        /// ⌘↓ — the list's verbs float (`ConsoleListModel.command`).
+        case "cmd-down": return (125, "\u{F701}", [.function, .command])
+        default: break
+        }
+        let letters: [Character: UInt16] = ["a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13,
+                                            "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46]
+        guard name.count == 1, let ch = name.first, let code = letters[ch] else { return nil }
+        return (code, name, [])
+    }
+
+    static func keyEvent(_ name: String, window: NSWindow, down: Bool) -> NSEvent? {
+        guard let spec = keySpec(name) else { return nil }
+        return NSEvent.keyEvent(with: down ? .keyDown : .keyUp, location: .zero, modifierFlags: spec.flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                windowNumber: window.windowNumber, context: nil, characters: spec.chars, charactersIgnoringModifiers: spec.chars,
+                                isARepeat: false, keyCode: spec.code)
+    }
+
+    /// `keyDown:<name>[+<name>…]`: each key down and up through the window's sendEvent, 40 ms apart.
+    func keyDown(_ spec: String, stamp: String) {
+        guard let window = jarheadWindow else { print("action: keyDown \(spec) at \(stamp)s → no window"); return }
+        window.makeKeyAndOrderFront(nil)
+        for (index, name) in spec.split(separator: "+").map(String.init).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04 * Double(index)) {
+                guard let down = Self.keyEvent(name, window: window, down: true), let up = Self.keyEvent(name, window: window, down: false) else {
+                    print("action: keyDown \(name) → unknown key (see the names in the header)")
+                    return
+                }
+                window.sendEvent(down)
+                window.sendEvent(up)
+                let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+                print("action: keyDown \(name) at \(stamp)s → key=\(window.isKeyWindow) firstResponder=\(responder)")
+            }
+        }
+    }
+
+    /// `click:(x,y)` — points from the content view's top-left; a left mouse down and up through sendEvent.
+    func click(_ spec: String, stamp: String) {
+        let numbers = spec.split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
+        guard numbers.count == 2, let window = jarheadWindow, let content = window.contentView else { print("action: click \(spec) → want (x,y) and a window"); return }
+        let point = NSPoint(x: numbers[0], y: content.bounds.height - numbers[1])
+        window.makeKeyAndOrderFront(nil)
+        let before = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let hit = content.hitTest(point).map { String(describing: type(of: $0)) } ?? "nil"
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                window.sendEvent(event)
+            }
+        }
+        let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        print("action: click (\(Int(numbers[0])),\(Int(numbers[1]))) at \(stamp)s → hit \(hit); firstResponder \(before) → \(after)")
+    }
+
+    /// `probe-floats`: the rect of every float the layer has placed, in the root's space.
+    func probeFloats(stamp: String) {
+        let placed = ConsoleFloatSlot.placed
+        floatProbes.append(placed)
+        guard !placed.isEmpty else { print("probe-floats: none at \(stamp)s"); return }
+        let line = placed.keys.sorted().map { id -> String in
+            let r = placed[id] ?? .zero
+            return String(format: "%@ x=%.1f y=%.1f w=%.1f h=%.1f", id, r.minX, r.minY, r.width, r.height)
+        }.joined(separator: " · ")
+        print("probe-floats: \(line) at \(stamp)s")
+    }
+
+    /// `check-kit`: the kit's pure pins as `check: ok|FAIL` lines.
+    func checkKit(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func fmt(_ r: CGRect) -> String { String(format: "%.0f,%.0f %.0f×%.0f", r.minX, r.minY, r.width, r.height) }
+        let bounds = CGRect(x: 0, y: 0, width: 1180, height: 760)
+        let field = CGRect(x: 900, y: 200, width: 182, height: 26)
+        let popup = CGSize(width: 220, height: 300)
+        expect("placement: below, leading-aligned, gap 4", fmt(ConsoleFloatPlacement.rect(anchor: field, size: popup, bounds: bounds, edge: .below)), "900,230 220×300")
+        let low = CGRect(x: 900, y: 600, width: 182, height: 26)
+        expect("placement: flips above when short", fmt(ConsoleFloatPlacement.rect(anchor: low, size: popup, bounds: bounds, edge: .below)), "900,296 220×300")
+        let right = CGRect(x: 1000, y: 200, width: 182, height: 26)
+        expect("placement: clamps x to maxX − 8", fmt(ConsoleFloatPlacement.rect(anchor: right, size: CGSize(width: 300, height: 300), bounds: bounds, edge: .below)), "872,230 300×300")
+        let row = CGRect(x: 8, y: 300, width: 244, height: 44)
+        let card = CGSize(width: 280, height: 160)
+        expect("placement: trailing beside a rail row, top-aligned", fmt(ConsoleFloatPlacement.rect(anchor: row, size: card, bounds: bounds, edge: .trailing)), "256,300 280×160")
+        let rightRow = CGRect(x: 900, y: 300, width: 260, height: 44)
+        expect("placement: trailing flips to leading when short", fmt(ConsoleFloatPlacement.rect(anchor: rightRow, size: card, bounds: bounds, edge: .trailing)), "616,300 280×160")
+        let clamped = ConsoleFloatPlacement.rect(anchor: right, size: CGSize(width: 300, height: 300), bounds: bounds, edge: .below)
+        expect("placement: arrow points at the anchor's centre", String(format: "%.0f", ConsoleFloatPlacement.arrowOffset(anchor: right, rect: clamped, side: .below)), "219")
+        let corner = CGRect(x: 870, y: 200, width: 4, height: 26)
+        expect("placement: arrow ≥ r + 4 from a corner", String(format: "%.0f", ConsoleFloatPlacement.arrowOffset(anchor: corner, rect: clamped, side: .below)), "10")
+        expect("placement: max list height under the field", String(format: "%.0f", ConsoleFloatPlacement.maxListHeight(anchor: field, bounds: bounds, side: .below)), "522")
+        expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
+        expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")
+        expect("tip delay: warm 0.2 s", "\(ConsoleTip.delay(sinceLastHide: 0.2))", "0.0")
+        expect("tip delay: never hidden", "\(ConsoleTip.delay(sinceLastHide: -1))", "0.35")
+        func badge(_ w: ConsoleBadge.Word) -> String { "\(ConsoleBadge.text(w)) · \(ConsoleBadge.toneKind(w).rawValue)" }
+        expect("badge: fits titanium", badge(.fits), "fits · rest")
+        expect("badge: tight speaking", badge(.tight), "tight · speaking")
+        expect("badge: too big error", badge(.tooBig), "too big · error")
+        expect("badge: missing(1) speaking", badge(.missing(1)), "1 missing · speaking")
+        expect("badge: asks speaking", badge(.asks), "asks · speaking")
+        expect("badge: asks(1) is one badge", badge(.asks(1)), "1 asks · speaking")
+        expect("badge: off speaking", badge(.off), "off · speaking")
+        expect("badge: failed error", badge(.failed), "failed · error")
+        expect("badge: resting words", [ConsoleBadge.Word.noTools, .loaded, .saved, .auto, .default, .noKey, .thisMac, .ready, .allOk].map(badge).joined(separator: " / "),
+               "no tools · rest / loaded · rest / saved · rest / auto · rest / default · rest / no key · rest / this Mac · rest / Ready · rest / all ok · rest")
+        expect("badge: a figure is mono", "\(ConsoleBadge.isFigure(.figure("17 GB"))) \(ConsoleBadge.isFigure(.word("live")))", "true false")
+        for entry in HelpCopy.all { expect("copy: \(entry.name)", HelpCopy.violations(entry).joined(separator: ", "), "") }
+        expect("copy: catches a full stop and you", HelpCopy.violations(HelpCopy.Entry(name: "Forget", hint: "Forget your circle.")).joined(separator: ", "), "full stop, says you")
+        expect("copy: catches the shortcut in the hint", HelpCopy.violations(HelpCopy.Entry(name: "Go", hint: "Go (⌘P)", key: "⌘P")).joined(separator: ", "), "shortcut in the hint")
+        expect("copy: spoken form carries the key last", HelpCopy.spoken(HelpCopy.go), "Open the live session (⌘P)")
+        expect("copy: a thread's verb carries its name", HelpCopy.stopThread("Slack").hint, "Stop Slack — the others carry on")
+        checkTipCards(expect)
+        checkKitMenu(expect)
+        failed += checkKitLists()
+        failed += checkKitRail()
+        failed += checkKitAutomations()
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+
+    /// The tip's pure pins: the card's spoken form, the stable id, the outline's arrow inside its frame.
+    func checkTipCards(_ expect: (String, String, String) -> Void) {
+        let t0: Double = 1_757_856_000_000
+        if let slack = fake?.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0) {
+            let card = ConsoleTipCard.thread(slack)
+            expect("tip card: thread title · badge · lines", "\(card.title) · \(card.badge.map(ConsoleBadge.text) ?? "-") · \(card.lines.count) lines · foot \(card.foot.map(\.key).joined(separator: " "))",
+                   "Slack · asks · 2 lines · foot started lane steps budget")
+            expect("tip card: thread spoken", card.spoken,
+                   "Slack, asks, Send “running late — there in 10” to Ben?, tell Ben on Slack that Kevin is running late, started \(ConsoleFormat.time(t0)), lane screen, steps 4 · 1 turn, budget 25 steps / 180 s, Opens its pane ⏎")
+            expect("tip card: thread meta line", ConsoleTipCard.threadMetaLine(slack), "started \(ConsoleFormat.time(t0)) · 1 turn · budget 25 steps / 180 s")
+        }
+        expect("tip card: connection foot", ConsoleTipCard.connection(connected: true, detail: "engine · pid 48213").spoken, "Connected, daemon engine · pid 48213")
+        expect("tip card: chain sessions", ConsoleTipCard.chain(sessionIds: ["7f3a9c2e41b0aaaa", "8c1d2e3f4a5b6c7d"]).spoken, "2 sessions, 7f3a9c2e → 8c1d2e3f")
+        expect("tip card: empty lines drop", ConsoleTipCard(title: "T", lines: ["", "a"]).spoken, "T, a")
+        expect("tip id: stable and distinct", "\(ConsoleTip.id(for: "Go") == ConsoleTip.id(for: "Go")) \(ConsoleTip.id(for: "Go") != ConsoleTip.id(for: "Pause"))", "true true")
+        let rect = CGRect(x: 0, y: 0, width: 200, height: 40)
+        let below = ConsoleTipOutline(side: .below, arrow: 20).path(in: rect)
+        expect("tip arrow: inside the frame, on the facing edge", "\(below.boundingRect == rect) \(below.contains(CGPoint(x: 20, y: 1))) \(below.contains(CGPoint(x: 40, y: 1))) \(below.contains(CGPoint(x: 40, y: 6)))", "true true false true")
+        let trailing = ConsoleTipOutline(side: .trailing, arrow: 12).path(in: rect)
+        expect("tip arrow: beside a row it points left", "\(trailing.contains(CGPoint(x: 1, y: 12))) \(trailing.contains(CGPoint(x: 1, y: 30)))", "true false")
+        expect("tip words", "\(ConsoleTipWords.opensPane) \(ConsoleTipWords.returnKey) \(ConsoleTipWords.question)", "Opens its pane ⏎ ?")
+        expect("tip bubble: the arrow's edge faces the anchor", "\(ConsoleTipBubble<EmptyView>.arrowEdge(.below) == .top) \(ConsoleTipBubble<EmptyView>.arrowEdge(.trailing) == .leading)", "true true")
+    }
+
+    /// `check-tips`: from the `tip:` trail — the cold tip waited, the warm one showed at once.
+    func checkTips(stamp: String) {
+        let shown = tipLog.compactMap { line -> (String, Double)? in
+            let parts = line.split(separator: " ").map(String.init)
+            guard parts.count >= 5, parts[0] == "shown", parts[2] == "after", let ms = Double(parts[3]) else { return nil }
+            return (parts[1], ms)
+        }
+        guard shown.count >= 2 else { print("check: FAIL tips — wanted two `shown` lines, got \(tipLog)"); return }
+        let cold = shown[0], warm = shown[1]
+        let coldOk = cold.1 >= 300, warmOk = warm.1 <= 16   // shown on the hover's own pass: a frame at most, never a hop
+        print(String(format: "check: %@ tip cold waits 350 ms → %@ after %.0f ms", coldOk ? "ok  " : "FAIL", cold.0, cold.1))
+        print(String(format: "check: %@ tip warm shows at once → %@ after %.0f ms", warmOk ? "ok  " : "FAIL", warm.0, warm.1))
+        print("check: \(coldOk && warmOk ? "all ok" : "FAILED") (tips) at \(stamp)s")
+    }
+
+    /// `check-floats:<none|id[+id]>`: exactly those floats are open, and the composer has not taken focus.
+    func checkFloats(_ spec: String, stamp: String) {
+        let want = spec == "none" ? [] : spec.split(separator: "+").map(String.init).sorted()
+        let have = ConsoleFloatSlot.placed.keys.sorted()
+        let responder = jarheadWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let composerFree = !responder.contains("TextView")
+        print("check: \(have == want ? "ok  " : "FAIL") floats open → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(have == want ? "" : " (want \(spec))")")
+        print("check: \(composerFree ? "ok  " : "FAIL") composer not focused → firstResponder \(responder)")
+        print("check: \(have == want && composerFree ? "all ok" : "FAILED") (floats) at \(stamp)s")
+    }
+
+    /// The dropdown's pure pins (Builder B): sections, steps, type-ahead, the words, the Local words.
+    func checkKitMenu(_ expect: (String, String, String) -> Void) {
+        let voices = ConsoleTheme.voices
+        let groups = ConsoleMenuModel.sections(voices, group: VoiceWords.group, title: VoiceWords.name, detail: nil, query: "")
+        expect("menu: sections voice groups", groups.map { "\($0.title ?? "-")[\($0.rows.count)]" }.joined(separator: " "), "Default[1] Also[2] All voices[19]")
+        let ma = ConsoleMenuModel.sections(voices, group: VoiceWords.group, title: VoiceWords.name, detail: nil, query: "ma")
+        expect("menu: sections query ma", ma.flatMap(\.rows).map(VoiceWords.name).joined(separator: ", "), "Marin, Meridian")
+        expect("menu: empty groups vanish while filtering", ma.map { $0.title ?? "-" }.joined(separator: " · "), "Also · All voices")
+        guard let up = fake?.ollamaUp() else { expect("menu: the local fixture", "none", "fixtures"); return }
+        expect("menu: model order fits → tight → too big → no tools", LocalBrainWords.modelRows(saved: "qwen3:8b", status: up).joined(separator: ","),
+               ",qwen3.5:27b,qwen3.5:9b,llama3.3:70b,gpt-oss:120b,deepseek-v3.1:671b,gemma4:31b,qwen3:8b")
+        let rows = ["a", "b", "c", "d"]
+        let off: (String) -> Bool = { $0 == "c" }
+        expect("menu: step clamps at the end", ConsoleMenuModel.step("d", by: 1, in: rows, disabled: { _ in false }) ?? "nil", "d")
+        expect("menu: step clamps at the top", ConsoleMenuModel.step("a", by: -1, in: rows, disabled: { _ in false }) ?? "nil", "a")
+        expect("menu: step skips disabled", ConsoleMenuModel.step("b", by: 1, in: rows, disabled: off) ?? "nil", "d")
+        expect("menu: step back skips disabled", ConsoleMenuModel.step("d", by: -1, in: rows, disabled: off) ?? "nil", "b")
+        expect("menu: step from nothing lands on the first", ConsoleMenuModel.step(nil, by: 1, in: rows, disabled: off) ?? "nil", "a")
+        expect("menu: ⌥↓ goes to the last enabled", ConsoleMenuModel.step("a", by: 4, in: rows, disabled: off) ?? "nil", "d")
+        expect("menu: typeAhead finds the next", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "s", after: "ripple") ?? "nil", "sage")
+        expect("menu: typeAhead wraps", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "b", after: "willow") ?? "nil", "ballad")
+        expect("menu: typeAhead passes the highlight", ConsoleMenuModel.typeAhead(voices, title: VoiceWords.name, prefix: "c", after: "cedar") ?? "nil", "cinder")
+        expect("menu: filterPlaceholder", ConsoleMenuModel.filterPlaceholder(count: 22, noun: "voices"), "Filter 22 voices")
+        expect("menu: countWord typing", ConsoleMenuModel.countWord(shown: 2, of: 22, typing: true), "2 of 22")
+        expect("menu: countWord at rest", ConsoleMenuModel.countWord(shown: 22, of: 22, typing: false), "22")
+        let w = ConsoleMenuModel.width(field: 182, minimum: 300, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), anchorMinX: 986)
+        expect("menu: width clamp", String(format: "x=%.0f w=%.0f", w.x, w.w), "x=872 w=300")
+        let narrow = ConsoleMenuModel.width(field: 400, minimum: 220, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), anchorMinX: 100)
+        expect("menu: width takes the field when wider", String(format: "x=%.0f w=%.0f", narrow.x, narrow.w), "x=100 w=400")
+        expect("menu: filter past eight rows", "\(ConsoleMenuModel.showsFilter(nil, count: 8)) \(ConsoleMenuModel.showsFilter(nil, count: 9)) \(ConsoleMenuModel.showsFilter(true, count: 2))", "false true true")
+        checkKitWords(expect, up: up)
+    }
+
+    /// The sites' words: the Local rows, the voices, the backends, the toggle, the Effort foot.
+    func checkKitWords(_ expect: (String, String, String) -> Void, up: LocalServerStatus) {
+        expect("local: size", LocalBrainWords.size("qwen3.5:27b", status: up) ?? "nil", "17 GB")
+        expect("local: badges", ["", "qwen3.5:27b", "gpt-oss:120b", "deepseek-v3.1:671b", "gemma4:31b", "qwen3:8b"]
+            .map { LocalBrainWords.badges($0, status: up).map(ConsoleBadge.text).joined(separator: "+") }.joined(separator: " / "),
+               "auto / fits / tight / too big / no tools / saved")
+        expect("local: meta", LocalBrainWords.meta("qwen3.5:27b", status: up) ?? "nil", "256k · tools · vision · thinking")
+        expect("local: meta of a saved id", LocalBrainWords.meta("qwen3:8b", status: up) ?? "nil", "not on Ollama 0.34.0")
+        expect("local: groups", ["", "qwen3.5:9b", "qwen3:8b"].map { LocalBrainWords.group($0, status: up) }.joined(separator: " / "), "Automatic / On Ollama 0.34.0 / Saved, not listed")
+        expect("local: group count and caption", "\(LocalBrainWords.groupCount("On Ollama 0.34.0", status: up) ?? "nil") · \(LocalBrainWords.groupCaption("On Ollama 0.34.0", status: up) ?? "nil")", "5 can call tools · size · fit")
+        expect("local: field", "\(LocalBrainWords.fieldTitle(saved: "", status: up)) [\(LocalBrainWords.fieldBadge(saved: "", status: up).map(ConsoleBadge.text) ?? "-")]", "qwen3.5:27b [auto]")
+        expect("local: field saved unlisted is quiet", "\(LocalBrainWords.fieldTitle(saved: "qwen3:8b", status: up)) \(LocalBrainWords.isQuiet(saved: "qwen3:8b", status: up))", "qwen3:8b true")
+        expect("local: disabled is the tool-less one", "\(LocalBrainWords.isDisabled("gemma4:31b", status: up)) \(LocalBrainWords.isDisabled("deepseek-v3.1:671b", status: up))", "true false")
+        expect("local: loaded", "\(LocalBrainWords.isLoaded("qwen3.5:27b", status: up)) \(LocalBrainWords.isLoaded("qwen3.5:9b", status: up))", "true false")
+        expect("local: foot tight", LocalBrainWords.foot("gpt-oss:120b", status: up) ?? "nil", "gpt-oss:120b · 65 GB on a 137 GB Mac — tight: slow first token, swaps under load.")
+        expect("local: foot too big", LocalBrainWords.foot("deepseek-v3.1:671b", status: up) ?? "nil", "deepseek-v3.1:671b · 404 GB on a 137 GB Mac — too big: it will not load.")
+        expect("local: foot no tools", LocalBrainWords.foot("gemma4:31b", status: up) ?? "nil", "gemma4:31b cannot call tools — the hands need them, so it is listed and greyed.")
+        expect("voice: default badge", VoiceWords.badges("ballad").map(ConsoleBadge.text).joined(), "default")
+        expect("voice: saved outside the list", "\(VoiceWords.group("nova")) · \(VoiceWords.badges("nova").map(ConsoleBadge.text).joined()) · \(VoiceWords.meta("nova") ?? "nil")", "Saved, not listed · saved · from env")
+        expect("voice: the field shows the name alone", VoiceWords.name("cedar"), "Cedar")
+        expect("brain: badges", BrainKind.allCases.map { BrainWords.badge($0).map(ConsoleBadge.text).joined() }.joined(separator: ","), ",no key,no key,,,,this Mac")
+        expect("brain: needs is the foot", BrainWords.needs(.local), "A model on this Mac through Ollama or LM Studio. Everything but the voice stays here.")
+        expect("toggle: word", "\(ConsoleToggle.word(true)) | \(ConsoleToggle.word(false))", "On | Off")
+        expect("segments: heights", "\(ConsoleSegments<Bool>.height(.rail)) \(ConsoleSegments<Bool>.height(.row)) \(ConsoleSegments<Bool>.height(.toggle))", "28.0 26.0 22.0")
+        expect("field: heights", "\(ConsoleField.height(.edit)) \(ConsoleField.height(.filter)) \(ConsoleField.height(.row))", "22.0 24.0 26.0")
+        for level in ConsoleTheme.efforts {
+            let hint = HelpCopy.effort(level) ?? ""
+            expect("copy: effort \(level)", HelpCopy.violations(HelpCopy.Entry(name: level, hint: hint)).joined(separator: ", ") + (hint.isEmpty ? "empty" : ""), "")
+        }
+    }
+}
+
+// MARK: - The kit (Builder C): rows, lists, disclosures — the pure pins
+
+extension PreviewDelegate {
+    /// `ConsoleListModel` (heights · step · typeAhead · kinds · months · keys) and the disclosure
+    /// summaries' words, as `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitLists() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        expect("row height: one line", "\(Int(ConsoleListModel.height(lines: 1, meta: false)))", "28")
+        expect("row height: title + meta", "\(Int(ConsoleListModel.height(lines: 1, meta: true)))", "40")
+        expect("row height: two lines + meta", "\(Int(ConsoleListModel.height(lines: 2, meta: true)))", "56")
+        expect("row height: agents rail", "\(Int(ConsoleListModel.height(lines: 1, meta: true, rail: .agents)))", "44")
+        let ids = ["a", "b", "c"]
+        expect("list step: clamps at the end", ConsoleListModel.step("c", by: 1, in: ids) ?? "nil", "c")
+        expect("list step: clamps at the top", ConsoleListModel.step("a", by: -1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → first on down", ConsoleListModel.step(nil, by: 1, in: ids) ?? "nil", "a")
+        expect("list step: nothing focused → last on up", ConsoleListModel.step(nil, by: -1, in: ids) ?? "nil", "c")
+        let titles = ["Ballad", "Cedar", "Coral", "Marin"]
+        expect("list typeAhead: next after the highlight", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "c", after: "Cedar") ?? "nil", "Coral")
+        expect("list typeAhead: wraps to the top", ConsoleListModel.typeAhead(titles, title: { $0 }, prefix: "b", after: "Marin") ?? "nil", "Ballad")
+        expect("list countWord", ConsoleListModel.countWord(shown: 2, of: 7, typing: true) + " / " + ConsoleListModel.countWord(shown: 7, of: 7, typing: false), "2 of 7 / 7")
+        let kinds = ConsoleListModel.memoryKinds(fake?.memoryList(state: "live", limit: 30) ?? [])
+        expect("memory kinds: first-seen order with counts", kinds.map { "\(MemoryWords.kindChip($0.kind)) \($0.count)" }.joined(separator: " · "), "fact 2 · pref 2 · how 1 · who 1 · where 1")
+        expect("memory kinds: every chip word", MemoryKind.allCases.map(MemoryWords.kindChip).joined(separator: ","), "pref,fact,when,how,who,where")
+        let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
+        let months = ConsoleListModel.ledgerMonths(["2026-09-10", "2026-09-09", "2026-08-31", "2025-12-01"], now: sept)
+        expect("ledger months: first-seen, the year only when not this one", months.map { "\($0.title)[\($0.days.count)]" }.joined(separator: " "), "September[2] August[1] December 2025[1]")
+        expect("list keys: ⌘↓ floats the row's verbs", "\(ConsoleListModel.command(.down, option: false, command: true, typeAhead: true))", "verbs")
+        expect("list keys: any other ⌘ is the window's", "\(ConsoleListModel.command(.up, option: false, command: true, typeAhead: true))", "ignore")
+        let nested = [ConsoleVerb(id: "edit", title: "Edit"), ConsoleVerb(id: "kind", title: "Kind", children: [ConsoleVerb(id: "kind.pref", title: "pref", checked: true), ConsoleVerb(id: "kind.fact", title: "fact")]),
+                      ConsoleVerb(id: "forget", title: "Forget", separatorBefore: true)]
+        expect("verb float: children under their parent, the checked one current", ConsoleVerbFloatModel.flat(nested).map { "\($0.id) \($0.title)\($0.checked ? " ✓" : "")" }.joined(separator: " · ") + " → " + ConsoleVerbFloatModel.spec(id: "row", verbs: nested, close: {}).current,
+               "edit Edit · kind/kind.pref Kind › pref ✓ · kind/kind.fact Kind › fact · forget Forget → kind/kind.pref")
+        expect("list keys: ⌥↓ jumps to the end", "\(ConsoleListModel.command(.down, option: true, command: false, typeAhead: true))", "jump(toEnd: true)")
+        expect("list keys: Space is never a yes", "\(ConsoleListModel.command(.space, option: false, command: false, typeAhead: true))", "swallow")
+        expect("list keys: a letter types ahead only without a filter", "\(ConsoleListModel.command(.char("m"), option: false, command: false, typeAhead: false))", "ignore")
+        // The folded heads' words (ConsoleDisclosureSummary): the seven Settings heads, a permission
+        // area, a problem kind, a tool's agents, a ledger month, a fold.
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Audio", text(ConsoleDisclosureSummary.audio(voice: "Cedar", accent: "British")), "Cedar · British")
+        expect("disclosure: Brain", text(ConsoleDisclosureSummary.brain(kind: "Local", model: "qwen3.5:27b", ready: true)), "Local · qwen3.5:27b · [Ready]")
+        expect("disclosure: Leaves the Mac", text(ConsoleDisclosureSummary.leaves(cloud: 2, mac: 2)), "2 cloud · 2 mac")
+        expect("disclosure: Session", text(ConsoleDisclosureSummary.session(home: "Notch", idleMinutes: 10)), "Notch · 10 min")
+        expect("disclosure: Memory", text(ConsoleDisclosureSummary.memory(enabled: true, learnedAgo: "12m")), "[learned 12m]")
+        expect("disclosure: Memory off", text(ConsoleDisclosureSummary.memory(enabled: false, learnedAgo: "12m")), "[off]")
+        expect("disclosure: Retention", text(ConsoleDisclosureSummary.retention(ledgerDays: nil, trashDays: 30)), "forever · 30 d")
+        expect("disclosure: Wake", text(ConsoleDisclosureSummary.wake(enabled: false, phrases: 2)), "[off]")
+        expect("disclosure: Permissions area missing", text(ConsoleDisclosureSummary.permissionGroup(missing: ["Input Monitoring"], granted: ["Accessibility"])), "[1 missing] · Input Monitoring")
+        expect("disclosure: Permissions area granted", text(ConsoleDisclosureSummary.permissionGroup(missing: [], granted: ["Desktop", "Documents"])), "Desktop · Documents")
+        expect("disclosure: Problems kind", text(ConsoleDisclosureSummary.problemGroup(first: "Delegation failed: Codex session refused input")), "Delegation failed: Codex session refused input")
+        expect("disclosure: Ready", text(ConsoleDisclosureSummary.ready(notReady: 0)) + " / " + text(ConsoleDisclosureSummary.ready(notReady: 1)), "[all ok] / [1 missing]")
+        expect("disclosure: Codex agents", text(ConsoleDisclosureSummary.agents(asks: 1, working: 2, idle: 1, done: 1)), "[1 asks] · 2 working")
+        expect("disclosure: idle agents", text(ConsoleDisclosureSummary.agents(asks: 0, working: 0, idle: 3, done: 1)), "3 idle")
+        expect("disclosure: September", text(ConsoleDisclosureSummary.ledgerMonth(read: 1, billedSeconds: 3_720)) + " / " + text(ConsoleDisclosureSummary.ledgerMonth(read: 0, billedSeconds: 0)), "62.0 min · " + TransportFormat.dollars(3_720) + " / ")
+        expect("disclosure: Trash fold", text(ConsoleDisclosureSummary.fold(inside: "3 days · 129 MB")), "3 days · 129 MB")
+        expect("fold store: remembers in memory when not persisting", { ConsoleFoldStore.persists = false; ConsoleFoldStore.set("kit.check", false); return "\(ConsoleFoldStore.isOpen("kit.check", default: true))" }(), "false")
+        return failed
+    }
+}
+
+// MARK: - The right rail (Builder D): the folded heads, the areas and kinds, the rows' words — the pure pins
+
+extension PreviewDelegate {
+    /// `RightRailView`'s pure words (the Settings index, the Permissions areas, the Problems kinds, a
+    /// thread row's line, the ledger's figures and filter, the mic dropdown's groups and badges) as
+    /// `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitRail() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let text = ConsoleDisclosureSummary.text
+        expect("rail: the eight fold ids", SettingsWords.folds.joined(separator: ","),
+               "settings.audio,settings.brain,settings.leaves,settings.session,settings.automations,settings.memory,settings.retention,settings.wake")
+        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint]
+        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device")
+        // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
+        let sans11 = NSFont.systemFont(ofSize: 11)
+        let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: sans11]).width }.max() ?? 0
+        expect("rail: every toggle hint fits beside the toggle (≤ 112 pt at sans 11)", widest <= 112 ? "fits" : String(format: "%.0f pt", widest), "fits")
+        expect("rail: filter days", "\(LedgerWords.filterDays) · \(LedgerWords.filterPast) · \(LedgerWords.unread)", "Filter days · 8 · —")
+        guard let fake else { expect("rail: fixtures", "none", "fixtures"); return failed }
+        // Permissions: the areas, their counts and the closed heads' words.
+        let all = fake.permissions(microphone: .granted, screenRecording: .unknown, accessibility: .denied).all
+        let senses = PermissionsRailList.rows(all, in: .senses), hands = PermissionsRailList.rows(all, in: .hands), files = PermissionsRailList.rows(all, in: .files)
+        expect("rail: permission areas", "\(senses.count) \(hands.count) \(files.count)", "6 3 7")
+        expect("rail: Senses head", text(PermissionsRailList.summary(senses)), "[1 missing] · Screen Recording")
+        expect("rail: Hands head", text(PermissionsRailList.summary(hands)), "[1 missing] · Accessibility")
+        expect("rail: Files head", text(PermissionsRailList.summary(files)), "Full Disk Access · Contacts · +5")
+        // Never a kind's raw id on a row: every title is capitalised words and every row has its why.
+        let rawIds = all.filter { $0.label == $0.kind.rawValue || $0.label.first?.isUppercase != true || $0.why.isEmpty }.map(\.label)
+        expect("rail: permission title is a word, the why on line 2", rawIds.isEmpty ? "words" : rawIds.joined(separator: ","), "words")
+        expect("rail: Problems kind head line", ProblemsRailList.headLine("Delegation failed: Codex session refused input") ?? "nil", "Delegation failed: Codex s…")
+        expect("rail: Permissions folded", text(PermissionsRailList.headSummary(all)), "[2 missing]")
+        expect("rail: a granted set is all ok", text(PermissionsRailList.headSummary(fake.permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted).all)), "[all ok]")
+        let denied = all.first { $0.kind == .accessibility }, notAsked = all.first { $0.kind == .screenRecording }
+        expect("rail: a denied grant opens Settings", "\(denied.map(PermissionRailRow.opensSettings) ?? false) \(notAsked.map(PermissionRailRow.opensSettings) ?? false)", "true true")
+        expect("rail: the why is the row's line 2", PermissionRailRow.meta(PermissionInfo(kind: .microphone, grant: .granted, ask: .prompt, required: true, label: "Microphone", why: "hears you")) ?? "nil", "hears you")
+        // Problems: Kevin's grants apart from the engine's; `since 10:08 · Retry` under the line.
+        let problems = fake.problems()
+        expect("rail: problem kinds", problems.map { ProblemsRailList.isGrant($0) ? "grant" : "engine" }.joined(separator: ","), "grant,engine,engine,engine")
+        expect("rail: Problems folded", text(ProblemsRailList.summary(problems)), "[1 missing] · 3 engine")
+        if let p = problems.last {
+            expect("rail: problem meta", ProblemsRailList.meta(p), "since \(ConsoleFormat.time(p.since)) · Reveal shots")
+            expect("rail: problem remedy tip opens", ProblemsRailList.remedyTip(p), "Opens \(ConsoleFormat.truncPath("/Users/kevinliu/.jarhead/shots", max: 40))")
+        }
+        expect("rail: problem remedy tip sends", ProblemsRailList.remedyTip(problems[0]), "Sends request-permission")
+        expect("rail: problem verb word", [ProblemRailRow.verbWord("Request"), ProblemRailRow.verbWord("Reveal shots"), ProblemRailRow.verbWord(nil)].joined(separator: " "), "Ask Reveal Retry")
+        // Threads: the status word first, then the figures.
+        let t0: Double = 1_757_856_000_000
+        let slack = fake.thread(FakeData.slackId, status: .waitingKevin, startedAt: t0)
+        expect("rail: thread word", "\(ThreadRailRow.word(slack) ?? "-") / \(ThreadRailRow.word(fake.thread(FakeData.slackId, status: .acting, startedAt: t0)) ?? "-")", "- / " + ConsoleTheme.thread(.acting).label)
+        expect("rail: thread line", ThreadRailRow.line(slack, now: t0 + 6_000), ConsoleFormat.threadMeta(slack, now: t0 + 6_000))
+        // Leaves the Mac: the destinations counted.
+        let paths = fake.cloudPaths(brain: "x")
+        expect("rail: leaves counts", "\(LeavesSection.counts(paths).cloud) \(LeavesSection.counts(paths).mac)", "4 0")
+        // Ledger: figures once read, `—` until then; the filter matches the date and the words.
+        let stats = StreamBuilder.stats(fake.ledgerRows())
+        expect("rail: day figures", LedgerPanel.figures("2026-09-10", in: ["2026-09-10": stats]) + " / " + LedgerPanel.figures("2026-09-09", in: [:]), ConsoleFormat.billed(stats.billedSeconds) + " / —")
+        let sept = Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: 14)) ?? Date()
+        expect("rail: filter days by date and word", LedgerPanel.filtered(["2026-09-10", "2026-08-31"], query: "08", now: sept).joined() + " / " + LedgerPanel.filtered(["2026-09-10", "2026-08-31"], query: "thu", now: sept).joined(), "2026-08-31 / 2026-09-10")
+        // Mic: Auto / Ranked / Connected, the badges.
+        expect("rail: mic groups", [SettingsPanel.micGroup(id: "", ranked: false, connected: false), SettingsPanel.micGroup(id: "a", ranked: true, connected: true),
+                                    SettingsPanel.micGroup(id: "b", ranked: false, connected: true), SettingsPanel.micGroup(id: "c", ranked: false, connected: false)].joined(separator: " / "),
+               "Auto / Ranked / Connected / Saved, not listed")
+        expect("rail: mic badges", SettingsPanel.micBadges(id: "a", active: "a", virtual: true, connected: true).map(ConsoleBadge.text).joined(separator: "+") + " / "
+               + SettingsPanel.micBadges(id: "c", active: "a", virtual: false, connected: false).map(ConsoleBadge.text).joined(separator: "+"), "active+virtual / gone")
+        expect("rail: brain model word", "\(SettingsPanel.brainModelWord(kind: .local, model: "", local: fake.ollamaUp()) ?? "nil") / \(SettingsPanel.brainModelWord(kind: .claudeCode, model: "claude-opus-5", local: fake.noServer()) ?? "nil")",
+               "qwen3.5:27b / claude-opus-5")
+        expect("rail: Brain head", text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .local, model: "qwen3.5:27b"), model: "qwen3.5:27b", ready: true)) + " / "
+               + text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .claudeCode, model: "claude-opus-5"), model: "claude-opus-5", ready: true)) + " / "
+               + text(ConsoleDisclosureSummary.brain(kind: SettingsPanel.brainKindWord(kind: .auto, model: nil), model: nil, ready: nil)),
+               "Local · qwen3.5:27b · [Ready] / claude-opus-5 · [Ready] / Automatic")
+        let summary = fake.memorySummary()
+        expect("rail: learned word", SettingsPanel.learnedWord(summary, now: fake.now), "learned 12m")
+        expect("rail: learned card", SettingsPanel.lastRunCard(summary, now: fake.now).spoken, "Last run, learned 12m ago, extractor responses, added +3, updated ~1, same 4, refused 1, took 1.8 s")
+        return failed
+    }
+}
+
+
+// MARK: - Automations (Builder D): the harness keys and the pure pins
+
+extension PreviewDelegate {
+    /// `ringing:<id>` sets AppState.ringing from that row (`ringing:off` clears it); `recipesAsks:<a,b>` names the recipes
+    /// the gate would question; `automationsFold` opens Settings › Automations; `probe-ring` prints what rings.
+    func automationAction(_ action: String, stamp: String) {
+        if action.hasPrefix("ringing:") {
+            let id = String(action.dropFirst("ringing:".count))
+            if id == "off" {
+                withAnimation(Motion.gentle) { state.ringing = nil }
+            } else if let row = state.automations.first(where: { $0.id == id }) {
+                let line = row.nextAt.map { ConsoleFormat.clock($0) + AutomationWords.dot + row.name } ?? row.name
+                let minutes = state.snapshot.settings.automationSettings.snoozeMinutes
+                withAnimation(Motion.gentle) {
+                    state.ringing = RingLine(id: row.id, kind: row.kind.rawValue, name: row.name, line: line, calm: nil, at: ConsoleFormat.nowMs, lateMs: nil,
+                                             presses: [AutomationPress(kind: "snooze", minutes: minutes, target: nil), AutomationPress(kind: "done", minutes: nil, target: nil)], more: 0)
+                }
+            }
+            print("action: \(action) at \(stamp)s → ringing=\(state.ringing?.id ?? "nil")")
+        } else if action.hasPrefix("recipesAsks:") {
+            AutomationRecipeAsks.names = Set(action.dropFirst("recipesAsks:".count).split(separator: ",").map(String.init))
+            print("action: \(action) at \(stamp)s")
+        } else if action == "automationsFold" {
+            console?.selectTab(.settings)
+            ConsoleFoldStore.set(SettingsWords.automationsFold, true)
+            print("action: automationsFold at \(stamp)s")
+        } else if action == "probe-ring" {
+            print("probe-ring: ringing=\(state.ringing?.id ?? "nil") line='\(state.ringing?.line ?? "")' rows=\(state.automations.count) at \(stamp)s")
+        }
+    }
+
+    /// `AutomationsRail`'s pure words — the badges, the words, the summary, the formats, a row's line, the card's
+    /// spoken form, the ring split, the recipe meta, the Add… parser — as `check:` lines; returns how many failed.
+    func checkKitAutomations() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func badge(_ w: ConsoleBadge.Word) -> String { "\(ConsoleBadge.text(w)) · \(ConsoleBadge.toneKind(w).rawValue)" }
+        expect("badge: automation words", [ConsoleBadge.Word.snoozed, .deferred, .billed, .ringing].map(badge).joined(separator: " / "),
+               "snoozed · rest / deferred · rest / billed · speaking / ringing · speaking")
+        let verbs = [AutomationWords.snooze, AutomationWords.done, AutomationWords.skip, AutomationWords.pause, AutomationWords.resume, AutomationWords.runNow,
+                     AutomationWords.rename, AutomationWords.moveToTrash, AutomationWords.restore, AutomationWords.add, AutomationWords.addRecipe]
+        expect("automations: the verbs", verbs.joined(separator: " · "), "Snooze · Done · Skip · Pause · Resume · Run now · Rename · Move to Trash · Restore · Add… · Add recipe…")
+        let forbidden = verbs.filter { $0.contains("Delete") || $0.contains("Cancel") }
+        expect("automations: never Delete, never Cancel", forbidden.isEmpty ? "none" : forbidden.joined(separator: ","), "none")
+        expect("automations: section · honest line · empty", [AutomationWords.section, AutomationWords.honest, AutomationWords.empty].joined(separator: " | "),
+               "Automations | Nothing fires while Jarhead is quit. | No automations yet. Say “wake me at 7:10”.")
+        expect("automations: chip words", AutomationWords.actionKinds.map(AutomationWords.actionWord).joined(separator: ","), "chime,say,notify,open,file,run recipe,press,wake brain")
+        // The two toggle hints beside a 60 pt toggle in the 182 pt column: the same 112 pt room checkKitRail measures.
+        let hints = [AutomationWords.enabledHint, AutomationWords.openAtLoginHint]
+        let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11)]).width }.max() ?? 0
+        expect("automations: toggle hints fit beside the toggle (≤ 112 pt at sans 11)", widest <= 112 ? "fits" : String(format: "%.0f pt", widest), "fits")
+        expect("automations: state word", AutomationWords.states.map(AutomationWords.stateWord).joined(separator: ","), "armed,snoozed,firing,fired,deferred,off,done,failed,trashed")
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Automations", text(ConsoleDisclosureSummary.automations(armed: 6, next: "07:10")) + " / " + text(ConsoleDisclosureSummary.automations(armed: 6, next: nil, enabled: false))
+               + " / " + text(ConsoleDisclosureSummary.automations(armed: 0, next: nil)), "6 armed · next 07:10 / [off] / ")
+        expect("format: countdown", [ConsoleFormat.countdown(252_000), ConsoleFormat.countdown(3_723_000), ConsoleFormat.countdown(-5)].joined(separator: " / "), "4:12 / 1:02:03 / 0:00")
+        guard let fake else { expect("automations: fixtures", "none", "fixtures"); return failed }
+        let at0710 = fake.clock(7, 10)
+        expect("format: clock is HH:mm", ConsoleFormat.clock(at0710), "07:10")
+        let rows = fake.automations(timerSettle: 0)
+        let now = fake.now
+        func row(_ id: String) -> Automation { rows.first { $0.id == id } ?? rows[0] }
+        var wake = row(FakeData.wakeId); wake.nextAt = now + 6 * 3_600_000
+        expect("automations: alarm meta", AutomationFormat.meta(wake, now: now), "weekdays · chime + say · 6 h")
+        let pasta = row(FakeData.pastaId)
+        expect("automations: timer value · meta", (AutomationFormat.value(pasta, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(pasta, now: now),
+               "4:12 | 12:00 · chime · ends " + ConsoleFormat.clock(now + 252_000))
+        let mum = row(FakeData.mumId)
+        expect("automations: snoozed value · meta", (AutomationFormat.value(mum, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(mum, now: now),
+               ConsoleFormat.clock(now + 600_000) + " | " + AutomationFormat.dayWord(now + 600_000, now: now) + " · say · snoozed 10")
+        expect("automations: routine meta", AutomationFormat.meta(row(FakeData.standupId), now: now).hasPrefix("weekdays · open Notes · ") ? "weekdays · open Notes · …" : AutomationFormat.meta(row(FakeData.standupId), now: now),
+               "weekdays · open Notes · …")
+        let papers = row(FakeData.papersId)
+        expect("automations: watcher value · meta", (AutomationFormat.value(papers, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(papers, now: now), "3× | *.pdf · file + chime · 14:02")
+        let red = row(FakeData.buildRedId)
+        expect("automations: paused watcher value · meta", (AutomationFormat.value(red, now: now, remaining: nil) ?? "-") + " | " + AutomationFormat.meta(red, now: now), "60 s | build-check · chime · paused 2d")
+        expect("automations: glyphs", rows.map(AutomationFormat.glyph).joined(separator: ","), "alarm.fill,timer,bell.fill,repeat,eye.fill,terminal.fill,timer")
+        expect("automations: resting verbs", rows.map(AutomationFormat.restingVerb).joined(separator: ","), "Pause,Done,Skip,Pause,Pause,Resume,Restore")
+        var billed = row(FakeData.standupId); billed.then = [fake.action("wake-brain")]
+        expect("automations: badges (resting rows wear none)", (rows + [billed]).map { AutomationFormat.badge($0).map(ConsoleBadge.text) ?? "-" }.joined(separator: ","), "-,-,snoozed,-,-,off,-,billed")
+        expect("tip card: automation spoken", ConsoleTipCard.automation(papers, now: now, cap: 5).spoken,
+               "Downloads → Papers, armed, When a PDF lands in Downloads, file it under ~/Documents/Papers and chime., next — · on a file, fires 3 · cooldown 30 s, last 14:02 · filed invoice.pdf, does file + chime · never overwrites, cost nothing billed, Opens its row ⏎")
+        var wakeBrain = row(FakeData.standupId); wakeBrain.then = [AutomationAction(kind: "wake-brain", line: nil, sound: nil, title: nil, body: nil, open: nil, app: nil, url: nil, path: nil, into: nil, recipe: nil, key: nil, prompt: "summarise", budget: AutomationBudget(steps: 25, seconds: 120), speak: true)]
+        expect("tip card: billed row", "\(ConsoleTipCard.automation(wakeBrain, now: now, cap: 5).badge.map(ConsoleBadge.text) ?? "-") · \(AutomationFormat.costWord(wakeBrain, cap: 5))", "billed · ≈ 2 brain min per fire · up to 5 a day")
+        let parts = AutomationFormat.ringParts("07:10 · Wake up, Kevin"), plain = AutomationFormat.ringParts("Filed · invoice.pdf → Papers")
+        expect("automations: ring split", "\(parts.figure ?? "-") | \(parts.words) / \(plain.figure ?? "-") | \(plain.words)", "07:10 | Wake up, Kevin / - | Filed · invoice.pdf → Papers")
+        let recipe = fake.automationSettings().recipes[0]
+        expect("automations: recipe meta", AutomationFormat.recipeMeta(recipe, home: "/Users/kevinliu"), "~/bin/backup.sh · 120 s · approved " + Date(timeIntervalSince1970: recipe.approvedAt / 1000).formatted(.dateTime.month(.abbreviated).day()))
+        expect("automations: chip flip keeps the contract's order", AutomationFormat.toggled(["chime", "file"], "say").joined(separator: ",") + " / " + AutomationFormat.toggled(["chime", "say"], "chime").joined(separator: ","), "chime,say,file / say")
+        expect("automations: quiet options", "\(AutomationFormat.quietOptions.count) · \(AutomationFormat.quietTitle("")) · \(AutomationFormat.quietTitle("23:00"))", "25 · Off · 23:00")
+        let weekly = AutomationForm.parseWhen("07:10 weekdays", now: now), timer = AutomationForm.parseWhen("12 min", now: now), once = AutomationForm.parseWhen("15:00", now: now)
+        // One statement per word (CI's older Swift gives up on `??` chains of interpolating closures).
+        func whenWord(_ w: AutomationWhen?) -> String {
+            guard let w else { return "nil" }
+            switch w.kind {
+            case "every": return "every \(w.every?.days?.count ?? 0) \(w.phrase ?? "")"
+            case "in": return "in \(Int(w.ms ?? 0))"
+            default: return "at " + ConsoleFormat.clock(w.at ?? 0)
+            }
+        }
+        expect("add form: parseWhen", [weekly, timer, once, AutomationForm.parseWhen("soonish", now: now)].map(whenWord).joined(separator: " / "),
+               "every 5 weekdays / in 720000 / at 15:00 / nil")
+        if let weekly { expect("add form: echo", AutomationForm.echo(name: "standup", when: weekly, kind: "chime"), "Weekdays at 07:10, ring “standup”.") }
+        expect("add form: draft quiet", AutomationForm.draft(name: "x", when: timer ?? weekly!, kind: "chime").clauses.quiet ?? "nil", "override")
+        return failed
     }
 }

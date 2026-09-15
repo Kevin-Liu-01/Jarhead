@@ -25,6 +25,10 @@ import SwiftUI
 //   PREVIEW_REDUCE_MOTION=1               pin Motion.reduced on (Motion.reducedOverride): plain fades,
 //                                         halved durations, no slide — the Reduce Motion path for real
 //   PREVIEW_SWEEP=asking|waiting|settings|folders|done    pin an "Ask for everything" sweep on the Permissions step
+//   PREVIEW_OPEN=<field>                  open that step's menu field on the Setup window's float layer at
+//                                         0.6 s (ConsoleSession.previewNotification, menuOpen "setup.<field>")
+//   PREVIEW_TIP=<id>                      pin that trigger's tip on the Setup root's float layer at 0.6 s
+//                                         (tipOpen:<id>; the tier-1 id is ConsoleTip.id(for: words) unless the site named one)
 //                                         (the progress line, the Next/Cancel controls, the summary)
 // Permissions are a canned list of all sixteen kinds with mixed statuses (per scenario); every
 // ask — the sweep, a row's Request, Open Settings — prints instead of prompting.
@@ -97,6 +101,9 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
             Motion.reducedOverride = true
             print("reduce motion: pinned on")
         }
+        // The kit's floats on the Setup root: tips at once, floats held while the window is inactive.
+        ConsoleTip.delayOverride = 0
+        ConsoleFloatLayer.holdWhileInactive = true
 
         state.connected = true
         state.daemonDetail = "engine · pid 48213"
@@ -175,6 +182,23 @@ final class OnboardingPreviewDelegate: NSObject, NSApplicationDelegate {
                     print("go: \(step.rawValue) at \(stamp())s (asked for \(at)s)")
                     fflush(stdout)
                 }
+            }
+        }
+        // PREVIEW_OPEN=voice: the step's menu field opens on the float layer the way a click would.
+        if let field = env["PREVIEW_OPEN"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                let id = "setup.\(field)"
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: [ConsolePreviewKey.menuOpen: id])
+                print("open: menuOpen \(id) asked at \(stamp())s → floats \(ConsoleFloatSlot.placed.keys.sorted())")
+                fflush(stdout)
+            }
+        }
+        // PREVIEW_TIP=<id>: that trigger's tip pinned on the Setup root's layer at 0.6 s (tipOpen:<id>).
+        if let id = env["PREVIEW_TIP"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: [ConsolePreviewKey.tipOpen: id])
+                print("open: tipOpen \(id) asked at \(stamp())s → floats \(ConsoleFloatSlot.placed.keys.sorted())")
+                fflush(stdout)
             }
         }
         // PREVIEW_SHOT_AT=1.12:/path/mid.png: the window as it is at that moment.

@@ -15,6 +15,39 @@ import AppKit
 private let stampWidth: CGFloat = 56
 private let stampGap: CGFloat = 10
 private let iconGap: CGFloat = 8
+
+enum ConversationWords {
+    static let askTip = "agent.ask."
+    static let cwdTip = "agent.cwd."
+    /// The header's second line (the cwd and the status detail) under the 40 pt name line.
+    static let metaHeight: CGFloat = 20
+}
+
+/// The header's second line: the session's cwd whole in mono (head-truncating, its card the
+/// path entire) and the status detail in words — what two tooltips carried.
+private struct ConversationHeaderMeta: View {
+    let agent: AgentInfo
+
+    var body: some View {
+        if agent.cwd != nil || agent.detail != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                if let cwd = agent.cwd {
+                    Text(cwd)
+                        .font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                        .lineLimit(1).truncationMode(.head)
+                        .consoleHelp(id: ConversationWords.cwdTip + agent.id, card: .path(title: ConsoleFormat.projectName(cwd) ?? agent.name, path: cwd), edge: .below)
+                }
+                if let detail = agent.detail {
+                    Text(detail).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1).truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .frame(height: ConversationWords.metaHeight)
+        }
+    }
+}
 private let turnMaxWidth: CGFloat = 640
 
 struct ConversationPane: View, Equatable {
@@ -210,25 +243,16 @@ private struct ConversationHeader: View {
                     .font(ConsoleTheme.sans(13, .medium)).foregroundStyle(ConsoleTheme.fg)
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(2)
-                if let project = ConsoleFormat.projectName(agent.cwd) {
-                    // Whole or not at all: the project is in the tooltip anyway, and a lone "…" is noise.
-                    ViewThatFits(in: .horizontal) {
-                        Text(project)
-                            .font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
-                            .lineLimit(1)
-                            .help(agent.cwd ?? project)
-                        Color.clear.frame(width: 0, height: 0)
-                    }
-                }
+                // The status as a word in a box (`asks` amber for blocked); its detail is the second line.
+                if let word = ConsoleBadge.agent(agent.status) { ConsoleBadge(word: word) }
                 BrandStatusGlyph(status: agent.status, tool: tool)
-                    .help(agent.detail.map { "\(agent.status.rawValue) · \($0)" } ?? agent.status.rawValue)
                 Spacer(minLength: 8)
                 HStack(spacing: 6) {
                     // The live dot fades in while the tail can still bring something and pulses
                     // only while the agent is writing (the 30 s lease); the count rolls its digits.
                     if live {
                         ConsoleDot(color: brandColor(tool), live: typing, size: 6)
-                            .help(typing ? "Live — the session is writing" : "Live — following the session; quiet for now")
+                            .consoleHelp(typing ? HelpCopy.liveWriting : HelpCopy.liveQuiet)
                             .accessibilityLabel(typing ? "Live, writing" : "Live")
                             .transition(.opacity)
                     }
@@ -247,12 +271,12 @@ private struct ConversationHeader: View {
                     ViewThatFits(in: .horizontal) {
                         Button { actions.reveal(url) } label: { Label("Reveal", systemImage: "folder.fill") }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                            .help(hint)
+                            .consoleHelp(hint)
                         Button { actions.reveal(url) } label: {
                             Image(systemName: "folder.fill").font(.system(size: 11, weight: .medium))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 24, small: true))
-                        .help(hint)
+                        .consoleHelp(hint)
                         .accessibilityLabel("Reveal")
                     }
                     .layoutPriority(1)
@@ -262,11 +286,12 @@ private struct ConversationHeader: View {
                 Button(action: close) { Label("Stream", systemImage: "chevron.left") }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
-                    .help("Back to the live stream (Esc in the composer)")
+                    .consoleHelp(HelpCopy.backStreamEsc)
                     .accessibilityLabel("Back to the live stream")
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
+            ConversationHeaderMeta(agent: agent)
             ConsoleHairline()
         }
         .accessibilityElement(children: .contain)
@@ -362,7 +387,7 @@ private struct ConversationFeed: View {
                     .buttonStyle(JumpPillStyle())
                     .padding(.bottom, 12)
                     .transition(ConsoleMotion.arriveLeave)
-                    .help("Jump to the latest")
+                    .consoleHelp(HelpCopy.latest)
                 }
             }
             .animation(Motion.gentle, value: tracker.showJump)
@@ -445,7 +470,7 @@ private struct ConversationFeed: View {
                         Label("Load earlier", systemImage: "arrow.up")
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                    .help(remaining > 0 ? "\(remaining) earlier message\(remaining == 1 ? "" : "s")" : "Earlier messages")
+                    .consoleHelp(remaining > 0 ? "\(remaining) earlier message\(remaining == 1 ? "" : "s")" : "Earlier messages")
                     .transition(.opacity)
                 }
             }
@@ -536,7 +561,7 @@ private struct RightStamp: View {
             .font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.fg3)
             .frame(width: stampWidth, alignment: .trailing)
             .padding(.leading, stampGap)
-            .help(ConsoleFormat.fullDate(at))
+            .consoleHelp(ConsoleFormat.fullDate(at))
     }
 }
 
@@ -600,7 +625,7 @@ private struct UserTurn: View {
             ConsoleIcon(name: pending ? "clock.fill" : "person.fill", tint: ConsoleTheme.titanium)
                 .padding(.leading, iconGap)
                 .padding(.top, 4)
-                .help(pending ? "Sent; waiting for the session to take it" : "Kevin")
+                .consoleHelp(pending ? "Sent; waiting for the session to take it" : "Kevin")
                 .accessibilityLabel(pending ? "Kevin, sending" : "Kevin")
             RightStamp(at: message.at).padding(.top, 7)
         }
@@ -660,7 +685,7 @@ private struct ToolCallCard: View {
                         // Running → done / error / interrupted: the dot's colour crossfades (ConsoleDot);
                         // it pulses only while the agent is actually writing.
                         ConsoleDot(color: dotColor, live: call.status == .running && typing, size: 5)
-                            .help(call.status.rawValue)
+                            .consoleHelp(call.status.rawValue)
                             .accessibilityLabel(call.status.rawValue)
                         if let word = statusWord {
                             Text(word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
@@ -856,17 +881,17 @@ private struct ConversationComposer: View {
                         .lineLimit(3).truncationMode(.tail)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                        .help(agent.detail ?? question)
+                        .consoleHelp(id: ConversationWords.askTip + agent.id, card: .question(name: tool.label, question: question, detail: agent.detail), edge: .below)
                         .contentTransition(.opacity)
                     Spacer(minLength: 8)
                     Button("Allow") { answer("yes") }
                         .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
                         .layoutPriority(1)
-                        .help("Send “yes”")
+                        .consoleHelp(HelpCopy.sendYes)
                     Button("Deny") { answer("no") }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
                         .layoutPriority(1)
-                        .help("Send “no”")
+                        .consoleHelp(HelpCopy.sendNo)
                 }
                 .padding(EdgeInsets(top: 8, leading: 12, bottom: 0, trailing: 12))
                 .accessibilityElement(children: .contain)
@@ -879,7 +904,7 @@ private struct ConversationComposer: View {
                         ConsoleIcon(name: "circle.slash.fill", tint: ConsoleTheme.fg3)
                         Text(off).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg3)
                             .lineLimit(1).truncationMode(.tail)
-                            .help(off)
+                            .consoleHelp(off)
                         Spacer(minLength: 0)
                     }
                     .transition(.opacity)
@@ -898,7 +923,7 @@ private struct ConversationComposer: View {
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
                         .disabled(!hasText)
-                        .help(ConversationPane.sendModeWords(agent).map { "Send (Return) — \($0)" } ?? "Send (Return)")
+                        .consoleHelp(HelpCopy.sendMode(ConversationPane.sendModeWords(agent)))
                         .accessibilityLabel("Send")
                     }
                     .transition(.opacity)
