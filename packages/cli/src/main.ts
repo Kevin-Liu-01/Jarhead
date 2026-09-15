@@ -46,14 +46,14 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead brain                    the brain setting, what runs now, and where words go (the four data-path rows)
   pnpm jarhead brain local [<model>] [--server URL]   pick a local model as the brain through the running daemon (memory follows); empty model = best fit; prints the status line when it lands
   pnpm jarhead brain <auto|codex|claude-code|anthropic-api|openai-responses|openai-compatible> [<model>] [--server URL]
-  pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|all]   what is set to fire while Jarhead is asleep, over the daemon: one row each —
+  pnpm jarhead automations [list] [--state armed|snoozed|deferred|paused|fired|failed|done|trashed|all]   what is set to fire while Jarhead is asleep, over the daemon: one row each —
                                       glyph · name · when · actions · id · next fire (or snoozed / paused / failed: why); nothing is billed for any of it
   pnpm jarhead automations add "<words>"   arm one from the clock ladder, parsed by core's parseWhen without a brain: "at 7:10 weekdays chime 'Wake up'", "in 12m chime pasta",
                                       "weekdays 09:00 open Notes", "tomorrow 15:00 say 'call mum'". Free kinds only (chime · say · notify · open); run recipe, press and wake the brain
                                       are set up by voice or in the Console, where the yes is heard. The policy judges the draft before it is armed; a refusal comes back as a toast
   pnpm jarhead automations snooze <id|name> [--minutes 10] · done · skip · pause · resume · rename <id|name> "<name>"
   pnpm jarhead automations run <id|name>   fire it now so you hear it — the daemon refuses unless you are there (a session open, or presence recent)
-  pnpm jarhead automations trash <id|name> · restore <id|name>   Move to Trash / Restore (restore takes the id; a trashed row is not listed). Nothing is deleted
+  pnpm jarhead automations trash <id|name> · restore <id|name>   Move to Trash / Restore (the newest eight trashed rows are under --state trashed; an older one restores by its id). Nothing is deleted
   pnpm jarhead recipes [list]         the approved shell recipes: name · the gate's word (run · asks · refused · fronts) · command · approved · cwd · timeout
   pnpm jarhead recipes add <name> "<command>" [--cwd DIR] [--timeout 120]   save one (through the daemon; it writes settings.json) and print the shell gate's verdict first —
                                       a confirm-tier command saves with \`asks\` and can never be armed: nobody is there to say yes when it runs
@@ -95,7 +95,7 @@ flags
   --json         (bench) print the table as JSON; (bench --brain) print the whole report as JSON
   --shots / --both   (ledger trash) move the day's screenshots instead of / as well as its ledger file
   --limit N      (ledger search, memory list/search) how many hits (default 50 / 50 / 30, at most 200)
-  --state S      (memory list) live (default) | forgotten | archived | merged | all; (automations list) armed | snoozed | deferred | paused | fired | failed | done | all (default)
+  --state S      (memory list) live (default) | forgotten | archived | merged | all; (automations list) armed | snoozed | deferred | paused | fired | failed | done | trashed | all (default; the Trash tail only under trashed)
   --kind K       (memory add) preference | fact | episode | procedure | contact | place (the store classifies when absent)
   --minutes N    (automations snooze) how long (default Settings.automations.snoozeMinutes, 10)
   --cwd DIR      (recipes add) the recipe's working directory (never inside ~/.jarhead)
@@ -656,7 +656,7 @@ async function automationsCommand(rest: string[]): Promise<void> {
     default: {
       if (!(ROW_VERBS as readonly string[]).includes(verb)) throw new Error(`unknown automations verb: ${verb} — list | add | ${ROW_VERBS.join(" | ")}`);
       const arg = args[0];
-      if (!arg) throw new Error(`usage: jarhead automations ${verb} <id|name>${verb === "snooze" ? " [--minutes 10]" : verb === "rename" ? ' "<name>"' : ""}  (both are on \`jarhead automations\`${verb === "restore" ? "; a trashed row is not listed — give its id" : ""})`);
+      if (!arg) throw new Error(`usage: jarhead automations ${verb} <id|name>${verb === "snooze" ? " [--minutes 10]" : verb === "rename" ? ' "<name>"' : ""}  (both are on \`jarhead automations\`${verb === "restore" ? "; `--state trashed` lists the newest eight, an older row by its id" : ""})`);
       await automationVerb(verb as RowVerb, arg, args.slice(1).join(" ").trim());
     }
   }
