@@ -328,6 +328,15 @@ export function progressLine(name: string, args: unknown): string {
       return `Checking on ${String(a["name"] ?? "the other hand")}.`;
     case "thread_stop":
       return `Stopping ${String(a["name"] ?? "the other hand")}.`;
+    // Automations: set while awake, fired by the daemon asleep (design11).
+    case "automation_set":
+      return `Setting ${String(a["name"] ?? "an automation")}.`;
+    case "automation_list":
+      return "Checking what is set.";
+    case "automation_change":
+      return `${String(a["verb"] ?? "Changing")} ${String(a["name"] ?? "an automation")}.`.replace(/^[a-z]/, (c) => c.toUpperCase());
+    case "recipe_list":
+      return "Checking the approved recipes.";
     case "frontmost_app":
       return "Checking which app is in front.";
     case "list_windows":

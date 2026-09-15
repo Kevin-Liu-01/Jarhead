@@ -8,6 +8,7 @@ import { DaemonClient } from "@jarhead/daemon";
 import { ComputerToolset, type ToolResult } from "@jarhead/hands";
 import type { OverlayCommand, Point, Rect } from "@jarhead/protocol";
 import type { BrainSink, BrainTask } from "./brain.ts";
+import { AUTOMATION_LIST_STATES, AUTOMATION_VERBS, armedLine, canonicalArgs, changedLine, describeDraft, draftFromArgs, renderAutomations, renderRecipes, type AutomationListState, type AutomationSource, type AutomationVerb } from "./automations.ts";
 import { describeWindow, editText, listTree, readWindow, realPathOf, searchFiles, writeText } from "./files.ts";
 import { SelfEditManager, type SelfEditOptions } from "./selfedit.ts";
 import { BackgroundJobs, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS, OUTPUT_CAP, SecretRedactor, describeShellResult, runAppleScript, runShell, truncateOutput } from "./shell.ts";
@@ -68,6 +69,14 @@ export interface RunnerOptions {
    * line under trash/manifest.jsonl is the only record — the engine wires this.
    */
   readonly ledger?: Ledger | undefined;
+  /**
+   * The engine's automations table, for `automation_set` / `automation_list` /
+   * `automation_change` / `recipe_list` (automations.ts). Absent — a plain runner, a
+   * test — the four tools answer "not available here"; nothing is armed.
+   */
+  readonly automations?: AutomationSource | undefined;
+  /** Whether the brain calling is a local model (the wake-brain cost line then says "warm-up"). Absent = the source decides from Settings. */
+  readonly brainIsLocal?: (() => boolean) | undefined;
 }
 
 export type ToolRunnerOptions = RunnerOptions;
@@ -445,10 +454,92 @@ export class ToolRunner {
       case "show_stroke":
       case "show_clear":
         return this.draw(name, args);
+      case "automation_set":
+      case "automation_list":
+      case "automation_change":
+      case "recipe_list":
+        return this.automationTool(name, args);
       default:
         return { kind: "error", message: `unknown tool ${name}` };
     }
   }
+
+  // --------------------------------------------------------- automations
+
+  /**
+   * The four automation tools, answered through the engine's `AutomationSource`. Read
+   * tools (`automation_list`, `recipe_list`) render what the table holds; `automation_change`
+   * is one verb on one row; `automation_set` is the set-up gate's one moment (below).
+   */
+  private async automationTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const source = this.opts.automations;
+    if (!source) return { kind: "error", message: `${name} is not available here: no automations table is wired to this runner` };
+    switch (name) {
+      case "automation_set":
+        return this.automationSet(source, args);
+      case "automation_list": {
+        const state = typeof args["state"] === "string" ? args["state"].trim().toLowerCase() : undefined;
+        if (state !== undefined && !(AUTOMATION_LIST_STATES as readonly string[]).includes(state)) return { kind: "error", message: `automation_list: state is one of ${AUTOMATION_LIST_STATES.join(", ")}` };
+        return { kind: "text", text: renderAutomations(await source.list(), state as AutomationListState | undefined) };
+      }
+      case "automation_change": {
+        const target = typeof args["name"] === "string" ? args["name"].trim() : "";
+        if (!target) return { kind: "error", message: "automation_change needs the automation's name or id" };
+        const verb = typeof args["verb"] === "string" ? args["verb"].trim().toLowerCase() : "";
+        if (!(AUTOMATION_VERBS as readonly string[]).includes(verb)) return { kind: "error", message: `automation_change: verb is one of ${AUTOMATION_VERBS.join(", ")}` };
+        const minutes = typeof args["minutes"] === "number" && Number.isFinite(args["minutes"]) ? Math.min(720, Math.max(1, Math.round(args["minutes"]))) : undefined;
+        const r = await source.change(target, verb as AutomationVerb, minutes);
+        return r.ok ? { kind: "text", text: changedLine(verb as AutomationVerb, r.automation, r.detail) } : { kind: "error", message: `refused: ${r.reason}` };
+      }
+      default:
+        return { kind: "text", text: renderRecipes(await source.recipes()) };
+    }
+  }
+
+  /**
+   * Set-up is the one moment an automation is judged (design11 §Policy): the source runs
+   * `classifyAutomation` with Settings and the table. `run` → armed, the line comes back.
+   * `confirm` (run-recipe · press · wake-brain · a new recipeCommand) → the ordinary one-off
+   * handshake, ONCE: `ask()` registers the question (for wake-brain its reason IS the cost
+   * line), the brain relays it, Kevin says yes in his own words, the brain calls again with
+   * exactly the same arguments and `consume()` matches them — judged by content
+   * (`canonicalArgs`), so key order is not a difference and any other change is. The yes is
+   * spent on this one row (no grant; nothing widens); the set-up then carries `confirmed`
+   * and the words Kevin heard. `refuse` → an error naming the reason and the nearest safe
+   * kind. Nothing here fires, and at fire time nothing asks.
+   */
+  private async automationSet(source: AutomationSource, args: Record<string, unknown>): Promise<ToolResult> {
+    const parsed = draftFromArgs(args, this.now());
+    if ("error" in parsed) return { kind: "error", message: `automation_set: ${parsed.error}` };
+    const key = { set: canonicalArgs(args) };
+    const confirmed = this.opts.toolset.confirmations.consume("automation_set", key);
+    const heard = confirmed && this.automationAsk?.key === key.set ? this.automationAsk.heard : undefined;
+    if (confirmed) this.automationAsk = undefined;
+    const r = await source.set(parsed.draft, {
+      by: "brain",
+      confirmed,
+      heard,
+      recipeCommand: parsed.recipeCommand,
+      fromThread: this.task?.thread !== undefined,
+      localBrain: this.opts.brainIsLocal?.(),
+      request: this.request,
+      delegationId: this.task?.delegationId,
+    });
+    switch (r.kind) {
+      case "armed":
+        return { kind: "text", text: armedLine(r.automation, r.note) };
+      case "refused":
+        return { kind: "error", message: `refused: ${r.reason}` };
+      default: {
+        // One question, spent on this row: no grantable, so nothing outlives the yes.
+        this.automationAsk = { key: key.set, heard: r.reason };
+        return this.ask(describeDraft(parsed.draft), "automation_set", key, { verdict: "confirm", reason: r.reason }, "It then fires unattended, with nobody there to stop it; after his yes call automation_set again with exactly the same arguments.");
+      }
+    }
+  }
+
+  /** The automation question outstanding, so the identical re-call can record what Kevin heard (`confirmed.heard`). */
+  private automationAsk: { readonly key: string; readonly heard: string } | undefined;
 
   // ------------------------------------------------------------- helpers
 

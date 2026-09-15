@@ -46,6 +46,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "browser_read", "browser_find", "browser_tabs",
   "read_file", "list_dir", "search_files", "web_fetch", "web_search", "agents_list", "agent_read", "recall", "clipboard_read", "self_status", "self_review",
   "show_circle", "show_arrow", "show_rect", "show_text", "show_stroke", "show_clear",
+  "automation_list", "recipe_list",
 ]);
 
 export type ToolResult =
