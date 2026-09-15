@@ -390,8 +390,8 @@ test("local: thinkFor by effort, only for thinking models, gpt-oss strings", () 
   assert.equal(thinkFor("max", oss), "high");
 });
 
-test("local: fitTools drops draw then browser then thread at ctx 16384 and nothing at 65536; LOCAL_TOOLS has no self_* or agent_*; ALL_TOOL_SPECS.length is still 67", () => {
-  assert.equal(ALL_TOOL_SPECS.length, 67);
+test("local: fitTools drops draw then browser then thread at ctx 16384 and nothing at 65536; LOCAL_TOOLS has no self_* or agent_*; ALL_TOOL_SPECS.length is 71", () => {
+  assert.equal(ALL_TOOL_SPECS.length, 71);
   assert.equal(LOCAL_TOOLS.some((t) => t.name.startsWith("self_") || t.name.startsWith("agent_") || t.name.startsWith("agents_")), false);
   assert.ok(LOCAL_TOOLS.some((t) => t.name.startsWith("thread_")), "thread_* stay in the table; the brain gates them by Settings.threads");
   assert.ok(LOCAL_TOOLS.length < ALL_TOOL_SPECS.length);
@@ -400,14 +400,16 @@ test("local: fitTools drops draw then browser then thread at ctx 16384 and nothi
 
   const systemBytes = 6600;
   const small = fitTools({ ctx: 16384, systemBytes, tools: LOCAL_TOOLS });
-  assert.deepEqual(small.dropped, ["draw", "browser", "thread"]);
-  assert.equal(small.tools.some((t) => t.name.startsWith("show_") || t.name.startsWith("browser_") || t.name.startsWith("thread_") || t.name === "web_search" || t.name === "web_fetch"), false);
+  // design11: the automation group (≈ 6.6 KB, automation_set's grammar most of it) drops second — after the
+  // teaching shapes, before the browser and the threads: a tight local model reads pages before it arms alarms.
+  assert.deepEqual(small.dropped, ["draw", "automation", "browser", "thread"]);
+  assert.equal(small.tools.some((t) => t.name.startsWith("show_") || t.name.startsWith("browser_") || t.name.startsWith("thread_") || t.name.startsWith("automation_") || t.name === "recipe_list" || t.name === "web_search" || t.name === "web_fetch"), false);
   assert.ok(small.tools.some((t) => t.name === "screenshot"), "the computer tools are never dropped");
 
   const mid = fitTools({ ctx: 32768, systemBytes, tools: LOCAL_TOOLS });
   assert.deepEqual(mid.dropped, [], "a 32k window takes the whole local table");
   const narrow = fitTools({ ctx: 24576, systemBytes, tools: LOCAL_TOOLS });
-  assert.deepEqual(narrow.dropped, ["draw"], "one group is enough at 24k");
+  assert.deepEqual(narrow.dropped, ["draw", "automation"], "two groups at 24k; the browser and the threads stay");
 
   const large = fitTools({ ctx: LOCAL_NUM_CTX_MAX, systemBytes, tools: LOCAL_TOOLS });
   assert.deepEqual(large.dropped, []);
@@ -488,7 +490,7 @@ test("local: body carries options.num_ctx clamped, num_predict, temperature, kee
     const small = new LocalBrain({ runner, baseUrl: server.url, model: "llama3.1:8b", effort: "high", threads: () => true, ramBytes: RAM });
     const s = await small.start();
     assert.equal(s.ready, true, s.detail);
-    assert.match(s.detail, /^Local · llama3\.1:8b on Ollama 0\.34\.0 · 8k ctx \(small\) · text-only · thinking off · \d+ tools \(draw, browser, thread dropped\)$/);
+    assert.match(s.detail, /^Local · llama3\.1:8b on Ollama 0\.34\.0 · 8k ctx \(small\) · text-only · thinking off · \d+ tools \(draw, automation, browser, thread dropped\)$/);
     assert.equal(small.acceptsImages, false);
     await small.handle(makeTask("hello"), makeSink().sink);
     const b2 = server.seen.filter((x) => x.path === "/api/chat").at(-1)!.body as Record<string, unknown>;
@@ -832,7 +834,7 @@ test("local: LM Studio path uses OpenAIChatTransport with images from vlm and a 
 
     const phi = new LocalBrain({ runner, baseUrl: lm.url, model: "phi-4", effort: "medium", threads: () => true, ramBytes: RAM });
     const p = await phi.start();
-    assert.match(p.detail, /^Local · phi-4 on LM Studio · 16k ctx · text-only · thinking off · \d+ tools \(draw, browser, thread dropped\) · tools: LM Studio default mode$/);
+    assert.match(p.detail, /^Local · phi-4 on LM Studio · 16k ctx · text-only · thinking off · \d+ tools \(draw, automation, browser, thread dropped\) · tools: LM Studio default mode$/);
     assert.equal(phi.acceptsImages, false);
 
     auth = true;

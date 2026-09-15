@@ -18,7 +18,7 @@ import {
   type RawToolCall,
 } from "./compatible.ts";
 import type { ToolRunner } from "./runner.ts";
-import { AGENT_SPECS, ALL_TOOL_SPECS, BROWSER_SPECS, DRAW_SPECS, SELF_SPECS, THREAD_SPECS, specByName, type ToolSpec } from "./tools.ts";
+import { AGENT_SPECS, ALL_TOOL_SPECS, AUTOMATION_SPECS, BROWSER_SPECS, DRAW_SPECS, SELF_SPECS, THREAD_SPECS, specByName, type ToolSpec } from "./tools.ts";
 
 /**
  * The local brain: a model on this Mac served by Ollama, LM Studio or llama.cpp.
@@ -63,8 +63,10 @@ const NOT_LOCAL = new Set([...SELF_SPECS, ...AGENT_SPECS].map((s) => s.name));
 /** ALL_TOOL_SPECS minus SELF_SPECS and AGENT_SPECS; thread_* kept (gated by `threads()` at request time). */
 export const LOCAL_TOOLS: readonly ToolSpec[] = ALL_TOOL_SPECS.filter((s) => !NOT_LOCAL.has(s.name));
 /** Groups fitTools drops, in order, until tokens(system + tools) ≤ LOCAL_TOOL_SHARE × ctx. */
-export const LOCAL_DROP_ORDER: readonly { name: "draw" | "browser" | "thread"; specs: readonly ToolSpec[] }[] = [
+export const LOCAL_DROP_ORDER: readonly { name: "draw" | "automation" | "browser" | "thread"; specs: readonly ToolSpec[] }[] = [
   { name: "draw", specs: DRAW_SPECS },
+  // design11: the automation grammar is the table's largest spec; a tight window reads pages before it arms alarms.
+  { name: "automation", specs: AUTOMATION_SPECS },
   { name: "browser", specs: [...BROWSER_SPECS, ...["web_search", "web_fetch"].map((n) => specByName(n)).filter((s): s is ToolSpec => s !== undefined)] },
   { name: "thread", specs: THREAD_SPECS },
 ];
