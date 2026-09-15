@@ -115,6 +115,11 @@ enum AutomationWords {
     static let whenField = "07:10 weekdays · 12 min · 15:00"
     static let doesField = "Does"
     static let whenRule = "HH:mm [weekdays · daily · weekends] · N min"
+    // the echo line the Add… form reads back (the brain's echo lives in core; this one is the Console's)
+    static let echoIn = "In"
+    static let echoAt = "At"
+    static let echoAtWord = "at"
+    static let echoRing = "ring"
     static let weekdays: [String] = ["mon", "tue", "wed", "thu", "fri"]
     static let weekend: [String] = ["sat", "sun"]
     static let everyDay: [String] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -689,11 +694,15 @@ enum AutomationForm {
 
     /// The one line the row reads back: `Weekdays at 07:10, chime “standup”.` · `In 12:00, ring “pasta”.`
     static func echo(name: String, when: AutomationWhen, kind: String) -> String {
-        let verb = kind == "chime" ? "ring" : AutomationWords.actionWord(kind)
+        let verb = kind == "chime" ? AutomationWords.echoRing : AutomationWords.actionWord(kind)
+        let deed = ", " + verb + " “" + name + "”."
         switch when.kind {
-        case "in": return "In \(ConsoleFormat.countdown(when.ms ?? 0)), \(verb) “\(name)”."
-        case "every": return "\((when.phrase ?? "").capitalized) at \(when.every?.at ?? ""), \(verb) “\(name)”."
-        default: return "At \(ConsoleFormat.clock(when.at ?? 0)), \(verb) “\(name)”."
+        case "in": return AutomationWords.echoIn + " " + ConsoleFormat.countdown(when.ms ?? 0) + deed
+        case "every":
+            let phrase = (when.phrase ?? "").capitalized
+            let at = when.every?.at ?? ""
+            return phrase + " " + AutomationWords.echoAtWord + " " + at + deed
+        default: return AutomationWords.echoAt + " " + ConsoleFormat.clock(when.at ?? 0) + deed
         }
     }
 
