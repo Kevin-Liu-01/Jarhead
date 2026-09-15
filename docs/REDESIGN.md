@@ -539,14 +539,15 @@ code. but make its system prompt super strong and robust too".
 
 The brain's tool table (`packages/brain/src/tools.ts`, one table for every
 `BrainKind`) now covers the whole Mac, and what used to be "not a tool" is
-"a tool with a gate". Sixty-seven tools in nine families: the computer family
+"a tool with a gate". Seventy-one tools in ten families: the computer family
 (17), desktop (8), browser (6), agents (5), threads (4: `thread_start`,
 `thread_wait`, `thread_read`, `thread_stop`), misc (`run_shell`, `speak_progress`,
 `remember`, `recall`), **system** (11: `read_file`, `write_file`, `edit_file`,
 `list_dir`, `search_files`, `web_fetch`, `web_search`, `applescript`, `open_url`,
 `clipboard_read`, `clipboard_write`), **self** (`self_edit`, `self_check`,
-`self_review`, `self_apply`, `self_discard`, `self_status`) and the drawing
-shapes (6). Every one runs through `ToolRunner`, in-process or over the daemon
+`self_review`, `self_apply`, `self_discard`, `self_status`), the drawing
+shapes (6) and **automations** (4: `automation_set`, `automation_list`,
+`automation_change`, `recipe_list` — §21). Every one runs through `ToolRunner`, in-process or over the daemon
 socket (Codex), so the ledger, the screenshot archive and the confirmation
 handshake are the same for every model.
 
