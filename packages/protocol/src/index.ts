@@ -522,7 +522,6 @@ export interface Automation {
   readonly confirmed?: { readonly at: number; readonly heard: string };
 }
 
-/** rows in one snapshot (armed first; trashed never) */
 /** Live (non-trashed) rows in one snapshot: armed / snoozed / deferred by nextAt, then the rest by updatedAt. */
 export const AUTOMATIONS_MAX = 32;
 /** Trashed rows after them, newest first, for the Console's Trash fold (Restore); the journal keeps every one. */
