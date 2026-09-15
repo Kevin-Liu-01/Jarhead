@@ -102,6 +102,70 @@ private struct ThreadHeader: View {
     private var isMain: Bool { thread.id == "main" }
     private var live: Bool { connected && thread.status.isBusy }
 
+    /// The figures whole (`fixedSize`): the live dot and `00:06 · screen · 4 steps` — never "screen…".
+    private var figures: some View {
+        HStack(spacing: 6) {
+            if live {
+                ConsoleDot(color: meta.color, live: true, size: 6)
+                    .consoleHelp(HelpCopy.liveThread)
+                    .accessibilityLabel("Live")
+                    .transition(.opacity)
+            }
+            elapsed
+        }
+        .fixedSize()
+        .animation(Motion.fade, value: live)
+    }
+
+    /// Where its hands last were: the thumbnail opens the shot (the shot is on the card too).
+    @ViewBuilder private var thumb: some View {
+        if let path = thread.lastScreenshotPath, !path.isEmpty {
+            let url = actions.screenshotURL(path)
+            ScreenshotThumb(url: url, onTap: { session.lightbox = ConsoleLightboxItem(url: url, caption: "\(thread.name) · last screenshot") }, width: 64)
+                .frame(height: 30)
+                .consoleHelp(id: ThreadPaneWords.shotTip + thread.id, spoken: ThreadPaneWords.lastShot) {
+                    ConsoleTipPreview(title: thread.name, subtitle: ThreadPaneWords.lastShot, url: url, meta: ConsoleTipPreview.fileMeta(url))
+                }
+                .transition(.opacity)
+        }
+    }
+
+    /// Pause / Resume and Stop act on THIS thread; the transport's Pause and Stop stay in the Now
+    /// composer. Main has no Pause of its own (the transport's is the session's). Every verb is
+    /// `fixedSize`: a verb never truncates.
+    private var verbs: some View {
+        HStack(spacing: 6) {
+            if !isMain, thread.status.isLive, thread.status != .idle {
+                if thread.status == .paused {
+                    Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: "play.fill") }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                        .fixedSize()
+                        .consoleHelp(HelpCopy.resumeThread(thread.name))
+                        .transition(.opacity)
+                } else {
+                    Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: "pause.fill") }
+                        .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                        .fixedSize()
+                        .consoleHelp(HelpCopy.pauseThread(thread.name))
+                        .transition(.opacity)
+                }
+            }
+            if thread.canStop, thread.status.isLive {
+                Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: "stop.fill") }
+                    .buttonStyle(ConsoleButtonStyle(kind: thread.status.isBusy ? .danger : .ghost, height: 24, small: true))
+                    .fixedSize()
+                    .consoleHelp(isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name))
+                    .accessibilityLabel("Stop \(thread.name)")
+                    .transition(.opacity)
+            }
+            Button(action: close) { Label("Now", systemImage: "chevron.left") }
+                .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
+                .fixedSize()
+                .consoleHelp(HelpCopy.backNow)
+                .accessibilityLabel("Back to Now")
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: iconGap) {
@@ -119,68 +183,14 @@ private struct ThreadHeader: View {
                     .layoutPriority(1)
                 // (The question itself is the composer's strip, not a header word: here it truncated to a letter.)
                 Spacer(minLength: 8)
-                // The figures stay whole (`fixedSize`): a narrow pane cuts the status word, never "screen…".
-                HStack(spacing: 6) {
-                    if live {
-                        ConsoleDot(color: meta.color, live: true, size: 6)
-                            .consoleHelp(HelpCopy.liveThread)
-                            .accessibilityLabel("Live")
-                            .transition(.opacity)
-                    }
-                    elapsed
+                // The trailing group gives way in order — the thumb, then the figures — so a verb never
+                // truncates and never runs under the rail: [figures · thumb · verbs] → [figures · verbs] → [verbs].
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { figures; thumb; verbs }
+                    HStack(spacing: 6) { figures; verbs }
+                    verbs
                 }
-                .fixedSize()
-                .animation(Motion.fade, value: live)
-                .layoutPriority(1)
-                if let path = thread.lastScreenshotPath, !path.isEmpty {
-                    // Where its hands last were: the thumbnail opens the shot. Whole or not at all — at
-                    // the pane's minimum the verbs and the figures come first (the shot is on the card too):
-                    // the verbs are `fixedSize`, so the HStack sizes them first and the thumb yields.
-                    let url = actions.screenshotURL(path)
-                    ViewThatFits(in: .horizontal) {
-                        ScreenshotThumb(url: url, onTap: { session.lightbox = ConsoleLightboxItem(url: url, caption: "\(thread.name) · last screenshot") }, width: 64)
-                            .frame(height: 30)
-                            .consoleHelp(id: ThreadPaneWords.shotTip + thread.id, spoken: ThreadPaneWords.lastShot) {
-                                ConsoleTipPreview(title: thread.name, subtitle: ThreadPaneWords.lastShot, url: url, meta: ConsoleTipPreview.fileMeta(url))
-                            }
-                        Color.clear.frame(width: 0, height: 0)
-                    }
-                    .transition(.opacity)
-                }
-                // Pause / Resume and Stop act on THIS thread; the transport's Pause and Stop stay
-                // in the Now composer. Main has no Pause of its own (the transport's is the session's).
-                if !isMain, thread.status.isLive, thread.status != .idle {
-                    if thread.status == .paused {
-                        Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: "play.fill") }
-                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                            .fixedSize()
-                            .layoutPriority(1)
-                            .consoleHelp(HelpCopy.resumeThread(thread.name))
-                            .transition(.opacity)
-                    } else {
-                        Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: "pause.fill") }
-                            .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                            .fixedSize()
-                            .layoutPriority(1)
-                            .consoleHelp(HelpCopy.pauseThread(thread.name))
-                            .transition(.opacity)
-                    }
-                }
-                if thread.canStop, thread.status.isLive {
-                    Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: "stop.fill") }
-                        .buttonStyle(ConsoleButtonStyle(kind: thread.status.isBusy ? .danger : .ghost, height: 24, small: true))
-                        .fixedSize()
-                        .layoutPriority(1)
-                        .consoleHelp(isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name))
-                        .accessibilityLabel("Stop \(thread.name)")
-                        .transition(.opacity)
-                }
-                Button(action: close) { Label("Now", systemImage: "chevron.left") }
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
-                    .fixedSize()
-                    .layoutPriority(1)
-                    .consoleHelp(HelpCopy.backNow)
-                    .accessibilityLabel("Back to Now")
+                .layoutPriority(3)
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
