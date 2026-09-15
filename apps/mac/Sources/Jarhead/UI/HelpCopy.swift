@@ -66,11 +66,24 @@ enum HelpCopy {
     static func denyThread(_ name: String) -> Entry { Entry(name: "Deny", hint: "No — \(name) drops the question") }
     static func sendMode(_ words: String?) -> Entry { words.map { Entry(name: "Send", hint: "Send — \($0)", key: "⏎") } ?? send }
 
+    // MARK: automations (design11) — the ring's presses, a row's verbs, the recipes
+
+    /// Snooze carries the minutes the island's press would use (Settings.snoozeMinutes).
+    static func snooze(_ minutes: Int) -> Entry { Entry(name: "Snooze", hint: "Snooze — rings again in \(minutes) min", key: "⌥⇧S") }
+    static let done = Entry(name: "Done", hint: "Done — stops the ring, the row stays")
+    static let skip = Entry(name: "Skip", hint: "Skip — the next fire rolls past without ringing")
+    static let pauseAutomation = Entry(name: "Pause", hint: "Pause — keeps it, fires nothing")
+    static let runNow = Entry(name: "Run now", hint: "Fire it now — only while someone is here to hear it")
+    static let trashAutomation = Entry(name: "Trash", hint: "Move to Trash — hidden, restorable, never deleted")
+    static let addRecipe = Entry(name: "Add recipe", hint: "Name a command a routine may run unattended")
+    static let asksRecipe = Entry(name: "Asks", hint: "The shell gate would ask about this — listed, never armed")
+
     static let all: [Entry] = [go, pause, stop, stopAll, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
                                backStream, backStreamEsc, backNow, latest, undoCleared, retryPage, undoMove, liveThread, liveWriting, liveQuiet,
                                pinned, restoreTrash, restoreArchive, logView, conversationView,
                                resumeThread("Slack"), pauseThread("Slack"), stopThread("Slack"), allowThread("Slack"), denyThread("Slack"),
-                               sendMode("queued in Codex")]
+                               sendMode("queued in Codex"),
+                               snooze(10), done, skip, pauseAutomation, runNow, trashAutomation, addRecipe, asksRecipe]
 
     // MARK: check-copy
 
