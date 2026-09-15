@@ -1,7 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { AutomationAction, AutomationClauses, AutomationSettings, AutomationWhen } from "@jarhead/protocol";
 import { BACKGROUND_SHELL_REFUSE, OPEN_BACKGROUND_FLAG, actionReason, classifyAutomation, costLine, openPathReason, pressKeyReason, shellSteals, triggerReason, type AutomationContext } from "../policy.ts";
 
@@ -332,15 +330,11 @@ test("a fixed-line row that also asks: the free actions run silently and the one
   assert.equal(verdict(broken), "refuse");
 });
 
-// ----------------------------------------------------------------- the copy of shellSteals
+// ----------------------------------------------------------------- shellSteals (the one copy; the engine's background lane imports it)
 
-test("shellSteals is the runner's: the two regexes in core are byte-for-byte the ones in packages/engine/src/threads/runner.ts, and the head test agrees on the cases the runner documents", () => {
-  const runner = readFileSync(fileURLToPath(new URL("../../../engine/src/threads/runner.ts", import.meta.url)), "utf8");
-  const refuse = /export const BACKGROUND_SHELL_REFUSE = (\/.*\/);\n/.exec(runner);
-  const flag = /const OPEN_BACKGROUND_FLAG = (\/.*\/);\n/.exec(runner);
-  assert.ok(refuse && flag, "the runner still declares both regexes");
-  assert.equal(String(BACKGROUND_SHELL_REFUSE), refuse[1]);
-  assert.equal(String(OPEN_BACKGROUND_FLAG), flag[1]);
+test("shellSteals: the head test on the cases the background lane documents — open fronts unless a background flag rides along, osascript always, every segment of a compound line past its wrappers and the head's directory; the regexes it reads are exported for the lane", () => {
+  assert.equal(String(BACKGROUND_SHELL_REFUSE), "/^(?:open|osascript)$/");
+  assert.equal(String(OPEN_BACKGROUND_FLAG), "/^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/");
   assert.equal(shellSteals("open -a Slack"), true);
   assert.equal(shellSteals("ls && open -a Slack"), true);
   assert.equal(shellSteals("cd x; open ."), true);

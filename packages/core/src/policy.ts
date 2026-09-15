@@ -1270,9 +1270,9 @@ const UNATTENDED_HINT = "a notify or a chime is";
 
 /**
  * A shell head that brings something to the front: `open` (unless a flag cluster carries g or
- * j, or `--background` / `--hide`) or `osascript`. The engine's background lane refuses these
- * (threads/runner.ts `shellSteals`); a recipe that fronts an app is told to use the `open`
- * action instead. The two regexes are copies of the runner's and a test pins them equal.
+ * j, or `--background` / `--hide`) or `osascript`. The ONE copy: the engine's background lane
+ * (threads/runner.ts) imports `shellSteals` from here to refuse these, and the automations'
+ * set-up gate tells a recipe that fronts an app to use the `open` action instead.
  */
 export const BACKGROUND_SHELL_REFUSE = /^(?:open|osascript)$/;
 export const OPEN_BACKGROUND_FLAG = /^-[A-Za-z]*[gj][A-Za-z]*$|^--(?:background|hide)$/;
