@@ -995,6 +995,10 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// in them lands nowhere — a double-click on Done, or a click arriving as the kind flips back to `question`,
     /// never reaches a thread's Allow. The dock asks before routing; `mouseUp` asks before flashing.
     static let middleDeadTime = 0.5
+    static func isSnooze(_ p: Press?) -> Bool {
+        if case .snooze = p { return true }
+        return false
+    }
     func pressIsDead(_ p: Press, now: Double = CACurrentMediaTime()) -> Bool {
         switch p {
         case .allow, .deny, .snooze, .done: break
@@ -3903,7 +3907,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         let b = button(at: p)
-        if b != hoveredButton { hoveredButton = b; needsDisplay = true }
+        if b != hoveredButton {
+            let was = hoveredButton
+            hoveredButton = b
+            needsDisplay = true
+            // The Snooze minis come and go with the hover: the accessibility children follow the hit list.
+            if Self.isSnooze(was) || Self.isSnooze(b) { rebuildAccessibility() }
+        }
         let onPill = pillRect?.contains(p) ?? false
         onHover?(islandRect.contains(p) || onPill)
     }
@@ -4113,7 +4123,12 @@ extension NotchView {
     func previewFieldReturn() { sayFromField() }
     func previewFieldEscape() { releaseField(keepText: true); onFieldRelease?(true) }
     /// Hover a control by name (nil clears).
-    func previewSetHovered(_ name: String?) { hoveredButton = name.flatMap { Press(previewName: $0) }; needsDisplay = true }
+    func previewSetHovered(_ name: String?) {
+        let was = hoveredButton
+        hoveredButton = name.flatMap { Press(previewName: $0) }
+        if Self.isSnooze(was) || Self.isSnooze(hoveredButton) { rebuildAccessibility() }
+        needsDisplay = true
+    }
     /// The accessibility children (buttons + the field) and the hit rects, for the "children == hit rects" check.
     var previewAccessibilityButtonCount: Int { accessibilityButtons.count }
     var previewAccessibilityChildCount: Int { accessibilityChildren()?.count ?? 0 }
