@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 import Foundation
 import Speech
 
@@ -191,6 +193,10 @@ final class WakeWordListener {
         do {
             try objcTry(throwing: {
                 let input = self.engine.inputNode
+                // design12 § Engine 8: hear through the ranked microphone, not the system
+                // default — before the format is read, so the guard below sees the device
+                // the tap will run on.
+                self.pointAtRankedMic(input)
                 let before = input.outputFormat(forBus: 0)
                 formatBefore = before.brief
                 guard before.sampleRate > 0, before.channelCount > 0 else { throw StartFailure.noInputDevice }
@@ -223,6 +229,31 @@ final class WakeWordListener {
         segments.begin()
         let note = formatBefore == formatAfter ? "" : ", was \(formatBefore) before prepare"
         status(.started("listening on-device (\(formatAfter); tap at the node's own format\(note))"))
+    }
+
+    /// design12 § Engine 8: the listener hears through the ranked microphone (the MacBook's
+    /// when it is there), not the system default. A Bluetooth headset's mic held while
+    /// Jarhead merely waits for his name drops every app's sound to the hands-free codec —
+    /// most of the day, on Kevin's Mac. One property on this engine's own input AU
+    /// (`kAudioOutputUnitProperty_CurrentDevice`, the plain-path call the voice engine
+    /// makes in `applyInputDevice`); no voice processing, no output node, nothing in the
+    /// gate. Runs inside the caller's `objcTry`. Logs `hears <name> (ranked | system default)`.
+    private func pointAtRankedMic(_ input: AVAudioInputNode) {
+        let inputs = MicInputs.enumerate()
+        let systemDefault = MicInputs.systemDefaultUID()
+        let ranked = MicRanking.rank(inputs, explicit: nil, lastUsed: nil, systemDefault: systemDefault)
+        let defaultName = MicInputs.name(of: systemDefault) ?? "the system default"
+        guard let choice = ranked.first, choice.uid != systemDefault, let au = input.audioUnit else {
+            WakeWordListener.log("hears \(defaultName) (system default)")
+            return
+        }
+        var dev = choice.id
+        let err = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
+        if err == noErr {
+            WakeWordListener.log("hears \(choice.name) (ranked)")
+        } else {
+            WakeWordListener.log("hears \(defaultName) (system default; could not select \(choice.name): \(err))")
+        }
     }
 
     /// A start that did not come up. Devices come and go — the first failures are retried
