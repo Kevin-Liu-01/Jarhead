@@ -196,6 +196,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // command older than 5 s — a slow cold start would leave that pane unfollowed. A
             // second open for the same viewer is idempotent at the engine.
             self.console.reconnected()
+            // design12: the audio frame too. A restarted daemon starts with `audioState` empty, and
+            // while asleep nothing in the read-back changes, so no new frame would ever come —
+            // `pnpm jarhead status` would say `no app connected` until the next wake.
+            self.audioFrameLast = nil
+            if let info = self.state.audioState { self.sendAudioFrame(info) }
         }
 
         // The daemon: start or attach, then connect.
