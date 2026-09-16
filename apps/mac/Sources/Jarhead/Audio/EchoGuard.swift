@@ -54,10 +54,11 @@ final class EchoGuard: @unchecked Sendable {
         return Stats(gated: gated, chunks: chunks, holds: m?.stats.holds ?? 0, breakthroughs: m?.stats.breakthroughs ?? 0, heldSeconds: m?.heldSeconds ?? 0)
     }
 
-    /// The plain graph is up: guard the wire with this tail (seconds).
-    func attach(tail: Double) {
+    /// The plain graph is up: guard the wire with this tail (seconds), learning the floor only
+    /// once the echo can have arrived (`learnDelay`, seconds — `EchoGuardModel.learnDelay`).
+    func attach(tail: Double, learnDelay: Double = 0) {
         lock.lock()
-        model = EchoGuardModel(tail: tail)
+        model = EchoGuardModel(tail: tail, learnDelay: learnDelay)
         gated = 0
         chunks = 0
         lock.unlock()

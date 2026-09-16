@@ -500,13 +500,16 @@ final class AudioEngine {
             try? objcTry { playerNode.volume = gain }
         }
         // On the plain graph the microphone hears Jarhead at full level: the guard holds the
-        // wire while he is audible plus a tail sized for the room and the output's latency.
-        let tail = guardTail(speaks: AudioDeviceFacts.defaultOutput())
+        // wire while he is audible plus a tail sized for the room and the output's latency, and
+        // learns the echo floor only once that latency (plus the tap's 100 ms) has passed — a
+        // floor taught from pre-echo silence would let the echo itself break through.
+        let latency = outputLatency()
+        let tail = guardTail(latency: latency, speaks: AudioDeviceFacts.defaultOutput())
         currentTailMs = Int((tail * 1000).rounded())
         if voiceProcessing {
             EchoGuard.shared.detach()
         } else {
-            EchoGuard.shared.attach(tail: tail)
+            EchoGuard.shared.attach(tail: tail, learnDelay: AudioEngine.guardLearnDelay(latency: latency))
         }
         let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
         onStatus?(AudioEngine.runningLine(mic: formatNote, policy: wantedPolicy, voiceProcessing: voiceProcessing, wiring: wiring, rung: rung, tailMs: currentTailMs))
@@ -522,13 +525,25 @@ final class AudioEngine {
         if !line.isEmpty { onStatus?(line) }
     }
 
-    /// `baseTail + the output node's presentation latency (+ the Bluetooth allowance)`, clamped.
-    private func guardTail(speaks: AudioDeviceFacts?) -> Double {
+    /// The output node's presentation latency in seconds (0 when unreadable or absurd).
+    private func outputLatency() -> Double {
         var latency = 0.0
         try? objcTry { latency = self.engine.outputNode.presentationLatency }
-        var tail = EchoGuardModel.baseTail + (latency.isFinite ? max(0, latency) : 0)
+        return latency.isFinite ? max(0, latency) : 0
+    }
+
+    /// `baseTail + the output's presentation latency (+ the Bluetooth allowance)`, clamped.
+    private func guardTail(latency: Double, speaks: AudioDeviceFacts?) -> Double {
+        var tail = EchoGuardModel.baseTail + latency
         if speaks?.isBluetooth == true { tail += EchoGuardModel.bluetoothTail }
         return min(EchoGuardModel.maxTail, max(EchoGuardModel.baseTail, tail))
+    }
+
+    /// How long after a hold begins the guard starts learning: the output's latency plus the
+    /// tap's 100 ms, clamped to `EchoGuardModel.maxLearnDelay`. Pure, for duck-probe.
+    static func guardLearnDelay(latency: Double) -> Double {
+        let l = latency.isFinite ? max(0, latency) : 0
+        return min(EchoGuardModel.maxLearnDelay, l + EchoGuardModel.tapDelay)
     }
 
     /// `audio running: mic <fmt>, voice processing on (duck min advanced, agc on, bypass off) | off (guard on[, fallback]), output wiring <w>, rung <n>, tail <ms> ms`

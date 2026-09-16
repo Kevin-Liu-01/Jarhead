@@ -530,6 +530,27 @@ struct PureSections {
                 _ = feed(&m, rms: 0.3, from: 0, slices: 10)
                 return m.echoFloor > 0.1 ? nil : "floor \(m.echoFloor) after 100 ms at 0.3"
             }),
+            ("a late echo (0.5 s of silence, then steady 0.1 for 3 s) never breaks through with learnDelay 0.5", {
+                // A high-latency output (Bluetooth): the first judged slices are pre-echo silence.
+                // Without the delay the floor learns that silence, the outlier cap rejects the
+                // echo, and at 2 s the echo itself is the break-through — Jarhead on the wire.
+                var m = EchoGuardModel(tail: tail, learnDelay: 0.5)
+                m.noteOutput(rms: 0.1, seconds: 10, now: 0)
+                let (quiet, t) = feed(&m, rms: 0.001, from: 0, slices: 50)
+                let (echo, _) = feed(&m, rms: 0.1, from: t, slices: 300)
+                let allHeld = quiet.allSatisfy { $0 == .hold } && echo.allSatisfy { $0 == .hold }
+                let floorIsEcho = m.echoFloor > 0.05
+                return allHeld && m.stats.breakthroughs == 0 && floorIsEcho && m.learned >= 2.9 ? nil : "passed \(echo.filter { $0 == .pass }.count) echo slices, breaks \(m.stats.breakthroughs), floor \(m.echoFloor), learned \(m.learned)"
+            }),
+            ("slices before learnDelay neither teach nor count; the clamp and the engine's arithmetic", {
+                var m = EchoGuardModel(tail: tail, learnDelay: 0.2)
+                m.noteOutput(rms: 0.1, seconds: 10, now: 0)
+                _ = feed(&m, rms: 0.3, from: 0, slices: 20)
+                let untaught = m.echoFloor == 0 && m.learned == 0 && abs(m.heldSeconds - 0.19) < 0.001
+                let clamped = EchoGuardModel(tail: tail, learnDelay: 5).learnDelay == EchoGuardModel.maxLearnDelay
+                let engine = abs(AudioEngine.guardLearnDelay(latency: 0.25) - 0.35) < 1e-9 && AudioEngine.guardLearnDelay(latency: 3) == EchoGuardModel.maxLearnDelay && AudioEngine.guardLearnDelay(latency: .nan) == EchoGuardModel.tapDelay
+                return untaught && clamped && engine ? nil : "floor \(m.echoFloor), learned \(m.learned), held \(m.heldSeconds), clamped \(clamped), engine \(engine)"
+            }),
             (".broken passes until the window ends", {
                 var (m, t) = taught(echoRMS: 0.01, seconds: 2.0)
                 _ = feed(&m, rms: 0.2, from: t, slices: 12)
