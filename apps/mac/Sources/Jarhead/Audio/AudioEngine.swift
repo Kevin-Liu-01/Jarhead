@@ -95,8 +95,10 @@ final class AudioEngine {
             self?.restartAfterConfigurationChange()
         }
         // The guard's hold beginning or ending is a state the island shows (the mic box dims).
+        // Twice per sentence, on the queue that schedules the sentence's chunks — so only the
+        // guard's own fields are refreshed, never the device tables or the HAL's process list.
         EchoGuard.shared.onHeldChange = { [weak self] _ in
-            self?.queue.async { self?.publishAudioState("guard") }
+            self?.queue.async { self?.publishGuardEdge() }
         }
         // The device list and the system default input, watched from the start: a
         // microphone that vanishes mid-session is rebuilt around on the next-ranked one
@@ -266,6 +268,16 @@ final class AudioEngine {
         s.tapFormat = running ? currentTapFormat : ""
         s.recording = !wantedPolicy.echoCancel
         s.fallback = running && !s.voiceProcessing && wantedPolicy.echoCancel
+        refreshGuardFields(&s)
+        s.sharedWith = s.hears.flatMap { AudioEngine.deviceID(matching: $0.uid) }.flatMap { AudioProcessObjects.sharingInput(on: $0) }
+        s.inputMuted = AVAudioApplication.shared.isInputMuted
+        s.aggregatePresent = AudioAggregates.present(AudioAggregates.unitPrefix)
+        s.engineAggregatePresent = AudioAggregates.present(AudioAggregates.enginePrefix)
+        return s
+    }
+
+    /// The guard's own fields — one lock, no HAL.
+    private func refreshGuardFields(_ s: inout AudioStateReadback) {
         let guardStats = EchoGuard.shared.stats
         s.guardOn = EchoGuard.shared.isAttached
         s.guardHeld = EchoGuard.shared.isHeld
@@ -274,11 +286,18 @@ final class AudioEngine {
         s.chunks = guardStats.chunks
         s.breakthroughs = guardStats.breakthroughs
         s.heldSeconds = guardStats.heldSeconds
-        s.sharedWith = s.hears.flatMap { AudioEngine.deviceID(matching: $0.uid) }.flatMap { AudioProcessObjects.sharingInput(on: $0) }
-        s.inputMuted = AVAudioApplication.shared.isInputMuted
-        s.aggregatePresent = AudioAggregates.present(AudioAggregates.unitPrefix)
-        s.engineAggregatePresent = AudioAggregates.present(AudioAggregates.enginePrefix)
-        return s
+    }
+
+    /// A hold began or ended: the last frame with the guard's fields refreshed — the device
+    /// tables, the aggregate scans and the process list are read on the tick and on route
+    /// changes only. Without a frame yet, the full read-back. On `queue`.
+    private func publishGuardEdge() {
+        guard var s = lastAudioState else {
+            publishAudioState("guard")
+            return
+        }
+        refreshGuardFields(&s)
+        publish(s, reason: "guard")
     }
 
     /// The device the graph hears through: under AEC the system default input (the unit
