@@ -12,7 +12,8 @@
 #   Scripts/audio-probe.sh --json                 # the last JSON line is the run record (`probe exit n` follows it)
 #   Scripts/audio-probe.sh --test [--json]        # `pnpm jarhead doctor --test-audio`: the graph as the current setting builds it,
 #                                                 # then a 1 s −12 dBFS chime through the player node — ONLY with AUDIO_PROBE_PLAY=1;
-#                                                 # without it the probe says what it would do ({"dryRun":true}) and exits 0.
+#                                                 # without it the probe says what it would do ({"dryRun":true}); the mode's V1
+#                                                 # checks still run first and the exit code carries them (the doctor reads the JSON either way).
 #                                                 # Refuses while Jarhead.app holds a microphone (`warn: Jarhead is awake; sleep it first`).
 #   Scripts/audio-probe.sh --build-only
 #   AUDIO_PROBE_DIRECT=1 Scripts/audio-probe.sh   # run the binary inline (the terminal's own microphone grant; no .app, no prompt

@@ -26,7 +26,7 @@ Settings › Audio › **Recording**, the status menu row, or **⌥⇧R**. Defau
 relaunch and is said in four places while on (the Audio head's `[recording]` badge, a `record.circle`
 chip on the tucked island, a 2 × 2 dot on the mute box, the doctor's `!` on its `recording` row). The
 status menu row is always titled `Recording` — the checkmark is the state — and its tooltip says
-`Hand back the mic, guard the echo — apps keep their sound · ⌥⇧R`.
+`Hand back the mic, guard the echo — apps keep their sound (⌥⇧R)` (`HelpCopy.spoken`: the key last, in brackets).
 
 | Recording | the graph | other apps | a recorder (QuickTime, OBS, Screen Studio's mic track) | echo |
 |---|---|---|---|---|
@@ -71,7 +71,9 @@ sleep`, `leak`) and `--test-audio` shells to the probe.
 
 All under `apps/mac/Scripts/`. None calls `pnpm jarhead probe` or `bench`; none connects to the
 daemon; none opens a session. Anything that plays sound needs `AUDIO_PROBE_PLAY=1` and otherwise
-prints what it would do and exits 0.
+prints what it would do; `recorder-probe.sh` and `duck-leak-probe.sh` then exit 0, while
+`audio-probe.sh --test` still runs the mode's V1 checks before its `{"dryRun":true}` line and its
+exit carries them (0 every check ok · 1 a FAIL · 3 refused) — the doctor reads the JSON either way.
 
 | probe | TCC | what it does | what it prints |
 |---|---|---|---|

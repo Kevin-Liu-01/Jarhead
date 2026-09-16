@@ -209,7 +209,8 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   `AudioProbe.app`; modes `aec|recording|asleep|private`; `--test` is what the doctor shells to; the
   record in `~/.jarhead/audio-probe.json` by mode) · `recorder-probe.sh` (V3) · `duck-leak-probe.sh`
   (V2, macOS 14.2 process tap). Anything that plays sound needs `AUDIO_PROBE_PLAY=1` and otherwise
-  prints its plan and exits 0. None connects to the daemon; none opens a session.
+  prints its plan (recorder/duck-leak exit 0; `audio-probe.sh --test` prints `{"dryRun":true}` and its
+  exit still carries the mode's V1 checks). None connects to the daemon; none opens a session.
 - **Rails**: `Wake/WakeGate.swift` is never touched; the wake listener gets exactly one property set
   on its own input AU (`kAudioOutputUnitProperty_CurrentDevice` → the ranked mic, `hears <name>
   (ranked)`); the barge-in duck stays detached on the plain path (it would duck Jarhead against
