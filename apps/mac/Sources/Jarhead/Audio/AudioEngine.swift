@@ -1130,7 +1130,8 @@ struct MicRoute {
     /// (`echo cancelled` | `echo guarded` | `no echo cancellation` | `off`) · `speaksName`
     /// String · `speaksRate` Double · `speaksState` String (`full quality` | `narrowed` | "")
     /// · `shared` [String] bundle ids of other processes on the mic — the key is absent
-    /// when the HAL cannot say.
+    /// when the HAL cannot say · `rung` Int (0 while stopped) · `duckLevel` Double (absent
+    /// while the unit is off) · `hearsUid` · `speaksUid` String.
     var userInfo: [String: Any] {
         var info: [String: Any] = [
             "ids": ranked.map(\.uid),
@@ -1147,8 +1148,12 @@ struct MicRoute {
             "speaksName": state.speaks?.name ?? "",
             "speaksRate": state.speaks?.rate ?? 0,
             "speaksState": state.speaksState,
+            "rung": state.rung,
+            "hearsUid": state.hears?.uid ?? "",
+            "speaksUid": state.speaks?.uid ?? "",
         ]
         if let shared = state.sharedWith { info["shared"] = shared }
+        if let duck = state.duckLevel { info["duckLevel"] = Double(duck) }
         return info
     }
 }

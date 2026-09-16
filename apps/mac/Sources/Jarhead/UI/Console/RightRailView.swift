@@ -154,6 +154,19 @@ enum SettingsWords {
     /// The hover card's foot keys and route words.
     static let uidKey = "uid"
     static let routeKey = "route"
+    static let rungKey = "rung"
+    static let duckKey = "ducking"
+    /// The unit's `AUVoiceIOOtherAudioDuckingLevel` as a word; nil (unit off) is `none`.
+    static func duckWord(_ level: Double?) -> String {
+        guard let level else { return "none" }
+        switch level {
+        case 0: return "default"
+        case 10: return "min"
+        case 20: return "mid"
+        case 30: return "max"
+        default: return "\(Int(level))"
+        }
+    }
     static let rateKey = "rate"
     static let ranked = "ranked"
     static let explicit = "explicit"
@@ -1340,6 +1353,11 @@ struct MicRouteInfo: Equatable {
     var speaksState = ""
     /// Other processes running input on the mic (bundle ids or `pid:<n>`); nil = the HAL cannot say (the key is absent).
     var shared: [String]? = nil
+    /// The ladder rung that came up (0 while stopped) and the unit's ducking level (nil while the unit is off).
+    var rung = 0
+    var duckLevel: Double? = nil
+    var hearsUid = ""
+    var speaksUid = ""
 
     init() {}
 
@@ -1360,6 +1378,10 @@ struct MicRouteInfo: Equatable {
         speaksRate = (info["speaksRate"] as? NSNumber)?.doubleValue ?? 0
         speaksState = info["speaksState"] as? String ?? ""
         shared = info["shared"] as? [String]
+        rung = (info["rung"] as? NSNumber)?.intValue ?? 0
+        duckLevel = (info["duckLevel"] as? NSNumber)?.doubleValue
+        hearsUid = info["hearsUid"] as? String ?? ""
+        speaksUid = info["speaksUid"] as? String ?? ""
     }
 
     /// The graph has read itself back (the Hears / Speaks rows have something to say).
@@ -1644,6 +1666,8 @@ struct SettingsPanel: View {
         var foot: [(String, String)] = []
         if !uid.isEmpty { foot.append((SettingsWords.uidKey, uid)) }
         foot.append((SettingsWords.routeKey, routeLine))
+        if route.rung > 0 { foot.append((SettingsWords.rungKey, "\(route.rung)")) }
+        foot.append((SettingsWords.duckKey, SettingsWords.duckWord(route.duckLevel)))
         return ConsoleTipCard(title: route.hearsName, status: route.hearsState, foot: foot)
     }
 
