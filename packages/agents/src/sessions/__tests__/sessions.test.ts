@@ -1035,7 +1035,7 @@ test("permissions: a resumed session's question stays open until Kevin answers; 
   const h = makeHome();
   try {
     h.realCwd(h.paths.s1, "/Users/kevinliu/demo-app");
-    h.touch(h.paths.s1, T("2026-09-01T10:01:00.000Z"));
+    h.touch(h.paths.s1, Date.now() - 60_000); // this test runs on the real clock (deadlines), so the fixture must sit inside the 14-day window today
     const id = `sessions:claude:${S1}`;
 
     const sdk = fakeSdk("Build directory removed.", 10, { tool: "Bash", input: { command: "rm -rf build", description: "clean" } });
@@ -1102,7 +1102,7 @@ test("permissions: parallel tool calls each reach Kevin in turn, and the session
   const h = makeHome();
   try {
     h.realCwd(h.paths.s1, "/Users/kevinliu/demo-app");
-    h.touch(h.paths.s1, T("2026-09-01T10:01:00.000Z"));
+    h.touch(h.paths.s1, Date.now() - 60_000); // this test runs on the real clock (deadlines), so the fixture must sit inside the 14-day window today
     const id = `sessions:claude:${S1}`;
 
     // Claude issues two non-allowlisted Bash calls in one message; the CLI asks for both at once.

@@ -91,7 +91,7 @@ function connector(h: Home, over: { procs?: AgentProcess[]; env?: Record<string,
   mkdirSync(emptyBin, { recursive: true });
   return new SessionsConnector({
     home: h.home,
-    now: Date.now,
+    now: () => NOW, // the fixtures are dated 2026-09-01; the real clock left the 14-day window on 2026-09-15
     processes: async () => over.procs ?? [],
     processCacheMs: 0,
     pollMs: 30,
@@ -407,7 +407,7 @@ test("send(): a writer lock nobody holds is a leftover → resumed, no queue; de
     // ps/lsof down: nobody can say whether the thread is open. A queue would look delivered either way; refuse, as for Claude Code.
     const degraded = new SessionsConnector({
       home: h.home,
-      now: Date.now,
+      now: () => NOW, // the fixtures are dated 2026-09-01; the real clock left the 14-day window on 2026-09-15
       processCacheMs: 0,
       codexBin: h.fake,
       applicationsDir: join(h.home, "Applications"),
