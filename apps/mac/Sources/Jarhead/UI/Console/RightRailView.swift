@@ -27,6 +27,10 @@ enum SettingsWords {
     static let shotsRetention = "settings.shotsRetention"
     static let learnedTip = "settings.learned"
     static let heardTip = "settings.heard"
+    /// design12: the Recording toggle and the two route rows (the cards hang from the row ids).
+    static let recording = "settings.recording"
+    static let hearsRow = "settings.hears"
+    static let speaksRow = "settings.speaks"
     static func leavesRow(_ what: String) -> String { "settings.leaves.\(what)" }
     // the seven heads (folds remembered per id)
     static let audioFold = "settings.audio"
@@ -44,6 +48,9 @@ enum SettingsWords {
     static let language = "Language"
     static let accent = "Accent"
     static let micLabel = "Mic"
+    static let hears = "Hears"
+    static let speaks = "Speaks"
+    static let recordingRow = "Recording"
     static let voiceKeyRow = "Voice key"
     static let model = "Model"
     static let serverRow = "Server"
@@ -68,6 +75,7 @@ enum SettingsWords {
     static let wakeHint = "listens on-device"
     static let autoWakeHint = "wakes on launch"
     static let rememberHint = "learns while on"
+    static let recordingHint = "shares the mic"
     // words on the rows
     static let minutes = "min"
     static let notch = "Notch"
@@ -124,6 +132,33 @@ enum SettingsWords {
     static let notRead = "Not read yet."
     // hints
     static let memoryOff = "Off: nothing is learned or used. What was remembered stays."
+    /// design12: under the Recording toggle while On (the `memoryOff` idiom).
+    static let recordingOn = "No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it."
+    /// `Shared with QuickTime Player.` · two names, then `+ n`; appended under Speaks, never alone.
+    static func sharedWith(_ names: [String]) -> String {
+        let shown = names.prefix(2).joined(separator: ", ")
+        let more = names.count > 2 ? " + \(names.count - 2)" : ""
+        return "Shared with \(shown)\(more)."
+    }
+    // the route rows' words (design12): one state word on line 2, the figure as `48 kHz`
+    static let echoCancelled = "echo cancelled"
+    static let echoGuarded = "echo guarded"
+    static let echoNone = "no echo cancellation"
+    /// The hover card's route row and the status line — a sentence, so never on line 2.
+    static let followsDefault = "follows the system default"
+    static let fullQuality = "full quality"
+    static let narrowed = "narrowed"
+    static func kHz(_ hz: Double) -> String { "\(Int((hz / 1000).rounded())) kHz" }
+    static let routeDot = "·"
+    static let routeJoiner = " · "
+    /// The hover card's foot keys and route words.
+    static let uidKey = "uid"
+    static let routeKey = "route"
+    static let rateKey = "rate"
+    static let ranked = "ranked"
+    static let explicit = "explicit"
+    static let defaultOutput = "default output"
+    static let recordingBadge = ConsoleDisclosureWords.recording
     static let retentionHint = "Older days move to the trash, never out of it. Pinned conversations keep their days."
     static let trashHint = "Nothing is deleted here; the trash is emptied in Finder."
     static let anyoneWakes = "Anyone who says the word wakes it."
@@ -184,6 +219,7 @@ enum SettingsWords {
     static let wakePassphraseLabel = "Wake passphrase"
     static let autoWakeLabel = "Auto-wake on launch"
     static let rememberLabel = "Remember across sessions"
+    static let recordingLabel = "Recording a demo: hand the mic back, guard the echo"
     static let idleLabel = "Idle sleep, minutes"
     static func orbHome(_ notch: Bool) -> String { "Orb home: \(notch ? SettingsWords.notch : SettingsWords.free)" }
     static func accentLabel(_ accent: String) -> String { "Accent: \(accent)" }
@@ -1289,6 +1325,21 @@ struct MicRouteInfo: Equatable {
     var systemDefault = ""
     /// "explicit" | "ranked" | "system default (echo cancellation)" | "off".
     var follows = ""
+    /// Transport word per uid ("built-in", "bluetooth", …), in the ranked order.
+    var transports: [String: String] = [:]
+    // design12: the graph's read-back as plain values — the Hears / Speaks rows and the `Shared with` hint.
+    /// What the graph listens to (empty while the graph is down) and its nominal rate in Hz (0 unknown).
+    var hearsName = ""
+    var hearsRate = 0.0
+    /// `echo cancelled` | `echo guarded` | `no echo cancellation` | `off`.
+    var hearsState = ""
+    /// The default output and its rate — the hands-free tell.
+    var speaksName = ""
+    var speaksRate = 0.0
+    /// `full quality` | `narrowed` | "".
+    var speaksState = ""
+    /// Other processes running input on the mic (bundle ids or `pid:<n>`); nil = the HAL cannot say (the key is absent).
+    var shared: [String]? = nil
 
     init() {}
 
@@ -1296,10 +1347,36 @@ struct MicRouteInfo: Equatable {
         guard let info = userInfo, let ids = info["ids"] as? [String], let names = info["names"] as? [String] else { return nil }
         ranked = ids
         for (i, id) in ids.enumerated() where i < names.count { self.names[id] = names[i] }
+        let transportWords = info["transports"] as? [String] ?? []
+        for (i, id) in ids.enumerated() where i < transportWords.count { transports[id] = transportWords[i] }
         virtual = Set(info["virtual"] as? [String] ?? [])
         active = info["active"] as? String ?? ""
         systemDefault = info["default"] as? String ?? ""
         follows = info["follows"] as? String ?? ""
+        hearsName = info["hearsName"] as? String ?? ""
+        hearsRate = (info["hearsRate"] as? NSNumber)?.doubleValue ?? 0
+        hearsState = info["hearsState"] as? String ?? ""
+        speaksName = info["speaksName"] as? String ?? ""
+        speaksRate = (info["speaksRate"] as? NSNumber)?.doubleValue ?? 0
+        speaksState = info["speaksState"] as? String ?? ""
+        shared = info["shared"] as? [String]
+    }
+
+    /// The graph has read itself back (the Hears / Speaks rows have something to say).
+    var hasReadback: Bool { !hearsName.isEmpty }
+    /// The route word for the card: `follows the system default` | `ranked` | `explicit` | the engine's own word.
+    var routeWord: String {
+        if follows.hasPrefix(SettingsWords.systemDefaultPrefix) { return SettingsWords.followsDefault }
+        return follows
+    }
+
+    /// A bundle id → the running app's name (`NSRunningApplication`), `pid:<n>` → that process's; the id itself when
+    /// nothing is running under it. The same mapping the app uses before the `audio-state` frame leaves.
+    static func processName(_ id: String) -> String {
+        if id.hasPrefix("pid:"), let pid = Int32(id.dropFirst(4)) {
+            return NSRunningApplication(processIdentifier: pid)?.localizedName ?? id
+        }
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id).first?.localizedName ?? id
     }
 }
 
@@ -1432,20 +1509,6 @@ struct SettingsPanel: View {
         Self.micGroup(id: id, ranked: route.ranked.contains(id), connected: micName(id) != nil)
     }
 
-    /// One line under the picker: the microphone in use, and why a pick is not (echo
-    /// cancellation follows the system default; only Sound settings can move that).
-    private var micHint: String {
-        guard !route.active.isEmpty, let active = micName(route.active) else { return "" }
-        if route.follows.hasPrefix(SettingsWords.systemDefaultPrefix) {
-            let pick = micSelection
-            if !pick.isEmpty, pick != route.active, let wanted = micName(pick) {
-                return SettingsWords.echoFollows(active: active, wanted: wanted)
-            }
-            return SettingsWords.using(active) + NowWords.dot + SettingsWords.systemDefault + SettingsWords.period
-        }
-        return SettingsWords.using(active) + NowWords.dot + route.follows + SettingsWords.period
-    }
-
     // MARK: the index
 
     var body: some View {
@@ -1494,7 +1557,8 @@ struct SettingsPanel: View {
 
     private var audio: some View {
         ConsoleDisclosure(id: SettingsWords.audioFold, title: ConsoleDisclosureWords.audio,
-                          summary: ConsoleDisclosureSummary.audio(voice: VoiceWords.name(settings.voice), accent: ConsoleTheme.accentLabel(settings.accent)),
+                          summary: ConsoleDisclosureSummary.audio(voice: VoiceWords.name(settings.voice), accent: ConsoleTheme.accentLabel(settings.accent),
+                                                                  recording: settings.audioSettings.recording),
                           size: .section, siblings: SettingsWords.folds, inset: true) {
             VStack(spacing: 2) {
                 // The kit's dropdown: the name alone (Language is its own row), Default / Also / All
@@ -1528,9 +1592,79 @@ struct SettingsPanel: View {
                                      fieldBadge: { $0.isEmpty ? .word(SettingsWords.micRankedBadge) : nil }, badge: micBadges,
                                      group: micGroup, foot: { $0.isEmpty ? SettingsWords.micFoot : nil }, filterNoun: SettingsWords.micNoun)
                 }
-                if !micHint.isEmpty { hint(micHint) }
+                routeRows
+                recordingRows
             }
         }
+    }
+
+    // MARK: Audio · the route (design12)
+
+    /// Hears / Speaks: the graph's own figures, only once it has read itself back; then the one sentence the
+    /// old mic hint was written for (echo cancellation follows the system default and the ranking disagrees),
+    /// and `Shared with …` while another process reads the mic.
+    @ViewBuilder private var routeRows: some View {
+        if route.hasReadback {
+            ConsoleFormRow(SettingsWords.hears, height: 40) {
+                ConsoleRouteValue(line: hearsLine, id: SettingsWords.hearsRow, card: hearsCard)
+            }
+            if !route.speaksName.isEmpty {
+                ConsoleFormRow(SettingsWords.speaks, height: 40) {
+                    ConsoleRouteValue(line: speaksLine, id: SettingsWords.speaksRow, card: speaksCard)
+                }
+            }
+        }
+        if let echoHint { hint(echoHint) }
+        if let sharedHint { hint(sharedHint).transition(Motion.appear) }
+    }
+
+    /// The Recording toggle (the whole audio block through `set-settings`; the snapshot's echo flips the cells)
+    /// and, while On, what it means — the `memoryOff` idiom.
+    @ViewBuilder private var recordingRows: some View {
+        ConsoleFormRow(SettingsWords.recordingRow) {
+            ConsoleToggle(on: settings.audioSettings.recording, hint: SettingsWords.recordingHint, id: SettingsWords.recording,
+                          accessibilityLabel: SettingsWords.recordingLabel) { on in
+                var a = settings.audioSettings
+                a.recording = on
+                var p = SettingsPatch()
+                p.setAudio(a)
+                patch(p)
+            }
+        }
+        if settings.audioSettings.recording { hint(SettingsWords.recordingOn).transition(Motion.appear) }
+    }
+
+    private var hearsLine: ConsoleRouteLine { ConsoleRouteLine.from(name: route.hearsName, rate: route.hearsRate, state: route.hearsState) }
+    private var speaksLine: ConsoleRouteLine { ConsoleRouteLine.from(name: route.speaksName, rate: route.speaksRate, state: route.speaksState) }
+
+    /// The tier-2 card: the device's name, the state word, `uid` and `route · transport · rate` in the foot.
+    private var hearsCard: ConsoleTipCard {
+        let uid = route.active
+        let routeLine = [route.routeWord, route.transports[uid] ?? "", hearsLine.figures].filter { !$0.isEmpty }.joined(separator: SettingsWords.routeJoiner)
+        var foot: [(String, String)] = []
+        if !uid.isEmpty { foot.append((SettingsWords.uidKey, uid)) }
+        foot.append((SettingsWords.routeKey, routeLine))
+        return ConsoleTipCard(title: route.hearsName, status: route.hearsState, foot: foot)
+    }
+
+    private var speaksCard: ConsoleTipCard {
+        let routeLine = [SettingsWords.defaultOutput, speaksLine.figures].filter { !$0.isEmpty }.joined(separator: SettingsWords.routeJoiner)
+        return ConsoleTipCard(title: route.speaksName, status: route.speaksState, foot: [(SettingsWords.routeKey, routeLine)])
+    }
+
+    /// `echoFollows`, only in the case it was written for: echo cancellation is on (so the unit follows the
+    /// system default) and the microphone Kevin wants — his pick, else the ranking's first — is another one.
+    private var echoHint: String? {
+        guard route.hasReadback, route.hearsState == SettingsWords.echoCancelled, !route.active.isEmpty else { return nil }
+        let wantedId = micSelection.isEmpty ? (route.ranked.first ?? "") : micSelection
+        guard !wantedId.isEmpty, wantedId != route.active, let wanted = micName(wantedId) else { return nil }
+        return SettingsWords.echoFollows(active: micName(route.active) ?? route.hearsName, wanted: wanted)
+    }
+
+    /// `Shared with QuickTime Player.` from the HAL's process list, names mapped here; nothing while nobody shares.
+    private var sharedHint: String? {
+        guard let shared = route.shared, !shared.isEmpty else { return nil }
+        return SettingsWords.sharedWith(shared.map(MicRouteInfo.processName))
     }
 
     /// The promise, and when a pick lands. Switch now closes the session and reopens it on the

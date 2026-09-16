@@ -30,6 +30,8 @@ enum ConsoleDisclosureWords {
     static let hidden = "Hidden"
     static let pinned = "Pinned"
     static let on = "on"
+    /// design12: the Audio head's one badge while Recording is on — titanium, the resting `[Ready]` idiom, not amber.
+    static let recording = "recording"
     static let keepForever = "forever"
     static let fold = "Fold"
     static let unfold = "Open"
@@ -276,8 +278,12 @@ struct ConsoleDisclosureSummaryView: View {
 enum ConsoleDisclosureSummary {
     typealias Summary = ConsoleDisclosureSummaryItem
 
-    /// `Cedar · British`
-    static func audio(voice: String, accent: String) -> [Summary] { [.words(voice), .words(accent)] }
+    /// `Cedar · British` · `Cedar · British · [recording]` while Recording is on (design12).
+    static func audio(voice: String, accent: String, recording: Bool = false) -> [Summary] {
+        var out: [Summary] = [.words(voice), .words(accent)]
+        if recording { out.append(.badge(.word(ConsoleDisclosureWords.recording))) }
+        return out
+    }
 
     /// `Local · qwen3.5:27b [Ready]`; `ready` nil draws no badge.
     static func brain(kind: String, model: String?, ready: Bool?) -> [Summary] {

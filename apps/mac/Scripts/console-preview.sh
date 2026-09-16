@@ -11,7 +11,14 @@
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
-#           automations | automations-ring | settings-automations (default live)
+#           automations | automations-ring | settings-automations |
+#           settings-audio | toggle-recording (default live)
+#   The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back from the fixture
+#   `aec-airpods` (Hears `Kevin's AirPods Pro · 24 kHz · echo cancelled`, Speaks `16 kHz · narrowed`, the `echoFollows`
+#   sentence, Recording Off); `toggle-recording` focuses the Recording toggle, snaps, presses Space (`send:` must carry
+#   {"audio":{"recording":true}} and nothing else), lands the `recording-macbook` read-back (`echo guarded`, `Shared with
+#   QuickTime Player.`), snaps the folded head with `[recording]` and ends open with the On hint. Both run `check-kit` (the
+#   Audio head both spellings, the toggle-hint join with `shares the mic`, the 112 pt and 182 pt measures, the words).
 #   The left rail (design10): `rail` is the threads fixture with the Trash and one hidden agent — Now bright with
 #   its dot, `Threads 3 · 1 asks`, the pinned over conversation on a grey orb at 0.72, Today open (bright, `×1`),
 #   `› Yesterday n … min`, `› Older 3 … since <day>`, Archived `2 · 15 min`, Claude Code open with `[asks]`,
@@ -179,6 +186,8 @@ case "$SCENARIO" in
   rail|rail-expanded|rail-asleep|rail-agents|rail-search|rail-keys|rail-midnight) ;;
   # Automations (design11): the Now section with the ring row, the ring on the Ledger tab, Settings › Automations.
   automations|automations-ring|settings-automations) ;;
+  # The audio pass (design12): Settings › Audio's route rows and the Recording toggle.
+  settings-audio|toggle-recording) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -202,7 +211,10 @@ if [[ "$SCENARIO" == "timing" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-12}"; f
 if [[ "$SCENARIO" == "durability" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
 # The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it);
 # `menu-model` is shot tall so the Model popup's eight rows and its foot are whole (the 760 window scrolls them).
-case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
+case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index|settings-audio|toggle-recording) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
+# The audio scenarios: the read-back lands at 0.5 s; `toggle-recording` runs its keys, the second read-back and the folds to 2.8 s.
+if [[ "$SCENARIO" == "settings-audio" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.6}"; fi
+if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac

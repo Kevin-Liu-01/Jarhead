@@ -332,7 +332,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // PREVIEW_CONNECTED=0: the daemon client is down — the caret gate's and the live dot's control.
         state.connected = env["PREVIEW_CONNECTED"] != "0"
         state.daemonDetail = state.connected ? "engine · pid 48213" : "reconnecting"
-        state.sendHandler = { cmd in print("send:", cmd.json) }
+        state.sendHandler = { [weak state] cmd in
+            print("send:", cmd.json)
+            // design12: the daemon's echo of the audio block, so `toggle-recording` sees the cells and the head flip.
+            if case .setSettings(let p) = cmd, let audio = p.audio { state?.snapshot.settings.audio = audio }
+        }
         // The memory rail's verbs, driven by `memory-forget:` / `memory-edit:` / `memory-restore:`
         // through the row's own closures; the rail reports what it holds after (`memory-rail:` lines).
         MemoryRailList.previewReport = { line in print("memory-rail: \(line)") }
@@ -417,7 +421,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.session = nil
             state.snapshot.problems = []
         case "confirm": state.snapshot = fake.confirm()
-        case "settings", "menu-voice", "menu-voice-filter", "menu-backend", "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index":
+        case "settings", "menu-voice", "menu-voice-filter", "menu-backend", "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index",
+             "settings-audio", "toggle-recording":
             state.snapshot = fake.asleep()
             // The gate is listening and has just heard the phrase: the "does it hear me?" readout.
             state.wakeGate = .listening
@@ -568,7 +573,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "settings", "wake-locked", "memory", "memory-chips", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
-             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index": console.selectTab(.settings)
+             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index", "settings-audio", "toggle-recording": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "settings-automations": console.selectTab(.settings)
         // The ring line sits under the tabs on every tab: shot on Ledger to prove it.
@@ -703,6 +708,16 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8"
         // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
         case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
+        // The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back posted as the
+        // `jarhead.micRoute` fixture `aec-airpods` — echo cancellation following the AirPods (Hears 24 kHz · echo cancelled,
+        // Speaks 16 kHz · narrowed, the `echoFollows` sentence), Recording Off. `toggle-recording` focuses the Recording toggle,
+        // snaps, presses Space (`send:` carries {"audio":{"recording":true}} and nothing else; the harness echoes the block into
+        // the snapshot as the daemon would), then the engine's second read-back `recording-macbook` lands (Hears MacBook 48 kHz ·
+        // echo guarded, Shared with QuickTime Player.), the hint appears, the head is folded and snapped with `[recording]`.
+        case "settings-audio": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5"
+        case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
+            + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
+            + "fold:\(SettingsWords.audioFold):closed@2.3,snap:preview-console-toggle-recording-closed@2.6,fold:\(SettingsWords.audioFold):open@2.8"
         // The kit (Builder C): the memory rail's kind chips (`chip:fact` → 2 rows) and a row's card;
         // the left rail's search with ↑↓ (the third hit takes the ring, Return opens it — `probe` says
         // which); the agents grouped per tool with Codex folded (`1 asks`); `cleanup` re-shot with the folds.
@@ -952,6 +967,15 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 let visible = action == "show-window"
                 NotificationCenter.default.post(name: ConsoleSession.previewNotification, object: nil, userInfo: ["windowVisible": visible])
                 print("action: \(action) at \(stamp)s (\(visible ? "agent.open" : "agent.close") as the same viewer)")
+            } else if action.hasPrefix("micRoute:") {
+                // design12: the voice engine's `jarhead.micRoute` read-back from a fixture (the harness compiles without Audio/).
+                let name = String(action.dropFirst("micRoute:".count))
+                if let info = Self.micRouteFixture(name) {
+                    NotificationCenter.default.post(name: MicRouteInfo.notificationName, object: nil, userInfo: info)
+                    print("action: micRoute \(name) at \(stamp)s")
+                } else {
+                    print("action: micRoute \(name) at \(stamp)s → no such fixture (aec-airpods | recording-macbook)")
+                }
             } else if action.hasPrefix("rail-scroll:") {
                 let points = Double(action.dropFirst("rail-scroll:".count)) ?? 0
                 guard let window = NSApp.windows.first(where: { $0.title == "Jarhead" }),
@@ -3358,6 +3382,7 @@ extension PreviewDelegate {
         failed += checkKitLists()
         failed += checkKitRail()
         failed += checkKitAutomations()
+        failed += checkKitAudio()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3545,6 +3570,78 @@ extension PreviewDelegate {
     }
 }
 
+// MARK: - Audio (design12, Builder C): the route rows' words, the Recording words, the head's badge, the fixtures
+
+extension PreviewDelegate {
+    /// The `jarhead.micRoute` userInfo the engine would post (AudioEngine `MicRoute.userInfo`: plain values, the design12
+    /// keys). `aec-airpods`: echo cancellation following the AirPods as the system default — Kevin's Mac today, the case that
+    /// narrows the headset. `recording-macbook`: the plain graph on the ranked MacBook mic, the AirPods back at 48 kHz,
+    /// QuickTime reading the same mic.
+    static func micRouteFixture(_ name: String) -> [String: Any]? {
+        let mac = "BuiltInMicrophoneDevice", pods = "BT-AirPods-Pro-in"
+        var info: [String: Any] = [
+            "ids": [mac, pods], "names": ["MacBook Pro Microphone", "Kevin's AirPods Pro"], "transports": ["built-in", "bluetooth"],
+            "virtual": [String](), "default": pods, "summary": "",
+        ]
+        switch name {
+        case "aec-airpods":
+            info["active"] = pods
+            info["follows"] = "system default (echo cancellation)"
+            info["hearsName"] = "Kevin's AirPods Pro"; info["hearsRate"] = 24_000.0; info["hearsState"] = SettingsWords.echoCancelled
+            info["speaksName"] = "Kevin's AirPods Pro"; info["speaksRate"] = 16_000.0; info["speaksState"] = SettingsWords.narrowed
+        case "recording-macbook":
+            info["active"] = mac
+            info["follows"] = SettingsWords.ranked
+            info["hearsName"] = "MacBook Pro Microphone"; info["hearsRate"] = 48_000.0; info["hearsState"] = SettingsWords.echoGuarded
+            info["speaksName"] = "Kevin's AirPods Pro"; info["speaksRate"] = 48_000.0; info["speaksState"] = SettingsWords.fullQuality
+            info["shared"] = ["QuickTime Player"]
+        default: return nil
+        }
+        return info
+    }
+
+    /// The audio pass's pure words as `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    func checkKitAudio() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let text = ConsoleDisclosureSummary.text
+        expect("disclosure: Audio recording", text(ConsoleDisclosureSummary.audio(voice: "Cedar", accent: "British", recording: true)), "Cedar · British · [recording]")
+        expect("audio: the head badge is a resting word", "\(ConsoleBadge.toneKind(.word(SettingsWords.recordingBadge)).rawValue) \(SettingsWords.recordingBadge)", "rest recording")
+        expect("audio: row keys", [SettingsWords.hears, SettingsWords.speaks, SettingsWords.recordingRow].joined(separator: " / "), "Hears / Speaks / Recording")
+        expect("audio: state words", [SettingsWords.echoCancelled, SettingsWords.echoGuarded, SettingsWords.echoNone, SettingsWords.fullQuality, SettingsWords.narrowed].joined(separator: " / "),
+               "echo cancelled / echo guarded / no echo cancellation / full quality / narrowed")
+        expect("audio: kHz figures", [48_000.0, 24_000.0, 16_000.0, 44_100.0].map(SettingsWords.kHz).joined(separator: " / "), "48 kHz / 24 kHz / 16 kHz / 44 kHz")
+        expect("audio: line 2", ConsoleRouteLine.from(name: "Kevin's AirPods Pro", rate: 16_000, state: SettingsWords.narrowed).line2 + " / "
+               + ConsoleRouteLine.from(name: "x", rate: 0, state: SettingsWords.echoNone).line2, "16 kHz · narrowed / no echo cancellation")
+        // The longest line 2 in the 182 pt control column (sans 11, as the design measures it).
+        let sans11 = NSFont.systemFont(ofSize: 11)
+        let longest = ConsoleRouteLine.from(name: "x", rate: 24_000, state: SettingsWords.echoNone).line2
+        let width = (longest as NSString).size(withAttributes: [.font: sans11]).width
+        expect("audio: the longest line 2 fits the 182 pt column (sans 11)", width <= 182 ? "fits" : String(format: "%.0f pt", width), "fits")
+        expect("audio: shared with", SettingsWords.sharedWith(["QuickTime Player"]) + " / " + SettingsWords.sharedWith(["QuickTime Player", "OBS", "Screen Studio"]),
+               "Shared with QuickTime Player. / Shared with QuickTime Player, OBS + 1.")
+        expect("audio: recording words", [SettingsWords.recording, SettingsWords.recordingHint, SettingsWords.recordingLabel, SettingsWords.recordingOn].joined(separator: " / "),
+               "settings.recording / shares the mic / Recording a demo: hand the mic back, guard the echo / No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.")
+        expect("audio: RecordingWords", [RecordingWords.heldTip, RecordingWords.chipTip, RecordingWords.menuRow, RecordingWords.menuTipSpoken, RecordingWords.badge].joined(separator: " / "),
+               "Mic held while he speaks — a word over him opens it / Recording — mic shared, echo guarded / Recording / Hand back the mic, guard the echo — apps keep their sound (⌥⇧R) / recording")
+        expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending — the session and the mic stay open")
+        let aec = MicRouteInfo(Self.micRouteFixture("aec-airpods"))
+        let rec = MicRouteInfo(Self.micRouteFixture("recording-macbook"))
+        expect("audio: fixture aec-airpods reads back", [aec?.hearsName ?? "", aec.map { SettingsWords.kHz($0.hearsRate) } ?? "", aec?.hearsState ?? "", aec?.speaksState ?? "", aec?.routeWord ?? "",
+                                                          aec?.shared == nil ? "shared unknown" : "shared known"].joined(separator: " / "),
+               "Kevin's AirPods Pro / 24 kHz / echo cancelled / narrowed / follows the system default / shared unknown")
+        expect("audio: fixture recording-macbook reads back", [rec?.hearsName ?? "", rec?.hearsState ?? "", rec.map { SettingsWords.kHz($0.speaksRate) } ?? "", rec?.speaksState ?? "", rec?.routeWord ?? "",
+                                                                rec?.shared?.joined(separator: ",") ?? "nil"].joined(separator: " / "),
+               "MacBook Pro Microphone / echo guarded / 48 kHz / full quality / ranked / QuickTime Player")
+        expect("audio: a fixture without the read-back has no rows", "\(MicRouteInfo(["ids": [String](), "names": [String]()])?.hasReadback ?? true)", "false")
+        return failed
+    }
+}
+
 // MARK: - The right rail (Builder D): the folded heads, the areas and kinds, the rows' words — the pure pins
 
 extension PreviewDelegate {
@@ -3561,8 +3658,8 @@ extension PreviewDelegate {
         let text = ConsoleDisclosureSummary.text
         expect("rail: the eight fold ids", SettingsWords.folds.joined(separator: ","),
                "settings.audio,settings.brain,settings.leaves,settings.session,settings.automations,settings.memory,settings.retention,settings.wake")
-        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint]
-        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device")
+        let hints = [SettingsWords.autoWakeHint, SettingsWords.rememberHint, SettingsWords.wakeHint, SettingsWords.recordingHint]
+        expect("rail: toggle hints", hints.joined(separator: " / "), "wakes on launch / learns while on / listens on-device / shares the mic")
         // The room beside a 60 pt toggle and its 10 pt gap in the 182 pt control column; ConsoleToggle pins lineLimit(1).
         let sans11 = NSFont.systemFont(ofSize: 11)
         let widest = hints.map { ($0 as NSString).size(withAttributes: [.font: sans11]).width }.max() ?? 0
