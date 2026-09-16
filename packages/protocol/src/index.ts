@@ -1005,7 +1005,7 @@ export interface AudioState {
   readonly sharedWith?: readonly string[];
   /** `AVAudioApplication.shared.isInputMuted`. */
   readonly inputMuted: boolean;
-  /** A `CADefaultDeviceAggregate-*` uid is in the device list — the voice-processing unit's aggregate. */
+  /** The voice-processing unit's own aggregate (`VPAUAggregateAudioDevice-*`) is in the device list; it must be gone after stop. (`CADefaultDeviceAggregate-*` is AVAudioEngine's own and is not this.) */
   readonly aggregatePresent: boolean;
   /** Stamped by the engine: wall-clock ms when `running` was last seen going true; absent while down. */
   readonly since?: number;

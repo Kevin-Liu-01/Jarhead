@@ -150,8 +150,11 @@ test("profiler: names, rates, transports, the default pair and the built-in inpu
   assert.equal(PROFILER.aggregatePresent, false);
   assert.equal(parseAudioProfiler("not json"), undefined);
   assert.equal(parseAudioProfiler("{}"), undefined);
-  const withAggregate = parseAudioProfiler(JSON.stringify({ SPAudioDataType: [{ _items: [{ _name: "CADefaultDeviceAggregate-4242-1", coreaudio_device_input: 1, coreaudio_device_srate: 48000 }] }] }));
+  const withAggregate = parseAudioProfiler(JSON.stringify({ SPAudioDataType: [{ _items: [{ _name: "VPAUAggregateAudioDevice-0x1f2e3d4c", coreaudio_device_input: 1, coreaudio_device_srate: 48000 }] }] }));
   assert.equal(withAggregate?.aggregatePresent, true);
+  // AVAudioEngine's own default-device aggregate is present whenever the app merely runs (default in ≠ out): never the unit's.
+  const engineOnly = parseAudioProfiler(JSON.stringify({ SPAudioDataType: [{ _items: [{ _name: "CADefaultDeviceAggregate-4242-1", coreaudio_device_input: 1, coreaudio_device_srate: 48000 }] }] }));
+  assert.equal(engineOnly?.aggregatePresent, false);
 });
 
 test("doctor · Kevin's Mac today: voice processing ok, hears and speaks warn (a Bluetooth mic held; the headset narrowed), the default input held by the unit, no other clients, recording off, released judged after the next sleep, leak not measured — and the next steps name the fixes", () => {
@@ -211,13 +214,13 @@ test("doctor · released at sleep is judged asleep: the graph down with the unit
   const stopped: AudioState = { ...omit(AEC_ON_AIRPODS, "hears", "speaks", "since"), running: false, voiceProcessing: false, aggregatePresent: false };
   const ok = audioChecks({ state: stopped, settings: { recording: false }, phase: "asleep", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(ok, "released at sleep").status, "ok");
-  assert.equal(row(ok, "released at sleep").detail, "voice processing off after the last stop · no CADefaultDeviceAggregate present");
+  assert.equal(row(ok, "released at sleep").detail, "voice processing off after the last stop · no unit aggregate present");
   const unitOn = audioChecks({ state: { ...stopped, voiceProcessing: true }, settings: { recording: false }, phase: "asleep", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(unitOn, "released at sleep").status, "warn");
-  assert.equal(row(unitOn, "released at sleep").detail, "voice processing still on after the last stop · no CADefaultDeviceAggregate present");
+  assert.equal(row(unitOn, "released at sleep").detail, "voice processing still on after the last stop · no unit aggregate present");
   const aggregate = audioChecks({ state: { ...stopped, aggregatePresent: true }, settings: { recording: false }, phase: "paused", profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(aggregate, "released at sleep").status, "warn");
-  assert.match(row(aggregate, "released at sleep").detail, /a CADefaultDeviceAggregate is still present/);
+  assert.match(row(aggregate, "released at sleep").detail, /the unit's aggregate \(VPAUAggregateAudioDevice\) is still present/);
   const up = audioChecks({ state: AEC_ON_AIRPODS, settings: { recording: false }, phase: "asleep", profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(up, "released at sleep").status, "warn");
   assert.equal(row(up, "released at sleep").detail, "the graph is still up while asleep");

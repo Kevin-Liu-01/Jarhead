@@ -932,9 +932,16 @@ export interface AudioProfilerRead {
   readonly defaultOutput?: AudioProfilerDevice;
   /** The first built-in input — the mic the `hears` fix names. */
   readonly builtInInput?: AudioProfilerDevice;
-  /** A `CADefaultDeviceAggregate-*` device is listed: the voice-processing unit's aggregate is still up. */
+  /**
+   * A `VPAUAggregateAudioDevice-*` device is listed: the voice-processing unit's aggregate is still
+   * up. Not `CADefaultDeviceAggregate-*` — that one is AVAudioEngine's own default-device aggregate
+   * and is present whenever Jarhead.app merely runs on a Mac whose default input ≠ default output.
+   */
   readonly aggregatePresent: boolean;
 }
+
+/** The voice-processing unit's aggregate, by uid/name prefix (the engine's own is `CADefaultDeviceAggregate-<pid>-n`, a different thing). */
+export const UNIT_AGGREGATE_PREFIX = "VPAUAggregateAudioDevice";
 
 /** `system_profiler SPAudioDataType -json` as the rows read it; undefined when the text is not that. */
 export function parseAudioProfiler(text: string): AudioProfilerRead | undefined {
@@ -973,7 +980,7 @@ export function parseAudioProfiler(text: string): AudioProfilerRead | undefined 
     ...(defaultInput ? { defaultInput } : {}),
     ...(defaultOutput ? { defaultOutput } : {}),
     ...(builtInInput ? { builtInInput } : {}),
-    aggregatePresent: devices.some((d) => d.name.startsWith("CADefaultDeviceAggregate")),
+    aggregatePresent: devices.some((d) => d.name.startsWith(UNIT_AGGREGATE_PREFIX)),
   };
 }
 
@@ -1161,7 +1168,7 @@ export function audioChecks(i: AudioCheckInput): Check[] {
       add({
         name: "released at sleep",
         status: bad ? "warn" : "ok",
-        detail: `voice processing ${s.voiceProcessing ? "still on" : "off"} after the last stop · ${aggregate ? "a CADefaultDeviceAggregate is still present" : "no CADefaultDeviceAggregate present"}`,
+        detail: `voice processing ${s.voiceProcessing ? "still on" : "off"} after the last stop · ${aggregate ? "the unit's aggregate (VPAUAggregateAudioDevice) is still present" : "no unit aggregate present"}`,
         ...(bad ? { fix: "the unit was not released — sleep and wake once; if it stays, quit Jarhead.app" } : {}),
       });
     }
