@@ -58,6 +58,12 @@ final class WakeWordListener {
     private var startFailures = 0
     private var retryScheduled = false
     private var restartPending = false
+    /// design12 § Engine 8: whether this start pointed the input AU at the ranked microphone,
+    /// and whether a start that did so has failed since the last device change. A pin the HAL
+    /// accepts can still leave the engine unable to start (the −10875 family); the next attempt
+    /// then hears the system default instead of re-pinning the same device for ever. On `queue`.
+    private var pinnedThisStart = false
+    private var pinFailedOnce = false
 
     static let rollInterval: TimeInterval = SegmentedRecognizer.rollInterval
     /// Failed starts retried here (0.5, 1, 2, 5 s) before the gate is told; see `startDidFail`.
@@ -238,7 +244,9 @@ final class WakeWordListener {
     /// (`kAudioOutputUnitProperty_CurrentDevice`, the plain-path call the voice engine
     /// makes in `applyInputDevice`); no voice processing, no output node, nothing in the
     /// gate. Runs inside the caller's `objcTry`. Logs `hears <name> (ranked | system default)`.
+    /// After a start that failed with the pin in place, the pin is skipped until a device change.
     private func pointAtRankedMic(_ input: AVAudioInputNode) {
+        pinnedThisStart = false
         let inputs = MicInputs.enumerate()
         let systemDefault = MicInputs.systemDefaultUID()
         let ranked = MicRanking.rank(inputs, explicit: nil, lastUsed: nil, systemDefault: systemDefault)
@@ -247,9 +255,14 @@ final class WakeWordListener {
             WakeWordListener.log("hears \(defaultName) (system default)")
             return
         }
+        guard !pinFailedOnce else {
+            WakeWordListener.log("hears \(defaultName) (system default; ranked mic start failed)")
+            return
+        }
         var dev = choice.id
         let err = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
         if err == noErr {
+            pinnedThisStart = true
             WakeWordListener.log("hears \(choice.name) (ranked)")
         } else {
             WakeWordListener.log("hears \(defaultName) (system default; could not select \(choice.name): \(err))")
@@ -263,6 +276,10 @@ final class WakeWordListener {
     /// drops), so the two loops never race. A raise caught by the shim is named as such.
     private func startDidFail(_ error: Error, formats: String) {
         startFailures += 1
+        if pinnedThisStart, !pinFailedOnce {
+            pinFailedOnce = true
+            WakeWordListener.log("start failed with the ranked mic pinned; the next attempt hears the system default")
+        }
         let what: String
         if let raised = error as? ObjCException {
             what = "AVFoundation raised \(raised.name): \(raised.reason)"
@@ -303,6 +320,8 @@ final class WakeWordListener {
     private func restartAfterConfigurationChange() {
         guard wanted, !restartPending else { return }
         restartPending = true
+        // A new device pair: the ranked mic gets its pin tried again.
+        pinFailedOnce = false
         let before = inputFormatText()
         if running { stopLocked() }
         try? objcTry { self.engine.reset() }
