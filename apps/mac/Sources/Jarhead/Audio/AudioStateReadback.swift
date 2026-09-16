@@ -86,8 +86,14 @@ struct AudioStateReadback: Equatable {
     var sharedWith: [String]?
     /// `AVAudioApplication.shared.isInputMuted`.
     var inputMuted = false
-    /// A `CADefaultDeviceAggregate-*` uid in `MicInputs.enumerate()` (the unit's own aggregate).
+    /// The voice-processing unit's own aggregate (`VPAUAggregateAudioDevice-0x…`) is in the
+    /// device list — it appears with the unit and must be gone after stop. This is the field the
+    /// wire frame (`AudioState.aggregatePresent`) and the doctor's `released at sleep` read.
     var aggregatePresent = false
+    /// AVAudioEngine's own default-device aggregate (`CADefaultDeviceAggregate-<pid>-n`): present
+    /// whenever the engine object exists on a Mac whose default input ≠ default output, unit or
+    /// no unit. A fact to print, never a pin — not on the wire.
+    var engineAggregatePresent = false
 
     init() {}
 
@@ -106,12 +112,42 @@ struct AudioStateReadback: Equatable {
 
     /// One log line: the frame as `pnpm jarhead status` would print its first row.
     var summary: String {
-        guard running else { return "audio state: stopped, voice processing \(voiceProcessing ? "on" : "off"), aggregate \(aggregatePresent ? "present" : "gone")" }
+        guard running else {
+            let engineWord = engineAggregatePresent ? "present" : "gone"
+            return "audio state: stopped, voice processing \(voiceProcessing ? "on" : "off"), unit aggregate \(aggregatePresent ? "present" : "gone"), engine aggregate \(engineWord)"
+        }
         let vp = voiceProcessing ? "on" : (recording ? "off · recording" : "off · fallback")
         let guardWord = guardOn ? "guard on" : "guard off"
         let hearsText = hears?.text ?? "none"
         let speaksText = speaks?.text ?? "none"
         return "audio state: voice processing \(vp) · \(guardWord) · rung \(rung) \(wiring) · hears \(hearsText) · speaks \(speaksText) · \(speaksState)"
+    }
+}
+
+/// The two aggregates a running graph can put in the device list, told apart by uid prefix.
+enum AudioAggregates {
+    /// AVAudioEngine's own default-device aggregate: lives with the engine object (default in ≠ out).
+    static let enginePrefix = "CADefaultDeviceAggregate"
+    /// The voice-processing unit's aggregate: appears with the unit, must go at stop.
+    static let unitPrefix = "VPAUAggregateAudioDevice"
+
+    /// Any device in `kAudioHardwarePropertyDevices` whose uid starts with `prefix`.
+    static func present(_ prefix: String) -> Bool {
+        AudioEngine.allDeviceIDs().contains { AudioEngine.deviceUID($0)?.hasPrefix(prefix) == true }
+    }
+}
+
+/// The plain path's device set failed (`AudioEngine.pinInputDevice`) — the rung fails and
+/// the ladder moves on to the system default microphone.
+enum InputDeviceError: Error, LocalizedError {
+    case noUnit
+    case select(name: String, status: OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .noUnit: return "input node has no audio unit"
+        case let .select(name, status): return "could not select mic device \(name) (\(status))"
+        }
     }
 }
 

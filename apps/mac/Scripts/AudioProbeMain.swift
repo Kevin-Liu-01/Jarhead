@@ -59,9 +59,9 @@ enum ProbeWords {
     static let jarheadBundle = "com.kevinliu.jarhead"
     /// AVAudioEngine's own default-device aggregate (default input ≠ default output): lives with
     /// the engine object, unit or no unit — NOT the voice-processing unit's.
-    static let enginePrefix = "CADefaultDeviceAggregate"
+    static let enginePrefix = AudioAggregates.enginePrefix
     /// The voice-processing unit's aggregate: appears with the unit, must go at stop.
-    static let unitPrefix = "VPAUAggregateAudioDevice"
+    static let unitPrefix = AudioAggregates.unitPrefix
     static let stateFile = "audio-probe.json"
     static let settingsFile = "settings.json"
 }
@@ -460,15 +460,17 @@ final class AudioProbe {
         let unit = appeared.filter { $0.hasPrefix(ProbeWords.unitPrefix) }
         checks.check("recording: no voice-processing aggregate (\(ProbeWords.unitPrefix)-*) appeared", unit.isEmpty, "appeared \(unit)")
         engineAggregateInfo(appeared, frame: f)
-        checks.check("recording: rung 1–2 (plain)", (1 ... 2).contains(f.rung), "rung \(f.rung) \(f.wiring)")
+        checks.check("recording: rung 1–3 (plain)", (1 ... 3).contains(f.rung), "rung \(f.rung) \(f.wiring)")
+        checks.check("recording: hears is a microphone, not the engine's aggregate", !hearsAggregate, "hears \(f.hears?.uid ?? "nil")")
         checks.check("recording: duck knobs absent", f.duckLevel == nil && f.agc == nil, "duck \(f.duckLevel.map(String.init) ?? "nil") agc \(f.agc.map(String.init) ?? "nil")")
     }
 
     /// The engine's own aggregate is a fact to print, not a pin: it appears with the first plain
-    /// attempt too and lives with the `AVAudioEngine` object (the frame's `aggregatePresent` keys on it).
+    /// attempt too and lives with the `AVAudioEngine` object (the frame's `engineAggregatePresent`;
+    /// `aggregatePresent` is the unit's).
     private func engineAggregateInfo(_ appeared: [String], frame f: AudioStateReadback) {
         let engine = appeared.filter { $0.hasPrefix(ProbeWords.enginePrefix) }
-        checks.info("engine's own aggregate (\(ProbeWords.enginePrefix)-<pid>-n, default in ≠ default out): \(engine.isEmpty ? "none" : engine.joined(separator: ", ")) · frame aggregatePresent \(f.aggregatePresent)")
+        checks.info("engine's own aggregate (\(ProbeWords.enginePrefix)-<pid>-n, default in ≠ default out): \(engine.isEmpty ? "none" : engine.joined(separator: ", ")) · frame engineAggregatePresent \(f.engineAggregatePresent) · unit aggregatePresent \(f.aggregatePresent)")
     }
 
     /// `mic route (audio running): … ; active <name>, follows …` → the name; nil when no such line.
@@ -547,7 +549,8 @@ final class AudioProbe {
             say("after stop: \(f?.summary ?? "no frame")")
             checks.check("\(mode): after stop isVoiceProcessingEnabled false", f != nil && f?.running == false && f?.voiceProcessing == false, "running \(f?.running ?? false), voiceProcessing \(f?.voiceProcessing ?? false)")
             checks.check("\(mode): after stop the unit's aggregate is gone", unitLeft.isEmpty, "still present \(unitLeft)")
-            checks.info("after stop the engine's own aggregate \(engineLeft.isEmpty ? "is gone" : "stays while the AVAudioEngine object lives: \(engineLeft.joined(separator: ", "))") · frame aggregatePresent \(f?.aggregatePresent ?? false)")
+            checks.check("\(mode): after stop the frame's aggregatePresent (the unit's) is false", f?.aggregatePresent == false, "aggregatePresent \(f?.aggregatePresent ?? false)")
+            checks.info("after stop the engine's own aggregate \(engineLeft.isEmpty ? "is gone" : "stays while the AVAudioEngine object lives: \(engineLeft.joined(separator: ", "))") · frame engineAggregatePresent \(f?.engineAggregatePresent ?? false)")
         } else {
             checks.check("asleep: no voice-processing aggregate appeared", unitLeft.isEmpty, "present \(unitLeft)")
         }
