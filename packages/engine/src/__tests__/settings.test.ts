@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_AUTOMATIONS, DEFAULT_SETTINGS, SETTINGS_KEYS } from "@jarhead/protocol";
+import { DEFAULT_AUDIO, DEFAULT_AUTOMATIONS, DEFAULT_SETTINGS, SETTINGS_KEYS, type AudioState } from "@jarhead/protocol";
 import { readConfig } from "@jarhead/core";
 import { Engine } from "../engine.ts";
 import { FakeMemoryService } from "./world.ts";
@@ -114,10 +114,10 @@ test("brain `local` round-trips through settings.json with an empty model (best 
   assert.equal(picked["brainModel"], "qwen3.5:27b");
   assert.equal("brainBaseUrl" in picked, false);
   // The contract's pin: the local brain rides on brain / brainModel / brainBaseUrl and adds no key.
-  // `automations` (design11, 2026-09-14) is the one key added since: the automations block (switch, unattended kinds, quiet hours, recipes).
+  // `automations` (design11, 2026-09-14) and `audio` (design12, 2026-09-16) are the two keys added since: the automations block (switch, unattended kinds, quiet hours, recipes) and the audio block (Recording).
   assert.deepEqual(
     [...SETTINGS_KEYS].sort(),
-    ["accent", "autoWake", "automations", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
+    ["accent", "audio", "autoWake", "automations", "brain", "brainBaseUrl", "brainModel", "effort", "idleSleepMinutes", "language", "ledgerRetentionDays", "memory", "micDeviceId", "observe", "onboarded", "orbHome", "orbPosition", "reflexes", "shotsRetentionDays", "threadOverflow", "threads", "typedWakes", "voice", "wake", "warmThreads"],
   );
   assert.ok(!SETTINGS_KEYS.some((k) => /local/i.test(k)));
 });
@@ -139,4 +139,75 @@ test("set-settings-migration: a settings.json from before the automations block 
   assert.deepEqual(bare(stateDir).snapshot().settings.automations.quietHours, { from: "22:00", to: "07:00" });
   engine.updateSettings({ automations: null });
   assert.deepEqual(engine.snapshot().settings.automations.recipes.length, 1, "null on a required block keeps its value");
+});
+
+// ---- design12 · V6: the audio block's migration and the read-back frame in the snapshot.
+
+test("V6 · a settings.json from before 2026-09-16 (no `audio`) loads DEFAULT_AUDIO and is not rewritten; `audio: {}` merges recording: false; a patch persists the block whole; null keeps it", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-audio-"));
+  const path = join(stateDir, "settings.json");
+  const before = JSON.stringify({ voice: "marin", wake: { enabled: false } }); // before 2026-09-16: no `audio`
+  writeFileSync(path, before);
+  const engine = bare(stateDir);
+  assert.deepEqual(engine.snapshot().settings.audio, DEFAULT_AUDIO);
+  assert.deepEqual(DEFAULT_AUDIO, { recording: false }, "Recording is off until Kevin turns it on");
+  assert.equal(readFileSync(path, "utf8"), before, "reading the default writes nothing — a missing known key is not unknown");
+  assert.ok((SETTINGS_KEYS as readonly string[]).includes("audio"), "the cover pin compiles only with the key listed");
+
+  // An empty block (a hand-edited file) merges field-wise.
+  writeFileSync(path, JSON.stringify({ voice: "marin", audio: {} }));
+  assert.deepEqual(bare(stateDir).snapshot().settings.audio, { recording: false });
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { voice: "marin", audio: {} }, "still not rewritten");
+
+  // The first set-settings after lands the block in the file, whole.
+  engine.updateSettings({ audio: { recording: true } });
+  const saved = JSON.parse(readFileSync(path, "utf8")) as { audio: { recording: boolean } };
+  assert.deepEqual(saved.audio, { recording: true });
+  assert.equal(bare(stateDir).snapshot().settings.audio.recording, true, "survives a relaunch");
+  // A partial block from an older writer merges over the default, never over undefined.
+  engine.updateSettings({ audio: {} as never });
+  assert.deepEqual(engine.snapshot().settings.audio, { recording: false });
+  engine.updateSettings({ audio: { recording: true } });
+  engine.updateSettings({ audio: null });
+  assert.equal(engine.snapshot().settings.audio.recording, true, "null on a required block keeps its value");
+});
+
+const RECORDING_STATE: AudioState = {
+  running: true,
+  voiceProcessing: false,
+  rung: 1,
+  wiring: "hardware",
+  hears: { name: "MacBook Pro Microphone", uid: "BuiltInMicrophoneDevice", rate: 48000, channels: 1, transport: "built-in" },
+  speaks: { name: "Kevin's AirPods Pro", uid: "AP-out", rate: 48000, channels: 2, transport: "bluetooth" },
+  tapFormat: "48000 Hz ×1 Float32",
+  recording: true,
+  fallback: false,
+  guardOn: true,
+  guardTailMs: 420,
+  guardHeldMs: 3200,
+  gated: 12,
+  chunks: 340,
+  breakthroughs: 1,
+  sharedWith: ["QuickTime Player"],
+  inputMuted: false,
+  aggregatePresent: false,
+};
+
+test("reportAudioState keeps the app's frame in the snapshot with `since` stamped on the first running frame, coalesces equal frames, and clears on undefined (the app disconnected)", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "jh-audio-state-"));
+  const engine = bare(stateDir);
+  assert.equal(engine.snapshot().audioState, undefined, "absent until the app reports");
+  engine.reportAudioState(RECORDING_STATE);
+  const first = engine.snapshot().audioState;
+  assert.ok(first);
+  assert.equal(first.recording, true);
+  assert.equal(first.hears?.name, "MacBook Pro Microphone");
+  assert.equal(typeof first.since, "number", "stamped when running went true");
+  engine.reportAudioState({ ...RECORDING_STATE, gated: 13 });
+  assert.equal(engine.snapshot().audioState?.since, first.since, "the same start keeps its since");
+  engine.reportAudioState({ ...RECORDING_STATE, running: false, guardOn: false, gated: 13 });
+  assert.equal(engine.snapshot().audioState?.since, undefined, "down: no since");
+  engine.reportAudioState(undefined);
+  assert.equal(engine.snapshot().audioState, undefined, "the app left");
+  assert.equal(engine.snapshot().settings.audio.recording, false, "the frame is state, never a setting: Recording stays as set-settings left it");
 });
