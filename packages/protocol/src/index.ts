@@ -692,6 +692,21 @@ export interface WakeSettings {
   readonly auth: WakeAuth;
 }
 
+/**
+ * design12: the audio graph's one user decision. Nested like `wake`: merged field-wise at
+ * load, so a settings.json from before the block still validates.
+ */
+export interface AudioSettings {
+  /**
+   * Recording a demo: no voice-processing unit, the ranked mic, the software echo guard;
+   * other apps keep their sound and every recorder gets a plain mic. Loud in the Console,
+   * the island and the status menu while on.
+   */
+  readonly recording: boolean;
+}
+
+export const DEFAULT_AUDIO: AudioSettings = { recording: false };
+
 export interface Settings {
   readonly voice: string;
   readonly brain: BrainKind;
@@ -702,7 +717,7 @@ export interface Settings {
   readonly effort: Effort;
   /** First-run onboarding finished (keys, brain, permissions, wake word). */
   readonly onboarded: boolean;
-  /** getUserMedia deviceId; undefined = system default. */
+  /** Core Audio device UID (not a getUserMedia id); undefined = ranked. */
   readonly micDeviceId?: string;
   readonly idleSleepMinutes: number;
   /** Start listening on launch (ignored while the wake word gate is enabled). */
@@ -736,6 +751,8 @@ export interface Settings {
   readonly warmThreads: number;
   /** Alarms, timers, reminders, routines and watchers the daemon carries out while asleep: the master switch, the unattended kinds, quiet hours, the recipes. */
   readonly automations: AutomationSettings;
+  /** The audio graph's one decision (design12): Recording on/off. The daemon keeps it; the app's graph reads it. */
+  readonly audio: AudioSettings;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -766,6 +783,7 @@ export const DEFAULT_SETTINGS: Settings = {
   threadOverflow: "supersede",
   warmThreads: 2,
   automations: DEFAULT_AUTOMATIONS,
+  audio: DEFAULT_AUDIO,
 };
 
 /**
@@ -778,6 +796,7 @@ export const SETTINGS_KEYS = [
   "voice", "brain", "brainModel", "brainBaseUrl", "effort", "onboarded", "micDeviceId", "idleSleepMinutes", "autoWake", "orbPosition", "wake", "reflexes", "orbHome",
   "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads",
   "automations", // design11: the automations block joins SETTINGS_KEYS so settings.json keeps it
+  "audio", // design12: the audio block joins SETTINGS_KEYS so settings.json keeps it
 ] as const satisfies readonly (keyof Settings)[];
 type SettingsKeysCover = Record<(typeof SETTINGS_KEYS)[number], 0>;
 const settingsKeysCoverEverything: Record<keyof Settings, 0> = {} as SettingsKeysCover;
@@ -935,6 +954,87 @@ export interface AudioLevels {
   readonly output: number;
 }
 
+/** One Core Audio device as the app read it. `transport` is the HAL's word: bluetooth · built-in · hdmi · continuity · aggregate · usb (a four-char code is also accepted by the readers). */
+export interface AudioDeviceInfo {
+  readonly name: string;
+  readonly uid: string;
+  /** Nominal sample rate in Hz — on a Bluetooth headset the tell for hands-free (16 000 / 8 000) versus AAC (44 100+). */
+  readonly rate: number;
+  readonly channels: number;
+  readonly transport: string;
+}
+
+/**
+ * design12: the app's audio graph as it read itself back (`AudioStateReadback` in Swift), plain
+ * strings and numbers only. Sent app → daemon as the `audio-state` frame on start, stop, a route
+ * change and every 5 s with the counters (≤ 1 Hz, coalesced to changes); kept in the snapshot
+ * while the app is connected. The daemon does nothing with it but keep it: `status`, the doctor
+ * and the Console read it. Nothing here is a setting — `Settings.audio` is.
+ */
+export interface AudioState {
+  readonly running: boolean;
+  /** `input.isVoiceProcessingEnabled`, read after start / after stop. */
+  readonly voiceProcessing: boolean;
+  /** AUVoiceIOOtherAudioDuckingLevel: 0 default · 10 min · 20 mid · 30 max; absent when the unit is off. */
+  readonly duckLevel?: number;
+  readonly advancedDucking?: boolean;
+  readonly agc?: boolean;
+  readonly bypassed?: boolean;
+  /** The rung of the start ladder that won (1-based); 0 when the graph is down. */
+  readonly rung: number;
+  /** The output wiring word of that rung: automatic · input-rate · hardware. */
+  readonly wiring: string;
+  /** What the graph listens to: the system default input under echo cancellation, the ranked mic on the plain path. */
+  readonly hears?: AudioDeviceInfo;
+  /** The default output — its `rate` is the hands-free tell. */
+  readonly speaks?: AudioDeviceInfo;
+  readonly tapFormat: string;
+  /** `Settings.audio.recording` as the graph applied it. */
+  readonly recording: boolean;
+  /** The last rung won: echo cancellation was refused and the plain graph runs guarded. */
+  readonly fallback: boolean;
+  readonly guardOn: boolean;
+  readonly guardTailMs: number;
+  /** Total milliseconds the guard has held the wire since start (the `held 3.2 s` figure); absent from a build that does not count it. */
+  readonly guardHeldMs?: number;
+  /** Chunks zero-filled / chunks sent / break-throughs since start. */
+  readonly gated: number;
+  readonly chunks: number;
+  readonly breakthroughs: number;
+  /** Names of other processes running input on `hears` (the app maps bundle ids to names); undefined = the HAL cannot say, never []. */
+  readonly sharedWith?: readonly string[];
+  /** `AVAudioApplication.shared.isInputMuted`. */
+  readonly inputMuted: boolean;
+  /** A `CADefaultDeviceAggregate-*` uid is in the device list — the voice-processing unit's aggregate. */
+  readonly aggregatePresent: boolean;
+  /** Stamped by the engine: wall-clock ms when `running` was last seen going true; absent while down. */
+  readonly since?: number;
+}
+
+/** The wire's shape check for an `audio-state` frame: the booleans and counters the readers index on must be there and typed; a frame that fails is dropped, never kept. */
+export function isAudioState(value: unknown): value is AudioState {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const bool = (k: string): boolean => typeof v[k] === "boolean";
+  const num = (k: string): boolean => typeof v[k] === "number" && Number.isFinite(v[k] as number);
+  const optBool = (k: string): boolean => v[k] === undefined || typeof v[k] === "boolean";
+  const optNum = (k: string): boolean => v[k] === undefined || num(k);
+  const device = (k: string): boolean => {
+    const d = v[k];
+    if (d === undefined) return true;
+    if (typeof d !== "object" || d === null) return false;
+    const o = d as Record<string, unknown>;
+    return typeof o["name"] === "string" && typeof o["uid"] === "string" && typeof o["rate"] === "number" && typeof o["channels"] === "number" && typeof o["transport"] === "string";
+  };
+  if (!(bool("running") && bool("voiceProcessing") && bool("recording") && bool("fallback") && bool("guardOn") && bool("inputMuted") && bool("aggregatePresent"))) return false;
+  if (!(num("rung") && num("guardTailMs") && num("gated") && num("chunks") && num("breakthroughs"))) return false;
+  if (!(typeof v["wiring"] === "string" && typeof v["tapFormat"] === "string")) return false;
+  if (!(optNum("duckLevel") && optBool("advancedDucking") && optBool("agc") && optBool("bypassed") && optNum("guardHeldMs") && optNum("since"))) return false;
+  if (!(device("hears") && device("speaks"))) return false;
+  const shared = v["sharedWith"];
+  return shared === undefined || (Array.isArray(shared) && shared.every((s) => typeof s === "string"));
+}
+
 export type Accent = "american" | "british" | "none";
 export const ACCENTS: readonly Accent[] = ["american", "british", "none"];
 /** GPT-Live-1's built-in voices (mirror of `BuiltInVoice` in @jarhead/live; a type-level test keeps them equal). All speak English. */
@@ -999,6 +1099,8 @@ export interface Snapshot {
   readonly nextFire?: { readonly id: string; readonly kind: AutomationKind; readonly name: string; readonly at: number };
   /** The recipes the shell gate now rates `confirm` (by name): the Console's `asks` badge, never pickable for a row. Re-judged at every snapshot. */
   readonly recipesAsking: readonly string[];
+  /** design12: the app's audio graph as it last read itself back; absent when no app is connected. */
+  readonly audioState?: AudioState;
 }
 
 /** `dock`: Jarhead twice in the Dock (a recent tile next to the pin, or two pins); the engine's read-only audit raises it, Fix the Dock repairs it. */
@@ -1326,7 +1428,9 @@ export type LedgerRow =
   | { readonly at: number; readonly type: "automation.missed"; readonly id: string; readonly dueAt: number; readonly lateMs?: number; readonly skipped?: boolean; readonly why: MissedWhy }
   | { readonly at: number; readonly type: "recipe.set"; readonly recipe: ShellRecipe; readonly by: "kevin" | "brain" }
   | { readonly at: number; readonly type: "recipe.trashed"; readonly name: string }
-  | { readonly at: number; readonly type: "recipe.restored"; readonly name: string };
+  | { readonly at: number; readonly type: "recipe.restored"; readonly name: string }
+  // ---- audio (design12): one row per Kevin turn while the software echo guard holds the wire (Recording, or the fallback rung) — the counters as the app last reported them, so a self-talk loop reads as rising `gated` with no `breakthroughs`.
+  | { readonly at: number; readonly type: "audio.guard"; readonly sessionId?: string; readonly tailMs: number; readonly heldMs?: number; readonly gated: number; readonly chunks: number; readonly breakthroughs: number; readonly fallback: boolean };
 
 // ------------------------------------------------------------ type guards ---
 

@@ -35,6 +35,8 @@ import {
   AUTOMATION_SLEEP_GAP_MS,
   AUTOMATION_GRACE_MS,
   DEFAULT_AUTOMATIONS,
+  DEFAULT_AUDIO,
+  isAudioState,
   automationKind,
   grantOf,
   isEngineCommand,
@@ -43,10 +45,13 @@ import {
   type Automation,
   type AutomationEvent,
   type AutomationSettings,
+  type AudioSettings,
+  type AudioState,
   type ClockTime,
   type LedgerRow,
   type Permissions,
   type Settings,
+  type SettingsPatch,
   type SetupStatus,
   type ShellRecipe,
   type Thread,
@@ -402,4 +407,64 @@ test("a recipe is never deleted: ShellRecipe carries trashedAt for Move to Trash
   assert.equal(recipeNamed([tests, binned], "purge", "any"), binned);
   assert.equal(recipeNamed([tests, binned], " tests "), tests, "the name is trimmed");
   assert.ok(isEngineCommand({ type: "recipe.restore", name: "purge" }));
+});
+
+// ---- design12: the audio block and the app's read-back frame.
+
+test("SETTINGS_KEYS lists audio once and DEFAULT_SETTINGS.audio is the contract's default: Recording off; a patch may carry the whole block or null", () => {
+  assert.equal((SETTINGS_KEYS as readonly string[]).filter((k) => k === "audio").length, 1, "the audio block joins SETTINGS_KEYS so settings.json keeps it");
+  const a: AudioSettings = (DEFAULT_SETTINGS as Settings).audio;
+  assert.deepEqual(a, { recording: false });
+  assert.deepEqual(a, DEFAULT_AUDIO);
+  assert.equal(Object.keys(a).length, 1, "one decision — the ducking level is a constant, not a setting");
+  const whole: SettingsPatch = { audio: { recording: true } };
+  const cleared: SettingsPatch = { audio: null };
+  assert.equal(whole.audio?.recording, true);
+  assert.equal(cleared.audio, null);
+});
+
+/** A frame as the app sends it on Kevin's Mac today: awake on AirPods, the unit following the headset mic. */
+const AEC_ON_AIRPODS: AudioState = {
+  running: true,
+  voiceProcessing: true,
+  duckLevel: 10,
+  advancedDucking: true,
+  agc: true,
+  bypassed: false,
+  rung: 2,
+  wiring: "input-rate",
+  hears: { name: "Kevin's AirPods Pro", uid: "AP-in", rate: 24000, channels: 1, transport: "bluetooth" },
+  speaks: { name: "Kevin's AirPods Pro", uid: "AP-out", rate: 16000, channels: 2, transport: "bluetooth" },
+  tapFormat: "24000 Hz ×9 Float32",
+  recording: false,
+  fallback: false,
+  guardOn: false,
+  guardTailMs: 0,
+  gated: 0,
+  chunks: 340,
+  breakthroughs: 0,
+  sharedWith: [],
+  inputMuted: false,
+  aggregatePresent: true,
+};
+
+test("isAudioState accepts the app's frame (devices, counters and the optional knobs) and refuses a malformed one — a missing boolean, a string counter, a device without a rate, a non-string sharer", () => {
+  assert.ok(isAudioState(AEC_ON_AIRPODS));
+  const { hears: _h, speaks: _s, sharedWith: _w, duckLevel: _d, ...bare } = AEC_ON_AIRPODS;
+  assert.ok(isAudioState(bare), "the devices, the sharers and the knobs are optional (the graph may be down; the HAL may not say)");
+  assert.equal(isAudioState(undefined), false);
+  assert.equal(isAudioState("running"), false);
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, running: "yes" }), false, "a boolean spelled as a string");
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, gated: "12" }), false, "a counter spelled as a string");
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, rung: Number.NaN }), false, "NaN is not a rung");
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, hears: { name: "x", uid: "y" } }), false, "a device without its rate and transport");
+  assert.equal(isAudioState({ ...AEC_ON_AIRPODS, sharedWith: [42] }), false, "sharers are names");
+  const { guardOn: _g, ...noGuard } = AEC_ON_AIRPODS;
+  assert.equal(isAudioState(noGuard), false, "guardOn is what the ledger line keys on");
+});
+
+test("the audio.guard ledger row carries the counters the self-talk fuse reads, and readers fall through on it like any other type", () => {
+  const row: LedgerRow = { at: 1, type: "audio.guard", sessionId: "sess_a", tailMs: 420, heldMs: 3200, gated: 12, chunks: 340, breakthroughs: 1, fallback: false };
+  assert.equal(row.type, "audio.guard");
+  assert.ok(JSON.stringify(row).length < 200, "one row per turn stays small");
 });
