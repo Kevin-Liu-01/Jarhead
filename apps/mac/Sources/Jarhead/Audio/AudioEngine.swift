@@ -5,9 +5,16 @@ import Foundation
 
 /// Microphone in, speaker out, both PCM16 mono 24 kHz on the wire.
 ///
-/// Voice processing is enabled on the input node BEFORE the engine starts so the
-/// system echo canceller removes Jarhead's own voice from the mic. The Live model is
-/// full duplex: without this it hears itself and answers itself.
+/// By default (`VoiceProcessingPolicy.aec`) voice processing is enabled on the input
+/// node BEFORE the engine starts so the system echo canceller removes Jarhead's own
+/// voice from the mic — the Live model is full duplex: without this it hears itself and
+/// answers itself. The moment it is switched on the unit is told to duck other apps at
+/// the least macOS allows and only while a voice is present (`VoiceProcessingKnobs`),
+/// and it is released at every stop, so nothing lingers after Jarhead sleeps. With
+/// Recording on (`VoiceProcessingPolicy.recording`, `setPolicy`) the plain graph runs
+/// on the ranked microphone and the software echo guard (`EchoGuard`) holds the wire
+/// while he speaks. What the graph is actually doing is read back as an
+/// `AudioStateReadback` (`onAudioState`) — never assumed.
 ///
 /// Call `start()` only once microphone permission is known to be granted.
 final class AudioEngine {

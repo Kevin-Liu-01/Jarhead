@@ -90,7 +90,13 @@ final class EchoGuard: @unchecked Sendable {
     func judge(mono: UnsafePointer<Float>, frames: Int, sampleRate: Double) -> EchoGuardModel.Verdict {
         guard frames > 0, sampleRate > 0 else { return .pass }
         lock.lock()
-        guard var m = model, !frozenFlag else { lock.unlock(); return .pass }
+        guard var m = model else { lock.unlock(); return .pass }
+        if frozenFlag {
+            // Muted: the chunk still goes out (as the HAL's zeros); it counts, it is not judged.
+            chunks += 1
+            lock.unlock()
+            return .pass
+        }
         let wasHeld = m.isHeld
         let now = CFAbsoluteTimeGetCurrent()
         let slice = max(1, Int(sampleRate * EchoGuardModel.sliceSeconds))
