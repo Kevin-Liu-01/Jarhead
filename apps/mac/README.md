@@ -465,15 +465,46 @@ the chime still fire. Bundle-only (`runsAsBundle`); the harness scripts skip it.
 
 `AVAudioEngine` with **voice processing enabled on the input node** before start,
 so the system echo canceller removes Jarhead's own voice from the mic (the model is
-full duplex and would otherwise hear itself). The graph is tried in four
-configurations (voice processing with automatic / input-rate / hardware output
-wiring, then without voice processing) because VoiceIO refuses to initialise
-(-10875) with some devices unless mixer → output runs at the input rate. The tap
-receives 2–9 channels on mic arrays; the loudest channel is picked and downmixed
+full duplex and would otherwise hear itself). The graph walks a ladder
+(`VoiceProcessingPolicy.attempts`): with echo cancellation, voice processing with
+automatic / input-rate / hardware output wiring, then the plain graph guarded —
+because VoiceIO refuses to initialise (-10875) with some devices unless mixer → output
+runs at the input rate; with Recording on, the plain rungs only. The rung that came up
+is remembered (`winningRung`) so a device change does not re-walk the refused rungs. The
+tap receives 2–9 channels on mic arrays; the loudest channel is picked and downmixed
 to mono, then converted to 24 kHz Int16 in 100 ms chunks, RMS reported at ≤ 10 Hz.
 Speaker frames are converted to Float32 and scheduled on an `AVAudioPlayerNode`;
 `flush` stops the player and drops the backlog. Audio runs only while a session is
 open and the mic is granted.
+
+**What the unit is told, and when it goes (design12).** The moment voice processing is
+switched on — inside the same `objcTry`, while the engine is stopped — `VoiceProcessingKnobs`
+sets the ducking of other apps to `.min` and *advanced* (only while a voice is present), AGC
+on and bypass off, and reads them back in both spellings (the AVFAudio properties and the raw
+AU property 2108) into the status line. The unit is released (`setVoiceProcessingEnabled(false)`)
+at every stop and teardown, so nothing ducks or holds a headset microphone after Jarhead sleeps.
+`Settings › Audio › Recording` (`settings.audio.recording`, `setPolicy`) picks the plain graph
+instead: the ranked microphone, no unit, and the **software echo guard** (`EchoGuard` over the
+pure `EchoGuardModel`) zero-filling the wire while Jarhead is audible plus a tail sized for the
+output's latency. What the graph is actually doing is read back as an `AudioStateReadback`
+(`onAudioState`: the knobs, the rung, `hears`/`speaks` with their nominal rates — the
+hands-free tell on a headset — the guard's counters, who else runs input on the mic) and
+forwarded to the daemon as the `audio-state` frame for `pnpm jarhead status` and `doctor`.
+The wake listener (`Wake/WakeWordListener.swift`) points its own input unit at the ranked
+microphone, so a headset is not held while Jarhead merely waits for his name. Read
+`docs/AUDIO.md` for the behaviour table and the AirPods case.
+
+**Reading it back without the app.** `Scripts/duck-probe.sh` opens with the V4 pure sections
+(the guard's machine, the ladder, the constants — no TCC). `Scripts/audio-probe.sh` builds the
+graph as the app would in `AUDIO_PROBE_MODE=aec|recording|asleep|private` inside its own
+`AudioProbe.app` (its TCC identity; `AUDIO_PROBE_DIRECT=1` borrows the terminal's grant) and
+prints `check:` lines and `checks: N ok, M FAIL`, writing `~/.jarhead/audio-probe.json`;
+`--test` is what `pnpm jarhead doctor --test-audio` runs and plays a chime only with
+`AUDIO_PROBE_PLAY=1`. `Scripts/recorder-probe.sh` (a recorder beside the graph, the guard's
+tail leak) and `Scripts/duck-leak-probe.sh` (other apps' level under the unit, through a
+macOS 14.2 process tap) play sound and need the same variable. On this Mac (2026-09-16):
+`CADefaultDeviceAggregate-<pid>-n` is AVAudioEngine's own default-device aggregate, alive
+with the engine object; the unit's is `VPAUAggregateAudioDevice-0x…`, gone at stop.
 
 **Nothing on the audio path may abort the process.** AVFoundation reports graph
 mistakes as Objective-C exceptions, which Swift cannot catch: `installTap` with a

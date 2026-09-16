@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Info.plist of the minimal AudioProbe.app wrapper that Scripts/audio-probe.sh builds
+       around the probe binary (the ear-probe mould): launched through `open` it is its own
+       responsible process for TCC and prompts once, by name, for the microphone — a bare
+       command-line tool would borrow the terminal's grant instead. Signed with the same
+       local identity as Jarhead.app when one exists, so the grant survives rebuilds. -->
+  <key>CFBundleIdentifier</key>
+  <string>com.kevinliu.jarhead.audio-probe</string>
+  <key>CFBundleName</key>
+  <string>audio-probe</string>
+  <key>CFBundleExecutable</key>
+  <string>audio-probe</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>The audio probe opens the microphone for a few seconds to read the audio graph's state back; nothing is recorded or sent anywhere.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>The asleep mode starts the wake listener's engine to read which microphone it hears through; recognition stays on this Mac.</string>
+</dict>
+</plist>

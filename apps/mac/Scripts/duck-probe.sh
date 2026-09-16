@@ -2,8 +2,14 @@
 # The barge-in duck and the microphone ranking, without the app or the daemon: feeds
 # synthetic 100 ms tap buffers into Audio/AudioEngine.swift's `BargeInDuck` and prints
 # speech onset → −20 dB per onset, the restore timings, and this Mac's input devices in
-# `MicRanking` order (read-only; nothing is played, recorded or changed).
-#   Scripts/duck-probe.sh                 # 3 runs × 5 scenarios, a line per event
+# `MicRanking` order (read-only; nothing is played, recorded or changed). design12 (V4): it
+# opens with the pure sections — `EchoGuardModel` (hold on the first slice after output,
+# release at audibleUntil + tail, no break-through in the first 2 s, +12 dB for 120 ms breaks
+# through, a loud slice never teaches the floor, flush shortens the window, NaN is silence,
+# the counters), `EchoGuard` (detached / attached / frozen) and `VoiceProcessingPolicy` (the
+# ladder per policy, the constants, `firstRung`, the running line, the state words) — one
+# `check: <section> · <name> ok` line each, then `check: pure sections N ok, 0 FAIL`.
+#   Scripts/duck-probe.sh                 # V4 sections, then 3 runs × 5 scenarios, a line per event
 #   DUCK_PROBE_RUNS=5 DUCK_PROBE_LIVE_MS=1200 Scripts/duck-probe.sh
 #   Scripts/duck-probe.sh --json          # the report as one JSON line (what `pnpm jarhead bench` reads)
 #   Scripts/duck-probe.sh --build-only

@@ -147,12 +147,58 @@ pnpm build:hands              # Swift helper → build/jarhead-hands
 apps/mac/Scripts/console-preview.sh [scenario] [out.png]   # Console with fake data (fixtures in apps/mac/Scripts/fixtures)
 apps/mac/Scripts/onboarding-preview.sh [step] [out.png]    # Setup window with fake data (welcome … done)
 scripts/make-readme-shots.sh [--only console|orb|onboarding] [--skip-build] [--audit]   # every README screenshot into docs/media, then an audit of README.md's image links
+apps/mac/Scripts/duck-probe.sh              # the echo guard's machine + the start ladder (V4 check lines, no TCC), then the barge-in duck rounds
+apps/mac/Scripts/audio-probe.sh [--json|--test] # AUDIO_PROBE_MODE=aec|recording|asleep|private: the graph's state read back, no session (its own .app for the mic grant; AUDIO_PROBE_DIRECT=1 borrows the terminal's); --test plays a chime ONLY with AUDIO_PROBE_PLAY=1
+apps/mac/Scripts/recorder-probe.sh · duck-leak-probe.sh   # V3 recorders beside the graph · V2 other apps' level under the unit — both PLAY SOUND, only with AUDIO_PROBE_PLAY=1; never while Jarhead.app is awake
 pnpm build:banner · pnpm build:media   # docs/media/banner.png (the README hero, 2560×800 so one 8 px cell is 4 CSS px); media = icon + banner; both wear the blob's `^ ^` (scripts/dither.ts FACE)
 ```
 
 Test launches of anything that opens a voice session must set
 `JARHEAD_AUTO_WAKE=0` unless Kevin asked to talk to it: an open session listens
 to his microphone and bills per second.
+
+## Audio
+
+The audio graph (`apps/mac/Sources/Jarhead/Audio/`) is read back, never assumed — every claim ends
+in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the record.
+
+- **One setting**: `settings.audio.recording` (default off), nested like `wake`, merged at load,
+  written only by `set-settings` (the Console toggle, the status menu row, ⌥⇧R all send that).
+  The ducking level is a constant (`VoiceProcessingPolicy.duckLevel = 10`, `.min`), not a knob.
+- **The policy** (`VoiceProcessingPolicy`): `aec` = the unit on, told `duck min advanced, agc on,
+  bypass off` inside the same `objcTry` that switches it on, released (`setVoiceProcessingEnabled(false)`)
+  at every stop and teardown, following the system default input; `recording` = no unit, the ranked
+  microphone, the software echo guard (`EchoGuard`/`EchoGuardModel`: hold the wire while Jarhead is
+  audible + tail, zero-fill not drop, +12 dB × 120 ms breaks through after 2 s of learning).
+- **The ladder** `startLocked` walks (`VoiceProcessingPolicy.attempts`; `winningRung` remembered,
+  reset by `setPolicy`, `setPreferredInputDevice` and a failed walk):
+
+  | policy | rung | voice processing | mainMixer → output | notes |
+  |---|---|---|---|---|
+  | aec | 1 | on | automatic | refused −10875 on this Mac |
+  | aec | 2 | on | input-rate | the one that comes up here |
+  | aec | 3 | on | hardware | |
+  | aec | 4 | off | hardware | the fallback: guard armed, `fallback` in the frame, the doctor fails `voice processing` |
+  | recording | 1 | off | hardware | guard on |
+  | recording | 2 | off | automatic | |
+
+  (`PrivateRoute.enabled` would add two `private` rungs at the top; it is `false` — probe-only.)
+- **The four surfaces** read one frame (`AudioStateReadback` → the `audio-state` wire frame →
+  `Snapshot.audioState`): Settings › Audio (Hears · Speaks · Recording, `SettingsWords`), the island
+  (the mute box at 0.48 while held, the dot, the `recording` chip — no new zone, no gesture), the
+  status menu row + ⌥⇧R (`Hotkeys.Action.toggleRecording = 9`), `pnpm jarhead status` / `doctor`
+  (group `audio`, `--test-audio`).
+- **The probes** (`apps/mac/Scripts/`): `duck-probe.sh` (V4, no TCC) · `audio-probe.sh` (V1, its own
+  `AudioProbe.app`; modes `aec|recording|asleep|private`; `--test` is what the doctor shells to; the
+  record in `~/.jarhead/audio-probe.json` by mode) · `recorder-probe.sh` (V3) · `duck-leak-probe.sh`
+  (V2, macOS 14.2 process tap). Anything that plays sound needs `AUDIO_PROBE_PLAY=1` and otherwise
+  prints its plan and exits 0. None connects to the daemon; none opens a session.
+- **Rails**: `Wake/WakeGate.swift` is never touched; the wake listener gets exactly one property set
+  on its own input AU (`kAudioOutputUnitProperty_CurrentDevice` → the ranked mic, `hears <name>
+  (ranked)`); the barge-in duck stays detached on the plain path (it would duck Jarhead against
+  himself); `set-settings` is the only writer of settings; the ledger is append-only (`audio.guard`
+  rows); taps are `format: nil`; every raising AVFAudio call sits in `objcTry`; nothing paid, ever,
+  from a probe.
 
 ## Things that cost real time to learn
 
@@ -727,3 +773,26 @@ to his microphone and bills per second.
 - **Floats never open a window.** One `ConsoleFloatLayer` per root (`ConsoleRootView.chromeA`, `OnboardingRootView`) draws every tip and menu from `consoleFloat(_:kind:edge:on:dismiss:content:)` — publishers APPEND to the anchor preference (`transformAnchorPreference`), so a tip on a menu field or a verb's tip inside a carded row composes with the floats under it, and of several tips only the innermost draws; a trigger publishes its frame (tracked by `onGeometryChange`) so a popup follows its field under a rail scroll; a `.focusable` popup takes the arrow keys through the responder chain. `ConsoleTheme.swift` is frozen; new tokens go through a kit file.
 - **Small structs, tokens only, words on an enum.** CI's older Swift: SwiftUI bodies under ~40 lines, no `??` chains of interpolating closures; every literal string on a `…Words` enum that `check-kit` pins; flat raised surfaces with one 0.22 hairline and radius 6, no shadow, no dither on a control; the accent only as the primary fill, the one key ring and the 2 pt selection bar; figures mono, words sans; Return is never a yes.
 - **The harness is the eye.** `apps/mac/Scripts/console-preview.sh <scenario>` with `keyDown:down+return`, `click:(x,y)`, `focus:<id>`, `menuOpen:<id>`, `tipOpen:<id>`, `fold:<id>:<open|closed>`, `chip:<kind>`, `probe-floats`, and `check-kit@0.3` in every kit scenario; shoot dark and `PREVIEW_APPEARANCE=light`, once with `PREVIEW_REDUCE_MOTION=1`. Kit files live flat in `UI/Console/` (the harness globs `UI/Console/*.swift`); `UI/HelpCopy.swift` is AppKit-free and sits on `onboarding-preview.sh`'s swiftc line.
+
+## Learnings (2026-09-16, audio pass — design12, builder D)
+
+- `CADefaultDeviceAggregate-<pid>-n` is **AVAudioEngine's own** default-device aggregate (it appears
+  when default input ≠ default output, at the first plain start attempt, with no voice-processing
+  unit anywhere, and lives as long as the engine object). The unit's aggregate is
+  `VPAUAggregateAudioDevice-0x…` — that is the one that must be gone after stop, and is. A "released
+  at sleep" rule keyed on the `CADefaultDeviceAggregate` prefix reads a false positive while the app
+  merely exists.
+- On a Mac whose default input and output are different devices, AVAudioEngine's I/O is one unit on
+  that aggregate: setting `kAudioOutputUnitProperty_CurrentDevice` on the *input node's* AU to an
+  input-only microphone knocks the output side out (`IsFormatSampleRateAndChannelCountValid(outputHWFormat)`
+  false → −10875 on every wiring). The plain path must not set the property when the ranked mic
+  already is the default (the wake listener already skips it then); when it differs, the set is a
+  rung that can fail, not a given.
+- A bare tool in Kevin's agent terminal inherits the microphone grant of the terminal's responsible
+  process — `AVCaptureDevice.authorizationStatus(for: .audio)` is `authorized` there — so a silent
+  probe can run headless without a TCC prompt (`AUDIO_PROBE_DIRECT=1`); the `.app` wrap is for Kevin's
+  own runs and the doctor, and is signed with the local identity so its grant survives rebuilds.
+- `EchoGuardModel` at `now = 0` exactly is inside `audibleUntil 0 + tail`: a fresh model's timeline in
+  a test must start later (the engine's clock is CFAbsoluteTime, so it never bites there). The
+  open→held transition slice is not counted in `heldSeconds`; 200 held slices read 1.99 s.
+- `zsh` treats `echo ====X` as a command lookup (`=cmd` expansion): never start an echo argument with `=`.
