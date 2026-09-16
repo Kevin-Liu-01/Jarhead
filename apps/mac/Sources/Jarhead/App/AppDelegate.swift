@@ -31,6 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var micGrant: Grant = .unknown
     private var audioActive = false
+    /// design12: the last audio read-back sent to the daemon, and the ≤ 1 Hz coalescing behind it.
+    private var audioFrameLast: AudioStateInfo?
+    private var audioFrameSentAt: CFAbsoluteTime = 0
+    private var audioFramePending = false
+    /// The engine's last read-back as the island needs it (the guard's edge, who shares the mic).
+    private var audioGuardHeld = false
+    private var audioSharedWith: String?
     private var speechRequested = false
     /// Phase and connection as last *published*. `@Published` emits in `willSet`, so
     /// inside a sink `state.phase` / `state.connected` still hold the previous value;
@@ -94,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         client.audio = audio
         audio.onMicChunk = { [client] pcm in client?.sendMic(pcm) }
         audio.onMicLevel = { [client] level in client?.sendMicLevel(level) }
+        // design12: the graph read back (on the audio queue) → main: AppState, the daemon's frame, the island's mute box.
+        audio.onAudioState = { [weak self] readback in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioStateChanged(readback) } }
+        }
         audio.onStatus = { [weak self] text in
             appLog("audio: \(text)")
             // A dead mic is not a log line: say so where Kevin looks.
@@ -298,6 +309,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .sink { [weak self] uid in MainActor.assumeIsolated { self?.audio.setPreferredInputDevice(uid: uid) } }
             .store(in: &cancellables)
+        // design12 · the two sinks. Recording → the voice-processing policy (the engine reads it at every start, and
+        // rebuilds a running graph once Jarhead has finished his sentence); the island hears the setting too.
+        state.$snapshot
+            .map(\.settings.audioSettings.recording)
+            .removeDuplicates()
+            .sink { [weak self] (on: Bool) in
+                CrashGuard.remember("audio: recording \(on ? "on" : "off")")
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.audio.setPolicy(VoiceProcessingPolicy.from(recording: on))
+                    self.postDockAudio()
+                }
+            }
+            .store(in: &cancellables)
+        // Mute (phase `muted`) → this process's input zeroed at the HAL, so the orange dot is honest; the graph stays up.
+        state.$snapshot
+            .map { (s: Snapshot) -> Bool in s.phase == .muted }
+            .removeDuplicates()
+            .sink { [weak self] (muted: Bool) in MainActor.assumeIsolated { self?.audio.setProcessInputMuted(muted) } }
+            .store(in: &cancellables)
 
         // The first read of every permission (read-only; the daemon gets the list on connect).
         permissions.start()
@@ -382,6 +413,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.state.send(self.state.phase == .muted ? .unmute : .mute)
         }
         a.stop = { [weak self] in self?.state.transportStop() }
+        // design12: the Recording row (and the Dock menu's): set-settings only.
+        a.toggleRecording = { [weak self] in self?.toggleRecording() }
         a.openConsole = { [weak self] in
             self?.console.show()
             NSApp.activate(ignoringOtherApps: true)
@@ -451,7 +484,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .snooze:
             // ⌥⇧S: snooze the ring; nothing rings, nothing happens — never a Go.
             snoozeRinging()
+        case .toggleRecording:
+            // ⌥⇧R: Settings › Audio › Recording flipped — the whole audio block through `set-settings`, nothing else.
+            toggleRecording()
         }
+    }
+
+    // MARK: - audio state (design12)
+
+    /// Recording flipped from the menu, the Dock menu or ⌥⇧R: `set-settings` only (AppState.setRecording; the bench pins it).
+    private func toggleRecording() {
+        state.setRecording(!state.snapshot.settings.audioSettings.recording)
+    }
+
+    /// On main, from `AudioEngine.onAudioState`: AppState (the Console's `Shared with …`, the fuse's `guardOn`), the daemon's
+    /// `audio-state` frame at ≤ 1 Hz (a trailing send carries the last value of a burst), and the island's three facts.
+    private func audioStateChanged(_ readback: AudioStateReadback) {
+        let info = AudioStateInfo(readback)
+        audioGuardHeld = readback.guardHeld
+        audioSharedWith = info.sharedWith?.first
+        if info != state.audioState { state.audioState = info }
+        postDockAudio()
+        sendAudioFrame(info)
+    }
+
+    private func sendAudioFrame(_ info: AudioStateInfo) {
+        guard info != audioFrameLast else { return }
+        audioFrameLast = info
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - audioFrameSentAt >= 1 {
+            audioFrameSentAt = now
+            client.sendAudioState(info)
+            return
+        }
+        guard !audioFramePending else { return }
+        audioFramePending = true
+        let wait = max(0.05, 1 - (now - audioFrameSentAt))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let last = self.audioFrameLast else { return }
+                self.audioFramePending = false
+                self.audioFrameSentAt = CFAbsoluteTimeGetCurrent()
+                self.client.sendAudioState(last)
+            }
+        }
+    }
+
+    /// The island's mute box and peek chip (`NotchDock.audioNotification`): the setting, the guard's edge, who shares.
+    private func postDockAudio() {
+        var info: [String: Any] = [
+            NotchDock.audioRecordingKey: state.snapshot.settings.audioSettings.recording,
+            NotchDock.audioHeldKey: audioGuardHeld,
+        ]
+        if let audioSharedWith { info[NotchDock.audioSharedKey] = audioSharedWith }
+        NotificationCenter.default.post(name: NotchDock.audioNotification, object: nil, userInfo: info)
     }
 
     // MARK: - audio activity
@@ -579,5 +665,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return sha.count >= 7 ? String(sha.prefix(7)) : sha
+    }
+}
+
+// MARK: - design12: the read-back as the protocol spells it
+
+private extension AudioDeviceInfo {
+    init(_ d: AudioDeviceFacts) { self.init(name: d.name, uid: d.uid, rate: d.rate, channels: d.channels, transport: d.transport) }
+}
+
+private extension AudioStateInfo {
+    /// `AudioStateReadback` → the frame's value: bundle ids become process names here (`NSRunningApplication`), the duck level
+    /// a plain number, the held seconds milliseconds; nil `sharedWith` stays nil (the HAL could not say — never `[]`).
+    init(_ r: AudioStateReadback) {
+        self.init(running: r.running, voiceProcessing: r.voiceProcessing, duckLevel: r.duckLevel.map { Int($0) },
+                  advancedDucking: r.advancedDucking, agc: r.agc, bypassed: r.bypassed, rung: r.rung, wiring: r.wiring,
+                  hears: r.hears.map(AudioDeviceInfo.init), speaks: r.speaks.map(AudioDeviceInfo.init), tapFormat: r.tapFormat,
+                  recording: r.recording, fallback: r.fallback, guardOn: r.guardOn, guardTailMs: r.guardTailMs,
+                  guardHeldMs: Int((r.heldSeconds * 1000).rounded()), gated: r.gated, chunks: r.chunks, breakthroughs: r.breakthroughs,
+                  sharedWith: r.sharedWith?.map(MicRouteInfo.processName), inputMuted: r.inputMuted, aggregatePresent: r.aggregatePresent)
     }
 }

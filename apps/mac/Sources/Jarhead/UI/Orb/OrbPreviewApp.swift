@@ -277,6 +277,11 @@ import SwiftUI
 //   ORB_NOTCH_METER="252,138,738"   the open session's elapsed s, its usageSeconds, usageToday s
 //   ORB_NOTCH_REQUEST="opening the PR in Cursor"   the running delegation's request
 //   ORB_NOTCH_TYPED_WAKES=1   settings.typedWakes
+//   ORB_RECORDING=1        design12: Settings › Audio › Recording on — the 2 × 2 dot on the mute box, ` · recording` in its
+//                          tooltip, the `recording` chip on the peek (after marks, before problem; dropped before problem)
+//   ORB_NOTCH_HELD=mute    the software echo guard holds the wire: the mute glyph at 0.48 and the held words in its tooltip
+//   ORB_NOTCH_SHARED=name  another process reads the mic: the dot at 2.5 pt, ` · shared with <name>` in the tooltip
+//                          (the three earn their `check:` lines at 3.45 s; the foot must still be the meter's)
 //   ORB_NOTCH_PRESS="what@t;…"   a press on that island control at t (the pointer approaches first): circle, window,
 //                          ask, clear, allow, deny, mark:0, forget:0, thread:Slack, threadStop:Slack, console, sleep,
 //                          remedy, field, face (a thread's name or id); each press prints what it sent and earns its check
@@ -3992,6 +3997,7 @@ extension OrbPreviewDelegate {
                   "kind \(kind) marks \(content.marks.count); console rects \(consoles.count) at \(consoles.map { "y\(Int($0.rect.minY))" }); headRight width \(Int(headRightW)); tooltip at (396,21) '\(headTip)'")
         }
         if env["ORB_NOTCH_METER"] != nil { meterCheck(env: env) }
+        if env["ORB_RECORDING"] != nil || env["ORB_NOTCH_HELD"] != nil || env["ORB_NOTCH_SHARED"] != nil { recordingCheck(env: env) }
         if let request = env["ORB_NOTCH_REQUEST"] {
             let working = orb.previewNotchLineText
             let swapsBefore = orb.previewNotchHeroSwaps.count
@@ -4211,6 +4217,43 @@ extension OrbPreviewDelegate {
             self.check(ok, "films: 3 × 84×60 at x 114/206/298 y 56–116; 5 marks → 2 films + \"+3\" (→ console); used α 0.50 plain frame; capturing = skeleton + amber frame; hero 1 line; head caption = the newest film's; window caption \"Captured · Safari · 1280×800\"",
                        "slots \(slots.map { "\(Int($0.minX))" }) thumbs \(thumbs); five → \(overflow) (+3 → console \(plusOK ? 1 : 0)); \(frameNote); hero lines \(heroLines.count); head caption '\(headTip)'; window caption '\(windowCaption)'")
         }
+    }
+
+    /// design12 · the `recording` recipe: the mute box says the state (the 0.48 glyph, the dot, the tooltip), the chip sits
+    /// on the peek after the marks and before the problem, and the foot is still the meter's — no new zone, no gesture.
+    private func recordingCheck(env: [String: String]) {
+        guard let v = notchView else { check(false, "recording: notch view", "none"); return }
+        let recording = env["ORB_RECORDING"] == "1"
+        let held = env["ORB_NOTCH_HELD"] == "mute"
+        let shared = env["ORB_NOTCH_SHARED"]
+        let glyph = v.previewMuteGlyphAlpha
+        let dot = v.previewMicDotSize
+        let wantDot: CGFloat = shared != nil ? 2.5 : (recording ? 2 : 0)
+        let wantGlyph: CGFloat = held ? NotchView.heldGlyphAlpha : 1
+        check(abs(glyph - wantGlyph) < 0.001 && abs(dot - wantDot) < 0.001,
+              "mute box (74,122,26,24): glyph 0.48 while the guard holds, 1 at rest; a 2 × 2 fg dot while Recording is on, 2.5 pt while the mic is shared, none otherwise",
+              String(format: "glyph %.2f (want %.2f) dot %.1f (want %.1f)", glyph, wantGlyph, dot, wantDot))
+        var wantTip = held ? RecordingWords.heldTip : "Mute"
+        if recording { wantTip += RecordingWords.recordingSuffix }
+        if let shared { wantTip += RecordingWords.sharedSuffix(shared) }
+        let tip = orb.previewNotchTooltip("mute")
+        check(tip == wantTip, "helpText(.mute): the held words while the guard holds · ` · recording` while on · ` · shared with <name>` while shared; `Mute` at rest", "'\(tip)' want '\(wantTip)'")
+        let chips = orb.previewNotchChips.map { $0.split(separator: ":").first.map(String.init) ?? $0 }
+        let at = chips.firstIndex(of: "recording")
+        let afterMarks = chips.firstIndex(of: "marks").map { m in at.map { $0 > m } ?? false } ?? true
+        let beforeProblem = chips.firstIndex(of: "problem").map { p in at.map { $0 < p } ?? false } ?? true
+        let chipTip = v.previewChipTooltip("recording")
+        check((at != nil) == recording && afterMarks && beforeProblem && (!recording || chipTip == RecordingWords.chipTip) && chips.count <= 4,
+              "peek chip `recording` (record.circle, no figure) iff Recording is on, after marks and before problem, ≤ 4 chips; tooltip \"Recording — mic shared, echo guarded\"",
+              "chips \(chips) tooltip '\(chipTip)'")
+        let foot = orb.previewNotchFootText
+        let meter = (env["ORB_NOTCH_METER"] ?? "").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        let footIsMeter = meter.count == 3 ? foot.contains(TransportFormat.minutes(meter[1])) : !foot.isEmpty
+        check(footIsMeter && !foot.lowercased().contains("recording"), "previewFootText unchanged: the foot is the meter's line, no mode word displaces it", "'\(foot)'")
+        let mode = orb.previewNotchMode
+        let hits = orb.previewNotchHitList.map(\.name)
+        check(mode == "island" && hits.filter { $0 == "mute" }.count == 1 && !hits.contains { $0.hasPrefix("recording") },
+              "no fourth box, no long-press: the hit list carries one mute and nothing named recording", "mode \(mode) hits \(hits)")
     }
 
     /// The meter: the peek chip (2.55 s), the foot now, paused after ORB_PAUSE_AT, asleep after ORB_SLEEP_AT.

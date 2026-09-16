@@ -108,6 +108,8 @@
 #                                                                                                     # tooltip / a landing line's animated hero swap; every notch run ends with the ink-after-the-close line
 #     marks      ORB_NOTCH_MARKS="used:320x180@-130;capturing:200x120@-2;pending:640x400@-40@Slack" ORB_NOTCH_PRESS="forget:0@4.2"
 #     marks-clear … the same marks, ORB_NOTCH_PRESS="clear@4.2"                                         # → notch-{tucked,peek,island}-marks.png
+#     recording  ORB_RECORDING=1 ORB_NOTCH_HELD=mute ORB_NOTCH_SHARED="QuickTime Player" ORB_NOTCH_HOVER=mute ORB_NOTCH_METER=…   # design12: the mute box's 0.48 glyph + dot,
+#                                                                                                     # its tooltip, the `recording` chip, the foot untouched
 #     ask-*      ORB_NOTCH_PRESS="ask@3.3" with a pending mark / a window mark / no marks + ORB_NOTCH_STROKE_AT=3.5 /
 #                ORB_NOTCH_PHASE=asleep (± ORB_NOTCH_TYPED_WAKES=1 with a pending mark)                 # → notch-island-asleep.png
 #     window     ORB_NOTCH_PRESS="window@3.0;window@4.0" ORB_NOTCH_ACTIVE=3.5
@@ -226,6 +228,10 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
   recipe ring 5.8 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_PRESS="snooze:10@5.3" ORB_NOTCH_SHOT_TAG=alarm
   recipe ring-folded 5.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_NEXT="timer:pasta:720" ORB_NOTCH_RING_FOLD_AT=1.9 ORB_NOTCH_WAKE_AT=2.2 \
     ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_MARKS="pending:640x400@-40" ORB_NOTCH_PROBLEM=permission.screenRecording
+  # design12 (Builder C): Recording on, the guard holding, QuickTime on the mic, the meter up — the mute box's glyph 0.48 + dot,
+  # its tooltip, the `recording` chip after the marks, the foot still the meter's.
+  recipe recording 4.5 ORB_RECORDING=1 ORB_NOTCH_HELD=mute ORB_NOTCH_SHARED="QuickTime Player" ORB_NOTCH_HOVER=mute ORB_NOTCH_METER="252,138,738" \
+    ORB_NOTCH_MARKS="pending:640x400@-40@Slack" ORB_NOTCH_SHOT_TAG=recording
   recipe ring-dead-time 5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_QUESTION_AT=ring-end \
     ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
   echo

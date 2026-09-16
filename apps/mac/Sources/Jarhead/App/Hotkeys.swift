@@ -11,17 +11,20 @@ import Carbon
 ///   ⌥⇧C      circle something on screen for Jarhead (mark mode)
 ///   ⌥⇧⏎      type to Jarhead (the notch's field while the blob is parked there, else the Console)
 ///   ⌥⇧S      snooze the ringing automation (nothing while none rings)
+///   ⌥⇧R      Recording on / off (design12: Settings › Audio's one switch, through `set-settings` only)
 @MainActor
 final class Hotkeys {
     enum Action: UInt32, CaseIterable {
         case openConsole = 1
         case toggleMute = 2
+        /// 3 is `stop` and stays `stop` (the ids are stable across builds; the design pins it).
         case stop = 3
         case transportToggle = 4
         case markScreen = 5
         /// 6 is retired and never reused (ids are stable across builds).
         case sayLine = 7
         case snooze = 8
+        case toggleRecording = 9
 
         var keyCode: UInt32 {
             switch self {
@@ -32,12 +35,13 @@ final class Hotkeys {
             case .markScreen: return UInt32(kVK_ANSI_C)
             case .sayLine: return UInt32(kVK_Return)
             case .snooze: return UInt32(kVK_ANSI_S)
+            case .toggleRecording: return UInt32(kVK_ANSI_R)
             }
         }
 
         var modifiers: UInt32 {
             switch self {
-            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine, .snooze: return UInt32(optionKey | shiftKey)
+            case .openConsole, .toggleMute, .transportToggle, .markScreen, .sayLine, .snooze, .toggleRecording: return UInt32(optionKey | shiftKey)
             case .stop: return UInt32(optionKey)
             }
         }
@@ -52,6 +56,7 @@ final class Hotkeys {
             case .markScreen: return ("c", [.option, .shift])
             case .sayLine: return ("\r", [.option, .shift])
             case .snooze: return ("s", [.option, .shift])
+            case .toggleRecording: return ("r", [.option, .shift])
             }
         }
     }

@@ -18,6 +18,8 @@ struct AppActions {
     var snoozeRing: (String, Int) -> Void = { _, _ in }
     var doneRing: (String) -> Void = { _ in }
     var openAutomations: () -> Void = {}
+    /// design12: Recording on / off — the whole audio block through `set-settings`, never another command.
+    var toggleRecording: () -> Void = {}
 }
 
 /// The menu-bar item: a template orb glyph drawn in code, a tooltip with the phase,
@@ -72,6 +74,17 @@ final class StatusItem: NSObject {
             .store(in: &cancellables)
         // The last crash's row comes and goes with the notice (CrashGuard → AppState.lastCrash).
         state.$lastCrash
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        // The Recording row's checkmark follows the setting; its tooltip names who shares the mic (design12).
+        state.$snapshot
+            .map { (s: Snapshot) -> Bool in s.settings.audioSettings.recording }
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+        state.$audioState
+            .map { (a: AudioStateInfo?) -> [String] in a?.sharedWith ?? [] }
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
@@ -213,6 +226,18 @@ final class StatusItem: NSObject {
         mute.image = StatusItem.symbol(phase == .muted ? "mic.fill" : "mic.slash.fill")
         menu.addItem(mute)
 
+        // Recording (design12): the checkmark is the state, the title never flips; enabled whenever the daemon is there
+        // (the point is to set it before the demo), never gated on a session. While another process reads the mic the
+        // tooltip says who.
+        let recording = NSMenuItem(title: RecordingWords.menuRow, action: #selector(doToggleRecording), keyEquivalent: Hotkeys.Action.toggleRecording.keyEquivalent.0)
+        recording.keyEquivalentModifierMask = Hotkeys.Action.toggleRecording.keyEquivalent.1
+        recording.target = self
+        recording.isEnabled = connected
+        recording.state = state.snapshot.settings.audioSettings.recording ? .on : .off
+        recording.image = StatusItem.symbol(RecordingWords.chipGlyph)
+        recording.toolTip = RecordingWords.menuTip(sharedWith: RecordingWords.firstShared(state.audioState?.sharedWith))
+        menu.addItem(recording)
+
         // Stop is never disabled: it must land in every phase, connected or not (the
         // local speaker flush still happens).
         let stop = NSMenuItem(title: "Stop", action: #selector(doStop), keyEquivalent: "\u{1b}")
@@ -287,6 +312,7 @@ final class StatusItem: NSObject {
 
     @objc private func doTransportToggle() { actions.transportToggle() }
     @objc private func doToggleMute() { actions.toggleMute() }
+    @objc private func doToggleRecording() { actions.toggleRecording() }
     @objc private func doStop() { actions.stop() }
     @objc private func doOpenConsole() { actions.openConsole() }
     @objc private func doSummon() { actions.summonOrb() }

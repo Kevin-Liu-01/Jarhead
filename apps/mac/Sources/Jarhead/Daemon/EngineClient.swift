@@ -381,6 +381,14 @@ final class EngineClient: @unchecked Sendable {
         net.async { self.rawSend(json: ["type": "mic-level", "level": clamped]) }
     }
 
+    /// design12: the audio graph's read-back (wire.ts `audio-state`, beside `mic-level`): the daemon keeps it in
+    /// `snapshot.audioState` for `pnpm jarhead status` / `doctor` and the per-turn `audio.guard` ledger row. The
+    /// AppDelegate coalesces to ≤ 1 Hz; the field names are the protocol's, exactly (`AudioStateInfo.json`).
+    func sendAudioState(_ state: AudioStateInfo) {
+        let json = state.json
+        net.async { self.rawSend(json: ["type": "audio-state", "state": json]) }
+    }
+
     /// One permission as this app read it (wire.ts `permission`); `detail` is the row's
     /// extra line (Automation's targets, a folder's path).
     func sendPermission(which: String, state grant: Grant, detail: String? = nil) {

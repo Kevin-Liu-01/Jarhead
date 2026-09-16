@@ -284,6 +284,14 @@ struct DockContent: Equatable {
     var ring: RingRow?
     var next: NextRow?
     var timer: TimerRow?
+    // design12: what the island says about the microphone — a setting and the guard's edge, never a Phase. Overlaid by
+    // `NotchDock` from the AppDelegate's `audio-state` notice (the controller builds the rest from the snapshot).
+    /// Settings › Audio › Recording is on: the 2 × 2 dot on the mute box, the `recording` chip while tucked.
+    var recording = false
+    /// The software echo guard holds the wire right now (Jarhead audible + tail): the mute glyph at 0.48.
+    var guardHeld = false
+    /// The first other process reading the mic, by name (`shared with QuickTime Player`), or nil.
+    var micSharedWith: String? = nil
     var pendingMarks: Int { marks.filter { !$0.consumed }.count }
 
     static let empty = DockContent(awake: false, inSession: false, typedWakes: false, request: nil, lastLine: nil, gateLabel: nil,
@@ -310,6 +318,43 @@ final class NotchDock {
     private(set) var geometry: NotchGeometry
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
+
+    // MARK: audio (design12)
+
+    /// The three audio facts the island shows. The AppDelegate posts them (`audioNotification`, main queue) from the
+    /// engine's read-back and the settings; the harness sets them from ORB_RECORDING / ORB_NOTCH_HELD / ORB_NOTCH_SHARED.
+    struct DockAudio: Equatable {
+        var recording = false
+        var guardHeld = false
+        var sharedWith: String? = nil
+    }
+    /// `jarhead.dock.audio` — userInfo `recording` Bool · `guardHeld` Bool · `shared` String (absent while nobody shares).
+    static let audioNotification = Notification.Name("jarhead.dock.audio")
+    static let audioRecordingKey = "recording"
+    static let audioHeldKey = "guardHeld"
+    static let audioSharedKey = "shared"
+    private var audio = NotchDock.startingAudio()
+
+    private static func startingAudio() -> DockAudio {
+        #if JARHEAD_ORB_PREVIEW
+        let env = ProcessInfo.processInfo.environment
+        return DockAudio(recording: env["ORB_RECORDING"] == "1", guardHeld: env["ORB_NOTCH_HELD"] == "mute", sharedWith: env["ORB_NOTCH_SHARED"])
+        #else
+        return DockAudio()
+        #endif
+    }
+
+    /// The notice's userInfo → the three facts; a missing key reads as its rest state.
+    static func audio(from info: [AnyHashable: Any]?) -> DockAudio {
+        DockAudio(recording: info?[audioRecordingKey] as? Bool ?? false, guardHeld: info?[audioHeldKey] as? Bool ?? false,
+                  sharedWith: info?[audioSharedKey] as? String)
+    }
+
+    private func setAudio(_ a: DockAudio) {
+        guard a != audio else { return }
+        audio = a
+        setContent(view.content)
+    }
     private var contractTimer: Task<Void, Never>?
     private var hovered = false
     /// The island held open by the capsule toggle (a hotkey, a click, the field), not the pointer.
@@ -434,6 +479,11 @@ final class NotchDock {
                 self.panel.keyAllowed = false
                 self.view.releaseField(keepText: true)
             }
+        })
+        // design12: the audio facts (Recording, the guard's edge, who shares the mic) from the AppDelegate.
+        observers.append(NotificationCenter.default.addObserver(forName: Self.audioNotification, object: nil, queue: .main) { [weak self] note in
+            let a = NotchDock.audio(from: note.userInfo)
+            MainActor.assumeIsolated { self?.setAudio(a) }
         })
         prewarmInk()
     }
@@ -581,9 +631,14 @@ final class NotchDock {
         view.wake()
     }
 
-    /// Everything else the dock shows, in one value.
+    /// Everything else the dock shows, in one value — the audio facts overlaid, since the controller builds the
+    /// content from the snapshot and knows nothing of the graph.
     func setContent(_ c: DockContent) {
         let hadRing = view.content.ring != nil
+        var c = c
+        c.recording = audio.recording
+        c.guardHeld = audio.guardHeld
+        c.micSharedWith = audio.sharedWith
         view.content = c
         view.lastLine = c.lastLine ?? ""
         ringChanged(from: hadRing, to: c.ring != nil)
@@ -2232,7 +2287,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     /// One glance chip on the peek: a glyph (tinted) and a figure, never a sentence.
     private struct Chip {
-        enum Kind { case ring, question, marks, timer, problem, meter, marking }
+        enum Kind { case ring, question, marks, timer, recording, problem, meter, marking }
         let kind: Kind
         let glyph: String?
         let tint: NSColor
@@ -2252,8 +2307,8 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var chipRects: [(NSRect, String)] = []
 
     /// Rebuild the chip list from the content and clamp the peek to the island's width:
-    /// chips drop from the right — the meter, then the problem — until it fits. The
-    /// question and the marks chips always fit.
+    /// chips drop from the right — the meter, then the recording chip, then the problem —
+    /// until it fits. The question and the marks chips always fit.
     private func relayoutChips() {
         func measure(_ glyph: String?, _ figure: String) -> CGFloat {
             let g: CGFloat = glyph == nil ? 0 : 10
@@ -2285,6 +2340,11 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                 let figure = Self.timerFigure(t)
                 list.append(Chip(kind: .timer, glyph: "timer", tint: NSColor(white: 1, alpha: 0.72), figure: figure, tooltip: "\(t.name) · \(figure) left", alpha: 0.72, width: measure("timer", figure)))
             }
+            if c.recording {
+                // design12: a forgotten switch is seen while tucked — a glyph, no figure, after the marks, before the problem.
+                list.append(Chip(kind: .recording, glyph: RecordingWords.chipGlyph, tint: NSColor(white: 1, alpha: 0.72), figure: "",
+                                 tooltip: RecordingWords.chipTip, alpha: 0.72, width: measure(RecordingWords.chipGlyph, "")))
+            }
             if let p = c.problem {
                 list.append(Chip(kind: .problem, glyph: p.symbol, tint: p.warn ? Self.markTone : Self.errorTone, figure: "", tooltip: p.text, alpha: 0.72, width: measure(p.symbol, "")))
             }
@@ -2295,7 +2355,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
                 list.append(Chip(kind: .meter, glyph: nil, tint: .white, figure: figure, tooltip: tip, alpha: c.meter.paused ? 0.48 : 0.72, width: measure(nil, figure)))
             }
         }
-        if list.count > 4 { list = Array(list.prefix(4)) }
+        // What goes first when there is no room: the meter, then the recording chip, then the problem.
+        func drop() -> Bool {
+            let i = list.lastIndex { $0.kind == .meter } ?? list.lastIndex { $0.kind == .recording } ?? list.lastIndex { $0.kind == .problem }
+            guard let i else { return false }
+            list.remove(at: i)
+            return true
+        }
+        while list.count > 4 { if !drop() { list = Array(list.prefix(4)) } }
         // The clamp: notch + breath + counter + dots + chips ≤ the peek's cap.
         let n = geometry?.notch.width ?? 185
         let fixed = n + (reduced ? 0 : 30) + (workingSince != nil ? Self.workExtraWidth : 0) + peekDotsExtraWidth
@@ -2303,9 +2370,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             guard !l.isEmpty else { return 0 }
             return l.reduce(0) { $0 + $1.width } + CGFloat(l.count - 1) * 8 + 8
         }
-        while list.count > 1, fixed + extra(list) > NotchGeometry.peekWidthCap, let i = list.lastIndex(where: { $0.kind == .meter || $0.kind == .problem }) {
-            list.remove(at: i)
-        }
+        while list.count > 1, fixed + extra(list) > NotchGeometry.peekWidthCap, drop() {}
         chips = list
         chipsExtraWidth = extra(list)
     }
@@ -2717,7 +2782,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// (or a word); hover one alpha step; the pressed one filled with the accent, letting
     /// go over `Motion.base`. `enabled` false dims it to 0.35 and it takes nothing.
     private func drawBox(_ cg: CGContext, which: Press, rect: NSRect, symbol: String?, word: String? = nil, enabled: Bool, dim: CGFloat = 1,
-                         hovered: Press?, pressed: Press?, base: CGFloat, now: Double) {
+                         glyphDim: CGFloat = 1, hovered: Press?, pressed: Press?, base: CGFloat, now: Double) {
         let alpha = finite01(base * (enabled ? dim : 0.35))
         let box = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
         let hot = enabled && hovered == which
@@ -2739,7 +2804,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         if let symbol, let img = Self.symbol(symbol, pointSize: 11, tint: down || hot ? white : white.withAlphaComponent(0.78)) {
             let s = img.size
             img.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2, width: s.width, height: s.height),
-                     from: .zero, operation: .sourceOver, fraction: alpha, respectFlipped: true, hints: nil)
+                     from: .zero, operation: .sourceOver, fraction: finite01(alpha * glyphDim), respectFlipped: true, hints: nil)
         }
         if let word {
             // Allow · Deny, the remedy: 12 medium, centred in the box.
@@ -2795,8 +2860,33 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         drawRing(cg, rect: z.go.offsetBy(dx: 0, dy: a.dy), color: s.color, symbol: AppState.transportLabel(for: sim.phase).symbol,
                  hot: s.hovered == .pause, down: s.pressed == .pause, flash: flashLevel(.pause, now: s.now), alpha: base)
         drawBox(cg, which: .stop, rect: z.stop.offsetBy(dx: 0, dy: a.dy), symbol: "stop.fill", enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
-        drawBox(cg, which: .mute, rect: z.mute.offsetBy(dx: 0, dy: a.dy), symbol: sim.phase == .muted ? "mic.slash.fill" : "mic.fill", enabled: muteEnabled,
-                hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        let muteRect = z.mute.offsetBy(dx: 0, dy: a.dy)
+        drawBox(cg, which: .mute, rect: muteRect, symbol: sim.phase == .muted ? "mic.slash.fill" : "mic.fill", enabled: muteEnabled,
+                glyphDim: muteGlyphAlpha, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        drawMicDot(cg, box: muteRect, alpha: base)
+    }
+
+    // design12: the island says the microphone's state on the mute box — no fourth box, no gesture.
+
+    /// The glyph at 0.48 while the software echo guard holds the wire (Recording, or the fallback rung; not while muted).
+    static let heldGlyphAlpha: CGFloat = 0.48
+    var muteGlyphAlpha: CGFloat { content.guardHeld && sim.phase != .muted ? Self.heldGlyphAlpha : 1 }
+    /// The dot at the box's top-right: 2 pt while Recording is on, 2.5 while another process reads the mic; 0 = none.
+    var micDotSize: CGFloat {
+        if content.micSharedWith != nil { return 2.5 }
+        return content.recording ? 2 : 0
+    }
+
+    /// A fg dot, inset 3 from the box's top-right corner (the context is flipped: minY is the top). A mark — not red, not accent.
+    private func drawMicDot(_ cg: CGContext, box: NSRect, alpha: CGFloat) {
+        let size = micDotSize
+        guard size > 0, box.isFiniteRect else { return }
+        let dot = NSRect(x: box.maxX - 3 - size, y: box.minY + 3, width: size, height: size)
+        cg.saveGState()
+        cg.setAlpha(finite01(alpha))
+        NSColor(white: 1, alpha: 0.78).setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        cg.restoreGState()
     }
 
     /// The transport as a ring: translucent ink under a hairline ring in the phase colour,
@@ -3715,7 +3805,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             case .stop: return "Connecting"
             }
         case .stop: return "Stop"
-        case .mute: return sim.phase == .muted ? "Unmute" : "Mute"
+        case .mute: return muteHelp
         case .face: return ""
         case .circle:
             if c.marking { return "Cancel circling (Esc)" }
@@ -3766,6 +3856,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             guard let r = c.ring else { return "" }
             return target == "console" ? "\(r.head) — Console" : "Open — \(target)"
         }
+    }
+
+    /// The mute box's words (design12): `Unmute` while muted; else `Mute`, or the held words while the guard holds the
+    /// wire; ` · recording` while Recording is on; ` · shared with QuickTime Player` while another process reads the mic.
+    private var muteHelp: String {
+        if sim.phase == .muted { return "Unmute" }
+        var text = content.guardHeld ? RecordingWords.heldTip : "Mute"
+        if content.recording { text += RecordingWords.recordingSuffix }
+        if let name = content.micSharedWith { text += RecordingWords.sharedSuffix(name) }
+        return text
     }
 
     /// `.console` appears up to three times in one hit list; the tooltip tells them apart by the rect.
@@ -4212,11 +4312,20 @@ extension NotchView {
         case .question: return "question"
         case .marks: return "marks"
         case .timer: return "timer"
+        case .recording: return "recording"
         case .problem: return "problem"
         case .meter: return "meter"
         case .marking: return "marking"
         }
     }
+
+    // design12: the mute box's said state and the chips' words, for the `recording` recipe.
+    /// The mute glyph's alpha relative to its box (1, or 0.48 while the guard holds).
+    var previewMuteGlyphAlpha: CGFloat { muteGlyphAlpha }
+    /// The dot on the mute box: 0 (none) · 2 (Recording) · 2.5 (the mic is shared).
+    var previewMicDotSize: CGFloat { micDotSize }
+    /// The tooltip of the chip of that kind ("" when it is not on the peek).
+    func previewChipTooltip(_ kind: String) -> String { chips.first { Self.previewName(of: $0.kind) == kind }?.tooltip ?? "" }
 
     /// The anchor's word as drawn (the ring's kind while one is up, else the phase).
     var previewAnchorWord: String { content.ring?.kindLabel ?? OrbStyle.label(sim.phase) }
