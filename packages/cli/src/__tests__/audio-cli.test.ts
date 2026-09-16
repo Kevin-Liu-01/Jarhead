@@ -11,6 +11,13 @@ import { LEAK_FAIL_DBFS, NARROWED_BELOW_HZ, audioChecks, audioStatusLines, audio
  * shape, the probe file's three spellings and the `--test-audio` row's answers.
  */
 
+/** `o` without `keys` — exactOptionalPropertyTypes refuses an explicit undefined in a spread. */
+function omit<T extends object, K extends keyof T>(o: T, ...keys: K[]): Omit<T, K> {
+  const out = { ...o } as Record<string, unknown>;
+  for (const k of keys) delete out[k as string];
+  return out as Omit<T, K>;
+}
+
 const SINCE = Date.UTC(2026, 8, 16, 11, 58, 2);
 const clock = (ms: number): string => new Date(ms).toTimeString().slice(0, 8);
 
@@ -64,7 +71,7 @@ const RECORDING: AudioState = {
 };
 
 /** The unit refused (−10875): rung 4 won, the plain graph runs guarded with Recording off. */
-const FALLBACK: AudioState = { ...RECORDING, rung: 4, recording: false, fallback: true, sharedWith: undefined, guardHeldMs: undefined } as AudioState;
+const FALLBACK: AudioState = { ...omit(RECORDING, "sharedWith", "guardHeldMs"), rung: 4, recording: false, fallback: true };
 
 const PROFILER_JSON = JSON.stringify({
   SPAudioDataType: [
@@ -124,9 +131,9 @@ test("status · Recording on: voice processing off · recording · guard on, hea
 
 test("status · the fallback rung says so; a stopped graph says the graph is down and whether the unit was released; no app: one line, with the profiler's defaults when read and never without --no-levels' consent", () => {
   assert.equal(audioStatusLines(FALLBACK, { recording: false })[0], `  audio      voice processing off · fallback (echo cancellation refused) · guard on · rung 4 hardware · since ${clock(FALLBACK.since as number)}`);
-  const down = audioStatusLines({ ...AEC_ON_AIRPODS, running: false, voiceProcessing: false, aggregatePresent: false, hears: undefined, speaks: undefined } as AudioState, { recording: false });
+  const down = audioStatusLines({ ...omit(AEC_ON_AIRPODS, "hears", "speaks", "since"), running: false, voiceProcessing: false, aggregatePresent: false }, { recording: false });
   assert.deepEqual(down, ["  audio      voice processing off · the graph is down", "             recording off · guard off · released"]);
-  const lingering = audioStatusLines({ ...AEC_ON_AIRPODS, running: false, hears: undefined, speaks: undefined } as AudioState, { recording: false });
+  const lingering = audioStatusLines({ ...omit(AEC_ON_AIRPODS, "hears", "speaks", "since"), running: false }, { recording: false });
   assert.equal(lingering[0], "  audio      voice processing off · the graph is down · voice processing still on");
   assert.equal(lingering[1], "             recording off · guard off · voice processing still on after stop");
   assert.deepEqual(audioStatusLines(undefined, { recording: false }), ["  audio      no app connected"]);
@@ -198,7 +205,7 @@ test("doctor · the fallback rung FAILS voice processing; a recorder beside the 
 });
 
 test("doctor · released at sleep is judged asleep: the graph down with the unit off and no aggregate is ok; the unit still on, an aggregate in the list (the app's or the profiler's), or the graph still up warn", () => {
-  const stopped: AudioState = { ...AEC_ON_AIRPODS, running: false, voiceProcessing: false, aggregatePresent: false, hears: undefined, speaks: undefined, since: undefined } as AudioState;
+  const stopped: AudioState = { ...omit(AEC_ON_AIRPODS, "hears", "speaks", "since"), running: false, voiceProcessing: false, aggregatePresent: false };
   const ok = audioChecks({ state: stopped, settings: { recording: false }, phase: "asleep", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(ok, "released at sleep").status, "ok");
   assert.equal(row(ok, "released at sleep").detail, "voice processing off after the last stop · no CADefaultDeviceAggregate present");
@@ -254,10 +261,14 @@ test("probe file: one run, { runs }, or a record keyed by mode; the leak row pre
 test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusal, a dry run, a leak figure under and over the line", () => {
   const asleep = { scriptExists: true, phase: "asleep" as const };
   let ran = 0;
-  const missing = audioTestCheck({ scriptExists: false, phase: "asleep", run: () => void ran++ ?? "" });
+  const spawn = (): string => {
+    ran++;
+    return "";
+  };
+  const missing = audioTestCheck({ scriptExists: false, phase: "asleep", run: spawn });
   assert.equal(missing.status, "warn");
   assert.equal(missing.detail, "apps/mac/Scripts/audio-probe.sh missing — nothing played");
-  const awake = audioTestCheck({ scriptExists: true, phase: "listening", run: () => void ran++ ?? "" });
+  const awake = audioTestCheck({ scriptExists: true, phase: "listening", run: spawn });
   assert.equal(awake.status, "warn");
   assert.equal(awake.detail, "Jarhead is awake; sleep it first (two voice-processing clients cut each other)");
   assert.equal(ran, 0, "neither spawned the probe");
