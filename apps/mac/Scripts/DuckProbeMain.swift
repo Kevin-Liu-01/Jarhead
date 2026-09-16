@@ -585,14 +585,24 @@ struct PureSections {
 
     static func policyCases() -> [Case] {
         [
-            ("from(recording: true) walks plain rungs only", {
+            ("from(recording: true) walks plain rungs only: ranked/hardware › ranked/automatic › default/hardware", {
                 let a = VoiceProcessingPolicy.from(recording: true).attempts
-                return a.count == 2 && a.allSatisfy { !$0.voice && !$0.privateRoute } && a[0].wiring == .hardware && a[1].wiring == .automatic ? nil : "\(a)"
+                let plain = a.count == 3 && a.allSatisfy { !$0.voice && !$0.privateRoute }
+                let shape = a[0].wiring == .hardware && a[0].pinDevice && a[1].wiring == .automatic && a[1].pinDevice && a[2].wiring == .hardware && !a[2].pinDevice
+                return plain && shape ? nil : "\(a)"
             }),
-            (".aec.attempts.count == 4 (private route off)", {
+            (".aec.attempts.count == 5 (private route off): three VoiceIO wirings, then plain ranked, then plain default", {
                 let a = VoiceProcessingPolicy.aec.attempts
-                let shape = a.count == 4 && a[0].voice && a[0].wiring == .automatic && a[1].wiring == .inputRate && a[2].wiring == .hardware && !a[3].voice && a[3].wiring == .hardware
-                return shape && !PrivateRoute.enabled && a.allSatisfy { !$0.privateRoute } ? nil : "\(a), private \(PrivateRoute.enabled)"
+                let voice = a.count == 5 && a[0].voice && a[0].wiring == .automatic && a[1].wiring == .inputRate && a[2].wiring == .hardware
+                let plain = !a[3].voice && a[3].wiring == .hardware && a[3].pinDevice && !a[4].voice && a[4].wiring == .hardware && !a[4].pinDevice
+                let noPin = a.prefix(3).allSatisfy { !$0.pinDevice }
+                return voice && plain && noPin && !PrivateRoute.enabled && a.allSatisfy { !$0.privateRoute } ? nil : "\(a), private \(PrivateRoute.enabled)"
+            }),
+            ("StartAttempt.description names the mic on the plain rungs", {
+                let ranked = StartAttempt(voice: false, wiring: .hardware, pinDevice: true).description
+                let fallback = StartAttempt(voice: false, wiring: .automatic).description
+                let vp = StartAttempt(voice: true, wiring: .inputRate).description
+                return ranked == "voice processing off, output hardware, ranked mic" && fallback == "voice processing off, output automatic, system default mic" && vp == "voice processing on, output input-rate" ? nil : "\(ranked) | \(fallback) | \(vp)"
             }),
             ("from(recording:) maps to the two policies", {
                 VoiceProcessingPolicy.from(recording: false) == .aec && VoiceProcessingPolicy.from(recording: true) == .recording && VoiceProcessingPolicy.aec != .recording ? nil : "mapping"

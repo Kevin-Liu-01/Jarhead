@@ -20,12 +20,24 @@ enum OutputWiring: Equatable, CustomStringConvertible {
     }
 }
 
-/// One rung of the start ladder: voice processing on or off, the output wiring, and
-/// whether the unit runs on Jarhead's own private aggregate (`PrivateRoute`, probe-only).
+/// One rung of the start ladder: voice processing on or off, the output wiring, whether the
+/// plain input AU is pinned to the ranked microphone (`kAudioOutputUnitProperty_CurrentDevice`
+/// — a set that can fail: on a Mac whose default input ≠ default output it knocks the shared
+/// I/O unit's output out, −10875 on every wiring, so the last plain rung hears the system
+/// default instead), and whether the unit runs on Jarhead's own private aggregate
+/// (`PrivateRoute`, probe-only).
 struct StartAttempt: Equatable {
     var voice: Bool
     var wiring: OutputWiring
+    var pinDevice = false
     var privateRoute = false
+
+    /// `voice processing off, output hardware, ranked mic` — the attempt loop's failure line.
+    var description: String {
+        guard !voice else { return "voice processing on, output \(wiring)" }
+        let mic = pinDevice ? "ranked mic" : "system default mic"
+        return "voice processing off, output \(wiring), \(mic)"
+    }
 }
 
 /// What the input node is told the moment voice processing is switched on. A value, so
@@ -50,13 +62,14 @@ struct VoiceProcessingPolicy: Equatable {
     static func from(recording: Bool) -> VoiceProcessingPolicy { recording ? .recording : .aec }
 
     /// The ladder `startLocked` walks, top first. Pure; pinned by duck-probe. With echo
-    /// cancellation: the three VoiceIO wirings, then the plain graph as the fallback rung
-    /// (guarded). Recording: plain rungs only. The private aggregate adds two rungs at the
-    /// top only while `PrivateRoute.enabled` — a follow-up flips it once V1-private is green.
+    /// cancellation: the three VoiceIO wirings, then the plain graph as the fallback rungs
+    /// (guarded) — the ranked mic pinned, then the system default. Recording: the plain rungs
+    /// only — hardware and automatic wiring on the ranked mic, then hardware on the system
+    /// default (`ranked mic refused; hearing the system default`). The private aggregate adds
+    /// two rungs at the top only while `PrivateRoute.enabled` — a follow-up flips it once
+    /// V1-private is green.
     var attempts: [StartAttempt] {
-        guard echoCancel else {
-            return [StartAttempt(voice: false, wiring: .hardware), StartAttempt(voice: false, wiring: .automatic)]
-        }
+        guard echoCancel else { return VoiceProcessingPolicy.plainRungs }
         var rungs: [StartAttempt] = []
         if PrivateRoute.enabled {
             rungs.append(StartAttempt(voice: true, wiring: .automatic, privateRoute: true))
@@ -65,9 +78,18 @@ struct VoiceProcessingPolicy: Equatable {
         rungs.append(StartAttempt(voice: true, wiring: .automatic))
         rungs.append(StartAttempt(voice: true, wiring: .inputRate))
         rungs.append(StartAttempt(voice: true, wiring: .hardware))
+        rungs.append(StartAttempt(voice: false, wiring: .hardware, pinDevice: true))
         rungs.append(StartAttempt(voice: false, wiring: .hardware))
         return rungs
     }
+
+    /// Recording's ladder: plain/hardware and plain/automatic on the ranked mic, then
+    /// plain/hardware without the device set (the system default microphone).
+    static let plainRungs: [StartAttempt] = [
+        StartAttempt(voice: false, wiring: .hardware, pinDevice: true),
+        StartAttempt(voice: false, wiring: .automatic, pinDevice: true),
+        StartAttempt(voice: false, wiring: .hardware),
+    ]
 
     /// Where `startLocked` begins: the remembered winning rung (0-based), clamped into the
     /// ladder; 0 when nothing is remembered. Pure, for the probe's `winningRung` arithmetic.

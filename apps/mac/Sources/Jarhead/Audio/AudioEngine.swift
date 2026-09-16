@@ -259,25 +259,40 @@ final class AudioEngine {
         s.heldSeconds = guardStats.heldSeconds
         s.sharedWith = s.hears.flatMap { AudioEngine.deviceID(matching: $0.uid) }.flatMap { AudioProcessObjects.sharingInput(on: $0) }
         s.inputMuted = AVAudioApplication.shared.isInputMuted
-        s.aggregatePresent = MicInputs.enumerate().contains { $0.uid.hasPrefix("CADefaultDeviceAggregate") }
+        s.aggregatePresent = AudioAggregates.present(AudioAggregates.unitPrefix)
+        s.engineAggregatePresent = AudioAggregates.present(AudioAggregates.enginePrefix)
         return s
     }
 
     /// The device the graph hears through: under AEC the system default input (the unit
-    /// follows it); on the plain path the input AU's `kAudioOutputUnitProperty_CurrentDevice`;
-    /// on the private route the ranked mic behind the aggregate. Stopped: the default input.
+    /// follows it); on the plain path the microphone `applyInputDevice` settled on
+    /// (`activeInputUID`); on the private route the ranked mic behind the aggregate.
+    /// Stopped: the default input.
     private func hearsFacts(input: AVAudioInputNode, voiceProcessing: Bool) -> AudioDeviceFacts? {
         if running, let route = privateRoute, let id = AudioEngine.deviceID(matching: route.micUID) {
             return AudioDeviceFacts.read(id: id, scope: kAudioObjectPropertyScopeInput)
         }
-        if running, !voiceProcessing, let au = input.audioUnit {
-            var dev = AudioDeviceID(0)
-            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-            if AudioUnitGetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, &size) == noErr, dev != 0 {
+        if running, !voiceProcessing {
+            // The AU's `CurrentDevice` reads as the engine's own aggregate on a Mac whose default
+            // input ≠ default output (`CADefaultDeviceAggregate-<pid>-n`), so the microphone the
+            // graph was pointed at is the fact: `activeInputUID`, then the AU, then the default.
+            if let uid = activeInputUID, let id = AudioEngine.deviceID(matching: uid) {
+                return AudioDeviceFacts.read(id: id, scope: kAudioObjectPropertyScopeInput)
+            }
+            if let dev = AudioEngine.currentDevice(of: input), let uid = AudioEngine.deviceUID(dev), !uid.hasPrefix(AudioAggregates.enginePrefix) {
                 return AudioDeviceFacts.read(id: dev, scope: kAudioObjectPropertyScopeInput)
             }
         }
         return AudioDeviceFacts.defaultInput()
+    }
+
+    /// The input AU's `kAudioOutputUnitProperty_CurrentDevice`, or nil.
+    static func currentDevice(of input: AVAudioInputNode) -> AudioDeviceID? {
+        guard let au = input.audioUnit else { return nil }
+        var dev = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioUnitGetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, &size) == noErr, dev != 0 else { return nil }
+        return dev
     }
 
     /// Publish the frame when it changed. On `queue`.
@@ -342,7 +357,7 @@ final class AudioEngine {
             } catch {
                 lastError = error
                 let how = error is ObjCException ? "raised" : "failed"
-                onStatus?("audio start (voice processing \(attempt.voice ? "on" : "off"), output \(attempt.wiring), rung \(index + 1)) \(how): \(error.localizedDescription) — \(deviceSummary())")
+                onStatus?("audio start (\(attempt.description), rung \(index + 1)) \(how): \(error.localizedDescription) — \(deviceSummary())")
                 tearDownGraph()
             }
         }
@@ -402,7 +417,7 @@ final class AudioEngine {
         if attempt.privateRoute {
             try applyPrivateRoute(to: input)
         } else {
-            applyInputDevice(to: input, voiceProcessing: voiceProcessing)
+            try applyInputDevice(to: input, voiceProcessing: voiceProcessing, pinDevice: attempt.pinDevice)
         }
 
         let hw = input.outputFormat(forBus: 0)
@@ -790,10 +805,17 @@ final class AudioEngine {
     /// the ranking is logged and the Console's picker says so. The default is Kevin's to
     /// change (System Settings › Sound) and is never written from here.
     ///
+    /// The plain path's set is a rung that can fail (`StartAttempt.pinDevice`): on a Mac
+    /// whose default input ≠ default output the engine's I/O is one unit on its own
+    /// aggregate, and pointing the input AU at an input-only microphone knocks the output
+    /// side out (−10875 on every wiring). So: the ranked mic already the default → nothing is
+    /// set; pinned and the set fails → the rung throws and the ladder moves on; not pinned →
+    /// the system default mic, said as `ranked mic refused; hearing the system default`.
+    ///
     /// One exception to "never a virtual device unless picked": when the only connected
     /// inputs are aggregate or virtual, the first of them is used — deaf is not better —
     /// and the log and the picker say it is virtual.
-    private func applyInputDevice(to input: AVAudioInputNode, voiceProcessing: Bool) {
+    private func applyInputDevice(to input: AVAudioInputNode, voiceProcessing: Bool, pinDevice: Bool) throws {
         let inputs = MicInputs.enumerate()
         let systemDefault = MicInputs.systemDefaultUID()
         let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
@@ -808,19 +830,34 @@ final class AudioEngine {
             }
             return
         }
-        guard let au = input.audioUnit else {
-            onStatus?("input node has no audio unit; using the system default mic")
+        if choice.uid == systemDefault {
+            // Already the default: the engine's unit hears it without a device set (which
+            // would knock the output out on a Mac whose default input ≠ default output).
             activeInputUID = systemDefault
+            noteInputChoice(choice)
             return
         }
+        guard pinDevice else {
+            activeInputUID = systemDefault
+            onStatus?("ranked mic \(choice.name) refused; hearing the system default (\(MicInputs.name(of: systemDefault) ?? "none"))")
+            return
+        }
+        try pinInputDevice(choice, on: input)
+        activeInputUID = choice.uid
+        noteInputChoice(choice)
+    }
+
+    /// `kAudioOutputUnitProperty_CurrentDevice` on the input AU → `choice`; throws when the
+    /// unit has no AU or refuses the device, so the rung fails and the ladder moves on.
+    private func pinInputDevice(_ choice: MicInput, on input: AVAudioInputNode) throws {
+        guard let au = input.audioUnit else { throw InputDeviceError.noUnit }
         var dev = choice.id
         let err = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
-        if err != noErr {
-            onStatus?("could not select mic device \(choice.name) (\(err)); using the system default")
-            activeInputUID = systemDefault
-            return
-        }
-        activeInputUID = choice.uid
+        guard err == noErr else { throw InputDeviceError.select(name: choice.name, status: err) }
+    }
+
+    /// The log line that explains a plain-path choice that is not simply Kevin's pick.
+    private func noteInputChoice(_ choice: MicInput) {
         if let wanted = preferredInputUID, wanted != choice.uid {
             onStatus?("mic device \(wanted) is not connected; using \(choice.name) (ranked)")
         } else if preferredInputUID == nil, choice.isVirtual {
