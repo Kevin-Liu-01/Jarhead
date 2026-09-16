@@ -33,7 +33,22 @@ final class AudioEngine {
     /// `applyInputDevice`); on the plain path it is the ranked or explicit choice.
     private var activeInputUID: String?
     private var voiceProcessingOn = false
-    /// Device list / default-input listeners (Core Audio), answering on `queue`.
+    /// design12: what the input node is told at start (`setPolicy`); consulted at every start,
+    /// so a flip while asleep costs nothing and is used at the next wake.
+    private var wantedPolicy: VoiceProcessingPolicy = .aec
+    /// The rung that came up last (0-based index into `wantedPolicy.attempts`), so a device
+    /// change does not re-walk the refused rungs (dead air); nil = walk from the top.
+    private var winningRung: Int?
+    /// The running graph's rung (1-based), wiring, guard tail and tap format, for the frame.
+    private var currentRung = 0
+    private var currentWiring: OutputWiring = .automatic
+    private var currentTailMs = 0
+    private var currentTapFormat = ""
+    private var lastAudioState: AudioStateReadback?
+    private var rebuildPending = false
+    /// The private aggregate the unit runs on (probe-only rungs; `PrivateRoute.enabled`).
+    private var privateRoute: PrivateRoute?
+    /// Device list / default-input / default-output / mic-client listeners (Core Audio), answering on `queue`.
     private let router = MicRouter()
     private var lastRouteSummary = ""
     private var running = false
@@ -58,12 +73,20 @@ final class AudioEngine {
     var onMicBuffer: ((AVAudioPCMBuffer, AVAudioTime) -> Void)?
     /// Human-readable status/errors. Called on the audio queue.
     var onStatus: ((String) -> Void)?
+    /// design12: the graph's state as a value (`AudioStateReadback`) — on start, stop, route
+    /// change, guard edges and every 5 s with the `mic diag` tick, coalesced to changes.
+    /// Called on the audio queue. The app forwards it to the daemon and the island.
+    var onAudioState: ((AudioStateReadback) -> Void)?
 
     var isRunning: Bool { queue.sync { running } }
 
     init() {
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
             self?.restartAfterConfigurationChange()
+        }
+        // The guard's hold beginning or ending is a state the island shows (the mic box dims).
+        EchoGuard.shared.onHeldChange = { [weak self] _ in
+            self?.queue.async { self?.publishAudioState("guard") }
         }
         // The device list and the system default input, watched from the start: a
         // microphone that vanishes mid-session is rebuilt around on the next-ranked one
@@ -106,8 +129,10 @@ final class AudioEngine {
                 self.player.stop()
                 if self.engine.isRunning { self.player.play() }
             }
-            // Nothing queued is audible any more: the duck's gate disarms with the backlog.
+            // Nothing queued is audible any more: the duck's gate disarms with the backlog,
+            // and the echo guard's audible window ends with it.
             BargeInDuck.shared.noteFlush()
+            EchoGuard.shared.noteFlush()
         }
     }
 
@@ -135,12 +160,128 @@ final class AudioEngine {
             let value = (normalized?.isEmpty ?? true) ? nil : normalized
             guard value != self.preferredInputUID else { return }
             self.preferredInputUID = value
+            self.winningRung = nil
             if self.wanted {
                 self.stopLocked()
                 self.retryAttempt = 0
                 self.startLocked()
             }
         }
+    }
+
+    // MARK: - design12: the policy, mute, the state frame
+
+    /// Settings › Audio › Recording flipped (or the app's first read of it): remember the
+    /// policy and, if the graph is up, rebuild it from rung 1 — once Jarhead has finished
+    /// the sentence he is on (`stopLocked` drops the speaker backlog), capped at 3 s.
+    func setPolicy(_ p: VoiceProcessingPolicy) {
+        queue.async {
+            guard p != self.wantedPolicy else { return }
+            self.wantedPolicy = p
+            self.winningRung = nil
+            guard self.wanted, self.running, !self.rebuildPending else { return }
+            self.rebuildPending = true
+            self.rebuildWhenQuiet(deadline: CFAbsoluteTimeGetCurrent() + 3, noted: false)
+        }
+    }
+
+    /// On `queue`: the deferred rebuild — now if the speaker is quiet (nothing audible queued
+    /// for 0.3 s) or the deadline has passed, else look again in 250 ms.
+    private func rebuildWhenQuiet(deadline: CFAbsoluteTime, noted: Bool) {
+        guard wanted, running else {
+            // Stopped meanwhile: the next start reads the policy anyway.
+            rebuildPending = false
+            return
+        }
+        if BargeInDuck.shared.outputQuiet(for: 0.3) || CFAbsoluteTimeGetCurrent() >= deadline {
+            rebuildPending = false
+            stopLocked()
+            retryAttempt = 0
+            startLocked()
+            return
+        }
+        if !noted { onStatus?("policy flip deferred — Jarhead is speaking") }
+        queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.rebuildWhenQuiet(deadline: deadline, noted: true)
+        }
+    }
+
+    /// Mute (phase `muted`): this process's input is zeroed at the HAL
+    /// (`kAudioHardwarePropertyProcessInputMute`, via `AVAudioApplication`) so the orange dot
+    /// is honest; the graph stays up so unmute is instant, and the echo guard freezes with it.
+    func setProcessInputMuted(_ muted: Bool) {
+        queue.async {
+            do {
+                try AVAudioApplication.shared.setInputMuted(muted)
+            } catch {
+                self.onStatus?("process input mute \(muted ? "on" : "off") refused: \(error.localizedDescription)")
+            }
+            EchoGuard.shared.frozen = muted
+            self.publishAudioState(muted ? "muted" : "unmuted")
+        }
+    }
+
+    /// The frame, read back from the nodes and the HAL. On `queue`.
+    private func readback() -> AudioStateReadback {
+        let input = engine.inputNode
+        var s = AudioStateReadback()
+        var knobs: VoiceProcessingKnobs.Readback?
+        try? objcTry {
+            s.voiceProcessing = input.isVoiceProcessingEnabled
+            if s.voiceProcessing { knobs = VoiceProcessingKnobs.read(input) }
+        }
+        s.running = running
+        s.duckLevel = knobs?.duckLevel
+        s.advancedDucking = knobs?.advanced
+        s.agc = knobs?.agc
+        s.bypassed = knobs?.bypassed
+        s.rung = running ? currentRung : 0
+        s.wiring = running ? currentWiring.description : ""
+        s.hears = hearsFacts(input: input, voiceProcessing: s.voiceProcessing)
+        s.speaks = AudioDeviceFacts.defaultOutput()
+        s.tapFormat = running ? currentTapFormat : ""
+        s.recording = !wantedPolicy.echoCancel
+        s.fallback = running && !s.voiceProcessing && wantedPolicy.echoCancel
+        let guardStats = EchoGuard.shared.stats
+        s.guardOn = EchoGuard.shared.isAttached
+        s.guardHeld = EchoGuard.shared.isHeld
+        s.guardTailMs = s.guardOn ? currentTailMs : 0
+        s.gated = guardStats.gated
+        s.chunks = guardStats.chunks
+        s.breakthroughs = guardStats.breakthroughs
+        s.heldSeconds = guardStats.heldSeconds
+        s.sharedWith = s.hears.flatMap { AudioEngine.deviceID(matching: $0.uid) }.flatMap { AudioProcessObjects.sharingInput(on: $0) }
+        s.inputMuted = AVAudioApplication.shared.isInputMuted
+        s.aggregatePresent = MicInputs.enumerate().contains { $0.uid.hasPrefix("CADefaultDeviceAggregate") }
+        return s
+    }
+
+    /// The device the graph hears through: under AEC the system default input (the unit
+    /// follows it); on the plain path the input AU's `kAudioOutputUnitProperty_CurrentDevice`;
+    /// on the private route the ranked mic behind the aggregate. Stopped: the default input.
+    private func hearsFacts(input: AVAudioInputNode, voiceProcessing: Bool) -> AudioDeviceFacts? {
+        if running, let route = privateRoute, let id = AudioEngine.deviceID(matching: route.micUID) {
+            return AudioDeviceFacts.read(id: id, scope: kAudioObjectPropertyScopeInput)
+        }
+        if running, !voiceProcessing, let au = input.audioUnit {
+            var dev = AudioDeviceID(0)
+            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            if AudioUnitGetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, &size) == noErr, dev != 0 {
+                return AudioDeviceFacts.read(id: dev, scope: kAudioObjectPropertyScopeInput)
+            }
+        }
+        return AudioDeviceFacts.defaultInput()
+    }
+
+    /// Publish the frame when it changed. On `queue`.
+    private func publishAudioState(_ reason: String) {
+        publish(readback(), reason: reason)
+    }
+
+    private func publish(_ state: AudioStateReadback, reason: String) {
+        guard state != lastAudioState else { return }
+        lastAudioState = state
+        onAudioState?(state)
     }
 
     /// Speaker PCM16 mono 24 kHz from the daemon. Scheduled immediately; the player queues.
@@ -160,9 +301,13 @@ final class AudioEngine {
                 dst[i] = s
                 energy += Double(s * s)
             }
-            // What the speaker is about to say, for the barge-in duck: GPT-Live-1 streams
-            // silence between sentences too, so audibility (not arrival) is what arms it.
-            BargeInDuck.shared.noteOutput(rms: clampLevel((energy / Double(frames)).squareRoot()), seconds: Double(frames) / self.playFormat.sampleRate)
+            // What the speaker is about to say, for the barge-in duck and the echo guard:
+            // GPT-Live-1 streams silence between sentences too, so audibility (not arrival)
+            // is what arms them.
+            let rms = clampLevel((energy / Double(frames)).squareRoot())
+            let seconds = Double(frames) / self.playFormat.sampleRate
+            BargeInDuck.shared.noteOutput(rms: rms, seconds: seconds)
+            EchoGuard.shared.noteOutput(rms: rms, seconds: seconds)
             self.guardPlayer("schedule") {
                 self.player.scheduleBuffer(buf, completionHandler: nil)
                 if !self.player.isPlaying { self.player.play() }
@@ -172,27 +317,35 @@ final class AudioEngine {
 
     // MARK: - engine setup (all on `queue`)
 
+    /// Walk the policy's ladder (`VoiceProcessingPolicy.attempts`) from the remembered
+    /// winning rung. Voice processing (system echo cancellation) is what makes full duplex
+    /// livable next to speakers, but it fails to initialise (-10875) with some virtual or
+    /// Bluetooth devices: with AEC the three wirings are tried, then the plain graph,
+    /// guarded, rather than being deaf. Recording walks the plain rungs only.
     private func startLocked() {
         guard !running else { return }
-        // Voice processing (system echo cancellation) is what makes full duplex livable
-        // next to speakers, but it fails to initialise (-10875) with some virtual or
-        // Bluetooth devices. Try with it, then fall back without it rather than being deaf.
+        let attempts = wantedPolicy.attempts
+        let first = VoiceProcessingPolicy.firstRung(remembered: winningRung, count: attempts.count)
         var lastError: Error?
-        // VoiceIO wants input and output on one clock: the output wiring is the part
-        // that decides whether initialization succeeds, so try the plausible ones.
-        let attempts: [(voice: Bool, wiring: OutputWiring)] = [(true, .automatic), (true, .inputRate), (true, .hardware), (false, .hardware)]
-        for attempt in attempts {
+        for (index, attempt) in attempts.enumerated() where index >= first {
             do {
-                try startGraph(voiceProcessing: attempt.voice, wiring: attempt.wiring)
+                try startGraph(attempt, rung: index + 1)
+                winningRung = index
                 return
             } catch {
                 lastError = error
                 let how = error is ObjCException ? "raised" : "failed"
-                onStatus?("audio start (voice processing \(attempt.voice ? "on" : "off"), output \(attempt.wiring)) \(how): \(error.localizedDescription) — \(deviceSummary())")
+                onStatus?("audio start (voice processing \(attempt.voice ? "on" : "off"), output \(attempt.wiring), rung \(index + 1)) \(how): \(error.localizedDescription) — \(deviceSummary())")
                 tearDownGraph()
             }
         }
+        if first > 0 {
+            // The remembered rung died (a device pair changed under it): walk from the top once.
+            winningRung = nil
+            return startLocked()
+        }
         running = false
+        winningRung = nil
         scheduleRetryLocked(after: lastError)
     }
 
@@ -219,35 +372,31 @@ final class AudioEngine {
         }
     }
 
-    private enum OutputWiring: CustomStringConvertible {
-        /// Let AVAudioEngine wire mainMixer → output itself when the mixer is first touched.
-        case automatic
-        /// Explicit connection at the input hardware format (VoiceIO runs both sides at one rate).
-        case inputRate
-        /// Explicit connection at the output hardware format.
-        case hardware
-        var description: String {
-            switch self {
-            case .automatic: return "automatic"
-            case .inputRate: return "input-rate"
-            case .hardware: return "hardware"
-            }
-        }
-    }
-
-    private func startGraph(voiceProcessing: Bool, wiring: OutputWiring) throws {
+    private func startGraph(_ attempt: StartAttempt, rung: Int) throws {
         // Every AVFoundation call below can raise an NSException (a connection at a rate
         // the hardware no longer runs, a tap on a stale format, a start with no device).
         // Inside the ObjC shim (`objcTry`) a raise is a thrown error the attempt loop
         // handles — not the end of the process.
         let input = engine.inputNode
+        let voiceProcessing = attempt.voice
+        // Still while the engine is stopped (`setVoiceProcessingEnabled` and the ducking
+        // configuration require it, AVIO:150). The knob writes sit in the same `objcTry`:
+        // AVFAudio raises when it dislikes the node's state, and a raise must stay a caught
+        // attempt failure.
         try objcTry(throwing: {
             if input.isVoiceProcessingEnabled != voiceProcessing {
                 try input.setVoiceProcessingEnabled(voiceProcessing)
             }
+            if voiceProcessing {
+                VoiceProcessingKnobs.apply(self.wantedPolicy, to: input)   // ducking · agc · bypass
+            }
         })
         voiceProcessingOn = voiceProcessing
-        applyInputDevice(to: input, voiceProcessing: voiceProcessing)
+        if attempt.privateRoute {
+            try applyPrivateRoute(to: input)
+        } else {
+            applyInputDevice(to: input, voiceProcessing: voiceProcessing)
+        }
 
         let hw = input.outputFormat(forBus: 0)
         guard hw.sampleRate > 0, hw.channelCount > 0 else {
@@ -257,50 +406,67 @@ final class AudioEngine {
 
         var live = hw
         try objcTry(throwing: {
-            if !engine.attachedNodes.contains(player) { engine.attach(player) }
-            engine.connect(player, to: engine.mainMixerNode, format: playFormat)
-            switch wiring {
-            case .automatic:
-                break
-            case .inputRate:
-                let f = AVAudioFormat(standardFormatWithSampleRate: hw.sampleRate, channels: engine.outputNode.inputFormat(forBus: 0).channelCount > 0 ? engine.outputNode.inputFormat(forBus: 0).channelCount : 2) ?? hw
-                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: f)
-            case .hardware:
-                let outFormat = engine.outputNode.inputFormat(forBus: 0)
-                if outFormat.sampleRate > 0 {
-                    engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outFormat)
-                }
-            }
-
-            input.removeTap(onBus: 0)
-            // AVAudioEngine clamps tap buffers to [100, 400] ms whatever size is asked for
-            // (AVAudioNode.h; measured 4800 frames = 100 ms at 48 kHz here), so 2048 is a
-            // wish, not the period: every word waits 0–100 ms (mean ~50) in the tap before
-            // the wire and the ear see it, plus ~10 ms delivery. Going below that needs a
-            // render-block source (an `AVAudioSinkNode` on the input, ~10 ms slices), not a
-            // tap setting.
-            //
-            // `format: nil` is the node's own output format at the moment the tap is
-            // created — nothing to mismatch. `hw`, read a moment ago, can be stale right
-            // after a device switch, and a tap asked for it raised "Failed to create tap
-            // due to format mismatch" and took the app down. `handleMic` converts from
-            // `buffer.format` and rebuilds its converter when that changes, so the tap's
-            // real format is never assumed.
-            var loggedFirst = false
-            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, when in
-                if !loggedFirst {
-                    loggedFirst = true
-                    self?.onStatus?("mic tap first buffer: \(buffer.format.brief), \(buffer.frameLength) frames")
-                }
-                self?.handleMic(buffer, at: when)
-            }
-
-            engine.prepare()
+            self.wireGraph(attempt.wiring, hw: hw)
+            self.installMicTap(on: input)
+            self.engine.prepare()
             live = input.outputFormat(forBus: 0)
-            try engine.start()
-            player.play()
+            try self.engine.start()
+            self.player.play()
         })
+        finishStart(voiceProcessing: voiceProcessing, wiring: attempt.wiring, rung: rung, hw: hw, live: live)
+    }
+
+    /// The player onto the main mixer, and mainMixer → output per the wiring. Inside the caller's `objcTry`.
+    private func wireGraph(_ wiring: OutputWiring, hw: AVAudioFormat) {
+        if !engine.attachedNodes.contains(player) { engine.attach(player) }
+        engine.connect(player, to: engine.mainMixerNode, format: playFormat)
+        switch wiring {
+        case .automatic:
+            break
+        case .inputRate:
+            let outChannels = engine.outputNode.inputFormat(forBus: 0).channelCount
+            let f = AVAudioFormat(standardFormatWithSampleRate: hw.sampleRate, channels: outChannels > 0 ? outChannels : 2) ?? hw
+            engine.connect(engine.mainMixerNode, to: engine.outputNode, format: f)
+        case .hardware:
+            let outFormat = engine.outputNode.inputFormat(forBus: 0)
+            if outFormat.sampleRate > 0 {
+                engine.connect(engine.mainMixerNode, to: engine.outputNode, format: outFormat)
+            }
+        }
+    }
+
+    /// The one microphone tap. Inside the caller's `objcTry`.
+    private func installMicTap(on input: AVAudioInputNode) {
+        input.removeTap(onBus: 0)
+        // AVAudioEngine clamps tap buffers to [100, 400] ms whatever size is asked for
+        // (AVAudioNode.h; measured 4800 frames = 100 ms at 48 kHz here), so 2048 is a
+        // wish, not the period: every word waits 0–100 ms (mean ~50) in the tap before
+        // the wire and the ear see it, plus ~10 ms delivery. Going below that needs a
+        // render-block source (an `AVAudioSinkNode` on the input, ~10 ms slices), not a
+        // tap setting.
+        //
+        // `format: nil` is the node's own output format at the moment the tap is
+        // created — nothing to mismatch. `hw`, read a moment ago, can be stale right
+        // after a device switch, and a tap asked for it raised "Failed to create tap
+        // due to format mismatch" and took the app down. `handleMic` converts from
+        // `buffer.format` and rebuilds its converter when that changes, so the tap's
+        // real format is never assumed.
+        var loggedFirst = false
+        input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, when in
+            if !loggedFirst {
+                loggedFirst = true
+                self?.onStatus?("mic tap first buffer: \(buffer.format.brief), \(buffer.frameLength) frames")
+            }
+            self?.handleMic(buffer, at: when)
+        }
+    }
+
+    /// The graph is up: arm the duck (AEC only) or the echo guard (plain graph only), say so, publish.
+    private func finishStart(voiceProcessing: Bool, wiring: OutputWiring, rung: Int, hw: AVAudioFormat, live: AVAudioFormat) {
         running = true
+        currentRung = rung
+        currentWiring = wiring
+        currentTapFormat = live.brief
         if let uid = activeInputUID { lastUsedInputUID = uid }
         // The duck drives the player's own volume (its bus on the main mixer): −20 dB the
         // moment Kevin's voice is heard over Jarhead's, back over 300 ms. Only with echo
@@ -311,9 +477,79 @@ final class AudioEngine {
         BargeInDuck.shared.attach(echoCancelled: voiceProcessing) { gain in
             try? objcTry { playerNode.volume = gain }
         }
+        // On the plain graph the microphone hears Jarhead at full level: the guard holds the
+        // wire while he is audible plus a tail sized for the room and the output's latency.
+        let tail = guardTail(speaks: AudioDeviceFacts.defaultOutput())
+        currentTailMs = Int((tail * 1000).rounded())
+        if voiceProcessing {
+            EchoGuard.shared.detach()
+        } else {
+            EchoGuard.shared.attach(tail: tail)
+        }
         let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
-        onStatus?("audio running: mic \(formatNote), voice processing \(voiceProcessing ? "on" : "off (no echo cancellation)"), output wiring \(wiring)")
+        onStatus?(AudioEngine.runningLine(mic: formatNote, policy: wantedPolicy, voiceProcessing: voiceProcessing, wiring: wiring, rung: rung, tailMs: currentTailMs))
         publishRoute("audio running")
+    }
+
+    /// `baseTail + the output node's presentation latency (+ the Bluetooth allowance)`, clamped.
+    private func guardTail(speaks: AudioDeviceFacts?) -> Double {
+        var latency = 0.0
+        try? objcTry { latency = self.engine.outputNode.presentationLatency }
+        var tail = EchoGuardModel.baseTail + (latency.isFinite ? max(0, latency) : 0)
+        if speaks?.isBluetooth == true { tail += EchoGuardModel.bluetoothTail }
+        return min(EchoGuardModel.maxTail, max(EchoGuardModel.baseTail, tail))
+    }
+
+    /// `audio running: mic <fmt>, voice processing on (duck min advanced, agc on, bypass off) | off (guard on[, fallback]), output wiring <w>, rung <n>, tail <ms> ms`
+    static func runningLine(mic: String, policy: VoiceProcessingPolicy, voiceProcessing: Bool, wiring: OutputWiring, rung: Int, tailMs: Int) -> String {
+        let vp: String
+        if voiceProcessing {
+            vp = "on (\(policy.knobsDescription))"
+        } else {
+            vp = policy.echoCancel ? "off (guard on, fallback)" : "off (guard on)"
+        }
+        return "audio running: mic \(mic), voice processing \(vp), output wiring \(wiring), rung \(rung), tail \(tailMs) ms"
+    }
+
+    /// Probe-only while `PrivateRoute.enabled` is false: the unit on Jarhead's own aggregate
+    /// (the default output as the clock, the ranked microphone beside it), so it need not
+    /// follow the system default input. Throws to fail the rung; the ladder falls through.
+    private func applyPrivateRoute(to input: AVAudioInputNode) throws {
+        let inputs = MicInputs.enumerate()
+        let systemDefault = MicInputs.systemDefaultUID()
+        let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
+        guard let mic = ranked.first else { throw PrivateRoute.RouteError.noMic }
+        guard let output = AudioDeviceFacts.defaultOutput() else { throw PrivateRoute.RouteError.noOutput }
+        guard let au = input.audioUnit else { throw PrivateRoute.RouteError.select(-1) }
+        let route = try PrivateRoute.make(micUID: mic.uid, outputUID: output.uid).get()
+        var dev = route.id
+        let err = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard err == noErr else {
+            route.destroy()
+            throw PrivateRoute.RouteError.select(err)
+        }
+        privateRoute = route
+        activeInputUID = mic.uid
+        onStatus?("private route \(PrivateRoute.uid): \(output.name) + \(mic.name) [\(route.subDevices().joined(separator: ", "))]")
+    }
+
+    /// Release the voice-processing unit with the graph: it exists exactly while the graph
+    /// runs, so nothing ducks or holds a headset microphone after Jarhead sleeps, and a
+    /// refused AEC rung never hands a stale `true` to the plain rung that follows. The
+    /// guard and the private aggregate go with it. On `queue`, after `engine.stop()`.
+    private func releaseVoiceProcessing() {
+        let input = engine.inputNode
+        do {
+            try objcTry(throwing: {
+                if input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(false) }
+            })
+        } catch {
+            onStatus?("voice processing release raised: \(error.localizedDescription)")
+        }
+        voiceProcessingOn = false
+        EchoGuard.shared.detach()
+        privateRoute?.destroy()
+        privateRoute = nil
     }
 
     private func tearDownGraph() {
@@ -325,6 +561,7 @@ final class AudioEngine {
             if self.engine.isRunning { self.engine.stop() }
             self.engine.reset()
         }
+        releaseVoiceProcessing()
     }
 
     /// Default input/output device names, for the log line that explains a failure.
@@ -352,8 +589,11 @@ final class AudioEngine {
             self.player.stop()
             if self.engine.isRunning { self.engine.stop() }
         }
+        releaseVoiceProcessing()
         running = false
         activeInputUID = nil
+        currentRung = 0
+        currentTapFormat = ""
         publishRoute("audio stopped")
     }
 
@@ -407,27 +647,11 @@ final class AudioEngine {
         guard buffer.frameLength > 0, let floats = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
-        if channelEnergy.count != channels { channelEnergy = Array(repeating: 0, count: channels) }
-        for c in 0..<channels {
-            var acc = 0.0
-            let p = floats[c]
-            for i in 0..<frames { acc += Double(p[i] * p[i]) }
-            // Leaky integration; time constant ≈ 20 buffers ≈ 2 s of the tap's 100 ms buffers.
-            // A non-finite mean (a NaN sample from a driver mid-switch) counts as silence:
-            // once NaN, the energy would never compare again and the channel choice would freeze.
-            let mean = acc / Double(frames)
-            channelEnergy[c] = channelEnergy[c] * 0.95 + (mean.isFinite ? mean : 0)
-        }
-        if channels > 1 {
-            var best = chosenChannel
-            for c in 0..<channels where channelEnergy[c] > channelEnergy[best] * 1.5 { best = c }
-            chosenChannel = best
-        } else {
-            chosenChannel = 0
-        }
+        let rate = buffer.format.sampleRate
+        chooseChannel(floats, frames: frames, channels: channels)
 
         // Mono float at the hardware rate, then one converter to 24 kHz Int16.
-        guard let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: buffer.format.sampleRate, channels: 1, interleaved: false),
+        guard let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
               let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(frames)),
               let dst = mono.floatChannelData?[0] else { return }
         let src = floats[min(chosenChannel, channels - 1)]
@@ -435,19 +659,57 @@ final class AudioEngine {
         mono.frameLength = AVAudioFrameCount(frames)
         // The barge-in gate reads the same channel in 10 ms slices: the tap only hands over
         // 100 ms buffers, so the slices are what let "60 ms of speech" be judged inside one.
-        BargeInDuck.shared.noteMic(mono: dst, frames: frames, sampleRate: buffer.format.sampleRate, capturedAt: when)
-        // The ear hears the same buffer the voice gets (echo-cancelled when voice
-        // processing is on), fresh each callback, so appending it elsewhere is safe.
+        // (It returns at once on the plain path: the duck stays detached there.)
+        BargeInDuck.shared.noteMic(mono: dst, frames: frames, sampleRate: rate, capturedAt: when)
+        // The ear hears the raw buffer first (echo-cancelled when voice processing is on;
+        // Jarhead's own voice too on the plain path — the engine holds reflexes while the
+        // voice speaks, and the `stop` reflex is barge-in by word), fresh each callback.
         onMicBuffer?(mono, when)
+        // The echo guard (plain graph only): `.hold` while Jarhead is audible plus the tail.
+        let verdict = EchoGuard.shared.judge(mono: dst, frames: frames, sampleRate: rate)
 
-        if monoConverter == nil || monoConverterRate != buffer.format.sampleRate {
-            monoConverter = AVAudioConverter(from: monoFormat, to: wireFormat)
-            monoConverterRate = buffer.format.sampleRate
+        guard let out = convertToWire(mono, format: monoFormat, frames: frames, channels: channels) else { return }
+        guard out.frameLength > 0, let ch = out.int16ChannelData?[0] else { return }
+        // Held: zero-filled, not dropped — the wire keeps its 100 ms cadence and Live's
+        // timeline does not jump. What reaches the wire is what the Input meter shows.
+        if verdict == .hold { memset(ch, 0, Int(out.frameLength) * 2) }
+        let bytes = Data(bytes: ch, count: Int(out.frameLength) * 2)
+        queue.async { self.accumulate(bytes) }
+    }
+
+    /// Per-channel leaky energy (time constant ≈ 20 buffers ≈ 2 s of the tap's 100 ms
+    /// buffers) and the channel choice, with 1.5× hysteresis. A non-finite mean (a NaN
+    /// sample from a driver mid-switch) counts as silence: once NaN, the energy would never
+    /// compare again and the channel choice would freeze.
+    private func chooseChannel(_ floats: UnsafePointer<UnsafeMutablePointer<Float>>, frames: Int, channels: Int) {
+        if channelEnergy.count != channels { channelEnergy = Array(repeating: 0, count: channels) }
+        for c in 0..<channels {
+            var acc = 0.0
+            let p = floats[c]
+            for i in 0..<frames { acc += Double(p[i] * p[i]) }
+            let mean = acc / Double(frames)
+            channelEnergy[c] = channelEnergy[c] * 0.95 + (mean.isFinite ? mean : 0)
         }
-        guard let converter = monoConverter else { return }
-        let ratio = wireFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(frames) * ratio) + 32
-        guard let out = AVAudioPCMBuffer(pcmFormat: wireFormat, frameCapacity: capacity) else { return }
+        guard channels > 1 else {
+            chosenChannel = 0
+            return
+        }
+        var best = min(chosenChannel, channels - 1)
+        for c in 0..<channels where channelEnergy[c] > channelEnergy[best] * 1.5 { best = c }
+        chosenChannel = best
+    }
+
+    /// One `AVAudioConverter` (mono@hw → Int16 24 kHz), rebuilt when the rate changes; the
+    /// `mic diag` line every 5 s, and the state frame's tick with it. nil on a converter error.
+    private func convertToWire(_ mono: AVAudioPCMBuffer, format monoFormat: AVAudioFormat, frames: Int, channels: Int) -> AVAudioPCMBuffer? {
+        let rate = monoFormat.sampleRate
+        if monoConverter == nil || monoConverterRate != rate {
+            monoConverter = AVAudioConverter(from: monoFormat, to: wireFormat)
+            monoConverterRate = rate
+        }
+        guard let converter = monoConverter else { return nil }
+        let capacity = AVAudioFrameCount(Double(frames) * (wireFormat.sampleRate / rate)) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: wireFormat, frameCapacity: capacity) else { return nil }
         var consumed = false
         var error: NSError?
         let status = converter.convert(to: out, error: &error) { _, outStatus in
@@ -463,11 +725,11 @@ final class AudioEngine {
         if now - lastDiagAt > 5 {
             lastDiagAt = now
             let energies = channelEnergy.map { String(format: "%.4f", sqrt($0)) }.joined(separator: " ")
-            onStatus?("mic diag: \(channels) ch, using ch\(chosenChannel), rms per ch [\(energies)], convert \(status == .error ? "ERROR \(error?.localizedDescription ?? "")" : "ok \(out.frameLength) frames")\(BargeInDuck.shared.diagSuffix())")
+            let convert = status == .error ? "ERROR \(error?.localizedDescription ?? "")" : "ok \(out.frameLength) frames"
+            onStatus?("mic diag: \(channels) ch, using ch\(chosenChannel), rms per ch [\(energies)], convert \(convert)\(BargeInDuck.shared.diagSuffix())\(EchoGuard.shared.diagSuffix())")
+            queue.async { self.publishAudioState("tick") }
         }
-        guard status != .error, out.frameLength > 0, let ch = out.int16ChannelData?[0] else { return }
-        let bytes = Data(bytes: ch, count: Int(out.frameLength) * 2)
-        queue.async { self.accumulate(bytes) }
+        return status == .error ? nil : out
     }
 
     private func accumulate(_ bytes: Data) {
@@ -607,7 +869,8 @@ final class AudioEngine {
         let inputs = MicInputs.enumerate()
         let systemDefault = MicInputs.systemDefaultUID()
         let ranked = MicRanking.rank(inputs, explicit: preferredInputUID, lastUsed: lastUsedInputUID, systemDefault: systemDefault)
-        let route = MicRoute(ranked: ranked, active: activeInputUID, systemDefault: systemDefault, explicit: preferredInputUID, echoCancelled: running && voiceProcessingOn, running: running)
+        let state = readback()
+        let route = MicRoute(ranked: ranked, active: activeInputUID, systemDefault: systemDefault, explicit: preferredInputUID, echoCancelled: running && voiceProcessingOn, running: running, state: state)
         let summary = route.summary
         if summary != lastRouteSummary {
             lastRouteSummary = summary
@@ -615,6 +878,7 @@ final class AudioEngine {
         }
         let info = route.userInfo
         DispatchQueue.main.async { NotificationCenter.default.post(name: .jarheadMicRoute, object: nil, userInfo: info) }
+        publish(state, reason: reason)
     }
 
     /// The Console's picker asks for the route when it appears (`MicRoute.requestName`).
@@ -678,7 +942,10 @@ struct MicInput: Equatable {
         transport == UInt32(kAudioDeviceTransportTypeAggregate) || transport == UInt32(kAudioDeviceTransportTypeAutoAggregate) || transport == UInt32(kAudioDeviceTransportTypeVirtual)
     }
 
-    var transportName: String {
+    var transportName: String { MicInput.transportName(transport) }
+
+    /// The transport as one word — shared with `AudioDeviceFacts` (outputs too).
+    static func transportName(_ transport: UInt32) -> String {
         switch transport {
         case UInt32(kAudioDeviceTransportTypeBuiltIn): return "built-in"
         case UInt32(kAudioDeviceTransportTypeUSB): return "usb"
@@ -700,6 +967,8 @@ enum MicInputs {
         var out: [MicInput] = []
         for id in AudioEngine.allDeviceIDs() where hasInputStreams(id) && isAlive(id) {
             guard let uid = AudioEngine.deviceUID(id), !uid.isEmpty else { continue }
+            // Our own private aggregate is visible to its creator; it is a route, not a microphone.
+            if uid == PrivateRoute.uid { continue }
             out.append(MicInput(id: id, uid: uid, name: deviceName(id) ?? uid, transport: transport(id)))
         }
         return out
@@ -782,6 +1051,8 @@ struct MicRoute {
     let explicit: String?
     let echoCancelled: Bool
     let running: Bool
+    /// design12: the Hears / Speaks figures and the other mic clients, for the Console's rows.
+    let state: AudioStateReadback
 
     /// "explicit" | "ranked" | "system default (echo cancellation)" | "off".
     var follows: String {
@@ -801,8 +1072,14 @@ struct MicRoute {
         return "\(list.isEmpty ? "no input devices" : list); active \(activeName), follows \(follows)"
     }
 
+    /// Plain values only (the Console harness compiles without this file). design12 keys:
+    /// `hearsName` String · `hearsRate` Double (Hz, 0 unknown) · `hearsState` String
+    /// (`echo cancelled` | `echo guarded` | `no echo cancellation` | `off`) · `speaksName`
+    /// String · `speaksRate` Double · `speaksState` String (`full quality` | `narrowed` | "")
+    /// · `shared` [String] bundle ids of other processes on the mic — the key is absent
+    /// when the HAL cannot say.
     var userInfo: [String: Any] {
-        [
+        var info: [String: Any] = [
             "ids": ranked.map(\.uid),
             "names": ranked.map(\.name),
             "transports": ranked.map(\.transportName),
@@ -811,22 +1088,45 @@ struct MicRoute {
             "default": systemDefault ?? "",
             "follows": follows,
             "summary": summary,
+            "hearsName": state.hears?.name ?? "",
+            "hearsRate": state.hears?.rate ?? 0,
+            "hearsState": state.hearsState,
+            "speaksName": state.speaks?.name ?? "",
+            "speaksRate": state.speaks?.rate ?? 0,
+            "speaksState": state.speaksState,
         ]
+        if let shared = state.sharedWith { info["shared"] = shared }
+        return info
     }
 }
 
-/// Core Audio listeners for the device list and the system default input; `onChange`
-/// runs on the queue handed to `start`, with a short reason.
+/// Core Audio listeners for the device list, the system default input and output, and
+/// (where the HAL has process objects) the list of processes holding devices; `onChange`
+/// runs on the queue handed to `start`, with a short reason. Bursts are coalesced by the
+/// engine's 50 ms fold (`routeChanged`).
 final class MicRouter {
     var onChange: ((String) -> Void)?
     private var queue: DispatchQueue?
     private var block: AudioObjectPropertyListenerBlock?
 
-    private static var devicesAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    /// The selectors watched on the system object, with the reason each one gives.
+    private static let watched: [(selector: AudioObjectPropertySelector, reason: String)] = [
+        (kAudioHardwarePropertyDevices, "device list changed"),
+        (kAudioHardwarePropertyDefaultInputDevice, "default input changed"),
+        (kAudioHardwarePropertyDefaultOutputDevice, "default output changed"),
+        (kAudioHardwarePropertyProcessObjectList, "mic clients changed"),
+    ]
+
+    private static func reason(for selector: AudioObjectPropertySelector) -> String {
+        watched.first { $0.selector == selector }?.reason ?? "audio hardware changed"
     }
-    private static var defaultInputAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+
+    /// The addresses that exist on this HAL (the process list is runtime-guarded).
+    private static func addresses() -> [AudioObjectPropertyAddress] {
+        watched.compactMap { entry in
+            var addr = CoreAudioReads.address(entry.selector)
+            return AudioObjectHasProperty(CoreAudioReads.system, &addr) ? addr : nil
+        }
     }
 
     func start(on queue: DispatchQueue) {
@@ -835,25 +1135,22 @@ final class MicRouter {
         let block: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
             var reasons: [String] = []
             for i in 0 ..< Int(count) {
-                let selector = addresses[i].mSelector
-                let reason = selector == kAudioHardwarePropertyDevices ? "device list changed" : selector == kAudioHardwarePropertyDefaultInputDevice ? "default input changed" : "audio hardware changed"
+                let reason = MicRouter.reason(for: addresses[i].mSelector)
                 if !reasons.contains(reason) { reasons.append(reason) }
             }
             self?.onChange?(reasons.joined(separator: ", "))
         }
         self.block = block
-        var devices = MicRouter.devicesAddress
-        var defaultInput = MicRouter.defaultInputAddress
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devices, queue, block)
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultInput, queue, block)
+        for var addr in MicRouter.addresses() {
+            AudioObjectAddPropertyListenerBlock(CoreAudioReads.system, &addr, queue, block)
+        }
     }
 
     func stop() {
         guard let block, let queue else { return }
-        var devices = MicRouter.devicesAddress
-        var defaultInput = MicRouter.defaultInputAddress
-        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &devices, queue, block)
-        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultInput, queue, block)
+        for var addr in MicRouter.addresses() {
+            AudioObjectRemovePropertyListenerBlock(CoreAudioReads.system, &addr, queue, block)
+        }
         self.block = nil
     }
 }
@@ -1086,6 +1383,13 @@ final class BargeInDuck: @unchecked Sendable {
         queueEnd = now
         audibleUntil = min(audibleUntil, now)
         lock.unlock()
+    }
+
+    /// True when no audible output is queued and none has been for `seconds` (the policy
+    /// flip's deferral asks this so a rebuild does not cut Jarhead mid-sentence).
+    func outputQuiet(for seconds: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return CFAbsoluteTimeGetCurrent() >= audibleUntil + seconds
     }
 
     /// The engine's phase entered or left `speaking` (main queue). Leaving it while ducked
