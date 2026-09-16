@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type Automation, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
+import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type AudioDeviceInfo, type AudioSettings, type AudioState, type Automation, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Phase, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
 import { Ledger, REPO_ROOT, clockOf, dataPaths, expandPath, keySource, readConfig, secretsPresent } from "@jarhead/core";
 import { inWords, recipeVerdict } from "./automations-cli.ts";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
@@ -63,6 +63,10 @@ interface DaemonRead {
   readonly nextFire: Snapshot["nextFire"] | undefined;
   /** `snapshot.settings.automations` — the daemon's view of the block (settings.json is the doctor's fallback). */
   readonly automationSettings: AutomationSettings | undefined;
+  /** design12: the phase, the app's audio read-back (absent when no app is connected) and the audio block. */
+  readonly phase: Phase | undefined;
+  readonly audioState: AudioState | undefined;
+  readonly audioSettings: AudioSettings | undefined;
 }
 
 /** A running daemon's first snapshot (`permissions.all`, the problems, the memory summary, the automations); undefined when none answers within 1.5 s. */
@@ -74,8 +78,8 @@ async function daemonRead(socketPath: string): Promise<DaemonRead | undefined> {
     const got = new Promise<DaemonRead | undefined>((resolve) => {
       client.on("message", (m) => {
         if (m.type !== "snapshot") return;
-        const snap = m.snapshot as { permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary; automations?: readonly Automation[]; nextFire?: Snapshot["nextFire"]; settings?: { automations?: AutomationSettings } };
-        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory, automations: snap.automations, nextFire: snap.nextFire, automationSettings: snap.settings?.automations });
+        const snap = m.snapshot as { phase?: Phase; permissions: Permissions; problems: readonly Problem[]; memory?: MemorySummary; automations?: readonly Automation[]; nextFire?: Snapshot["nextFire"]; settings?: { automations?: AutomationSettings; audio?: AudioSettings }; audioState?: AudioState };
+        resolve({ permissions: snap.permissions.all, problems: snap.problems, ms: Date.now() - t0, memory: snap.memory, automations: snap.automations, nextFire: snap.nextFire, automationSettings: snap.settings?.automations, phase: snap.phase, audioState: snap.audioState, audioSettings: snap.settings?.audio });
       });
       setTimeout(() => resolve(undefined), 1500);
     });
@@ -131,14 +135,16 @@ async function json(url: string, headers: Record<string, string>): Promise<{ sta
 }
 
 /** The brain and memory settings the engine actually uses: ~/.jarhead/settings.json overrides the env defaults (memory defaults to on through DEFAULT_SETTINGS). */
-function readSavedSettings(stateDir: string): { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean } {
+function readSavedSettings(stateDir: string): { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean; audio?: AudioSettings } {
   try {
-    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean };
+    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as { brain?: BrainKind; brainModel?: string; brainBaseUrl?: string; memory?: boolean; audio?: { recording?: unknown } };
     return {
       ...(saved.brain ? { brain: saved.brain } : {}),
       ...(typeof saved.brainModel === "string" ? { brainModel: saved.brainModel } : {}),
       ...(saved.brainBaseUrl ? { brainBaseUrl: saved.brainBaseUrl } : {}),
       ...(typeof saved.memory === "boolean" ? { memory: saved.memory } : {}),
+      // design12: the audio block, merged over its default as the engine merges it (a file from before the block has none).
+      ...(typeof saved.audio === "object" && saved.audio !== null ? { audio: { recording: saved.audio.recording === true } } : {}),
     };
   } catch {
     return {};
@@ -817,7 +823,434 @@ function memoryStoreRows(dir: string): number | undefined {
   }
 }
 
-export async function runChecks(): Promise<Check[]> {
+// ------------------------------------------------------------------ audio (design12)
+//
+// The `audio` group and the `status` block, from the app's read-back frame (`Snapshot.audioState`),
+// the one setting (`Settings.audio`), a read-only `system_profiler` pass and the probe's JSON.
+// Advisory throughout (`required: false`): nothing here opens a session, touches the microphone
+// or plays a sound — `--test-audio` shells to builder D's probe, which refuses while Jarhead is awake.
+
+/** Below this the default output is on a Bluetooth headset's hands-free codec (16 000 / 8 000 Hz). */
+export const NARROWED_BELOW_HZ = 44_100;
+/** The guard's residual on the wire after `audibleUntil + tail`: louder than this and Live would hear Jarhead. */
+export const LEAK_FAIL_DBFS = -50;
+export const AUDIO_PROBE_FILE = "audio-probe.json";
+export const AUDIO_PROBE_SCRIPT = join(REPO_ROOT, "apps", "mac", "Scripts", "audio-probe.sh");
+/** Rewritten by every build: the probe's figures are stale once this is newer than the run. */
+export const APP_BUILD_MARK = join(INSTALLED_APP, "Contents", "Info.plist");
+
+/** The HAL's transport as one word — from the app's word or its four-char code, or system_profiler's `coreaudio_device_type_*`. */
+export function transportWord(t: string | undefined): string {
+  const k = (t ?? "").replace(/^coreaudio_device_type_/, "").trim().toLowerCase();
+  switch (k) {
+    case "blue":
+    case "bluetooth":
+    case "bluetoothle":
+      return "bluetooth";
+    case "bltn":
+    case "builtin":
+    case "built-in":
+      return "built-in";
+    case "cont":
+    case "continuity":
+      return "continuity";
+    case "grup":
+    case "aggregate":
+      return "aggregate";
+    case "":
+      return "unknown";
+    default:
+      return k;
+  }
+}
+
+/** AUVoiceIOOtherAudioDuckingLevel as a word: 0 default · 10 min · 20 mid · 30 max. */
+export function duckWord(level: number | undefined): string {
+  if (level === undefined) return "—";
+  return level === 0 ? "default" : level === 10 ? "min" : level === 20 ? "mid" : level === 30 ? "max" : `level ${level}`;
+}
+
+function onOff(b: boolean | undefined): string {
+  return b === undefined ? "?" : b ? "on" : "off";
+}
+
+/** The `speaks` state word: a headset below 44.1 kHz is on the hands-free codec, and every app hears it. */
+export function speaksState(d: AudioDeviceInfo): string {
+  return d.rate >= NARROWED_BELOW_HZ ? "full quality" : "narrowed while the headset mic is held";
+}
+
+function hzWords(d: AudioDeviceInfo): string {
+  return `${d.rate} Hz ×${d.channels}`;
+}
+
+/** ≤ 2 names, then "+ n". */
+export function sharedWords(names: readonly string[]): string {
+  const shown = names.slice(0, 2).join(", ");
+  return names.length > 2 ? `${shown} + ${names.length - 2}` : shown;
+}
+
+/** The `hears` state word: what the graph follows, and who else holds the mic. */
+function hearsState(s: AudioState): string {
+  const shared = s.sharedWith?.length ? `shared with ${sharedWords(s.sharedWith)}` : "";
+  if (s.voiceProcessing) return shared ? `follows the system default · ${shared}` : "follows the system default";
+  return shared || "ranked";
+}
+
+/** The knobs as one line, shared by the status head and the doctor's `voice processing` row. */
+export function voiceProcessingWords(s: AudioState): string {
+  if (!s.running) return `off · the graph is down${s.voiceProcessing ? " · voice processing still on" : ""}`;
+  if (s.voiceProcessing) return `on · duck ${duckWord(s.duckLevel)} ${s.advancedDucking === false ? "plain" : "advanced"} · agc ${onOff(s.agc)} · bypass ${onOff(s.bypassed)} · rung ${s.rung} ${s.wiring}`;
+  return `off · ${s.recording ? "recording" : "fallback (echo cancellation refused)"} · guard ${onOff(s.guardOn)} · rung ${s.rung} ${s.wiring}`;
+}
+
+/** The guard's counters as one line: `guard tail 420 ms · held 3.2 s · gated 12 of 340 · 1 break`. */
+export function guardWords(s: AudioState): string {
+  const held = s.guardHeldMs !== undefined ? ` · held ${(s.guardHeldMs / 1000).toFixed(1)} s` : "";
+  return `guard tail ${s.guardTailMs} ms${held} · gated ${s.gated} of ${s.chunks} · ${s.breakthroughs} ${s.breakthroughs === 1 ? "break" : "breaks"}`;
+}
+
+function clockWords(ms: number): string {
+  return new Date(ms).toTimeString().slice(0, 8);
+}
+
+// ---- system_profiler SPAudioDataType -json (read-only, ≈ 1 s): the fallback when no app is connected, and the default-input name for the rows.
+
+export interface AudioProfilerDevice {
+  readonly name: string;
+  readonly rate: number;
+  readonly channels: number;
+  readonly transport: string;
+  readonly input: boolean;
+  readonly output: boolean;
+  readonly defaultInput: boolean;
+  readonly defaultOutput: boolean;
+}
+
+export interface AudioProfilerRead {
+  readonly devices: readonly AudioProfilerDevice[];
+  readonly defaultInput?: AudioProfilerDevice;
+  readonly defaultOutput?: AudioProfilerDevice;
+  /** The first built-in input — the mic the `hears` fix names. */
+  readonly builtInInput?: AudioProfilerDevice;
+  /** A `CADefaultDeviceAggregate-*` device is listed: the voice-processing unit's aggregate is still up. */
+  readonly aggregatePresent: boolean;
+}
+
+/** `system_profiler SPAudioDataType -json` as the rows read it; undefined when the text is not that. */
+export function parseAudioProfiler(text: string): AudioProfilerRead | undefined {
+  let root: { SPAudioDataType?: { _items?: Record<string, unknown>[] }[] };
+  try {
+    root = JSON.parse(text) as typeof root;
+  } catch {
+    return undefined;
+  }
+  const groups = root.SPAudioDataType;
+  if (!Array.isArray(groups)) return undefined;
+  const devices: AudioProfilerDevice[] = [];
+  for (const g of groups) {
+    for (const it of g._items ?? []) {
+      const name = typeof it["_name"] === "string" ? it["_name"] : "";
+      if (!name) continue;
+      const inCh = Number(it["coreaudio_device_input"]) || 0;
+      const outCh = Number(it["coreaudio_device_output"]) || 0;
+      devices.push({
+        name,
+        rate: Number(it["coreaudio_device_srate"]) || 0,
+        channels: inCh || outCh,
+        transport: transportWord(typeof it["coreaudio_device_transport"] === "string" ? it["coreaudio_device_transport"] : undefined),
+        input: inCh > 0,
+        output: outCh > 0,
+        defaultInput: it["coreaudio_default_audio_input_device"] === "spaudio_yes",
+        defaultOutput: it["coreaudio_default_audio_output_device"] === "spaudio_yes",
+      });
+    }
+  }
+  const defaultInput = devices.find((d) => d.defaultInput);
+  const defaultOutput = devices.find((d) => d.defaultOutput);
+  const builtInInput = devices.find((d) => d.input && d.transport === "built-in");
+  return {
+    devices,
+    ...(defaultInput ? { defaultInput } : {}),
+    ...(defaultOutput ? { defaultOutput } : {}),
+    ...(builtInInput ? { builtInInput } : {}),
+    aggregatePresent: devices.some((d) => d.name.startsWith("CADefaultDeviceAggregate")),
+  };
+}
+
+/** One read-only `system_profiler` pass; undefined when it is missing or slow (the `sh` timeout). */
+export function readAudioProfiler(): AudioProfilerRead | undefined {
+  const out = sh("system_profiler", ["SPAudioDataType", "-json"]);
+  return out ? parseAudioProfiler(out) : undefined;
+}
+
+// ---- ~/.jarhead/audio-probe.json: what apps/mac/Scripts/audio-probe.sh wrote (V1), per mode.
+
+/** One probe run as the script writes it; only `at` and `mode` are required of the file, the figures are read when present. */
+export interface AudioProbeRun {
+  readonly at: number;
+  readonly mode: string;
+  readonly rung?: number;
+  readonly vpAfterStop?: boolean;
+  readonly aggregateAfterStop?: boolean;
+  readonly speaksRateDuring?: number;
+  readonly couplingDb?: number;
+  /** The guard's tail leak on the wire (dBFS); the `leak` row's figure. */
+  readonly residualDbfs?: number;
+  readonly floorDbfs?: number;
+  readonly tailMs?: number;
+  readonly sharedWith?: readonly string[];
+  readonly checks?: unknown;
+}
+
+export interface AudioProbeRead {
+  readonly path: string;
+  readonly runs: readonly AudioProbeRun[];
+}
+
+export function audioProbePath(stateDir: string): string {
+  return join(stateDir, AUDIO_PROBE_FILE);
+}
+
+function probeRun(value: unknown, modeHint?: string): AudioProbeRun | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const at = Number(v["at"]);
+  const mode = typeof v["mode"] === "string" ? v["mode"] : modeHint;
+  if (!Number.isFinite(at) || !mode) return undefined;
+  const num = (k: string): { [key: string]: number } | Record<string, never> => (typeof v[k] === "number" && Number.isFinite(v[k] as number) ? { [k]: v[k] as number } : {});
+  const bool = (k: string): { [key: string]: boolean } | Record<string, never> => (typeof v[k] === "boolean" ? { [k]: v[k] as boolean } : {});
+  const shared = Array.isArray(v["sharedWith"]) ? (v["sharedWith"] as unknown[]).filter((s): s is string => typeof s === "string") : undefined;
+  return {
+    at,
+    mode,
+    ...num("rung"),
+    ...bool("vpAfterStop"),
+    ...bool("aggregateAfterStop"),
+    ...num("speaksRateDuring"),
+    ...num("couplingDb"),
+    ...num("residualDbfs"),
+    ...num("floorDbfs"),
+    ...num("tailMs"),
+    ...(shared ? { sharedWith: shared } : {}),
+    ...(v["checks"] !== undefined ? { checks: v["checks"] } : {}),
+  } as AudioProbeRun;
+}
+
+/**
+ * The file in any of the three spellings the probe may use — one run, `{ runs: [...] }`, or a
+ * record keyed by mode — read leniently: a run needs `at` and a mode, everything else is optional.
+ */
+export function parseAudioProbe(text: string, path: string): AudioProbeRead | undefined {
+  let root: unknown;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof root !== "object" || root === null) return undefined;
+  const r = root as Record<string, unknown>;
+  const runs: AudioProbeRun[] = [];
+  const one = probeRun(r);
+  if (one) runs.push(one);
+  else if (Array.isArray(r["runs"])) for (const x of r["runs"] as unknown[]) {
+    const run = probeRun(x);
+    if (run) runs.push(run);
+  }
+  else for (const [k, x] of Object.entries(r)) {
+    const run = probeRun(x, k);
+    if (run) runs.push(run);
+  }
+  return { path, runs };
+}
+
+export function readAudioProbe(stateDir: string): AudioProbeRead | undefined {
+  const path = audioProbePath(stateDir);
+  try {
+    return parseAudioProbe(readFileSync(path, "utf8"), path);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `leak` row: the probe's residual against LEAK_FAIL_DBFS, or why there is no figure. */
+export function leakCheck(probe: AudioProbeRead | undefined, appBuiltAt: number | undefined, now: number): Check {
+  const g = { group: "audio", name: "leak", required: false } as const;
+  const rerun = `run the probe once per device pair; the doctor reads ~/.jarhead/${AUDIO_PROBE_FILE}`;
+  if (!probe || probe.runs.length === 0) return { ...g, status: "warn", detail: "not measured — apps/mac/Scripts/audio-probe.sh (no session; needs the mic grant)", fix: rerun };
+  const measured = probe.runs.filter((r) => r.residualDbfs !== undefined);
+  const run = measured.find((r) => r.mode === "recording") ?? measured.sort((a, b) => b.at - a.at)[0];
+  if (!run || run.residualDbfs === undefined) return { ...g, status: "warn", detail: `${probe.runs.length} run${probe.runs.length === 1 ? "" : "s"} (${probe.runs.map((r) => r.mode).join(", ")}) — none measured the guard's residual`, fix: rerun };
+  const figures = `residual ${run.residualDbfs} dBFS${run.tailMs !== undefined ? ` · tail ${run.tailMs} ms` : ""} · ${run.mode} · ${agoWords(run.at, now)}`;
+  if (run.residualDbfs > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures} — above ${LEAK_FAIL_DBFS} dBFS`, fix: "the guard is not holding on this hardware — use headphones for Recording, or leave it off" };
+  if (appBuiltAt !== undefined && run.at < appBuiltAt) return { ...g, status: "warn", detail: `${figures} — measured before this app build`, fix: rerun };
+  return { ...g, status: "ok", detail: figures };
+}
+
+/** When the installed app last changed (Info.plist is rewritten by every build); undefined without an install. */
+export function appBuiltAt(mark = APP_BUILD_MARK): number | undefined {
+  try {
+    return statSync(mark).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---- the rows
+
+export interface AudioCheckInput {
+  /** `snapshot.audioState`; undefined = no app connected (or none has reported yet). */
+  readonly state: AudioState | undefined;
+  /** `snapshot.settings.audio`, or settings.json's block when no daemon answers. */
+  readonly settings: AudioSettings | undefined;
+  readonly phase: Phase | undefined;
+  readonly profiler: AudioProfilerRead | undefined;
+  readonly probe: AudioProbeRead | undefined;
+  readonly appBuiltAt: number | undefined;
+  readonly now: number;
+}
+
+const ASLEEP_PHASES: ReadonlySet<Phase> = new Set<Phase>(["asleep", "paused", "error"]);
+
+/**
+ * The `audio` group. Rules: `hears` warns on a Bluetooth mic (every app's sound narrows while it is
+ * held); `speaks` warns below 44.1 kHz (narrowed) or, while Recording, on Bluetooth (a longer guard
+ * tail); `voice processing` FAILS when the fallback rung won (running, no unit, Recording off);
+ * `other mic clients` is fine while Recording and a warning beside the unit; `recording` warns while
+ * on; `released at sleep` is judged only while asleep; `leak` reads the probe file. Without an app:
+ * one warning row, then what settings.json and the file still say.
+ */
+export function audioChecks(i: AudioCheckInput): Check[] {
+  const out: Check[] = [];
+  const add = (c: Omit<Check, "group" | "required">): void => void out.push({ group: "audio", required: false, ...c });
+  const s = i.state;
+  const recording = s?.recording ?? i.settings?.recording ?? false;
+  if (!s) add({ name: "audio state", status: "warn", detail: "app not running — the graph's read-back needs Jarhead.app connected", fix: "open Jarhead.app; it reports its graph to the daemon on start, stop and every route change" });
+  else {
+    const fallbackWon = s.running && !s.voiceProcessing && !s.recording;
+    add({ name: "voice processing", status: fallbackWon ? "fail" : "ok", detail: voiceProcessingWords(s), ...(fallbackWon ? { fix: "echo cancellation failed to start on this device pair; Jarhead runs guarded" } : {}) });
+    if (s.hears) {
+      const bluetooth = transportWord(s.hears.transport) === "bluetooth";
+      const builtIn = i.profiler?.builtInInput?.name ?? "the built-in microphone";
+      add({ name: "hears", status: bluetooth ? "warn" : "ok", detail: `${s.hears.name} · ${hzWords(s.hears)} · ${transportWord(s.hears.transport)} · ${hearsState(s)}`, ...(bluetooth ? { fix: `a headset mic drops every app's sound to hands-free while held — make ${builtIn} the default in System Settings › Sound, or turn Recording on` } : {}) });
+    } else add({ name: "hears", status: "ok", detail: "nothing — the graph is down" });
+    if (s.speaks) {
+      const narrowed = s.speaks.rate < NARROWED_BELOW_HZ;
+      const bluetoothWhileRecording = s.recording && transportWord(s.speaks.transport) === "bluetooth";
+      const fix = narrowed ? "the headset mic is held (by Jarhead's unit, or another app) — make the built-in mic the default in System Settings › Sound, or turn Recording on" : bluetoothWhileRecording ? "Bluetooth output buffers lengthen the guard tail — wired headphones or the speakers cut it" : undefined;
+      add({ name: "speaks", status: narrowed || bluetoothWhileRecording ? "warn" : "ok", detail: `${s.speaks.name} · ${hzWords(s.speaks)} · ${transportWord(s.speaks.transport)} · ${speaksState(s.speaks)}`, ...(fix ? { fix } : {}) });
+    } else add({ name: "speaks", status: "ok", detail: "nothing — the graph is down" });
+    const def = i.profiler?.defaultInput?.name ?? (s.voiceProcessing ? s.hears?.name : undefined);
+    const held = s.running && s.voiceProcessing ? "held by Jarhead (the unit follows it)" : s.running ? `not held — the plain graph uses ${s.hears?.name ?? "the ranked mic"}` : "not held (the graph is down)";
+    add({ name: "default input", status: "ok", detail: def ? `${def} · ${held}` : `unknown (no system_profiler read) · ${held}` });
+    if (s.sharedWith === undefined) add({ name: "other mic clients", status: "ok", detail: "unknown (the HAL has no process objects)" });
+    else if (s.sharedWith.length === 0) add({ name: "other mic clients", status: "ok", detail: "none" });
+    else add({ name: "other mic clients", status: s.recording ? "ok" : "warn", detail: `${sharedWords(s.sharedWith)} · ${s.recording ? "sharing the plain mic" : "beside a voice-processing unit"}`, ...(s.recording ? {} : { fix: "turn Recording on so the recorder shares a plain microphone" }) });
+  }
+  add({ name: "recording", status: recording ? "warn" : "ok", detail: `${recording ? "on" : "off"} · Settings › Audio, ⌥⇧R`, ...(recording ? { fix: "turn it off after the demo" } : {}) });
+  if (s) {
+    const asleep = i.phase === undefined || ASLEEP_PHASES.has(i.phase);
+    if (!asleep) add({ name: "released at sleep", status: "ok", detail: `awake · voice processing ${onOff(s.voiceProcessing)} — read again after the next sleep` });
+    else if (s.running) add({ name: "released at sleep", status: "warn", detail: "the graph is still up while asleep", fix: "sleep and wake once; if it stays, quit Jarhead.app" });
+    else {
+      const aggregate = s.aggregatePresent || i.profiler?.aggregatePresent === true;
+      const bad = s.voiceProcessing || aggregate;
+      add({
+        name: "released at sleep",
+        status: bad ? "warn" : "ok",
+        detail: `voice processing ${s.voiceProcessing ? "still on" : "off"} after the last stop · ${aggregate ? "a CADefaultDeviceAggregate is still present" : "no CADefaultDeviceAggregate present"}`,
+        ...(bad ? { fix: "the unit was not released — sleep and wake once; if it stays, quit Jarhead.app" } : {}),
+      });
+    }
+  }
+  out.push(leakCheck(i.probe, i.appBuiltAt, i.now));
+  return out;
+}
+
+// ---- `pnpm jarhead status`: the audio block after `permissions`.
+
+const STATUS_PAD = "             "; // the column every status value starts in ("  phase      ")
+
+/**
+ * The block: the knobs line, `hears` / `speaks` with their figures, then the guard's counters or
+ * the resting line. Without an app: one line, with the profiler's defaults when they were read.
+ */
+export function audioStatusLines(state: AudioState | undefined, settings: AudioSettings | undefined, profiler?: AudioProfilerRead): string[] {
+  if (!state) {
+    const recording = settings?.recording ? " · recording on" : "";
+    if (!profiler) return [`  audio      no app connected${recording}`];
+    const device = (d: AudioProfilerDevice | undefined): string => (d ? `${d.name} ${d.rate} Hz` : "none");
+    return [`  audio      no app connected${recording} — defaults: in ${device(profiler.defaultInput)} · out ${device(profiler.defaultOutput)}`];
+  }
+  const since = state.since !== undefined && state.running ? ` · since ${clockWords(state.since)}` : "";
+  const lines = [`  audio      voice processing ${voiceProcessingWords(state)}${since}`];
+  const device = (label: string, d: AudioDeviceInfo, word: string): string => `${STATUS_PAD}${label.padEnd(8)}${d.name.padEnd(26)} ${hzWords(d).padEnd(13)} ${transportWord(d.transport).padEnd(11)} ${word}`;
+  if (state.hears) lines.push(device("hears", state.hears, hearsState(state)));
+  if (state.speaks) lines.push(device("speaks", state.speaks, speaksState(state.speaks)));
+  const muted = state.inputMuted ? " · input muted" : "";
+  if (state.guardOn) lines.push(`${STATUS_PAD}${guardWords(state)}${muted}`);
+  else {
+    const rest = state.running ? "released at sleep" : state.voiceProcessing ? "voice processing still on after stop" : state.aggregatePresent ? "released · aggregate still present" : "released";
+    lines.push(`${STATUS_PAD}recording ${onOff(state.recording)} · guard off · ${rest}${muted}`);
+  }
+  return lines;
+}
+
+// ---- `pnpm jarhead doctor --test-audio`: builder D's probe, `--test --json`.
+
+export interface AudioTestInput {
+  readonly scriptExists: boolean;
+  readonly phase: Phase | undefined;
+  /** Runs the script and returns its stdout; undefined when it printed nothing, timed out or failed. */
+  readonly run: () => string | undefined;
+}
+
+/** The last line of the probe's output that parses as a JSON object (human lines may precede it). */
+function lastJsonLine(text: string): Record<string, unknown> | undefined {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{"));
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const v = JSON.parse(lines[i] as string) as unknown;
+      if (typeof v === "object" && v !== null) return v as Record<string, unknown>;
+    } catch {
+      // not this line
+    }
+  }
+  return undefined;
+}
+
+/**
+ * One row, `test audio`: the probe builds the graph as the app would in the current setting, records,
+ * plays a 1 s −12 dBFS chime through the player node, records again, and prints `leakDb` and what the
+ * guard would have gated. Refused here while Jarhead is awake (two voice-processing clients cut each
+ * other) before the script is spawned; the script refuses too. Accepted JSON: `{ refused }`,
+ * `{ dryRun, note }` (nothing played — AUDIO_PROBE_PLAY unset), `{ leakDb, gated?, chunks?, rung?, mode? }`.
+ */
+export function audioTestCheck(i: AudioTestInput): Check {
+  const g = { group: "audio", name: "test audio", required: false } as const;
+  if (!i.scriptExists) return { ...g, status: "warn", detail: "apps/mac/Scripts/audio-probe.sh missing — nothing played", fix: "the probe is builder D's: apps/mac/Scripts/audio-probe.sh --test --json" };
+  if (i.phase !== undefined && !ASLEEP_PHASES.has(i.phase)) return { ...g, status: "warn", detail: "Jarhead is awake; sleep it first (two voice-processing clients cut each other)", fix: "pnpm jarhead cmd sleep, then doctor --test-audio again" };
+  const out = i.run();
+  if (out === undefined) return { ...g, status: "warn", detail: "the probe printed nothing (timed out, or the mic grant was refused)", fix: "run apps/mac/Scripts/audio-probe.sh --test yourself and read its lines" };
+  const j = lastJsonLine(out);
+  if (!j) return { ...g, status: "warn", detail: `unreadable: ${out.trim().split("\n")[0]?.slice(0, 80) ?? ""}` };
+  if (typeof j["refused"] === "string") return { ...g, status: "warn", detail: j["refused"] };
+  if (j["dryRun"] === true) return { ...g, status: "ok", detail: `dry run — ${typeof j["note"] === "string" ? j["note"] : "set AUDIO_PROBE_PLAY=1 to play the chime"}` };
+  const leak = typeof j["leakDb"] === "number" ? j["leakDb"] : typeof j["residualDbfs"] === "number" ? j["residualDbfs"] : undefined;
+  if (leak === undefined) return { ...g, status: "warn", detail: `no leak figure in ${JSON.stringify(j).slice(0, 80)}` };
+  const gated = typeof j["gated"] === "number" && typeof j["chunks"] === "number" ? ` · guard would gate ${j["gated"]} of ${j["chunks"]}` : "";
+  const rung = typeof j["rung"] === "number" ? ` · rung ${j["rung"]}` : "";
+  const mode = typeof j["mode"] === "string" ? ` · ${j["mode"]}` : "";
+  const figures = `leak ${leak} dB${gated}${rung}${mode}`;
+  if (leak > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures} — above ${LEAK_FAIL_DBFS} dB`, fix: "the guard is not holding on this hardware — use headphones for Recording, or leave it off" };
+  return { ...g, status: "ok", detail: figures };
+}
+
+/** What `doctor` takes from the command line: `--test-audio` shells to the probe (nothing else does). */
+export interface DoctorOptions {
+  readonly testAudio?: boolean;
+}
+
+export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
   const cfg = readConfig();
   const checks: Check[] = [];
   const add = (c: Check): void => void checks.push(c);
@@ -972,6 +1405,36 @@ export async function runChecks(): Promise<Check[]> {
     required: false,
     ...(missingRequired.length ? { fix: `Setup › Permissions › Ask for everything (required and missing: ${missingRequired.map((p) => p.label).join(", ")})` } : {}),
   });
+
+  // ---- audio (design12): the app's graph as it read itself back, the one setting, a read-only system_profiler pass, the probe's file. Nothing here touches the mic.
+  {
+    const saved = readSavedSettings(cfg.stateDir);
+    for (const c of audioChecks({
+      state: daemon?.audioState,
+      settings: daemon?.audioSettings ?? saved.audio,
+      phase: daemon?.phase,
+      profiler: readAudioProfiler(),
+      probe: readAudioProbe(cfg.stateDir),
+      appBuiltAt: appBuiltAt(),
+      now: Date.now(),
+    })) add(c);
+    if (opts.testAudio) {
+      add(
+        audioTestCheck({
+          scriptExists: existsSync(AUDIO_PROBE_SCRIPT),
+          phase: daemon?.phase,
+          // The probe carries its own TCC grant and opens nothing paid; a minute is generous for a build plus three seconds of audio.
+          run: () => {
+            try {
+              return execFileSync("bash", [AUDIO_PROBE_SCRIPT, "--test", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60_000 }) || undefined;
+            } catch {
+              return undefined;
+            }
+          },
+        }),
+      );
+    }
+  }
 
   // ---- local: a daemon from before the field is said so first; then the server on this Mac, and under `local` the model and the embeddings memory uses (the daemon's dims when it answers)
   const stale = staleDaemonCheck(running);
