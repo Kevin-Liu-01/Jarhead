@@ -1001,8 +1001,13 @@ export interface AudioProbeRun {
   readonly aggregateAfterStop?: boolean;
   readonly speaksRateDuring?: number;
   readonly couplingDb?: number;
-  /** The guard's tail leak on the wire (dBFS); the `leak` row's figure. */
+  /**
+   * The wire's level WHILE the guard held (dBFS). With zero-fill this is the floor by construction
+   * (recorder-probe: −120) — the `leak` row's figure only when no tail figure was written.
+   */
   readonly residualDbfs?: number;
+  /** The wire's level in the 300 ms after a hold ended (dBFS) — the number that matters; the `leak` row judges it first. */
+  readonly tailLeakDbfs?: number;
   readonly floorDbfs?: number;
   readonly tailMs?: number;
   readonly sharedWith?: readonly string[];
@@ -1036,6 +1041,7 @@ function probeRun(value: unknown, modeHint?: string): AudioProbeRun | undefined 
     ...num("speaksRateDuring"),
     ...num("couplingDb"),
     ...num("residualDbfs"),
+    ...num("tailLeakDbfs"),
     ...num("floorDbfs"),
     ...num("tailMs"),
     ...(shared ? { sharedWith: shared } : {}),
@@ -1079,16 +1085,24 @@ export function readAudioProbe(stateDir: string): AudioProbeRead | undefined {
   }
 }
 
-/** The `leak` row: the probe's residual against LEAK_FAIL_DBFS, or why there is no figure. */
+/** The figure the `leak` row judges: the tail leak when the probe wrote one (the residual while held is the floor by construction), else the residual. */
+function leakFigure(run: AudioProbeRun): { readonly word: string; readonly dbfs: number } | undefined {
+  if (run.tailLeakDbfs !== undefined) return { word: "tail leak", dbfs: run.tailLeakDbfs };
+  if (run.residualDbfs !== undefined) return { word: "residual", dbfs: run.residualDbfs };
+  return undefined;
+}
+
+/** The `leak` row: the probe's tail leak (else its residual) against LEAK_FAIL_DBFS, saying which it read, or why there is no figure. */
 export function leakCheck(probe: AudioProbeRead | undefined, appBuiltAt: number | undefined, now: number): Check {
   const g = { group: "audio", name: "leak", required: false } as const;
   const rerun = `run the probe once per device pair; the doctor reads ~/.jarhead/${AUDIO_PROBE_FILE}`;
   if (!probe || probe.runs.length === 0) return { ...g, status: "warn", detail: "not measured — apps/mac/Scripts/audio-probe.sh (no session; needs the mic grant)", fix: rerun };
-  const measured = probe.runs.filter((r) => r.residualDbfs !== undefined);
+  const measured = probe.runs.filter((r) => leakFigure(r) !== undefined);
   const run = measured.find((r) => r.mode === "recording") ?? measured.sort((a, b) => b.at - a.at)[0];
-  if (!run || run.residualDbfs === undefined) return { ...g, status: "warn", detail: `${probe.runs.length} run${probe.runs.length === 1 ? "" : "s"} (${probe.runs.map((r) => r.mode).join(", ")}) — none measured the guard's residual`, fix: rerun };
-  const figures = `residual ${run.residualDbfs} dBFS${run.tailMs !== undefined ? ` · tail ${run.tailMs} ms` : ""} · ${run.mode} · ${agoWords(run.at, now)}`;
-  if (run.residualDbfs > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures} — above ${LEAK_FAIL_DBFS} dBFS`, fix: "the guard is not holding on this hardware — use headphones for Recording, or leave it off" };
+  const figure = run ? leakFigure(run) : undefined;
+  if (!run || !figure) return { ...g, status: "warn", detail: `${probe.runs.length} run${probe.runs.length === 1 ? "" : "s"} (${probe.runs.map((r) => r.mode).join(", ")}) — none measured the guard's residual`, fix: rerun };
+  const figures = `${figure.word} ${figure.dbfs} dBFS${run.tailMs !== undefined ? ` · tail ${run.tailMs} ms` : ""} · ${run.mode} · ${agoWords(run.at, now)}`;
+  if (figure.dbfs > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures} — above ${LEAK_FAIL_DBFS} dBFS`, fix: "the guard is not holding on this hardware — use headphones for Recording, or leave it off" };
   if (appBuiltAt !== undefined && run.at < appBuiltAt) return { ...g, status: "warn", detail: `${figures} — measured before this app build`, fix: rerun };
   return { ...g, status: "ok", detail: figures };
 }
@@ -1246,14 +1260,30 @@ export function audioTestCheck(i: AudioTestInput): Check {
   if (!j) return { ...g, status: "warn", detail: `unreadable: ${out.trim().split("\n")[0]?.slice(0, 80) ?? ""}` };
   if (typeof j["refused"] === "string") return { ...g, status: "warn", detail: j["refused"] };
   if (j["dryRun"] === true) return { ...g, status: "ok", detail: `dry run — ${typeof j["note"] === "string" ? j["note"] : "set AUDIO_PROBE_PLAY=1 to play the chime"}` };
-  const leak = typeof j["leakDb"] === "number" ? j["leakDb"] : typeof j["residualDbfs"] === "number" ? j["residualDbfs"] : undefined;
+  // The tail leak (the wire after the chime, once the hold released) is judged first: while held the wire is zero-filled, so `leakDb` reads the floor.
+  const tail = typeof j["tailLeakDbfs"] === "number" ? j["tailLeakDbfs"] : undefined;
+  const during = typeof j["leakDb"] === "number" ? j["leakDb"] : typeof j["residualDbfs"] === "number" ? j["residualDbfs"] : undefined;
+  const leak = tail ?? during;
   if (leak === undefined) return { ...g, status: "warn", detail: `no leak figure in ${JSON.stringify(j).slice(0, 80)}` };
   const gated = typeof j["gated"] === "number" && typeof j["chunks"] === "number" ? ` · guard would gate ${j["gated"]} of ${j["chunks"]}` : "";
   const rung = typeof j["rung"] === "number" ? ` · rung ${j["rung"]}` : "";
   const mode = typeof j["mode"] === "string" ? ` · ${j["mode"]}` : "";
-  const figures = `leak ${leak} dB${gated}${rung}${mode}`;
+  const figures = `${tail !== undefined ? "tail leak" : "leak"} ${leak} dB${gated}${rung}${mode}`;
   if (leak > LEAK_FAIL_DBFS) return { ...g, status: "fail", detail: `${figures} — above ${LEAK_FAIL_DBFS} dB`, fix: "the guard is not holding on this hardware — use headphones for Recording, or leave it off" };
   return { ...g, status: "ok", detail: figures };
+}
+
+/**
+ * What a spawn that exited non-zero still printed. audio-probe.sh exits 3 on a refusal and 1 on any
+ * FAIL — the leak figure above the line included — with its JSON already on stdout; `execFileSync`
+ * throws on those exits and hangs the output on the error (`stdout`, a string under `encoding`).
+ */
+export function probeStdout(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const out = (error as { stdout?: unknown }).stdout;
+  if (typeof out === "string") return out || undefined;
+  if (out instanceof Uint8Array) return Buffer.from(out).toString("utf8") || undefined;
+  return undefined;
 }
 
 /** What `doctor` takes from the command line: `--test-audio` shells to the probe (nothing else does). */
@@ -1434,12 +1464,19 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
         audioTestCheck({
           scriptExists: existsSync(AUDIO_PROBE_SCRIPT),
           phase: daemon?.phase,
-          // The probe carries its own TCC grant and opens nothing paid; a minute is generous for a build plus three seconds of audio.
+          // The probe carries its own TCC grant and opens nothing paid. A cold `swiftc -O` of Model + Audio + Ear + the
+          // wake listener can alone pass a minute, so the build runs first on its own clock; the timed run then covers
+          // three seconds of audio. A refusal (exit 3) or a FAIL (exit 1) throws with the JSON on the error's stdout.
           run: () => {
             try {
-              return execFileSync("bash", [AUDIO_PROBE_SCRIPT, "--test", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60_000 }) || undefined;
+              execFileSync("bash", [AUDIO_PROBE_SCRIPT, "--build-only"], { stdio: "ignore", timeout: 240_000 });
             } catch {
-              return undefined;
+              // The timed run below says what happened (or prints nothing).
+            }
+            try {
+              return execFileSync("bash", [AUDIO_PROBE_SCRIPT, "--test", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60_000 }) || undefined;
+            } catch (e) {
+              return probeStdout(e);
             }
           },
         }),

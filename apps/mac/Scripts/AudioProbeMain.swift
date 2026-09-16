@@ -690,12 +690,15 @@ final class AudioProbe {
         return r
     }
 
-    /// `leakDb` = the wire's RMS while the chime plays (+ tail), dBFS — what would have reached Live;
-    /// `couplingDb` = how far the raw microphone rose over the quiet second; `floorDbfs` = the wire at rest.
+    /// `leakDb` = the wire's RMS while the chime plays (+ 0.5 s), dBFS — with the guard holding, the zero-filled
+    /// floor by construction; `tailLeakDbfs` = the wire in the second after that, once the hold has released —
+    /// the figure the doctor's `leak` row judges first; `couplingDb` = how far the raw microphone rose over the
+    /// quiet second; `floorDbfs` = the wire at rest.
     private func leakFigures() -> [String: Any] {
-        let quiet = tally.dbfs(.quiet), chime = tally.dbfs(.chime)
+        let quiet = tally.dbfs(.quiet), chime = tally.dbfs(.chime), after = tally.dbfs(.after)
         var out: [String: Any] = [:]
         if let wire = chime.wire { out["leakDb"] = wire; out["residualDbfs"] = wire }
+        if let tail = after.wire { out["tailLeakDbfs"] = tail }
         if let floor = quiet.wire { out["floorDbfs"] = floor }
         if let rq = quiet.raw, let rc = chime.raw { out["couplingDb"] = ((rc - rq) * 10).rounded() / 10 }
         return out
@@ -705,7 +708,7 @@ final class AudioProbe {
     private func testJSON(_ record: [String: Any]) -> [String: Any] {
         guard config.play else { return ["dryRun": true, "note": "\(ProbeWords.dryRun); \(checks.summary) in \(config.mode.rawValue)", "mode": config.mode.rawValue] }
         var j: [String: Any] = ["mode": config.mode.rawValue]
-        for key in ["leakDb", "residualDbfs", "couplingDb", "floorDbfs", "gated", "chunks", "rung"] where record[key] != nil { j[key] = record[key] }
+        for key in ["leakDb", "residualDbfs", "tailLeakDbfs", "couplingDb", "floorDbfs", "gated", "chunks", "rung"] where record[key] != nil { j[key] = record[key] }
         if j["leakDb"] == nil { j["refused"] = "the chime played but no wire chunks were counted" }
         return j
     }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AudioState } from "@jarhead/protocol";
-import { LEAK_FAIL_DBFS, NARROWED_BELOW_HZ, audioChecks, audioStatusLines, audioTestCheck, leakCheck, parseAudioProbe, parseAudioProfiler, render, transportWord, type AudioProfilerRead } from "../doctor.ts";
+import { LEAK_FAIL_DBFS, NARROWED_BELOW_HZ, audioChecks, audioStatusLines, audioTestCheck, leakCheck, parseAudioProbe, parseAudioProfiler, probeStdout, render, transportWord, type AudioProfilerRead } from "../doctor.ts";
 
 /**
  * design12 · V5 (CLI): the `audio` block of `jarhead status` and the doctor's `audio` group from a
@@ -264,6 +264,23 @@ test("probe file: one run, { runs }, or a record keyed by mode; the leak row pre
   assert.equal(noFigure.detail, "1 run (aec) — none measured the guard's residual");
 });
 
+test("leak row: the tail leak is judged before the residual — recorder-probe's residual is the zero-filled floor (−120) whatever the guard leaks after a hold", () => {
+  const at = NOW - 60_000;
+  const leaking = parseAudioProbe(JSON.stringify({ recording: { at, residualDbfs: -120, tailLeakDbfs: -38, tailMs: 420 } }), "/x");
+  assert.equal(leaking?.runs[0]?.tailLeakDbfs, -38);
+  const fail = leakCheck(leaking, undefined, NOW);
+  assert.equal(fail.status, "fail");
+  assert.equal(fail.detail, "tail leak -38 dBFS · tail 420 ms · recording · 1 min ago — above -50 dBFS");
+  const tight = leakCheck(parseAudioProbe(JSON.stringify({ recording: { at, residualDbfs: -120, tailLeakDbfs: -61 } }), "/x"), undefined, NOW);
+  assert.equal(tight.status, "ok");
+  assert.equal(tight.detail, "tail leak -61 dBFS · recording · 1 min ago");
+  // Only a tail figure counts as measured when both spellings are absent from the recording run but a tail exists elsewhere.
+  const aecOnly = leakCheck(parseAudioProbe(JSON.stringify({ aec: { at, tailLeakDbfs: -70 }, recording: { at } }), "/x"), undefined, NOW);
+  assert.equal(aecOnly.status, "ok");
+  assert.match(aecOnly.detail, /^tail leak -70 dBFS · aec/);
+});
+
+
 test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusal, a dry run, a leak figure under and over the line", () => {
   const asleep = { scriptExists: true, phase: "asleep" as const };
   let ran = 0;
@@ -290,4 +307,25 @@ test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusa
   assert.equal(bad.status, "fail");
   assert.equal(bad.detail, "leak -31 dB — above -50 dB");
   assert.equal(audioTestCheck({ ...asleep, run: () => "garbage\n" }).detail, "unreadable: garbage");
+  // The tail leak is judged first: while the chime plays the wire is zero-filled (leakDb reads the floor).
+  const tail = audioTestCheck({ ...asleep, run: () => '{"leakDb":-120,"tailLeakDbfs":-31,"mode":"recording"}' });
+  assert.equal(tail.status, "fail");
+  assert.equal(tail.detail, "tail leak -31 dB · recording — above -50 dB");
+});
+
+test("--test-audio: the script's non-zero exits (3 refused, 1 a FAIL) throw out of execFileSync with the JSON on the error's stdout — probeStdout hands it to the row", () => {
+  const asleep = { scriptExists: true, phase: "asleep" as const };
+  // What spawnSync attaches under { encoding: "utf8" }: status and a string stdout.
+  const refusal = Object.assign(new Error("Command failed"), { status: 3, stdout: 'probe: building\n{"refused":"Jarhead is awake; sleep it first","mode":"aec"}\nprobe exit 3\n' });
+  assert.equal(probeStdout(refusal), refusal.stdout);
+  assert.equal(audioTestCheck({ ...asleep, run: () => probeStdout(refusal) }).detail, "Jarhead is awake; sleep it first");
+  const failed = Object.assign(new Error("Command failed"), { status: 1, stdout: Buffer.from('{"leakDb":-120,"tailLeakDbfs":-33,"gated":9,"chunks":30,"rung":1,"mode":"recording"}\nprobe exit 1\n') });
+  const check = audioTestCheck({ ...asleep, run: () => probeStdout(failed) });
+  assert.equal(check.status, "fail");
+  assert.equal(check.detail, "tail leak -33 dB · guard would gate 9 of 30 · rung 1 · recording — above -50 dB");
+  // A timeout or a signal: no stdout worth reading → the row's "printed nothing" branch, as before.
+  assert.equal(probeStdout(Object.assign(new Error("ETIMEDOUT"), { status: null, stdout: "" })), undefined);
+  assert.equal(probeStdout(new Error("spawn bash ENOENT")), undefined);
+  assert.equal(probeStdout(undefined), undefined);
+  assert.equal(audioTestCheck({ ...asleep, run: () => probeStdout(new Error("x")) }).detail, "the probe printed nothing (timed out, or the mic grant was refused)");
 });
