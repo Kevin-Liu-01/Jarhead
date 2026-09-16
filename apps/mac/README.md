@@ -467,9 +467,13 @@ the chime still fire. Bundle-only (`runsAsBundle`); the harness scripts skip it.
 so the system echo canceller removes Jarhead's own voice from the mic (the model is
 full duplex and would otherwise hear itself). The graph walks a ladder
 (`VoiceProcessingPolicy.attempts`): with echo cancellation, voice processing with
-automatic / input-rate / hardware output wiring, then the plain graph guarded —
-because VoiceIO refuses to initialise (-10875) with some devices unless mixer → output
-runs at the input rate; with Recording on, the plain rungs only. The rung that came up
+automatic / input-rate / hardware output wiring, then the plain graph guarded (the ranked
+mic pinned, then the system default) — because VoiceIO refuses to initialise (-10875) with
+some devices unless mixer → output runs at the input rate; with Recording on, the plain rungs
+only: ranked/hardware › ranked/automatic › default/hardware. The plain path's device set
+(`StartAttempt.pinDevice`) is skipped when the ranked mic already is the system default —
+on a Mac whose default input ≠ default output it knocks the shared I/O unit's output out
+(-10875) — and otherwise is a rung that can fail. The rung that came up
 is remembered (`winningRung`) so a device change does not re-walk the refused rungs. The
 tap receives 2–9 channels on mic arrays; the loudest channel is picked and downmixed
 to mono, then converted to 24 kHz Int16 in 100 ms chunks, RMS reported at ≤ 10 Hz.

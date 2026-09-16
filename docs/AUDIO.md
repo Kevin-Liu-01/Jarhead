@@ -23,13 +23,15 @@ no one can hear is noise. Jarhead's own voice is never ducked (it plays through 
 ## 2. The Recording switch
 
 Settings › Audio › **Recording**, the status menu row, or **⌥⇧R**. Default off; it survives a
-relaunch and is said in four places while on (the Audio head's `[recording]` badge, a chip on the
-tucked island, a dot on the mute box, the doctor's `!`).
+relaunch and is said in four places while on (the Audio head's `[recording]` badge, a `record.circle`
+chip on the tucked island, a 2 × 2 dot on the mute box, the doctor's `!` on its `recording` row). The
+status menu row is always titled `Recording` — the checkmark is the state — and its tooltip says
+`Hand back the mic, guard the echo — apps keep their sound · ⌥⇧R`.
 
 | Recording | the graph | other apps | a recorder (QuickTime, OBS, Screen Studio's mic track) | echo |
 |---|---|---|---|---|
 | **off** (default) | the unit on, following the system default input | ducked at the OS floor while a voice is present — not zero | a second client beside a voice-processing unit; on AirPods, the hands-free mic | Apple's |
-| **on** | no Apple unit anywhere; the plain graph on the ranked microphone | untouched | an ordinary client of the same microphone, full level | the **software echo guard**: Jarhead holds the wire (chunks zero-filled, cadence kept) while he is audible plus a tail (300–800 ms, longer on Bluetooth); a word said clearly over him (+12 dB for 120 ms, after two seconds of held speech) opens it |
+| **on** | no Apple unit anywhere; the plain graph on the ranked microphone (pinned on rungs 1–2; rung 3 hears the system default when the pin is refused — `ranked mic refused; hearing the system default`) | untouched | an ordinary client of the same microphone, full level | the **software echo guard**: Jarhead holds the wire (chunks zero-filled, cadence kept) while he is audible plus a tail (300–800 ms, longer on Bluetooth); a word said clearly over him (+12 dB for 120 ms, after two seconds of held speech) opens it |
 
 What Recording costs, said plainly: the first ~120 ms of your word over Jarhead are lost, and
 break-in by voice is off for the first two seconds of each hold while the guard learns the echo
@@ -51,12 +53,16 @@ is read back by the probes below.
 ## 4. What the surfaces say
 
 Settings › Audio, after Mic: **Hears** (device · `48 kHz · echo cancelled` | `echo guarded` |
-`no echo cancellation`), **Speaks** (device · `48 kHz · full quality` | `16 kHz · narrowed` — the
+`no echo cancellation` — on the plain path the device is the microphone the graph settled on, never
+the engine's own aggregate), **Speaks** (device · `48 kHz · full quality` | `16 kHz · narrowed` — the
 hands-free tell as a figure), **Recording** `[On | Off] shares the mic`, then the hints
 (`No Apple unit. Jarhead holds the wire while he speaks; a word over him opens it.` while on;
-`Shared with QuickTime Player.` when another process reads the mic). The island's mute box dims
-to 0.48 while the guard holds; a 2 × 2 dot marks Recording; the tucked island shows a
-`record.circle` chip. `pnpm jarhead status` prints the `audio` block (voice processing · knobs ·
+`Shared with QuickTime Player.` — two names, then `+ n` — when another process reads the mic; while
+echo cancellation follows a headset, `Using <headset>. Echo cancellation follows the system default;
+make <ranked mic> the default in Sound settings to use it.`). The island's mute box dims to 0.48
+while the guard holds; a 2 × 2 dot marks Recording; the tucked island shows a `record.circle` chip
+whose tooltip reads `Recording — mic shared, echo guarded`; the mute box's own tooltip gains
+` · recording` and ` · shared with <app>`. `pnpm jarhead status` prints the `audio` block (voice processing · knobs ·
 rung · hears · speaks · guard counters); `pnpm jarhead doctor` has an `audio` group (`voice
 processing`, `hears`, `speaks`, `default input`, `other mic clients`, `recording`, `released at
 sleep`, `leak`) and `--test-audio` shells to the probe.
@@ -96,7 +102,7 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 
 - `aec`: rung 1 (automatic wiring) refused −10875, rung 2 (input-rate) came up; `duck 10 advanced true, agc true, bypass false · raw 2108 duck 10 advanced true`; `isVoiceProcessingEnabled false` and the unit's `VPAUAggregateAudioDevice-0x…` gone 2 s after stop — `checks: 9 ok, 0 FAIL`.
 - `CADefaultDeviceAggregate-<pid>-0` is **AVAudioEngine's own** default-device aggregate (default input ≠ default output), created at the first plain attempt with no unit anywhere and alive as long as the engine object is; the unit's aggregate is the `VPAUAggregateAudioDevice-0x…` one. Anything that keys "the unit is released" on the `CADefaultDeviceAggregate` prefix will read a false positive.
-- `recording`: on this Mac the plain graph's `kAudioOutputUnitProperty_CurrentDevice` set on the input node's AU (the input-only built-in mic) knocks the output side out — `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` false, −10875 on every wiring — so the Recording ladder never came up; with the set skipped when the ranked mic already is the default, it comes up on rung 1 (hardware) with `guard on, tail 301 ms`. The engine fix is one guard in `applyInputDevice`; the wake listener already skips the set in that case.
+- `recording`: on this Mac the plain graph's `kAudioOutputUnitProperty_CurrentDevice` set on the input node's AU (the input-only built-in mic) knocked the output side out — `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` false, −10875 on every wiring — so the Recording ladder never came up (`checks: 2 ok, 1 FAIL`). Fixed in the integration pass: the set is skipped when the ranked mic already is the default, and otherwise it is a rung that can fail (`StartAttempt.pinDevice`; the ladder is ranked/hardware › ranked/automatic › default/hardware). Now rung 1 (hardware) comes up with `hears MacBook Pro Microphone 48000 Hz ×1 built-in · echo guarded`, `guard on, tail 301 ms`, no `VPAUAggregateAudioDevice` — `checks: 10 ok, 0 FAIL`; `aec` on the same run: rung 2, the unit's aggregate gone after stop — `checks: 10 ok, 0 FAIL`.
 - The terminal Kevin's agents run in inherits a microphone grant from its responsible process, so `AUDIO_PROBE_DIRECT=1` runs every silent mode without a TCC prompt.
 
 ## 8. What the Console prints, and what to do

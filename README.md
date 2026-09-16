@@ -333,6 +333,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 - **Unattended means the run tier.** An automation chimes, speaks a fixed line, shows a banner, opens what you named, files a file (never overwriting, never unlinking, inside `~`), runs a recipe you approved once; it never opens the voice session and never spends a brain turn unless that one row says `billed` and you said yes to its cost. Nothing asks at fire time — a would-be question is a `failed` row — and nothing is set up by a `--yes`: the yes is heard by voice or pressed in the Console, once, and spent on that row.
 - **Self-edits name their rails.** `policy.ts`, `brain.ts`, `instructions.ts`, the wake gate, `selfedit.ts`, the runner, the shell and file tools, the confirmation handshake, build signing, the Codex sandbox flags, `SECRET_KEYS`. A change that touches one applies only if you named it.
 - **Nothing on the voice path awaits a tool.** The brain reports through a sink; the Delegator decides what reaches your ear.
+- **Other apps keep their sound.** Awake, the echo-cancellation unit ducks other apps only at the least macOS allows and only while a voice is present, and it is released the moment Jarhead stops — nothing ducks or holds a microphone while he sleeps; Recording mode (Settings › Audio, ⌥⇧R) runs no Apple unit at all, so nothing is ducked and the microphone is shared with a recorder as an ordinary client ([`docs/AUDIO.md`](docs/AUDIO.md)).
 
 ## Install and run
 
@@ -504,6 +505,7 @@ Working rules for anyone — or anything — editing this repo: [`AGENTS.md`](AG
 - [`docs/LATENCY.md`](docs/LATENCY.md) — the before and after numbers, the field side by side, the honest assessment.
 - [`docs/DEMO.md`](docs/DEMO.md) — a ninety-second single take.
 - [`docs/AUTOMATIONS.md`](docs/AUTOMATIONS.md) — alarms, timers, reminders, routines, watchers: what fires with the agent asleep, what asks once, what is refused, the CLI and the doctor group.
+- [`docs/AUDIO.md`](docs/AUDIO.md) — Jarhead and everyone else's sound: what the echo-cancellation unit is told and when it is released, the Recording switch, the ten-second check, the probes and what this Mac said.
 - [`apps/mac/README.md`](apps/mac/README.md) — the native app: packaging, TCC, wake word, audio, wire protocol.
 - [`packages/hands/native/README.md`](packages/hands/native/README.md) — the helper's protocol, ops, numbers.
 - [`AGENTS.md`](AGENTS.md) — rules for agents editing this repo.

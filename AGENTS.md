@@ -178,16 +178,33 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   | aec | 1 | on | automatic | refused −10875 on this Mac |
   | aec | 2 | on | input-rate | the one that comes up here |
   | aec | 3 | on | hardware | |
-  | aec | 4 | off | hardware | the fallback: guard armed, `fallback` in the frame, the doctor fails `voice processing` |
-  | recording | 1 | off | hardware | guard on |
-  | recording | 2 | off | automatic | |
+  | aec | 4 | off | hardware | the fallback, ranked mic pinned (`pinDevice`): guard armed, `fallback` in the frame, the doctor fails `voice processing` |
+  | aec | 5 | off | hardware | the fallback on the system default mic (the pin refused) |
+  | recording | 1 | off | hardware | ranked mic pinned; guard on — the one that comes up here |
+  | recording | 2 | off | automatic | ranked mic pinned |
+  | recording | 3 | off | hardware | no device set: the system default mic, `ranked mic refused; hearing the system default` |
 
   (`PrivateRoute.enabled` would add two `private` rungs at the top; it is `false` — probe-only.)
+  `StartAttempt.pinDevice` is the plain path's `kAudioOutputUnitProperty_CurrentDevice` set, and it
+  is skipped outright when the ranked mic already *is* the system default: on a Mac whose default
+  input ≠ default output the engine's I/O is one unit on its own aggregate and the set knocks the
+  output side out (−10875 on every wiring). A pinned rung whose set fails throws and the ladder moves
+  on. `hears` on the plain path is `activeInputUID` (the AU's `CurrentDevice` reads as the engine's
+  `CADefaultDeviceAggregate-<pid>-n` there); `aggregatePresent` in the frame is the **unit's**
+  `VPAUAggregateAudioDevice-*` (the Swift read-back also carries `engineAggregatePresent`, a fact, not
+  on the wire).
 - **The four surfaces** read one frame (`AudioStateReadback` → the `audio-state` wire frame →
-  `Snapshot.audioState`): Settings › Audio (Hears · Speaks · Recording, `SettingsWords`), the island
-  (the mute box at 0.48 while held, the dot, the `recording` chip — no new zone, no gesture), the
-  status menu row + ⌥⇧R (`Hotkeys.Action.toggleRecording = 9`), `pnpm jarhead status` / `doctor`
-  (group `audio`, `--test-audio`).
+  `Snapshot.audioState`): Settings › Audio (`SettingsWords.hears` / `.speaks` / `.recordingRow` with
+  the `shares the mic` hint, `recordingOn` while on, `sharedWith(_:)` when another process reads the
+  mic; the head's `[recording]` badge is `ConsoleDisclosureWords.recording`), the island (`RecordingWords`
+  in `UI/HelpCopy.swift`: the mute box at 0.48 while the guard holds, the 2 × 2 dot, the `record.circle`
+  chip while tucked — fed by the `jarhead.dock.audio` notice (`NotchDock.audioNotification`, userInfo
+  `recording` · `guardHeld` · `shared`); no new zone, no gesture), the status menu row + ⌥⇧R
+  (`HelpCopy.recordingRow`: `Recording` · `Hand back the mic, guard the echo — apps keep their sound` ·
+  `Hotkeys.Action.toggleRecording = 9`; the title never flips, the checkmark is the state), `pnpm
+  jarhead status` / `doctor` (group `audio`, `--test-audio`). The cost fuse lives in `AppState`
+  (`echoTurns`, `echoFuseTurns = 3`, toast `AppState.heardHimself`): three turns of Jarhead's own
+  sentence while `guardOn` send `.mute` and nothing else.
 - **The probes** (`apps/mac/Scripts/`): `duck-probe.sh` (V4, no TCC) · `audio-probe.sh` (V1, its own
   `AudioProbe.app`; modes `aec|recording|asleep|private`; `--test` is what the doctor shells to; the
   record in `~/.jarhead/audio-probe.json` by mode) · `recorder-probe.sh` (V3) · `duck-leak-probe.sh`
@@ -787,7 +804,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   input-only microphone knocks the output side out (`IsFormatSampleRateAndChannelCountValid(outputHWFormat)`
   false → −10875 on every wiring). The plain path must not set the property when the ranked mic
   already is the default (the wake listener already skips it then); when it differs, the set is a
-  rung that can fail, not a given.
+  rung that can fail, not a given. Done in the integration pass: `StartAttempt.pinDevice`, the
+  Recording ladder `ranked/hardware › ranked/automatic › default/hardware` — `recording` went from
+  `2 ok, 1 FAIL` to `10 ok, 0 FAIL` on this Mac.
 - A bare tool in Kevin's agent terminal inherits the microphone grant of the terminal's responsible
   process — `AVCaptureDevice.authorizationStatus(for: .audio)` is `authorized` there — so a silent
   probe can run headless without a TCC prompt (`AUDIO_PROBE_DIRECT=1`); the `.app` wrap is for Kevin's
