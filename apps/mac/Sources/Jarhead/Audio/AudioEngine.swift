@@ -1159,11 +1159,15 @@ struct MicRoute {
     /// design12: the Hears / Speaks figures and the other mic clients, for the Console's rows.
     let state: AudioStateReadback
 
-    /// "explicit" | "ranked" | "system default (echo cancellation)" | "off".
+    /// "explicit" | "ranked" | "system default (echo cancellation)" | "system default (ranked mic refused)" | "off".
+    /// The last one: the plain graph's unpinned rung won (`applyInputDevice`: `ranked mic refused; hearing the
+    /// system default`) — the Console's route word then says `follows the system default`, not `ranked`.
     var follows: String {
         guard running else { return "off" }
         if echoCancelled { return "system default (echo cancellation)" }
-        return explicit != nil && active == explicit ? "explicit" : "ranked"
+        if explicit != nil && active == explicit { return "explicit" }
+        if let active, active == systemDefault, let first = ranked.first, first.uid != active { return "system default (ranked mic refused)" }
+        return "ranked"
     }
 
     var summary: String {

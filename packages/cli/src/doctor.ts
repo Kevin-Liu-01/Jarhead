@@ -1131,6 +1131,8 @@ export interface AudioCheckInput {
 }
 
 const ASLEEP_PHASES: ReadonlySet<Phase> = new Set<Phase>(["asleep", "paused", "error"]);
+/** Recording's ladder (`VoiceProcessingPolicy.plainRungs`): ranked/hardware › ranked/automatic › default/hardware — rung 3 hears the system default. */
+export const RECORDING_DEFAULT_MIC_RUNG = 3;
 
 /**
  * The `audio` group. Rules: `hears` warns on a Bluetooth mic (every app's sound narrows while it is
@@ -1152,7 +1154,16 @@ export function audioChecks(i: AudioCheckInput): Check[] {
     if (s.hears) {
       const bluetooth = transportWord(s.hears.transport) === "bluetooth";
       const builtIn = i.profiler?.builtInInput?.name ?? "the built-in microphone";
-      add({ name: "hears", status: bluetooth ? "warn" : "ok", detail: `${s.hears.name} · ${hzWords(s.hears)} · ${transportWord(s.hears.transport)} · ${hearsState(s)}`, ...(bluetooth ? { fix: `a headset mic drops every app's sound to hands-free while held — make ${builtIn} the default in System Settings › Sound, or turn Recording on` } : {}) });
+      // Recording's ladder pins the ranked mic on rungs 1–2; rung 3 is the unpinned fallback — the system default,
+      // whatever it is. On a Mac whose default input is the headset that is the outcome Recording exists to avoid.
+      const refusedRanked = s.recording && s.running && !s.voiceProcessing && s.rung === RECORDING_DEFAULT_MIC_RUNG;
+      const detail = `${s.hears.name} · ${hzWords(s.hears)} · ${transportWord(s.hears.transport)} · ${hearsState(s)}${refusedRanked ? " · ranked mic refused; hearing the system default" : ""}`;
+      const fix = bluetooth
+        ? `a headset mic drops every app's sound to hands-free while held — make ${builtIn} the default in System Settings › Sound, or turn Recording on`
+        : refusedRanked
+          ? `the plain graph could not pin the ranked microphone (rung ${RECORDING_DEFAULT_MIC_RUNG}) — make ${builtIn} the default in System Settings › Sound so Recording hears it`
+          : undefined;
+      add({ name: "hears", status: bluetooth || refusedRanked ? "warn" : "ok", detail, ...(fix ? { fix } : {}) });
     } else add({ name: "hears", status: "ok", detail: "nothing — the graph is down" });
     if (s.speaks) {
       const narrowed = s.speaks.rate < NARROWED_BELOW_HZ;

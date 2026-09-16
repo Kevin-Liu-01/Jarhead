@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AudioState } from "@jarhead/protocol";
-import { LEAK_FAIL_DBFS, NARROWED_BELOW_HZ, audioChecks, audioStatusLines, audioTestCheck, leakCheck, parseAudioProbe, parseAudioProfiler, probeStdout, render, transportWord, type AudioProfilerRead } from "../doctor.ts";
+import { LEAK_FAIL_DBFS, NARROWED_BELOW_HZ, RECORDING_DEFAULT_MIC_RUNG, audioChecks, audioStatusLines, audioTestCheck, leakCheck, parseAudioProbe, parseAudioProfiler, probeStdout, render, transportWord, type AudioProfilerRead } from "../doctor.ts";
 
 /**
  * design12 · V5 (CLI): the `audio` block of `jarhead status` and the doctor's `audio` group from a
@@ -280,6 +280,18 @@ test("leak row: the tail leak is judged before the residual — recorder-probe's
   assert.match(aecOnly.detail, /^tail leak -70 dBFS · aec/);
 });
 
+test("doctor · hears: Recording on rung 3 is the unpinned rung — the system default, not the ranked mic — and the row says so", () => {
+  const onDefault: AudioState = { ...RECORDING, rung: RECORDING_DEFAULT_MIC_RUNG };
+  const checks = audioChecks({ state: onDefault, settings: { recording: true }, phase: "listening", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW });
+  const hears = row(checks, "hears");
+  assert.equal(hears.status, "warn");
+  assert.equal(hears.detail, "MacBook Pro Microphone · 48000 Hz ×1 · built-in · shared with QuickTime Player · ranked mic refused; hearing the system default");
+  assert.match(hears.fix ?? "", /could not pin the ranked microphone \(rung 3\)/);
+  // Rung 1 (pinned) stays ok; the AEC ladder's rung 3 is a voice-processing rung and says nothing of the kind.
+  assert.equal(row(audioChecks({ state: RECORDING, settings: { recording: true }, phase: "listening", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW }), "hears").status, "ok");
+  const aecRung3 = row(audioChecks({ state: { ...AEC_ON_AIRPODS, rung: 3 }, settings: { recording: false }, phase: "listening", profiler: PROFILER, probe: undefined, appBuiltAt: undefined, now: NOW }), "hears");
+  assert.doesNotMatch(aecRung3.detail, /ranked mic refused/);
+});
 
 test("--test-audio: the script missing, Jarhead awake, nothing printed, a refusal, a dry run, a leak figure under and over the line", () => {
   const asleep = { scriptExists: true, phase: "asleep" as const };
