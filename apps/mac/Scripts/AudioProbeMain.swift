@@ -135,38 +135,21 @@ enum DeviceTable {
     static func aggregates(_ rows: [DeviceRow]) -> [String] { rows.filter(\.isAggregate).map(\.uid).sorted() }
 }
 
-/// Does Jarhead.app hold a microphone right now? The HAL's process objects name it by bundle id;
-/// on a HAL without them the fallback is a running `Jarhead` process beside a default-device
-/// aggregate (the unit's own). nil = not awake (or nothing to say).
+/// Does Jarhead.app hold a microphone right now? The HAL's process objects name it by bundle id
+/// (always there at the macOS 14 target). Without them nothing here can say: the engine's
+/// `CADefaultDeviceAggregate-<pid>-n` is AVAudioEngine's own and stands whenever the app merely
+/// exists with default in ≠ out (AudioStateReadback), so it is no sign of a held microphone — the
+/// doctor's phase check is the other gate. nil = not awake (or nothing to say).
 enum JarheadAwake {
     static func detect() -> String? {
-        if AudioProcessObjects.available {
-            for object in CoreAudioReads.objectIDs(CoreAudioReads.system, kAudioHardwarePropertyProcessObjectList) {
-                guard CoreAudioReads.string(object, kAudioProcessPropertyBundleID) == ProbeWords.jarheadBundle else { continue }
-                guard CoreAudioReads.uint32(object, kAudioProcessPropertyIsRunningInput) == 1 else { continue }
-                let pid = CoreAudioReads.uint32(object, kAudioProcessPropertyPID) ?? 0
-                return "Jarhead (pid \(pid)) is running input"
-            }
-            return nil
+        guard AudioProcessObjects.available else { return nil }
+        for object in CoreAudioReads.objectIDs(CoreAudioReads.system, kAudioHardwarePropertyProcessObjectList) {
+            guard CoreAudioReads.string(object, kAudioProcessPropertyBundleID) == ProbeWords.jarheadBundle else { continue }
+            guard CoreAudioReads.uint32(object, kAudioProcessPropertyIsRunningInput) == 1 else { continue }
+            let pid = CoreAudioReads.uint32(object, kAudioProcessPropertyPID) ?? 0
+            return "Jarhead (pid \(pid)) is running input"
         }
-        let pids = shell("/usr/bin/pgrep", ["-x", "Jarhead"]).split(separator: "\n").map(String.init)
-        guard !pids.isEmpty else { return nil }
-        let aggregates = DeviceTable.aggregates(DeviceTable.snapshot())
-        let owned = aggregates.filter { uid in pids.contains { uid.hasPrefix("\(ProbeWords.enginePrefix)-\($0)-") } }
-        return owned.isEmpty ? nil : "Jarhead (pid \(pids.joined(separator: ","))) holds \(owned.joined(separator: ", "))"
-    }
-
-    private static func shell(_ path: String, _ args: [String]) -> String {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        guard (try? p.run()) != nil else { return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return nil
     }
 }
 
@@ -816,7 +799,8 @@ final class PrivateSpike {
                 }
             })
             say("spike: vp on \(vpOn) · CurrentDevice.uid \(selected ?? "nil") \(selected == PrivateRoute.uid ? "ok" : "not the route")")
-            say("spike: speaks.rate \(Int(AudioDeviceFacts.defaultOutput()?.rate ?? 0)) Hz · CADefaultDeviceAggregate present \(DeviceTable.aggregates(DeviceTable.snapshot()).isEmpty ? "no" : "yes")")
+            let aggregates = DeviceTable.aggregates(DeviceTable.snapshot())
+            say("spike: speaks.rate \(Int(AudioDeviceFacts.defaultOutput()?.rate ?? 0)) Hz · aggregates present (engine \(ProbeWords.enginePrefix)-* and unit \(ProbeWords.unitPrefix)-*): \(aggregates.isEmpty ? "none" : aggregates.joined(separator: ", "))")
         } catch {
             say("spike: the unit refused the route: \(error.localizedDescription)")
         }
