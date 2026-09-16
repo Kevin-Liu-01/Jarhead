@@ -43,6 +43,9 @@ final class AudioEngine {
     /// design12: what the input node is told at start (`setPolicy`); consulted at every start,
     /// so a flip while asleep costs nothing and is used at the next wake.
     private var wantedPolicy: VoiceProcessingPolicy = .aec
+    /// The policy the running graph was built from (`finishStart`); the deferred rebuild
+    /// compares it with `wantedPolicy` — a flip and a flip back within the deferral rebuilds nothing.
+    private var runningPolicy: VoiceProcessingPolicy = .aec
     /// The rung that came up last (0-based index into `wantedPolicy.attempts`), so a device
     /// change does not re-walk the refused rungs (dead air); nil = walk from the top.
     private var winningRung: Int?
@@ -180,28 +183,42 @@ final class AudioEngine {
 
     /// Settings › Audio › Recording flipped (or the app's first read of it): remember the
     /// policy and, if the graph is up, rebuild it from rung 1 — once Jarhead has finished
-    /// the sentence he is on (`stopLocked` drops the speaker backlog), capped at 3 s.
+    /// the sentence he is on (`stopLocked` drops the speaker backlog), capped at 3 s. A second
+    /// flip while that rebuild waits only moves `wantedPolicy`; the rebuild reads it when it runs.
     func setPolicy(_ p: VoiceProcessingPolicy) {
         queue.async {
             guard p != self.wantedPolicy else { return }
             self.wantedPolicy = p
-            self.winningRung = nil
-            guard self.wanted, self.running, !self.rebuildPending else { return }
+            guard self.wanted, self.running else {
+                // Stopped: the next start walks the new policy's ladder from the top.
+                self.winningRung = nil
+                return
+            }
+            guard !self.rebuildPending else { return }
             self.rebuildPending = true
             self.rebuildWhenQuiet(deadline: CFAbsoluteTimeGetCurrent() + 3, noted: false)
         }
     }
 
     /// On `queue`: the deferred rebuild — now if the speaker is quiet (nothing audible queued
-    /// for 0.3 s) or the deadline has passed, else look again in 250 ms.
+    /// for 0.3 s) or the deadline has passed, else look again in 250 ms. Nothing is torn down
+    /// when the running graph already carries the wanted policy (flipped on and off meanwhile):
+    /// the remembered rung stays, the speaker backlog and the microphone are not interrupted.
     private func rebuildWhenQuiet(deadline: CFAbsoluteTime, noted: Bool) {
         guard wanted, running else {
             // Stopped meanwhile: the next start reads the policy anyway.
             rebuildPending = false
+            winningRung = nil
             return
         }
         if BargeInDuck.shared.outputQuiet(for: 0.3) || CFAbsoluteTimeGetCurrent() >= deadline {
             rebuildPending = false
+            guard wantedPolicy != runningPolicy else {
+                onStatus?("audio: policy flipped back before the rebuild — the running graph already matches; nothing rebuilt")
+                publishAudioState("policy")
+                return
+            }
+            winningRung = nil
             stopLocked()
             retryAttempt = 0
             startLocked()
@@ -486,6 +503,7 @@ final class AudioEngine {
     /// The graph is up: arm the duck (AEC only) or the echo guard (plain graph only), say so, publish.
     private func finishStart(voiceProcessing: Bool, wiring: OutputWiring, rung: Int, hw: AVAudioFormat, live: AVAudioFormat) {
         running = true
+        runningPolicy = wantedPolicy
         currentRung = rung
         currentWiring = wiring
         currentTapFormat = live.brief
