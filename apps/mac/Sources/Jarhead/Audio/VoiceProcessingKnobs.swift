@@ -44,6 +44,21 @@ enum VoiceProcessingKnobs {
         return Readback(duckLevel: level, advanced: cfg.enableAdvancedDucking.boolValue, agc: input.isVoiceProcessingAGCEnabled, bypassed: input.isVoiceProcessingBypassed)
     }
 
+    /// One status line with both spellings, for run.log and the probe:
+    /// `voice processing knobs: duck 10 advanced true, agc true, bypass false · raw 2108 duck 10 advanced true`
+    /// (`raw 2108 n/a` when the unit has no such property). Inside the caller's `objcTry`.
+    static func readbackLine(_ input: AVAudioInputNode) -> String {
+        let swift = read(input)
+        let head = "voice processing knobs: duck \(swift.duckLevel) advanced \(swift.advanced), agc \(swift.agc), bypass \(swift.bypassed)"
+        let rawWord: String
+        if let raw = readRawDucking(input) {
+            rawWord = "raw 2108 duck \(raw.level) advanced \(raw.advanced)"
+        } else {
+            rawWord = "raw 2108 n/a"
+        }
+        return "\(head) · \(rawWord)"
+    }
+
     /// The raw AU view, for the probe's cross-check: (advanced, level), or nil when the
     /// unit has no such property (voice processing off, or no audio unit yet).
     static func readRawDucking(_ input: AVAudioInputNode) -> (advanced: Bool, level: UInt32)? {

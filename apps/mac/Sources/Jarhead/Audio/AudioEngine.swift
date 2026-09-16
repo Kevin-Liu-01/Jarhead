@@ -207,7 +207,7 @@ final class AudioEngine {
             startLocked()
             return
         }
-        if !noted { onStatus?("policy flip deferred — Jarhead is speaking") }
+        if !noted { onStatus?("audio: policy flip deferred — Jarhead is speaking") }
         queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.rebuildWhenQuiet(deadline: deadline, noted: true)
         }
@@ -495,7 +495,16 @@ final class AudioEngine {
         }
         let formatNote = live.brief == hw.brief ? live.brief : "\(live.brief) (was \(hw.brief) before prepare)"
         onStatus?(AudioEngine.runningLine(mic: formatNote, policy: wantedPolicy, voiceProcessing: voiceProcessing, wiring: wiring, rung: rung, tailMs: currentTailMs))
+        if voiceProcessing { logKnobsReadback() }
         publishRoute("audio running")
+    }
+
+    /// The knobs as the unit holds them now, in both spellings — the Swift properties and
+    /// the raw AU property 2108 — so run.log carries V1's cross-check without the probe.
+    private func logKnobsReadback() {
+        var line = ""
+        try? objcTry { line = VoiceProcessingKnobs.readbackLine(self.engine.inputNode) }
+        if !line.isEmpty { onStatus?(line) }
     }
 
     /// `baseTail + the output node's presentation latency (+ the Bluetooth allowance)`, clamped.
