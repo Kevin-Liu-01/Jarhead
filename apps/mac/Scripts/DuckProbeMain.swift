@@ -96,6 +96,7 @@ final class DuckProbe: @unchecked Sendable {
     private var minGainSeen: Float = 1
     private var rounds: [Round] = []
     private var failures: [String] = []
+    private var pureChecks = (ok: 0, failed: 0)
 
     // The round in flight.
     private var current: Round?
@@ -118,6 +119,9 @@ final class DuckProbe: @unchecked Sendable {
     }
 
     func begin() {
+        // V4 (design12): the echo guard's machine and the start ladder, table-driven, before the duck rounds.
+        let (pureOk, pureFailed) = PureSections.run(say: { [weak self] in self?.say($0) }, fail: { [weak self] in self?.failures.append($0) })
+        pureChecks = (pureOk, pureFailed)
         rankingSelfCheck()
         rankingOnThisMac()
 
@@ -407,6 +411,8 @@ final class DuckProbe: @unchecked Sendable {
             "liveModelledMs": liveMs,
             "ranked": names,
             "lowestGain": Double(min),
+            "pureChecksOk": pureChecks.ok,
+            "pureChecksFailed": pureChecks.failed,
         ]
         if !fails.isEmpty { report["failures"] = fails }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), let line = String(data: data, encoding: .utf8) {
@@ -414,5 +420,217 @@ final class DuckProbe: @unchecked Sendable {
         }
         let missing = s.count < onsets
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(fails.isEmpty && !missing ? 0 : 2) }
+    }
+}
+
+// MARK: - V4 · the pure parts (design12 § Verification)
+
+/// Table-driven `check:` lines over `EchoGuardModel`, `EchoGuard` and `VoiceProcessingPolicy`
+/// — nothing played, no microphone, no TCC. Each case returns nil when it holds, else the
+/// mismatch in words; `run` prints `check: <section> · <name> ok | FAIL <why>` and hands the
+/// failures to the duck's tally so `--json` and the exit code carry them.
+struct PureSections {
+    typealias Case = (name: String, body: () -> String?)
+
+    static let slice = EchoGuardModel.sliceSeconds
+    static let tail = EchoGuardModel.baseTail
+
+    /// Hand every failure to the caller; returns (ok, failed).
+    static func run(say: (String) -> Void, fail: (String) -> Void) -> (Int, Int) {
+        var ok = 0, failed = 0
+        for (section, cases) in [("guard", guardCases()), ("policy", policyCases())] {
+            for c in cases {
+                if let why = c.body() {
+                    failed += 1
+                    fail("\(section) · \(c.name): \(why)")
+                    say("check: \(section) · \(c.name) FAIL \(why)")
+                } else {
+                    ok += 1
+                    say("check: \(section) · \(c.name) ok")
+                }
+            }
+        }
+        say("check: pure sections \(ok) ok, \(failed) FAIL")
+        return (ok, failed)
+    }
+
+    /// `slices` steps of 10 ms at `rms`, starting at `from`; returns the verdicts and the time after the last.
+    static func feed(_ m: inout EchoGuardModel, rms: Double, from: Double, slices: Int) -> ([EchoGuardModel.Verdict], Double) {
+        var out: [EchoGuardModel.Verdict] = []
+        var t = from
+        for _ in 0 ..< slices {
+            out.append(m.step(rms: rms, now: t))
+            t += slice
+        }
+        return (out, t)
+    }
+
+    /// A model with one second of audible output queued at t = 0 (audible until 1.0 + tail).
+    static func speaking(seconds: Double = 1.0) -> EchoGuardModel {
+        var m = EchoGuardModel(tail: tail)
+        m.noteOutput(rms: 0.1, seconds: seconds, now: 0)
+        return m
+    }
+
+    /// A model that has been held on echo at `echoRMS` for `seconds` (the floor taught), the window 10 s long.
+    static func taught(echoRMS: Double, seconds: Double) -> (EchoGuardModel, Double) {
+        var m = speaking(seconds: 10)
+        let (_, t) = feed(&m, rms: echoRMS, from: 0, slices: Int((seconds / slice).rounded()))
+        return (m, t)
+    }
+
+    static func guardCases() -> [Case] {
+        [
+            ("silence before any output passes", {
+                // The engine's clock is CFAbsoluteTime (~8e8 s): a fresh model's `audibleUntil 0`
+                // is long past. At t = 0 exactly the tail would still cover it, so the line starts later.
+                var m = EchoGuardModel(tail: tail)
+                return m.step(rms: 0.001, now: 100) == .pass && m.state == .open ? nil : "held with nothing queued"
+            }),
+            ("hold begins on the first slice after noteOutput", {
+                var m = speaking()
+                let v = m.step(rms: 0.001, now: 0)
+                return v == .hold && m.isHeld && m.stats.holds == 1 ? nil : "verdict \(v), holds \(m.stats.holds)"
+            }),
+            ("silence between sentences arms nothing", {
+                var m = speaking()
+                m.noteOutput(rms: 0.0, seconds: 5, now: 0)
+                return m.audibleUntil == 1.0 && m.queueEnd == 6.0 ? nil : "audibleUntil \(m.audibleUntil), queueEnd \(m.queueEnd)"
+            }),
+            ("release at audibleUntil + tail, not before", {
+                var m = speaking()
+                _ = m.step(rms: 0.001, now: 0)
+                let before = m.step(rms: 0.001, now: 1.0 + tail - slice)
+                let at = m.step(rms: 0.001, now: 1.0 + tail)
+                return before == .hold && at == .pass && m.state == .open ? nil : "at tail−10ms \(before), at tail \(at), state \(m.state)"
+            }),
+            ("no break-through in the first 2 s however loud", {
+                var m = speaking(seconds: 10)
+                let (verdicts, _) = feed(&m, rms: 0.9, from: 0, slices: 199)
+                return verdicts.allSatisfy { $0 == .hold } && m.stats.breakthroughs == 0 ? nil : "passed \(verdicts.filter { $0 == .pass }.count) slices, breaks \(m.stats.breakthroughs)"
+            }),
+            ("break-through after 12 slices over max(4 × floor, 0.02)", {
+                var (m, t) = taught(echoRMS: 0.01, seconds: 2.0)
+                let threshold = max(m.echoFloor * EchoGuardModel.breakFactor, EchoGuardModel.breakMinimumRMS)
+                let (verdicts, _) = feed(&m, rms: threshold * 1.5, from: t, slices: 12)
+                let firstEleven = verdicts.prefix(11).allSatisfy { $0 == .hold }
+                let twelfth = verdicts.last == .pass
+                var broken = false
+                if case .broken = m.state { broken = true }
+                return firstEleven && twelfth && broken && m.stats.breakthroughs == 1 ? nil : "verdicts \(verdicts.map { $0 == .hold ? "h" : "p" }.joined()), state \(m.state)"
+            }),
+            ("a Kevin-loud slice after 0.5 s does not move the floor", {
+                var (m, t) = taught(echoRMS: 0.01, seconds: 0.6)
+                let before = m.echoFloor
+                _ = m.step(rms: 0.5, now: t)
+                return m.echoFloor == before ? nil : "floor \(before) → \(m.echoFloor)"
+            }),
+            ("the first half second teaches from every slice", {
+                var m = speaking(seconds: 10)
+                _ = feed(&m, rms: 0.3, from: 0, slices: 10)
+                return m.echoFloor > 0.1 ? nil : "floor \(m.echoFloor) after 100 ms at 0.3"
+            }),
+            (".broken passes until the window ends", {
+                var (m, t) = taught(echoRMS: 0.01, seconds: 2.0)
+                _ = feed(&m, rms: 0.2, from: t, slices: 12)
+                let (during, t2) = feed(&m, rms: 0.001, from: t + 0.12, slices: 5)
+                var stillBroken = false
+                if case .broken = m.state { stillBroken = true }
+                let after = m.step(rms: 0.001, now: max(t2, m.audibleUntil + tail))
+                return during.allSatisfy { $0 == .pass } && stillBroken && after == .pass && m.state == .open ? nil : "during \(during), state \(m.state)"
+            }),
+            ("noteFlush shortens the window", {
+                var m = speaking(seconds: 10)
+                m.noteFlush(now: 1)
+                return m.audibleUntil == 1 && m.queueEnd == 1 && m.outputAudible(1 + tail - slice) && !m.outputAudible(1 + tail) ? nil : "audibleUntil \(m.audibleUntil), queueEnd \(m.queueEnd)"
+            }),
+            ("NaN counts as silence", {
+                var m = speaking(seconds: 10)
+                let v = m.step(rms: .nan, now: 0)
+                _ = feed(&m, rms: .nan, from: slice, slices: 60)
+                var open = EchoGuardModel(tail: tail)
+                let quiet = open.step(rms: .nan, now: 100)
+                return v == .hold && m.echoFloor.isFinite && m.echoFloor == 0 && quiet == .pass ? nil : "verdict \(v), floor \(m.echoFloor), open \(quiet)"
+            }),
+            ("counters: holds, heldSeconds, breakthroughs", {
+                // 200 slices taught = 1 open→held slice (not counted as held) + 199 held; + 12 to the break.
+                var (m, t) = taught(echoRMS: 0.01, seconds: 2.0)
+                _ = feed(&m, rms: 0.2, from: t, slices: 12)
+                _ = m.step(rms: 0.001, now: 10 + tail)
+                m.noteOutput(rms: 0.1, seconds: 1, now: 11)
+                _ = m.step(rms: 0.001, now: 11)
+                let held = abs(m.heldSeconds - 2.11) < 0.001
+                return m.stats.holds == 2 && m.stats.breakthroughs == 1 && held ? nil : "holds \(m.stats.holds), breaks \(m.stats.breakthroughs), held \(m.heldSeconds)"
+            }),
+            ("EchoGuard: detached passes, attached holds and counts, frozen passes", {
+                let g = EchoGuard.shared
+                g.detach()
+                var samples = [Float](repeating: 0.001, count: 480)
+                let pass = samples.withUnsafeBufferPointer { g.judge(mono: $0.baseAddress!, frames: 480, sampleRate: 48_000) }
+                g.attach(tail: tail)
+                g.noteOutput(rms: 0.1, seconds: 1)
+                let hold = samples.withUnsafeBufferPointer { g.judge(mono: $0.baseAddress!, frames: 480, sampleRate: 48_000) }
+                let s1 = g.stats
+                g.frozen = true
+                let frozen = samples.withUnsafeBufferPointer { g.judge(mono: $0.baseAddress!, frames: 480, sampleRate: 48_000) }
+                let s2 = g.stats
+                g.frozen = false
+                g.detach()
+                samples.removeAll()
+                let ok = pass == .pass && hold == .hold && s1.gated == 1 && s1.chunks == 1 && frozen == .pass && s2.chunks == 2 && s2.gated == 1 && !g.isAttached
+                return ok ? nil : "detached \(pass), attached \(hold) gated \(s1.gated)/\(s1.chunks), frozen \(frozen) \(s2.gated)/\(s2.chunks)"
+            }),
+        ]
+    }
+
+    static func policyCases() -> [Case] {
+        [
+            ("from(recording: true) walks plain rungs only", {
+                let a = VoiceProcessingPolicy.from(recording: true).attempts
+                return a.count == 2 && a.allSatisfy { !$0.voice && !$0.privateRoute } && a[0].wiring == .hardware && a[1].wiring == .automatic ? nil : "\(a)"
+            }),
+            (".aec.attempts.count == 4 (private route off)", {
+                let a = VoiceProcessingPolicy.aec.attempts
+                let shape = a.count == 4 && a[0].voice && a[0].wiring == .automatic && a[1].wiring == .inputRate && a[2].wiring == .hardware && !a[3].voice && a[3].wiring == .hardware
+                return shape && !PrivateRoute.enabled && a.allSatisfy { !$0.privateRoute } ? nil : "\(a), private \(PrivateRoute.enabled)"
+            }),
+            ("from(recording:) maps to the two policies", {
+                VoiceProcessingPolicy.from(recording: false) == .aec && VoiceProcessingPolicy.from(recording: true) == .recording && VoiceProcessingPolicy.aec != .recording ? nil : "mapping"
+            }),
+            ("the constants: duck min (10) advanced, agc on, bypass off", {
+                let p = VoiceProcessingPolicy.aec
+                return p.duckLevel == 10 && p.advancedDucking && p.agc && !p.bypass && p.knobsDescription == "duck min advanced, agc on, bypass off" ? nil : p.knobsDescription
+            }),
+            ("winningRung arithmetic (firstRung)", {
+                let f = VoiceProcessingPolicy.firstRung
+                let table: [(Int?, Int, Int)] = [(nil, 4, 0), (2, 4, 2), (7, 4, 3), (-1, 4, 0), (0, 0, 0), (3, 2, 1)]
+                for (r, n, want) in table where f(r, n) != want { return "firstRung(\(r.map(String.init) ?? "nil"), \(n)) = \(f(r, n)), want \(want)" }
+                return nil
+            }),
+            ("the running line spells the rung and the knobs", {
+                let on = AudioEngine.runningLine(mic: "48000 Hz ×1 Float32", policy: .aec, voiceProcessing: true, wiring: .inputRate, rung: 2, tailMs: 0)
+                let off = AudioEngine.runningLine(mic: "m", policy: .recording, voiceProcessing: false, wiring: .hardware, rung: 1, tailMs: 420)
+                let fb = AudioEngine.runningLine(mic: "m", policy: .aec, voiceProcessing: false, wiring: .hardware, rung: 4, tailMs: 300)
+                let okOn = on == "audio running: mic 48000 Hz ×1 Float32, voice processing on (duck min advanced, agc on, bypass off), output wiring input-rate, rung 2, tail 0 ms"
+                let okOff = off.contains("voice processing off (guard on), output wiring hardware, rung 1, tail 420 ms")
+                let okFb = fb.contains("off (guard on, fallback)") && fb.contains("rung 4")
+                return okOn && okOff && okFb ? nil : "\(on) | \(off) | \(fb)"
+            }),
+            ("the state words", {
+                var s = AudioStateReadback()
+                let off = s.hearsState == AudioStateWords.off
+                s.running = true; s.voiceProcessing = true
+                let aec = s.hearsState == AudioStateWords.echoCancelled
+                s.voiceProcessing = false; s.recording = true
+                let rec = s.hearsState == AudioStateWords.echoGuarded
+                s.recording = false
+                let fb = s.hearsState == AudioStateWords.echoNone
+                s.speaks = AudioDeviceFacts(name: "AirPods", uid: "bt", rate: 16_000, channels: 2, transport: "bluetooth")
+                let narrow = s.speaksState == AudioStateWords.narrowed
+                s.speaks?.rate = 48_000
+                let full = s.speaksState == AudioStateWords.fullQuality
+                return off && aec && rec && fb && narrow && full ? nil : "off \(off) aec \(aec) rec \(rec) fb \(fb) narrow \(narrow) full \(full)"
+            }),
+        ]
     }
 }
