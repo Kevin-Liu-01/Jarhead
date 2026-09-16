@@ -5461,12 +5461,12 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 }
 
-/** The hostname of a server root, "" when the URL does not parse. */
 /** Two audio-state frames say the same thing (design12): the app sends one every 5 s with the counters; only a change earns a snapshot. */
 function sameAudioState(a: AudioState, b: AudioState): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** The hostname of a server root, "" when the URL does not parse. */
 function hostOf(baseUrl: string): string {
   try {
     return new URL(baseUrl).hostname;

@@ -198,6 +198,9 @@ test("doctor · the fallback rung FAILS voice processing; a recorder beside the 
   assert.equal(row(fallback, "voice processing").fix, "echo cancellation failed to start on this device pair; Jarhead runs guarded");
   assert.equal(row(fallback, "other mic clients").detail, "unknown (the HAL has no process objects)");
   assert.equal(row(fallback, "other mic clients").status, "ok");
+  const fallbackShared = audioChecks({ state: { ...FALLBACK, sharedWith: ["QuickTime Player"] }, settings: { recording: false }, phase: "listening", profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
+  assert.equal(row(fallbackShared, "other mic clients").status, "ok", "the fallback rung runs the plain graph: a recorder beside it shares an ordinary mic");
+  assert.equal(row(fallbackShared, "other mic clients").detail, "QuickTime Player · sharing the plain mic");
   const shared = audioChecks({ state: { ...AEC_ON_AIRPODS, sharedWith: ["QuickTime Player", "OBS", "Screen Studio"] }, settings: { recording: false }, phase: "listening", profiler: undefined, probe: undefined, appBuiltAt: undefined, now: NOW });
   assert.equal(row(shared, "other mic clients").status, "warn");
   assert.equal(row(shared, "other mic clients").detail, "QuickTime Player, OBS + 1 · beside a voice-processing unit");

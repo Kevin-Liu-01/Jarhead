@@ -1115,7 +1115,7 @@ const ASLEEP_PHASES: ReadonlySet<Phase> = new Set<Phase>(["asleep", "paused", "e
  * The `audio` group. Rules: `hears` warns on a Bluetooth mic (every app's sound narrows while it is
  * held); `speaks` warns below 44.1 kHz (narrowed) or, while Recording, on Bluetooth (a longer guard
  * tail); `voice processing` FAILS when the fallback rung won (running, no unit, Recording off);
- * `other mic clients` is fine while Recording and a warning beside the unit; `recording` warns while
+ * `other mic clients` is fine beside the plain graph (Recording, or the fallback rung) and a warning beside the unit; `recording` warns while
  * on; `released at sleep` is judged only while asleep; `leak` reads the probe file. Without an app:
  * one warning row, then what settings.json and the file still say.
  */
@@ -1144,7 +1144,11 @@ export function audioChecks(i: AudioCheckInput): Check[] {
     add({ name: "default input", status: "ok", detail: def ? `${def} · ${held}` : `unknown (no system_profiler read) · ${held}` });
     if (s.sharedWith === undefined) add({ name: "other mic clients", status: "ok", detail: "unknown (the HAL has no process objects)" });
     else if (s.sharedWith.length === 0) add({ name: "other mic clients", status: "ok", detail: "none" });
-    else add({ name: "other mic clients", status: s.recording ? "ok" : "warn", detail: `${sharedWords(s.sharedWith)} · ${s.recording ? "sharing the plain mic" : "beside a voice-processing unit"}`, ...(s.recording ? {} : { fix: "turn Recording on so the recorder shares a plain microphone" }) });
+    else {
+      // A recorder beside the voice-processing unit hears a processed (on AirPods, narrowband) mic; beside the plain graph — Recording, or the fallback rung — it shares an ordinary one.
+      const besideUnit = s.running && s.voiceProcessing;
+      add({ name: "other mic clients", status: besideUnit ? "warn" : "ok", detail: `${sharedWords(s.sharedWith)} · ${besideUnit ? "beside a voice-processing unit" : "sharing the plain mic"}`, ...(besideUnit ? { fix: "turn Recording on so the recorder shares a plain microphone" } : {}) });
+    }
   }
   add({ name: "recording", status: recording ? "warn" : "ok", detail: `${recording ? "on" : "off"} · Settings › Audio, ⌥⇧R`, ...(recording ? { fix: "turn it off after the demo" } : {}) });
   if (s) {
