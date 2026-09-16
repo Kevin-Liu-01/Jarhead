@@ -528,6 +528,20 @@ public struct WakeSettings: Codable, Equatable {
     public var json: [String: Any] { ["enabled": enabled, "phrases": phrases, "auth": auth.rawValue] }
 }
 
+/// design12: the audio graph's one user decision (`Settings.audio`). Nested like `wake`, merged
+/// field-wise at load by the engine, so a daemon before the block sends none and `audioSettings`
+/// fills the default in.
+public struct AudioSettings: Codable, Equatable {
+    /// Recording a demo: no voice-processing unit, the ranked mic, the software echo guard.
+    public var recording: Bool
+
+    public init(recording: Bool) { self.recording = recording }
+
+    public static let standard = AudioSettings(recording: false)
+
+    public var json: [String: Any] { ["recording": recording] }
+}
+
 public struct Settings: Codable, Equatable {
     public var voice: String
     public var brain: BrainKind
@@ -540,7 +554,7 @@ public struct Settings: Codable, Equatable {
     public var effort: String
     /// First-run onboarding finished (keys, brain, permissions, wake word).
     public var onboarded: Bool
-    /// getUserMedia deviceId; nil = the system default.
+    /// Core Audio device UID (not a getUserMedia id); nil = ranked.
     public var micDeviceId: String?
     public var idleSleepMinutes: Double
     /// Start listening on launch (ignored while the wake word gate is enabled).
@@ -572,10 +586,14 @@ public struct Settings: Codable, Equatable {
     public var warmThreads: Int
     /// Automations: the switch, the unattended kinds, quiet hours, the recipes. nil from a daemon before the field.
     public var automations: AutomationSettings?
+    /// design12: the audio block (Recording). nil from a daemon before the field.
+    public var audio: AudioSettings?
 
     public var livesInNotch: Bool { orbHome == "notch" }
     /// The block, or the contract's default when the daemon predates it.
     public var automationSettings: AutomationSettings { automations ?? .standard }
+    /// The audio block, or the contract's default when the daemon predates it.
+    public var audioSettings: AudioSettings { audio ?? .standard }
 }
 
 // MARK: - Local model servers (mirror of LocalFlavor / LocalFit / LocalModel / LocalServerStatus / DataPath)
@@ -1193,6 +1211,86 @@ public struct SystemSignal: Equatable {
     }
 }
 
+// MARK: - Audio state (design12: the mirror of the protocol's AudioState / AudioDeviceInfo)
+
+/// One audio device as the HAL described it: `rate` on a Bluetooth headset is the hands-free
+/// tell (16 000 / 8 000 narrowed, 44 100+ full quality). Plain fields; the frame's field names.
+public struct AudioDeviceInfo: Codable, Equatable {
+    public var name: String
+    public var uid: String
+    public var rate: Double
+    public var channels: Int
+    public var transport: String
+
+    public init(name: String, uid: String, rate: Double, channels: Int, transport: String) {
+        self.name = name; self.uid = uid; self.rate = rate; self.channels = channels; self.transport = transport
+    }
+
+    public var json: [String: Any] { ["name": name, "uid": uid, "rate": rate, "channels": channels, "transport": transport] }
+}
+
+/// The audio graph read back — what is, not what was asked for. The app builds it from
+/// `AudioStateReadback`, sends it as the `audio-state` frame and the daemon keeps it in the
+/// snapshot. Strings and numbers only; `sharedWith` carries process NAMES (mapped by the app),
+/// nil when the HAL cannot say — never an empty list for "unknown".
+public struct AudioStateInfo: Codable, Equatable {
+    public var running: Bool
+    public var voiceProcessing: Bool
+    public var duckLevel: Int?
+    public var advancedDucking: Bool?
+    public var agc: Bool?
+    public var bypassed: Bool?
+    public var rung: Int
+    public var wiring: String
+    public var hears: AudioDeviceInfo?
+    public var speaks: AudioDeviceInfo?
+    public var tapFormat: String
+    public var recording: Bool
+    public var fallback: Bool
+    public var guardOn: Bool
+    public var guardTailMs: Int
+    public var guardHeldMs: Int?
+    public var gated: Int
+    public var chunks: Int
+    public var breakthroughs: Int
+    public var sharedWith: [String]?
+    public var inputMuted: Bool
+    public var aggregatePresent: Bool
+    public var since: Double?
+
+    public init(running: Bool = false, voiceProcessing: Bool = false, duckLevel: Int? = nil, advancedDucking: Bool? = nil, agc: Bool? = nil,
+                bypassed: Bool? = nil, rung: Int = 0, wiring: String = "", hears: AudioDeviceInfo? = nil, speaks: AudioDeviceInfo? = nil,
+                tapFormat: String = "", recording: Bool = false, fallback: Bool = false, guardOn: Bool = false, guardTailMs: Int = 0,
+                guardHeldMs: Int? = nil, gated: Int = 0, chunks: Int = 0, breakthroughs: Int = 0, sharedWith: [String]? = nil,
+                inputMuted: Bool = false, aggregatePresent: Bool = false, since: Double? = nil) {
+        self.running = running; self.voiceProcessing = voiceProcessing; self.duckLevel = duckLevel; self.advancedDucking = advancedDucking
+        self.agc = agc; self.bypassed = bypassed; self.rung = rung; self.wiring = wiring; self.hears = hears; self.speaks = speaks
+        self.tapFormat = tapFormat; self.recording = recording; self.fallback = fallback; self.guardOn = guardOn; self.guardTailMs = guardTailMs
+        self.guardHeldMs = guardHeldMs; self.gated = gated; self.chunks = chunks; self.breakthroughs = breakthroughs; self.sharedWith = sharedWith
+        self.inputMuted = inputMuted; self.aggregatePresent = aggregatePresent; self.since = since
+    }
+
+    /// The frame's `state` object: exactly the protocol's AudioState field names, booleans as
+    /// booleans, counters as numbers, optionals absent rather than null.
+    public var json: [String: Any] {
+        var o: [String: Any] = [
+            "running": running, "voiceProcessing": voiceProcessing, "rung": rung, "wiring": wiring, "tapFormat": tapFormat,
+            "recording": recording, "fallback": fallback, "guardOn": guardOn, "guardTailMs": guardTailMs,
+            "gated": gated, "chunks": chunks, "breakthroughs": breakthroughs, "inputMuted": inputMuted, "aggregatePresent": aggregatePresent,
+        ]
+        if let duckLevel { o["duckLevel"] = duckLevel }
+        if let advancedDucking { o["advancedDucking"] = advancedDucking }
+        if let agc { o["agc"] = agc }
+        if let bypassed { o["bypassed"] = bypassed }
+        if let hears { o["hears"] = hears.json }
+        if let speaks { o["speaks"] = speaks.json }
+        if let guardHeldMs { o["guardHeldMs"] = guardHeldMs }
+        if let sharedWith { o["sharedWith"] = sharedWith }
+        if let since { o["since"] = since }
+        return o
+    }
+}
+
 public struct Snapshot: Codable, Equatable {
     public var phase: Phase
     public var session: SessionInfo?
@@ -1227,6 +1325,8 @@ public struct Snapshot: Codable, Equatable {
     public var nextFire: NextFire?
     /// The recipes the shell gate now rates confirm, by name: the `asks` badge, never pickable. nil from a daemon before the field.
     public var recipesAsking: [String]?
+    /// design12: the app's audio graph as it last read itself back (`audio-state`); absent while no app is connected.
+    public var audioState: AudioStateInfo?
 
     public var automationRows: [Automation] { automations ?? [] }
     public var liveThreads: [WorkThread] { threads.filter { $0.status.isLive } }
@@ -1453,6 +1553,8 @@ public struct SettingsPatch: Equatable {
     public var warmThreads: Int?
     /// Replaces the whole automations block (Settings › Automations writes it via `set-settings`).
     public var automations: AutomationSettings?
+    /// Replaces the whole audio block (Settings › Audio › Recording, the status menu, ⌥⇧R — `set-settings` only).
+    public var audio: AudioSettings?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
@@ -1470,6 +1572,9 @@ public struct SettingsPatch: Equatable {
     public mutating func setThreads(observe: Bool? = nil, typedWakes: Bool? = nil, threadOverflow: String? = nil, warmThreads: Int? = nil) {
         self.observe = observe; self.typedWakes = typedWakes; self.threadOverflow = threadOverflow; self.warmThreads = warmThreads
     }
+
+    /// The audio block, set after init (design12).
+    public mutating func setAudio(_ a: AudioSettings) { audio = a }
 
     public var json: [String: Any] {
         var o: [String: Any] = [:]
@@ -1497,6 +1602,7 @@ public struct SettingsPatch: Equatable {
         if let v = threadOverflow { o["threadOverflow"] = v }
         if let v = warmThreads { o["warmThreads"] = v }
         if let v = automations { o["automations"] = v.json }
+        if let v = audio { o["audio"] = v.json }
         return o
     }
 }

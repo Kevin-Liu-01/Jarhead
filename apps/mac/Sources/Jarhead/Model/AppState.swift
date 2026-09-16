@@ -6,7 +6,10 @@ import Combine
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var snapshot: Snapshot = .empty {
-        didSet { syncAutomations(from: snapshot) }
+        didSet {
+            syncAutomations(from: snapshot)
+            noteEchoTurns(from: snapshot)
+        }
     }
     @Published public var levels: AudioLevels = .silent
     @Published public var connected: Bool = false
@@ -383,6 +386,17 @@ public final class AppState: ObservableObject {
     /// Installed by the daemon client: forwards a `system.signal` frame. UI and observers only ever call `systemSignal`.
     public var signalHandler: (SystemSignal) -> Void = { _ in }
 
+    // MARK: audio (design12)
+
+    /// The app's audio graph as it last read itself back (`AudioEngine.onAudioState`, hopped to main by the
+    /// AppDelegate): the island's held mic, the Console's `Shared with …`, the fuse's `guardOn`. nil before the
+    /// first read and in a harness without audio.
+    @Published public var audioState: AudioStateInfo?
+    /// Kevin turns in a row that were Jarhead's own words (the guard leaked): the fuse's counter.
+    public private(set) var echoTurns = 0
+    /// The last final Kevin turn the fuse judged, so a republished snapshot does not count it twice.
+    private var echoCheckedId: String?
+
     /// Installed by the daemon client. UI code only ever calls `send`.
     public var sendHandler: (EngineCommand) -> Void = { _ in }
     public var ledgerDaysHandler: () async -> [String] = { [] }
@@ -409,6 +423,55 @@ public final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             self?.toasts.removeAll { $0.id == t.id }
         }
+    }
+
+    // MARK: - Recording and the echo fuse (design12)
+
+    /// Settings › Audio › Recording, the status menu row, ⌥⇧R: the whole audio block through `set-settings` —
+    /// the only writer of settings, and the only command a flip may enqueue (appstate-bench pins it).
+    public func setRecording(_ on: Bool) {
+        var a = snapshot.settings.audioSettings
+        a.recording = on
+        var p = SettingsPatch()
+        p.setAudio(a)
+        send(.setSettings(p))
+    }
+
+    /// The cost fuse: this many echo turns in a row → one `.mute`, then the counter starts over.
+    public nonisolated static let echoFuseTurns = 3
+    /// A turn shorter than this is never called an echo (a "yes" is Kevin's, whatever Jarhead said).
+    public nonisolated static let echoMinWords = 3
+
+    /// Pure: a Kevin turn of `echoMinWords` or more, every word of it in Jarhead's last utterance — the
+    /// software echo guard let Jarhead hear himself. Case-folded, punctuation dropped.
+    public nonisolated static func isEchoTurn(kevin: String, jarhead: String?) -> Bool {
+        guard let jarhead else { return false }
+        let heard = words(kevin)
+        guard heard.count >= echoMinWords else { return false }
+        let said = Set(words(jarhead))
+        return heard.allSatisfy { said.contains($0) }
+    }
+
+    nonisolated static func words(_ text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber && $0 != "'" }.map(String.init)
+    }
+
+    /// From `snapshot.didSet`: each NEW final Kevin turn while the guard holds the wire moves the counter — an echo
+    /// adds one, anything else clears it; at `echoFuseTurns` one `.mute` (a Live-side command that opens nothing)
+    /// and a toast, and the count starts over. With the guard off nothing is counted.
+    func noteEchoTurns(from s: Snapshot) {
+        guard let index = s.transcript.lastIndex(where: { $0.speaker == .kevin && $0.final }) else { return }
+        let turn = s.transcript[index]
+        guard turn.id != echoCheckedId else { return }
+        echoCheckedId = turn.id
+        guard audioState?.guardOn == true else { echoTurns = 0; return }
+        let said = s.transcript[..<index].last { $0.speaker == .jarhead }?.text
+        guard AppState.isEchoTurn(kevin: turn.text, jarhead: said) else { echoTurns = 0; return }
+        echoTurns += 1
+        guard echoTurns >= AppState.echoFuseTurns else { return }
+        echoTurns = 0
+        send(.mute)
+        toast(AudioFuseWords.heardHimself, tone: .warn)
     }
 
     public func screenshotURL(_ relativePath: String) -> URL { stateDir.appendingPathComponent(relativePath) }
@@ -1161,6 +1224,11 @@ public struct Toast: Identifiable, Equatable {
     public var tone: Tone
 }
 
+/// The echo fuse's one line (design12); in Model so the bench compiles without UI/.
+public enum AudioFuseWords {
+    public static let heardHimself = "heard himself · muted — Recording off?"
+}
+
 // MARK: - Transport
 
 /// What a press of the Go/Pause button does in a phase (`AppState.transportPress(for:)`).
@@ -1513,6 +1581,55 @@ public enum AppStateBench {
         let patch = SettingsPatch(language: "en", accent: "british", memory: false).json
         check(patch["language"] as? String == "en" && patch["accent"] as? String == "british" && patch["memory"] as? Bool == false, "SettingsPatch json carries language / accent / memory")
         check(SettingsPatch(voice: "marin").json["language"] == nil, "an unset field is omitted from the patch")
+
+        // 7. design12: a Recording flip enqueues only set-settings (the billing rail as a test).
+        let audio = AppState()
+        var sent: [EngineCommand] = []
+        audio.sendHandler = { sent.append($0) }
+        audio.setRecording(true)
+        var flipJSON: [String: Any] = [:]
+        if case .setSettings(let p)? = sent.first { flipJSON = p.json }
+        let flipBlock = flipJSON["audio"] as? [String: Any]
+        check(sent.count == 1 && flipJSON.count == 1 && flipBlock?["recording"] as? Bool == true, "a Recording flip enqueues one set-settings carrying only audio.recording = true (\(sent.count) sent)")
+        check(SettingsPatch(voice: "marin").json["audio"] == nil, "an unset audio block is omitted from the patch")
+        var decoded: Settings? = nil
+        if let data = try? JSONEncoder().encode(Snapshot.empty.settings) { decoded = try? JSONDecoder().decode(Settings.self, from: data) }
+        check(decoded?.audio == nil && decoded?.audioSettings.recording == false, "a settings block without audio reads Recording off")
+
+        // 8. design12: the cost fuse sends `.mute` after exactly three echo turns and never anything else.
+        sent = []
+        audio.audioState = AudioStateInfo(running: true, recording: true, guardOn: true)
+        var fuse = Snapshot.empty
+        fuse.phase = .listening
+        let jarheadLine = "The demo doc is open. Say go when you want the walkthrough."
+        var turnNo = 0
+        func kevinTurn(_ text: String) {
+            turnNo += 1
+            let at = Double(turnNo) * 1_000
+            fuse.transcript.append(TranscriptItem(id: "j\(turnNo)", speaker: .jarhead, text: jarheadLine, startMs: at, endMs: at + 500, at: at, final: true))
+            fuse.transcript.append(TranscriptItem(id: "k\(turnNo)", speaker: .kevin, text: text, startMs: at + 600, endMs: at + 900, at: at + 600, final: true))
+            audio.snapshot = fuse
+        }
+        check(AppState.isEchoTurn(kevin: "say go when you want", jarhead: jarheadLine) && !AppState.isEchoTurn(kevin: "say go", jarhead: jarheadLine)
+              && !AppState.isEchoTurn(kevin: "open the calendar please", jarhead: jarheadLine) && !AppState.isEchoTurn(kevin: "say go when", jarhead: nil),
+              "isEchoTurn: ≥ 3 words all in the last utterance; a short or a real turn is not")
+        kevinTurn("say go when you want")
+        kevinTurn("the demo doc is open")
+        check(sent.isEmpty && audio.echoTurns == 2, "two echo turns → nothing sent, count 2 (\(audio.echoTurns))")
+        kevinTurn("open the calendar please")
+        check(sent.isEmpty && audio.echoTurns == 0, "a real turn clears the count")
+        kevinTurn("say go when you want")
+        kevinTurn("the demo doc is open")
+        audio.snapshot = fuse
+        check(sent.isEmpty && audio.echoTurns == 2, "a republished snapshot does not count a turn twice")
+        kevinTurn("when you want the walkthrough")
+        check(sent == [.mute] && audio.echoTurns == 0, "the third echo turn sends exactly .mute, once, and the count starts over (\(sent.map { $0.json["type"] as? String ?? "?" }))")
+        kevinTurn("say go when you want")
+        check(sent == [.mute], "a fourth echo turn sends nothing more")
+        audio.audioState = AudioStateInfo(running: true, guardOn: false)
+        sent = []
+        kevinTurn("say go when you want"); kevinTurn("say go when you want"); kevinTurn("say go when you want")
+        check(sent.isEmpty, "with the guard off the fuse counts nothing")
 
         out.append(String(format: "timing: %d append deltas in %.1f ms → %d kept", deltas, ms, held?.messages.count ?? -1))
         return out

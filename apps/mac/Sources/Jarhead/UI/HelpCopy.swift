@@ -31,7 +31,7 @@ enum HelpCopy {
     static let check = Entry(name: "Check", hint: "Probe the brain again")
     static let search = Entry(name: "Search", hint: "Find a line in every conversation", key: "⌘F")
     static let circle = Entry(name: "Circle", hint: "Circle something — needs Screen Recording", key: "⌥⇧C")
-    static let mute = Entry(name: "Mute", hint: "Stop listening — the session stays open")
+    static let mute = Entry(name: "Mute", hint: "Stop sending — the session and the mic stay open")
     static let unmute = Entry(name: "Unmute", hint: "Listen again")
     static let send = Entry(name: "Send", hint: "Send the line", key: "⏎")
     static let sendAsleep = Entry(name: "Send", hint: "Asleep: the engine keeps the words — press Go", key: "⏎")
@@ -78,12 +78,22 @@ enum HelpCopy {
     static let addRecipe = Entry(name: "Add recipe", hint: "Name a command a routine may run unattended")
     static let asksRecipe = Entry(name: "Asks", hint: "The shell gate would ask about this — listed, never armed")
 
+    // MARK: audio (design12) — the island's mute box while the guard holds, the recording chip, the menu row
+
+    /// The mute box while the software echo guard holds the wire (Recording, or the fallback rung).
+    static let micHeld = Entry(name: "Mute", hint: "Mic held while he speaks — a word over him opens it")
+    /// The peek chip while Recording is on (a glyph, no figure).
+    static let recordingChip = Entry(name: "Recording", hint: "Recording — mic shared, echo guarded")
+    /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
+    static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌥⇧R")
+
     static let all: [Entry] = [go, pause, stop, stopAll, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
                                backStream, backStreamEsc, backNow, latest, undoCleared, retryPage, undoMove, liveThread, liveWriting, liveQuiet,
                                pinned, restoreTrash, restoreArchive, logView, conversationView,
                                resumeThread("Slack"), pauseThread("Slack"), stopThread("Slack"), allowThread("Slack"), denyThread("Slack"),
                                sendMode("queued in Codex"),
-                               snooze(10), done, skip, pauseAutomation, runNow, trashAutomation, addRecipe, asksRecipe]
+                               snooze(10), done, skip, pauseAutomation, runNow, trashAutomation, addRecipe, asksRecipe,
+                               micHeld, recordingChip, recordingRow]
 
     // MARK: check-copy
 
@@ -107,4 +117,29 @@ enum HelpCopy {
         guard let key = e.key else { return e.hint }
         return "\(e.hint) (\(key))"
     }
+}
+
+/// design12: the words the island, the status menu and the harness spell Recording with. Here rather than
+/// beside `RingWords` (NotchPanel.swift) because check-kit compiles UI/ without UI/Orb; every literal once.
+enum RecordingWords {
+    /// The head badge, the tucked chip's name: lowercase, titanium — a resting state, not an alarm.
+    static let badge = "recording"
+    /// `helpText(for: .mute)` while the guard holds (HelpCopy.micHeld, so check-copy pins it).
+    static let heldTip = HelpCopy.micHeld.hint
+    /// Appended to the mute box's tooltip while Recording is on.
+    static let recordingSuffix = " · recording"
+    /// Appended while another process reads the mic: ` · shared with QuickTime Player`.
+    static func sharedSuffix(_ name: String) -> String { " · shared with \(name)" }
+    /// The peek chip: `record.circle`, no figure, this tooltip.
+    static let chipGlyph = "record.circle"
+    static let chipTip = HelpCopy.recordingChip.hint
+    /// The status menu row: the title never flips (the checkmark is the state), the tooltip carries the key last.
+    static let menuRow = HelpCopy.recordingRow.name
+    static let menuTip = HelpCopy.recordingRow.hint
+    static let menuKey = HelpCopy.recordingRow.key ?? ""
+    static var menuTipSpoken: String { HelpCopy.spoken(HelpCopy.recordingRow) }
+    /// The menu tooltip's shared tail: ` · shared with QuickTime Player` after the key.
+    static func menuTip(sharedWith name: String?) -> String { menuTipSpoken + (name.map(sharedSuffix) ?? "") }
+    /// Bundle ids or `pid:<n>` from the HAL → the first process's name, or nil while nobody shares.
+    static func firstShared(_ names: [String]?) -> String? { names?.first }
 }
