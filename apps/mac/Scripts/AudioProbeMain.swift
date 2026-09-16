@@ -22,7 +22,7 @@ import Speech
 //   AUDIO_PROBE_PLAY=1        allow sound: without it `--test` prints what it would do (dryRun) and exits 0
 //   AUDIO_PROBE_NO_PROMPT=1   never ask TCC: an undecided microphone grant is a refusal, not a prompt
 //   AUDIO_PROBE_STATE_DIR     where audio-probe.json goes (default ~/.jarhead)
-//   --json                    the last line is the run record (what audio-probe.json holds for this mode)
+//   --json                    the last JSON line is the run record (what audio-probe.json holds for this mode; `probe exit n` follows)
 //   --test                    `pnpm jarhead doctor --test-audio`: the graph as the current setting
 //                             (~/.jarhead/settings.json audio.recording) would build it, 1 s quiet,
 //                             a 1 s −12 dBFS 1 kHz chime through the player node, 1 s more; prints

@@ -9,7 +9,7 @@
 #   AUDIO_PROBE_MODE=recording Scripts/audio-probe.sh   # no unit, the ranked mic, the guard on, no aggregate appears
 #   AUDIO_PROBE_MODE=asleep Scripts/audio-probe.sh      # the wake listener hears through the ranked mic (`hears <name> (ranked)`)
 #   AUDIO_PROBE_MODE=private Scripts/audio-probe.sh     # the private-aggregate spike — `spike:` lines, never counted
-#   Scripts/audio-probe.sh --json                 # the last line is the run record
+#   Scripts/audio-probe.sh --json                 # the last JSON line is the run record (`probe exit n` follows it)
 #   Scripts/audio-probe.sh --test [--json]        # `pnpm jarhead doctor --test-audio`: the graph as the current setting builds it,
 #                                                 # then a 1 s −12 dBFS chime through the player node — ONLY with AUDIO_PROBE_PLAY=1;
 #                                                 # without it the probe says what it would do ({"dryRun":true}) and exits 0.
