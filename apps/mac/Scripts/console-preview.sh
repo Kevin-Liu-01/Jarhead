@@ -11,7 +11,8 @@
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
-#           automations | automations-ring | settings-automations (default live)
+#           automations | automations-ring | settings-automations |
+#           settings-audio | toggle-recording (default live)
 #   The left rail (design10): `rail` is the threads fixture with the Trash and one hidden agent — Now bright with
 #   its dot, `Threads 3 · 1 asks`, the pinned over conversation on a grey orb at 0.72, Today open (bright, `×1`),
 #   `› Yesterday n … min`, `› Older 3 … since <day>`, Archived `2 · 15 min`, Claude Code open with `[asks]`,
@@ -179,6 +180,8 @@ case "$SCENARIO" in
   rail|rail-expanded|rail-asleep|rail-agents|rail-search|rail-keys|rail-midnight) ;;
   # Automations (design11): the Now section with the ring row, the ring on the Ledger tab, Settings › Automations.
   automations|automations-ring|settings-automations) ;;
+  # Audio (design12, V5): Settings › Audio with AEC on AirPods (the narrowed case) and the Recording toggle flipped by Space.
+  settings-audio|toggle-recording) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
