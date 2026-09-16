@@ -212,9 +212,10 @@ if [[ "$SCENARIO" == "durability" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4
 # The Settings-tab kit scenarios open on the Settings tab like `settings` does (the harness selects it);
 # `menu-model` is shot tall so the Model popup's eight rows and its foot are whole (the 760 window scrolls them).
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-outside|tip-key|toggle|settings-index|settings-audio|toggle-recording) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}";; esac
-# The audio scenarios: the read-back lands at 0.5 s; `toggle-recording` runs its keys, the second read-back and the folds to 2.8 s.
+# The audio scenarios: the read-back lands at 0.5 s; `toggle-recording` runs its keys, the second read-back and the folds to 3.2 s
+# (the closed snap at 3.0 s, once the fold's animation has landed).
 if [[ "$SCENARIO" == "settings-audio" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.6}"; fi
-if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}"; fi
+if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.8}"; fi
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac

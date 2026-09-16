@@ -717,7 +717,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "settings-audio": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
             + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
-            + "fold:\(SettingsWords.audioFold):closed@2.3,snap:preview-console-toggle-recording-closed@2.6,fold:\(SettingsWords.audioFold):open@2.8"
+            // The closed snap waits for the disclosure's Motion.snappy collapse and the summary's Motion.swap to land
+            // (0.3 s after the fold the rows were still fading over the Brain section); the .sh's settle covers the last fold.
+            + "fold:\(SettingsWords.audioFold):closed@2.3,snap:preview-console-toggle-recording-closed@3.0,fold:\(SettingsWords.audioFold):open@3.2"
         // The kit (Builder C): the memory rail's kind chips (`chip:fact` → 2 rows) and a row's card;
         // the left rail's search with ↑↓ (the third hit takes the ring, Return opens it — `probe` says
         // which); the agents grouped per tool with Codex folded (`1 asks`); `cleanup` re-shot with the folds.
