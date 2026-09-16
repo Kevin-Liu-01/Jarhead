@@ -123,6 +123,15 @@ export type ClientMessage =
   | { readonly type: "hello"; readonly pid: number; readonly version?: string; readonly audio?: boolean }
   | { readonly type: "command"; readonly command: unknown }
   | { readonly type: "mic-level"; readonly level: number }
+  /**
+   * design12: the app's audio graph as it read itself back (the protocol's AudioState: voice
+   * processing and its knobs, the winning rung, what it hears and speaks through, the echo
+   * guard's counters, who else holds the mic). Sent on start, stop, a route change and every
+   * 5 s with the counters, ≤ 1 Hz. The daemon checks the shape (`isAudioState`) and keeps it in
+   * the snapshot for `status`, the doctor and the Console; a malformed frame is dropped. Data,
+   * never a command: nothing here changes a setting or the graph.
+   */
+  | { readonly type: "audio-state"; readonly state: unknown }
   | { readonly type: "permission"; readonly which: string; readonly state: "granted" | "denied" | "unknown"; readonly detail?: string }
   /** The app's full read of every permission (PermissionInfo[]), after a sweep or a poll. */
   | { readonly type: "permissions"; readonly all: unknown[] }

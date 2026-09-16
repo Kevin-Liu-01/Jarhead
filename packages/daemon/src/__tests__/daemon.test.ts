@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolResult } from "@jarhead/hands";
+import type { AudioState } from "@jarhead/protocol";
 import { FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, type DaemonMessage } from "../wire.ts";
 import { DaemonServer, Lifeline, type EngineLike, type ToolHost } from "../server.ts";
 import { DaemonClient } from "../client.ts";
@@ -113,7 +114,59 @@ class FakeEngine extends EventEmitter implements EngineLike {
   setViewers(n: number): void {
     this.viewers.push(n);
   }
+  /** Every `audio-state` frame the wire accepted (design12), and the `undefined` the app's leaving sends. */
+  audioStates: (AudioState | undefined)[] = [];
+  reportAudioState(state: AudioState | undefined): void {
+    this.audioStates.push(state);
+  }
 }
+
+/** The frame the app sends with Recording on: the plain graph, the guard holding, QuickTime beside it on the built-in mic. */
+const RECORDING_FRAME: AudioState = {
+  running: true,
+  voiceProcessing: false,
+  rung: 1,
+  wiring: "hardware",
+  hears: { name: "MacBook Pro Microphone", uid: "BuiltInMicrophoneDevice", rate: 48000, channels: 1, transport: "built-in" },
+  speaks: { name: "Kevin's AirPods Pro", uid: "AP-out", rate: 48000, channels: 2, transport: "bluetooth" },
+  tapFormat: "48000 Hz ×1 Float32",
+  recording: true,
+  fallback: false,
+  guardOn: true,
+  guardTailMs: 420,
+  gated: 12,
+  chunks: 340,
+  breakthroughs: 1,
+  sharedWith: ["QuickTime Player"],
+  inputMuted: false,
+  aggregatePresent: false,
+};
+
+test("audio-state (design12): a well-formed frame reaches reportAudioState as sent, a malformed one is dropped, and the sender's leaving clears the state; a client that never sent one clears nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-audio-state-"));
+  const path = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, path);
+  await server.listen();
+  const app = new DaemonClient(path);
+  const cli = new DaemonClient(path);
+  await app.connect({ pid: 1, audio: true });
+  await cli.connect({ pid: 2, audio: false });
+  app.sendJson({ type: "audio-state", state: RECORDING_FRAME });
+  app.sendJson({ type: "audio-state", state: { running: "yes", rung: 1 } });
+  app.sendJson({ type: "audio-state", state: { ...RECORDING_FRAME, gated: "13" } });
+  app.sendJson({ type: "audio-state", state: null });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(engine.audioStates, [RECORDING_FRAME], "one frame landed, three were dropped");
+  assert.deepEqual(engine.commands, [], "a state frame is data: no command reached the engine");
+  cli.close();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(engine.audioStates.length, 1, "the CLI leaving clears nothing — it never reported a graph");
+  app.close();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(engine.audioStates, [RECORDING_FRAME, undefined], "the app leaving clears the read-back");
+  await server.close();
+});
 
 test("server and client round-trip control, audio, and ledger over a unix socket", async () => {
   const dir = mkdtempSync(join(tmpdir(), "jh-sock-"));
