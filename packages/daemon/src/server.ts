@@ -4,7 +4,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { specByName } from "@jarhead/brain";
-import { isEngineCommand, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
+import { isAudioState, isEngineCommand, type AudioState, type EngineEvent, type Grant, type OverlayCommand } from "@jarhead/protocol";
 import { FRAME_JSON, FRAME_MIC, FRAME_SPEAKER, FrameParser, encodeFrame, encodeJson, parseClientMessage, type DaemonMessage } from "./wire.ts";
 
 /**
@@ -39,6 +39,8 @@ export interface EngineLike {
   command(cmd: unknown): Promise<void>;
   feedMic(pcm: Buffer): void;
   reportInputLevel(level: number): void;
+  /** design12: the app's audio graph read back (`audio-state`), or undefined when the app that sent it left. Optional so a tool-only host and the older fakes need none. */
+  reportAudioState?(state: AudioState | undefined): void;
   /** One permission as the app read it (any kind, the microphone included); the full list after a sweep. */
   setPermission(which: string, state: Grant, detail?: string): void;
   setPermissions(all: unknown[]): void;
@@ -116,6 +118,8 @@ interface Client {
   readonly socket: Socket;
   readonly parser: FrameParser;
   audio: boolean;
+  /** This client sent an `audio-state` frame: when its socket closes the snapshot's audioState is cleared (the graph left with the app). */
+  audioState: boolean;
   /**
    * The conversations this client is showing — "agent:<id>" | "thread:<id>" — kept from
    * the open/close commands it sent; `route` reads it. A key stays while ANY of the
@@ -229,7 +233,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
   }
 
   private accept(socket: Socket): void {
-    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, viewers: new Set(), panes: new Map() };
+    const client: Client = { id: `c${++this.clientSeq}`, socket, parser: new FrameParser(), audio: false, audioState: false, viewers: new Set(), panes: new Map() };
     this.clients.add(client);
     socket.setNoDelay(true);
     this.send(client, { type: "hello", version: this.version, pid: process.pid, stateDir: this.engine.config.stateDir });
@@ -256,6 +260,14 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
         this.engine.dropViewers(client.id);
       } catch (e) {
         log.debug(`dropViewers(${client.id}): ${(e as Error).message}`);
+      }
+      // The audio graph left with the app that reported it: the snapshot must not keep a stale read-back.
+      if (client.audioState) {
+        try {
+          this.engine.reportAudioState?.(undefined);
+        } catch (e) {
+          log.debug(`reportAudioState(undefined): ${(e as Error).message}`);
+        }
       }
       log.info(`client left (${this.clients.size} remaining)`);
       this.tellViewers();
@@ -300,6 +312,15 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       }
       case "mic-level":
         this.engine.reportInputLevel(Number(msg.level) || 0);
+        return;
+      case "audio-state":
+        // Data, never a command (design12): the shape is checked here and a malformed frame is dropped with a line, never kept.
+        if (!isAudioState(msg.state)) {
+          log.debug("audio-state frame dropped: malformed");
+          return;
+        }
+        client.audioState = true;
+        this.engine.reportAudioState?.(msg.state);
         return;
       case "ear":
         if (typeof msg.text === "string") this.engine.ear(msg.text, msg.isFinal === true, Number(msg.segment ?? 0), Number(msg.at ?? Date.now()));

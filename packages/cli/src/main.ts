@@ -5,8 +5,8 @@ import { AgentRegistry, defaultConnectors } from "@jarhead/agents";
 import { NativeHandsProcess } from "@jarhead/hands";
 import { Engine } from "@jarhead/engine";
 import { DaemonClient, type ClientMessage } from "@jarhead/daemon";
-import { type AgentInfo, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
-import { MEMORY_ID, agentsByStatus, agoWords, memoryLine, render, runChecks, summarizePermissions } from "./doctor.ts";
+import { type AgentInfo, type AudioSettings, type AudioState, type BrainKind, type Delegation, type Effort, type EngineCommand, type EngineEvent, type MemoryItem, type MemoryKind, type MemoryState, type MemorySummary, type Permissions, type Problem, type SetupStatus, type SleepCause, type Snapshot, type Thread, type TranscriptItem, grantOf } from "@jarhead/protocol";
+import { MEMORY_ID, agentsByStatus, agoWords, audioStatusLines, memoryLine, readAudioProfiler, render, runChecks, summarizePermissions } from "./doctor.ts";
 import { localStatusLine, runBrain, runModels, type BrainDaemon } from "./local-cli.ts";
 import { runHygiene, type DockAudit, type HygieneReport } from "./install/index.ts";
 import { bench } from "./bench.ts";
@@ -20,7 +20,8 @@ import { PERMISSION_KINDS, type Automation, type AutomationState, type Permissio
 const HELP = `
 jarhead — voice-first computer use for Kevin's Mac
 
-  pnpm jarhead doctor                 keys, brain, hands, permissions, local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
+  pnpm jarhead doctor                 keys, brain, hands, permissions, audio (voice processing · hears · speaks · other mic clients · recording · released at sleep · leak), local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
+  pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure — refused while Jarhead is awake; nothing paid
   pnpm jarhead live                   headless session in this terminal (ffmpeg mic, ffplay speaker)
   pnpm jarhead probe "<utterance>"    synthesize the utterance, run it through the whole stack, print the timeline
   pnpm jarhead agents                 list the agent sessions on this Mac (Claude Code, Codex, …)
@@ -61,7 +62,9 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead recipes restore <name> Restore it from the Trash (a recipe.restored row); nothing is ever deleted
   pnpm jarhead status                 talk to a running daemon (jarheadd or the app) and print its state (phase, session, brain, the local server and whether it is the brain; --permissions: every grant as a row; agents by status —
                                       working · idle · blocked · done · ended (no live process) · unknown (evidence missing) · offline; threads N (M live): the lines of work
-                                      with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing)
+                                      with name · status · lane · steps · id; memory: counts and the last learn; automations N (M armed) · next · ringing;
+                                      audio: voice processing and its knobs, the rung, what the graph hears and speaks through with the rate that tells hands-free from
+                                      full quality, the echo guard's counters — from the app's read-back; with no app connected, system_profiler's defaults (skipped with --no-levels))
   pnpm jarhead say "<text>"           send typed text to the running daemon as if spoken
   pnpm jarhead cmd <go|pause|resume|stop|interrupt|mute|unmute|agent.refresh>   send a command to the running daemon (go opens the session)
   pnpm jarhead cmd request-permission <kind|all>   ask the app to put up the system prompt for one grant (notifications, screenRecording, …) — the doctor's banners row names it; you answer macOS yourself
@@ -521,7 +524,7 @@ async function status(): Promise<void> {
     setTimeout(done, 1500);
   });
   client.close();
-  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string }; automations?: Automation[]; nextFire?: Snapshot["nextFire"]; ringing?: Snapshot["ringing"] };
+  const s = snap as { phase: string; session?: { id: string; usageSeconds: number; voice?: string; accent?: string }; transcript: { speaker: string; text: string }[]; delegations: unknown[]; agents: Pick<AgentInfo, "status">[]; threads: Thread[]; memory?: MemorySummary; problems: Problem[]; brainReady: boolean; handsReady: boolean; permissions: Permissions; trash?: { path: string; days: number; bytes: number }; hiddenAgents?: string[]; setup?: SetupStatus; settings?: { brain?: BrainKind; brainModel?: string; audio?: AudioSettings }; automations?: Automation[]; nextFire?: Snapshot["nextFire"]; ringing?: Snapshot["ringing"]; audioState?: AudioState };
   console.log(`\n  phase      ${s.phase}`);
   // The voice and accent are the session's own (picked at connect; a change is heard at the next wake).
   console.log(`  session    ${s.session ? `${s.session.id} · ${Math.round(s.session.usageSeconds)}s billed${s.session.voice ? ` · ${s.session.voice} · English${s.session.accent && s.session.accent !== "none" ? ` (${s.session.accent})` : ""}` : ""}` : "none"}`);
@@ -533,6 +536,9 @@ async function status(): Promise<void> {
   const perms = s.permissions;
   console.log(`  permissions  mic ${grantOf(perms, "microphone")} · screen recording ${grantOf(perms, "screenRecording")} · accessibility ${grantOf(perms, "accessibility")} · ${summarizePermissions(perms.all)}`);
   if (flags.has("--permissions")) for (const p of perms.all) console.log(`    ${p.grant === "granted" ? "✔" : p.grant === "denied" ? "✘" : "?"} ${p.label.padEnd(20)} ${p.grant.padEnd(8)} ${p.ask === "settings" ? "System Settings" : p.ask === "perApp" ? "per app" : "prompt"}${p.required ? " · required" : ""}${p.detail ? ` · ${p.detail}` : ""}`);
+  // The audio graph (design12) as the app last read it back: the knobs, the rung, hears / speaks with the rate that tells hands-free from full quality, the guard's counters.
+  // No app connected: one read-only system_profiler line for the defaults (≈ 1 s; skipped with --no-levels, like the levels wait).
+  for (const line of audioStatusLines(s.audioState, s.settings?.audio, s.audioState || flags.has("--no-levels") ? undefined : readAudioProfiler())) console.log(line);
   if (levels) console.log(`  levels     mic ${levels.input.toFixed(3)}   speaker ${levels.output.toFixed(3)}`);
   // Agents by status: `ended` is a session with no live process (however old); `unknown` means the process evidence was missing, not "old".
   const byStatus = agentsByStatus(s.agents);
@@ -827,7 +833,7 @@ const [command, ...rest] = positional;
 try {
   switch (command) {
     case "doctor": {
-      const { text, blocking } = render(await runChecks());
+      const { text, blocking } = render(await runChecks({ testAudio: flags.has("--test-audio") }));
       console.log(text);
       process.exit(blocking > 0 ? 1 : 0);
     }

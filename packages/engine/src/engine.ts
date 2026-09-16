@@ -15,6 +15,7 @@ import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable,
 import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
 import {
   BRAIN_KINDS,
+  DEFAULT_AUDIO,
   DEFAULT_SETTINGS,
   DEFAULT_WAKE,
   LOCAL_NONE,
@@ -28,6 +29,8 @@ import {
   type AgentMessage,
   type AgentStatus,
   type AudioLevels,
+  type AudioSettings,
+  type AudioState,
   type ConnectorHealth,
   type Delegation,
   type DelegationStatus,
@@ -387,6 +390,8 @@ export class Engine extends EventEmitter<EngineEvents> {
   private axWarmBusy = false;
   private outputLevel = 0;
   private inputLevel = 0;
+  /** design12: the app's audio graph as it last read itself back (the `audio-state` frame); undefined while no app is connected. */
+  private audioState: AudioState | undefined;
   private snapshotTimer: NodeJS.Timeout | undefined;
   private tickTimer: NodeJS.Timeout | undefined;
   /** The startup Dock read, armed in start(); cleared by stop(). */
@@ -664,6 +669,9 @@ export class Engine extends EventEmitter<EngineEvents> {
     t.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
+        // design12: while the software echo guard holds the wire (Recording, or the fallback rung), each Kevin turn
+        // leaves the guard's counters beside it — a self-talk loop reads as rising `gated` with no break-through.
+        if (item.speaker === "kevin") this.appendGuardRow(item.at);
         this.emit("utterance", item);
         // The main thread's pane: every utterance as it settles (typed lines included).
         this.mainLog.append({ kind: "utterance", item });
@@ -748,7 +756,14 @@ export class Engine extends EventEmitter<EngineEvents> {
     for (const key of SETTINGS_KEYS) if (key in saved) known[key] = saved[key];
     if ("workers" in saved && !("threads" in saved)) known["threads"] = saved["workers"]; // settings.json written before 2026-09-13 says `workers`
     const wake = known["wake"];
-    const settings: Settings = { ...base, ...(known as Partial<Settings>), wake: { ...DEFAULT_WAKE, ...(typeof wake === "object" && wake !== null ? (wake as Partial<WakeSettings>) : {}) } };
+    // audio: absent before 2026-09-16 → DEFAULT_AUDIO. A missing known key is not "unknown", so the file is not rewritten; the block lands on the first set-settings after.
+    const audio = known["audio"];
+    const settings: Settings = {
+      ...base,
+      ...(known as Partial<Settings>),
+      wake: { ...DEFAULT_WAKE, ...(typeof wake === "object" && wake !== null ? (wake as Partial<WakeSettings>) : {}) },
+      audio: { ...DEFAULT_AUDIO, ...(typeof audio === "object" && audio !== null ? (audio as Partial<AudioSettings>) : {}) },
+    };
     // A key Settings no longer has is written out once; a file holding only known keys is never rewritten here.
     if (Object.keys(saved).some((k) => !(SETTINGS_KEYS as readonly string[]).includes(k))) {
       try {
@@ -777,7 +792,8 @@ export class Engine extends EventEmitter<EngineEvents> {
         if (key in DEFAULT_SETTINGS) continue;
         delete next[key];
       } else if (value !== undefined) {
-        next[key] = key === "wake" ? { ...DEFAULT_WAKE, ...(value as Partial<WakeSettings>) } : value;
+        // The nested blocks merge field-wise; the audio block has no engine behaviour here — the app's graph reads it from the snapshot.
+        next[key] = key === "wake" ? { ...DEFAULT_WAKE, ...(value as Partial<WakeSettings>) } : key === "audio" ? { ...DEFAULT_AUDIO, ...(value as Partial<AudioSettings>) } : value;
       }
     }
     const before = this.settings;
@@ -2331,6 +2347,45 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** App-measured mic level, 0..1. */
   reportInputLevel(level: number): void {
     this.inputLevel = level;
+  }
+
+  /**
+   * The app's audio graph read back (design12): kept in the snapshot for `status`, the doctor and
+   * the Console; `undefined` when the app disconnects. `since` is stamped here when `running`
+   * goes true so the surfaces can say how long the graph has been up. Coalesced: a frame equal
+   * to the last one schedules nothing. The engine does nothing else with it — the graph is the
+   * app's, and the one setting behind it (`Settings.audio`) is written only by set-settings.
+   */
+  reportAudioState(state: AudioState | undefined): void {
+    const before = this.audioState;
+    if (state === undefined) {
+      this.audioState = undefined;
+      if (before) this.scheduleSnapshot();
+      return;
+    }
+    const since = state.running ? (before?.running ? before.since : this.now()) : undefined;
+    const next: AudioState = { ...state, ...(since !== undefined ? { since } : {}) };
+    if (before && sameAudioState(before, next)) return;
+    this.audioState = next;
+    this.scheduleSnapshot();
+  }
+
+  /** One `audio.guard` row per Kevin turn while the guard is on (design12): the counters as the app last reported them. */
+  private appendGuardRow(at: number): void {
+    const a = this.audioState;
+    if (!a?.guardOn) return;
+    const sessionId = this.live?.session?.id;
+    this.ledger.append({
+      at,
+      type: "audio.guard",
+      ...(sessionId ? { sessionId } : {}),
+      tailMs: a.guardTailMs,
+      ...(a.guardHeldMs !== undefined ? { heldMs: a.guardHeldMs } : {}),
+      gated: a.gated,
+      chunks: a.chunks,
+      breakthroughs: a.breakthroughs,
+      fallback: a.fallback,
+    });
   }
 
   /**
@@ -5176,6 +5231,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       threads: this.threads.threads(),
       // Automations (design11): the non-trashed rows, the ring the island shows, the foot's next fire.
       ...this.automations.snapshot(),
+      // The app's audio graph as it last read itself back (design12); absent when no app is connected.
+      ...(this.audioState ? { audioState: this.audioState } : {}),
     };
   }
 
@@ -5402,6 +5459,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   get brainInfo(): { kind: string; ready: boolean; detail: string } {
     return { kind: this.brain?.kind ?? "none", ready: this.brainReady, detail: this.brain?.detail ?? this.brainDetail };
   }
+}
+
+/** Two audio-state frames say the same thing (design12): the app sends one every 5 s with the counters; only a change earns a snapshot. */
+function sameAudioState(a: AudioState, b: AudioState): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** The hostname of a server root, "" when the URL does not parse. */
