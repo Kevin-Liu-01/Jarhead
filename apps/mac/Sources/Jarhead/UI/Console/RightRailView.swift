@@ -1353,6 +1353,8 @@ struct MicRouteInfo: Equatable {
     var speaksState = ""
     /// Other processes running input on the mic (bundle ids or `pid:<n>`); nil = the HAL cannot say (the key is absent).
     var shared: [String]? = nil
+    /// `shared` as app names (`processName`), mapped once here when the notification lands — never in a view body.
+    var sharedNames: [String] = []
     /// The ladder rung that came up (0 while stopped) and the unit's ducking level (nil while the unit is off).
     var rung = 0
     var duckLevel: Double? = nil
@@ -1378,6 +1380,7 @@ struct MicRouteInfo: Equatable {
         speaksRate = (info["speaksRate"] as? NSNumber)?.doubleValue ?? 0
         speaksState = info["speaksState"] as? String ?? ""
         shared = info["shared"] as? [String]
+        sharedNames = shared?.map(MicRouteInfo.processName) ?? []
         rung = (info["rung"] as? NSNumber)?.intValue ?? 0
         duckLevel = (info["duckLevel"] as? NSNumber)?.doubleValue
         hearsUid = info["hearsUid"] as? String ?? ""
@@ -1393,7 +1396,8 @@ struct MicRouteInfo: Equatable {
     }
 
     /// A bundle id → the running app's name (`NSRunningApplication`), `pid:<n>` → that process's; the id itself when
-    /// nothing is running under it. The same mapping the app uses before the `audio-state` frame leaves.
+    /// nothing is running under it. The same mapping the app uses before the `audio-state` frame leaves. A process-table
+    /// lookup: called once per route notification (`init?`), not per render.
     static func processName(_ id: String) -> String {
         if id.hasPrefix("pid:"), let pid = Int32(id.dropFirst(4)) {
             return NSRunningApplication(processIdentifier: pid)?.localizedName ?? id
@@ -1685,10 +1689,10 @@ struct SettingsPanel: View {
         return SettingsWords.echoFollows(active: micName(route.active) ?? route.hearsName, wanted: wanted)
     }
 
-    /// `Shared with QuickTime Player.` from the HAL's process list, names mapped here; nothing while nobody shares.
+    /// `Shared with QuickTime Player.` from the HAL's process list (names mapped when the route landed); nothing while nobody shares.
     private var sharedHint: String? {
-        guard let shared = route.shared, !shared.isEmpty else { return nil }
-        return SettingsWords.sharedWith(shared.map(MicRouteInfo.processName))
+        guard !route.sharedNames.isEmpty else { return nil }
+        return SettingsWords.sharedWith(route.sharedNames)
     }
 
     /// The promise, and when a pick lands. Switch now closes the session and reopens it on the
