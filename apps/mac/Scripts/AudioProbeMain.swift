@@ -414,7 +414,6 @@ final class AudioProbe {
 
     private func duringChecks(appeared: [String]) {
         guard let frame = runningFrame else { return }
-        let mode = config.mode.rawValue
         let latestFrame = latest ?? frame
         say("during: hears \(latestFrame.hears?.text ?? "none") · \(latestFrame.hearsState); speaks \(latestFrame.speaks?.text ?? "none") · \(latestFrame.speaksState); tap \(latestFrame.tapFormat); rung \(latestFrame.rung) \(latestFrame.wiring); inputMuted \(latestFrame.inputMuted)")
         if config.mode == .aec { aecChecks(latestFrame, appeared: appeared) } else { recordingChecks(latestFrame, appeared: appeared) }
