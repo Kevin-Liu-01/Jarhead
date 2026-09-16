@@ -329,10 +329,10 @@ final class NotchDock {
         var sharedWith: String? = nil
     }
     /// `jarhead.dock.audio` — userInfo `recording` Bool · `guardHeld` Bool · `shared` String (absent while nobody shares).
-    static let audioNotification = Notification.Name("jarhead.dock.audio")
-    static let audioRecordingKey = "recording"
-    static let audioHeldKey = "guardHeld"
-    static let audioSharedKey = "shared"
+    nonisolated static let audioNotification = Notification.Name("jarhead.dock.audio")
+    nonisolated static let audioRecordingKey = "recording"
+    nonisolated static let audioHeldKey = "guardHeld"
+    nonisolated static let audioSharedKey = "shared"
     private var audio = NotchDock.startingAudio()
 
     private static func startingAudio() -> DockAudio {
@@ -344,8 +344,9 @@ final class NotchDock {
         #endif
     }
 
-    /// The notice's userInfo → the three facts; a missing key reads as its rest state.
-    static func audio(from info: [AnyHashable: Any]?) -> DockAudio {
+    /// The notice's userInfo → the three facts; a missing key reads as its rest state. Pure, so the notification
+    /// closure (nonisolated) may call it before hopping onto the actor.
+    nonisolated static func audio(from info: [AnyHashable: Any]?) -> DockAudio {
         DockAudio(recording: info?[audioRecordingKey] as? Bool ?? false, guardHeld: info?[audioHeldKey] as? Bool ?? false,
                   sharedWith: info?[audioSharedKey] as? String)
     }
@@ -2357,10 +2358,14 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
         // What goes first when there is no room: the meter, then the recording chip, then the problem.
         func drop() -> Bool {
-            let i = list.lastIndex { $0.kind == .meter } ?? list.lastIndex { $0.kind == .recording } ?? list.lastIndex { $0.kind == .problem }
-            guard let i else { return false }
-            list.remove(at: i)
-            return true
+            // A loop over the order, not a `??` chain of closures (CI's older Swift).
+            for kind in [Chip.Kind.meter, .recording, .problem] {
+                if let i = list.lastIndex(where: { $0.kind == kind }) {
+                    list.remove(at: i)
+                    return true
+                }
+            }
+            return false
         }
         while list.count > 4 { if !drop() { list = Array(list.prefix(4)) } }
         // The clamp: notch + breath + counter + dots + chips ≤ the peek's cap.

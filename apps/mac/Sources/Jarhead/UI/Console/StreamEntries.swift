@@ -344,9 +344,24 @@ extension ConsoleFormat {
         case "grant":
             let until = row.until.map { " · until \(clock($0))" } ?? ""
             return ("checkmark.seal.fill", "grant", "granted \(row.app ?? "app") · \(row.actionClass ?? "action") for this conversation\(until)", nil, nil)
+        case "audio.guard":
+            // design12: the software echo guard's per-turn counters — "guard held 1.2 s · gated 12 of 340 · 0 breaks", the
+            // session in mono, "fallback rung" trailing when the unit refused and the guard was the backstop.
+            return ("mic.fill", "audio", guardWords(row), row.sessionId.map { shortId($0) }, row.fallback == true ? "fallback rung" : nil)
         default:
             return nil
         }
+    }
+
+    /// The `audio.guard` row's words: the held time as seconds to one place (absent when the row has none), the gated
+    /// chunks over the total, the break-throughs — every figure the engine wrote, none invented.
+    static func guardWords(_ row: LedgerRow) -> String {
+        var parts: [String] = []
+        if let held = row.heldMs { parts.append(String(format: "guard held %.1f s", held / 1000)) } else { parts.append("guard on") }
+        parts.append("gated \(row.gated ?? 0) of \(row.chunks ?? 0)")
+        let breaks = row.breakthroughs ?? 0
+        parts.append("\(breaks) break\(breaks == 1 ? "" : "s")")
+        return parts.joined(separator: " · ")
     }
 
     /// The automation rows as one line each (design11): the kind's glyph and word when the row is known (its `set`

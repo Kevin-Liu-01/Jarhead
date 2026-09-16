@@ -4240,8 +4240,11 @@ extension OrbPreviewDelegate {
         check(tip == wantTip, "helpText(.mute): the held words while the guard holds · ` · recording` while on · ` · shared with <name>` while shared; `Mute` at rest", "'\(tip)' want '\(wantTip)'")
         let chips = orb.previewNotchChips.map { $0.split(separator: ":").first.map(String.init) ?? $0 }
         let at = chips.firstIndex(of: "recording")
-        let afterMarks = chips.firstIndex(of: "marks").map { m in at.map { $0 > m } ?? false } ?? true
-        let beforeProblem = chips.firstIndex(of: "problem").map { p in at.map { $0 < p } ?? false } ?? true
+        // Plain if/lets, not nested `??` closures (CI's older Swift): the order only matters when both chips are there.
+        var afterMarks = true
+        if let m = chips.firstIndex(of: "marks"), let r = at { afterMarks = r > m }
+        var beforeProblem = true
+        if let p = chips.firstIndex(of: "problem"), let r = at { beforeProblem = r < p }
         let chipTip = v.previewChipTooltip("recording")
         check((at != nil) == recording && afterMarks && beforeProblem && (!recording || chipTip == RecordingWords.chipTip) && chips.count <= 4,
               "peek chip `recording` (record.circle, no figure) iff Recording is on, after marks and before problem, ≤ 4 chips; tooltip \"Recording — mic shared, echo guarded\"",

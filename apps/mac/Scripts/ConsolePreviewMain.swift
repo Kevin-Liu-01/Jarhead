@@ -3631,13 +3631,24 @@ extension PreviewDelegate {
         expect("audio: the mute tip says the mic stays open", HelpCopy.mute.hint, "Stop sending — the session and the mic stay open")
         let aec = MicRouteInfo(Self.micRouteFixture("aec-airpods"))
         let rec = MicRouteInfo(Self.micRouteFixture("recording-macbook"))
-        expect("audio: fixture aec-airpods reads back", [aec?.hearsName ?? "", aec.map { SettingsWords.kHz($0.hearsRate) } ?? "", aec?.hearsState ?? "", aec?.speaksState ?? "", aec?.routeWord ?? "",
-                                                          aec?.shared == nil ? "shared unknown" : "shared known"].joined(separator: " / "),
+        // Named pieces, not `??` inside one wide array literal (CI's older Swift).
+        let aecHearsKHz = aec.map { SettingsWords.kHz($0.hearsRate) } ?? ""
+        let aecShared = aec?.shared == nil ? "shared unknown" : "shared known"
+        let aecPieces = [aec?.hearsName ?? "", aecHearsKHz, aec?.hearsState ?? "", aec?.speaksState ?? "", aec?.routeWord ?? "", aecShared]
+        expect("audio: fixture aec-airpods reads back", aecPieces.joined(separator: " / "),
                "Kevin's AirPods Pro / 24 kHz / echo cancelled / narrowed / follows the system default / shared unknown")
-        expect("audio: fixture recording-macbook reads back", [rec?.hearsName ?? "", rec?.hearsState ?? "", rec.map { SettingsWords.kHz($0.speaksRate) } ?? "", rec?.speaksState ?? "", rec?.routeWord ?? "",
-                                                                rec?.shared?.joined(separator: ",") ?? "nil"].joined(separator: " / "),
+        let recSpeaksKHz = rec.map { SettingsWords.kHz($0.speaksRate) } ?? ""
+        let recShared = rec?.shared?.joined(separator: ",") ?? "nil"
+        let recPieces = [rec?.hearsName ?? "", rec?.hearsState ?? "", recSpeaksKHz, rec?.speaksState ?? "", rec?.routeWord ?? "", recShared]
+        expect("audio: fixture recording-macbook reads back", recPieces.joined(separator: " / "),
                "MacBook Pro Microphone / echo guarded / 48 kHz / full quality / ranked / QuickTime Player")
         expect("audio: a fixture without the read-back has no rows", "\(MicRouteInfo(["ids": [String](), "names": [String]()])?.hasReadback ?? true)", "false")
+        // The engine's per-turn `audio.guard` row (engine.ts appendGuardRow) reads as one stream line, never skipped.
+        let guardJSON = #"{"at":1000,"type":"audio.guard","sessionId":"live_u7_abcdefgh1234","tailMs":300,"heldMs":1234,"gated":12,"chunks":340,"breakthroughs":0,"fallback":true}"#
+        let guardRow = try? JSONDecoder().decode(LedgerRow.self, from: Data(guardJSON.utf8))
+        let guardLine = guardRow.flatMap { ConsoleFormat.tombstone($0) }
+        expect("audio: the audio.guard ledger row renders", [guardLine?.symbol ?? "", guardLine?.text ?? "", guardLine?.mono ?? "", guardLine?.trailing ?? ""].joined(separator: " / "),
+               "mic.fill / guard held 1.2 s · gated 12 of 340 · 0 breaks / abcdefgh / fallback rung")
         return failed
     }
 }

@@ -1777,6 +1777,13 @@ public struct LedgerRow: Codable, Identifiable {
     public var skipped: Bool?
     public var why: String?
     public var recipe: ShellRecipe?
+    // design12: the `audio.guard` row — the software echo guard's counters per Kevin turn (engine `appendGuardRow`).
+    public var tailMs: Double?
+    public var heldMs: Double?
+    public var gated: Int?
+    public var chunks: Int?
+    public var breakthroughs: Int?
+    public var fallback: Bool?
     /// The row's key: type · at · the first id it carries (item, step, delegation, thread, the wire's own).
     /// An if/else ladder, not a `??` chain inside the interpolation (CI's older Swift).
     public var id: String {
@@ -1797,6 +1804,7 @@ public struct LedgerRow: Codable, Identifiable {
         case cause, phrase, farewell, thread, threadId, steps, seconds, threadStatus, detail
         case rowId = "id"
         case automation, actions, ok, line, lateMs, ms, brainSeconds, state, dueAt, skipped, why, recipe
+        case tailMs, heldMs, gated, chunks, breakthroughs, fallback
     }
 }
 
