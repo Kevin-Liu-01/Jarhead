@@ -1565,7 +1565,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         expect("showsCaret: a final item never", String(UtteranceRow.showsCaret(final: true, gate: true)), "false")
         let fake = self.fake ?? FakeData(shot: "preview.png")
         let entries = StreamBuilder.fromSnapshot(transcript: fake.live().transcript, delegations: fake.live().delegations, clearedAt: nil)
-        expect("caretId: the newest utterance, not a card", StreamFeed.caretId(entries) ?? "nil", "u8")
+        // The entry's id (design13: `t:<id>@<at>`), the one the row compares against — never the bare item id.
+        let newest = entries.last(where: { if case .utterance = $0 { return true } else { return false } })
+        expect("caretId: the newest utterance's entry, not a card", StreamFeed.caretId(entries) ?? "nil", newest?.id ?? "nil")
+        expect("caretId: the entry id carries the item id and its clock", String((StreamFeed.caretId(entries) ?? "").hasPrefix("t:u8@")), "true")
         expect("caretId: nothing without utterances", StreamFeed.caretId([StreamEntry.delegation(fake.doneDelegation())]) ?? "nil", "nil")
         // The feed's cap keeps the newest 400.
         let long = fake.longTranscript(agentId: FakeData.endedId, count: 1_200)

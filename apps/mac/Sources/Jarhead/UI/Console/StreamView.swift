@@ -439,7 +439,8 @@ struct StreamFeed: View {
     /// heard). An older non-final item — a cut answer whose settle never came — sits still.
     static func caretId(_ entries: [StreamEntry]) -> String? {
         for entry in entries.reversed() {
-            if case .utterance(let t) = entry { return t.id }
+            // The entry's id, not the item's: the row compares `entry.id == caretId`.
+            if case .utterance = entry { return entry.id }
         }
         return nil
     }
