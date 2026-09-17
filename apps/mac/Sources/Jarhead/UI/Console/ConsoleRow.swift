@@ -79,8 +79,11 @@ struct ConsoleVerbFloat: ViewModifier {
     func body(content: Content) -> some View {
         // Published from a background the row's size, so the float's anchor is the row and its
         // frame tracking never fights the card's (publishers append, so both floats reach the layer).
+        // The row is the anchor, not the menu's field (`ownsField: false`): a down on the row with the
+        // verbs open dismisses them and passes through, so the row's primary acts on that same click —
+        // never a click that acts under a menu left floating over it.
         content.background {
-            Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, dismiss: close) {
+            Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, ownsField: false, dismiss: close) {
                 ConsoleMenuPopup(spec: ConsoleVerbFloatModel.spec(id: id, verbs: verbs, close: close))
             }
         }

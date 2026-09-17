@@ -829,7 +829,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
         case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
-        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
+        // The verbs float hangs off the row, not a field: a click on the row (its centre is the float's tracked frame)
+        // dismisses the float and passes through to the row's primary — `check-floats:none` after it (the snap before keeps the open float seen).
+        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7,"
+            + "snap:preview-console-list-verbs-open@1.75,click:rail.chain.\(FakeData.yesterdayId).verbs@1.8,probe-floats@2.1,check-floats:none@2.15"
         // The left rail (design10): the ladder's pins, then each state staged by its fold id. `rail` is the
         // default state; `rail-expanded` opens Yesterday and Older and pins yesterday's card; `rail-agents`
         // opens Claude Code's Ended sub-head (the ring on it), the dead Codex group (three over rows, no
