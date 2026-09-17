@@ -105,9 +105,10 @@ struct ConsoleMenuField<Value: Hashable>: View {
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
-        Button(action: show) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
+        Button(action: toggle) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
             .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || focused ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
-            .focusable()
+            // `.activate`: Tab and the harness's `focus:` land here, a click never does — the ring is the keyboard's alone.
+            .focusable(interactions: .activate)
             .focused($focused)
             .focusEffectDisabled()
             .modifier(ConsoleMenuFieldKeys(open: show))
@@ -130,17 +131,22 @@ struct ConsoleMenuField<Value: Hashable>: View {
         return options + [saved.value]
     }
 
-    private func show() { guard enabled else { return }; open = true }
+    /// The keys (Space, Return, ↓) open; the click toggles — the layer lets the mouse-down on the
+    /// field through, so the field alone closes its own menu, once.
+    private func show() { guard enabled, !open else { return }; open = true; ConsolePress.report?("menu: opened \(id)") }
+    private func toggle() { if open { hide() } else { show() } }
 
     /// The layer's dismiss and the popup's close: focus comes back to the field.
     private func hide() {
         guard open else { return }
         open = false
         focused = true
+        ConsolePress.report?("menu: closed \(id)")
     }
 
     private func choose(_ v: Value) {
         hide()
+        ConsolePress.report?("menu-pick: \(id) \(ConsolePress.word(v))")
         if v != value { pick(v) }
     }
 

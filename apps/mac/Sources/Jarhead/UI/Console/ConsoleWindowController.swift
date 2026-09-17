@@ -119,8 +119,8 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
 
         let session = self.session
         let actions = ConsoleActions(
-            send: { [state] command in state.send(command) },
-            stop: { [weak self] in _ = self?.handle(.stop) },
+            send: { [state] command in ConsolePress.report?("press: \(ConsolePress.word(command))"); state.send(command) },
+            stop: { [weak self] in ConsolePress.report?("press: stop"); _ = self?.handle(.stop) },
             screenshotURL: { [state] path in state.screenshotURL(path) },
             loadLedgerDays: { [state] in Task { await session.loadDays(from: state) } },
             pickLedgerDay: { [state] day in Task { await session.pick(day: day, from: state) } },
@@ -131,14 +131,17 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             reveal: { url in NSWorkspace.shared.activateFileViewerSelecting([url]) })
 
         // The composer's Go/Pause: the one transport (AppState's Transport region).
-        let transport = ConsoleTransport(toggle: { [state] in state.transportToggle() })
+        let transport = ConsoleTransport(toggle: { [state] in
+            ConsolePress.report?("press: \(ConsolePress.word(AppState.transportPress(for: state.phase)))")
+            state.transportToggle()
+        })
 
         let root = ConsoleRootView()
             .environmentObject(state)
             .environmentObject(session)
             .environment(\.consoleActions, actions)
             .environment(\.consoleTransport, transport)
-        let hosting = NSHostingView(rootView: root)
+        let hosting = ConsoleHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]
         // The window's minimum is `minSize` above (the columns' sum); the hosting view must not
         // also derive one. With the default options AppKit asks it for its min / intrinsic / max
@@ -242,4 +245,11 @@ final class ConsoleWindow: NSWindow {
         if flags == [.command, .option], chars == "." { return .stopThread }
         return nil
     }
+}
+
+/// The Console's and Setup's root view. A click on an inactive window acts on the first click:
+/// AppKit hands the mouse-down to the hit view only if it accepts first mouse, and a bare
+/// `NSHostingView` leaves that to a default nothing pins — so it is said here, once.
+final class ConsoleHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

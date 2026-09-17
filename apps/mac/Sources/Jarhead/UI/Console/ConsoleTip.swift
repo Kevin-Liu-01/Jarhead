@@ -258,7 +258,9 @@ struct ConsoleTipModifier<Card: View>: ViewModifier {
 }
 
 /// `?` on the focused trigger pins its tip; Esc, a focus move or any other key lets go. The
-/// trigger becomes focusable with a keyboard-only accent ring (the one key ring on screen).
+/// trigger becomes focusable with a keyboard-only accent ring (the one key ring on screen):
+/// `.activate` interactions, so Tab and `focus:<id>` land here and a mouse click never does —
+/// the click runs the control's action and lights no ring.
 struct ConsoleTipKeys: ViewModifier {
     let id: String
     @Binding var pinned: Bool
@@ -266,7 +268,7 @@ struct ConsoleTipKeys: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .focusable()
+            .focusable(interactions: .activate)
             .focused($focused)
             .focusEffectDisabled()
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.accent, lineWidth: 1).opacity(focused ? 1 : 0))
