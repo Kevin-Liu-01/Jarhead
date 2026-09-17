@@ -4127,11 +4127,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         }
     }
 
-    /// The springs settled: a press remembered mid-open goes out once, if the pointer is still on the island.
+    /// The springs settled: a press remembered mid-open goes out once, if the pointer is still on the SAME
+    /// box the down and up hit (`button(at:)`, as the up required) — a pointer that slid from Stop to Mute
+    /// during the spring fires nothing, and a pointer off every box fires nothing.
     private func firePendingPress() {
         guard let b = pendingPress else { return }
         pendingPress = nil
-        guard mode == .island, let p = lastPointer, islandOpenRect.contains(p) else { return }
+        guard mode == .island, let p = lastPointer, button(at: p) == b else { return }
         onPress?(b)
     }
 }
