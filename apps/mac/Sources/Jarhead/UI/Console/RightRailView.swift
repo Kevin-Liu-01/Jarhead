@@ -1722,7 +1722,8 @@ struct SettingsPanel: View {
             case .waits(let enabled):
                 VoiceSwitchButton(enabled: enabled, height: 22, kind: .ghost, small: true, id: VoiceChipWords.settingsSwitchId) { actions.send(.voiceReopen) }
                     .transition(Motion.appear)
-                hint(VoiceSwitchWords.waitsLine(current: VoiceWords.name(sessionInfo?.voice ?? settings.voice)))
+                // The words follow the button, not the key column: no indent, or the line folds three deep.
+                ConsoleHint(VoiceSwitchWords.waitsLine(current: VoiceWords.name(sessionInfo?.voice ?? settings.voice)), indent: 0).padding(.bottom, 4)
             }
         }
         .animation(Motion.gentle, value: switchLineState)

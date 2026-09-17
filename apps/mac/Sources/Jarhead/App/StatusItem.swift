@@ -103,6 +103,12 @@ final class StatusItem: NSObject {
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
+        // A live thread starting or ending flips Switch now's enabled state; the threads ride beside the snapshot.
+        state.$threads
+            .map { (t: [String: WorkThread]) -> Bool in t.values.contains { $0.status.isBusy } }
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
     }
 
     /// What the Voice row depends on, as one string for `removeDuplicates`.

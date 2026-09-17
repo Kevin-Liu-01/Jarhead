@@ -167,6 +167,8 @@ struct VoiceChipFace: View {
                 .foregroundStyle(open ? ConsoleTheme.fg : ConsoleTheme.fg3)
                 .padding(.leading, 8)
         }
+        // The chip keeps its words: beside Switch now the field is what gives, never the name.
+        .fixedSize(horizontal: true, vertical: false)
         .animation(Motion.snappy, value: waits)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(VoiceWords.label)
@@ -214,6 +216,8 @@ struct VoiceSwitchButton: View {
         Button(VoiceSwitchWords.switchNow, action: action)
             .buttonStyle(ConsoleButtonStyle(kind: kind, height: height, small: small))
             .disabled(!enabled)
+            // One line, one width: the field beside it gives, never the verb.
+            .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(1)
             .consoleHelp(VoiceSwitch.tip(enabled: enabled), id: id)
             .accessibilityLabel(VoiceSwitchWords.switchNow)
