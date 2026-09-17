@@ -3388,6 +3388,8 @@ extension OrbPreviewDelegate {
 
     /// Everything a press can route to, as one count: commands sent, plus the dock's own openers.
     var notchRoutes: Int { notchSends.total + openConsoleCalls + openThreadCalls + beginMarkModeCalls }
+    /// 1 / 0 for a print (one ternary per interpolation keeps CI's older Swift happy).
+    func bit(_ b: Bool) -> Int { b ? 1 : 0 }
 
     /// What one ORB_NOTCH_CLICK saw at its down and up, carried to its checks 0.7 s later.
     struct NotchClickSeen {
@@ -3430,7 +3432,7 @@ extension OrbPreviewDelegate {
         panel.sendEvent(down)
         seen.ignoredAtDown = panel.ignoresMouseEvents
         seen.modeAtDown = orb.previewNotchMode
-        print(stamp, "notch click \(raw) at window \(Int(p.x)),\(Int(p.y)): mode \(seen.modeBefore) -> \(seen.modeAtDown), ignoresMouse \(seen.ignoredBefore ? 1 : 0) -> \(seen.ignoredAtDown ? 1 : 0), dead \(seen.dead ? 1 : 0)")
+        print(stamp, "notch click \(raw) at window \(Int(p.x)),\(Int(p.y)): mode \(seen.modeBefore) -> \(seen.modeAtDown), ignoresMouse \(bit(seen.ignoredBefore)) -> \(bit(seen.ignoredAtDown)), dead \(bit(seen.dead))")
         fflush(stdout)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
             guard let self else { return }
@@ -3448,13 +3450,15 @@ extension OrbPreviewDelegate {
         let sent = Array(notchSends.all.dropFirst(seen.sendsBefore))
         let flash = seen.flashAtUp ?? "none"
         let pending = seen.pendingAtUp ?? "none"
-        let tail = "mode \(seen.modeBefore) -> \(seen.modeAtDown); routes at up \(seen.routesAtUp), after 0.7 s \(after) (sent \(sent.isEmpty ? "nothing" : sent.joined(separator: ", "))); flash at up \(flash); pending \(pending); settled \(view.previewSpringsSettled ? 1 : 0)"
+        let sentWord = sent.isEmpty ? "nothing" : sent.joined(separator: ", ")
+        let settled = view.previewSpringsSettled
+        let tail = "mode \(seen.modeBefore) -> \(seen.modeAtDown); routes at up \(seen.routesAtUp), after 0.7 s \(after) (sent \(sentWord)); flash at up \(flash); pending \(pending); settled \(bit(settled))"
         check(!seen.ignoredAtDown, "notch-click \(seen.name): the panel accepts the mouse at the down with no prior approach (sendEvent → pointer(at:))",
-              "ignoresMouseEvents \(seen.ignoredBefore ? 1 : 0) -> \(seen.ignoredAtDown ? 1 : 0); \(tail)")
+              "ignoresMouseEvents \(bit(seen.ignoredBefore)) -> \(bit(seen.ignoredAtDown)); \(tail)")
         if seen.dead {
             check(seen.flashAtUp == seen.name && after == 0, "notch-click \(seen.name) inside 500 ms of a kind change → the box flashes, 0 routes (felt, not routed)", tail)
         } else if seen.modeBefore != "island" {
-            check(seen.routesAtUp == 0 && seen.pendingAtUp == seen.name && after == 1 && view.previewSpringsSettled,
+            check(seen.routesAtUp == 0 && seen.pendingAtUp == seen.name && after == 1 && settled,
                   "notch-click \(seen.name) on the folded island → opens, 0 routes at the up, one once the springs settle", tail)
         } else {
             check(seen.routesAtUp == 1 && after == 1, "notch-click \(seen.name) on the open island → one route at the up", tail)
@@ -3467,7 +3471,8 @@ extension OrbPreviewDelegate {
         let dim = orb.previewNotchBoxDim("stop")
         let want: CGFloat = phase == .asleep ? 0.45 : 1
         let word = phase == .asleep ? "asleep → 0.45" : "awake → 1"
-        check(abs(dim - want) < 0.001, "island stop dim \(word)", "phase \(phase.rawValue), drawn dim \(String(format: "%.2f", dim)), hittable \(orb.previewNotchHitList.contains { $0.name == "stop" } ? 1 : 0)")
+        let hittable = orb.previewNotchHitList.contains { $0.name == "stop" }
+        check(abs(dim - want) < 0.001, "island stop dim \(word)", "phase \(phase.rawValue), drawn dim \(String(format: "%.2f", dim)), hittable \(bit(hittable))")
         check(NotchPanel.stopDim(.asleep) == 0.45 && NotchPanel.stopDim(.listening) == 1 && NotchPanel.stopDim(.paused) == 1,
               "NotchPanel.stopDim: asleep 0.45, every other phase 1")
     }
