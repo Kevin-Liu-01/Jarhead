@@ -706,7 +706,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // draw), `?` pinning the composer's Stop after `focus:`, the warm re-show timed from the trail, the pane
         // Retargeted (Builder D): the card beside the right rail's Slack row; `?` on the Brain section's Check.
         case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:\(NowWords.threadTip(FakeData.slackId))@0.8,probe-floats@1.3"
-        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4"
+        // `check-floats:` pins that the trigger took the focus at all (plain `.focusable()`; `.activate` interactions
+        // would need Keyboard navigation on system-wide and `?` would land nowhere).
+        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4,check-floats:\(SettingsWords.check)@1.5"
         // The right rail (Builder D): Settings as seven folded heads with Memory opened by its id; the Now rail's
         // Permissions areas (Senses open) and Problems kinds (Engine folded); the Ledger's forty days by month —
         // two August days read first so the folded head sums them, then Sep 10 picked, the list given the
@@ -730,7 +732,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // ↓ moves the highlight and the foot to the next kind's `needs` sentence.
         case "menu-backend": defaultActions = "check-kit@0.3,menuOpen:settings.backend@0.6,keyDown:down@1.2,probe-floats@2.0"
         // Esc closes unchanged; an outside click closes and does not focus the composer.
-        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8"
+        // …then the focus is back on the field (`hide()`), so ↓ opens it again: the field is focusable with Keyboard navigation off.
+        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8,"
+            + "check-floats:none@1.85,keyDown:down@2.0,probe-floats@2.5,check-floats:settings.voice@2.55"
         // A click on ground closes the menu and focuses nothing: the two assertions, split.
         case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8,"
             + "check-floats:none@1.9,check-composer-free@1.9"
@@ -3338,6 +3342,8 @@ extension PreviewDelegate {
                     print("action: keyDown \(name) → unknown key (see the names in the header)")
                     return
                 }
+                // The window's sendEvent passes no local monitor: tell the key ring's flag what the monitor would have seen.
+                ConsoleKeyRing.note(down.type)
                 window.sendEvent(down)
                 window.sendEvent(up)
                 let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
@@ -3450,6 +3456,8 @@ extension PreviewDelegate {
         expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
         expect("floats: a tip never consumes a click", "\(ConsoleFloatLayer.catches(kind: .tip))", "false")
         expect("floats: a menu never consumes a click", "\(ConsoleFloatLayer.catches(kind: .menu))", "false")
+        expect("key ring: a mouse-down is the mouse's (a focus it moves lights nothing)", "\(ConsoleKeyRing.mouse(.leftMouseDown))", "true")
+        expect("key ring: a key-down is the keyboard's (a focus it moves lights the ring)", "\(ConsoleKeyRing.mouse(.keyDown))", "false")
         expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")
         expect("tip delay: warm 0.2 s", "\(ConsoleTip.delay(sinceLastHide: 0.2))", "0.0")
         expect("tip delay: never hidden", "\(ConsoleTip.delay(sinceLastHide: -1))", "0.35")

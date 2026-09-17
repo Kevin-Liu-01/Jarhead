@@ -102,15 +102,18 @@ struct ConsoleMenuField<Value: Hashable>: View {
     @State private var hovering = false
     @State private var frame: CGRect = .zero
     @FocusState private var focused: Bool
+    /// True while the keyboard put the focus here (Tab, `focus:`, Esc's return); a click clears it — the ring is the keyboard's alone.
+    @State private var keyboard = false
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
         Button(action: toggle) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
-            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || focused ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
-            // `.activate`: Tab and the harness's `focus:` land here, a click never does — the ring is the keyboard's alone.
-            .focusable(interactions: .activate)
+            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || (focused && keyboard) ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
+            .focusable()
             .focused($focused)
             .focusEffectDisabled()
+            .onAppear { ConsoleKeyRing.watch() }
+            .onChange(of: focused) { keyboard = focused && ConsoleKeyRing.byKeyboard }
             .modifier(ConsoleMenuFieldKeys(open: show))
             .onHover { hovering = $0 }
             .animation(ConsoleMotion.hover, value: hovering)
