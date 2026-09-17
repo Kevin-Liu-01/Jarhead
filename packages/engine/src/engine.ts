@@ -2411,11 +2411,35 @@ export class Engine extends EventEmitter<EngineEvents> {
    * words reach the new session. Typing while ASLEEP is REFUSED with a toast and the text kept in the composer —
    * `Settings.typedWakes` (default false): a stray Return must never open a paid session; with it on, the line
    * wakes Jarhead and reaches the new session. One log line with ms per call.
+   *
+   * The exception, BEFORE the resume or wake: a voice or accent typed while paused or asleep ("switch voice to
+   * marin", the `set_voice` reflex) is a pick, and a pick is free. Run first — the reflex only patches the setting
+   * with no session open — so the session that opens next speaks it and there is nothing left to reopen: one paid
+   * start at most, never the old voice's session closed a moment after it opened. Paused, or asleep with
+   * typedWakes off, the words are done with here (a toast says when it is heard); with typedWakes on the wake
+   * opens on the new voice and the reflex is already handled.
    */
   async sayText(text: string): Promise<void> {
     const t0 = performance.now();
     const t = text.trim();
     if (!t) return;
+    let picked: { readonly did: string } | undefined;
+    if (!this.live && this.matchReflex(t)?.kind === "set_voice") {
+      const outcome = await this.earReflexes.typed(t, this.now(), { free: true });
+      if (outcome?.ok) {
+        const answer = outcome.result.kind === "text" ? outcome.result.text : "";
+        const when = this.pauseInfo ? "heard when the session resumes" : "heard at the next Go";
+        const wakes = !this.pauseInfo && this.settings.typedWakes === true;
+        // An unknown name is the reflex's own line; a pick is the voice and when it speaks — unless the wake is the answer.
+        if (answer) this.toast(answer, "warn");
+        else if (!wakes) this.toast(`${Engine.voiceLine(this.settings.voice, this.settings.accent)} · ${when}`, "info");
+        if (!wakes) {
+          log.info(`say-text: ${t.length} chars while ${this.pauseInfo ? "paused" : "asleep"} → ${outcome.reflex.label} (${answer || when}) in ${Math.round(performance.now() - t0)} ms; no session opened`);
+          return;
+        }
+        picked = { did: answer };
+      }
+    }
     if (this.pauseInfo) await this.resume();
     if (!this.live) {
       if (this.settings.typedWakes !== true) {
@@ -2449,9 +2473,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     // The reflex first (M5): the hands act before the voice has decided anything; the instruction then says so,
     // and the words are done with (they must not ride into the next spoken request).
-    let did: string | undefined;
-    let meta = false;
-    if (!isYes) {
+    let did: string | undefined = picked?.did;
+    let meta = picked !== undefined;
+    if (picked) {
+      // The pick ran before the wake (above); the new session speaks with it, and Live's delegation for the words reconciles as done.
+      if (item) this.delegator?.typedHandled(item);
+    } else if (!isYes) {
       const outcome = await this.earReflexes.typed(t, this.now());
       if (outcome?.ok) {
         meta = outcome.reflex.meta === true;
@@ -2826,8 +2853,10 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the new voice says "Marin here." from its continuity, so the result text is empty. Busy (a task or a
    * thread runs): the current voice says "Marin at the next wake." — no reopen, nothing cancelled.
    * Asleep, paused or connecting: the setting alone, never a connect — a reflex must not open a paid
-   * session. A name that is not a `VOICES` id changes nothing. Idempotent: the session already speaking
-   * this way (the slower source repeating the ear's words) is answered with silence.
+   * session (typed, `sayText` runs it BEFORE its resume or wake for that reason: the session that opens
+   * next speaks the pick, and one start is all it costs). A name that is not a `VOICES` id changes
+   * nothing. Idempotent: the session already speaking this way (the slower source repeating the ear's
+   * words) is answered with silence.
    */
   private async setVoiceReflex(reflex: Reflex): Promise<ToolResult> {
     const voiceIn = typeof reflex.input["voice"] === "string" ? reflex.input["voice"].trim() : undefined;

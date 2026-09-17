@@ -14,7 +14,9 @@ import { FakeLive, delegate, nextUtterance, rows, settle, world } from "./world.
  * change" continuity, whose last line has the new voice say "<Name> here." — never while
  * work runs) or asks aloud ("switch voice to marin": the `set_voice` reflex, the only
  * settings-writing reflex — idle it reopens, busy the current voice says "at the next
- * wake", asleep it never opens a session); and a reconnect after the server dropped the
+ * wake", asleep or paused it never opens a session, and typed in that state it runs
+ * BEFORE `sayText`'s resume or wake so the one start that follows is on the pick); and
+ * a reconnect after the server dropped the
  * session carries the conversation (`# Continuity`, the dead id as `resumedFrom`, one
  * chain, toast "back").
  */
@@ -337,6 +339,106 @@ test("set_voice reflex, asleep and paused: the setting alone — NEVER a connect
     await engine.command({ type: "resume" });
     assert.equal(lives.length, 2);
     assert.equal(lives[1]!.config?.audio?.output?.voice, "cedar");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("set_voice typed while PAUSED costs no start: 'switch voice to marin' in the composer saves the pick, opens nothing and toasts when it is heard; the resume opens ONCE, on Marin — never the old voice's session closed a moment after it opened", async () => {
+  const w = world();
+  const { engine, live, lives, events } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    assert.equal(live.config?.audio?.output?.voice, "ballad");
+    await engine.command({ type: "pause" });
+    assert.equal(engine.transportState, "paused");
+    events.length = 0;
+    await engine.command({ type: "say-text", text: "switch voice to marin" });
+    await settle();
+    assert.equal(engine.snapshot().settings.voice, "marin", "the pick is saved");
+    assert.equal(engine.transportState, "paused", "still paused: typing a pick does not resume");
+    assert.equal(lives.length, 1, "no session opened by the typed pick");
+    assert.equal(rows<Started>(w, "session.started").length, 1);
+    assert.equal(rows<Resume>(w, "resume").length, 0);
+    const toasts = events.filter((e) => e.type === "toast").map((e) => `${e.tone}: ${e.text}`);
+    assert.deepEqual(toasts, ["info: Marin 🇬🇧 · heard when the session resumes"], JSON.stringify(toasts));
+    const reflexRows = rows<{ type: "reflex"; action: string; ok: boolean; source: string }>(w, "reflex").filter((r) => r.action === "switch voice to marin");
+    assert.equal(reflexRows.length, 1, "on the ledger once");
+    assert.equal(reflexRows[0]!.ok, true);
+    assert.equal(reflexRows[0]!.source, "typed");
+    assert.ok(!live.instructions.some((i) => /Kevin just typed/.test(i)), "the held session hears nothing");
+    // The resume: one new session, on Marin, the conversation carried — and nothing reopens it again.
+    await engine.command({ type: "resume" });
+    await settle(60);
+    assert.equal(lives.length, 2, "exactly one start");
+    assert.equal(lives[1]!.config?.audio?.output?.voice, "marin");
+    assert.match(lives[1]!.config?.instructions ?? "", /# Continuity/);
+    assert.equal(rows<Pause>(w, "pause").length, 1, "only the pause Kevin pressed");
+    assert.equal(rows<Resume>(w, "resume").length, 1);
+    assert.equal(rows<Started>(w, "session.started").length, 2);
+    assert.equal(engine.snapshot().session?.voice, "marin");
+    assert.equal(engine.transportState, "awake");
+    assert.ok(!lives[1]!.instructions.some((i) => /Kevin just typed/.test(i)), "the words were done with while paused; the new session is not told");
+    assert.equal(rows<{ type: "reflex"; action: string }>(w, "reflex").filter((r) => r.action === "switch voice to marin").length, 1, "the reflex did not run again after the resume");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("set_voice typed while ASLEEP: with typedWakes off the pick is saved and toasted ('heard at the next Go'), no 'asleep — press Go', nothing opened; with typedWakes on the line wakes Jarhead ONCE, on the new voice, and the reflex is not run again", async () => {
+  const w = world();
+  const { engine, live, lives, events } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    assert.equal(engine.transportState, "asleep");
+    events.length = 0;
+    await engine.command({ type: "say-text", text: "switch voice to cedar" });
+    await settle();
+    assert.equal(engine.snapshot().settings.voice, "cedar", "a pick is free asleep");
+    assert.equal(engine.transportState, "asleep");
+    assert.equal(lives.length, 1);
+    assert.equal(live.config === undefined, true, "no session was opened: FakeLive.start was never called");
+    let toasts = events.filter((e) => e.type === "toast").map((e) => `${e.tone}: ${e.text}`);
+    assert.deepEqual(toasts, ["info: Cedar 🇬🇧 · heard at the next Go"], JSON.stringify(toasts));
+    assert.equal(rows<{ type: "reflex"; action: string; ok: boolean }>(w, "reflex").filter((r) => r.action === "switch voice to cedar" && r.ok).length, 1);
+    // An accent the same way.
+    events.length = 0;
+    await engine.command({ type: "say-text", text: "speak with an american accent" });
+    await settle();
+    assert.equal(engine.snapshot().settings.accent, "american");
+    assert.equal(lives.length, 1);
+    assert.equal(live.config === undefined, true);
+    toasts = events.filter((e) => e.type === "toast").map((e) => `${e.tone}: ${e.text}`);
+    assert.deepEqual(toasts, ["info: Cedar 🇺🇸 · heard at the next Go"], JSON.stringify(toasts));
+    // A line that is no pick is still refused asleep, as before.
+    events.length = 0;
+    await engine.command({ type: "say-text", text: "open safari" });
+    assert.equal(live.config === undefined, true);
+    assert.deepEqual(events.filter((e) => e.type === "toast").map((e) => e.text), ["asleep — press Go"]);
+    // typedWakes on: the pick is saved first, so the ONE wake opens on Marin; the reflex is handled, not run again on the new session.
+    engine.updateSettings({ typedWakes: true });
+    events.length = 0;
+    await engine.command({ type: "say-text", text: "switch voice to marin" });
+    await settle(60);
+    assert.equal(engine.snapshot().settings.voice, "marin");
+    assert.equal(engine.transportState, "awake");
+    assert.equal(lives.length, 1, "the first session is the wake's: no second start");
+    assert.equal(live.currentState, "started");
+    assert.equal(live.config?.audio?.output?.voice, "marin", "the wake opened on the pick");
+    assert.match(live.config?.instructions ?? "", /# Language\nSpeak English, American accent/);
+    assert.doesNotMatch(live.config?.instructions ?? "", /# Continuity/, "a wake, not a reopen");
+    assert.equal(rows<Started>(w, "session.started").length, 1, "one started row");
+    assert.equal(rows<Pause>(w, "pause").length, 0, "nothing was paused and reopened");
+    assert.equal(rows<{ type: "reflex"; action: string }>(w, "reflex").filter((r) => r.action === "switch voice to marin").length, 1, "the reflex ran once, before the wake");
+    assert.ok(live.instructions.some((i) => /Kevin just typed \(treat it exactly like speech\): "switch voice to marin"\. Jarhead already handled it\. Say one word and wait\./.test(i)), live.instructions.join(" | "));
+    toasts = events.filter((e) => e.type === "toast").map((e) => e.text);
+    assert.ok(!toasts.some((t) => /heard at the next|at the next wake/.test(t)), `the wake is the answer, no pick toast: ${JSON.stringify(toasts)}`);
+    assert.equal(engine.snapshot().session?.voice, "marin");
   } finally {
     await engine.stop();
   }
