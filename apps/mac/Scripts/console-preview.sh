@@ -221,9 +221,9 @@ if [[ "$SCENARIO" == "settings-audio" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:
 if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.8}"; fi
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
 # The click path (design13): `menu-click-through` is the `local` fixture tall like `menu-model` (Voice and Model both on
-# screen) and drives three clicks to 3.05 s; `tip-click` and `cold-click` run their one click and the press check by 1.6 s.
-case "$SCENARIO" in menu-click-through) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}";; esac
-case "$SCENARIO" in tip-click|cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}";; esac
+# screen) and drives three clicks to 4.15 s; `tip-click` and `cold-click` run their one click and the press check by 2 s.
+case "$SCENARIO" in menu-click-through) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-4.5}";; esac
+case "$SCENARIO" in tip-click|cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
 # The right rail's scenarios (Builder D): `ledger-months` picks two August days and Sep 10, then ↓ ⏎ on the list

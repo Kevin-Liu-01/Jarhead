@@ -737,12 +737,14 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // The click path (design13, Builder B): every press on ONE click while a float is open or the window is cold.
         // Model first, then the Voice field: the Model popup hangs below its field, so the Voice field above it is
         // bare ground for the click (the Voice popup, 22 rows tall, would cover the Model field).
-        case "menu-click-through": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,probe-floats@0.9,click:settings.voice@1.0,probe-floats@1.3,"
-            + "check-floats:settings.voice@1.35,snap:preview-console-menu-click-through-voice@1.4,click:stream.stop@1.6,probe-floats@1.9,check-floats:none@1.95,"
-            + "menuOpen:settings.voice@2.2,probe-floats@2.5,click:settings.voice@2.6,probe-floats@2.9,check-floats:none@2.95,probe-press@3.0,check-press:stop@3.05"
-        case "tip-click": defaultActions = "check-kit@0.3,tipOpen:stream.stop@0.6,probe-floats@0.9,snap:preview-console-tip-click-pinned@0.95,click:stream.stop@1.0,"
-            + "probe-floats@1.3,check-floats:none@1.35,probe-press@1.5,check-press:stop@1.55"
-        case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@0.8,probe-press@1.2,check-press:go@1.25"
+        // A popup's teardown (its `placed` entry goes on onDisappear) can trail the click by a few frames on a loaded
+        // Mac, so every probe waits 0.6 s after its click.
+        case "menu-click-through": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,probe-floats@1.0,click:settings.voice@1.1,probe-floats@1.7,"
+            + "check-floats:settings.voice@1.75,snap:preview-console-menu-click-through-voice@1.8,click:stream.stop@2.0,probe-floats@2.6,check-floats:none@2.65,"
+            + "menuOpen:settings.voice@2.9,probe-floats@3.3,click:settings.voice@3.4,probe-floats@4.0,check-floats:none@4.05,probe-press@4.1,check-press:stop@4.15"
+        case "tip-click": defaultActions = "check-kit@0.3,tipOpen:stream.stop@0.6,probe-floats@1.0,snap:preview-console-tip-click-pinned@1.05,click:stream.stop@1.1,"
+            + "probe-floats@1.7,check-floats:none@1.75,probe-press@1.9,check-press:stop@1.95"
+        case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@0.8,probe-press@1.4,check-press:go@1.45"
         // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
         case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
         // The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back posted as the
