@@ -3467,7 +3467,11 @@ extension PreviewDelegate {
 
     /// `click:(x,y)` — points from the content view's top-left; `click:<id>` — the centre of that control's
     /// tracked frame (ConsoleClickTargets); `:cold` — the app deactivated, the window left un-key, so the
-    /// click is an inactive window's first. A left mouse down and up through sendEvent either way.
+    /// click is an inactive window's first. A left mouse down and up through sendEvent either way — the up
+    /// 60 ms later (`clickUpDelay`), as a real mouse's up is: SwiftUI's focus transaction and the popup's
+    /// one-turn-later close run between them, so a menu that closed on the down (the focus the down moves)
+    /// and reopened on the up is a state the checks after can see. (The next runloop turn was too early:
+    /// the up landed before the transaction, and the bug hid.)
     func click(_ spec: String, stamp: String) {
         let cold = spec.hasSuffix(":cold")
         let target = cold ? String(spec.dropLast(":cold".count)) : spec
@@ -3484,15 +3488,23 @@ extension PreviewDelegate {
         } ?? "nil"
         // Through NSApp.sendEvent, not the window's: the layer's local event monitor (a menu closing on
         // the mouse-down outside it, a tip on any down) runs only for events the application dispatches.
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+        func send(_ type: NSEvent.EventType) {
             if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
                 NSApp.sendEvent(event)
             }
         }
-        let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        print("action: click \(target) (\(Int(top.x)),\(Int(top.y)))\(cold ? " cold" : "") at \(stamp)s → \(key); hit \(hit); firstResponder \(before) → \(after)")
+        send(.leftMouseDown)
+        let between = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clickUpDelay) {
+            send(.leftMouseUp)
+            let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+            print("action: click \(target) (\(Int(top.x)),\(Int(top.y)))\(cold ? " cold" : "") at \(stamp)s → \(key); hit \(hit); firstResponder \(before) → \(between) at the down → \(after)")
+        }
     }
+
+    /// A real click's down-to-up gap, near enough: the up lands after the focus transaction the down started.
+    static let clickUpDelay: TimeInterval = 0.06
 
     /// `(x,y)` as given, or the centre of the frame tracked under that id; nil when neither.
     static func clickPoint(_ target: String) -> CGPoint? {
@@ -3580,6 +3592,8 @@ extension PreviewDelegate {
         expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
         expect("floats: a tip never consumes a click", "\(ConsoleFloatLayer.catches(kind: .tip))", "false")
         expect("floats: a menu never consumes a click", "\(ConsoleFloatLayer.catches(kind: .menu))", "false")
+        // A down on the anchor that missed the popup: the field's own toggle when the menu owns it, an outside click when it hangs off a row (the ⌘↓ verbs).
+        expect("floats: a down on the anchor is outside only when the float does not own its field", "\(ConsoleFloatMonitor.fieldDownOutside(ownsField: true)) \(ConsoleFloatMonitor.fieldDownOutside(ownsField: false))", "false true")
         expect("key ring: a mouse-down is the mouse's (a focus it moves lights nothing)", "\(ConsoleKeyRing.mouse(.leftMouseDown))", "true")
         expect("key ring: a key-down is the keyboard's (a focus it moves lights the ring)", "\(ConsoleKeyRing.mouse(.keyDown))", "false")
         expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")

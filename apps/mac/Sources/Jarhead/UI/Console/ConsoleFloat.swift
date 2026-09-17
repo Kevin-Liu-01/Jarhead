@@ -29,6 +29,13 @@ struct ConsoleFloat: Identifiable, Equatable {
     let frame: CGRect
     let content: () -> AnyView
     let dismiss: () -> Void
+    /// Whether the anchor is the menu's own field (a mouse-down on it is the field's toggle, never an
+    /// outside click). False for a float hung off a whole row (the ⌘↓ verbs): a down anywhere off
+    /// the popup dismisses and passes through, so the row under it acts on the same click.
+    var ownsField = true
+    /// The monitor's word to the field that a mouse-DOWN landed on it while the menu is open (`ownsField`
+    /// only): the field decides the toggle at the down, once, and ignores the focus the down moves.
+    var fieldDown: () -> Void = {}
 
     static func == (a: ConsoleFloat, b: ConsoleFloat) -> Bool { a.id == b.id && a.kind == b.kind && a.frame == b.frame }
 }
@@ -102,10 +109,11 @@ extension EnvironmentValues {
 extension View {
     /// Publish a float while `on`; this view is its anchor. The trigger owns `on` (its @State)
     /// and `dismiss` is how the layer asks it to let go (an outside click, a ⌘-key, the window
-    /// leaving key).
-    func consoleFloat<C: View>(_ id: String, kind: ConsoleFloat.Kind, edge: ConsoleFloat.Edge = .below, on: Bool,
-                               dismiss: @escaping () -> Void, @ViewBuilder content: @escaping () -> C) -> some View {
-        modifier(ConsoleFloatPublisher(id: id, kind: kind, edge: edge, on: on, dismiss: dismiss, content: content))
+    /// leaving key). `ownsField: false` for a menu hung off a row rather than a field (a down on the
+    /// anchor dismisses like any outside click); `fieldDown` hears a down on an owned field.
+    func consoleFloat<C: View>(_ id: String, kind: ConsoleFloat.Kind, edge: ConsoleFloat.Edge = .below, on: Bool, ownsField: Bool = true,
+                               dismiss: @escaping () -> Void, fieldDown: @escaping () -> Void = {}, @ViewBuilder content: @escaping () -> C) -> some View {
+        modifier(ConsoleFloatPublisher(id: id, kind: kind, edge: edge, on: on, ownsField: ownsField, dismiss: dismiss, fieldDown: fieldDown, content: content))
     }
 
     /// Installed once per window root, after everything the floats must draw over.
@@ -123,7 +131,9 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
     let kind: ConsoleFloat.Kind
     let edge: ConsoleFloat.Edge
     let on: Bool
+    var ownsField = true
     let dismiss: () -> Void
+    var fieldDown: () -> Void = {}
     let content: () -> C
     @State private var frame: CGRect = .zero
 
@@ -132,7 +142,10 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { moved(to: $0) }
             .onDisappear { ConsoleClickTargets.frames[id] = nil }
             .transformAnchorPreference(key: ConsoleFloatKey.self, value: .bounds) { floats, anchor in
-                if on { floats.append(ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)) }
+                if on {
+                    floats.append(ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss,
+                                               ownsField: ownsField, fieldDown: fieldDown))
+                }
             }
     }
 
@@ -235,9 +248,12 @@ struct ConsoleFloatSlot: View {
 /// unchanged, so the control under the pointer still gets it) and it only looks at the key
 /// window: a tip dismisses on any mouse-down, wheel or key-down; a menu on a ⌘ key-down (the
 /// window's shortcut is about to run), on a wheel outside itself — a wheel over the popup scrolls
-/// its list — and on a mouse-down outside both the popup and its own field. The field is left to
-/// its Button: its click toggles the menu closed once (a dismiss here too would close on the down
-/// and reopen on the up). Every test is a rect-contains in the root's top-left space, never a clock.
+/// its list — and on a mouse-down outside both the popup and its own field. A down ON the field is
+/// told to the field (`fieldDown`) and left to its Button: the field decides the toggle at the down,
+/// once, and its up does the one close (a dismiss here would close on the down and reopen on the
+/// up; so would the focus the down moves off the popup, which is why the field is told). A float
+/// that does not own its anchor (`ownsField == false`, the row's ⌘↓ verbs) treats a down on the
+/// anchor as outside. Every test is a rect-contains in the root's top-left space, never a clock.
 @MainActor
 final class ConsoleFloatMonitor {
     private var token: Any?
@@ -264,18 +280,23 @@ final class ConsoleFloatMonitor {
         for f in floats {
             switch f.kind {
             case .tip: f.dismiss()
-            case .menu: if command || Self.outside(f, event: event, window: window) { f.dismiss() }
+            case .menu:
+                if command || Self.outside(f, event: event, window: window) { f.dismiss() }
+                else if f.ownsField, Self.downs.contains(event.type), Self.onField(f, event: event, window: window) { f.fieldDown() }
             }
         }
     }
 
-    /// A wheel or a mouse-down that misses the menu: off the popup, and — for a down — off the
-    /// field that owns it too.
+    /// A wheel or a mouse-down that misses the menu: off the popup, and — for a down on a menu that
+    /// owns its field — off that field too. Pinned by `check-kit` (`fieldDownOutside`).
     static func outside(_ f: ConsoleFloat, event: NSEvent, window: NSWindow) -> Bool {
         if event.type == .scrollWheel { return !inside(f.id, event: event, window: window) }
         guard downs.contains(event.type) else { return false }
-        return !inside(f.id, event: event, window: window) && !onField(f, event: event, window: window)
+        return !inside(f.id, event: event, window: window) && !(f.ownsField && onField(f, event: event, window: window))
     }
+
+    /// The rule for a down that hit the anchor and missed the popup, pure: outside unless the float owns its field.
+    static func fieldDownOutside(ownsField: Bool) -> Bool { !ownsField }
 
     /// Whether the wheel is over the float: the event's point flipped into the root's top-left
     /// space and tested against the rect the layer placed it at (an unplaced float is outside).
