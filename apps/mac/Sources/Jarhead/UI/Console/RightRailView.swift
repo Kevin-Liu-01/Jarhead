@@ -455,7 +455,7 @@ struct CrashNoticeRow: View {
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                             .consoleHelp(NowWords.detailsTip)
                         Button { withAnimation(Motion.gentle) { state.dismissCrash() } } label: {
-                            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.dismiss).font(.system(size: 14, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
                         .accessibilityLabel(NowWords.dismiss)

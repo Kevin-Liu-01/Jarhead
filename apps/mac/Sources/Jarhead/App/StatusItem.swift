@@ -299,11 +299,11 @@ final class StatusItem: NSObject {
         let askAll = NSMenuItem(title: "Ask for everything…", action: #selector(doAskAll), keyEquivalent: "")
         askAll.target = self
         askAll.isEnabled = !(state.permissionSweep?.running ?? false)
-        askAll.image = StatusItem.symbol("checklist")
+        askAll.image = StatusItem.symbol(ConsoleGlyph.ask)
         askAll.toolTip = "Ask for every permission Jarhead can use, one dialog at a time, then the System Settings panes"
         menu.addItem(askAll)
 
-        quit.image = StatusItem.symbol("power")
+        quit.image = StatusItem.symbol(ConsoleGlyph.quit)
         menu.addItem(quit)
 
         menu.autoenablesItems = false

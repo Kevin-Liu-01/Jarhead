@@ -626,7 +626,7 @@ struct AutomationRenameRow: View {
             ConsoleIcon(name: AutomationFormat.glyph(automation))
             ConsoleField(text: $draft, placeholder: automation.name, size: .edit, id: AutomationWords.tip(automation.id) + ".rename",
                          accessibilityLabel: AutomationWords.rename, onCommit: commit)
-            Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+            Button(action: close) { Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold)) }
                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
                 .consoleHelp(AutomationWords.keepName)
                 .accessibilityLabel(AutomationWords.keepName)
@@ -809,7 +809,7 @@ struct AutomationAddForm: View {
                 Button(AutomationWords.arm(cleanName), action: send)
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
                 Button { withAnimation(Motion.snappy) { armed = false } } label: {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                    Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 26))
                 .consoleHelp(AutomationWords.letGo)
@@ -1177,7 +1177,7 @@ struct RecipeForm: View {
             }
             .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 26, small: true))
             Button { withAnimation(Motion.snappy) { armed = false } } label: {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
             }
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 26))
             .consoleHelp(AutomationWords.keep)

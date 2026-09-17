@@ -380,7 +380,7 @@ private struct ConversationFeed: View {
                         tracker.jump(animated: true)
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "arrow.down").font(.system(size: 10, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.newestLine).font(.system(size: 10, weight: .semibold))
                             Text("Latest")
                         }
                     }
@@ -467,7 +467,7 @@ private struct ConversationFeed: View {
                         loadingEarlier = true
                         actions.send(.agentHistory(agentId: agent.id, before: first.id))
                     } label: {
-                        Label("Load earlier", systemImage: "arrow.up")
+                        Label("Load earlier", systemImage: ConsoleGlyph.earlierLine)
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(remaining > 0 ? "\(remaining) earlier message\(remaining == 1 ? "" : "s")" : "Earlier messages")
@@ -501,7 +501,7 @@ private struct ConversationFeed: View {
                 // A page with nothing on it while the file has messages: ask for the tail again.
                 ConsoleEmpty(t.total == 0 ? "Nothing said yet." : "Nothing loaded yet.") {
                     if t.total > 0 {
-                        Button(action: reopen) { Label("Reload", systemImage: "arrow.clockwise") }
+                        Button(action: reopen) { Label("Reload", systemImage: ConsoleGlyph.reloadLine) }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     }
                 }
@@ -510,7 +510,7 @@ private struct ConversationFeed: View {
                     Button {
                         retries += 1
                         reopen()
-                    } label: { Label("Try again", systemImage: "arrow.clockwise") }
+                    } label: { Label("Try again", systemImage: ConsoleGlyph.reloadLine) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                 }
             } else {
@@ -919,7 +919,7 @@ private struct ConversationComposer: View {
                         // One filled accent per strip: while a permission question is up,
                         // Allow has it and a typed answer is the secondary path.
                         Button(action: submit) {
-                            Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.send).font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
                         .disabled(!hasText)
