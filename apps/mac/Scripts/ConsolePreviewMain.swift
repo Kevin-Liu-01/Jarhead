@@ -503,6 +503,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.applySnapshotThreads(snap.threads)
             for t in fake.threads() where t.id != "main" { state.applyThreadTranscript(fake.threadTranscript(t.id), mode: "replace") }
             state.applyThreadTranscript(fake.pagedMain().newest, mode: "replace")
+        case "resumed":
+            // design13 (Builder A): a paused → resumed (or voice-switched) conversation the way the engine
+            // holds it — the held session's rows before the live session's, ids in the engine's own scheme.
+            state.snapshot = fake.resumed()
         case "typed-row":
             // A line Kevin typed in the composer, on the record beside the spoken ones.
             state.snapshot = fake.live()
@@ -668,6 +672,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "thread-pane": defaultActions = "thread-open:\(FakeData.slackId)@0.3"
         // Allow the way the strip sends it: the `send:` line must be thread.answer, never say-text or stop.
         case "thread-answer": defaultActions = "thread-open:\(FakeData.slackId)@0.3,thread-answer:\(FakeData.slackId):yes@1.0,check-threads@1.2"
+        // design13 (Builder A): the stream's ids after a resume — `check-stream` before and after a republish and an append.
+        case "resumed": defaultActions = "check-stream@0.3,republish@0.6,append@0.9,check-stream@1.2"
         case "typed-row": defaultActions = "check-threads@0.3"
         // The paged main pane: scrolled up off the bottom, "Load earlier" pressed (the button's own path:
         // `send:` thread.history), the engine's page landing, geometry before and after (the row stays).
@@ -821,6 +827,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                                                   startMs: 0, endMs: 900, at: now, final: true))
             state.snapshot = snap
             print("action: append #\(appended) at \(stamp)s")
+        case "republish":
+            // The `audio-state` path: the same snapshot published again (EngineClient.queueSnapshot replaces, never appends).
+            state.snapshot = state.snapshot
+            print("action: republish at \(stamp)s → transcript \(state.snapshot.transcript.count) items")
         case "open-jarhead":
             // The root view listens for this; it opens the paused → resumed chain.
             withAnimation(Motion.snappy) {
@@ -1018,6 +1028,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 probeFloats(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
+            } else if action == "check-stream" {
+                checkStream(stamp: stamp)
             } else if action == "check-tips" {
                 checkTips(stamp: stamp)
             } else if action.hasPrefix("check-floats:") {
@@ -2824,6 +2836,36 @@ struct FakeData {
         return s
     }
 
+    /// design13 (Builder A): the snapshot after a pause → resume — the held session's seven rows, then the
+    /// live session's five, every id in the engine's real scheme. Before the engine owned one counter both
+    /// sessions counted `t_1…`; the Console keyed rows by that id and drew the first session's rows for the
+    /// second's. The words differ per session so the AX walk can tell which rows are on screen.
+    func resumed() -> Snapshot {
+        let held: [(SpeakerRole, String)] = [
+            (.kevin, "What's up"), (.jarhead, "Not much. I'm here, awake and ready if you need me"),
+            (.kevin, "What's up"), (.jarhead, "Not much. What's up with you?"),
+            (.kevin, "I think your audio isn't that great to be honest"), (.jarhead, "Okay. I'll keep it steady on my side."),
+            (.kevin, "Hello"),
+        ]
+        let live: [(SpeakerRole, String)] = [
+            (.kevin, "Are you back?"), (.jarhead, "Back, yes — same conversation, new voice."),
+            (.kevin, "Nice"), (.kevin, "Hello again"), (.jarhead, "Hey. Still here."),
+        ]
+        func items(_ words: [(SpeakerRole, String)], from t0: Double, final: Bool) -> [TranscriptItem] {
+            words.enumerated().map { i, w in
+                TranscriptItem(id: "t_\(i + 1)", speaker: w.0, text: w.1, startMs: Double(i) * 4_000, endMs: Double(i) * 4_000 + 1_800,
+                               at: t0 + Double(i) * 7_000, final: final || i + 1 < words.count)
+            }
+        }
+        var s = Snapshot(phase: .listening, session: session(), transcript: items(held, from: ago(125), final: true) + items(live, from: ago(48), final: false),
+                         delegations: [], agents: agents(), connectors: connectors(), settings: settings,
+                         permissions: permissions(microphone: .granted, screenRecording: .granted, accessibility: .granted),
+                         problems: [], brainReady: true, handsReady: true, setup: setup, marks: [], threads: [])
+        s.trash = trash
+        s.memory = memorySummary()
+        return s
+    }
+
     /// The live day's stream with the session closed: asleep, nothing billed, the wake gate in charge.
     func asleep() -> Snapshot {
         var s = live()
@@ -3386,6 +3428,65 @@ extension PreviewDelegate {
         failed += checkKitAutomations()
         failed += checkKitAudio()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+
+    /// `check-stream` (design13, Builder A): the Now stream's rows against the snapshot they are built from.
+    /// The entry ids are unique (a `ForEach` with two equal ids draws the first row for both); the caret gate
+    /// names an entry that exists; and — through the window's accessibility tree — the utterance texts on
+    /// screen, in order, are the snapshot's (the line a duplicated id fails: the second session's rows read
+    /// as the first's). After `append`, the last text on screen is the appended line.
+    func checkStream(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let snap = state.snapshot
+        let entries = StreamBuilder.fromSnapshot(transcript: snap.transcript, delegations: snap.delegations, clearedAt: state.nowClearedAt)
+        expect("stream: entry ids unique", "\(Set(entries.map(\.id)).count)", "\(entries.count)")
+        let caretId = StreamFeed.caretId(entries)
+        expect("stream: caret on the newest utterance", "\(caretId != nil && entries.contains { $0.id == caretId })", "true")
+        let want = snap.transcript.map(\.text)
+        let wanted = Set(want)
+        var texts: [String] = []
+        if let content = jarheadWindow?.contentView { Self.staticTexts(content, into: &texts) }
+        let inProcess = texts.count
+        // SwiftUI's hosting view serves its rows to the accessibility server, not to an in-process walk:
+        // when the protocol walk comes back empty, read our own tree through the AX API (this pid).
+        if texts.isEmpty { texts = Self.axStaticTexts(windowTitle: "Jarhead") }
+        print("stream-ax: \(texts.count) static texts (in-process \(inProcess), AX API \(texts.count - inProcess < 0 ? 0 : texts.count - inProcess)) at \(stamp)s")
+        let visible = texts.filter { wanted.contains($0) }
+        expect("stream: AX row texts == transcript texts (\(visible.count) of \(want.count))", visible.joined(separator: " | "), want.joined(separator: " | "))
+        if appended > 0 {
+            expect("stream: rows after append", "\(visible.count) rows, last '\(visible.last ?? "")'", "\(want.count) rows, last '\(want.last ?? "")'")
+        }
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (stream) at \(stamp)s")
+    }
+
+    /// Every static text under `element`, in the accessibility tree's order (SwiftUI's Text rows are AXStaticText).
+    static func staticTexts(_ element: Any, into out: inout [String]) {
+        guard let ax = element as? NSAccessibilityProtocol else { return }
+        if ax.accessibilityRole() == .staticText, let value = ax.accessibilityValue() as? String { out.append(value) }
+        for child in ax.accessibilityChildren() ?? [] { staticTexts(child, into: &out) }
+    }
+
+    /// The same walk through the AX API over this process: the window with `windowTitle`, every AXStaticText's value in tree order.
+    static func axStaticTexts(windowTitle: String) -> [String] {
+        let app = AXUIElementCreateApplication(getpid())
+        var out: [String] = []
+        func attribute(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(el, name as CFString, &value) == .success ? value : nil
+        }
+        func walk(_ el: AXUIElement, depth: Int) {
+            guard depth < 80 else { return }
+            if attribute(el, kAXRoleAttribute) as? String == kAXStaticTextRole, let text = attribute(el, kAXValueAttribute) as? String { out.append(text) }
+            for child in (attribute(el, kAXChildrenAttribute) as? [AXUIElement]) ?? [] { walk(child, depth: depth + 1) }
+        }
+        let windows = (attribute(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        for w in windows where (attribute(w, kAXTitleAttribute) as? String) == windowTitle { walk(w, depth: 0) }
+        return out
     }
 
     /// The tip's pure pins: the card's spoken form, the stable id, the outline's arrow inside its frame.

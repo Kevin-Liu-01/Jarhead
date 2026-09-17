@@ -12,7 +12,12 @@
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
 #           automations | automations-ring | settings-automations |
-#           settings-audio | toggle-recording (default live)
+#           settings-audio | toggle-recording | resumed (default live)
+#   The stream ids (design13, Builder A): `resumed` is a paused → resumed conversation as the engine holds it — the
+#   held session's seven rows before the live session's five — with `check-stream@0.3,republish@0.6,append@0.9,
+#   check-stream@1.2`: `check-stream` prints `check:` lines (entry ids unique · caret on the newest utterance · the
+#   AX row texts in order == the snapshot's texts · after `append`, one more row and the appended line last) and
+#   ends `check: all ok (stream)`; `republish` is the audio-state path (the same snapshot published again).
 #   The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back from the fixture
 #   `aec-airpods` (Hears `Kevin's AirPods Pro · 24 kHz · echo cancelled`, Speaks `16 kHz · narrowed`, the `echoFollows`
 #   sentence, Recording Off); `toggle-recording` focuses the Recording toggle, snaps, presses Space (`send:` must carry
@@ -188,6 +193,8 @@ case "$SCENARIO" in
   automations|automations-ring|settings-automations) ;;
   # The audio pass (design12): Settings › Audio's route rows and the Recording toggle.
   settings-audio|toggle-recording) ;;
+  # The stream ids (design13, Builder A): the resumed conversation's rows, checked before and after a republish and an append.
+  resumed) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -216,6 +223,8 @@ case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-o
 # (the closed snap at 3.0 s, once the fold's animation has landed).
 if [[ "$SCENARIO" == "settings-audio" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.6}"; fi
 if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.8}"; fi
+# `resumed` runs its checks to 1.2 s (the second check-stream after the append).
+if [[ "$SCENARIO" == "resumed" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.8}"; fi
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
