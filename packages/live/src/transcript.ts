@@ -34,9 +34,16 @@ export class Transcript {
   private readonly touchedAt = new Map<string, number>();
   private readonly listeners = new Set<(item: TranscriptItem, kind: "start" | "update" | "final") => void>();
 
+  /**
+   * `nextId`: where an utterance's id comes from. The default counts on this instance
+   * (`t_1, t_2, …`); the engine passes its own counter, because it starts a fresh Transcript
+   * for every session and shows held + live items in one list — two per-instance counters
+   * would both say `t_1`, and a list keyed by id draws one row for the other.
+   */
   constructor(
     private readonly now: () => number = Date.now,
     private readonly maxItems = 400,
+    private readonly nextId: () => string = () => `t_${++this.seq}`,
   ) {}
 
   onChange(listener: (item: TranscriptItem, kind: "start" | "update" | "final") => void): () => void {
@@ -75,7 +82,7 @@ export class Transcript {
     this.finalizeOpen();
 
     const item: TranscriptItem = {
-      id: `t_${++this.seq}`,
+      id: this.nextId(),
       speaker: frag.speaker,
       text: frag.delta.trim(),
       startMs: frag.startMs,
@@ -108,7 +115,7 @@ export class Transcript {
     if (!clean) return undefined;
     this.finalizeOpen();
     const item: TranscriptItem = {
-      id: `t_${++this.seq}`,
+      id: this.nextId(),
       speaker,
       text: clean,
       startMs: nowMs,

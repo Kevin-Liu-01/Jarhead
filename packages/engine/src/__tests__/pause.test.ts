@@ -276,3 +276,29 @@ test("pause while threads run: every thread is cancelled with its brain's cancel
     await engine.stop();
   }
 });
+
+test("held and live utterances never share an id: two utterances, pause, resume, one more — the snapshot's ids are unique and the last words are the new ones", async () => {
+  const w = world();
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "what's up", "item_a");
+    nextUtterance(w);
+    delegate(w, "hello", "item_a2");
+    await settle();
+    await engine.command({ type: "pause" });
+    clock.t += 700;
+    await engine.command({ type: "resume" });
+    delegate(w, "nice", "item_b");
+    await settle();
+    const t = engine.snapshot().transcript;
+    assert.ok(t.length >= 3, `three utterances on the record, got ${t.length}`);
+    assert.equal(new Set(t.map((i) => i.id)).size, t.length, "held and live utterances never share an id");
+    assert.equal(t.at(-1)!.text, "nice");
+  } finally {
+    await engine.stop();
+  }
+});
