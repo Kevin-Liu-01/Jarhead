@@ -407,8 +407,10 @@ final class NotchDock {
     /// (`ignoresMouseEvents`), rather than trusting the window server's alpha
     /// pass-through for a layer-backed clear panel. The global mouse-moved monitor sees
     /// the pointer approach while the panel is ignoring events and turns them back on
-    /// before a click can land. Never changed mid-drag: the drag's events are owed to
-    /// the view that took the mouse-down.
+    /// before a click can land; a click the panel does receive re-reads the pointer
+    /// synchronously first (`NotchPanel.sendEvent` → `pointer(at:fromEvent:)`), so the
+    /// island's state is never a monitor's turn behind the click. Never changed
+    /// mid-drag: the drag's events are owed to the view that took the mouse-down.
     private func refreshMouseAcceptance() {
         let accept = view.isDragging || (parked && !marking && (pointerNear || pinned))
         if panel.ignoresMouseEvents == accept { panel.ignoresMouseEvents = !accept }
@@ -466,6 +468,7 @@ final class NotchDock {
         panel.contentView = view
         view.geometry = geometry
         view.onPress = { [weak self] which in self?.pressed(which) }
+        panel.onMouseDown = { [weak self] p in self?.pointer(at: p, fromEvent: true) }
         view.onSay = { [weak self] text in self?.say(text) }
         view.onFieldRelease = { [weak self] keepText in self?.releaseKey(keepText: keepText) }
         view.onDragOut = { [weak self] p in self?.dragOut(p) }
@@ -777,11 +780,14 @@ final class NotchDock {
     /// opens it; leaving the open island (with slop) starts the 600 ms contraction.
     /// Either way the panel takes the mouse only while the pointer is about the island
     /// (or on the pill under it). Marking: nothing — the overlay has the pointer.
-    private func pointer(at p: NSPoint) {
+    /// `fromEvent`: the point is a mouse-down's the panel is about to deliver
+    /// (`NotchPanel.onMouseDown`), not a monitor's sighting — a deliberate act.
+    private func pointer(at p: NSPoint, fromEvent: Bool = false) {
         #if JARHEAD_ORB_PREVIEW
         // The harness's shots are scripted (`previewHover`); Kevin's own pointer, which
-        // may well be sitting under the notch, must not open the island in them.
-        if Self.previewIgnoresPointer { return }
+        // may well be sitting under the notch, must not open the island in them. A
+        // click the panel is handed (the harness posts its own) is another matter.
+        if Self.previewIgnoresPointer, !fromEvent { return }
         #endif
         guard parked, !marking else { pointerNear = false; refreshMouseAcceptance(); return }
         let island = view.islandScreenRect(in: panel)
@@ -888,6 +894,21 @@ final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { keyAllowed }
     override var canBecomeMain: Bool { false }
 
+    /// A mouse-down's screen point, handed to the dock's `pointer(at:)` before the view
+    /// sees the click (design13 § Clicking twice, fix 3): the pointer monitors are
+    /// asynchronous, so a click that beats their turn used to find the island's state
+    /// (`hovered`, the mode) a frame behind the pointer. Synchronous, and a rect test.
+    var onMouseDown: ((NSPoint) -> Void)?
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown { onMouseDown?(convertPoint(toScreen: event.locationInWindow)) }
+        super.sendEvent(event)
+    }
+
+    /// The Stop box's alpha step by phase (design13 § Stop): asleep there is nothing to
+    /// stop, so the box rests at .45 like Circle / Window without Screen Recording — a
+    /// spent look, still a button (a Stop must land). Pure; the harness pins it.
+    static func stopDim(_ phase: Phase) -> CGFloat { phase == .asleep ? 0.45 : 1 }
+
     /// While key — only ever with the Say field focused — the panel would also answer
     /// ⌘-shortcuts, and our main menu would take ⌘Q for a quit Kevin did not mean.
     /// Editing shortcuts pass; every other ⌘ combination is swallowed.
@@ -965,6 +986,13 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     private var hoveredButton: Press?
     private var pressing: Press?
     private var downPoint: NSPoint?
+    /// A press whose mouse-down landed while the island was still springing open
+    /// (design13 § Clicking twice, fix 4): felt at the up, routed once the springs
+    /// settle — and only if the pointer is still on the island then.
+    private var pendingPress: Press?
+    private var downWhileOpening = false
+    /// The pointer's last known point (view coordinates); nil once it left the view.
+    private var lastPointer: NSPoint?
     private var dragging = false
     private var tracking: NSTrackingArea?
 
@@ -1562,6 +1590,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     /// content's fade clock starts here.
     func setMode(_ m: NotchDock.Mode, animated: Bool) {
         mode = m
+        if m != .island { pendingPress = nil }
         let n = geometry?.notch.width ?? 185
         if !parked {
             // The blob is out. Working — or with threads live — the notch keeps a quiet
@@ -1714,6 +1743,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             widthSpring.step(step, spec); heightSpring.step(step, spec); openSpring.step(step, spec)
             if springsSettled { widthSpring.snap(); heightSpring.snap(); openSpring.snap() }
         }
+        if springsSettled, pendingPress != nil { firePendingPress() }
         let animating = isAnimating(now)
         // The shared sim is stepped here only while the blob is parked (the field's
         // own link is paused then); at the sim's cadence, so a parked blob costs what
@@ -2864,7 +2894,9 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         let base = finite01(s.park * a.alpha)
         drawRing(cg, rect: z.go.offsetBy(dx: 0, dy: a.dy), color: s.color, symbol: AppState.transportLabel(for: sim.phase).symbol,
                  hot: s.hovered == .pause, down: s.pressed == .pause, flash: flashLevel(.pause, now: s.now), alpha: base)
-        drawBox(cg, which: .stop, rect: z.stop.offsetBy(dx: 0, dy: a.dy), symbol: "stop.fill", enabled: true, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
+        // Asleep the Stop box rests at .45 — spent, still a button (design13 § Stop); the accent press flash stays.
+        drawBox(cg, which: .stop, rect: z.stop.offsetBy(dx: 0, dy: a.dy), symbol: "stop.fill", enabled: true, dim: NotchPanel.stopDim(sim.phase),
+                hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
         let muteRect = z.mute.offsetBy(dx: 0, dy: a.dy)
         drawBox(cg, which: .mute, rect: muteRect, symbol: sim.phase == .muted ? "mic.slash.fill" : "mic.fill", enabled: muteEnabled,
                 glyphDim: muteGlyphAlpha, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
@@ -3253,7 +3285,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         var cells: [StripCell] = []
         if !content.marks.isEmpty, z.kind != .question { cells.append(StripCell(press: .clear, rect: z.clear, symbol: "eraser.fill", enabled: true, dim: 1)) }
         cells.append(StripCell(press: .circle, rect: z.circle, symbol: "pencil.and.outline", enabled: true, dim: granted ? 1 : 0.45))
-        cells.append(StripCell(press: .window, rect: z.window, symbol: "macwindow", enabled: true, dim: granted ? 1 : 0.45))
+        cells.append(StripCell(press: .window, rect: z.window, symbol: "rectangle.inset.filled", enabled: true, dim: granted ? 1 : 0.45))
         if z.kind != .question { cells.append(StripCell(press: .ask, rect: z.ask, symbol: "questionmark.bubble.fill", enabled: askEnabled, dim: 1)) }
         drawStrip(cg, cells: cells.map { $0.offset(dy: a.dy) }, hovered: s.hovered, pressed: s.pressed, base: base, now: s.now)
     }
@@ -3982,12 +4014,17 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
         guard parked else { return nil }
         let p = convert(point, from: superview)
         if fieldFocused, !field.isHidden, field.frame.contains(p) { return field }
-        if islandRect.insetBy(dx: -2, dy: -2).contains(p) || notchRect.contains(p) { return self }
+        if inkRect.insetBy(dx: -2, dy: -2).contains(p) || notchRect.contains(p) { return self }
         if let pill = pillRect, pill.insetBy(dx: -2, dy: -2).contains(p) { return self }
         return nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// The ink a click may land on: the open island's fixed rect from the first frame of
+    /// the open (the layout is laid out in it; the spring only reveals it), else the
+    /// island as drawn. So the first frames of the spring already take the click.
+    private var inkRect: NSRect { mode == .island ? islandOpenRect : islandRect }
 
     /// The control under `p` while the island is open — from the first frame of the
     /// open (the layout is fixed; the ink reveals it, and `hitTest` keeps clicks to the
@@ -4019,6 +4056,7 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
 
     override func mouseMoved(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        lastPointer = p
         let b = button(at: p)
         if b != hoveredButton {
             let was = hoveredButton
@@ -4032,13 +4070,16 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
     }
 
     override func mouseExited(with event: NSEvent) {
+        lastPointer = nil
         if hoveredButton != nil { hoveredButton = nil; needsDisplay = true }
     }
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         downPoint = p
+        lastPointer = p
         dragging = false
+        downWhileOpening = mode == .island && !springsSettled
         let b = button(at: p)
         // A click anywhere but the line while the field has key: the field lets go, text kept.
         if fieldFocused, b != .field {
@@ -4068,19 +4109,30 @@ final class NotchView: NSView, NSViewToolTipOwner, NotchInkObserver, NSTextField
             return
         }
         let p = convert(event.locationInWindow, from: nil)
+        lastPointer = p
         if let b = pressing, button(at: p) == b {
-            // Inside the consent boxes' dead-time the click lands nowhere: no flash, no route.
-            if pressIsDead(b) { return }
-            // The press is felt: the accent stays on the button and lets go over `Motion.base`.
+            // The press is felt either way: the accent stays on the button and lets go over `Motion.base`.
             if b != .field {
                 flashPress = b
                 flashAt = CACurrentMediaTime()
             }
             wake()
+            // Inside the consent boxes' dead-time only the route is dropped (design13, fix 5).
+            if pressIsDead(b) { return }
+            // The down caught the island mid-open: the route waits for the springs (`firePendingPress`).
+            if downWhileOpening { pendingPress = b; return }
             onPress?(b)
-        } else if islandRect.contains(p) || notchRect.contains(p) {
+        } else if inkRect.contains(p) || notchRect.contains(p) {
             onPress?(.face)
         }
+    }
+
+    /// The springs settled: a press remembered mid-open goes out once, if the pointer is still on the island.
+    private func firePendingPress() {
+        guard let b = pendingPress else { return }
+        pendingPress = nil
+        guard mode == .island, let p = lastPointer, islandOpenRect.contains(p) else { return }
+        onPress?(b)
     }
 }
 
@@ -4163,6 +4215,16 @@ extension NotchView {
     }
     /// Whether a control is in the hit list right now (an island must be open for any to be).
     func previewIsHittable(_ p: Press) -> Bool { buttonRects(in: islandOpenRect).contains { $0.0 == p } }
+    /// The open island's fixed rect (view coordinates): the hit list's rects are relative to it.
+    var previewIslandOpenRect: NSRect { islandOpenRect }
+    var previewSpringsSettled: Bool { springsSettled }
+    /// The box the accent is still letting go of (inside `Motion.base` of its press), by harness name.
+    var previewFlashPress: String? {
+        guard let f = flashPress, flashAt >= 0, CACurrentMediaTime() - flashAt < seconds(Motion.base) else { return nil }
+        return Self.previewName(of: f)
+    }
+    /// The press waiting for the springs to settle, by harness name.
+    var previewPendingPress: String? { pendingPress.map(Self.previewName(of:)) }
     /// The chips on the peek, in order, as "kind:figure".
     var previewChips: [String] { chips.map { "\(Self.previewName(of: $0.kind)):\($0.figure)" } }
     /// What the peek grows by for the chips (pt) and the width the peek is springing to.
@@ -4206,6 +4268,7 @@ extension NotchView {
         case .mute: return muteEnabled ? 1 : 0.35
         case .ask: return askEnabled ? 1 : 0.35
         case .sleep: return awake ? 1 : 0.35
+        case .stop: return NotchPanel.stopDim(sim.phase)
         case .circle, .window: return content.screenRecordingGranted ? 1 : 0.45
         default: return 1
         }
