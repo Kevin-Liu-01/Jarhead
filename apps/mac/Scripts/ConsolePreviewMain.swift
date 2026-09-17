@@ -4056,6 +4056,8 @@ extension PreviewDelegate {
         func show(_ t: String) -> String { "\(split(t).flag ?? "nil")|\(split(t).word)" }
         expect("segments: a leading flag splits off the title", [show("🇬🇧 UK"), show("None"), show("🇺🇸 American"), show("🇬🇧"), show("Off")].joined(separator: " · "), "🇬🇧|UK · nil|None · 🇺🇸|American · nil|🇬🇧 · nil|Off")
         expect("row controls: raised on the highlight", "\(ConsoleRow.surface(selected: false, hovering: false)) \(ConsoleRow.surface(selected: true, hovering: false)) \(ConsoleRow.surface(selected: false, hovering: true))", "ground raised raised")
+        // The ⋯ rests plain on the ground and wears its ghost tile on the highlighted row (design13 review: the light rail read as a grid of boxes).
+        expect("row ⋯: plain on the ground, ghost on the highlight", "\(ConsoleRowOverflow.kind(on: .ground)) \(ConsoleRowOverflow.kind(on: .raised))", "plain ghost")
         return failed
     }
 
