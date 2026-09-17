@@ -678,7 +678,7 @@ private struct ToolCallCard: View {
                     withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                        Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         Text(call.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
                             .lineLimit(1).truncationMode(.tail).layoutPriority(1)
@@ -782,7 +782,7 @@ private struct ThinkingRow: View {
                     withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                        Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         Text("thinking").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.titanium)
                     }

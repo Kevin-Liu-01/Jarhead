@@ -287,7 +287,7 @@ struct ConsoleRowInlineTrailing: View {
     var body: some View {
         switch trailing {
         case .chevron:
-            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3).frame(width: 12, height: 20)
+            Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3).frame(width: 12, height: 20)
         case .glyph(let name, let tint):
             ConsoleIcon(name: name, tint: tint, size: 11)
         default:
@@ -419,7 +419,7 @@ struct ConsoleGroupHead: View {
     private var line: some View {
         HStack(spacing: 6) {
             if let folded {
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                     .rotationEffect(.degrees(folded ? 0 : 90))
                     .frame(width: 12, height: 12)
                     .animation(Motion.snappy, value: folded)

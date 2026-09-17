@@ -356,7 +356,7 @@ private struct ThreadComposer: View {
                             .accessibilityLabel("Message \(thread.name)")
                         // One filled accent per strip: while a question is up, Allow has it.
                         Button(action: submit) {
-                            Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.send).font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: hasText && question == nil ? .primary : .ghost, iconOnly: true, height: 32))
                         .disabled(!hasText)
