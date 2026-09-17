@@ -12,7 +12,7 @@
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
 #           automations | automations-ring | settings-automations |
-#           settings-audio | toggle-recording (default live)
+#           settings-audio | toggle-recording | buttons (default live)
 #   The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back from the fixture
 #   `aec-airpods` (Hears `Kevin's AirPods Pro · 24 kHz · echo cancelled`, Speaks `16 kHz · narrowed`, the `echoFollows`
 #   sentence, Recording Off); `toggle-recording` focuses the Recording toggle, snaps, presses Space (`send:` must carry
@@ -188,6 +188,11 @@ case "$SCENARIO" in
   automations|automations-ring|settings-automations) ;;
   # The audio pass (design12): Settings › Audio's route rows and the Recording toggle.
   settings-audio|toggle-recording) ;;
+  # The Console UX pass (design13, Builder E): `buttons` swaps the window's content for the kit's kinds × states
+  # sheet (ghost · plain · primary · danger · spent at rest / hover / pressed / disabled, the segments with flags,
+  # the field, the stepper, a raised card's controls, the outline → filled glyph twins); `focus:buttons.field`
+  # rings the second field. Shoot dark, light and PREVIEW_REDUCE_MOTION=1; every run ends `check: all ok (kit)`.
+  buttons) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -252,7 +257,7 @@ case "$SCENARIO" in automations|automations-ring) export PREVIEW_WINDOW_SIZE="${
 if [[ "$SCENARIO" == "settings-automations" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2}"; fi
 # The Brain section and "Leaves the Mac" under it on the Settings tab; the Problems section under
 # Permissions on the Now tab: a taller window shows them whole.
-case "$SCENARIO" in local|local-empty) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
+case "$SCENARIO" in local|local-empty|buttons) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}";; esac
 if [[ -n "${PREVIEW_CONNECTED:-}" ]]; then export PREVIEW_CONNECTED; fi
 if [[ -n "${PREVIEW_WIPE_SECONDS:-}" ]]; then export PREVIEW_WIPE_SECONDS; fi
 if [[ -n "${PREVIEW_SLOW_THUMBS:-}" ]]; then export PREVIEW_SLOW_THUMBS; fi

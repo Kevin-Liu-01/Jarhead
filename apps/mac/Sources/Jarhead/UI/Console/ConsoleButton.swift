@@ -29,8 +29,9 @@ struct ConsoleButtonStyle: ButtonStyle {
         switch kind {
         case .ghost, .spent: return ConsoleFill.rest(on: surface)
         case .plain: return .clear
-        case .primary: return ConsoleTheme.accent.opacity(pressed ? 0.8 : 1)
-        case .danger: return ConsoleTheme.error.opacity(pressed ? 0.8 : 1)
+        // The token itself at rest (a wrapped `.opacity(1)` is a different Color to SwiftUI), .8 while pressed.
+        case .primary: return pressed ? ConsoleTheme.accent.opacity(0.8) : ConsoleTheme.accent
+        case .danger: return pressed ? ConsoleTheme.error.opacity(0.8) : ConsoleTheme.error
         }
     }
 
