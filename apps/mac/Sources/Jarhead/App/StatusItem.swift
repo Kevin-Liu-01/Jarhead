@@ -111,10 +111,13 @@ final class StatusItem: NSObject {
             .store(in: &cancellables)
     }
 
-    /// What the Voice row depends on, as one string for `removeDuplicates`.
+    /// What the Voice row depends on, as one string for `removeDuplicates`. Lets first, one plain value per
+    /// part: CI's older Swift gives up on `??` inside an interpolation.
     static func voiceKey(_ s: Snapshot) -> String {
         let busy = VoiceSwitch.busy(delegations: s.delegations, threads: [], phase: s.phase)
-        return "\(s.settings.voice)|\(s.settings.accent)|\(s.session?.voice ?? "")|\(s.session?.accent ?? "")|\(busy)"
+        let spoken = s.session?.voice ?? ""
+        let accent = s.session?.accent ?? ""
+        return [s.settings.voice, s.settings.accent, spoken, accent, String(busy)].joined(separator: "|")
     }
 
     private func scheduleRefresh() {
