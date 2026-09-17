@@ -13,7 +13,7 @@
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
 #           automations | automations-ring | settings-automations |
-#           settings-audio | toggle-recording | resumed | buttons (default live)
+#           settings-audio | toggle-recording | resumed | buttons | composer-stop (default live)
 #   The stream ids (design13, Builder A): `resumed` is a paused → resumed conversation as the engine holds it — the
 #   held session's seven rows before the live session's five — with `check-stream@0.3,republish@0.6,append@0.9,
 #   check-stream@1.2`: `check-stream` prints `check:` lines (entry ids unique · caret on the newest utterance · the
@@ -203,6 +203,9 @@ case "$SCENARIO" in
   # the field, the stepper, a raised card's controls, the outline → filled glyph twins); `focus:buttons.field`
   # rings the second field. Shoot dark, light and PREVIEW_REDUCE_MOTION=1; every run ends `check: all ok (kit)`.
   buttons) ;;
+  # Stop's face (design13, Builder F): a ghost in session, one press, the engine's asleep, the SPENT face (lift + hairRow,
+  # fg3, the word `Stopped`, one width), a second press that dips and never flashes red; `check-press:stop+stop`.
+  composer-stop) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -238,6 +241,8 @@ if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW
 # screen) and drives three clicks to 4.15 s; `tip-click` and `cold-click` run their one click and the press check by 2 s.
 case "$SCENARIO" in menu-click-through) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-4.5}";; esac
 case "$SCENARIO" in tip-click|cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+# `composer-stop` (design13, Builder F) runs its two presses and three snaps to 2.85 s.
+if [[ "$SCENARIO" == "composer-stop" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.3}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
 # The right rail's scenarios (Builder D): `ledger-months` picks two August days and Sep 10, then ↓ ⏎ on the list
