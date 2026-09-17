@@ -200,7 +200,7 @@ case "$SCENARIO" in
   menu-click-through|tip-click|cold-click) ;;
   # The Console UX pass (design13, Builder E): `buttons` swaps the window's content for the kit's kinds × states
   # sheet (ghost · plain · primary · danger · spent at rest / hover / pressed / disabled, the segments with flags,
-  # the field, the stepper, a raised card's controls, the outline → filled glyph twins); `focus:buttons.field`
+  # the field, the stepper, a raised card's controls, the outline → filled glyph twins); `focus:buttons.field2`
   # rings the second field. Shoot dark, light and PREVIEW_REDUCE_MOTION=1; every run ends `check: all ok (kit)`.
   buttons) ;;
   # Stop's face (design13, Builder F): a ghost in session, one press, the engine's asleep, the SPENT face (lift + hairRow,
