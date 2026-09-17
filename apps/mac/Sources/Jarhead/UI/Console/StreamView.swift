@@ -764,7 +764,8 @@ struct SystemRow: View {
             ConsoleIcon(name: entry.symbol, tint: entry.tone == .problem ? ConsoleTheme.error : ConsoleTheme.titanium)
                 .padding(.leading, stampGap)
             HStack(spacing: 8) {
-                Text(entry.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
+                // A mono-only row (the voice switch's `voice → Marin 🇬🇧 · one restart · 0.7 s`) starts in the word column: no empty sans Text and its 8-pt gap before it.
+                if !entry.text.isEmpty { Text(entry.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2) }
                 if let mono = entry.mono {
                     Text(mono).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                 }

@@ -547,7 +547,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "resumed":
             // design13 (Builder A): a paused → resumed (or voice-switched) conversation the way the engine
             // holds it — the held session's rows before the live session's, ids in the engine's own scheme.
+            // The day before holds the same conversation on the record with its Switch now — the one mono row
+            // (`ledger-day:2026-09-09` steps into it after the live checks; the live stream has no session rows).
             state.snapshot = fake.resumed()
+            state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : (day == "2026-09-09" ? fake.switchedRows() : []) }
         case "voice-chip":
             // design13 (Builder G): awake and idle on Ballad (the session says so), nothing running — the chip
             // reads `🇬🇧 Ballad ⌄`; ↓ ↓ ⏎ in its popup picks Marin (free: one set-settings, echoed below),
@@ -735,7 +738,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Allow the way the strip sends it: the `send:` line must be thread.answer, never say-text or stop.
         case "thread-answer": defaultActions = "thread-open:\(FakeData.slackId)@0.3,thread-answer:\(FakeData.slackId):yes@1.0,check-threads@1.2"
         // design13 (Builder A): the stream's ids after a resume — `check-stream` before and after a republish and an append.
-        case "resumed": defaultActions = "check-stream@0.3,republish@0.6,append@0.9,check-stream@1.2"
+        case "resumed": defaultActions = "check-stream@0.3,republish@0.6,append@0.9,check-stream@1.2,snap:preview-console-resumed-live@1.3,ledger-day:2026-09-09@1.4"
         case "typed-row": defaultActions = "check-threads@0.3"
         // The paged main pane: scrolled up off the bottom, "Load earlier" pressed (the button's own path:
         // `send:` thread.history), the engine's page landing, geometry before and after (the row stays).
@@ -1133,6 +1136,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 print("voice-chip: \(VoiceSwitchWords.chip(name: VoiceWords.name(v.voice), flag: AccentWords.flag(v.accent))) waits=\(v.waits) line=\(v.line) busy=\(v.busy) at \(stamp)s")
             } else if action.hasPrefix("phase:") {
                 setPhase(String(action.dropFirst("phase:".count)), stamp: stamp)
+            } else if action.hasPrefix("ledger-day:") {
+                // `ledger-day:<day>` steps into that day on the Ledger tab (the read handler's rows); `ledger-day:live` comes back to Now.
+                let day = String(action.dropFirst("ledger-day:".count))
+                if day == "live" { console?.showNow() } else { console?.pickLedgerDay(day) }
+                print("action: ledger-day \(day) at \(stamp)s")
             } else if action == "probe-press" {
                 probePress(stamp: stamp)
             } else if action.hasPrefix("check-press:") {
@@ -2992,6 +3000,38 @@ struct FakeData {
         s.trash = trash
         s.memory = memorySummary()
         return s
+    }
+
+    /// design13 review: the same conversation on the record with its Switch now — the first session on
+    /// Ballad, a quiet pause and close, the second started `resumedFrom` it on Marin 🇬🇧 0.7 s later
+    /// (`ms`), Marin's "Marin here." — so the one mono row `voice → Marin 🇬🇧 · one restart · 0.7 s`
+    /// is seen once (`resumed`, then `ledger-day:2026-09-09`) before Kevin sees it.
+    func switchedRows() -> [LedgerRow] {
+        func row(_ at: Double, _ type: String) -> LedgerRow {
+            LedgerRow(at: at, type: type, item: nil, delegation: nil, delegationId: nil, step: nil, status: nil, summary: nil, text: nil, sessionId: nil, reason: nil, usageSeconds: nil, agent: nil)
+        }
+        func heard(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "heard"); r.item = TranscriptItem(id: id, speaker: .kevin, text: text, startMs: 0, endMs: 2000, at: at, final: true); return r
+        }
+        func said(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "said"); r.item = TranscriptItem(id: id, speaker: .jarhead, text: text, startMs: 0, endMs: 3000, at: at, final: true); return r
+        }
+        let t0 = ago(86_400 + 1_200)
+        var rows: [LedgerRow] = []
+        var r = row(t0, "session.started"); r.sessionId = "live_1"; r.voice = "ballad"; r.language = "en"; r.accent = "british"; rows.append(r)
+        rows.append(heard(t0 + 9_000, "sw1", "What's up"))
+        rows.append(said(t0 + 12_000, "sw2", "Not much. I'm here, awake and ready if you need me"))
+        rows.append(heard(t0 + 40_000, "sw3", "I think your audio isn't that great to be honest"))
+        rows.append(said(t0 + 43_000, "sw4", "Okay. I'll keep it steady on my side."))
+        // Switch now: the engine's pause({quiet}) + connect("voice change") — the close, then the second session resumed on the new pair.
+        var pause = row(t0 + 90_000, "pause"); pause.sessionId = "live_1"; pause.usageSeconds = 90; rows.append(pause)
+        var closed = row(t0 + 90_100, "session.closed"); closed.sessionId = "live_1"; closed.reason = "close_requested"; closed.usageSeconds = 90; rows.append(closed)
+        r = row(t0 + 90_800, "session.started"); r.sessionId = "live_2"; r.voice = "marin"; r.language = "en"; r.accent = "british"; r.resumedFrom = "live_1"; r.ms = 700; rows.append(r)
+        rows.append(said(t0 + 92_000, "sw5", "Marin here."))
+        rows.append(heard(t0 + 120_000, "sw6", "Are you back?"))
+        rows.append(said(t0 + 123_000, "sw7", "Back, yes — same conversation, new voice."))
+        var end = row(t0 + 300_000, "session.closed"); end.sessionId = "live_2"; end.reason = "close_requested"; end.usageSeconds = 209; rows.append(end)
+        return rows
     }
 
     /// The live day's stream with the session closed: asleep, nothing billed, the wake gate in charge.
