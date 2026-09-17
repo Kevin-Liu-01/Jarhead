@@ -87,13 +87,23 @@ enum HelpCopy {
     /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
     static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌥⇧R")
 
+    // MARK: voices (design13) — the composer chip, Switch now at rest and while work runs
+
+    /// The composer's `🇬🇧 Ballad ⌄` chip: a pick is free; only Switch now (or Kevin asking aloud) pays.
+    static let voiceChip = Entry(name: "Voice", hint: "Voice and accent — a pick is free; Switch now hears it")
+    /// Switch now: one paid restart, behind this press alone.
+    static let switchVoice = Entry(name: "Switch now", hint: "Pause, then resume on the new voice — one restart")
+    /// The same button while a delegation or a thread runs (the engine refuses the reopen).
+    static let switchVoiceBusy = Entry(name: "Switch now", hint: "Pause, then resume on the new voice — not while work runs")
+
     static let all: [Entry] = [go, pause, stop, stopAll, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
                                backStream, backStreamEsc, backNow, latest, undoCleared, retryPage, undoMove, liveThread, liveWriting, liveQuiet,
                                pinned, restoreTrash, restoreArchive, logView, conversationView,
                                resumeThread("Slack"), pauseThread("Slack"), stopThread("Slack"), allowThread("Slack"), denyThread("Slack"),
                                sendMode("queued in Codex"),
                                snooze(10), done, skip, pauseAutomation, runNow, trashAutomation, addRecipe, asksRecipe,
-                               micHeld, recordingChip, recordingRow]
+                               micHeld, recordingChip, recordingRow,
+                               voiceChip, switchVoice, switchVoiceBusy]
 
     // MARK: check-copy
 

@@ -81,6 +81,9 @@ enum StreamBuilder {
         var threadNames: [String: String] = [:]
         // An automation, from its `automation.set` row, for the fired / state / missed rows that carry only its id (design11).
         var automationRows: [String: Automation] = [:]
+        // The voice and accent the last session opened on: a `session.started` resumed on another
+        // pair is the voice switch, and reads as one mono row (design13).
+        var spoken: ConsoleFormat.Spoken?
 
         for (index, row) in rows.enumerated() {
             switch row.type {
@@ -106,9 +109,15 @@ enum StreamBuilder {
                 break
             case "session.started":
                 transport = nil
-                out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: "bolt.fill", text: "Session started",
-                                               mono: ConsoleFormat.shortId(row.sessionId),
-                                               trailing: row.resumedFrom.map { "resumed from \(ConsoleFormat.shortId($0))" })))
+                if let line = ConsoleFormat.voiceSwitchLine(row, before: spoken) {
+                    // The one visible line of a Switch now: the words are the mono column's (titanium), the glyph the Voice row's.
+                    out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: ConsoleGlyph.voice, text: "", mono: line)))
+                } else {
+                    out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: "bolt.fill", text: "Session started",
+                                                   mono: ConsoleFormat.shortId(row.sessionId),
+                                                   trailing: row.resumedFrom.map { "resumed from \(ConsoleFormat.shortId($0))" })))
+                }
+                if let voice = row.voice { spoken = ConsoleFormat.Spoken(voice: voice, accent: row.accent) }
             case "session.closed":
                 let reason = ConsoleFormat.closeReason(row.reason, after: transport)
                 out.append(.system(SystemEntry(id: "c:\(row.at):\(index)", at: row.at, symbol: "moon.fill",
@@ -209,6 +218,24 @@ enum StreamBuilder {
 // MARK: - The transport rows' words (pure)
 
 extension ConsoleFormat {
+    /// The voice and accent a `session.started` row opened on.
+    struct Spoken: Equatable {
+        let voice: String
+        let accent: String?
+    }
+
+    /// design13: a `session.started` row resumed from another session (`resumedFrom`) on a voice or
+    /// accent the last one did not speak is the Switch now the stream shows as one mono row —
+    /// `voice → Marin 🇬🇧 · one restart · 0.7 s` (`ms` when the row carries it). A plain resume on the
+    /// same pair keeps its "Session started · resumed from" line; nil when the row is not a resume,
+    /// names no voice, or the day has no earlier session to compare with.
+    static func voiceSwitchLine(_ row: LedgerRow, before: Spoken?) -> String? {
+        guard row.resumedFrom != nil, let voice = row.voice, let before else { return nil }
+        let now = Spoken(voice: voice, accent: row.accent)
+        guard now != before else { return nil }
+        return VoiceSwitchWords.switched(name: VoiceWords.name(voice), flag: row.accent.flatMap(AccentWords.flag), ms: row.ms)
+    }
+
     /// "resumed after 3 min" · "resumed after 12 s" · "resumed" when the row does not say.
     static func resumedAfter(_ pausedMs: Double?) -> String {
         guard let ms = pausedMs, ms.isFinite, ms >= 0 else { return "resumed" }

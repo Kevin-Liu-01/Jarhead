@@ -97,6 +97,18 @@ final class StatusItem: NSObject {
             .removeDuplicates()
             .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
             .store(in: &cancellables)
+        // The `Voice ▸` row and its submenu follow the saved pick, the session's voice and the running work (design13).
+        state.$snapshot
+            .map { (s: Snapshot) -> String in StatusItem.voiceKey(s) }
+            .removeDuplicates()
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
+            .store(in: &cancellables)
+    }
+
+    /// What the Voice row depends on, as one string for `removeDuplicates`.
+    static func voiceKey(_ s: Snapshot) -> String {
+        let busy = VoiceSwitch.busy(delegations: s.delegations, threads: [], phase: s.phase)
+        return "\(s.settings.voice)|\(s.settings.accent)|\(s.session?.voice ?? "")|\(s.session?.accent ?? "")|\(busy)"
     }
 
     private func scheduleRefresh() {
@@ -250,6 +262,10 @@ final class StatusItem: NSObject {
 
         menu.addItem(.separator())
 
+        // design13: `Voice   Marin 🇬🇧 ▸` — the same free pick as the Console's chip, Switch now first
+        // while a pick waits. Native NSMenu is right here (the kit's rule is the Console's and Setup's).
+        menu.addItem(voiceRow())
+
         let console = NSMenuItem(title: "Open Console", action: #selector(doOpenConsole), keyEquivalent: "j")
         console.keyEquivalentModifierMask = [.option, .shift]
         console.target = self
@@ -332,6 +348,84 @@ final class StatusItem: NSObject {
         actions.doneRing(ring.id)
     }
     @objc private func doOpenAutomations() { actions.openAutomations() }
+
+    // MARK: - the Voice row (design13)
+
+    /// `Voice   Marin 🇬🇧` with the submenu; the value in the secondary colour after the key.
+    private func voiceRow() -> NSMenuItem {
+        let s = state.snapshot
+        let row = NSMenuItem(title: VoiceMenuWords.voice, action: nil, keyEquivalent: "")
+        row.attributedTitle = StatusItem.voiceTitle(voice: s.settings.voice, accent: s.settings.accent)
+        row.image = StatusItem.symbol(ConsoleGlyph.voice)
+        row.toolTip = HelpCopy.voiceChip.hint
+        let busy = VoiceSwitch.busy(delegations: s.delegations, threads: Array(state.threads.values), phase: s.phase)
+        row.submenu = voiceMenu(StatusItem.voiceMenu(settings: s.settings, session: s.session, phase: s.phase, busy: busy))
+        return row
+    }
+
+    /// The submenu, pure: the rows from `VoiceMenuModel` as NSMenuItems carrying their id in
+    /// `representedObject`; no target yet, so the harness could build it without an AppState.
+    static func voiceMenu(settings: Settings, session: SessionInfo?, phase: Phase, busy: Bool) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for row in VoiceMenuModel.rows(voice: settings.voice, accent: settings.accent, session: session, phase: phase, busy: busy) {
+            switch row.kind {
+            case .separator:
+                menu.addItem(.separator())
+            case .switchNow:
+                let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+                item.isEnabled = row.enabled
+                item.tag = 1
+                item.toolTip = VoiceSwitch.tip(enabled: row.enabled)
+                menu.addItem(item)
+            case .voice(let id):
+                let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+                item.representedObject = id
+                item.state = row.on ? .on : .off
+                item.tag = 2
+                menu.addItem(item)
+            case .accent(let id):
+                let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+                item.representedObject = id
+                item.state = row.on ? .on : .off
+                item.tag = 3
+                menu.addItem(item)
+            }
+        }
+        return menu
+    }
+
+    /// `Voice` in the label colour, the pick (`Marin 🇬🇧`) after it in the secondary one.
+    static func voiceTitle(voice: String, accent: String) -> NSAttributedString {
+        let font = NSFont.menuFont(ofSize: 0)
+        let out = NSMutableAttributedString(string: VoiceMenuWords.voice, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        out.append(NSAttributedString(string: "   " + VoiceMenuModel.value(voice: voice, accent: accent),
+                                      attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        return out
+    }
+
+    /// The submenu wired to this item: Switch now → `voice.reopen`; a voice or accent row → one `set-settings`.
+    private func voiceMenu(_ menu: NSMenu) -> NSMenu {
+        for item in menu.items where !item.isSeparatorItem {
+            item.target = self
+            switch item.tag {
+            case 1: item.action = #selector(doSwitchVoice)
+            case 2: item.action = #selector(doPickVoice(_:))
+            default: item.action = #selector(doPickAccent(_:))
+            }
+        }
+        return menu
+    }
+
+    @objc private func doSwitchVoice() { state.send(.voiceReopen) }
+    @objc private func doPickVoice(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, id != state.snapshot.settings.voice else { return }
+        state.send(.setSettings(SettingsPatch(voice: id)))
+    }
+    @objc private func doPickAccent(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, id != state.snapshot.settings.accent else { return }
+        state.send(.setSettings(SettingsPatch(accent: id)))
+    }
 
     // MARK: - automations rows
 

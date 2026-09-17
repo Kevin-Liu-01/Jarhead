@@ -181,7 +181,8 @@ enum SettingsWords {
     // tips (verb first, ≤ 60, no full stop)
     static let languageTip = "Speaks English whatever language it hears"
     static let accentTip = "How the English sounds — best-effort on the voice's side"
-    static let switchNowTip = "Pause, then resume on the new voice — refused while work runs"
+    /// design13: the two Switch now tips ride on HelpCopy (check-copy pins them).
+    static let switchNowTip = VoiceSwitchWords.switchTipBusy
     static let notchTip = "The orb lives and sleeps in the notch"
     static let freeTip = "The orb floats free and stays where it last worked"
     static let learnNowTip = "Read what has not been read yet, now"
@@ -412,7 +413,8 @@ struct RightRail: View, Equatable {
                             .transition(.identity)
                     case .settings:
                         SettingsPanel(settings: snapshot.settings, setup: snapshot.setup, phase: snapshot.phase, gate: wake, trash: snapshot.trash,
-                                      sessionInfo: snapshot.session, memory: snapshot.memory)
+                                      sessionInfo: snapshot.session, memory: snapshot.memory,
+                                      busy: VoiceSwitch.busy(delegations: snapshot.delegations, threads: threads, phase: snapshot.phase))
                             .transition(.identity)
                     case .ledger:
                         LedgerPanel(days: ledgerDays, picked: ledgerDay, loading: ledgerLoading, stats: ledgerStats)
@@ -1424,6 +1426,8 @@ struct SettingsPanel: View {
     var sessionInfo: SessionInfo? = nil
     /// What Jarhead remembers (Snapshot.memory); nil from a daemon that has no memory.
     var memory: MemorySummary? = nil
+    /// Work runs (a delegation or a live thread): Switch now stays but disables — the engine would refuse the reopen (design13).
+    var busy = false
 
     @Environment(\.consoleActions) private var actions
     @State private var mics: [MicDevice] = []
@@ -1472,12 +1476,17 @@ struct SettingsPanel: View {
     /// switch. Never when the session did not say its voice: a daemon from before
     /// SessionInfo.voice predates `voice.reopen` too, so the button would press nothing.
     static func needsSwitch(settings: Settings, session: SessionInfo?, phase: Phase) -> Bool {
-        guard let session, AppState.inSessionPhases.contains(phase) else { return false }
-        guard let voice = session.voice else { return false }
-        return voice != settings.voice || (session.accent ?? settings.accent) != settings.accent
+        VoiceSwitch.waits(voice: settings.voice, accent: settings.accent, session: session, phase: phase)
+    }
+
+    /// The line under Accent (design13): `.rest` — the promise; `.waits(enabled:)` — Switch now and
+    /// `one restart · Ballad until you switch`, the button disabled while work runs. Pure, pinned.
+    static func switchLine(settings: Settings, session: SessionInfo?, phase: Phase, busy: Bool) -> VoiceSwitch.Line {
+        VoiceSwitch.line(waits: needsSwitch(settings: settings, session: session, phase: phase), busy: busy)
     }
 
     private var needsSwitch: Bool { Self.needsSwitch(settings: settings, session: sessionInfo, phase: phase) }
+    private var switchLineState: VoiceSwitch.Line { Self.switchLine(settings: settings, session: sessionInfo, phase: phase, busy: busy) }
 
     private var effortOptions: [String] {
         ConsoleTheme.efforts + (ConsoleTheme.efforts.contains(settings.effort) ? [] : [settings.effort])
@@ -1583,17 +1592,23 @@ struct SettingsPanel: View {
 
     private var audio: some View {
         ConsoleDisclosure(id: SettingsWords.audioFold, title: ConsoleDisclosureWords.audio,
-                          summary: ConsoleDisclosureSummary.audio(voice: VoiceWords.name(settings.voice), accent: ConsoleTheme.accentLabel(settings.accent),
+                          summary: ConsoleDisclosureSummary.audio(voice: VoiceWords.name(settings.voice), accent: AccentWords.title(settings.accent, short: false),
                                                                   recording: settings.audioSettings.recording),
                           size: .section, siblings: SettingsWords.folds, inset: true) {
             VStack(spacing: 2) {
-                // The kit's dropdown: the name alone (Language is its own row), Default / Also / All
-                // voices, `default` on Ballad, a filter over the 22, a saved id outside the list kept.
+                // The kit's dropdown — the same popup as the composer's chip (design13): the field
+                // reads `🇬🇧 Ballad  default` (the flag is the Accent's), the head is the Accent
+                // segments, `speaking` marks the open session's voice, the foot says what a pick does
+                // in this phase; Default / Also / All voices, a filter over the 22, a saved id kept.
                 ConsoleFormRow(SettingsWords.voiceKeyLabel) {
                     ConsoleMenuField(value: settings.voice, options: voiceOptions, title: VoiceWords.name,
                                      pick: { patch(SettingsPatch(voice: $0)) },
+                                     fieldTitle: { VoiceSwitchWords.chip(name: VoiceWords.name($0), flag: AccentWords.flag(settings.accent)) },
                                      id: SettingsWords.voice, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
-                                     detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
+                                     detail: { VoiceWords.detail($0, speaking: sessionInfo?.voice) }, group: VoiceWords.group,
+                                     foot: { VoiceSwitchWords.foot(name: VoiceWords.name($0), phase: phase, busy: busy) },
+                                     filter: true, filterNoun: VoiceWords.noun, width: VoiceChipWords.settingsPopupWidth,
+                                     head: { AnyView(VoicePopupHead(accent: settings.accent, pick: { patch(SettingsPatch(accent: $0)) })) })
                 }
                 // One language today: a value, not a menu with one row. The menu appears
                 // when a second language exists (ConsoleTheme.languages).
@@ -1604,13 +1619,14 @@ struct SettingsPanel: View {
                         .consoleHelp(SettingsWords.languageTip)
                         .accessibilityLabel(SettingsWords.languageLabel(ConsoleTheme.languageLabel(settings.language)))
                 }
+                // design13 (§ Flags): the short words with the flag — three cells share the 158 pt column.
                 ConsoleFormRow(SettingsWords.accent) {
-                    ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: ConsoleTheme.accentLabel,
+                    ConsoleSegments(value: settings.accent, options: ConsoleTheme.accents.map(\.id), title: { AccentWords.title($0, short: true) },
                                     pick: { patch(SettingsPatch(accent: $0)) },
-                                    accessibilityLabel: SettingsWords.accentLabel(ConsoleTheme.accentLabel(settings.accent)), size: .row)
+                                    accessibilityLabel: SettingsWords.accentLabel(AccentWords.title(settings.accent, short: false)), size: .row)
                         .consoleHelp(SettingsWords.accentTip)
                 }
-                switchNow
+                switchLine
                 ConsoleFormRow(SettingsWords.micLabel) {
                     ConsoleMenuField(value: micSelection, options: micOptions, title: micTitle,
                                      pick: { patch(SettingsPatch(micDeviceId: .some($0.isEmpty ? nil : $0))) },
@@ -1695,20 +1711,21 @@ struct SettingsPanel: View {
         return SettingsWords.sharedWith(route.sharedNames)
     }
 
-    /// The promise, and when a pick lands. Switch now closes the session and reopens it on the
-    /// new voice (one paid start); it rises in only while a pick is waiting and a session is open.
-    private var switchNow: some View {
+    /// The line under Accent (design13): at rest the promise and when a pick lands; while a pick
+    /// waits, `[Switch now] one restart · Ballad until you switch` — Switch now closes the session
+    /// and reopens it on the new voice (one paid start), Kevin's press only; disabled while work runs.
+    private var switchLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            hint(ConsoleTheme.languageHint)
-            if needsSwitch {
-                Button(SettingsWords.switchNow) { actions.send(.voiceReopen) }
-                    .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
-                    .layoutPriority(1)
-                    .consoleHelp(SettingsWords.switchNowTip)
+            switch switchLineState {
+            case .rest:
+                hint(ConsoleTheme.languageHint)
+            case .waits(let enabled):
+                VoiceSwitchButton(enabled: enabled, height: 22, kind: .ghost, small: true, id: VoiceChipWords.settingsSwitchId) { actions.send(.voiceReopen) }
                     .transition(Motion.appear)
+                hint(VoiceSwitchWords.waitsLine(current: VoiceWords.name(sessionInfo?.voice ?? settings.voice)))
             }
         }
-        .animation(Motion.gentle, value: needsSwitch)
+        .animation(Motion.gentle, value: switchLineState)
     }
 
     // MARK: Brain

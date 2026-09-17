@@ -100,15 +100,17 @@ struct OnboardingVoiceStep: View, Equatable {
                 setupRow("Voice") {
                     ConsoleMenuField(value: voice, options: voiceOptions, title: VoiceWords.name,
                                      pick: { actions.send(.setSettings(SettingsPatch(voice: $0))) },
+                                     fieldTitle: { VoiceSwitchWords.chip(name: VoiceWords.name($0), flag: AccentWords.flag(accent)) },
                                      id: OnboardingWords.voiceMenu, label: VoiceWords.label, fieldBadge: VoiceWords.fieldBadge, badge: VoiceWords.badges,
                                      detail: VoiceWords.detail, group: VoiceWords.group, filter: true, filterNoun: VoiceWords.noun)
                 }
+                // design13 (§ Flags): the long-word cells with the accent's flag — the sheet has the width.
                 setupRow("Accent") {
                     VStack(alignment: .leading, spacing: 5) {
-                        ConsoleSegments(value: accent, options: accentOptions, title: ConsoleTheme.accentLabel,
+                        ConsoleSegments(value: accent, options: accentOptions, title: { AccentWords.title($0, short: false) },
                                         pick: { actions.send(.setSettings(SettingsPatch(accent: $0))) },
                                         accessibilityLabel: OnboardingWords.accentLabel, size: .row, fixedSize: true)
-                        ConsoleHint("Always English; a change is heard at the next wake.", indent: 0)
+                        ConsoleHint(VoiceSwitchWords.setupHint, indent: 0)
                     }
                 }
             }

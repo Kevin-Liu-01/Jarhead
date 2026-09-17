@@ -278,7 +278,8 @@ struct ConsoleDisclosureSummaryView: View {
 enum ConsoleDisclosureSummary {
     typealias Summary = ConsoleDisclosureSummaryItem
 
-    /// `Cedar · British` · `Cedar · British · [recording]` while Recording is on (design12).
+    /// `Cedar · 🇬🇧 British` (the caller hands the accent with its flag, `AccentWords.title(_, short: false)`;
+    /// design13) · `… · [recording]` while Recording is on (design12).
     static func audio(voice: String, accent: String, recording: Bool = false) -> [Summary] {
         var out: [Summary] = [.words(voice), .words(accent)]
         if recording { out.append(.badge(.word(ConsoleDisclosureWords.recording))) }

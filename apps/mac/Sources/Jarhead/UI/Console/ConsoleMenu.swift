@@ -36,6 +36,9 @@ struct ConsoleMenuSpec<Value: Hashable> {
     let disabled: ((Value) -> Bool)?
     let loaded: ((Value) -> Bool)?
     let foot: ((Value) -> String?)?
+    /// A 28 strip above the filter (the voice popup's Accent segments); nil draws none. A `var`
+    /// with a default so the other sites that build a spec by hand (ConsoleRow's verbs) compile unchanged.
+    var head: (() -> AnyView)? = nil
     let filter: Bool
     let filterNoun: String
     let width: CGFloat
@@ -97,6 +100,14 @@ struct ConsoleMenuField<Value: Hashable>: View {
     /// Default max(field, 220).
     var width: CGFloat? = nil
     var height: CGFloat = 26
+    // design13 (§ Voices) — the two slots the voice popup lights up; every other site leaves them nil.
+    /// A 28 strip above the filter (the Accent segments), on the popup's raised surface.
+    var head: (() -> AnyView)? = nil
+    /// A custom field face (the composer's `🇬🇧 Ballad ⌄` chip) in place of `ConsoleMenuFieldLabel`;
+    /// the box, ring and fills stay the style's. `open` says whether the popup is up.
+    var trigger: ((_ open: Bool) -> AnyView)? = nil
+    /// The field sized to its face instead of the row's width (a chip in the composer's HStack).
+    var hugs = false
 
     @State private var open = false
     @State private var hovering = false
@@ -107,8 +118,8 @@ struct ConsoleMenuField<Value: Hashable>: View {
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
-        Button(action: toggle) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
-            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || (focused && keyboard) ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
+        Button(action: toggle) { face }
+            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || (focused && keyboard) ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled, hugs: hugs))
             .focusable()
             .focused($focused)
             .focusEffectDisabled()
@@ -128,6 +139,15 @@ struct ConsoleMenuField<Value: Hashable>: View {
     }
 
     private var shownTitle: String { (fieldTitle ?? title)(value) }
+
+    /// The field's face: the site's trigger when it brought one, else the kit's value · badge · chevron.
+    @ViewBuilder private var face: some View {
+        if let trigger {
+            trigger(open)
+        } else {
+            ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open)
+        }
+    }
 
     private var allOptions: [Value] {
         guard let saved, !options.contains(saved.value) else { return options }
@@ -162,7 +182,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
         ConsoleMenuSpec(id: id, label: label ?? ConsoleMenuWords.fallbackLabel, current: value, options: allOptions, title: title, mono: mono,
                         badge: savedBadge, badgeColumn: badgeColumn, size: size, detail: detail, meta: savedMeta, metaMono: metaMono,
                         group: savedGroup, groupCount: groupCount, groupCaption: groupCaption, dim: dim, disabled: disabled, loaded: loaded,
-                        foot: foot, filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), filterNoun: filterNoun,
+                        foot: foot, head: head, filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), filterNoun: filterNoun,
                         width: ConsoleMenuModel.width(field: frame.width, minimum: width ?? 220, bounds: bounds, anchorMinX: frame.minX).w,
                         listMax: listMax, pick: choose, close: hide)
     }
@@ -192,7 +212,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
     private var listMax: CGFloat {
         var room = ConsoleFloatPlacement.maxListHeight(anchor: frame, bounds: bounds, side: .below)
         if room < 200 { room = max(room, ConsoleFloatPlacement.maxListHeight(anchor: frame, bounds: bounds, side: .above)) }
-        return max(78, room - ConsoleMenuPopupLayout.chrome(filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), foot: foot != nil))
+        return max(78, room - ConsoleMenuPopupLayout.chrome(filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), foot: foot != nil, head: head != nil))
     }
 }
 
@@ -220,24 +240,44 @@ struct ConsoleMenuFieldLabel: View {
     }
 }
 
-/// `ground` flat, hover `hover`, pressed `active`, one ring (hair → accent while open or focused), 0.45 disabled.
+/// The tile (`ConsoleFill.rest(on:)` — design13: `lift` on ground, `liftRaised` on a raised surface),
+/// hover `hover`, pressed `active`, one ring (hair → accent while open or focused), 0.45 disabled.
 struct ConsoleMenuFieldStyle: ButtonStyle {
     let height: CGFloat
     let ring: Color
     let hovering: Bool
     let enabled: Bool
+    /// Sized to the face (a composer chip) instead of the row's width.
+    var hugs = false
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        ConsoleMenuFieldFace(height: height, ring: ring, hovering: hovering, enabled: enabled, hugs: hugs, pressed: configuration.isPressed) { configuration.label }
+    }
+}
+
+/// The style's body, reading the surface the field sits on.
+struct ConsoleMenuFieldFace<Label: View>: View {
+    let height: CGFloat
+    let ring: Color
+    let hovering: Bool
+    let enabled: Bool
+    let hugs: Bool
+    let pressed: Bool
+    @ViewBuilder let label: () -> Label
+
+    @Environment(\.consoleSurface) private var surface
+
+    var body: some View {
+        label()
             .padding(.horizontal, 8)
             .frame(height: height)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 6).fill(configuration.isPressed ? ConsoleTheme.active : (hovering ? ConsoleTheme.hover : .clear)))
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
+            .frame(maxWidth: hugs ? nil : .infinity)
+            .background(RoundedRectangle(cornerRadius: 6).fill(pressed ? ConsoleTheme.active : (hovering ? ConsoleTheme.hover : .clear)))
+            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleFill.rest(on: surface)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ring, lineWidth: 1))
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45)
-            .animation(ConsoleMotion.hover, value: configuration.isPressed)
+            .animation(ConsoleMotion.hover, value: pressed)
     }
 }
 
@@ -258,12 +298,14 @@ struct ConsoleMenuFieldKeys: ViewModifier {
 enum ConsoleMenuPopupLayout {
     /// What the popup spends outside its list: the filter strip (32) with its rule, the foot at its
     /// tallest (two lines) with its rule, the list's air and the seam.
-    static func chrome(filter: Bool, foot: Bool) -> CGFloat {
-        (filter ? 33 : 0) + (foot ? 41 : 0) + 8 + 2 * ConsoleTheme.seam
+    static func chrome(filter: Bool, foot: Bool, head: Bool = false) -> CGFloat {
+        (head ? stripHeight + 1 : 0) + (filter ? 33 : 0) + (foot ? 41 : 0) + 8 + 2 * ConsoleTheme.seam
     }
     static let rowHeight: CGFloat = 26
     static let twoLineRowHeight: CGFloat = 40
     static let headHeight: CGFloat = 22
+    /// The `head` slot's strip (the voice popup's Accent segments) — 28, a row rule under it.
+    static let stripHeight: CGFloat = 28
 }
 
 /// Filter · list · foot on a raised surface with one hairline, radius 6 and the 2 pt ground seam.
@@ -278,6 +320,8 @@ struct ConsoleMenuPopup<Value: Hashable>: View {
     @State private var settled = false
     @FocusState private var listFocused: Bool
     @FocusState private var filterFocused: Bool
+    /// The `head` strip's controls (Tab reaches them from the filter; Tab again closes).
+    @FocusState private var headFocused: Bool
 
     private var sections: [ConsoleMenuModel.Section<Value>] { spec.sections(query) }
     private var rows: [Value] { sections.flatMap(\.rows) }
@@ -285,6 +329,7 @@ struct ConsoleMenuPopup<Value: Hashable>: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let head = spec.head { ConsoleMenuHead(content: head()).focused($headFocused); ConsoleHairline(weight: .row) }
             if spec.filter { filterStrip; ConsoleHairline(weight: .row) }
             ConsoleMenuList(spec: spec, sections: sections, highlight: $highlight)
             if spec.foot != nil { ConsoleMenuFoot(text: footText) }
@@ -299,11 +344,12 @@ struct ConsoleMenuPopup<Value: Hashable>: View {
         .focusable(!spec.filter)
         .focusEffectDisabled()
         .focused($listFocused)
-        .modifier(ConsoleMenuKeys(rows: rows, spec: spec, highlight: $highlight, hasFilter: spec.filter))
+        .modifier(ConsoleMenuKeys(rows: rows, spec: spec, highlight: $highlight, hasFilter: spec.filter, tab: tab))
         .onAppear(perform: appear)
         .onChange(of: query) { keepHighlight() }
         .onChange(of: filterFocused) { was, now in if spec.filter, settled, was, !now { leave() } }
         .onChange(of: listFocused) { was, now in if !spec.filter, settled, was, !now { leave() } }
+        .onChange(of: headFocused) { was, now in if settled, was, !now { leave() } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(ConsoleMenuWords.optionsLabel(spec.label))
     }
@@ -327,8 +373,17 @@ struct ConsoleMenuPopup<Value: Hashable>: View {
         ConsoleMenuAnnounce.post(ConsoleMenuWords.announcement(spec.label, spec.options.count))
     }
 
-    /// Focus left (Tab, a click elsewhere): the popup closes unchanged.
-    private func leave() { if !filterFocused, !listFocused { spec.close() } }
+    /// Focus left (Tab, a click elsewhere): the popup closes unchanged. Read one turn later, so a
+    /// hop between the filter and the head (both inside the popup) is not a leaving.
+    private func leave() {
+        DispatchQueue.main.async { if !filterFocused, !listFocused, !headFocused { spec.close() } }
+    }
+
+    /// Tab: with a head, the first press hops into it (the Accent segments) and the next closes;
+    /// without one, Tab closes as it always did.
+    private func tab() {
+        if spec.head != nil, !headFocused { headFocused = true } else { spec.close() }
+    }
 
     /// An empty result keeps the current pick highlighted, so Return is safe.
     private func keepHighlight() {
@@ -485,6 +540,18 @@ struct ConsoleMenuRowLine<Value: Hashable>: View {
     }
 }
 
+/// The `head` slot: a 28 strip on the popup's raised surface (its controls read `.raised`, so a
+/// segments box there rests on `liftRaised`, never equal to the row highlight beside it).
+struct ConsoleMenuHead: View {
+    let content: AnyView
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, minHeight: ConsoleMenuPopupLayout.stripHeight, alignment: .leading)
+            .environment(\.consoleSurface, .raised)
+    }
+}
+
 /// The highlighted row's sentence whole: sans 11 fg2 over a row rule; 28 tall or as the text needs.
 struct ConsoleMenuFoot: View {
     let text: String?
@@ -511,6 +578,8 @@ struct ConsoleMenuKeys<Value: Hashable>: ViewModifier {
     let spec: ConsoleMenuSpec<Value>
     @Binding var highlight: Value?
     let hasFilter: Bool
+    /// Tab: into the head when there is one, else close (the popup's `tab()`).
+    var tab: () -> Void = {}
 
     func body(content: Content) -> some View {
         content
@@ -521,7 +590,7 @@ struct ConsoleMenuKeys<Value: Hashable>: ViewModifier {
             .onKeyPress(.return) { pick(); return .handled }
             .onKeyPress(.space) { if hasFilter { return .ignored }; pick(); return .handled }
             .onKeyPress(.escape) { if hasFilter { return .ignored }; spec.close(); return .handled }
-            .onKeyPress(.tab) { spec.close(); return .handled }
+            .onKeyPress(.tab) { tab(); return .handled }
             .onKeyPress(characters: .alphanumerics, phases: .down) { press in
                 if hasFilter { return .ignored }
                 if let next = ConsoleMenuModel.typeAhead(rows, title: spec.title, prefix: press.characters, after: highlight) { highlight = next }

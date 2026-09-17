@@ -350,8 +350,8 @@ enum ConsoleTheme {
     static let memoryBudgetHint = "Capped at 250 brain · 120 voice tokens a turn. The saving is never re-explaining yourself."
     /// Every Forget in the Console says the same thing; no control offers a deletion verb.
     static let memoryForgetHint = "Forget hides it from Jarhead; Jarhead's own record keeps it (nothing is deleted)."
-    /// Settings › Audio: the promise, and when a pick is heard.
-    static let languageHint = "English at all times. A change is heard at the next wake."
+    /// Settings › Audio: the promise, and when a pick is heard (design13: awake, Switch now; asleep, the next Go).
+    static let languageHint = "English · awake, Switch now · asleep, the next Go"
 
     /// Every brain the contract knows, so whatever the daemon runs is a valid pick.
     static let brains: [BrainKind] = BrainKind.allCases

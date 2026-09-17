@@ -22,6 +22,46 @@ enum ConsoleMenuWords {
     /// The VoiceOver announcement on open: "Voice: 22 options".
     static func announcement(_ label: String, _ count: Int) -> String { "\(label): \(count) \(optionsNoun)" }
     static let fallbackLabel = "Menu"
+    // design13 (§ Voices): the badge a field wears while a pick waits for the next wake, and the
+    // detail on the row of the voice the open session speaks.
+    static let waits = "waits"
+    static let speaking = "speaking"
+}
+
+/// design13 (§ Flags): the emoji flag rides on the **Accent** — a prompt clause, never a property
+/// of a voice (all 22 take every accent). `flag` is nil for `none`; `title` is the segment's cell:
+/// short (`🇬🇧 UK`) in the 296 rail and the popup head, long (`🇬🇧 British`) in Setup and the fold
+/// summary. `ConsoleTheme.accents` stays the source of the ids and the plain words.
+enum AccentWords {
+    static let american = "🇺🇸"
+    static let british = "🇬🇧"
+    static let us = "US"
+    static let uk = "UK"
+
+    /// american → 🇺🇸 · british → 🇬🇧 · none (or an id the app does not know) → nil. Pinned.
+    static func flag(_ id: String) -> String? {
+        switch id {
+        case "american": return american
+        case "british": return british
+        default: return nil
+        }
+    }
+
+    /// `🇬🇧 UK` · `🇬🇧 British` · `None`; an unknown id reads as its own word, no flag. Pinned.
+    static func title(_ id: String, short: Bool) -> String {
+        let word = short ? shortWord(id) : ConsoleTheme.accentLabel(id)
+        guard let flag = flag(id) else { return word }
+        return "\(flag) \(word)"
+    }
+
+    /// The two-letter word for the rail's 158 pt control column: US · UK; the rest keep their label.
+    static func shortWord(_ id: String) -> String {
+        switch id {
+        case "american": return us
+        case "british": return uk
+        default: return ConsoleTheme.accentLabel(id)
+        }
+    }
 }
 
 enum ConsoleMenuModel {
@@ -154,6 +194,12 @@ enum VoiceWords {
     static func meta(_ id: String) -> String? { ConsoleTheme.voices.contains(id) ? nil : fromEnv }
     /// The same as the row's detail column (empty for a listed voice, so the rows stay one line).
     static func detail(_ id: String) -> String { meta(id) ?? "" }
+
+    /// design13: the detail with the open session's voice marked `speaking` (a saved id's provenance
+    /// otherwise); nil `speaking` (asleep, or a daemon that did not say) marks nothing.
+    static func detail(_ id: String, speaking: String?) -> String {
+        id == speaking ? ConsoleMenuWords.speaking : detail(id)
+    }
 
     static func fieldBadge(_ id: String) -> ConsoleBadge.Word? {
         if id == defaultId { return .default }
