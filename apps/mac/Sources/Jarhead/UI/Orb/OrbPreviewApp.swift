@@ -2996,11 +2996,7 @@ extension OrbPreviewDelegate {
         if env["ORB_NOTCH_PHASE"] == "asleep" { suffixes = ["asleep"] }
         if notchShotTag.isEmpty, suffixes.count == 1, let s = suffixes.first { notchScenarioSuffix = s }
 
-        let presses = (env["ORB_NOTCH_PRESS"] ?? "").split(separator: ";").compactMap { entry -> (String, Double)? in
-            let parts = entry.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
-            guard parts.count == 2, let t = Double(parts[1]), !parts[0].isEmpty else { if !entry.isEmpty { print("ORB_NOTCH_PRESS: could not parse \(entry); want what@t") }; return nil }
-            return (parts[0], t)
-        }
+        let presses = Self.parsePressList(env["ORB_NOTCH_PRESS"], knob: "ORB_NOTCH_PRESS")
         notchEngineSleeps = presses.contains { $0.0.lowercased() == "sleep" }
         for (name, t) in presses {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPress(name) }
