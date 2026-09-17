@@ -55,6 +55,8 @@ enum ConsoleDisclosureWords {
     static func since(_ shortDay: String) -> String { "since \(shortDay)" }
     static func phrases(_ n: Int) -> String { n == 1 ? "1 phrase" : "\(n) phrases" }
     static let joiner = " · "
+    /// The joiner as the summary view draws it between two items (the 6-pt gaps around it are the joiner's spaces).
+    static let dot = "·"
 }
 
 // MARK: - The fold store
@@ -253,13 +255,16 @@ struct ConsoleDisclosureHead: View {
     }
 }
 
-/// The closed head's right-hand words, ` · `-spaced: mono titanium · sans fg3 · one badge.
+/// The closed head's right-hand words, ` · `-spaced: mono titanium · sans fg3 · one badge. The dot is drawn
+/// between every two items (titanium), so the head reads exactly what `ConsoleDisclosureSummary.text`
+/// says — `Ballad · 🇬🇧 British`, `Local · qwen3.5:27b · [Ready]` — and the AX value and the pin match the view.
 struct ConsoleDisclosureSummaryView: View {
     let summary: [ConsoleDisclosureSummaryItem]
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(Array(summary.enumerated()), id: \.offset) { _, item in
+            ForEach(Array(summary.enumerated()), id: \.offset) { index, item in
+                if index > 0 { Text(ConsoleDisclosureWords.dot).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.titanium).accessibilityHidden(true) }
                 switch item {
                 case .mono(let s): Text(s).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium).lineLimit(1)
                 case .words(let s): Text(s).font(ConsoleTheme.sans(11)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
