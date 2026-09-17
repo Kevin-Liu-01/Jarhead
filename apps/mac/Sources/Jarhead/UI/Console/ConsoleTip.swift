@@ -257,21 +257,59 @@ struct ConsoleTipModifier<Card: View>: ViewModifier {
     }
 }
 
+/// The one key ring lights only when the keyboard moved the focus — `ConsoleListFocus`'s
+/// `keyboard` flag, for the kit's triggers and fields. On macOS a click on a `.focusable()` view
+/// moves focus too (on the mouse-down, before the Button's action), so one local monitor notes
+/// whether the last input was a mouse-down or a key-down, and a view reads that as its focus
+/// arrives: a click lights nothing; Tab, Esc's return to the field and the harness's `focus:` do.
+/// Plain `.focusable()` and not `.activate` interactions — those make a view focusable only
+/// while Keyboard navigation is on system-wide, and Tab, `?`, ↓ and `focus:` must work with it
+/// off (Kevin's Mac). `mouse(_:)` is pure and pinned by `check-kit`.
+@MainActor
+enum ConsoleKeyRing {
+    /// The last input the app dispatched was a mouse-down (false at launch: nothing clicked yet).
+    private(set) static var lastInputWasMouse = false
+    private static var token: Any?
+
+    /// Whether a focus arriving now was the keyboard's.
+    static var byKeyboard: Bool { !lastInputWasMouse }
+
+    /// Installed once, from the first trigger or field that appears; observes, never consumes.
+    static func watch() {
+        guard token == nil else { return }
+        token = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { event in
+            note(event.type)
+            return event
+        }
+    }
+
+    /// An input happened (the monitor's, or the harness's `keyDown:`, which posts through the
+    /// window's sendEvent and so passes no local monitor).
+    static func note(_ type: NSEvent.EventType) { lastInputWasMouse = mouse(type) }
+
+    /// Whether an input event of that type came from the mouse (a key-down did not).
+    nonisolated static func mouse(_ type: NSEvent.EventType) -> Bool { type != .keyDown }
+}
+
 /// `?` on the focused trigger pins its tip; Esc, a focus move or any other key lets go. The
-/// trigger becomes focusable with a keyboard-only accent ring (the one key ring on screen).
+/// trigger becomes focusable with a keyboard-only accent ring (the one key ring on screen):
+/// a click runs the control's action and lights no ring (`ConsoleKeyRing`), Tab and `focus:<id>` do.
 struct ConsoleTipKeys: ViewModifier {
     let id: String
     @Binding var pinned: Bool
     @FocusState private var focused: Bool
+    /// True while the keyboard put the focus here; a click clears it, so the ring is the keyboard's alone.
+    @State private var keyboard = false
 
     func body(content: Content) -> some View {
         content
             .focusable()
             .focused($focused)
             .focusEffectDisabled()
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.accent, lineWidth: 1).opacity(focused ? 1 : 0))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.accent, lineWidth: 1).opacity(focused && keyboard ? 1 : 0))
             .onKeyPress(phases: .down, action: key)
-            .onChange(of: focused) { if !focused { pinned = false } }
+            .onAppear { ConsoleKeyRing.watch() }
+            .onChange(of: focused) { keyboard = focused && ConsoleKeyRing.byKeyboard; if !focused { pinned = false } }
             .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification)) { note in
                 if note.userInfo?[ConsolePreviewKey.focus] as? String == id { focused = true }
             }

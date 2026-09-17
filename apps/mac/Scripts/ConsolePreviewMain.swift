@@ -129,6 +129,14 @@ import SwiftUI
 //                    (`settings.voice` · `settings.backend` · `settings.wakeWord`); `settings.model` is
 //                    LocalModelMenu's own. `check-kit` prints the pure placement / menu model / words /
 //                    tip / badge / copy pins. The kit's other scenarios (tip-* … agents-groups) are named
+//     menu-click-through = the click path (design13, Builder B): the `local` fixture on Settings; Model open,
+//                    then ONE click on the Voice field closes Model and opens Voice (`menu: closed settings.model`,
+//                    `probe-floats: settings.voice`), one click on Stop closes Voice and presses it (`press: stop`,
+//                    `probe-floats: none`), Voice open again and one click on its own field closes it and does not
+//                    reopen it (`none`). `tip-click` pins Stop's tip and clicks Stop: one `press: stop` and
+//                    `tip: hidden stream.stop` on the same click. `cold-click` clicks Go with the app deactivated
+//                    and the window not key (`click:stream.go:cold`): `press: go` on the first click. Each ends
+//                    `check-press:` and `check: all ok (kit)`; the kit pins `floats: a tip/menu never consumes a click`.
 //     automations  = the Now rail's Automations section (design11, Builder D): the mockup's six rows under
 //                    Clock 4 / Watchers 2, the Trash fold open (`fold:now.automations.trash:open`), the honest
 //                    line, the ring row `07:10 · Wake up, Kevin [Snooze] [Done]` under the tabs, the Downloads →
@@ -251,6 +259,16 @@ import SwiftUI
 //                          several joined with `+` land 40 ms apart (keyDown:m+a, keyDown:down+return)
 //     click:(x,y)          a left click at that point of the content view (points from its top-left),
 //                          down and up through sendEvent; prints the first responder before and after
+//     click:<id>           the same at the centre of the control with that id (ConsoleClickTargets.frames:
+//                          every tip trigger and menu field with an id); `click:<id>:cold` deactivates the
+//                          app first and does not make the window key — the first click on an inactive
+//                          window must act (ConsoleHostingView.acceptsFirstMouse)
+//     probe-press          print the press trail so far (`press: <verb>` from ConsoleActions.send / .stop
+//                          and the transport, `menu-pick: <id> <value>`, `menu: opened|closed <id>` — the
+//                          lines ConsolePress.report prints as they happen, stamped)
+//     check-press:<none|verb[+verb]>  the `press:` lines so far must be exactly those verbs, in order
+//     check-composer-free  the first responder is not the composer's text (a click on ground never
+//                          focuses the composer; `check-floats:` no longer folds this in)
 //     focus:<id> · menuOpen:<id> · tipOpen:<id> · chip:<kind> · highlight:<id> · fold:<id>:<open|closed>
 //                          the kit's previewNotification keys (ConsolePreviewKey): the control with that
 //                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
@@ -260,7 +278,7 @@ import SwiftUI
 //     check-tips           the timing pins from the `tip:` trail: the cold tip waited ≥ 300 ms, the warm one
 //                          (within 400 ms of the last hide) showed within 120 ms (a run-loop hop under load)
 //     check-floats:<none|id[+id]>  what the layer holds right now must be exactly that (`none` = nothing
-//                          open) — and the first responder is not the composer's text
+//                          open)
 //     probe-floats         print the rect of every float the layer has placed (ConsoleFloatSlot.placed)
 //     check-kit            the kit's pure pins as `check:` lines: placement (below · flips · clamps · trailing
 //                          · arrow ≥ r + 4 · max list height · size == .zero), ConsoleTip.delay, every badge
@@ -297,6 +315,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
     var floatProbes: [[String: CGRect]] = []
     /// The tips' trail (`tip:` lines: armed · shown after n ms · hidden · pinned), read by `check-tips`.
     var tipLog: [String] = []
+    /// What clicks did (`press:` · `menu-pick:` · `menu:` lines, ConsolePress.report), read by `check-press`.
+    var pressLog: [String] = []
     /// The main thread's turns between `trace:<label>` and `trace-stop` (the `timing` scenario).
     lazy var trace = MainThreadTrace(launchedAt: launchedAt)
     /// The conversation scenarios' pane, opened once the app is active (`openPendingAgentAfterActivation`).
@@ -375,7 +395,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         ConsoleListFocus.report = { line in print("list-focus: \(line)") }
         ConsoleTip.report = { [weak self] line in
             self?.tipLog.append(line)
-            print("tip: \(line)")
+            print("tip: \(line) at \(self?.wallStamp ?? "?")s")
+        }
+        ConsolePress.report = { [weak self] line in
+            self?.pressLog.append(line)
+            print("\(line) at \(self?.wallStamp ?? "?")s")
         }
 
         switch scenario {
@@ -422,7 +446,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.problems = []
         case "confirm": state.snapshot = fake.confirm()
         case "settings", "menu-voice", "menu-voice-filter", "menu-backend", "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index",
-             "settings-audio", "toggle-recording":
+             "settings-audio", "toggle-recording", "tip-click", "cold-click":
             state.snapshot = fake.asleep()
             // The gate is listening and has just heard the phrase: the "does it hear me?" readout.
             state.wakeGate = .listening
@@ -447,9 +471,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // Asleep (the extractor runs only then), the Settings tab, its Memory section in view.
             state.snapshot = fake.asleep()
             state.snapshot.memory = fake.memorySummary()
-        case "local", "menu-model":
+        case "local", "menu-model", "menu-click-through":
             // Backend → Local model, Ollama up, the engine's best fit; the Settings tab. `menu-model`
             // saves an id the server no longer lists, so the popup's `Saved, not listed` head shows.
+            // `menu-click-through` wants two fields on screen (Voice, Model) and the composer's Stop.
             state.snapshot = fake.localSnapshot()
             if scenario == "menu-model" { state.snapshot.settings.brainModel = "qwen3:8b" }
             state.wakeGate = .listening
@@ -577,7 +602,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
 
         switch scenario {
         case "settings", "wake-locked", "memory", "memory-chips", "local", "menu-voice", "menu-voice-filter", "menu-model", "menu-backend",
-             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index", "settings-audio", "toggle-recording": console.selectTab(.settings)
+             "menu-escape", "menu-outside", "toggle", "tip-key", "settings-index", "settings-audio", "toggle-recording",
+             "menu-click-through", "tip-click", "cold-click": console.selectTab(.settings)
         case "ledger": console.pickLedgerDay("2026-09-10")
         case "settings-automations": console.selectTab(.settings)
         // The ring line sits under the tabs on every tab: shot on Ledger to prove it.
@@ -686,7 +712,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // draw), `?` pinning the composer's Stop after `focus:`, the warm re-show timed from the trail, the pane
         // Retargeted (Builder D): the card beside the right rail's Slack row; `?` on the Brain section's Check.
         case "tip-thread": defaultActions = "check-kit@0.3,tipOpen:\(NowWords.threadTip(FakeData.slackId))@0.8,probe-floats@1.3"
-        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4"
+        // `check-floats:` pins that the trigger took the focus at all (plain `.focusable()`; `.activate` interactions
+        // would need Keyboard navigation on system-wide and `?` would land nowhere).
+        case "tip-key": defaultActions = "check-kit@0.3,focus:\(SettingsWords.check)@0.8,keyDown:?@1.0,probe-floats@1.4,check-floats:\(SettingsWords.check)@1.5"
         // The right rail (Builder D): Settings as seven folded heads with Memory opened by its id; the Now rail's
         // Permissions areas (Senses open) and Problems kinds (Engine folded); the Ledger's forty days by month —
         // two August days read first so the folded head sums them, then Sep 10 picked, the list given the
@@ -710,8 +738,23 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // ↓ moves the highlight and the foot to the next kind's `needs` sentence.
         case "menu-backend": defaultActions = "check-kit@0.3,menuOpen:settings.backend@0.6,keyDown:down@1.2,probe-floats@2.0"
         // Esc closes unchanged; an outside click closes and does not focus the composer.
-        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8"
-        case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8"
+        // …then the focus is back on the field (`hide()`), so ↓ opens it again: the field is focusable with Keyboard navigation off.
+        case "menu-escape": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,keyDown:escape@1.4,probe-floats@1.8,"
+            + "check-floats:none@1.85,keyDown:down@2.0,probe-floats@2.5,check-floats:settings.voice@2.55"
+        // A click on ground closes the menu and focuses nothing: the two assertions, split.
+        case "menu-outside": defaultActions = "check-kit@0.3,menuOpen:settings.voice@0.6,probe-floats@1.2,click:(300,300)@1.4,probe-floats@1.8,"
+            + "check-floats:none@1.9,check-composer-free@1.9"
+        // The click path (design13, Builder B): every press on ONE click while a float is open or the window is cold.
+        // Model first, then the Voice field: the Model popup hangs below its field, so the Voice field above it is
+        // bare ground for the click (the Voice popup, 22 rows tall, would cover the Model field).
+        // A popup's teardown (its `placed` entry goes on onDisappear) can trail the click by a few frames on a loaded
+        // Mac, so every probe waits 0.6 s after its click.
+        case "menu-click-through": defaultActions = "check-kit@0.3,menuOpen:settings.model@0.6,probe-floats@1.0,click:settings.voice@1.1,probe-floats@1.7,"
+            + "check-floats:settings.voice@1.75,snap:preview-console-menu-click-through-voice@1.8,click:stream.stop@2.0,probe-floats@2.6,check-floats:none@2.65,"
+            + "menuOpen:settings.voice@2.9,probe-floats@3.3,click:settings.voice@3.4,probe-floats@4.0,check-floats:none@4.05,probe-press@4.1,check-press:stop@4.15"
+        case "tip-click": defaultActions = "check-kit@0.3,tipOpen:stream.stop@0.6,probe-floats@1.0,snap:preview-console-tip-click-pinned@1.05,click:stream.stop@1.1,"
+            + "probe-floats@1.7,check-floats:none@1.75,probe-press@1.9,check-press:stop@1.95"
+        case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@0.8,probe-press@1.4,check-press:go@1.45"
         // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
         case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
         // The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back posted as the
@@ -1026,6 +1069,12 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 click(String(action.dropFirst("click:".count)), stamp: stamp)
             } else if action == "probe-floats" {
                 probeFloats(stamp: stamp)
+            } else if action == "probe-press" {
+                probePress(stamp: stamp)
+            } else if action.hasPrefix("check-press:") {
+                checkPress(String(action.dropFirst("check-press:".count)), stamp: stamp)
+            } else if action == "check-composer-free" {
+                checkComposerFree(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
             } else if action == "check-stream" {
@@ -3338,6 +3387,8 @@ extension PreviewDelegate {
                     print("action: keyDown \(name) → unknown key (see the names in the header)")
                     return
                 }
+                // The window's sendEvent passes no local monitor: tell the key ring's flag what the monitor would have seen.
+                ConsoleKeyRing.note(down.type)
                 window.sendEvent(down)
                 window.sendEvent(up)
                 let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
@@ -3346,22 +3397,66 @@ extension PreviewDelegate {
         }
     }
 
-    /// `click:(x,y)` — points from the content view's top-left; a left mouse down and up through sendEvent.
+    /// `click:(x,y)` — points from the content view's top-left; `click:<id>` — the centre of that control's
+    /// tracked frame (ConsoleClickTargets); `:cold` — the app deactivated, the window left un-key, so the
+    /// click is an inactive window's first. A left mouse down and up through sendEvent either way.
     func click(_ spec: String, stamp: String) {
-        let numbers = spec.split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
-        guard numbers.count == 2, let window = jarheadWindow, let content = window.contentView else { print("action: click \(spec) → want (x,y) and a window"); return }
-        let point = NSPoint(x: numbers[0], y: content.bounds.height - numbers[1])
-        window.makeKeyAndOrderFront(nil)
+        let cold = spec.hasSuffix(":cold")
+        let target = cold ? String(spec.dropLast(":cold".count)) : spec
+        guard let window = jarheadWindow, let content = window.contentView, let top = Self.clickPoint(target) else {
+            print("action: click \(spec) → want (x,y) or a tracked id (\(ConsoleClickTargets.frames.keys.sorted().joined(separator: " "))) and a window"); return
+        }
+        let point = NSPoint(x: top.x, y: content.bounds.height - top.y)
+        if cold { NSApp.deactivate() } else { window.makeKeyAndOrderFront(nil) }
+        let key = "key=\(window.isKeyWindow) active=\(NSApp.isActive)"
         let before = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        let hit = content.hitTest(point).map { String(describing: type(of: $0)) } ?? "nil"
+        let hit = content.hitTest(point).map { view -> String in
+            let f = content.convert(view.bounds, from: view)
+            return String(format: "%@ at %.0f,%.0f %.0f×%.0f", String(describing: type(of: view)), f.minX, content.bounds.height - f.maxY, f.width, f.height)
+        } ?? "nil"
+        // Through NSApp.sendEvent, not the window's: the layer's local event monitor (a menu closing on
+        // the mouse-down outside it, a tip on any down) runs only for events the application dispatches.
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
-                window.sendEvent(event)
+                NSApp.sendEvent(event)
             }
         }
         let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        print("action: click (\(Int(numbers[0])),\(Int(numbers[1]))) at \(stamp)s → hit \(hit); firstResponder \(before) → \(after)")
+        print("action: click \(target) (\(Int(top.x)),\(Int(top.y)))\(cold ? " cold" : "") at \(stamp)s → \(key); hit \(hit); firstResponder \(before) → \(after)")
+    }
+
+    /// `(x,y)` as given, or the centre of the frame tracked under that id; nil when neither.
+    static func clickPoint(_ target: String) -> CGPoint? {
+        let numbers = target.split(whereSeparator: { !"0123456789.".contains($0) }).compactMap { Double($0) }
+        if target.hasPrefix("("), numbers.count == 2 { return CGPoint(x: numbers[0], y: numbers[1]) }
+        guard let frame = ConsoleClickTargets.frames[target], frame != .zero else { return nil }
+        return CGPoint(x: frame.midX, y: frame.midY)
+    }
+
+    /// Seconds since launch, for the lines events print as they happen.
+    var wallStamp: String { String(format: "%.2f", Date().timeIntervalSince(launchedAt)) }
+
+    /// `probe-press`: the press trail so far, in order.
+    func probePress(stamp: String) {
+        print("probe-press: \(pressLog.isEmpty ? "none" : pressLog.joined(separator: " · ")) at \(stamp)s")
+    }
+
+    /// `check-press:<none|verb[+verb]>`: the `press:` lines so far are exactly those verbs, in order.
+    func checkPress(_ spec: String, stamp: String) {
+        let want = spec == "none" ? [] : spec.split(separator: "+").map(String.init)
+        let have = pressLog.filter { $0.hasPrefix("press: ") }.map { String($0.dropFirst("press: ".count)) }
+        let ok = have == want
+        print("check: \(ok ? "ok  " : "FAIL") presses → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(ok ? "" : " (want \(spec))")")
+        print("check: \(ok ? "all ok" : "FAILED") (press) at \(stamp)s")
+    }
+
+    /// `check-composer-free`: a click on ground has not handed the composer's text the focus.
+    func checkComposerFree(stamp: String) {
+        let responder = jarheadWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        let free = !responder.contains("TextView")
+        print("check: \(free ? "ok  " : "FAIL") composer not focused → firstResponder \(responder)")
+        print("check: \(free ? "all ok" : "FAILED") (composer) at \(stamp)s")
     }
 
     /// `probe-floats`: the rect of every float the layer has placed, in the root's space.
@@ -3404,6 +3499,10 @@ extension PreviewDelegate {
         expect("placement: arrow ≥ r + 4 from a corner", String(format: "%.0f", ConsoleFloatPlacement.arrowOffset(anchor: corner, rect: clamped, side: .below)), "10")
         expect("placement: max list height under the field", String(format: "%.0f", ConsoleFloatPlacement.maxListHeight(anchor: field, bounds: bounds, side: .below)), "522")
         expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
+        expect("floats: a tip never consumes a click", "\(ConsoleFloatLayer.catches(kind: .tip))", "false")
+        expect("floats: a menu never consumes a click", "\(ConsoleFloatLayer.catches(kind: .menu))", "false")
+        expect("key ring: a mouse-down is the mouse's (a focus it moves lights nothing)", "\(ConsoleKeyRing.mouse(.leftMouseDown))", "true")
+        expect("key ring: a key-down is the keyboard's (a focus it moves lights the ring)", "\(ConsoleKeyRing.mouse(.keyDown))", "false")
         expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")
         expect("tip delay: warm 0.2 s", "\(ConsoleTip.delay(sinceLastHide: 0.2))", "0.0")
         expect("tip delay: never hidden", "\(ConsoleTip.delay(sinceLastHide: -1))", "0.35")
@@ -3531,15 +3630,13 @@ extension PreviewDelegate {
         print("check: \(coldOk && warmOk ? "all ok" : "FAILED") (tips) at \(stamp)s")
     }
 
-    /// `check-floats:<none|id[+id]>`: exactly those floats are open, and the composer has not taken focus.
+    /// `check-floats:<none|id[+id]>`: exactly those floats are open (the composer's focus is
+    /// `check-composer-free`'s own question — a click that lands on a control may focus it).
     func checkFloats(_ spec: String, stamp: String) {
         let want = spec == "none" ? [] : spec.split(separator: "+").map(String.init).sorted()
         let have = ConsoleFloatSlot.placed.keys.sorted()
-        let responder = jarheadWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        let composerFree = !responder.contains("TextView")
         print("check: \(have == want ? "ok  " : "FAIL") floats open → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(have == want ? "" : " (want \(spec))")")
-        print("check: \(composerFree ? "ok  " : "FAIL") composer not focused → firstResponder \(responder)")
-        print("check: \(have == want && composerFree ? "all ok" : "FAILED") (floats) at \(stamp)s")
+        print("check: \(have == want ? "all ok" : "FAILED") (floats) at \(stamp)s")
     }
 
     /// The dropdown's pure pins (Builder B): sections, steps, type-ahead, the words, the Local words.

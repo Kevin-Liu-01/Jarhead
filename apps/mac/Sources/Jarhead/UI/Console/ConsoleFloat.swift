@@ -59,6 +59,26 @@ enum ConsolePreviewKey {
     static let leave = "leave"
 }
 
+/// Where every trigger with an id last laid out, in the window's top-left space — written by
+/// `ConsoleFloatPublisher` (a tip's trigger, a menu's field) as it tracks its frame. The layer's
+/// monitor reads a menu's field from it (a mouse-down on the field is the field's toggle, not an
+/// outside click); the harness's `click:<id>` hits the centre of an entry.
+enum ConsoleClickTargets {
+    @MainActor static var frames: [String: CGRect] = [:]
+}
+
+/// The harness's ear for what a click did: `press: <verb>` from the Console's actions,
+/// `menu-pick: <id> <value>` from a field's pick, `menu: opened|closed <id>` from a field.
+/// nil in the app.
+enum ConsolePress {
+    @MainActor static var report: ((String) -> Void)?
+
+    /// A command's or a press's bare word: the enum case without its payload (`sayText`, `go`).
+    static func word(_ value: Any) -> String {
+        String(String(describing: value).prefix { $0 != "(" })
+    }
+}
+
 /// Where the layer put a float, handed to its content through the environment so a tip's bubble
 /// draws its arrow on the facing edge, pointing at the anchor. `.zero` until the slot has placed it.
 struct ConsoleFloatGeometry: Equatable {
@@ -110,25 +130,30 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
     func body(content view: Content) -> some View {
         view
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { moved(to: $0) }
+            .onDisappear { ConsoleClickTargets.frames[id] = nil }
             .transformAnchorPreference(key: ConsoleFloatKey.self, value: .bounds) { floats, anchor in
                 if on { floats.append(ConsoleFloat(id: id, kind: kind, edge: edge, anchor: anchor, frame: frame, content: { AnyView(content()) }, dismiss: dismiss)) }
             }
     }
 
     /// A menu follows its field (the frame is the republish key); a tip lets go when its anchor
-    /// moves (a scroll under the pointer) — NSMenu-like, and never a stale arrow.
+    /// moves (a scroll under the pointer) — NSMenu-like, and never a stale arrow. The trigger's
+    /// frame is also the click target the monitor and the harness read by id.
     private func moved(to next: CGRect) {
         let was = frame
         frame = next
+        ConsoleClickTargets.frames[id] = next
         if on, kind == .tip, was != .zero, was != next { dismiss() }
     }
 }
 
 /// Draws the floats over the whole root. While a menu is open only the menu is drawn (tips never
-/// sit beside a menu) and an outside-click catcher lies under it — the click is swallowed, as
-/// NSMenu swallows it. Of several tips only the innermost draws (the first published: the ⋯'s
-/// `More`, not the row's card under the same pointer) — one float at a time. Everything goes when
-/// the window stops being key; one event monitor lives while anything is open.
+/// sit beside a menu). Nothing here takes a click: a tip never did, and a menu closes on the
+/// mouse-DOWN outside it (the monitor's) and lets that down through, so the control under the
+/// pointer — another field, Stop, a row — acts on the same click. Of several tips only the
+/// innermost draws (the first published: the ⋯'s `More`, not the row's card under the same
+/// pointer) — one float at a time. Everything goes when the window stops being key; one event
+/// monitor lives while anything is open.
 struct ConsoleFloatLayer: View {
     let floats: [ConsoleFloat]
     @Environment(\.controlActiveState) private var active
@@ -146,10 +171,19 @@ struct ConsoleFloatLayer: View {
         return floats.first.map { [$0] } ?? []
     }
 
+    /// Whether the layer puts anything under a float that would take a click meant for the
+    /// control beneath — never: a tip is not hit-testable and a menu dismisses on the mouse-down
+    /// and lets it through. Pure, and pinned by `check-kit` so a window-wide catcher cannot return.
+    static func catches(kind: ConsoleFloat.Kind) -> Bool {
+        switch kind {
+        case .tip: return false
+        case .menu: return false
+        }
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
-                if let menu { Color.clear.contentShape(Rectangle()).onTapGesture(perform: menu.dismiss) }
                 ForEach(shown) { f in
                     ConsoleFloatSlot(float: f, anchor: proxy[f.anchor], bounds: proxy.frame(in: .local))
                         .zIndex(f.kind == .menu ? 2 : 1)
@@ -198,14 +232,18 @@ struct ConsoleFloatSlot: View {
 }
 
 /// One local event monitor while any float is open. It only observes (every event is returned
-/// unchanged) and it only looks at the key window: a tip dismisses on any mouse-down, wheel or
-/// key-down; a menu on a ⌘ key-down (the window's shortcut is about to run) and on a wheel
-/// outside itself — a wheel over the popup scrolls its list (the placed rect is the test, in the
-/// root's top-left space). Outside clicks on a menu are the layer's catcher's, not the monitor's.
+/// unchanged, so the control under the pointer still gets it) and it only looks at the key
+/// window: a tip dismisses on any mouse-down, wheel or key-down; a menu on a ⌘ key-down (the
+/// window's shortcut is about to run), on a wheel outside itself — a wheel over the popup scrolls
+/// its list — and on a mouse-down outside both the popup and its own field. The field is left to
+/// its Button: its click toggles the menu closed once (a dismiss here too would close on the down
+/// and reopen on the up). Every test is a rect-contains in the root's top-left space, never a clock.
 @MainActor
 final class ConsoleFloatMonitor {
     private var token: Any?
     private var floats: [ConsoleFloat] = []
+
+    private static let downs: Set<NSEvent.EventType> = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
     func set(_ floats: [ConsoleFloat]) {
         self.floats = floats
@@ -217,23 +255,46 @@ final class ConsoleFloatMonitor {
         }
     }
 
+    /// The key window's events — or, while the app is inactive and has no key window, the event's
+    /// own window: a local monitor only ever sees this app's events, and a float open in an
+    /// inactive window is one `holdWhileInactive` kept (the harness's shots and clicks).
     private func observe(_ event: NSEvent) {
-        guard let window = event.window, window === NSApp.keyWindow else { return }
+        guard let window = event.window, window === NSApp.keyWindow || NSApp.keyWindow == nil else { return }
         let command = event.type == .keyDown && event.modifierFlags.contains(.command)
         for f in floats {
             switch f.kind {
             case .tip: f.dismiss()
-            case .menu: if command || (event.type == .scrollWheel && !Self.inside(f.id, event: event, window: window)) { f.dismiss() }
+            case .menu: if command || Self.outside(f, event: event, window: window) { f.dismiss() }
             }
         }
+    }
+
+    /// A wheel or a mouse-down that misses the menu: off the popup, and — for a down — off the
+    /// field that owns it too.
+    static func outside(_ f: ConsoleFloat, event: NSEvent, window: NSWindow) -> Bool {
+        if event.type == .scrollWheel { return !inside(f.id, event: event, window: window) }
+        guard downs.contains(event.type) else { return false }
+        return !inside(f.id, event: event, window: window) && !onField(f, event: event, window: window)
     }
 
     /// Whether the wheel is over the float: the event's point flipped into the root's top-left
     /// space and tested against the rect the layer placed it at (an unplaced float is outside).
     static func inside(_ id: String, event: NSEvent, window: NSWindow) -> Bool {
         guard let rect = ConsoleFloatSlot.placed[id], let content = window.contentView else { return false }
-        let point = CGPoint(x: event.locationInWindow.x, y: content.bounds.height - event.locationInWindow.y)
-        return rect.contains(point)
+        return rect.contains(point(of: event, in: content))
+    }
+
+    /// Whether the down is on the menu's own field: the frame its publisher tracks (the float's
+    /// `frame` when the tracker has nothing newer), the same space as the placed rect.
+    static func onField(_ f: ConsoleFloat, event: NSEvent, window: NSWindow) -> Bool {
+        guard let content = window.contentView else { return false }
+        let field = ConsoleClickTargets.frames[f.id] ?? f.frame
+        return field.contains(point(of: event, in: content))
+    }
+
+    /// The event's point flipped into the root's top-left space.
+    private static func point(of event: NSEvent, in content: NSView) -> CGPoint {
+        CGPoint(x: event.locationInWindow.x, y: content.bounds.height - event.locationInWindow.y)
     }
 
     private func remove() {

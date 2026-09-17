@@ -8,6 +8,7 @@
 #           memory | durability | threads | thread-pane | thread-answer | thread-history | typed-row | agent-pending |
 #           local | local-empty |
 #           menu-voice | menu-voice-filter | menu-model | menu-backend | menu-escape | menu-outside |
+#           menu-click-through | tip-click | cold-click |
 #           tip-thread | tip-key | tip-warm | tip-thumb | toggle | settings-index | permissions-groups |
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
@@ -195,6 +196,8 @@ case "$SCENARIO" in
   settings-audio|toggle-recording) ;;
   # The stream ids (design13, Builder A): the resumed conversation's rows, checked before and after a republish and an append.
   resumed) ;;
+  # The click path (design13, Builder B): one click acts while a menu or a tip is open, or the window is cold.
+  menu-click-through|tip-click|cold-click) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -226,6 +229,10 @@ if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTL
 # `resumed` runs its checks to 1.2 s (the second check-stream after the append).
 if [[ "$SCENARIO" == "resumed" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.8}"; fi
 if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; fi
+# The click path (design13): `menu-click-through` is the `local` fixture tall like `menu-model` (Voice and Model both on
+# screen) and drives three clicks to 4.15 s; `tip-click` and `cold-click` run their one click and the press check by 2 s.
+case "$SCENARIO" in menu-click-through) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-4.5}";; esac
+case "$SCENARIO" in tip-click|cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
 case "$SCENARIO" in menu-voice|menu-voice-filter|menu-model|menu-backend|menu-escape|menu-outside|toggle) PREVIEW_SETTLE="${PREVIEW_SETTLE:-3}";; esac
 # The right rail's scenarios (Builder D): `ledger-months` picks two August days and Sep 10, then ↓ ⏎ on the list

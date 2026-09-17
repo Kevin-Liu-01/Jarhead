@@ -102,14 +102,18 @@ struct ConsoleMenuField<Value: Hashable>: View {
     @State private var hovering = false
     @State private var frame: CGRect = .zero
     @FocusState private var focused: Bool
+    /// True while the keyboard put the focus here (Tab, `focus:`, Esc's return); a click clears it — the ring is the keyboard's alone.
+    @State private var keyboard = false
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
-        Button(action: show) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
-            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || focused ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
+        Button(action: toggle) { ConsoleMenuFieldLabel(title: shownTitle, mono: mono, badge: fieldBadge?(value) ?? nil, quiet: fieldQuiet?(value) ?? false, open: open) }
+            .buttonStyle(ConsoleMenuFieldStyle(height: height, ring: open || (focused && keyboard) ? ConsoleTheme.accent : ConsoleTheme.hair, hovering: hovering, enabled: enabled))
             .focusable()
             .focused($focused)
             .focusEffectDisabled()
+            .onAppear { ConsoleKeyRing.watch() }
+            .onChange(of: focused) { keyboard = focused && ConsoleKeyRing.byKeyboard }
             .modifier(ConsoleMenuFieldKeys(open: show))
             .onHover { hovering = $0 }
             .animation(ConsoleMotion.hover, value: hovering)
@@ -130,17 +134,22 @@ struct ConsoleMenuField<Value: Hashable>: View {
         return options + [saved.value]
     }
 
-    private func show() { guard enabled else { return }; open = true }
+    /// The keys (Space, Return, ↓) open; the click toggles — the layer lets the mouse-down on the
+    /// field through, so the field alone closes its own menu, once.
+    private func show() { guard enabled, !open else { return }; open = true; ConsolePress.report?("menu: opened \(id)") }
+    private func toggle() { if open { hide() } else { show() } }
 
     /// The layer's dismiss and the popup's close: focus comes back to the field.
     private func hide() {
         guard open else { return }
         open = false
         focused = true
+        ConsolePress.report?("menu: closed \(id)")
     }
 
     private func choose(_ v: Value) {
         hide()
+        ConsolePress.report?("menu-pick: \(id) \(ConsolePress.word(v))")
         if v != value { pick(v) }
     }
 
