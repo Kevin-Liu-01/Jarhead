@@ -121,6 +121,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
     /// While this is set the popup's close is skipped; the up's `toggle()` clears it and does the one `hide()`.
     @State private var closingByField = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.consoleTitleBand) private var titleBand
 
     var body: some View {
         Button(action: toggle) { face }
@@ -219,10 +220,12 @@ struct ConsoleMenuField<Value: Hashable>: View {
         return { $0 == saved.value ? saved.provenance : (meta?($0) ?? "") }
     }
 
-    /// The window's content rect, the space the root's float layer draws in.
+    /// The window's content rect less its title band — the space the root's float layer places in (the same
+    /// inset the layer applies), so a popup flipped above the composer sizes its list to stop under the chrome.
     private var bounds: CGRect {
         let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.contentView != nil }
-        return CGRect(origin: .zero, size: window?.contentView?.bounds.size ?? CGSize(width: 1180, height: 760))
+        let whole = CGRect(origin: .zero, size: window?.contentView?.bounds.size ?? CGSize(width: 1180, height: 760))
+        return ConsoleFloatPlacement.insetTop(whole, by: titleBand)
     }
 
     /// As many rows as fit between the field and the window's margin, then the list scrolls;

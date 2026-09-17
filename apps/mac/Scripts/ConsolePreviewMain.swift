@@ -812,7 +812,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // reads `waits` (`voice-chip:` line, a snap); `click:stream.switch` is the one `press: voiceReopen`.
         // Then Tab into the head: the popup stays (`check-floats:stream.voice`), ← moves the Accent to US
         // (`send:` carries accent=american), Esc closes.
-        case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
+        case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,check-float-clear:\(VoiceChipWords.id)@1.05,snap:preview-console-voice-chip-open@1.1,"
             // Three presses 0.2 s apart, not one burst: two ↓ 40 ms apart in the filter popup can land as one step under load.
             // The popup's leave after ⏎ is checked 0.3 s on (the removal fade under load), the rest of the run 0.1 s later than before.
             + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@2.0,check-floats:none@2.05,probe-press@2.1,check-press:setSettings@2.15,probe-voice@2.2,"
@@ -1149,6 +1149,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkTips(stamp: stamp)
             } else if action.hasPrefix("check-floats:") {
                 checkFloats(String(action.dropFirst("check-floats:".count)), stamp: stamp)
+            } else if action.hasPrefix("check-float-clear:") {
+                checkFloatClear(String(action.dropFirst("check-float-clear:".count)), stamp: stamp)
             } else if let info = memoryAction(action) {
                 // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
                 // `send:` line is the command, the `memory-rail:` line what the list holds after.
@@ -3625,6 +3627,12 @@ extension PreviewDelegate {
         expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
         expect("floats: a tip never consumes a click", "\(ConsoleFloatLayer.catches(kind: .tip))", "false")
         expect("floats: a menu never consumes a click", "\(ConsoleFloatLayer.catches(kind: .menu))", "false")
+        // The title band (design13 review): the bounds start under it, a float above its anchor sizes and clamps to it.
+        let banded = ConsoleFloatPlacement.insetTop(CGRect(x: 0, y: 0, width: 1180, height: 760), by: 28)
+        expect("floats: bounds less the title band", "\(Int(banded.minY)) \(Int(banded.height)) \(Int(ConsoleFloatPlacement.insetTop(banded, by: -5).minY))", "28 732 28")
+        let chip = CGRect(x: 358, y: 712, width: 130, height: 32)
+        expect("floats: room above the composer is the band shorter", "\(Int(ConsoleFloatPlacement.maxListHeight(anchor: chip, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), side: .above) - ConsoleFloatPlacement.maxListHeight(anchor: chip, bounds: banded, side: .above)))", "28")
+        expect("floats: a tall popup above clamps under the band", "\(Int(ConsoleFloatPlacement.rect(anchor: chip, size: CGSize(width: 260, height: 900), bounds: banded, edge: .below).minY))", "36")
         // A down on the anchor that missed the popup: the field's own toggle when the menu owns it, an outside click when it hangs off a row (the ⌘↓ verbs).
         expect("floats: a down on the anchor is outside only when the float does not own its field", "\(ConsoleFloatMonitor.fieldDownOutside(ownsField: true)) \(ConsoleFloatMonitor.fieldDownOutside(ownsField: false))", "false true")
         expect("key ring: a mouse-down is the mouse's (a focus it moves lights nothing)", "\(ConsoleKeyRing.mouse(.leftMouseDown))", "true")
@@ -3828,6 +3836,26 @@ extension PreviewDelegate {
         let have = ConsoleFloatSlot.placed.keys.sorted()
         print("check: \(have == want ? "ok  " : "FAIL") floats open → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(have == want ? "" : " (want \(spec))")")
         print("check: \(have == want ? "all ok" : "FAILED") (floats) at \(stamp)s")
+    }
+
+    /// `check-float-clear:<id>` (design13 review): the float placed under that id stops under the window's title
+    /// band — its top at or below `titleBand + margin` — so a popup flipped above the composer never sits level
+    /// with the traffic lights (its list scrolls instead).
+    func checkFloatClear(_ id: String, stamp: String) {
+        guard let window = jarheadWindow else { print("check: FAIL float \(id) clears the title band → no window"); print("check: FAILED (float-clear) at \(stamp)s"); return }
+        let band = ConsoleWindowController.titleBand(of: window)
+        let floor = band + ConsoleFloatPlacement.margin
+        let ok: Bool
+        let got: String
+        if let rect = ConsoleFloatSlot.placed[id] {
+            ok = rect.minY >= floor - 0.5 && band > 0
+            got = String(format: "y=%.1f band=%.1f floor=%.1f", rect.minY, band, floor)
+        } else {
+            ok = false
+            got = "not placed (\(ConsoleFloatSlot.placed.keys.sorted().joined(separator: " ")))"
+        }
+        print("check: \(ok ? "ok  " : "FAIL") float \(id) clears the title band → \(got)")
+        print("check: \(ok ? "all ok" : "FAILED") (float-clear) at \(stamp)s")
     }
 
     /// The dropdown's pure pins (Builder B): sections, steps, type-ahead, the words, the Local words.

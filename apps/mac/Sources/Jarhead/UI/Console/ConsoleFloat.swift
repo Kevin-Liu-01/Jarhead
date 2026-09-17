@@ -106,6 +106,21 @@ extension EnvironmentValues {
     }
 }
 
+/// The window's title band (`ConsoleWindowController.titleBand(of:)`): with `fullSizeContentView` the root
+/// is laid under the transparent title bar, so its bounds start at y = 0 while the traffic lights sit in
+/// the first ≈ 28 pt. The layer and a menu field's `listMax` inset their bounds by it (design13 review):
+/// no float climbs into the chrome. 0 in a window without the band (the onboarding's).
+private struct ConsoleTitleBandKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var consoleTitleBand: CGFloat {
+        get { self[ConsoleTitleBandKey.self] }
+        set { self[ConsoleTitleBandKey.self] = newValue }
+    }
+}
+
 extension View {
     /// Publish a float while `on`; this view is its anchor. The trigger owns `on` (its @State)
     /// and `dismiss` is how the layer asks it to let go (an outside click, a ⌘-key, the window
@@ -170,6 +185,7 @@ struct ConsoleFloatPublisher<C: View>: ViewModifier {
 struct ConsoleFloatLayer: View {
     let floats: [ConsoleFloat]
     @Environment(\.controlActiveState) private var active
+    @Environment(\.consoleTitleBand) private var titleBand
     @State private var monitor = ConsoleFloatMonitor()
 
     /// The harness pins this on so a shot behind the lock screen (the window inactive) keeps its floats.
@@ -198,7 +214,8 @@ struct ConsoleFloatLayer: View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
                 ForEach(shown) { f in
-                    ConsoleFloatSlot(float: f, anchor: proxy[f.anchor], bounds: proxy.frame(in: .local))
+                    // The bounds less the title band: a float flipped above its anchor stops under the traffic lights.
+                    ConsoleFloatSlot(float: f, anchor: proxy[f.anchor], bounds: ConsoleFloatPlacement.insetTop(proxy.frame(in: .local), by: titleBand))
                         .zIndex(f.kind == .menu ? 2 : 1)
                 }
             }
