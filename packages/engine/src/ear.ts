@@ -392,15 +392,19 @@ export class EarReflexes {
    * for the same words is finished as "already did it". Held as the spoken path is held
    * (a task running, the voice speaking) — a meta kind passes. Resolves with the outcome
    * when a reflex ran, undefined when the words are no reflex or were held: the voice
-   * takes them then.
+   * takes them then. `free`: the engine has matched the one reflex that writes a setting
+   * and touches no session (`set_voice`) while paused or asleep — the `enabled()` gate
+   * (a session open, not paused) is lifted for it alone, so the pick is saved and on the
+   * record before the resume or wake that speaks it; any other kind is still refused.
    */
-  async typed(text: string, at: number): Promise<(ReflexOutcome & { readonly dropped?: string }) | undefined> {
+  async typed(text: string, at: number, o: { readonly free?: boolean } = {}): Promise<(ReflexOutcome & { readonly dropped?: string }) | undefined> {
     // Dictating: Kevin's words are text for the focused field, never commands — a typed line meanwhile is the voice's.
-    if (!this.opts.enabled() || this.opts.dictation.active()) return undefined;
+    if ((!o.free && !this.opts.enabled()) || this.opts.dictation.active()) return undefined;
     const cleaned = text.replace(/\s+/g, " ").trim().replace(FILLER_HEAD, "");
     if (!cleaned) return undefined;
     const reflex = this.opts.match(cleaned);
     if (!reflex) return undefined;
+    if (o.free && reflex.kind !== "set_voice") return undefined;
     const held = this.opts.suppressed?.();
     if (held && !reflex.meta) {
       log.info(`typed: "${cleaned.slice(0, 60)}" matched ${reflex.label} but held (${held}); the voice takes it`);

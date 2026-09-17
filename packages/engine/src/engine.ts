@@ -7,7 +7,7 @@ import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, lang
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
-import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
+import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, readRunning, repairDock, restartDock, type DockAudit, type Exec, type RunningApp } from "@jarhead/cli/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
@@ -2411,11 +2411,35 @@ export class Engine extends EventEmitter<EngineEvents> {
    * words reach the new session. Typing while ASLEEP is REFUSED with a toast and the text kept in the composer —
    * `Settings.typedWakes` (default false): a stray Return must never open a paid session; with it on, the line
    * wakes Jarhead and reaches the new session. One log line with ms per call.
+   *
+   * The exception, BEFORE the resume or wake: a voice or accent typed while paused or asleep ("switch voice to
+   * marin", the `set_voice` reflex) is a pick, and a pick is free. Run first — the reflex only patches the setting
+   * with no session open — so the session that opens next speaks it and there is nothing left to reopen: one paid
+   * start at most, never the old voice's session closed a moment after it opened. Paused, or asleep with
+   * typedWakes off, the words are done with here (a toast says when it is heard); with typedWakes on the wake
+   * opens on the new voice and the reflex is already handled.
    */
   async sayText(text: string): Promise<void> {
     const t0 = performance.now();
     const t = text.trim();
     if (!t) return;
+    let picked: { readonly did: string } | undefined;
+    if (!this.live && this.matchReflex(t)?.kind === "set_voice") {
+      const outcome = await this.earReflexes.typed(t, this.now(), { free: true });
+      if (outcome?.ok) {
+        const answer = outcome.result.kind === "text" ? outcome.result.text : "";
+        const when = this.pauseInfo ? "heard when the session resumes" : "heard at the next Go";
+        const wakes = !this.pauseInfo && this.settings.typedWakes === true;
+        // An unknown name is the reflex's own line; a pick is the voice and when it speaks — unless the wake is the answer.
+        if (answer) this.toast(answer, "warn");
+        else if (!wakes) this.toast(`${Engine.voiceLine(this.settings.voice, this.settings.accent)} · ${when}`, "info");
+        if (!wakes) {
+          log.info(`say-text: ${t.length} chars while ${this.pauseInfo ? "paused" : "asleep"} → ${outcome.reflex.label} (${answer || when}) in ${Math.round(performance.now() - t0)} ms; no session opened`);
+          return;
+        }
+        picked = { did: answer };
+      }
+    }
     if (this.pauseInfo) await this.resume();
     if (!this.live) {
       if (this.settings.typedWakes !== true) {
@@ -2449,9 +2473,12 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     // The reflex first (M5): the hands act before the voice has decided anything; the instruction then says so,
     // and the words are done with (they must not ride into the next spoken request).
-    let did: string | undefined;
-    let meta = false;
-    if (!isYes) {
+    let did: string | undefined = picked?.did;
+    let meta = picked !== undefined;
+    if (picked) {
+      // The pick ran before the wake (above); the new session speaks with it, and Live's delegation for the words reconciles as done.
+      if (item) this.delegator?.typedHandled(item);
+    } else if (!isYes) {
       const outcome = await this.earReflexes.typed(t, this.now());
       if (outcome?.ok) {
         meta = outcome.reflex.meta === true;
@@ -2826,8 +2853,10 @@ export class Engine extends EventEmitter<EngineEvents> {
    * the new voice says "Marin here." from its continuity, so the result text is empty. Busy (a task or a
    * thread runs): the current voice says "Marin at the next wake." — no reopen, nothing cancelled.
    * Asleep, paused or connecting: the setting alone, never a connect — a reflex must not open a paid
-   * session. A name that is not a `VOICES` id changes nothing. Idempotent: the session already speaking
-   * this way (the slower source repeating the ear's words) is answered with silence.
+   * session (typed, `sayText` runs it BEFORE its resume or wake for that reason: the session that opens
+   * next speaks the pick, and one start is all it costs). A name that is not a `VOICES` id changes
+   * nothing. Idempotent: the session already speaking this way (the slower source repeating the ear's
+   * words) is answered with silence.
    */
   private async setVoiceReflex(reflex: Reflex): Promise<ToolResult> {
     const voiceIn = typeof reflex.input["voice"] === "string" ? reflex.input["voice"].trim() : undefined;
@@ -4868,9 +4897,10 @@ export class Engine extends EventEmitter<EngineEvents> {
    * The row an audit earns, or none: two or more Jarhead tiles with a pin among them
    * ("Two Jarhead tiles in the Dock"; the count past two), else a pin whose URL is not
    * the installed bundle's. A recent tile with no pin is one tile — nothing to fix.
-   * An audit that carries `helperTiles` (the one-Jarhead pass read `lsappinfo list`) is
-   * drawn a tile per Foreground helper whether or not `recent-apps` has caught up, and
-   * the text names that cause: Fix the Dock clears only the leftover once the helper is rebuilt.
+   * An audit that carries `helperTiles` (the one-Jarhead pass and `checkDock` / `fixDock`
+   * read `lsappinfo list` beside the plist) is drawn a tile per Foreground helper whether or
+   * not `recent-apps` has caught up, and the text names that cause: Fix the Dock clears only
+   * the leftover once the helper is rebuilt.
    */
   static dockProblemText(a: DockAudit): string | undefined {
     const helpers = a.helperTiles ?? [];
@@ -4882,14 +4912,41 @@ export class Engine extends EventEmitter<EngineEvents> {
     return undefined;
   }
 
-  /** Read the Dock (one `defaults export`, no write) and set or clear the `dock` row from what it says. */
+  /**
+   * The Foreground Jarhead processes besides the app (one `lsappinfo list`, ~50 ms, no lsd
+   * wait, no write): each is a Dock tile the plist repair cannot remove. Read beside every
+   * Dock read so the row and the fix's verdict see the helper's tile before `recent-apps`
+   * has parked it — the plist alone reads clean for the ~10 s until it does. A failed or
+   * absent `lsappinfo` (headless, a scripted exec) is nobody's tile.
+   */
+  private helperTiles(reason: string): readonly RunningApp[] {
+    const ran = readRunning(this.exec, { bundleId: JARHEAD_BUNDLE_ID, timeoutMs: Engine.DOCK_EXEC_TIMEOUT_MS });
+    if ("skipped" in ran) {
+      log.debug(`dock audit (${reason}): running apps not read — ${ran.skipped}`);
+      return [];
+    }
+    return ran.helperTiles;
+  }
+
+  /** The audit with the helper tiles on it — the very same object when there are none. */
+  private static withHelpers(a: DockAudit, helpers: readonly RunningApp[]): DockAudit {
+    return helpers.length ? { ...a, helperTiles: helpers } : a;
+  }
+
+  /** What Fix the Dock says while a helper's tile stands: the plist half is done (or was clean); the tile is the helper's to lose. */
+  private static dockHelperToast(written: boolean): string {
+    return `${written ? "Dock written" : "Dock unchanged"} — the helper's tile returns while it lives; rebuild (pnpm build:mac) and relaunch`;
+  }
+
+  /** Read the Dock (one `defaults export`, no write) and the running helpers (one `lsappinfo list`), and set or clear the `dock` row from what they say. */
   checkDock(reason: string): DockAudit | undefined {
-    const read = readDock(this.exec, Engine.DOCK_OPTS);
-    if ("skipped" in read) {
+    const dock = readDock(this.exec, Engine.DOCK_OPTS);
+    if ("skipped" in dock) {
       // No Dock to read (headless, or cfprefsd said no): not a problem of Kevin's to fix.
-      log.debug(`dock audit (${reason}) skipped: ${read.skipped}`);
+      log.debug(`dock audit (${reason}) skipped: ${dock.skipped}`);
       return undefined;
     }
+    const read = Engine.withHelpers(dock, this.helperTiles(reason));
     const text = Engine.dockProblemText(read);
     if (text) this.replaceProblem("dock", text, Engine.DOCK_REMEDY);
     // A clean read while a restart is owed is cfprefsd's import, not what the Dock draws: the row stays.
@@ -4906,16 +4963,21 @@ export class Engine extends EventEmitter<EngineEvents> {
    * An import whose `killall Dock` failed keeps the row too ("— Dock not restarted"): the
    * re-read is only cfprefsd's copy until the Dock relaunches, so no recheck is armed and
    * the next press runs just the restart. A read that fails toasts why and leaves the row.
+   * A Foreground helper alive (`helperTiles`, read once per press) is the one tile no import
+   * removes: the leftover still goes, the row stays with the cause, and the toast says the
+   * Dock was written — never "fixed" — and where the fix is (rebuild, relaunch).
    */
   private fixDock(): void {
     const opts = { ...Engine.DOCK_OPTS, log: (line: string) => log.info(line) };
-    const before = readDock(this.exec, opts);
-    if ("skipped" in before) {
+    const dock = readDock(this.exec, opts);
+    if ("skipped" in dock) {
       // The row stands — the read that raised it worked — and a press has to be seen to do something.
-      log.warn(`fix the Dock: ${before.skipped}`);
-      this.toast(`Could not read the Dock: ${before.skipped}`, "warn");
+      log.warn(`fix the Dock: ${dock.skipped}`);
+      this.toast(`Could not read the Dock: ${dock.skipped}`, "warn");
       return;
     }
+    const helpers = this.helperTiles("fix");
+    const before = Engine.withHelpers(dock, helpers);
     let did: string;
     let written: boolean;
     let restarted: boolean;
@@ -4926,7 +4988,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       did = describeDockChanges(before.changes);
       written = r.imported;
       restarted = r.restarted;
-      after = r.after ?? before;
+      after = r.after ? Engine.withHelpers(r.after, helpers) : before;
       skipped = r.skipped;
     } else if (this.dockRestartOwed) {
       // The last press imported the clean document; only the relaunch is owed.
@@ -4934,8 +4996,13 @@ export class Engine extends EventEmitter<EngineEvents> {
       written = true;
       restarted = restartDock(this.exec, opts);
     } else {
-      log.info(`fix the Dock: nothing to repair (${describeDock(before)})`);
-      this.clearProblems("dock");
+      // A clean plist. With a helper alive the tile is still drawn: the row keeps its cause, nothing is written.
+      const standing = Engine.dockProblemText(before);
+      log.info(`fix the Dock: nothing to repair (${describeDock(before)})${standing ? ` — ${standing}` : ""}`);
+      if (standing) {
+        this.replaceProblem("dock", standing, Engine.DOCK_REMEDY);
+        this.toast(Engine.dockHelperToast(false), "warn");
+      } else this.clearProblems("dock");
       this.scheduleSnapshot();
       return;
     }
@@ -4954,6 +5021,8 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.toast(`Dock fixed: ${did}`, "info");
     } else {
       this.replaceProblem("dock", skipped ? `${text} — ${skipped}` : text, Engine.DOCK_REMEDY);
+      // The plist half is done; the tile that stands is the helper's, and only its rebuild ends it.
+      if (helpers.length) this.toast(Engine.dockHelperToast(written), "warn");
     }
     this.dockRecheckAt = this.now() + Engine.DOCK_RECHECK_MS;
     this.scheduleSnapshot();

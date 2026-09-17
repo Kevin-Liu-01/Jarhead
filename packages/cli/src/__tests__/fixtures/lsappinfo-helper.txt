@@ -1,0 +1,21 @@
+115) "Jarhead" ASN:0x0-0xd23822b: 
+    bundleID="com.kevinliu.jarhead"
+    bundle path="/Applications/Jarhead.app"
+    executable path="/Applications/Jarhead.app/Contents/MacOS/Jarhead"
+    pid = 3125 type="Foreground" flavor=3 Version="2.0.0" fileType="APPL" creator="????" Arch=ARM64 
+    coalition: 92615  { 3125 3390 3391 3393 3394 66017 }
+    launch time =  2026/09/16 16:48:05 ( 18 hours, 44 minutes, 59.712 seconds ago )
+    checkin time = 2026/09/16 16:48:05 ( 18 hours, 44 minutes, 59.3858 seconds ago )
+116) "npm exec vite --port 5198 --strictPort" ASN:0x0-0xdba4b97: 
+    bundleID=[ NULL ] 
+    bundle path="/Users/kevinliu/.nvm/versions/node/v24.13.0/bin/node"
+    executable path="/Users/kevinliu/.nvm/versions/node/v24.13.0/bin/node"
+    pid = 52305 !cgsConnection !signalled type="BackgroundOnly" flavor=[ NULL ]  Version=[ NULL ]  Arch=ARM64 
+    checkin time = 2026/09/17 10:07:44 ( 1 hours, 25 minutes, 20.4732 seconds ago )
+122) "Jarhead" ASN:0x0-0xdbb8bab: 
+    bundleID="com.kevinliu.jarhead"
+    bundle path="/Applications/Jarhead.app"
+    executable path="/Applications/Jarhead.app/Contents/MacOS/jarhead-hands"
+    pid = 66017 !signalled type="Foreground" flavor=3 Version="2.0.0" fileType="APPL" creator="????" Arch=ARM64 
+    parentASN="Jarhead" ASN:0x0-0xd23822b:  (inferred)
+    checkin time = 2026/09/17 10:32:45 ( 1 hours, 19.5711 seconds ago )

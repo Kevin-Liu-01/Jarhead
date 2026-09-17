@@ -9,12 +9,14 @@ import { rows, until, world, type World } from "./world.ts";
 
 /**
  * One Jarhead in the Dock (REDESIGN §14, "Learned since"): the engine READS the Dock
- * 20 s after start — `defaults export com.apple.dock -`, never lsregister — and two
- * Jarhead tiles become the typed problem `dock` with Fix the Dock as its remedy. The
- * fix runs only on `problem.retry {kind:"dock"}` (Kevin's press): the Dock half of
- * `pnpm jarhead dock --fix` — import behind the mod-count check, `killall Dock` — then
- * a re-read clears the row, and tick() reads once more 10 s later. Every command goes
- * through a scripted exec; no Dock, no file, no Trash is touched.
+ * 20 s after start — `defaults export com.apple.dock -` and `lsappinfo list` for the
+ * Foreground helpers, never lsregister — and two Jarhead tiles become the typed problem
+ * `dock` with Fix the Dock as its remedy. The fix runs only on `problem.retry {kind:"dock"}`
+ * (Kevin's press): the Dock half of `pnpm jarhead dock --fix` — import behind the mod-count
+ * check, `killall Dock` — then a re-read clears the row, and tick() reads once more 10 s
+ * later. A helper alive is the tile no import removes: the row keeps its cause and the
+ * press says "Dock written", never "fixed". Every command goes through a scripted exec;
+ * no Dock, no file, no Trash is touched.
  */
 
 // The sanitized exports of Kevin's own Dock, shared with the install library's tests.
@@ -22,6 +24,11 @@ const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`..
 const TWO = fixture("dock-two-tiles.xml");
 const CLEAN = fixture("dock-clean.xml");
 const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
+// The reading hands helper as `lsappinfo list` printed it on 2026-09-17: LaunchServices checked it in as a
+// second Foreground "Jarhead" from the same bundle — the second tile no plist repair removes.
+const RUNNING_HELPER = fixture("lsappinfo-helper.txt");
+const HELPER = { pid: 66017, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/jarhead-hands", type: "Foreground" };
+const HELPER_CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover";
 
 interface Call {
   readonly cmd: string;
@@ -37,9 +44,11 @@ interface Script {
   importCode?: number;
   /** `killall Dock` exit codes, consumed in order (the last one repeats; default 0). */
   readonly killall?: readonly number[];
+  /** What `lsappinfo list` prints (mutable: a helper exits mid-test); unset, the command is unknown (127) — nobody's tile, as on a headless run. */
+  running?: string | undefined;
 }
 
-/** Exports are consumed in order (the last one repeats); import and killall answer as scripted. */
+/** Exports are consumed in order (the last one repeats); import, killall and lsappinfo answer as scripted. */
 function fake(script: Script): { exec: Exec; calls: Call[]; script: Script } {
   const calls: Call[] = [];
   const exports = [...script.exports];
@@ -55,6 +64,7 @@ function fake(script: Script): { exec: Exec; calls: Call[]; script: Script } {
       const code = killall.length > 1 ? (killall.shift() as number) : (killall[0] ?? 0);
       return { code, stdout: "", stderr: code ? "No matching processes belonging to you were found" : "" };
     }
+    if (cmd === "lsappinfo" && args[0] === "list" && script.running !== undefined) return { code: 0, stdout: script.running, stderr: "" };
     return { code: 127, stdout: "", stderr: `unexpected ${cmd}` };
   };
   return { exec, calls, script };
@@ -64,6 +74,7 @@ const argv = (calls: readonly Call[]): string[][] => calls.map((c) => [c.cmd, ..
 const EXPORT = ["defaults", "export", "com.apple.dock"];
 const IMPORT = ["defaults", "import", "com.apple.dock"];
 const KILLALL = ["killall", "Dock"];
+const RUNNING = ["lsappinfo", "list"];
 const ofKind = (w: World, kind: ProblemKind): readonly Problem[] => w.engine.typedProblems().filter((p) => p.kind === kind);
 const tick = (w: World): void => (w.engine as unknown as { tick(): void }).tick();
 const REMEDY = { label: "Fix the Dock", command: { type: "problem.retry", kind: "dock" } };
@@ -80,7 +91,7 @@ test("the Dock is read once, 20 s after start (shortened here) and read-only: tw
     assert.equal(p.text, "Two Jarhead tiles in the Dock");
     assert.deepEqual(p.remedy, REMEDY);
     assert.equal(p.since, w.clock.t);
-    assert.deepEqual(argv(calls), [EXPORT], "one export, nothing written, nothing restarted");
+    assert.deepEqual(argv(calls), [EXPORT, RUNNING], "one export and one lsappinfo, nothing written, nothing restarted");
     assert.ok(!calls.some((c) => c.cmd === LSREGISTER), "never lsregister from the engine");
     assert.ok(calls.every((c) => c.timeoutMs === Engine.DOCK_EXEC_TIMEOUT_MS), "every Dock shell-out is capped: spawnSync on the daemon's event loop");
     assert.equal(Engine.DOCK_EXEC_TIMEOUT_MS, 3000);
@@ -101,7 +112,7 @@ test("a clean Dock raises nothing; a Dock that cannot be read (headless, `defaul
     assert.ok(audit);
     assert.equal(audit?.changes.length, 0);
     assert.equal(ofKind(w, "dock").length, 0);
-    assert.deepEqual(argv(clean.calls), [EXPORT]);
+    assert.deepEqual(argv(clean.calls), [EXPORT, RUNNING], "the plist and the running apps, both read-only");
   } finally {
     await w.engine.stop();
   }
@@ -134,7 +145,7 @@ test("Fix the Dock (problem.retry dock) runs the repair — export, export (mod-
     assert.equal(ofKind(w, "dock").length, 1);
     const before = calls.length;
     await engine.command({ type: "problem.retry", kind: "dock" });
-    assert.deepEqual(argv(calls.slice(before)), [EXPORT, EXPORT, IMPORT, KILLALL, EXPORT]);
+    assert.deepEqual(argv(calls.slice(before)), [EXPORT, RUNNING, EXPORT, IMPORT, KILLALL, EXPORT], "one lsappinfo per press; the repair's re-reads are Dock exports only");
     assert.ok(!calls.some((c) => c.cmd === LSREGISTER));
     assert.ok(calls.slice(before).every((c) => c.timeoutMs === Engine.DOCK_EXEC_TIMEOUT_MS), "the import and the killall are capped like the reads");
     const imported = calls.find((c) => c.args[0] === "import");
@@ -151,9 +162,9 @@ test("Fix the Dock (problem.retry dock) runs the repair — export, export (mod-
     assert.equal(calls.length, n, "not yet");
     clock.t += 1000;
     tick(w);
-    assert.deepEqual(argv(calls.slice(n)), [EXPORT], "one recheck");
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING], "one recheck");
     tick(w);
-    assert.equal(calls.length, n + 1, "once, not every tick");
+    assert.equal(calls.length, n + 2, "once, not every tick");
     assert.equal(ofKind(w, "dock").length, 0);
   } finally {
     await engine.stop();
@@ -207,7 +218,7 @@ test("an import whose `killall Dock` failed is not a fix: the row stays (— Doc
     const since = ofKind(w, "dock")[0]!.since;
     let n = calls.length;
     await engine.command({ type: "problem.retry", kind: "dock" });
-    assert.deepEqual(argv(calls.slice(n)), [EXPORT, EXPORT, IMPORT, KILLALL, EXPORT], "the repair ran to the killall");
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING, EXPORT, IMPORT, KILLALL, EXPORT], "the repair ran to the killall");
     const p = ofKind(w, "dock");
     assert.equal(p.length, 1);
     assert.equal(p[0]!.text, "Two Jarhead tiles in the Dock — Dock not restarted", "the re-read said clean, but the Dock never relaunched: not fixed");
@@ -225,13 +236,13 @@ test("an import whose `killall Dock` failed is not a fix: the row stays (— Doc
     // The next press: the document is already clean, so only the restart runs — and it lands.
     n = calls.length;
     await engine.command({ type: "problem.retry", kind: "dock" });
-    assert.deepEqual(argv(calls.slice(n)), [EXPORT, KILLALL], "one read, the owed restart, no import");
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING, KILLALL], "one read, the owed restart, no import");
     assert.equal(ofKind(w, "dock").length, 0, "restarted: the row is gone");
     assert.ok(toasts(w).includes("info: Dock fixed: restarted"), JSON.stringify(toasts(w)));
     n = calls.length;
     clock.t += Engine.DOCK_RECHECK_MS;
     tick(w);
-    assert.deepEqual(argv(calls.slice(n)), [EXPORT], "this fix earns its recheck");
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING], "this fix earns its recheck");
     assert.equal(ofKind(w, "dock").length, 0);
     // A press whose read fails: the row (raised by a read that worked) stays, and the press is seen — a warn toast, nothing written.
     engine.checkDock("again");
@@ -245,12 +256,71 @@ test("an import whose `killall Dock` failed is not a fix: the row stays (— Doc
       two.script.exportCode = 1;
       const m = two.calls.length;
       await w2.engine.command({ type: "problem.retry", kind: "dock" });
-      assert.deepEqual(argv(two.calls.slice(m)), [EXPORT], "one failed read, nothing else");
+      assert.deepEqual(argv(two.calls.slice(m)), [EXPORT], "one failed read, nothing else — not even lsappinfo");
       assert.equal(ofKind(w2, "dock")[0]?.text, "Two Jarhead tiles in the Dock", "the row stands");
       assert.deepEqual(toasts(w2).filter((t) => /Dock/.test(t)), ["warn: Could not read the Dock: defaults export failed (1)"]);
     } finally {
       await w2.engine.stop();
     }
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("a Foreground jarhead-hands alive: the row names it from the startup read on; Fix the Dock still drops the leftover but keeps the row with the cause and toasts 'Dock written — …rebuild…', never 'Dock fixed'; a clean plist with the helper alive writes nothing; once the helper is gone the leftover's fix clears the row", async () => {
+  const toasts = (w: World): string[] => w.events.filter((e): e is Extract<typeof e, { type: "toast" }> => e.type === "toast").map((e) => `${e.tone}: ${e.text}`);
+  const WITH_HELPER = `Two Jarhead tiles in the Dock — ${HELPER_CLAUSE}`;
+  const WRITTEN = "warn: Dock written — the helper's tile returns while it lives; rebuild (pnpm build:mac) and relaunch";
+  // Startup TWO (the helper's tile already parked once). Press 1: before TWO, mod-count TWO, import, killall, after CLEANED — and the
+  // helper still checked in. Recheck: CLEANED. Press 2 (plist clean, helper alive): before CLEANED, nothing to write. Then the helper
+  // exits and the Dock parks its leftover again: TWO; press 3 repairs it for good: TWO, TWO, import, killall, CLEANED; recheck CLEANED.
+  const { exec, calls, script } = fake({ exports: [TWO, TWO, TWO, CLEANED, CLEANED, CLEANED, TWO, TWO, TWO, CLEANED, CLEANED], running: RUNNING_HELPER });
+  const w = world({ exec });
+  const { engine, clock } = w;
+  try {
+    await engine.start();
+    engine.checkDock("startup");
+    const p0 = ofKind(w, "dock");
+    assert.equal(p0.length, 1);
+    assert.equal(p0[0]!.text, WITH_HELPER, "the startup read names the helper as the second tile");
+    assert.deepEqual(p0[0]!.remedy, REMEDY, "Fix the Dock stays the remedy: it clears the leftover");
+    const since = p0[0]!.since;
+    // Press 1: the leftover goes, the tile stays — the row keeps its cause; the toast never says fixed.
+    let n = calls.length;
+    await engine.command({ type: "problem.retry", kind: "dock" });
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING, EXPORT, IMPORT, KILLALL, EXPORT], "the repair ran; one lsappinfo per press");
+    const imported = calls.find((c) => c.args[0] === "import");
+    const recent = dictGet(parsePlistXml(imported?.input ?? ""), "recent-apps");
+    assert.equal(recent?.kind === "array" ? recent.items.length : -1, 1, "the persisted leftover was dropped all the same");
+    let p = ofKind(w, "dock");
+    assert.equal(p.length, 1, "the row stands");
+    assert.equal(p[0]!.text, WITH_HELPER, "the re-read is a clean plist, but the helper still draws its tile");
+    assert.equal(p[0]!.since, since, "refreshed in place");
+    assert.deepEqual(toasts(w).filter((t) => /Dock/.test(t)), [WRITTEN], "written, not fixed");
+    assert.ok(!toasts(w).some((t) => /Dock fixed/.test(t)), "never 'Dock fixed' with a helper alive");
+    // The 10 s recheck reads the clean plist and the living helper: the row stays as it is.
+    n = calls.length;
+    clock.t += Engine.DOCK_RECHECK_MS;
+    tick(w);
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING]);
+    assert.equal(ofKind(w, "dock")[0]?.text, WITH_HELPER, "the recheck keeps the cause");
+    // Press 2 on a clean plist: nothing to write, nothing restarted; the row and its cause stay, the toast says so.
+    n = calls.length;
+    w.events.length = 0;
+    await engine.command({ type: "problem.retry", kind: "dock" });
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING], "no import, no killall");
+    assert.equal(ofKind(w, "dock")[0]?.text, WITH_HELPER);
+    assert.deepEqual(toasts(w).filter((t) => /Dock/.test(t)), ["warn: Dock unchanged — the helper's tile returns while it lives; rebuild (pnpm build:mac) and relaunch"]);
+    // The helper exits (rebuilt and relaunched, or the daemon reaped it); the Dock parks its leftover once more.
+    script.running = undefined;
+    w.events.length = 0;
+    engine.checkDock("later");
+    assert.equal(ofKind(w, "dock")[0]?.text, "Two Jarhead tiles in the Dock", "no helper: today's line, no clause");
+    n = calls.length;
+    await engine.command({ type: "problem.retry", kind: "dock" });
+    assert.deepEqual(argv(calls.slice(n)), [EXPORT, RUNNING, EXPORT, IMPORT, KILLALL, EXPORT]);
+    assert.equal(ofKind(w, "dock").length, 0, "the leftover was the last tile: fixed");
+    assert.deepEqual(toasts(w).filter((t) => /Dock/.test(t)), ["info: Dock fixed: removed 1 recent tile, pin rebuilt"]);
   } finally {
     await engine.stop();
   }
@@ -282,4 +352,27 @@ test("dockProblemText: two tiles with a pin is the line; more is the count; a re
   // A pin at the old build path.
   assert.equal(Engine.dockProblemText(read(fixture("dock-stale-url.xml"))), "The Dock's Jarhead pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/");
   assert.deepEqual(Engine.DOCK_REMEDY, REMEDY);
+});
+
+test("dockProblemText with helperTiles: a clean plist and one Foreground jarhead-hands is two tiles with the cause and the Console's remedy; the same helper over a recent tile is still two, not three; no helper is today's line", () => {
+  const read = (xml: string): Parameters<typeof Engine.dockProblemText>[0] => {
+    const a = readDock(fake({ exports: [xml] }).exec);
+    if ("skipped" in a) throw new Error(a.skipped);
+    return a;
+  };
+  const clean = read(CLEAN);
+  assert.equal(clean.pinned, 1);
+  assert.equal(clean.recent, 0);
+  // The helper's tile is drawn before `recent-apps` has caught up: the row names it, the pin is fine.
+  assert.equal(Engine.dockProblemText({ ...clean, helperTiles: [HELPER] }), `Two Jarhead tiles in the Dock — ${HELPER_CLAUSE}`);
+  // The leftover already in `recent-apps` is the helper's own tile parked: one tile, not one more.
+  const two = read(TWO);
+  assert.equal(two.recent, 1);
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER] }), `Two Jarhead tiles in the Dock — ${HELPER_CLAUSE}`);
+  // Two helpers over the one leftover: three tiles, both pids.
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER, { ...HELPER, pid: 66020 }] }), "3 Jarhead tiles in the Dock — jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover");
+  // No helper (an empty list, or nobody read `lsappinfo`): today's lines, no clause.
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [] }), "Two Jarhead tiles in the Dock");
+  assert.equal(Engine.dockProblemText({ ...clean, helperTiles: [] }), undefined);
+  assert.equal(Engine.dockProblemText(clean), undefined);
 });
