@@ -7,7 +7,7 @@ import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, lang
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
 import { BROWSER_APPS, ClaudeBrain, Delegator, FiredReflexes, LOCAL_NUM_CTX_MIN, LocalBrain, RECONCILE_THRESHOLD, ReflexRunner, ResponsesBrain, discoverLocalServer, foreignModel, normalizeUtterance, resolveLocalModel, responsesDelegationConfig, screenNote, serverLabel, similarity, suggestedPull, type Brain, type BrainAttachment, type BrainSink, type BrainTask, type DelegatorThreads, type Reconciliation, type Reflex, type ReflexOutcome, type RunOutcome, type RunnerOptions, type ToolRunner } from "@jarhead/brain";
-import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
+import { INSTALLED_URL, JARHEAD_BUNDLE_ID, defaultExec, describeDock, describeDockChanges, describeHelperTiles, readDock, repairDock, restartDock, type DockAudit, type Exec } from "@jarhead/cli/install";
 import { EarReflexes, STOP_NAME_WAIT_MS, type ReflexLedgerRow } from "./ear.ts";
 import { MemoryBridge, type LocalMemoryTarget, type MemoryBridgeSeams } from "./memory-bridge.ts";
 import { ActionObserver, ActingSerializer } from "./observe.ts";
@@ -4772,10 +4772,15 @@ export class Engine extends EventEmitter<EngineEvents> {
    * The row an audit earns, or none: two or more Jarhead tiles with a pin among them
    * ("Two Jarhead tiles in the Dock"; the count past two), else a pin whose URL is not
    * the installed bundle's. A recent tile with no pin is one tile — nothing to fix.
+   * An audit that carries `helperTiles` (the one-Jarhead pass read `lsappinfo list`) is
+   * drawn a tile per Foreground helper whether or not `recent-apps` has caught up, and
+   * the text names that cause: Fix the Dock clears only the leftover once the helper is rebuilt.
    */
   static dockProblemText(a: DockAudit): string | undefined {
-    const tiles = a.pinned + a.recent;
-    if (a.pinned >= 1 && tiles >= 2) return tiles === 2 ? "Two Jarhead tiles in the Dock" : `${tiles} Jarhead tiles in the Dock`;
+    const helpers = a.helperTiles ?? [];
+    const tiles = a.pinned + Math.max(a.recent, helpers.length);
+    const cause = helpers.length ? ` — ${describeHelperTiles(helpers, "Fix the Dock")}` : "";
+    if (a.pinned >= 1 && tiles >= 2) return `${tiles === 2 ? "Two Jarhead tiles in the Dock" : `${tiles} Jarhead tiles in the Dock`}${cause}`;
     const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
     if (rebuild && rebuild.urlWas !== INSTALLED_URL) return `The Dock's Jarhead pin points at ${rebuild.urlWas ?? "nothing"}`;
     return undefined;
