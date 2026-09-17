@@ -224,8 +224,9 @@ test("set_voice reflex, idle: 'switch voice to marin' typed patches the setting 
     assert.ok(toasts.includes("Marin 🇬🇧 · one restart"), JSON.stringify(toasts));
     assert.ok(!live.instructions.some((i) => /Kevin just typed/.test(i)), "the closed session was not told about the typed line");
     assert.ok(!next.instructions.some((i) => /Kevin just typed/.test(i)), "the new session's first line is its continuity's, nothing else");
-    const reflexRow = rows<Extract<LedgerRow, { type: "reflex" }>>(w, "reflex").find((r) => r.action === "switch voice to marin");
-    assert.ok(reflexRow?.ok, "the reflex is on the ledger as typed and ok");
+    const reflexRow = rows<{ type: "reflex"; action: string; ok: boolean; source: string }>(w, "reflex").find((r) => r.action === "switch voice to marin");
+    assert.equal(reflexRow?.ok, true, "the reflex is on the ledger as ok");
+    assert.equal(reflexRow?.source, "typed");
     // Said again: the session already speaks as Marin — nothing reopens (the slower source repeating the ear's words costs nothing).
     await engine.command({ type: "say-text", text: "switch voice to marin" });
     await settle();
@@ -311,7 +312,7 @@ test("set_voice reflex, asleep and paused: the setting alone — NEVER a connect
     assert.equal(engine.snapshot().settings.voice, "marin", "the setting is written");
     assert.equal(engine.transportState, "asleep", "still asleep");
     assert.equal(live.currentState, "idle", "no session was opened");
-    assert.equal(live.config, undefined, "no config was ever built");
+    assert.equal(live.config === undefined, true, "no config was ever built");
     assert.equal(lives.length, 1);
     assert.equal(rows<Started>(w, "session.started").length, 0);
     assert.ok(!events.some((e) => e.type === "toast" && /at the next wake/.test(e.text)), "asleep, the pick toast is silent as before");
