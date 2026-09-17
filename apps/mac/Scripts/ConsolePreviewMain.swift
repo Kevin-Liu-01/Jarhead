@@ -361,6 +361,9 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             print("send:", cmd.json)
             // design12: the daemon's echo of the audio block, so `toggle-recording` sees the cells and the head flip.
             if case .setSettings(let p) = cmd, let audio = p.audio { state?.snapshot.settings.audio = audio }
+            // design13: the daemon's echo of a voice or accent pick, so the chip reads `waits` and Switch now rises.
+            if case .setSettings(let p) = cmd, let voice = p.voice { state?.snapshot.settings.voice = voice }
+            if case .setSettings(let p) = cmd, let accent = p.accent { state?.snapshot.settings.accent = accent }
         }
         // The memory rail's verbs, driven by `memory-forget:` / `memory-edit:` / `memory-restore:`
         // through the row's own closures; the rail reports what it holds after (`memory-rail:` lines).
@@ -579,7 +582,20 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.session = fake.session()
             state.wakeGate = .off(reason: "awake")
             state.wakeHeard = ""
+        case "voice-chip":
+            // design13 (Builder G): awake and idle on Ballad (the session says so), nothing running — the chip
+            // reads `🇬🇧 Ballad ⌄`; ↓ ↓ ⏎ in its popup picks Marin (free: one set-settings, echoed below),
+            // the chip wears `waits` and Switch now rises in; a click on it is the one `voice.reopen`.
+            state.snapshot = fake.resumed()
+            state.snapshot.settings.voice = "ballad"
+            state.snapshot.session = fake.session(voice: "ballad", accent: "british")
         default: break
+        }
+        // design13 (Builder G): Settings › Audio shot awake on Ballad while Cedar is the saved pick, so the
+        // line under Accent reads `[Switch now] one restart · Ballad until you switch` beside the flags.
+        if scenario == "settings-audio" {
+            state.snapshot.phase = .listening
+            state.snapshot.session = fake.session(voice: "ballad", accent: "british")
         }
 
         let console = ConsoleWindowController(state: state)
@@ -772,6 +788,17 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // echo guarded, Shared with QuickTime Player.), the hint appears, the head is folded and snapped with `[recording]`.
         case "buttons": defaultActions = "check-kit@0.3,focus:\(ConsoleButtonSheetWords.fieldFocusedId)@0.8"
         case "settings-audio": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5"
+        // design13 (Builder G): the composer's voice chip. Its popup opens above the composer (`probe-floats:
+        // stream.voice`), a snap with the Accent head and the foot; ↓ ↓ ⏎ picks Marin (`menu-pick: stream.voice
+        // marin`, the popup gone, `press: setSettings` and nothing paid — `check-press:setSettings`); the chip
+        // reads `waits` (`voice-chip:` line, a snap); `click:stream.switch` is the one `press: voiceReopen`.
+        // Then Tab into the head: the popup stays (`check-floats:stream.voice`), ← moves the Accent to US
+        // (`send:` carries accent=american), Esc closes.
+        case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
+            + "keyDown:down+down+return@1.3,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
+            + "snap:preview-console-voice-chip-waits@2.2,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
+            + "menuOpen:\(VoiceChipWords.id)@3.1,keyDown:tab@3.5,probe-floats@3.9,check-floats:\(VoiceChipWords.id)@3.95,keyDown:left@4.0,probe-voice@4.3,"
+            + "keyDown:escape@4.4,probe-floats@4.8"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
             + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
             // The closed snap waits for the disclosure's Motion.snappy collapse and the summary's Motion.swap to land
@@ -1077,6 +1104,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 click(String(action.dropFirst("click:".count)), stamp: stamp)
             } else if action == "probe-floats" {
                 probeFloats(stamp: stamp)
+            } else if action == "probe-voice" {
+                // design13: what the composer's chip reads from the snapshot (VoiceChipSlot.inputs), one line.
+                let v = VoiceChipSlot.inputs(state)
+                print("voice-chip: \(VoiceSwitchWords.chip(name: VoiceWords.name(v.voice), flag: AccentWords.flag(v.accent))) waits=\(v.waits) line=\(v.line) busy=\(v.busy) at \(stamp)s")
             } else if action == "probe-press" {
                 probePress(stamp: stamp)
             } else if action.hasPrefix("check-press:") {
@@ -2876,6 +2907,14 @@ struct FakeData {
         SessionInfo(id: "sess_7f3a9c2e41b0", startedAt: ago(14 * 60 + 35), expiresAt: now + 45 * 60 * 1000 + 46_000, usageSeconds: 758, contextRatio: 0.31)
     }
 
+    /// The same session saying the voice and accent it opened on (design13: the chip's `waits` and Switch now need it).
+    func session(voice: String, accent: String) -> SessionInfo {
+        var s = session()
+        s.voice = voice
+        s.accent = accent
+        return s
+    }
+
     func live() -> Snapshot {
         var t = transcript()
         t.append(TranscriptItem(id: "u5", speaker: .kevin, text: "Yes, do it.", startMs: 12000, endMs: 12600, at: ago(60), final: true))
@@ -3538,7 +3577,61 @@ extension PreviewDelegate {
         failed += checkKitAutomations()
         failed += checkKitAudio()
         failed += checkKitButtons()
+        failed += checkKitVoices()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
+    }
+
+    /// design13 (Builder G): the voice switch's pure words and rules — the Accent's flags and titles, the chip's
+    /// words, the foot per phase, the switch line, the fold summary, the stream's switch row, the status submenu.
+    func checkKitVoices() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        expect("accent flag british → 🇬🇧 / none → nil", "\(AccentWords.flag("british") ?? "nil") \(AccentWords.flag("american") ?? "nil") \(AccentWords.flag("none") ?? "nil")", "🇬🇧 🇺🇸 nil")
+        expect("accent title short → 🇺🇸 US", [AccentWords.title("american", short: true), AccentWords.title("british", short: true), AccentWords.title("none", short: true)].joined(separator: " | "), "🇺🇸 US | 🇬🇧 UK | None")
+        expect("accent title long → 🇬🇧 British", [AccentWords.title("american", short: false), AccentWords.title("british", short: false), AccentWords.title("none", short: false)].joined(separator: " | "), "🇺🇸 American | 🇬🇧 British | None")
+        expect("chip word", VoiceSwitchWords.chip(name: "Ballad", flag: AccentWords.flag("british")) + " / " + VoiceSwitchWords.chip(name: "Ballad", flag: AccentWords.flag("none")), "🇬🇧 Ballad / Ballad")
+        expect("voice foot idle", VoiceSwitchWords.foot(name: "Marin", phase: .listening, busy: false), "Marin — ⏎ picks · Switch now hears it · one restart")
+        expect("voice foot busy", VoiceSwitchWords.foot(name: "Marin", phase: .acting, busy: true), "Marin — busy · heard at the next wake")
+        expect("voice foot paused", VoiceSwitchWords.foot(name: "Marin", phase: .paused, busy: false), "Marin — heard when the session resumes")
+        expect("voice foot asleep", VoiceSwitchWords.foot(name: "Marin", phase: .asleep, busy: false) + " / " + VoiceSwitchWords.foot(name: "Marin", phase: .error, busy: false), "Marin — heard at the next Go / Marin — heard at the next Go")
+        expect("voice foot connecting", VoiceSwitchWords.foot(name: "Marin", phase: .connecting, busy: false), "Marin — heard at the next wake")
+        var settings = fake.settings
+        settings.voice = "ballad"; settings.accent = "british"
+        var session = fake.session(voice: "ballad", accent: "british")
+        expect("switch line rest", "\(SettingsPanel.switchLine(settings: settings, session: session, phase: .listening, busy: false))", "rest")
+        settings.voice = "marin"
+        expect("switch line waits(enabled)", "\(SettingsPanel.switchLine(settings: settings, session: session, phase: .listening, busy: false))", "waits(enabled: true)")
+        expect("switch line waits(disabled)", "\(SettingsPanel.switchLine(settings: settings, session: session, phase: .acting, busy: true))", "waits(enabled: false)")
+        expect("switch line: paused and asleep rest (nothing to press)", "\(SettingsPanel.switchLine(settings: settings, session: session, phase: .paused, busy: false)) \(SettingsPanel.switchLine(settings: settings, session: nil, phase: .asleep, busy: false))", "rest rest")
+        expect("waits line", VoiceSwitchWords.waitsLine(current: "Ballad"), "one restart · Ballad until you switch")
+        expect("disclosure Audio summary → Ballad · 🇬🇧 British", ConsoleDisclosureSummary.text(ConsoleDisclosureSummary.audio(voice: "Ballad", accent: AccentWords.title("british", short: false))), "Ballad · 🇬🇧 British")
+        expect("switched row", VoiceSwitchWords.switched(name: "Marin", flag: "🇬🇧", ms: 700) + " / " + VoiceSwitchWords.switched(name: "Marin", flag: nil, ms: nil), "voice → Marin 🇬🇧 · one restart · 0.7 s / voice → Marin · one restart")
+        expect("toast", VoiceSwitchWords.toast(name: "Marin", flag: "🇬🇧"), "Marin 🇬🇧 at the next wake · Switch now")
+        expect("speaking detail on the session's voice", VoiceWords.detail("ballad", speaking: "ballad") + "/" + VoiceWords.detail("marin", speaking: "ballad") + "/" + VoiceWords.detail("zephyr-x", speaking: nil), "speaking//from env")
+        expect("busy: a running delegation awake · none asleep · a live thread", "\(VoiceSwitch.busy(delegations: [fake.runningDelegation(awaiting: false)], threads: [], phase: .acting)) \(VoiceSwitch.busy(delegations: [fake.runningDelegation(awaiting: false)], threads: [], phase: .asleep)) \(VoiceSwitch.busy(delegations: [], threads: [], phase: .listening))", "true false false")
+        // The stream's switch row: a session.started resumed from another on a new voice; the same pair keeps the plain line.
+        let switched = #"{"at":2000,"type":"session.started","sessionId":"live_2","voice":"marin","language":"en","accent":"british","resumedFrom":"live_1","ms":700}"#
+        let row = try? JSONDecoder().decode(LedgerRow.self, from: Data(switched.utf8))
+        let before = ConsoleFormat.Spoken(voice: "ballad", accent: "british")
+        let same = ConsoleFormat.Spoken(voice: "marin", accent: "british")
+        expect("stream: resumed on a new voice → the switch row", row.flatMap { ConsoleFormat.voiceSwitchLine($0, before: before) } ?? "nil", "voice → Marin 🇬🇧 · one restart · 0.7 s")
+        expect("stream: resumed on the same voice → the plain line", "\(row.flatMap { ConsoleFormat.voiceSwitchLine($0, before: same) } ?? "nil") \(row.flatMap { ConsoleFormat.voiceSwitchLine($0, before: nil) } ?? "nil")", "nil nil")
+        // The status menu's rows: Switch now first while a pick waits, Ballad · default, the session's voice · speaking, the accents with flags.
+        session = fake.session(voice: "ballad", accent: "british")
+        let rows = VoiceMenuModel.rows(voice: "marin", accent: "british", session: session, phase: .listening, busy: false)
+        expect("status voice submenu titles", rows.prefix(6).map { $0.kind == .separator ? "—" : $0.title }.joined(separator: " / "), "Switch now / — / Ballad · default · speaking / Cedar / Marin / —")
+        expect("status voice submenu: 22 voices, 3 accents, the pick on", "\(rows.filter { if case .voice = $0.kind { return true }; return false }.count) \(rows.suffix(3).map(\.title).joined(separator: " | ")) \(rows.first { $0.on }?.title ?? "nil")", "22 🇺🇸 American | 🇬🇧 British | None Marin")
+        let asleep = VoiceMenuModel.rows(voice: "marin", accent: "british", session: nil, phase: .asleep, busy: false)
+        expect("status voice submenu: no Switch now asleep", "\(asleep.first?.kind == .switchNow) \(VoiceMenuModel.value(voice: "marin", accent: "british"))", "false Marin 🇬🇧")
+        expect("chip ids", [VoiceChipWords.id, VoiceChipWords.switchId, VoiceChipWords.tipId].joined(separator: " "), "stream.voice stream.switch stream.voice.tip")
+        expect("popup measures: 256 above the composer · 258 in the rail · the head strip 28", "\(Int(VoiceChipWords.popupWidth)) \(Int(VoiceChipWords.settingsPopupWidth)) \(Int(ConsoleMenuPopupLayout.stripHeight)) \(Int(ConsoleMenuPopupLayout.chrome(filter: true, foot: true, head: true) - ConsoleMenuPopupLayout.chrome(filter: true, foot: true)))", "256 258 28 29")
+        expect("language hint", ConsoleTheme.languageHint, "English · awake, Switch now · asleep, the next Go")
+        expect("setup hint", VoiceSwitchWords.setupHint, "English at all times · heard at the first Go")
+        return failed
     }
 
     /// `check-stream` (design13, Builder A): the Now stream's rows against the snapshot they are built from.

@@ -13,7 +13,7 @@
 #           problems-groups | ledger-months | memory-chips | list-keys | list-verbs | agents-groups |
 #           rail | rail-expanded | rail-asleep | rail-agents | rail-search | rail-keys | rail-midnight |
 #           automations | automations-ring | settings-automations |
-#           settings-audio | toggle-recording | resumed | buttons (default live)
+#           settings-audio | toggle-recording | resumed | buttons | voice-chip (default live)
 #   The stream ids (design13, Builder A): `resumed` is a paused → resumed conversation as the engine holds it — the
 #   held session's seven rows before the live session's five — with `check-stream@0.3,republish@0.6,append@0.9,
 #   check-stream@1.2`: `check-stream` prints `check:` lines (entry ids unique · caret on the newest utterance · the
@@ -203,6 +203,11 @@ case "$SCENARIO" in
   # the field, the stepper, a raised card's controls, the outline → filled glyph twins); `focus:buttons.field`
   # rings the second field. Shoot dark, light and PREVIEW_REDUCE_MOTION=1; every run ends `check: all ok (kit)`.
   buttons) ;;
+  # The voices (design13, Builder G): the composer's `🇬🇧 Ballad ⌄` chip — its popup above the composer with the
+  # Accent head and the per-phase foot, ↓ ↓ ⏎ picking Marin for free (`press: setSettings`, the chip `waits`,
+  # Switch now risen in), `click:stream.switch` the one `press: voiceReopen`, Tab into the head and ← moving the
+  # accent; `settings-audio` is re-shot awake on Ballad with Cedar saved (the flags, the switch line).
+  voice-chip) ;;
   *) echo "unknown scenario: $SCENARIO (see the list at the top of $0)" >&2; exit 2 ;;
 esac
 BUILD=".build/console-preview"
@@ -230,6 +235,8 @@ case "$SCENARIO" in menu-voice|menu-voice-filter|menu-backend|menu-escape|menu-o
 # The audio scenarios: the read-back lands at 0.5 s; `toggle-recording` runs its keys, the second read-back and the folds to 3.2 s
 # (the closed snap at 3.0 s, once the fold's animation has landed).
 if [[ "$SCENARIO" == "settings-audio" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.6}"; fi
+# `voice-chip` (design13, Builder G) drives the popup, the pick, the click and the Tab to 4.8 s.
+if [[ "$SCENARIO" == "voice-chip" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-5.2}"; fi
 if [[ "$SCENARIO" == "toggle-recording" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.8}"; fi
 # `resumed` runs its checks to 1.2 s (the second check-stream after the append).
 if [[ "$SCENARIO" == "resumed" ]]; then PREVIEW_SETTLE="${PREVIEW_SETTLE:-1.8}"; fi
