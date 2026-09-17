@@ -548,6 +548,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // design13 (Builder A): a paused → resumed (or voice-switched) conversation the way the engine
             // holds it — the held session's rows before the live session's, ids in the engine's own scheme.
             state.snapshot = fake.resumed()
+        case "voice-chip":
+            // design13 (Builder G): awake and idle on Ballad (the session says so), nothing running — the chip
+            // reads `🇬🇧 Ballad ⌄`; ↓ ↓ ⏎ in its popup picks Marin (free: one set-settings, echoed below),
+            // the chip wears `waits` and Switch now rises in; a click on it is the one `voice.reopen`.
+            state.snapshot = fake.resumed()
+            state.snapshot.settings.voice = "ballad"
+            state.snapshot.session = fake.session(voice: "ballad", accent: "british")
         case "composer-stop":
             // design13 (Builder F): in session with nothing hot, so Stop rests as a ghost before the press.
             state.snapshot = fake.live()
@@ -595,13 +602,6 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             state.snapshot.session = fake.session()
             state.wakeGate = .off(reason: "awake")
             state.wakeHeard = ""
-        case "voice-chip":
-            // design13 (Builder G): awake and idle on Ballad (the session says so), nothing running — the chip
-            // reads `🇬🇧 Ballad ⌄`; ↓ ↓ ⏎ in its popup picks Marin (free: one set-settings, echoed below),
-            // the chip wears `waits` and Switch now rises in; a click on it is the one `voice.reopen`.
-            state.snapshot = fake.resumed()
-            state.snapshot.settings.voice = "ballad"
-            state.snapshot.session = fake.session(voice: "ballad", accent: "british")
         default: break
         }
         // design13 (Builder G): Settings › Audio shot awake on Ballad while Cedar is the saved pick, so the
@@ -813,7 +813,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Then Tab into the head: the popup stays (`check-floats:stream.voice`), ← moves the Accent to US
         // (`send:` carries accent=american), Esc closes.
         case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
-            + "keyDown:down+down+return@1.3,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
+            // Three presses 0.2 s apart, not one burst: two ↓ 40 ms apart in the filter popup can land as one step under load.
+            + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
             + "snap:preview-console-voice-chip-waits@2.2,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
             + "menuOpen:\(VoiceChipWords.id)@3.1,keyDown:tab@3.5,probe-floats@3.9,check-floats:\(VoiceChipWords.id)@3.95,keyDown:left@4.0,probe-voice@4.3,"
             + "keyDown:escape@4.4,probe-floats@4.8"
@@ -3622,6 +3623,8 @@ extension PreviewDelegate {
             if !ok { failed += 1 }
             print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
         }
+        // The fixtures, or the same set the shots use when check-kit runs before a scenario loaded them.
+        let fake = self.fake ?? FakeData(shot: "preview.png")
         expect("accent flag british → 🇬🇧 / none → nil", "\(AccentWords.flag("british") ?? "nil") \(AccentWords.flag("american") ?? "nil") \(AccentWords.flag("none") ?? "nil")", "🇬🇧 🇺🇸 nil")
         expect("accent title short → 🇺🇸 US", [AccentWords.title("american", short: true), AccentWords.title("british", short: true), AccentWords.title("none", short: true)].joined(separator: " | "), "🇺🇸 US | 🇬🇧 UK | None")
         expect("accent title long → 🇬🇧 British", [AccentWords.title("american", short: false), AccentWords.title("british", short: false), AccentWords.title("none", short: false)].joined(separator: " | "), "🇺🇸 American | 🇬🇧 British | None")
