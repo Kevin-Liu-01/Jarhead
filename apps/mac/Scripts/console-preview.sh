@@ -247,7 +247,9 @@ if [[ "$SCENARIO" == "menu-model" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW
 # The click path (design13): `menu-click-through` is the `local` fixture tall like `menu-model` (Voice and Model both on
 # screen) and drives three clicks to 4.15 s; `tip-click` and `cold-click` run their one click and the press check by 2 s.
 case "$SCENARIO" in menu-click-through) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x1040}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-4.5}";; esac
-case "$SCENARIO" in tip-click|cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+case "$SCENARIO" in tip-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-2.4}";; esac
+# The cold click hands activation to Finder and waits for the app to go inactive (≤ 1 s) before its down; check-press lands at 2.45 s.
+case "$SCENARIO" in cold-click) export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.4}";; esac
 # `composer-stop` (design13, Builder F) runs its two presses and three snaps to 2.85 s.
 if [[ "$SCENARIO" == "composer-stop" ]]; then export PREVIEW_WINDOW_SIZE="${PREVIEW_WINDOW_SIZE:-1180x760}"; PREVIEW_SETTLE="${PREVIEW_SETTLE:-3.3}"; fi
 # The dropdown scenarios drive keys to ~2.6 s (a filter typed, ↓ Return, the probes) before the shot.
