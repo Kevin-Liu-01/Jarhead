@@ -45,7 +45,7 @@ interface Script {
   /** `killall Dock` exit codes, consumed in order (the last one repeats; default 0). */
   readonly killall?: readonly number[];
   /** What `lsappinfo list` prints (mutable: a helper exits mid-test); unset, the command is unknown (127) — nobody's tile, as on a headless run. */
-  running?: string;
+  running?: string | undefined;
 }
 
 /** Exports are consumed in order (the last one repeats); import, killall and lsappinfo answer as scripted. */
