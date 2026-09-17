@@ -55,6 +55,34 @@ test("parseReflex: whole commands match, wrapped in the wake word and politeness
   }
 });
 
+test("set_voice: 'switch voice to marin' / 'speak with a british accent' are the one settings-writing meta reflex — a VOICES id or an accent word only; 'use ash', 'be marin', an unknown name and a compound are not; 'switch to marin' stays the app row's", () => {
+  const marin = parseReflex("switch voice to marin")!;
+  assert.deepEqual(marin, { kind: "set_voice", tool: "set_voice", input: { voice: "marin" }, said: "", label: "switch voice to marin", prefire: false, idempotent: true, meta: true });
+  for (const said of ["change the voice to cedar", "switch your voice to cedar", "Change voice to Cedar", "Jarhead, switch the voice to cedar please.", "um, change voice to cedar"]) {
+    const r = parseReflex(said);
+    assert.ok(r, said);
+    assert.equal(r.kind, "set_voice", said);
+    assert.deepEqual(r.input, { voice: "cedar" }, said);
+    assert.equal(r.meta, true, said);
+    assert.equal(r.prefire, false, said);
+    assert.equal(r.idempotent, true, said);
+    assert.equal(r.said, "", `${said}: spoken from the result`);
+  }
+  const british = parseReflex("speak with a british accent")!;
+  assert.deepEqual(british, { kind: "set_voice", tool: "set_voice", input: { accent: "british" }, said: "", label: "speak with a british accent", prefire: false, idempotent: true, meta: true });
+  assert.deepEqual(parseReflex("talk in an american accent")!.input, { accent: "american" });
+  assert.deepEqual(parseReflex("Jarhead, speak in a British accent, please")!.input, { accent: "british" });
+  // Not the voice row: a bare name, a loose verb, a name that is no voice, a compound, another accent word.
+  for (const s of ["use ash", "be marin", "marin", "switch voice to bob", "switch voice to marin and say hi", "speak with a scottish accent", "speak with an accent", "switch voice", "change the voice"]) {
+    const r = parseReflex(s);
+    assert.ok(!r || r.kind !== "set_voice", `${s}: not a voice switch (got ${JSON.stringify(r)})`);
+  }
+  assert.equal(parseReflex("switch to marin")!.kind, "open_app", "the app row keeps 'switch to <name>'");
+  assert.equal(parseReflex("use ash"), undefined);
+  assert.equal(parseReflex("be marin"), undefined);
+  assert.equal(parseReflex("switch voice to bob"), undefined, "no such voice: the brain's");
+});
+
 test("ReflexRunner: a reflex runs through the runner; a click is pre-checked by the policy and left to the brain when the control looks irreversible or the app is hands-off", async () => {
   const hands = new FakeHands();
   const { runner } = makeRunner({}, hands);

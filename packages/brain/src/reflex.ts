@@ -1,4 +1,5 @@
 import { HANDS_OFF_APPS, classifyAction, classifyAppleScript, logger } from "@jarhead/core";
+import { ACCENTS, VOICES } from "@jarhead/protocol";
 import { ACTING_MEMBERS, type ToolResult } from "@jarhead/hands";
 import type { ToolRunner } from "./runner.ts";
 
@@ -29,7 +30,10 @@ import type { ToolRunner } from "./runner.ts";
  * Spotify doing", "stop the Slack one") are answered from the engine's thread table
  * and "what time is it" from the clock — zero generations, never held while a task
  * runs, spoken from the result. Their names come from the caller (`ctx.threadNames`,
- * the LIVE threads), never a static list.
+ * the LIVE threads), never a static list. `set_voice` ("switch voice to marin", "speak
+ * with a british accent") is the one meta row that writes a setting: the engine patches
+ * the voice or accent itself and, with a session open and idle, reopens it on the new
+ * voice — Kevin asking aloud is the explicit press. It never opens a session from asleep.
  */
 
 const log = logger("brain.reflex");
@@ -66,7 +70,9 @@ export type ReflexKind =
   | "thread_list"
   | "thread_stop"
   | "thread_pause"
-  | "thread_resume";
+  | "thread_resume"
+  /** The voice or accent by name (a `VOICES` id, "american" / "british"): the engine's own settings write, no tool spec. */
+  | "set_voice";
 
 /** What the caller knows that the grammar does not: the live thread names, the clock. */
 export interface ReflexContext {
@@ -339,6 +345,28 @@ function parseThreadVerb(t: string, utterance: string, ctx: ReflexContext | unde
   }
   return undefined;
 }
+/**
+ * "switch voice to marin" / "change the voice to cedar" / "speak with a british accent" /
+ * "talk in an american accent" — the word must be a `VOICES` id or an accent word; no
+ * loose "be marin" / "use ash" (a name alone is room talk). "switch to marin" stays the
+ * app row's.
+ */
+const SWITCH_VOICE = /^(?:switch|change) (?:the |your )?voice to (\w+)$|^(?:speak|talk) (?:with|in) an? (american|british) accent$/i;
+
+/** The one settings-writing reflex: meta (the engine patches and, idle, reopens), idempotent, never prefired. */
+function parseSwitchVoice(t: string): Reflex | undefined {
+  const m = SWITCH_VOICE.exec(t);
+  if (!m) return undefined;
+  const meta = { said: "", prefire: false, idempotent: true, meta: true } as const;
+  if (m[1] !== undefined) {
+    const voice = m[1].toLowerCase();
+    if (!(VOICES as readonly string[]).includes(voice)) return undefined;
+    return { kind: "set_voice", tool: "set_voice", input: { voice }, label: `switch voice to ${voice}`, ...meta };
+  }
+  const accent = (m[2] ?? "").toLowerCase();
+  if (!(ACCENTS as readonly string[]).includes(accent)) return undefined;
+  return { kind: "set_voice", tool: "set_voice", input: { accent }, label: `speak with a ${accent} accent`, ...meta };
+}
 /** At most four words: a control's name, not a description of where to find it. */
 const CLICK = /^(?:click|press|tap|hit)(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon))?$/;
 const DOUBLE_CLICK = /^double[- ]?click(?: on)?(?: the)? ([a-z0-9][a-z0-9.&'-]*(?: [a-z0-9.&'-]+){0,3}?)(?: (?:button|link|tab|checkbox|menu|icon|file|folder))?$/;
@@ -445,6 +473,11 @@ export function parseReflex(utterance: string, ctx?: ReflexContext): Reflex | un
   {
     const thread = parseThreadVerb(t, utterance, ctx);
     if (thread) return thread;
+  }
+  // The voice by name: a settings write the engine answers itself (never a paid start from asleep).
+  {
+    const voice = parseSwitchVoice(t);
+    if (voice) return voice;
   }
   if (TIME.test(t) || DATE.test(t)) {
     const text = clockLine(TIME.test(t) ? "time" : "date", (ctx?.now ?? Date.now)());

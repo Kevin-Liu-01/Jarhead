@@ -364,6 +364,8 @@ export const AUTOMATION_SPECS: readonly ToolSpec[] = [
       required: ["name", "verb"],
     },
   },
+  // No spec in this file writes a setting. The one exception lives outside the specs: the `set_voice`
+  // reflex (reflex.ts, "switch voice to marin") — the engine's own updateSettings, no tool the brain can call.
   {
     name: "recipe_list",
     description: "The shell recipes Kevin approved for automations: name, command, when approved, which automations use it, and `asks` when the policy would now question it (such a recipe cannot be armed until it is edited). A recipe is approved through automation_set's recipeCommand and its one yes; nothing here writes settings.",
