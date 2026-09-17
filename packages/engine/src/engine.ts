@@ -14,6 +14,7 @@ import { ActionObserver, ActingSerializer } from "./observe.ts";
 import { LaneRunner, ThreadAwareRunner, ThreadLog, ThreadScheduler, ThreadTable, type ThreadBrainFactory, type ThreadBrainSpec, type ThreadParent, type ThreadVoice } from "./threads/index.ts";
 import { Automations, keepRecipeTrash, type AutomationExec, type ShellGate, type ShellRunner } from "./automations/index.ts";
 import {
+  ACCENTS,
   BRAIN_KINDS,
   DEFAULT_AUDIO,
   DEFAULT_SETTINGS,
@@ -24,6 +25,7 @@ import {
   grantOf,
   THREAD_PAGE,
   THREAD_TERMINAL,
+  VOICES,
   type Accent,
   type AgentInfo,
   type AgentMessage,
@@ -196,6 +198,9 @@ interface LostSession {
 }
 
 const SETTINGS_FILE = "settings.json";
+
+/** What the gap before a resumed session was: a pause Kevin chose, an engine restart, a server drop, or a voice change. */
+type ResumeHow = "paused" | "restarted" | "reconnected" | "voice change";
 
 export class Engine extends EventEmitter<EngineEvents> {
   /** Re-read after `config.set-secrets`; everything else treats it as constant. */
@@ -779,7 +784,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     return this.settings;
   }
 
-  updateSettings(patch: SettingsPatch): void {
+  /**
+   * Save a patch. `quiet`: the voice toast stays unsaid — the `set_voice` reflex passes it when
+   * it reopens the session at once (the reopen is the answer; "at the next wake" would be false).
+   */
+  updateSettings(patch: SettingsPatch, o: { readonly quiet?: boolean } = {}): void {
     const next: Record<string, unknown> = { ...this.settings };
     for (const [key, value] of Object.entries(patch)) {
       // A brain kind this build does not know would otherwise fall through selection as Responses; it is refused here, with a line.
@@ -803,10 +812,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       void this.restartBrain(`settings changed to ${this.settings.brain} ${this.settings.brainModel}`);
     }
     // A voice, accent or language is fixed at session.start (session.update carries only the
-    // delegation), so a pick while awake is silent until the next session — say so, and where
-    // the button is that reopens now (voice.reopen, Kevin-pressed only: never a paid start on a menu browse).
-    if ((this.live || this.connecting) && (before.voice !== this.settings.voice || before.accent !== this.settings.accent || before.language !== this.settings.language)) {
-      this.toast("voice change heard at the next wake · Switch now in Settings to hear it", "info");
+    // delegation), so a pick while awake is silent until the next session — say so, and name
+    // the verb that reopens now (Switch now → voice.reopen, Kevin-pressed only: never a paid start on a menu browse).
+    if (!o.quiet && (this.live || this.connecting) && (before.voice !== this.settings.voice || before.accent !== this.settings.accent || before.language !== this.settings.language)) {
+      this.toast(`${Engine.voiceLine(this.settings.voice, this.settings.accent)} at the next wake · Switch now`, "info");
     }
     try {
       writeFileSync(this.settingsPath(), JSON.stringify(this.settings, null, 2));
@@ -1813,7 +1822,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    * session is then closed the moment it exists (it billed for the handshake, nothing
    * more) and the transport stays asleep.
    */
-  private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string; readonly how?: "paused" | "restarted" | "reconnected" }): Promise<void> {
+  private async connect(reason: string, resume?: { readonly pause: PauseInfo; readonly continuity: string; readonly how?: ResumeHow }): Promise<void> {
     log.info(`wake requested (${reason})`);
     this.wantAwake = true;
     if (this.live || this.connecting) return;
@@ -1874,7 +1883,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (resume) {
         this.ledger.append({ at, type: "resume", sessionId: res.id, resumedFrom: resume.pause.sessionId, pausedMs: at - resume.pause.at });
         this.pauseInfo = undefined;
-        this.toast(resume.how === "reconnected" ? "back" : "resumed", "info");
+        this.toast(this.resumeToast(resume.how), "info");
       }
       if (this.muted) live.mute();
       this.setPhase(this.muted ? "muted" : "listening");
@@ -1897,7 +1906,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.setPhase("error");
         // The conversation the server cut is not lost with the failed start: Kevin's Go (or Retry)
         // carries it on with the same continuity — the network being down is the common case here.
-        if (resume?.how === "reconnected" && !this.heldReconnect) {
+        if ((resume?.how === "reconnected" || resume?.how === "voice change") && !this.heldReconnect) {
           this.heldReconnect = resume.pause;
           log.info(`the reconnect failed; the conversation (${resume.pause.sessionId}) is held for the next Go until ${new Date(resume.pause.sleepsAt).toISOString()}`);
         }
@@ -2447,6 +2456,11 @@ export class Engine extends EventEmitter<EngineEvents> {
         if (item) this.delegator?.typedHandled(item);
       }
     }
+    if (this.live !== live) {
+      // The reflex reopened the session (a voice switch): the new one carries its own first line; the closed one hears nothing.
+      log.info(`say-text: ${t.length} chars → the session was reopened by the reflex (${(did || "handled").slice(0, 60)}) in ${Math.round(performance.now() - t0)} ms`);
+      return;
+    }
     const typed = `Kevin just typed (treat it exactly like speech): "${t}".`;
     live.appendInstructions(
       null,
@@ -2793,9 +2807,49 @@ export class Engine extends EventEmitter<EngineEvents> {
         }
         return { kind: "text", text: t.statusLine(name) };
       }
+      case "set_voice":
+        return this.setVoiceReflex(reflex);
       default:
         return { kind: "error", message: `not a reflex: ${reflex.kind} is not the engine's to answer` };
     }
+  }
+
+  /**
+   * "Switch voice to Marin" / "speak with a British accent", said or typed: the ONLY reflex that writes
+   * a setting. The pick is saved through `updateSettings`; then, with a session open and idle, the
+   * session is reopened on the new voice at once (Kevin asked aloud — that is the explicit press) and
+   * the new voice says "Marin here." from its continuity, so the result text is empty. Busy (a task or a
+   * thread runs): the current voice says "Marin at the next wake." — no reopen, nothing cancelled.
+   * Asleep, paused or connecting: the setting alone, never a connect — a reflex must not open a paid
+   * session. A name that is not a `VOICES` id changes nothing. Idempotent: the session already speaking
+   * this way (the slower source repeating the ear's words) is answered with silence.
+   */
+  private async setVoiceReflex(reflex: Reflex): Promise<ToolResult> {
+    const voiceIn = typeof reflex.input["voice"] === "string" ? reflex.input["voice"].trim() : undefined;
+    const accentIn = typeof reflex.input["accent"] === "string" ? reflex.input["accent"].trim().toLowerCase() : undefined;
+    const voice = voiceIn?.toLowerCase();
+    if (voice !== undefined && !(VOICES as readonly string[]).includes(voice)) return { kind: "text", text: `no voice called ${voiceIn} — the list is in Settings` };
+    if (accentIn !== undefined && !(ACCENTS as readonly string[]).includes(accentIn)) return { kind: "text", text: `no accent called ${accentIn} — American, British or none` };
+    if (voice === undefined && accentIn === undefined) return { kind: "error", message: "set_voice names neither a voice nor an accent" };
+    const accent = accentIn as Accent | undefined;
+    const wantVoice = voice ?? this.settings.voice;
+    const wantAccent = accent ?? this.settings.accent;
+    const name = Engine.voiceName(wantVoice);
+    const open = this.live?.session !== undefined && !this.connecting && !this.pauseInfo && !this.sleeping;
+    if (open && this.sessionVoice === wantVoice && this.sessionAccent === wantAccent && this.settings.voice === wantVoice && this.settings.accent === wantAccent) {
+      log.info(`set_voice: ${name} already — nothing to do`);
+      return { kind: "text", text: "" };
+    }
+    const busy = this.delegator?.active !== undefined || this.threads.running() > 0;
+    const reopen = open && !busy;
+    this.updateSettings(voice !== undefined ? { voice } : { accent: accent as Accent }, { quiet: reopen });
+    if (reopen) {
+      await this.reopenVoice({ how: "voice change" });
+      return { kind: "text", text: "" };
+    }
+    if (open) return { kind: "text", text: `${name} at the next wake.` };
+    log.info(`set_voice: ${name} saved while ${this.pauseInfo ? "paused" : this.connecting ? "connecting" : "asleep"}; heard at the next wake — no session opened`);
+    return { kind: "text", text: "" };
   }
 
   /**
@@ -3588,15 +3642,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   }
 
   /**
-   * Kevin pressed Switch now after picking a voice or accent: the session is paused
-   * (closed, the conversation held) and reopened at once with the new voice and the
-   * "reconnected" continuity — strictly the two existing verbs, so one session at a
-   * time and both rows on the ledger. Refused while a task or a thread runs (a pause
-   * would cancel them: "busy — heard at the next wake"), and while paused, asleep or
-   * connecting (nothing to reopen: the pick is heard at the next wake anyway). Only
-   * ever on Kevin's press — browsing 22 voices must never churn paid starts.
+   * Kevin pressed Switch now after picking a voice or accent, or asked aloud ("switch
+   * voice to marin", the `set_voice` reflex): the session is paused (closed, the
+   * conversation held) and reopened at once with the new voice — strictly the two
+   * existing verbs, so one session at a time and both rows on the ledger. `how`: "voice
+   * change" (the default) has the new voice say one line, "<Name> here.", so the switch
+   * is audible; "reconnected" carries on silently. Refused while a task or a thread runs
+   * (a pause would cancel them: "busy — heard at the next wake"), and while paused,
+   * asleep or connecting (nothing to reopen: the pick is heard at the next wake anyway).
+   * Only ever on Kevin's press or his words — browsing 22 voices must never churn paid
+   * starts, and nothing here opens a session from asleep.
    */
-  async reopenVoice(): Promise<void> {
+  async reopenVoice(opts: { readonly how?: "reconnected" | "voice change" } = {}): Promise<void> {
     if (this.delegator?.active !== undefined || this.threads.running() > 0) {
       this.toast("busy — heard at the next wake", "info");
       return;
@@ -3609,8 +3666,32 @@ export class Engine extends EventEmitter<EngineEvents> {
     await this.pause({ quiet: true });
     const pause = this.pauseInfo;
     if (!pause) return; // a sleep raced the pause: nothing is held, nothing to reopen
-    log.info(`voice change: reopening the session (${was} → ${this.settings.voice} / ${this.settings.accent})`);
-    await this.connect("voice change", { pause, continuity: this.continuityFor(pause, "reconnected"), how: "reconnected" });
+    const how = opts.how ?? "voice change";
+    log.info(`voice change: reopening the session (${was} → ${this.settings.voice} / ${this.settings.accent}; ${how})`);
+    await this.connect("voice change", { pause, continuity: this.continuityFor(pause, how), how });
+  }
+
+  /** The word the Console shows when a resumed session is up: "resumed", "back" (a reconnect), or the voice it now speaks with. */
+  private resumeToast(how: ResumeHow | undefined): string {
+    if (how === "reconnected") return "back";
+    if (how === "voice change") return `${Engine.voiceLine(this.settings.voice, this.settings.accent)} · one restart`;
+    return "resumed";
+  }
+
+  /** "Marin" — a `VOICES` id as the Console spells it. */
+  static voiceName(voice: string): string {
+    return voice ? voice.charAt(0).toUpperCase() + voice.slice(1) : "";
+  }
+
+  /** The accent's flag: it is a prompt clause, not a voice, so the flag rides beside the name. */
+  static accentFlag(accent: Accent | undefined): string {
+    return accent === "british" ? "🇬🇧" : accent === "american" ? "🇺🇸" : "";
+  }
+
+  /** "Marin 🇬🇧" / "Marin" (no accent). */
+  static voiceLine(voice: string, accent: Accent | undefined): string {
+    const flag = Engine.accentFlag(accent);
+    return flag ? `${Engine.voiceName(voice)} ${flag}` : Engine.voiceName(voice);
   }
 
   /**
@@ -3619,11 +3700,12 @@ export class Engine extends EventEmitter<EngineEvents> {
    * (the default: carry on silently); a restart of the engine that cut the
    * conversation — then the lines come from the LEDGER (this process never heard them)
    * and the voice says one word, "back", so Kevin knows it is the same conversation; or
-   * a reconnect after the server dropped the session (expired, connection lost, a voice
-   * switch) — the same conversation picked up where it was cut, silently unless Kevin
-   * was mid-request.
+   * a reconnect after the server dropped the session (expired, connection lost) — the
+   * same conversation picked up where it was cut, silently unless Kevin was mid-request;
+   * or a voice change (Switch now, "switch voice to marin") — the same conversation, and
+   * the new voice says one line, "<Name> here.", so the switch is heard.
    */
-  private continuityFor(pause: PauseInfo, how: "paused" | "restarted" | "reconnected" = "paused"): string {
+  private continuityFor(pause: PauseInfo, how: ResumeHow = "paused"): string {
     const gapMs = this.now() - pause.at;
     const minutes = Math.round(gapMs / 60_000);
     const when = minutes < 1 ? "less than a minute ago" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
@@ -3647,9 +3729,19 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     const last = this.lastDelegations[this.lastDelegations.length - 1];
     const task = last?.summary ? `Last task: "${last.request.replace(/\s+/g, " ").trim().slice(0, 160)}" — ${last.status}: ${last.summary}` : recalled?.task;
+    const seconds = Math.max(1, Math.round(gapMs / 1000));
+    const gap = seconds < 90 ? `${seconds} ${seconds === 1 ? "second" : "seconds"}` : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+    if (how === "voice change") {
+      const name = Engine.voiceName(this.settings.voice);
+      return [
+        "# Continuity",
+        `Kevin switched your voice ${gap} ago: you now speak as ${name}. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
+        lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
+        ...(task ? [task] : []),
+        `Say exactly one line now — "${name} here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.`,
+      ].join("\n");
+    }
     if (how === "reconnected") {
-      const seconds = Math.max(1, Math.round(gapMs / 1000));
-      const gap = seconds < 90 ? `${seconds} ${seconds === 1 ? "second" : "seconds"}` : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
       return [
         "# Continuity",
         `The voice connection dropped ${gap} ago and just came back. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
@@ -3659,7 +3751,6 @@ export class Engine extends EventEmitter<EngineEvents> {
       ].join("\n");
     }
     if (how === "restarted") {
-      const seconds = Math.max(1, Math.round(gapMs / 1000));
       return [
         "# Continuity",
         `Jarhead's engine restarted ${seconds < 90 ? `${seconds} seconds` : `${minutes} minutes`} ago in the middle of this conversation (a crash, or an update). This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
@@ -4221,7 +4312,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       case "agent.history":
         return this.agentHistory(cmd.agentId, cmd.before);
       case "voice.reopen":
-        return this.reopenVoice();
+        return this.reopenVoice({ how: "voice change" });
       case "memory.forget":
       case "memory.restore":
       case "memory.edit":
