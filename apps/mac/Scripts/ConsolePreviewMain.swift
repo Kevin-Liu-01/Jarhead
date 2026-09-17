@@ -137,6 +137,12 @@ import SwiftUI
 //                    `tip: hidden stream.stop` on the same click. `cold-click` clicks Go with the app deactivated
 //                    and the window not key (`click:stream.go:cold`): `press: go` on the first click. Each ends
 //                    `check-press:` and `check: all ok (kit)`; the kit pins `floats: a tip/menu never consumes a click`.
+//     composer-stop = Stop's face (design13, Builder F): the live fixture with no running delegation (Stop a ghost),
+//                    `snap` in session, ONE click on Stop (`press: stop`, the 0.4 s red flash), `phase:asleep` as the
+//                    engine's answer, `snap` asleep — the SPENT face: lift + hairRow, fg3, the word `Stopped`, one width
+//                    — then `click:stream.stop` again and a `snap` 0.15 s after it: grey, never red (`stopFlashes(asleep)`
+//                    is false); `check-press:stop+stop`. `check-kit` pins stopKind / stopWord / stopFlashes and
+//                    HelpCopy.stopSpent (checkKitStop).
 //     automations  = the Now rail's Automations section (design11, Builder D): the mockup's six rows under
 //                    Clock 4 / Watchers 2, the Trash fold open (`fold:now.automations.trash:open`), the honest
 //                    line, the ring row `07:10 · Wake up, Kevin [Snooze] [Done]` under the tabs, the Downloads →
@@ -274,6 +280,8 @@ import SwiftUI
 //     check-press:<none|verb[+verb]>  the `press:` lines so far must be exactly those verbs, in order
 //     check-composer-free  the first responder is not the composer's text (a click on ground never
 //                          focuses the composer; `check-floats:` no longer folds this in)
+//     phase:<raw>          the engine's answer to a press, as the daemon would publish it: the snapshot's phase
+//                          set to that Phase (asleep also drops the session) — `phase:asleep` after a Stop
 //     focus:<id> · menuOpen:<id> · tipOpen:<id> · chip:<kind> · highlight:<id> · fold:<id>:<open|closed>
 //                          the kit's previewNotification keys (ConsolePreviewKey): the control with that
 //                          id takes focus / opens its menu / pins its tip / the chip is picked / the row
@@ -540,6 +548,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             // design13 (Builder A): a paused → resumed (or voice-switched) conversation the way the engine
             // holds it — the held session's rows before the live session's, ids in the engine's own scheme.
             state.snapshot = fake.resumed()
+        case "composer-stop":
+            // design13 (Builder F): in session with nothing hot, so Stop rests as a ghost before the press.
+            state.snapshot = fake.live()
+            state.snapshot.marks = fake.marks()
+            state.snapshot.delegations.removeAll { $0.status == .running || $0.status == .awaitingConfirmation }
         case "typed-row":
             // A line Kevin typed in the composer, on the record beside the spoken ones.
             state.snapshot = fake.live()
@@ -778,6 +791,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "tip-click": defaultActions = "check-kit@0.3,tipOpen:stream.stop@0.6,probe-floats@1.0,snap:preview-console-tip-click-pinned@1.05,click:stream.stop@1.1,"
             + "probe-floats@1.7,check-floats:none@1.75,probe-press@1.9,check-press:stop@1.95"
         case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@0.8,probe-press@1.4,check-press:go@1.45"
+        // Stop's face (design13, Builder F): the ghost in session, one press (the flash runs to 1.4 s), the engine's
+        // asleep, the spent face at rest, a second press snapped 0.15 s later — inside where a flash would show red.
+        case "composer-stop": defaultActions = "check-kit@0.3,snap:preview-console-composer-stop-session@0.8,click:stream.stop@1.0,phase:asleep@1.2,"
+            + "snap:preview-console-composer-stop-asleep@2.0,click:stream.stop@2.2,snap:preview-console-composer-stop-pressed-again@2.35,"
+            + "probe-press@2.8,check-press:stop+stop@2.85"
         // The Wake word toggle focused, Space flips it: `send:` carries wakeEnabled=false; the words read On | Off.
         case "toggle": defaultActions = "check-kit@0.3,rail-scroll:1500@0.6,focus:settings.wakeWord@1.0,snap:preview-console-toggle-focused@1.4,keyDown:space@1.6"
         // The audio pass (design12, Builder C): `settings-audio` is Settings › Audio with the engine's read-back posted as the
@@ -1108,6 +1126,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 // design13: what the composer's chip reads from the snapshot (VoiceChipSlot.inputs), one line.
                 let v = VoiceChipSlot.inputs(state)
                 print("voice-chip: \(VoiceSwitchWords.chip(name: VoiceWords.name(v.voice), flag: AccentWords.flag(v.accent))) waits=\(v.waits) line=\(v.line) busy=\(v.busy) at \(stamp)s")
+            } else if action.hasPrefix("phase:") {
+                setPhase(String(action.dropFirst("phase:".count)), stamp: stamp)
             } else if action == "probe-press" {
                 probePress(stamp: stamp)
             } else if action.hasPrefix("check-press:") {
@@ -3484,6 +3504,17 @@ extension PreviewDelegate {
     /// Seconds since launch, for the lines events print as they happen.
     var wallStamp: String { String(format: "%.2f", Date().timeIntervalSince(launchedAt)) }
 
+    /// `phase:<raw>`: the engine's answer as the daemon would publish it — the snapshot's phase; asleep
+    /// also drops the session (the composer's Stop goes spent, Go turns primary, the Now row greys).
+    func setPhase(_ raw: String, stamp: String) {
+        guard let phase = Phase(rawValue: raw) else {
+            print("action: phase \(raw) at \(stamp)s → unknown phase (\(Phase.allCases.map(\.rawValue).joined(separator: " ")))"); return
+        }
+        state.snapshot.phase = phase
+        if phase == .asleep { state.snapshot.session = nil }
+        print("action: phase \(raw) at \(stamp)s → phase=\(state.snapshot.phase.rawValue) session=\(state.snapshot.session == nil ? "nil" : "open")")
+    }
+
     /// `probe-press`: the press trail so far, in order.
     func probePress(stamp: String) {
         print("probe-press: \(pressLog.isEmpty ? "none" : pressLog.joined(separator: " · ")) at \(stamp)s")
@@ -3578,6 +3609,7 @@ extension PreviewDelegate {
         failed += checkKitAudio()
         failed += checkKitButtons()
         failed += checkKitVoices()
+        failed += checkKitStop()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3939,6 +3971,31 @@ extension PreviewDelegate {
         func show(_ t: String) -> String { "\(split(t).flag ?? "nil")|\(split(t).word)" }
         expect("segments: a leading flag splits off the title", [show("🇬🇧 UK"), show("None"), show("🇺🇸 American"), show("🇬🇧"), show("Off")].joined(separator: " · "), "🇬🇧|UK · nil|None · 🇺🇸|American · nil|🇬🇧 · nil|Off")
         expect("row controls: raised on the highlight", "\(ConsoleRow.surface(selected: false, hovering: false)) \(ConsoleRow.surface(selected: true, hovering: false)) \(ConsoleRow.surface(selected: false, hovering: true))", "ground raised raised")
+        return failed
+    }
+
+    /// design13 (Builder F): Stop's face is a pure function of the phase — spent while asleep with nothing
+    /// running, red while hot or flashing, a ghost otherwise; the word follows; a press from asleep never
+    /// flashes; the spent tip is clean copy with the verb first and the shortcut of `stopAll`.
+    func checkKitStop() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        func kind(_ phase: Phase, hot: Bool = false, flashing: Bool = false) -> String { "\(ComposerBar.stopKind(phase: phase, hot: hot, flashing: flashing))" }
+        expect("stop kind asleep → spent", kind(.asleep), "spent")
+        expect("stop kind hot → danger (in session · asleep)", "\(kind(.acting, hot: true)) \(kind(.asleep, hot: true))", "danger danger")
+        expect("stop kind flashing from session → danger", kind(.listening, flashing: true), "danger")
+        expect("stop kind rest → ghost (listening · paused · connecting · error)", [kind(.listening), kind(.paused), kind(.connecting), kind(.error)].joined(separator: " "), "ghost ghost ghost ghost")
+        expect("stop word asleep → Stopped / listening → Stop", "\(ComposerBar.stopWord(phase: .asleep, hot: false)) / \(ComposerBar.stopWord(phase: .listening, hot: false))", "Stopped / Stop")
+        expect("stop word asleep but hot → Stop", ComposerBar.stopWord(phase: .asleep, hot: true), "Stop")
+        expect("stop no red from asleep → false", "\(ComposerBar.stopFlashes(phaseAtPress: .asleep)) \(ComposerBar.stopFlashes(phaseAtPress: .listening)) \(ComposerBar.stopFlashes(phaseAtPress: .paused))", "false true true")
+        let spent = HelpCopy.stopSpent
+        expect("help copy stopSpent ≤ 60, verb first", "\(spent.hint.count <= HelpCopy.maxHintLength) \(spent.hint.hasPrefix(ComposerWords.stopped)) \(HelpCopy.violations(spent).joined(separator: ","))", "true true ")
+        expect("help copy stopSpent keeps Stop all's key", "\(spent.key ?? "nil") \(spent.name)", "\(HelpCopy.stopAll.key ?? "nil") Stop")
+        expect("composer words: Stop · Stopped", "\(ComposerWords.stop) · \(ComposerWords.stopped)", "Stop · Stopped")
         return failed
     }
 
