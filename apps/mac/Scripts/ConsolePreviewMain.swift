@@ -3612,11 +3612,14 @@ extension PreviewDelegate {
         let ids = [StreamTipWords.goId, StreamTipWords.muteId, VoiceChipWords.id, VoiceChipWords.switchId, StreamTipWords.sendId, StreamTipWords.stopId]
         let present = ids.compactMap { id in ConsoleClickTargets.frames[id].map { (id, $0) } }
         let width = jarheadWindow?.contentView?.bounds.width ?? 0
-        print("composer-fit: " + present.map { String(format: "%@ x=%.0f w=%.0f", $0.0, $0.1.minX, $0.1.width) }.joined(separator: " · ") + String(format: " · window %.0f at %@s", width, stamp))
+        let height = jarheadWindow?.contentView?.bounds.height ?? 0
+        print("composer-fit: " + present.map { String(format: "%@ x=%.0f w=%.0f", $0.0, $0.1.minX, $0.1.width) }.joined(separator: " · ")
+              + String(format: " · y=%.0f h=%.0f · window %.0f×%.0f at %@s", present.first?.1.minY ?? 0, present.first?.1.height ?? 0, width, height, stamp))
         expect("composer: every control tracked", present.map(\.0).joined(separator: " "), ids.joined(separator: " "))
         let ordered = zip(present, present.dropFirst()).allSatisfy { $0.1.maxX <= $1.1.minX + 0.5 }
         expect("composer: controls in order, none overlapping", "\(ordered)", "true")
-        let inside = present.allSatisfy { $0.1.minX >= -0.5 && $0.1.maxX <= width + 0.5 }
+        // Sideways AND down: at the window's minimum height the root's floor must not push the composer under the bottom edge.
+        let inside = present.allSatisfy { $0.1.minX >= -0.5 && $0.1.maxX <= width + 0.5 && $0.1.minY >= -0.5 && $0.1.maxY <= height + 0.5 }
         expect("composer: every control inside the window", "\(inside)", "true")
         if let cluster = ConsoleClickTargets.frames[VoiceChipWords.switchId] ?? ConsoleClickTargets.frames[VoiceChipWords.id], let send = ConsoleClickTargets.frames[StreamTipWords.sendId] {
             let field = send.minX - cluster.maxX - 16
