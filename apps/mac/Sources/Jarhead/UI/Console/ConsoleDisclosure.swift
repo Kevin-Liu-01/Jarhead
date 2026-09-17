@@ -241,7 +241,7 @@ struct ConsoleDisclosureHead: View {
 
     private var line: some View {
         HStack(spacing: 6) {
-            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+            Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                 .rotationEffect(.degrees(open ? 90 : 0))
                 .frame(width: 12, height: 12)
             Text(title).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(open ? ConsoleTheme.fg2 : ConsoleTheme.titanium).lineLimit(1)

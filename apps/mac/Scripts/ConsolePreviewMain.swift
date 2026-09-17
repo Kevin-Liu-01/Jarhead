@@ -4092,6 +4092,15 @@ extension PreviewDelegate {
         expect("glyphs: send · dismiss · quit · ask", [ConsoleGlyph.send, ConsoleGlyph.dismiss, ConsoleGlyph.quit, ConsoleGlyph.ask].joined(separator: " "), "arrowshape.up.fill xmark.circle.fill power.circle.fill checklist.checked")
         let missing = ConsoleGlyph.all.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
         expect("glyphs: every name is an SF Symbol", missing.joined(separator: ","), "")
+        // The real pin, over the call sites (design13 review): no `systemName:` / `systemImage:` literal is left in UI/Console
+        // (every glyph goes through ConsoleGlyph), and every member of the enum is drawn somewhere under Sources/Jarhead —
+        // `all` describes what is on screen. Read from the sources under cwd (console-preview.sh runs from apps/mac).
+        if let scan = Self.glyphSourceScan() {
+            expect("glyphs: no literal left in UI/Console (\(scan.files) files)", scan.literals.joined(separator: ","), "")
+            expect("glyphs: every ConsoleGlyph member is drawn (\(scan.members) members)", scan.unused.joined(separator: ","), "")
+        } else {
+            print("check: ok   glyphs: source scan skipped — no Sources/Jarhead under \(FileManager.default.currentDirectoryPath)")
+        }
         let split = ConsoleSegmentTitle.split
         func show(_ t: String) -> String { "\(split(t).flag ?? "nil")|\(split(t).word)" }
         expect("segments: a leading flag splits off the title", [show("🇬🇧 UK"), show("None"), show("🇺🇸 American"), show("🇬🇧"), show("Off")].joined(separator: " · "), "🇬🇧|UK · nil|None · 🇺🇸|American · nil|🇬🇧 · nil|Off")
@@ -4099,6 +4108,33 @@ extension PreviewDelegate {
         // The ⋯ rests plain on the ground and wears its ghost tile on the highlighted row (design13 review: the light rail read as a grid of boxes).
         expect("row ⋯: plain on the ground, ghost on the highlight", "\(ConsoleRowOverflow.kind(on: .ground)) \(ConsoleRowOverflow.kind(on: .raised))", "plain ghost")
         return failed
+    }
+
+    /// The glyph sources, read: the `systemName: "…"` / `systemImage: "…"` literals left in UI/Console (outside
+    /// ConsoleGlyph.swift), and the enum's members no file under Sources/Jarhead refers to. nil when the sources are not under cwd.
+    static func glyphSourceScan() -> (files: Int, members: Int, literals: [String], unused: [String])? {
+        let fm = FileManager.default
+        let root = fm.currentDirectoryPath + "/Sources/Jarhead"
+        guard let walk = fm.enumerator(atPath: root) else { return nil }
+        var sources: [(path: String, text: String)] = []
+        for case let rel as String in walk where rel.hasSuffix(".swift") {
+            if let text = try? String(contentsOfFile: root + "/" + rel, encoding: .utf8) { sources.append((rel, text)) }
+        }
+        guard let enumFile = sources.first(where: { $0.path.hasSuffix("UI/Console/ConsoleGlyph.swift") }) else { return nil }
+        let literal = try! NSRegularExpression(pattern: #"system(?:Name|Image): "([^"]+)""#)
+        let member = try! NSRegularExpression(pattern: #"static let (\w+) = ""#)
+        func matches(_ re: NSRegularExpression, in text: String) -> [String] {
+            re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range(at: 1), in: text).map { String(text[$0]) } }
+        }
+        let console = sources.filter { $0.path.hasPrefix("UI/Console/") && $0.path != enumFile.path }
+        let literals = console.flatMap { file in matches(literal, in: file.text).map { "\((file.path as NSString).lastPathComponent):\($0)" } }
+        let members = matches(member, in: enumFile.text)
+        let others = sources.filter { $0.path != enumFile.path }.map(\.text).joined(separator: "\n")
+        let unused = members.filter { name in
+            let re = try! NSRegularExpression(pattern: "ConsoleGlyph\\.\(name)\\b")
+            return re.firstMatch(in: others, range: NSRange(others.startIndex..., in: others)) == nil
+        }
+        return (console.count, members.count, literals, unused)
     }
 
     /// design13 (Builder F): Stop's face is a pure function of the phase — spent while asleep with nothing
@@ -4530,9 +4566,9 @@ enum ConsoleButtonSheetWords {
     static let accents = ["🇺🇸 US", "🇬🇧 UK", "None"]
     static let twins: [(String, String, String)] = [
         ("arrow.up", ConsoleGlyph.send, "Send — a solid arrow"), ("arrow.clockwise", ConsoleGlyph.reload, "Reload · Refresh, icon-only"),
-        ("arrow.uturn.backward", ConsoleGlyph.undo, "Undo · Restore, icon-only"), ("arrow.down", ConsoleGlyph.newest, "Jump to newest"),
+        ("arrow.uturn.backward", ConsoleGlyph.undo, "Undo · Restore, icon-only"), ("mic.slash", ConsoleGlyph.muted, "status menu Mute"),
         ("magnifyingglass", ConsoleGlyph.search, "Agents rail search"), ("xmark", ConsoleGlyph.dismiss, "a lone dismiss on a card"),
-        ("macwindow", ConsoleGlyph.islandWindow, "island Window"), ("power", ConsoleGlyph.quit, "status menu Quit"),
+        ("arrow.up.right", ConsoleGlyph.externalLink, "Setup's external link"), ("power", ConsoleGlyph.quit, "status menu Quit"),
     ]
 }
 

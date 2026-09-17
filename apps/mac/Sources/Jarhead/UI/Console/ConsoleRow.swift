@@ -58,7 +58,7 @@ struct ConsoleVerbMenu: View {
             if verb.separatorBefore { Divider() }
             if verb.children.isEmpty {
                 Button(role: verb.destructive ? .destructive : nil, action: verb.run) {
-                    if verb.checked { Label(verb.title, systemImage: "checkmark") } else { Text(verb.title) }
+                    if verb.checked { Label(verb.title, systemImage: ConsoleGlyph.checkmark) } else { Text(verb.title) }
                 }
                 .disabled(verb.disabled)
             } else {

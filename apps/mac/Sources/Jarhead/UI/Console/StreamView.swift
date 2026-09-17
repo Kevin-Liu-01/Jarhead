@@ -146,7 +146,7 @@ private struct LedgerBanner: View {
                 Text(ConsoleFormat.day(day)).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
                 Text(day).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                 Spacer()
-                Button(action: back) { Label("Live", systemImage: "bolt.fill") }
+                Button(action: back) { Label("Live", systemImage: ConsoleGlyph.live) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(HelpCopy.backStream)
             }
@@ -499,7 +499,7 @@ struct StreamFeed: View {
                         tracker.jump(animated: true)
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "arrow.down").font(.system(size: 10, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.newestLine).font(.system(size: 10, weight: .semibold))
                             Text("Latest")
                         }
                     }
@@ -581,7 +581,7 @@ struct StreamFeed: View {
                         loadingEarlier = true
                         earlier.load()
                     } label: {
-                        Label("Load earlier", systemImage: "arrow.up")
+                        Label("Load earlier", systemImage: ConsoleGlyph.earlierLine)
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(earlier.remaining > 0 ? "\(earlier.remaining) earlier entr\(earlier.remaining == 1 ? "y" : "ies")" : "Earlier entries")
@@ -625,15 +625,15 @@ struct StreamFeed: View {
             if emptyState.loading {
                 ConsoleGlyphs(cols: 16, rows: 2)
             } else if emptyState.go {
-                Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
+                Button(action: transport.toggle) { Label("Go", systemImage: ConsoleGlyph.play) }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
                     .consoleHelp(HelpCopy.go)
             } else if emptyState.undo {
-                Button(action: undo) { Label("Undo", systemImage: "arrow.uturn.backward") }
+                Button(action: undo) { Label("Undo", systemImage: ConsoleGlyph.undoLine) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 28))
                     .consoleHelp(HelpCopy.undoCleared)
             } else if let retry {
-                Button(action: retry) { Label("Try again", systemImage: "arrow.clockwise") }
+                Button(action: retry) { Label("Try again", systemImage: ConsoleGlyph.reloadLine) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(HelpCopy.retryPage)
             }
@@ -1148,7 +1148,7 @@ struct ToolStepRow: View {
                     withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                        Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         // The name and timing keep their width; the input preview absorbs the squeeze.
                         Text(tool.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)

@@ -167,7 +167,7 @@ private struct JarheadConversationHeader: View {
                 JarheadSegmented(selected: view, select: select)
                     .layoutPriority(1)
                 // Navigation, named for where it goes — the live stream.
-                Button(action: close) { Label("Stream", systemImage: "chevron.left") }
+                Button(action: close) { Label("Stream", systemImage: ConsoleGlyph.chevronLeft) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
                     .consoleHelp(HelpCopy.backStream)

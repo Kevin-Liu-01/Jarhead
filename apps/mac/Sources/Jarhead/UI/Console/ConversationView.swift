@@ -269,11 +269,11 @@ private struct ConversationHeader: View {
                     // rather than "Rev…".
                     let hint = "Show \(ConsoleFormat.truncPath(url.path, max: 48)) in Finder"
                     ViewThatFits(in: .horizontal) {
-                        Button { actions.reveal(url) } label: { Label("Reveal", systemImage: "folder.fill") }
+                        Button { actions.reveal(url) } label: { Label("Reveal", systemImage: ConsoleGlyph.folder) }
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                             .consoleHelp(hint)
                         Button { actions.reveal(url) } label: {
-                            Image(systemName: "folder.fill").font(.system(size: 11, weight: .medium))
+                            Image(systemName: ConsoleGlyph.folder).font(.system(size: 11, weight: .medium))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 24, small: true))
                         .consoleHelp(hint)
@@ -283,7 +283,7 @@ private struct ConversationHeader: View {
                 }
                 // Navigation, named for where it goes — not "Live", which next to the
                 // live dot would read as a state chip.
-                Button(action: close) { Label("Stream", systemImage: "chevron.left") }
+                Button(action: close) { Label("Stream", systemImage: ConsoleGlyph.chevronLeft) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .layoutPriority(1)
                     .consoleHelp(HelpCopy.backStreamEsc)

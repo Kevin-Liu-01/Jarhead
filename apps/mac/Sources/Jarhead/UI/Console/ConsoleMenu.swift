@@ -254,7 +254,7 @@ struct ConsoleMenuFieldLabel: View {
                 .contentTransition(.opacity)
             if let badge { ConsoleBadge(word: badge) }
             Spacer(minLength: 4)
-            Image(systemName: "chevron.up.chevron.down")
+            Image(systemName: ConsoleGlyph.picker)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(open ? ConsoleTheme.fg : ConsoleTheme.fg3)
         }

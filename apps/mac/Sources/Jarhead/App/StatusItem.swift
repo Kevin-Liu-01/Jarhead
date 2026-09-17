@@ -254,7 +254,7 @@ final class StatusItem: NSObject {
         mute.keyEquivalentModifierMask = [.option, .shift]
         mute.target = self
         mute.isEnabled = connected && inSession
-        mute.image = StatusItem.symbol(phase == .muted ? "mic.fill" : "mic.slash.fill")
+        mute.image = StatusItem.symbol(phase == .muted ? ConsoleGlyph.mic : ConsoleGlyph.muted)
         menu.addItem(mute)
 
         // Recording (design12): the checkmark is the state, the title never flips; enabled whenever the daemon is there
@@ -276,7 +276,7 @@ final class StatusItem: NSObject {
         stop.keyEquivalentModifierMask = [.option]
         stop.target = self
         stop.isEnabled = true
-        stop.image = StatusItem.symbol("stop.fill")
+        stop.image = StatusItem.symbol(ConsoleGlyph.stop)
         stop.toolTip = "Stop everything — close the session, sleep (⌥⎋)"
         if phase == .asleep { stop.attributedTitle = StatusItem.spentTitle(StatusWords.stopped) }
         menu.addItem(stop)
@@ -295,7 +295,7 @@ final class StatusItem: NSObject {
 
         let summon = NSMenuItem(title: "Summon Orb to Cursor", action: #selector(doSummon), keyEquivalent: "")
         summon.target = self
-        summon.image = StatusItem.symbol("cursorarrow.click.2")
+        summon.image = StatusItem.symbol(ConsoleGlyph.summon)
         menu.addItem(summon)
 
         let ledger = NSMenuItem(title: "Open Ledger Folder", action: #selector(doOpenLedger), keyEquivalent: "")

@@ -1256,7 +1256,7 @@ private struct MarkThumb: View {
                     DitheredGradient(stops: scheme == .dark ? Dither.skeletonStopsDark : Dither.skeletonStopsLight,
                                      direction: .horizontal, bands: 2, cellPoints: 2)
                     VStack(spacing: 3) {
-                        Image(systemName: "scope").font(.system(size: 12, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
+                        Image(systemName: ConsoleGlyph.scopeMark).font(.system(size: 12, weight: .medium)).foregroundStyle(ConsoleTheme.fg3)
                         Text("\(Int(mark.rect.w.rounded()))×\(Int(mark.rect.h.rounded()))")
                             .font(ConsoleTheme.mono(10)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                     }
@@ -2305,7 +2305,7 @@ private struct TrashRow: View {
                 .animation(Motion.snappy, value: trash)
             if let trash {
                 Text(ConsoleFormat.truncPath(trash.path, max: 48)).font(ConsoleTheme.mono(10)).foregroundStyle(ConsoleTheme.fg3).lineLimit(1)
-                Button { actions.open(trash.path) } label: { Label(SettingsWords.revealInFinder, systemImage: "folder.fill") }
+                Button { actions.open(trash.path) } label: { Label(SettingsWords.revealInFinder, systemImage: ConsoleGlyph.folder) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                     .consoleHelp(SettingsWords.revealTrashTip)
             }
@@ -2535,7 +2535,7 @@ struct LedgerPanel: View {
 
     private var folder: some View {
         Button { actions.send(.openLedger) } label: {
-            Image(systemName: "folder.fill").font(.system(size: 12, weight: .medium))
+            Image(systemName: ConsoleGlyph.folder).font(.system(size: 12, weight: .medium))
         }
         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
         .consoleHelp(LedgerWords.openFolder)
