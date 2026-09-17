@@ -814,10 +814,11 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // (`send:` carries accent=american), Esc closes.
         case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
             // Three presses 0.2 s apart, not one burst: two ↓ 40 ms apart in the filter popup can land as one step under load.
-            + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
-            + "snap:preview-console-voice-chip-waits@2.2,check-composer-fit@2.3,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
-            + "menuOpen:\(VoiceChipWords.id)@3.1,keyDown:tab@3.5,probe-floats@3.9,check-floats:\(VoiceChipWords.id)@3.95,keyDown:left@4.0,probe-voice@4.3,"
-            + "keyDown:escape@4.4,probe-floats@4.8"
+            // The popup's leave after ⏎ is checked 0.3 s on (the removal fade under load), the rest of the run 0.1 s later than before.
+            + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@2.0,check-floats:none@2.05,probe-press@2.1,check-press:setSettings@2.15,probe-voice@2.2,"
+            + "snap:preview-console-voice-chip-waits@2.3,check-composer-fit@2.4,click:\(VoiceChipWords.switchId)@2.5,probe-press@3.0,check-press:setSettings+voiceReopen@3.05,"
+            + "menuOpen:\(VoiceChipWords.id)@3.2,keyDown:tab@3.6,probe-floats@4.0,check-floats:\(VoiceChipWords.id)@4.05,keyDown:left@4.1,probe-voice@4.4,"
+            + "keyDown:escape@4.5,probe-floats@4.9"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
             + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
             // The closed snap waits for the disclosure's Motion.snappy collapse and the summary's Motion.swap to land
@@ -3710,8 +3711,9 @@ extension PreviewDelegate {
         expect("status voice submenu: no Switch now asleep", "\(asleep.first?.kind == .switchNow) \(VoiceMenuModel.value(voice: "marin", accent: "british"))", "false Marin 🇬🇧")
         expect("chip ids", [VoiceChipWords.id, VoiceChipWords.switchId, VoiceChipWords.tipId].joined(separator: " "), "stream.voice stream.switch stream.voice.tip")
         // The fit (design13 review): the field's minimum per composer width, the chip's faces.
-        expect("composer fit: field min at 618 (1180 window) · 420 (the minimum) · 300", "\(Int(ComposerFit.fieldMin(width: 618))) \(Int(ComposerFit.fieldMin(width: 420))) \(Int(ComposerFit.fieldMin(width: 300)))", "128 60 48")
-        expect("composer fit: fixed spend · smallest cluster", "\(Int(ComposerFit.fixed)) \(Int(ComposerFit.clusterMin))", "264 96")
+        func cluster(_ w: CGFloat) -> String { let c = ComposerFit.cluster(width: w); return "\(c.chip)/\(c.word ? "word" : "glyph")" }
+        expect("composer fit: the cluster at 618 (1180) · 600 · 560 · 422 (984, the minimum)", [cluster(618), cluster(600), cluster(560), cluster(422)].joined(separator: " "), "full/word name/word flag/word flag/glyph")
+        expect("composer fit: fixed spend · floor · the smallest cluster fits the minimum beside the floor's fallback", "\(Int(ComposerFit.fixed)) \(Int(ComposerFit.fieldFloor)) \(ConsoleLayout.streamMinWidth - ComposerFit.fixed - ComposerFit.clusterMin >= ComposerFit.fieldLeast)", "264 120 true")
         func face(_ t: VoiceChipFace.Tier, _ flag: String?, _ waits: Bool) -> String { let s = VoiceChipFace.shows(t, flag: flag, waits: waits); return "\(s.flag ? "flag" : "-")/\(s.name ? "name" : "-")/\(s.waits ? "waits" : "-")" }
         expect("chip faces with a flag, waits: full · name · flag", [face(.full, "🇬🇧", true), face(.name, "🇬🇧", true), face(.flag, "🇬🇧", true)].joined(separator: " "), "flag/name/waits flag/name/- flag/-/-")
         expect("chip faces without a flag: the name stays; no waits without a wait", [face(.full, nil, true), face(.flag, nil, false), face(.full, "🇬🇧", false)].joined(separator: " "), "-/name/waits -/name/- flag/name/-")

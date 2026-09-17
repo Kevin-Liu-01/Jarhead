@@ -1302,23 +1302,39 @@ struct LightboxView: View {
 // MARK: - Composer
 
 /// How the composer shares its width when a pick waits (design13 review): Go · Mute · Send · Stop keep
-/// their widths; the field is held at `fieldFloor` while the voice cluster — the chip's three faces
-/// (`VoiceChipFace.Tier`) and Switch now's word or glyph — gives; only when the smallest cluster no
-/// longer fits beside the floor does the field shrink, to `fieldLeast` at the window's minimum
-/// (`ConsoleLayout.streamMinWidth`, 420: field ≈ 66 with the flag-alone chip and the glyph). Pure, pinned.
+/// their widths; the field is held near `fieldFloor` while the voice cluster — the chip's three faces
+/// (`VoiceChipFace.Tier`) and Switch now's word or glyph — gives, by arithmetic on the composer's own
+/// width (a `ViewThatFits` measuring the faces cost the pick a 0.4 s layout stall); only when the
+/// smallest cluster no longer fits beside the floor does the field shrink — to ≈ 66 at the window's
+/// minimum (`ConsoleLayout.streamMinWidth`, 420), never under `fieldLeast`. Pure, pinned by `check-kit`;
+/// the frames on screen by `check-composer-fit`.
 enum ComposerFit {
+    /// The chip's face and whether Switch now keeps its word.
+    struct Cluster: Equatable {
+        var chip: VoiceChipFace.Tier = .full
+        var word = true
+    }
+
     /// Go · Mute · Send (32 each) · Stop (one width, the hidden `Stopped`, 88) · seven 8-pt gaps · the 12-pt insets.
     static let fixed: CGFloat = 32 + 32 + 32 + 88 + 7 * 8 + 24
-    /// The cluster at its smallest — the flag-alone chip (≈ 50) · 8 · the icon-only Switch now (32) — with room to spare.
-    static let clusterMin: CGFloat = 96
-    /// The field the chip's words yield to before the field gives (the 1180 window's waits state keeps its full chip above it).
-    static let fieldFloor: CGFloat = 128
+    /// The field the chip's words yield to before the field gives (the 1180 window's composer, 616 wide, keeps its full chip above it).
+    static let fieldFloor: CGFloat = 120
     /// The field's least: what the minimum window leaves it, so nothing overflows.
     static let fieldLeast: CGFloat = 48
+    /// The cluster's widths, widest first: `🇬🇧 Ballad waits ⌄` + Switch now (130 · 8 · 87) · `🇬🇧 Ballad ⌄` + the word
+    /// (94 · 8 · 87) · `🇬🇧 ⌄` + the word (50 · 8 · 87) · `🇬🇧 ⌄` + the glyph (50 · 8 · 32), each with a little room.
+    static let clusterFull: CGFloat = 226
+    static let clusterName: CGFloat = 190
+    static let clusterFlagWord: CGFloat = 146
+    static let clusterMin: CGFloat = 96
 
-    /// The field's minimum for a composer this wide: the floor while the smallest cluster still fits beside it, else what is left.
-    static func fieldMin(width: CGFloat) -> CGFloat {
-        max(fieldLeast, min(fieldFloor, width - fixed - clusterMin))
+    /// The widest cluster the room beside the field's floor takes, for a composer this wide.
+    static func cluster(width: CGFloat) -> Cluster {
+        let room = width - fixed - fieldFloor
+        if room >= clusterFull { return Cluster(chip: .full, word: true) }
+        if room >= clusterName { return Cluster(chip: .name, word: true) }
+        if room >= clusterFlagWord { return Cluster(chip: .flag, word: true) }
+        return Cluster(chip: .flag, word: false)
     }
 }
 
@@ -1347,8 +1363,8 @@ struct ComposerBar: View {
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
     @State private var stopFlashing = false
-    /// The composer's own width (the stream column's): `ComposerFit.fieldMin` reads it, so the field is
-    /// held at its floor while the voice cluster gives, and gives itself only at the window's minimum.
+    /// The composer's own width (the stream column's): `ComposerFit.cluster` reads it, so the voice
+    /// cluster gives while the field is held near its floor, and the field gives only at the window's minimum.
     @State private var width: CGFloat = ConsoleLayout.defaultSize.width
     @FocusState private var focused: Bool
 
@@ -1413,12 +1429,10 @@ struct ComposerBar: View {
                 transportButton
                 muteButton
                 // ── Builder G's slot: the voice chip (`VoiceChip`, `🇬🇧 Ballad ⌄`) sits here, between Mute and the field. ──
-                // Sized before the field (priority 1) with what the field's minimum leaves it: its faces pick themselves.
-                VoiceChipSlot()
-                    .layoutPriority(1)
+                // Its face and Switch now's word follow the composer's width (ComposerFit), so the field keeps its floor.
+                VoiceChipSlot(cluster: ComposerFit.cluster(width: width))
                 TextField(placeholder, text: $text)
                     .consoleField(height: 32, focused: focused)
-                    .frame(minWidth: ComposerFit.fieldMin(width: width))
                     .focused($focused)
                     .onSubmit(submit)
                     .onExitCommand { focused = false }
