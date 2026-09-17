@@ -864,7 +864,7 @@ struct AgentsRail: View, Equatable {
 
     private func trashFolder(_ trash: TrashInfo) -> some View {
         Button { actions.open(trash.path) } label: {
-            Image(systemName: "folder.fill").font(.system(size: 11, weight: .medium))
+            Image(systemName: ConsoleGlyph.folder).font(.system(size: 11, weight: .medium))
         }
         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 20))
         .consoleHelp(AgentsRailWords.revealHelp)

@@ -111,6 +111,9 @@ enum StreamBuilder {
                 transport = nil
                 if let line = ConsoleFormat.voiceSwitchLine(row, before: spoken) {
                     // The one visible line of a Switch now: the words are the mono column's (titanium), the glyph the Voice row's.
+                    // It is the record's line: the live Now stream is built from the snapshot (`fromSnapshot`), whose transcript
+                    // and delegations carry no session rows and whose `session` names no `resumedFrom` or previous voice —
+                    // live, the switch is the toast and "Marin here." in the new voice; the Ledger day shows this row.
                     out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: ConsoleGlyph.voice, text: "", mono: line)))
                 } else {
                     out.append(.system(SystemEntry(id: "s:\(row.at):\(index)", at: row.at, symbol: "bolt.fill", text: "Session started",

@@ -141,6 +141,8 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
             .environmentObject(session)
             .environment(\.consoleActions, actions)
             .environment(\.consoleTransport, transport)
+            // The title band the root is laid under: no float climbs into it (ConsoleFloatLayer, ConsoleMenuField.listMax).
+            .environment(\.consoleTitleBand, Self.titleBand(of: window))
         let hosting = ConsoleHostingView(rootView: root)
         hosting.autoresizingMask = [.width, .height]
         // The window's minimum is `minSize` above (the columns' sum); the hosting view must not
@@ -151,6 +153,12 @@ public final class ConsoleWindowController: NSObject, NSWindowDelegate {
         hosting.sizingOptions = []
         window.contentView = hosting
         return window
+    }
+
+    /// The title band of a `fullSizeContentView` window — the traffic lights' strip the root is laid under
+    /// (≈ 28): the content rect less the content layout rect (which starts under the title bar).
+    static func titleBand(of window: NSWindow) -> CGFloat {
+        max(0, window.contentRect(forFrameRect: window.frame).height - window.contentLayoutRect.height)
     }
 
     private func handle(_ command: ConsoleKeyCommand) -> Bool {

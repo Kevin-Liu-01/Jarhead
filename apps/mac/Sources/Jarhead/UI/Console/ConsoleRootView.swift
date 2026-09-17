@@ -217,7 +217,6 @@ struct ConsoleRootView: View {
         .sheet(item: $session.lightbox) { item in
             LightboxView(item: item) { session.lightbox = nil }
         }
-        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The watchers: panes that lost their subject, LRU eviction, the Jarhead list, notifications.
@@ -281,6 +280,10 @@ struct ConsoleRootView: View {
         }
         // The same sum the window's minSize uses, so the columns always fit.
         .frame(minWidth: ConsoleLayout.minWidth, minHeight: ConsoleLayout.minHeight)
+        // Under the `fullSizeContentView` title band, AFTER the floor: measured inside the safe area (the
+        // content less the band) a 520 floor in a 520 window was centred in 488 and pushed the composer
+        // 16 pt under the bottom edge (design13 review, seen at 984×520); here the floor is the window's.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The ledger's list folded into chains, Kevin's pending clicks laid over them.

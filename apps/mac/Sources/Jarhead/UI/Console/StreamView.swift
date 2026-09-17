@@ -146,7 +146,7 @@ private struct LedgerBanner: View {
                 Text(ConsoleFormat.day(day)).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg)
                 Text(day).font(ConsoleTheme.mono(11)).monospacedDigit().foregroundStyle(ConsoleTheme.titanium)
                 Spacer()
-                Button(action: back) { Label("Live", systemImage: "bolt.fill") }
+                Button(action: back) { Label("Live", systemImage: ConsoleGlyph.live) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(HelpCopy.backStream)
             }
@@ -499,7 +499,7 @@ struct StreamFeed: View {
                         tracker.jump(animated: true)
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "arrow.down").font(.system(size: 10, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.newestLine).font(.system(size: 10, weight: .semibold))
                             Text("Latest")
                         }
                     }
@@ -581,7 +581,7 @@ struct StreamFeed: View {
                         loadingEarlier = true
                         earlier.load()
                     } label: {
-                        Label("Load earlier", systemImage: "arrow.up")
+                        Label("Load earlier", systemImage: ConsoleGlyph.earlierLine)
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(earlier.remaining > 0 ? "\(earlier.remaining) earlier entr\(earlier.remaining == 1 ? "y" : "ies")" : "Earlier entries")
@@ -625,15 +625,15 @@ struct StreamFeed: View {
             if emptyState.loading {
                 ConsoleGlyphs(cols: 16, rows: 2)
             } else if emptyState.go {
-                Button(action: transport.toggle) { Label("Go", systemImage: "play.fill") }
+                Button(action: transport.toggle) { Label("Go", systemImage: ConsoleGlyph.play) }
                     .buttonStyle(ConsoleButtonStyle(kind: .primary, height: 28))
                     .consoleHelp(HelpCopy.go)
             } else if emptyState.undo {
-                Button(action: undo) { Label("Undo", systemImage: "arrow.uturn.backward") }
+                Button(action: undo) { Label("Undo", systemImage: ConsoleGlyph.undoLine) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 28))
                     .consoleHelp(HelpCopy.undoCleared)
             } else if let retry {
-                Button(action: retry) { Label("Try again", systemImage: "arrow.clockwise") }
+                Button(action: retry) { Label("Try again", systemImage: ConsoleGlyph.reloadLine) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                     .consoleHelp(HelpCopy.retryPage)
             }
@@ -764,7 +764,8 @@ struct SystemRow: View {
             ConsoleIcon(name: entry.symbol, tint: entry.tone == .problem ? ConsoleTheme.error : ConsoleTheme.titanium)
                 .padding(.leading, stampGap)
             HStack(spacing: 8) {
-                Text(entry.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2)
+                // A mono-only row (the voice switch's `voice → Marin 🇬🇧 · one restart · 0.7 s`) starts in the word column: no empty sans Text and its 8-pt gap before it.
+                if !entry.text.isEmpty { Text(entry.text).font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg2) }
                 if let mono = entry.mono {
                     Text(mono).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
                 }
@@ -1147,7 +1148,7 @@ struct ToolStepRow: View {
                     withAnimation(Motion.gentle) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                        Image(systemName: ConsoleGlyph.chevron).font(.system(size: 9, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                         // The name and timing keep their width; the input preview absorbs the squeeze.
                         Text(tool.name).font(ConsoleTheme.mono(12)).foregroundStyle(ConsoleTheme.fg)
@@ -1301,6 +1302,43 @@ struct LightboxView: View {
 
 // MARK: - Composer
 
+/// How the composer shares its width when a pick waits (design13 review): Go · Mute · Send · Stop keep
+/// their widths; the field is held near `fieldFloor` while the voice cluster — the chip's three faces
+/// (`VoiceChipFace.Tier`) and Switch now's word or glyph — gives, by arithmetic on the composer's own
+/// width (a `ViewThatFits` measuring the faces cost the pick a 0.4 s layout stall); only when the
+/// smallest cluster no longer fits beside the floor does the field shrink — to ≈ 66 at the window's
+/// minimum (`ConsoleLayout.streamMinWidth`, 420), never under `fieldLeast`. Pure, pinned by `check-kit`;
+/// the frames on screen by `check-composer-fit`.
+enum ComposerFit {
+    /// The chip's face and whether Switch now keeps its word.
+    struct Cluster: Equatable {
+        var chip: VoiceChipFace.Tier = .full
+        var word = true
+    }
+
+    /// Go · Mute · Send (32 each) · Stop (one width, the hidden `Stopped`, 88) · seven 8-pt gaps · the 12-pt insets.
+    static let fixed: CGFloat = 32 + 32 + 32 + 88 + 7 * 8 + 24
+    /// The field the chip's words yield to before the field gives (the 1180 window's composer, 616 wide, keeps its full chip above it).
+    static let fieldFloor: CGFloat = 120
+    /// The field's least: what the minimum window leaves it, so nothing overflows.
+    static let fieldLeast: CGFloat = 48
+    /// The cluster's widths, widest first: `🇬🇧 Ballad waits ⌄` + Switch now (130 · 8 · 87) · `🇬🇧 Ballad ⌄` + the word
+    /// (94 · 8 · 87) · `🇬🇧 ⌄` + the word (50 · 8 · 87) · `🇬🇧 ⌄` + the glyph (50 · 8 · 32), each with a little room.
+    static let clusterFull: CGFloat = 226
+    static let clusterName: CGFloat = 190
+    static let clusterFlagWord: CGFloat = 146
+    static let clusterMin: CGFloat = 96
+
+    /// The widest cluster the room beside the field's floor takes, for a composer this wide.
+    static func cluster(width: CGFloat) -> Cluster {
+        let room = width - fixed - fieldFloor
+        if room >= clusterFull { return Cluster(chip: .full, word: true) }
+        if room >= clusterName { return Cluster(chip: .name, word: true) }
+        if room >= clusterFlagWord { return Cluster(chip: .flag, word: true) }
+        return Cluster(chip: .flag, word: false)
+    }
+}
+
 /// 48pt, owns its top rule: Go/Pause (the transport's one button — `play.fill` as the
 /// filled accent while asleep, a ghost while paused, `pause.fill` in session, a quiet
 /// "…" while connecting where a press stops; ⌘P here, ⌥⇧Space anywhere), Mute (enabled
@@ -1326,6 +1364,9 @@ struct ComposerBar: View {
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
     @State private var stopFlashing = false
+    /// The composer's own width (the stream column's): `ComposerFit.cluster` reads it, so the voice
+    /// cluster gives while the field is held near its floor, and the field gives only at the window's minimum.
+    @State private var width: CGFloat = ConsoleLayout.defaultSize.width
     @FocusState private var focused: Bool
 
     /// How long Stop stays red for a press: a larger change of state, Motion.slow.
@@ -1389,7 +1430,8 @@ struct ComposerBar: View {
                 transportButton
                 muteButton
                 // ── Builder G's slot: the voice chip (`VoiceChip`, `🇬🇧 Ballad ⌄`) sits here, between Mute and the field. ──
-                VoiceChipSlot()
+                // Its face and Switch now's word follow the composer's width (ComposerFit), so the field keeps its floor.
+                VoiceChipSlot(cluster: ComposerFit.cluster(width: width))
                 TextField(placeholder, text: $text)
                     .consoleField(height: 32, focused: focused)
                     .focused($focused)
@@ -1400,6 +1442,7 @@ struct ComposerBar: View {
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
         }
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
         .onChange(of: session.composerFocusRequest) { focused = true }
         .onChange(of: session.stopFlash) {
             // The press is felt at once — when there was something to stop. `phase` here is the
@@ -1466,6 +1509,8 @@ struct ComposerBar: View {
                 }
                 .animation(Motion.snappy, value: stopWord)
             }
+            // The word's width, never squeezed: the field and the voice cluster are what give (ComposerFit).
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(ConsoleButtonStyle(kind: stopKind, height: 32))
         .consoleHelp(stopKind == .spent ? HelpCopy.stopSpent : HelpCopy.stopAll, id: StreamTipWords.stopId)

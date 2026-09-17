@@ -137,13 +137,13 @@ private struct ThreadHeader: View {
         HStack(spacing: 6) {
             if !isMain, thread.status.isLive, thread.status != .idle {
                 if thread.status == .paused {
-                    Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: "play.fill") }
+                    Button { actions.send(.threadResume(threadId: thread.id)) } label: { Label("Resume", systemImage: ConsoleGlyph.play) }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                         .fixedSize()
                         .consoleHelp(HelpCopy.resumeThread(thread.name))
                         .transition(.opacity)
                 } else {
-                    Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: "pause.fill") }
+                    Button { actions.send(.threadPause(threadId: thread.id)) } label: { Label("Pause", systemImage: ConsoleGlyph.pause) }
                         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                         .fixedSize()
                         .consoleHelp(HelpCopy.pauseThread(thread.name))
@@ -151,14 +151,14 @@ private struct ThreadHeader: View {
                 }
             }
             if thread.canStop, thread.status.isLive {
-                Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: "stop.fill") }
+                Button { actions.send(.threadStop(threadId: thread.id)) } label: { Label("Stop", systemImage: ConsoleGlyph.stop) }
                     .buttonStyle(ConsoleButtonStyle(kind: thread.status.isBusy ? .danger : .ghost, height: 24, small: true))
                     .fixedSize()
                     .consoleHelp(isMain ? HelpCopy.stop : HelpCopy.stopThread(thread.name))
                     .accessibilityLabel("Stop \(thread.name)")
                     .transition(.opacity)
             }
-            Button(action: close) { Label("Now", systemImage: "chevron.left") }
+            Button(action: close) { Label("Now", systemImage: ConsoleGlyph.chevronLeft) }
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 24, small: true))
                 .fixedSize()
                 .consoleHelp(HelpCopy.backNow)

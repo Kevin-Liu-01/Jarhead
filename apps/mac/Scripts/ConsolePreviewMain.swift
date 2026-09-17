@@ -551,7 +551,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "resumed":
             // design13 (Builder A): a paused → resumed (or voice-switched) conversation the way the engine
             // holds it — the held session's rows before the live session's, ids in the engine's own scheme.
+            // The day before holds the same conversation on the record with its Switch now — the one mono row
+            // (`ledger-day:2026-09-09` steps into it after the live checks; the live stream has no session rows).
             state.snapshot = fake.resumed()
+            state.ledgerReadHandler = { day in day == "2026-09-10" ? fake.ledgerRows() : (day == "2026-09-09" ? fake.switchedRows() : []) }
         case "voice-chip":
             // design13 (Builder G): awake and idle on Ballad (the session says so), nothing running — the chip
             // reads `🇬🇧 Ballad ⌄`; ↓ ↓ ⏎ in its popup picks Marin (free: one set-settings, echoed below),
@@ -739,7 +742,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Allow the way the strip sends it: the `send:` line must be thread.answer, never say-text or stop.
         case "thread-answer": defaultActions = "thread-open:\(FakeData.slackId)@0.3,thread-answer:\(FakeData.slackId):yes@1.0,check-threads@1.2"
         // design13 (Builder A): the stream's ids after a resume — `check-stream` before and after a republish and an append.
-        case "resumed": defaultActions = "check-stream@0.3,republish@0.6,append@0.9,check-stream@1.2"
+        case "resumed": defaultActions = "check-stream@0.3,republish@0.6,append@0.9,check-stream@1.2,snap:preview-console-resumed-live@1.3,ledger-day:2026-09-09@1.4"
         case "typed-row": defaultActions = "check-threads@0.3"
         // The paged main pane: scrolled up off the bottom, "Load earlier" pressed (the button's own path:
         // `send:` thread.history), the engine's page landing, geometry before and after (the row stays).
@@ -817,12 +820,13 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // reads `waits` (`voice-chip:` line, a snap); `click:stream.switch` is the one `press: voiceReopen`.
         // Then Tab into the head: the popup stays (`check-floats:stream.voice`), ← moves the Accent to US
         // (`send:` carries accent=american), Esc closes.
-        case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
+        case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,check-float-clear:\(VoiceChipWords.id)@1.05,snap:preview-console-voice-chip-open@1.1,"
             // Three presses 0.2 s apart, not one burst: two ↓ 40 ms apart in the filter popup can land as one step under load.
-            + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
-            + "snap:preview-console-voice-chip-waits@2.2,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
-            + "menuOpen:\(VoiceChipWords.id)@3.1,keyDown:tab@3.5,probe-floats@3.9,check-floats:\(VoiceChipWords.id)@3.95,keyDown:left@4.0,probe-voice@4.3,"
-            + "keyDown:escape@4.4,probe-floats@4.8"
+            // The popup's leave after ⏎ is checked 0.3 s on (the removal fade under load), the rest of the run 0.1 s later than before.
+            + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@2.0,check-floats:none@2.05,probe-press@2.1,check-press:setSettings@2.15,probe-voice@2.2,"
+            + "snap:preview-console-voice-chip-waits@2.3,check-composer-fit@2.4,click:\(VoiceChipWords.switchId)@2.5,probe-press@3.0,check-press:setSettings+voiceReopen@3.05,"
+            + "menuOpen:\(VoiceChipWords.id)@3.2,keyDown:tab@3.6,probe-floats@4.0,check-floats:\(VoiceChipWords.id)@4.05,keyDown:left@4.1,probe-voice@4.4,"
+            + "keyDown:escape@4.5,probe-floats@4.9"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
             + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
             // The closed snap waits for the disclosure's Motion.snappy collapse and the summary's Motion.swap to land
@@ -834,7 +838,10 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "memory-chips": defaultActions = "check-kit@0.3,rail-scroll:540@0.6,chip:fact@0.9,tipOpen:memory.m_kev@1.2"
         case "list-keys": defaultActions = "check-kit@0.3,search:codex@0.4,keyDown:down+down+down@1.2,probe@1.6,keyDown:return@1.8,probe@2.4"
         case "agents-groups": defaultActions = "check-kit@0.3,fold:agents.codex:closed@0.6"
-        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7"
+        // The verbs float hangs off the row, not a field: a click on the row (its centre is the float's tracked frame)
+        // dismisses the float and passes through to the row's primary — `check-floats:none` after it (the snap before keeps the open float seen).
+        case "list-verbs": defaultActions = "check-kit@0.3,highlight:chain:\(FakeData.yesterdayId)@0.6,keyDown:cmd-down@1.0,probe-floats@1.6,check-floats:rail.chain.\(FakeData.yesterdayId).verbs@1.7,"
+            + "snap:preview-console-list-verbs-open@1.75,click:rail.chain.\(FakeData.yesterdayId).verbs@1.8,probe-floats@2.1,check-floats:none@2.15"
         // The left rail (design10): the ladder's pins, then each state staged by its fold id. `rail` is the
         // default state; `rail-expanded` opens Yesterday and Older and pins yesterday's card; `rail-agents`
         // opens Claude Code's Ended sub-head (the ring on it), the dead Codex group (three over rows, no
@@ -1134,12 +1141,19 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 print("voice-chip: \(VoiceSwitchWords.chip(name: VoiceWords.name(v.voice), flag: AccentWords.flag(v.accent))) waits=\(v.waits) line=\(v.line) busy=\(v.busy) at \(stamp)s")
             } else if action.hasPrefix("phase:") {
                 setPhase(String(action.dropFirst("phase:".count)), stamp: stamp)
+            } else if action.hasPrefix("ledger-day:") {
+                // `ledger-day:<day>` steps into that day on the Ledger tab (the read handler's rows); `ledger-day:live` comes back to Now.
+                let day = String(action.dropFirst("ledger-day:".count))
+                if day == "live" { console?.showNow() } else { console?.pickLedgerDay(day) }
+                print("action: ledger-day \(day) at \(stamp)s")
             } else if action == "probe-press" {
                 probePress(stamp: stamp)
             } else if action.hasPrefix("check-press:") {
                 checkPress(String(action.dropFirst("check-press:".count)), stamp: stamp)
             } else if action == "check-composer-free" {
                 checkComposerFree(stamp: stamp)
+            } else if action == "check-composer-fit" {
+                checkComposerFit(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
             } else if action == "check-stream" {
@@ -1148,6 +1162,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkTips(stamp: stamp)
             } else if action.hasPrefix("check-floats:") {
                 checkFloats(String(action.dropFirst("check-floats:".count)), stamp: stamp)
+            } else if action.hasPrefix("check-float-clear:") {
+                checkFloatClear(String(action.dropFirst("check-float-clear:".count)), stamp: stamp)
             } else if let info = memoryAction(action) {
                 // The memory rail's verbs, through the row's own closures (MemoryRailList.preview): the
                 // `send:` line is the command, the `memory-rail:` line what the list holds after.
@@ -2991,6 +3007,38 @@ struct FakeData {
         return s
     }
 
+    /// design13 review: the same conversation on the record with its Switch now — the first session on
+    /// Ballad, a quiet pause and close, the second started `resumedFrom` it on Marin 🇬🇧 0.7 s later
+    /// (`ms`), Marin's "Marin here." — so the one mono row `voice → Marin 🇬🇧 · one restart · 0.7 s`
+    /// is seen once (`resumed`, then `ledger-day:2026-09-09`) before Kevin sees it.
+    func switchedRows() -> [LedgerRow] {
+        func row(_ at: Double, _ type: String) -> LedgerRow {
+            LedgerRow(at: at, type: type, item: nil, delegation: nil, delegationId: nil, step: nil, status: nil, summary: nil, text: nil, sessionId: nil, reason: nil, usageSeconds: nil, agent: nil)
+        }
+        func heard(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "heard"); r.item = TranscriptItem(id: id, speaker: .kevin, text: text, startMs: 0, endMs: 2000, at: at, final: true); return r
+        }
+        func said(_ at: Double, _ id: String, _ text: String) -> LedgerRow {
+            var r = row(at, "said"); r.item = TranscriptItem(id: id, speaker: .jarhead, text: text, startMs: 0, endMs: 3000, at: at, final: true); return r
+        }
+        let t0 = ago(86_400 + 1_200)
+        var rows: [LedgerRow] = []
+        var r = row(t0, "session.started"); r.sessionId = "live_1"; r.voice = "ballad"; r.language = "en"; r.accent = "british"; rows.append(r)
+        rows.append(heard(t0 + 9_000, "sw1", "What's up"))
+        rows.append(said(t0 + 12_000, "sw2", "Not much. I'm here, awake and ready if you need me"))
+        rows.append(heard(t0 + 40_000, "sw3", "I think your audio isn't that great to be honest"))
+        rows.append(said(t0 + 43_000, "sw4", "Okay. I'll keep it steady on my side."))
+        // Switch now: the engine's pause({quiet}) + connect("voice change") — the close, then the second session resumed on the new pair.
+        var pause = row(t0 + 90_000, "pause"); pause.sessionId = "live_1"; pause.usageSeconds = 90; rows.append(pause)
+        var closed = row(t0 + 90_100, "session.closed"); closed.sessionId = "live_1"; closed.reason = "close_requested"; closed.usageSeconds = 90; rows.append(closed)
+        r = row(t0 + 90_800, "session.started"); r.sessionId = "live_2"; r.voice = "marin"; r.language = "en"; r.accent = "british"; r.resumedFrom = "live_1"; r.ms = 700; rows.append(r)
+        rows.append(said(t0 + 92_000, "sw5", "Marin here."))
+        rows.append(heard(t0 + 120_000, "sw6", "Are you back?"))
+        rows.append(said(t0 + 123_000, "sw7", "Back, yes — same conversation, new voice."))
+        var end = row(t0 + 300_000, "session.closed"); end.sessionId = "live_2"; end.reason = "close_requested"; end.usageSeconds = 209; rows.append(end)
+        return rows
+    }
+
     /// The live day's stream with the session closed: asleep, nothing billed, the wake gate in charge.
     func asleep() -> Snapshot {
         var s = live()
@@ -3471,8 +3519,12 @@ extension PreviewDelegate {
     }
 
     /// `click:(x,y)` — points from the content view's top-left; `click:<id>` — the centre of that control's
-    /// tracked frame (ConsoleClickTargets); `:cold` — the app inactive and the window not key first, so the
-    /// click is an inactive window's first (`coldClick`). A left mouse down and up through sendEvent either way.
+    /// tracked frame (ConsoleClickTargets); `:cold` — the app inactive and the window not key first (`coldClick`),
+    /// so the click is an inactive window's first. A left mouse down and up through sendEvent either way — the up
+    /// 60 ms later (`clickUpDelay`), as a real mouse's up is: SwiftUI's focus transaction and the popup's
+    /// one-turn-later close run between them, so a menu that closed on the down (the focus the down moves)
+    /// and reopened on the up is a state the checks after can see. (The next runloop turn was too early:
+    /// the up landed before the transaction, and the bug hid.)
     func click(_ spec: String, stamp: String) {
         let cold = spec.hasSuffix(":cold")
         let target = cold ? String(spec.dropLast(":cold".count)) : spec
@@ -3535,17 +3587,25 @@ extension PreviewDelegate {
         } ?? "nil"
         // Through NSApp.sendEvent, not the window's: the layer's local event monitor (a menu closing on
         // the mouse-down outside it, a tip on any down) runs only for events the application dispatches.
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+        func send(_ type: NSEvent.EventType) {
             if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
                 NSApp.sendEvent(event)
             }
         }
-        let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        var when = "at \(stamp)s"
-        if cold { when = "cold at \(stamp)s, delivered at \(wallStamp)s" }
-        print("action: click \(target) (\(Int(top.x)),\(Int(top.y))) \(when) → \(key); hit \(hit); firstResponder \(before) → \(after)")
+        send(.leftMouseDown)
+        let between = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clickUpDelay) {
+            send(.leftMouseUp)
+            let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+            var when = "at \(stamp)s"
+            if cold { when = "cold at \(stamp)s, delivered at \(self.wallStamp)s" }
+            print("action: click \(target) (\(Int(top.x)),\(Int(top.y))) \(when) → \(key); hit \(hit); firstResponder \(before) → \(between) at the down → \(after)")
+        }
     }
+
+    /// A real click's down-to-up gap, near enough: the up lands after the focus transaction the down started.
+    static let clickUpDelay: TimeInterval = 0.06
 
     /// `(x,y)` as given, or the centre of the frame tracked under that id; nil when neither.
     static func clickPoint(_ target: String) -> CGPoint? {
@@ -3591,6 +3651,36 @@ extension PreviewDelegate {
         print("check: \(free ? "all ok" : "FAILED") (composer) at \(stamp)s")
     }
 
+    /// `check-composer-fit` (design13 review): the composer's six controls, by their tracked frames, sit in order
+    /// inside the window with a field between the voice cluster and Send at least `ComposerFit.fieldLeast` wide —
+    /// run in the waits state at 1180 and at the window's minimum (PREVIEW_WINDOW_SIZE=984x520), where the chip
+    /// and Switch now must have given before the field did. `composer-fit:` prints the frames.
+    func checkComposerFit(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let ids = [StreamTipWords.goId, StreamTipWords.muteId, VoiceChipWords.id, VoiceChipWords.switchId, StreamTipWords.sendId, StreamTipWords.stopId]
+        let present = ids.compactMap { id in ConsoleClickTargets.frames[id].map { (id, $0) } }
+        let width = jarheadWindow?.contentView?.bounds.width ?? 0
+        let height = jarheadWindow?.contentView?.bounds.height ?? 0
+        print("composer-fit: " + present.map { String(format: "%@ x=%.0f w=%.0f", $0.0, $0.1.minX, $0.1.width) }.joined(separator: " · ")
+              + String(format: " · y=%.0f h=%.0f · window %.0f×%.0f at %@s", present.first?.1.minY ?? 0, present.first?.1.height ?? 0, width, height, stamp))
+        expect("composer: every control tracked", present.map(\.0).joined(separator: " "), ids.joined(separator: " "))
+        let ordered = zip(present, present.dropFirst()).allSatisfy { $0.1.maxX <= $1.1.minX + 0.5 }
+        expect("composer: controls in order, none overlapping", "\(ordered)", "true")
+        // Sideways AND down: at the window's minimum height the root's floor must not push the composer under the bottom edge.
+        let inside = present.allSatisfy { $0.1.minX >= -0.5 && $0.1.maxX <= width + 0.5 && $0.1.minY >= -0.5 && $0.1.maxY <= height + 0.5 }
+        expect("composer: every control inside the window", "\(inside)", "true")
+        if let cluster = ConsoleClickTargets.frames[VoiceChipWords.switchId] ?? ConsoleClickTargets.frames[VoiceChipWords.id], let send = ConsoleClickTargets.frames[StreamTipWords.sendId] {
+            let field = send.minX - cluster.maxX - 16
+            expect(String(format: "composer: the field between the cluster and Send ≥ %.0f", ComposerFit.fieldLeast), String(format: "%.0f ≥ least %@", field, field >= ComposerFit.fieldLeast ? "true" : "false"), String(format: "%.0f ≥ least true", field))
+        }
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (composer) at \(stamp)s")
+    }
+
     /// `probe-floats`: the rect of every float the layer has placed, in the root's space.
     func probeFloats(stamp: String) {
         let placed = ConsoleFloatSlot.placed
@@ -3633,6 +3723,14 @@ extension PreviewDelegate {
         expect("placement: size == .zero places at the preferred side", fmt(ConsoleFloatPlacement.rect(anchor: field, size: .zero, bounds: bounds, edge: .below)), "900,230 0×0")
         expect("floats: a tip never consumes a click", "\(ConsoleFloatLayer.catches(kind: .tip))", "false")
         expect("floats: a menu never consumes a click", "\(ConsoleFloatLayer.catches(kind: .menu))", "false")
+        // The title band (design13 review): the bounds start under it, a float above its anchor sizes and clamps to it.
+        let banded = ConsoleFloatPlacement.insetTop(CGRect(x: 0, y: 0, width: 1180, height: 760), by: 28)
+        expect("floats: bounds less the title band", "\(Int(banded.minY)) \(Int(banded.height)) \(Int(ConsoleFloatPlacement.insetTop(banded, by: -5).minY))", "28 732 28")
+        let chip = CGRect(x: 358, y: 712, width: 130, height: 32)
+        expect("floats: room above the composer is the band shorter", "\(Int(ConsoleFloatPlacement.maxListHeight(anchor: chip, bounds: CGRect(x: 0, y: 0, width: 1180, height: 760), side: .above) - ConsoleFloatPlacement.maxListHeight(anchor: chip, bounds: banded, side: .above)))", "28")
+        expect("floats: a tall popup above clamps under the band", "\(Int(ConsoleFloatPlacement.rect(anchor: chip, size: CGSize(width: 260, height: 900), bounds: banded, edge: .below).minY))", "36")
+        // A down on the anchor that missed the popup: the field's own toggle when the menu owns it, an outside click when it hangs off a row (the ⌘↓ verbs).
+        expect("floats: a down on the anchor is outside only when the float does not own its field", "\(ConsoleFloatMonitor.fieldDownOutside(ownsField: true)) \(ConsoleFloatMonitor.fieldDownOutside(ownsField: false))", "false true")
         expect("key ring: a mouse-down is the mouse's (a focus it moves lights nothing)", "\(ConsoleKeyRing.mouse(.leftMouseDown))", "true")
         expect("key ring: a key-down is the keyboard's (a focus it moves lights the ring)", "\(ConsoleKeyRing.mouse(.keyDown))", "false")
         expect("tip delay: cold 2.0 s", "\(ConsoleTip.delay(sinceLastHide: 2.0))", "0.35")
@@ -3716,6 +3814,13 @@ extension PreviewDelegate {
         let asleep = VoiceMenuModel.rows(voice: "marin", accent: "british", session: nil, phase: .asleep, busy: false)
         expect("status voice submenu: no Switch now asleep", "\(asleep.first?.kind == .switchNow) \(VoiceMenuModel.value(voice: "marin", accent: "british"))", "false Marin 🇬🇧")
         expect("chip ids", [VoiceChipWords.id, VoiceChipWords.switchId, VoiceChipWords.tipId].joined(separator: " "), "stream.voice stream.switch stream.voice.tip")
+        // The fit (design13 review): the field's minimum per composer width, the chip's faces.
+        func cluster(_ w: CGFloat) -> String { let c = ComposerFit.cluster(width: w); return "\(c.chip)/\(c.word ? "word" : "glyph")" }
+        expect("composer fit: the cluster at 618 (1180) · 600 · 560 · 422 (984, the minimum)", [cluster(618), cluster(600), cluster(560), cluster(422)].joined(separator: " "), "full/word name/word flag/word flag/glyph")
+        expect("composer fit: fixed spend · floor · the smallest cluster fits the minimum beside the floor's fallback", "\(Int(ComposerFit.fixed)) \(Int(ComposerFit.fieldFloor)) \(ConsoleLayout.streamMinWidth - ComposerFit.fixed - ComposerFit.clusterMin >= ComposerFit.fieldLeast)", "264 120 true")
+        func face(_ t: VoiceChipFace.Tier, _ flag: String?, _ waits: Bool) -> String { let s = VoiceChipFace.shows(t, flag: flag, waits: waits); return "\(s.flag ? "flag" : "-")/\(s.name ? "name" : "-")/\(s.waits ? "waits" : "-")" }
+        expect("chip faces with a flag, waits: full · name · flag", [face(.full, "🇬🇧", true), face(.name, "🇬🇧", true), face(.flag, "🇬🇧", true)].joined(separator: " "), "flag/name/waits flag/name/- flag/-/-")
+        expect("chip faces without a flag: the name stays; no waits without a wait", [face(.full, nil, true), face(.flag, nil, false), face(.full, "🇬🇧", false)].joined(separator: " "), "-/name/waits -/name/- flag/name/-")
         expect("popup measures: 256 above the composer · 258 in the rail · the head strip 28", "\(Int(VoiceChipWords.popupWidth)) \(Int(VoiceChipWords.settingsPopupWidth)) \(Int(ConsoleMenuPopupLayout.stripHeight)) \(Int(ConsoleMenuPopupLayout.chrome(filter: true, foot: true, head: true) - ConsoleMenuPopupLayout.chrome(filter: true, foot: true)))", "256 258 28 29")
         expect("language hint", ConsoleTheme.languageHint, "English · awake, Switch now · asleep, the next Go")
         expect("setup hint", VoiceSwitchWords.setupHint, "English at all times · heard at the first Go")
@@ -3827,6 +3932,26 @@ extension PreviewDelegate {
         let have = ConsoleFloatSlot.placed.keys.sorted()
         print("check: \(have == want ? "ok  " : "FAIL") floats open → \(have.isEmpty ? "none" : have.joined(separator: "+"))\(have == want ? "" : " (want \(spec))")")
         print("check: \(have == want ? "all ok" : "FAILED") (floats) at \(stamp)s")
+    }
+
+    /// `check-float-clear:<id>` (design13 review): the float placed under that id stops under the window's title
+    /// band — its top at or below `titleBand + margin` — so a popup flipped above the composer never sits level
+    /// with the traffic lights (its list scrolls instead).
+    func checkFloatClear(_ id: String, stamp: String) {
+        guard let window = jarheadWindow else { print("check: FAIL float \(id) clears the title band → no window"); print("check: FAILED (float-clear) at \(stamp)s"); return }
+        let band = ConsoleWindowController.titleBand(of: window)
+        let floor = band + ConsoleFloatPlacement.margin
+        let ok: Bool
+        let got: String
+        if let rect = ConsoleFloatSlot.placed[id] {
+            ok = rect.minY >= floor - 0.5 && band > 0
+            got = String(format: "y=%.1f band=%.1f floor=%.1f", rect.minY, band, floor)
+        } else {
+            ok = false
+            got = "not placed (\(ConsoleFloatSlot.placed.keys.sorted().joined(separator: " ")))"
+        }
+        print("check: \(ok ? "ok  " : "FAIL") float \(id) clears the title band → \(got)")
+        print("check: \(ok ? "all ok" : "FAILED") (float-clear) at \(stamp)s")
     }
 
     /// The dropdown's pure pins (Builder B): sections, steps, type-ahead, the words, the Local words.
@@ -4023,11 +4148,49 @@ extension PreviewDelegate {
         expect("glyphs: send · dismiss · quit · ask", [ConsoleGlyph.send, ConsoleGlyph.dismiss, ConsoleGlyph.quit, ConsoleGlyph.ask].joined(separator: " "), "arrowshape.up.fill xmark.circle.fill power.circle.fill checklist.checked")
         let missing = ConsoleGlyph.all.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
         expect("glyphs: every name is an SF Symbol", missing.joined(separator: ","), "")
+        // The real pin, over the call sites (design13 review): no `systemName:` / `systemImage:` literal is left in UI/Console
+        // (every glyph goes through ConsoleGlyph), and every member of the enum is drawn somewhere under Sources/Jarhead —
+        // `all` describes what is on screen. Read from the sources under cwd (console-preview.sh runs from apps/mac).
+        if let scan = Self.glyphSourceScan() {
+            expect("glyphs: no literal left in UI/Console (\(scan.files) files)", scan.literals.joined(separator: ","), "")
+            expect("glyphs: every ConsoleGlyph member is drawn (\(scan.members) members)", scan.unused.joined(separator: ","), "")
+        } else {
+            print("check: ok   glyphs: source scan skipped — no Sources/Jarhead under \(FileManager.default.currentDirectoryPath)")
+        }
         let split = ConsoleSegmentTitle.split
         func show(_ t: String) -> String { "\(split(t).flag ?? "nil")|\(split(t).word)" }
         expect("segments: a leading flag splits off the title", [show("🇬🇧 UK"), show("None"), show("🇺🇸 American"), show("🇬🇧"), show("Off")].joined(separator: " · "), "🇬🇧|UK · nil|None · 🇺🇸|American · nil|🇬🇧 · nil|Off")
         expect("row controls: raised on the highlight", "\(ConsoleRow.surface(selected: false, hovering: false)) \(ConsoleRow.surface(selected: true, hovering: false)) \(ConsoleRow.surface(selected: false, hovering: true))", "ground raised raised")
+        // The ⋯ rests plain on the ground and wears its ghost tile on the highlighted row (design13 review: the light rail read as a grid of boxes).
+        expect("row ⋯: plain on the ground, ghost on the highlight", "\(ConsoleRowOverflow.kind(on: .ground)) \(ConsoleRowOverflow.kind(on: .raised))", "plain ghost")
         return failed
+    }
+
+    /// The glyph sources, read: the `systemName: "…"` / `systemImage: "…"` literals left in UI/Console (outside
+    /// ConsoleGlyph.swift), and the enum's members no file under Sources/Jarhead refers to. nil when the sources are not under cwd.
+    static func glyphSourceScan() -> (files: Int, members: Int, literals: [String], unused: [String])? {
+        let fm = FileManager.default
+        let root = fm.currentDirectoryPath + "/Sources/Jarhead"
+        guard let walk = fm.enumerator(atPath: root) else { return nil }
+        var sources: [(path: String, text: String)] = []
+        for case let rel as String in walk where rel.hasSuffix(".swift") {
+            if let text = try? String(contentsOfFile: root + "/" + rel, encoding: .utf8) { sources.append((rel, text)) }
+        }
+        guard let enumFile = sources.first(where: { $0.path.hasSuffix("UI/Console/ConsoleGlyph.swift") }) else { return nil }
+        let literal = try! NSRegularExpression(pattern: #"system(?:Name|Image): "([^"]+)""#)
+        let member = try! NSRegularExpression(pattern: #"static let (\w+) = ""#)
+        func matches(_ re: NSRegularExpression, in text: String) -> [String] {
+            re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range(at: 1), in: text).map { String(text[$0]) } }
+        }
+        let console = sources.filter { $0.path.hasPrefix("UI/Console/") && $0.path != enumFile.path }
+        let literals = console.flatMap { file in matches(literal, in: file.text).map { "\((file.path as NSString).lastPathComponent):\($0)" } }
+        let members = matches(member, in: enumFile.text)
+        let others = sources.filter { $0.path != enumFile.path }.map(\.text).joined(separator: "\n")
+        let unused = members.filter { name in
+            let re = try! NSRegularExpression(pattern: "ConsoleGlyph\\.\(name)\\b")
+            return re.firstMatch(in: others, range: NSRange(others.startIndex..., in: others)) == nil
+        }
+        return (console.count, members.count, literals, unused)
     }
 
     /// design13 (Builder F): Stop's face is a pure function of the phase — spent while asleep with nothing
@@ -4459,9 +4622,9 @@ enum ConsoleButtonSheetWords {
     static let accents = ["🇺🇸 US", "🇬🇧 UK", "None"]
     static let twins: [(String, String, String)] = [
         ("arrow.up", ConsoleGlyph.send, "Send — a solid arrow"), ("arrow.clockwise", ConsoleGlyph.reload, "Reload · Refresh, icon-only"),
-        ("arrow.uturn.backward", ConsoleGlyph.undo, "Undo · Restore, icon-only"), ("arrow.down", ConsoleGlyph.newest, "Jump to newest"),
+        ("arrow.uturn.backward", ConsoleGlyph.undo, "Undo · Restore, icon-only"), ("mic.slash", ConsoleGlyph.muted, "status menu Mute"),
         ("magnifyingglass", ConsoleGlyph.search, "Agents rail search"), ("xmark", ConsoleGlyph.dismiss, "a lone dismiss on a card"),
-        ("macwindow", ConsoleGlyph.islandWindow, "island Window"), ("power", ConsoleGlyph.quit, "status menu Quit"),
+        ("arrow.up.right", ConsoleGlyph.externalLink, "Setup's external link"), ("power", ConsoleGlyph.quit, "status menu Quit"),
     ]
 }
 

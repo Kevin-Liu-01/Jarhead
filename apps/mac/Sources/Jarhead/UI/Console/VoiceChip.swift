@@ -120,11 +120,15 @@ struct VoiceChipInputs: Equatable {
 /// `x = chip.minX`, 256 wide.
 struct VoiceChip: View, Equatable {
     let inputs: VoiceChipInputs
+    /// Which face the chip wears and whether Switch now keeps its word — the composer's arithmetic on its
+    /// own width (`ComposerFit.cluster(width:)`), never a measure of the faces (a `ViewThatFits` here
+    /// cost the pick a 0.4 s layout stall).
+    var cluster = ComposerFit.Cluster()
     let pickVoice: (String) -> Void
     let pickAccent: (String) -> Void
     let switchNow: () -> Void
 
-    static func == (a: VoiceChip, b: VoiceChip) -> Bool { a.inputs == b.inputs }
+    static func == (a: VoiceChip, b: VoiceChip) -> Bool { a.inputs == b.inputs && a.cluster == b.cluster }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -134,7 +138,7 @@ struct VoiceChip: View, Equatable {
                              head: head, trigger: face, hugs: true)
                 .consoleHelp(HelpCopy.voiceChip, id: VoiceChipWords.tipId)
             if case .waits(let enabled) = inputs.line {
-                VoiceSwitchButton(enabled: enabled, id: VoiceChipWords.switchId, action: switchNow)
+                VoiceSwitchButton(enabled: enabled, word: cluster.word, id: VoiceChipWords.switchId, action: switchNow)
                     .transition(Motion.appear)
             }
         }
@@ -145,29 +149,48 @@ struct VoiceChip: View, Equatable {
     private func foot(_ id: String) -> String? { VoiceSwitchWords.foot(name: VoiceWords.name(id), phase: inputs.phase, busy: inputs.busy) }
     private func head() -> AnyView { AnyView(VoicePopupHead(accent: inputs.accent, pick: pickAccent)) }
     private func face(_ open: Bool) -> AnyView {
-        AnyView(VoiceChipFace(name: VoiceWords.name(inputs.voice), flag: AccentWords.flag(inputs.accent), waits: inputs.waits, open: open))
+        AnyView(VoiceChipFace(name: VoiceWords.name(inputs.voice), flag: AccentWords.flag(inputs.accent), waits: inputs.waits, open: open, tier: cluster.chip))
     }
 }
 
 /// `[8] 🇬🇧 [5] Ballad sans 12 medium fg [6 · waits] [8] chevron 9 fg3 [8]` — the style pads the 8s.
+/// Three faces, widest first; the composer picks one from its own width (`ComposerFit.cluster`: the
+/// field is held at its floor, then the chip gives its badge, then its name, then Switch now gives
+/// its word; only then does the field shrink). The accessibility value is the whole chip whatever face is drawn.
 struct VoiceChipFace: View {
     let name: String
     let flag: String?
     let waits: Bool
     let open: Bool
+    var tier: Tier = .full
+
+    /// The faces: `🇬🇧 Ballad waits ⌄` · `🇬🇧 Ballad ⌄` · `🇬🇧 ⌄` (the name stays when the accent has no flag).
+    enum Tier: CaseIterable { case full, name, flag }
+
+    /// What a face draws — pure, pinned by `check-kit`.
+    static func shows(_ tier: Tier, flag: String?, waits: Bool) -> (flag: Bool, name: Bool, waits: Bool) {
+        switch tier {
+        case .full: return (flag != nil, true, waits)
+        case .name: return (flag != nil, true, false)
+        case .flag: return (flag != nil, flag == nil, false)
+        }
+    }
 
     var body: some View {
+        let shows = Self.shows(tier, flag: flag, waits: waits)
         HStack(spacing: 0) {
-            if let flag { Text(flag).font(ConsoleTheme.sans(12)).padding(.trailing, 5) }
-            Text(name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
-                .contentTransition(.opacity)
-            if waits { ConsoleBadge(word: .word(VoiceSwitchWords.waits)).padding(.leading, 6).transition(Motion.appear) }
+            if shows.flag, let flag { Text(flag).font(ConsoleTheme.sans(12)).padding(.trailing, shows.name ? 5 : 0) }
+            if shows.name {
+                Text(name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
+                    .contentTransition(.opacity)
+            }
+            if shows.waits { ConsoleBadge(word: .word(VoiceSwitchWords.waits)).padding(.leading, 6).transition(Motion.appear) }
             Image(systemName: ConsoleGlyph.picker)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(open ? ConsoleTheme.fg : ConsoleTheme.fg3)
                 .padding(.leading, 8)
         }
-        // The chip keeps its words: beside Switch now the field is what gives, never the name.
+        // The chip keeps its words at this tier: the composer's arithmetic, not the field, decides the tier.
         .fixedSize(horizontal: true, vertical: false)
         .animation(Motion.snappy, value: waits)
         .accessibilityElement(children: .combine)
@@ -203,9 +226,12 @@ struct VoicePopupHead: View {
 
 /// Switch now — the one paid restart, behind an explicit press: `pause({quiet})` + `connect("voice
 /// change")` on the engine (`EngineCommand.voiceReopen`). Primary 32 beside the chip; the rail's
-/// verb size in Settings. Disabled (.45) with the busy tip while the engine would refuse it.
+/// verb size in Settings. Disabled (.45) with the busy tip while the engine would refuse it. The word,
+/// or — when the composer is too narrow for it beside the flag-alone chip (`ComposerFit.cluster`) —
+/// the one filled glyph (`ConsoleGlyph.switchVoice`); the tip and the accessibility label say the verb either way.
 struct VoiceSwitchButton: View {
     let enabled: Bool
+    var word = true
     var height: CGFloat = VoiceChipWords.height
     var kind: ConsoleButtonStyle.Kind = .primary
     var small = false
@@ -213,14 +239,21 @@ struct VoiceSwitchButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(VoiceSwitchWords.switchNow, action: action)
-            .buttonStyle(ConsoleButtonStyle(kind: kind, height: height, small: small))
-            .disabled(!enabled)
-            // One line, one width: the field beside it gives, never the verb.
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
-            .consoleHelp(VoiceSwitch.tip(enabled: enabled), id: id)
-            .accessibilityLabel(VoiceSwitchWords.switchNow)
+        Group {
+            if word {
+                Button(VoiceSwitchWords.switchNow, action: action)
+                    .buttonStyle(ConsoleButtonStyle(kind: kind, height: height, small: small))
+            } else {
+                Button(action: action) { Image(systemName: ConsoleGlyph.switchVoice).font(.system(size: 13, weight: .semibold)) }
+                    .buttonStyle(ConsoleButtonStyle(kind: kind, iconOnly: true, height: height, small: small))
+            }
+        }
+        .disabled(!enabled)
+        // One line, one width: the field beside it gives, never the verb.
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
+        .consoleHelp(VoiceSwitch.tip(enabled: enabled), id: id)
+        .accessibilityLabel(VoiceSwitchWords.switchNow)
     }
 }
 
@@ -228,11 +261,13 @@ struct VoiceSwitchButton: View {
 /// follow-up hands the chip its inputs from `ConsoleRootView` and this observer goes). It slices
 /// to `VoiceChipInputs` and the chip is `.equatable()`, so a level tick redraws nothing under it.
 struct VoiceChipSlot: View {
+    /// The composer's word on the room (`ComposerFit.cluster(width:)`).
+    var cluster = ComposerFit.Cluster()
     @EnvironmentObject private var state: AppState
     @Environment(\.consoleActions) private var actions
 
     var body: some View {
-        VoiceChip(inputs: Self.inputs(state),
+        VoiceChip(inputs: Self.inputs(state), cluster: cluster,
                   pickVoice: { actions.send(.setSettings(SettingsPatch(voice: $0))) },
                   pickAccent: { actions.send(.setSettings(SettingsPatch(accent: $0))) },
                   switchNow: { actions.send(.voiceReopen) })

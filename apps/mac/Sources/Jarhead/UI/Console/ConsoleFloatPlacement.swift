@@ -70,6 +70,14 @@ enum ConsoleFloatPlacement {
         }
     }
 
+    /// The bounds a float may use under a `fullSizeContentView` title bar: the root starts at y = 0 but the
+    /// traffic lights own the first `band` points, so the layer and a field's `listMax` both start there —
+    /// a popup flipped `.above` shrinks (its list scrolls) instead of climbing into the chrome.
+    static func insetTop(_ bounds: CGRect, by band: CGFloat) -> CGRect {
+        let band = min(max(0, band), bounds.height)
+        return CGRect(x: bounds.minX, y: bounds.minY + band, width: bounds.width, height: bounds.height - band)
+    }
+
     /// How tall a `.below` list may grow before it scrolls: the room on its side of the anchor.
     static func maxListHeight(anchor: CGRect, bounds: CGRect, side: Side) -> CGFloat {
         switch side {

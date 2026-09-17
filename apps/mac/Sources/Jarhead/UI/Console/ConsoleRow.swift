@@ -3,9 +3,10 @@ import AppKit
 
 // The Console's list row and what every dense list shares: `ConsoleRow` (28 one line · 40 with a
 // meta line · +16 per extra title line · 44 on the agents rail while a figure ticks, 28 otherwise), `ConsoleGroupHead` (22, sticky),
-// `ConsoleRowOverflow` (the ⋯ drawn at rest in a ghost tile — nothing is revealed under the pointer;
-// the row's controls sit on `.raised` while the row is hovered or selected, so their tiles step
-// off the highlight, design13),
+// `ConsoleRowOverflow` (the ⋯ drawn at rest — nothing is revealed under the pointer; its ghost tile
+// comes with the row's highlight: the row's controls sit on `.raised` while the row is hovered or
+// selected and the ⋯ rests `.plain` on the ground, so a light rail is a list of rows, not a grid of
+// boxes beside the badges — design13 § Risks' fallback for icon-only ghosts, taken after a light shot),
 // `ConsoleFocusRing` (the keyboard's one ring), `ConsoleListKeys` + `ConsoleListFocus` (↑↓ ⏎ → ←
 // Esc and type-ahead over a list's ids) and `ConsoleListModel` (pure: heights, stepping,
 // type-ahead, the memory kinds, the ledger's months — pinned by `check-kit`). A row's verbs are
@@ -57,7 +58,7 @@ struct ConsoleVerbMenu: View {
             if verb.separatorBefore { Divider() }
             if verb.children.isEmpty {
                 Button(role: verb.destructive ? .destructive : nil, action: verb.run) {
-                    if verb.checked { Label(verb.title, systemImage: "checkmark") } else { Text(verb.title) }
+                    if verb.checked { Label(verb.title, systemImage: ConsoleGlyph.checkmark) } else { Text(verb.title) }
                 }
                 .disabled(verb.disabled)
             } else {
@@ -79,8 +80,11 @@ struct ConsoleVerbFloat: ViewModifier {
     func body(content: Content) -> some View {
         // Published from a background the row's size, so the float's anchor is the row and its
         // frame tracking never fights the card's (publishers append, so both floats reach the layer).
+        // The row is the anchor, not the menu's field (`ownsField: false`): a down on the row with the
+        // verbs open dismisses them and passes through, so the row's primary acts on that same click —
+        // never a click that acts under a menu left floating over it.
         content.background {
-            Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, dismiss: close) {
+            Color.clear.consoleFloat(id + ConsoleRowWords.verbsSuffix, kind: .menu, on: open && !verbs.isEmpty, ownsField: false, dismiss: close) {
                 ConsoleMenuPopup(spec: ConsoleVerbFloatModel.spec(id: id, verbs: verbs, close: close))
             }
         }
@@ -467,18 +471,24 @@ struct ConsoleOptionalTip: ViewModifier {
     }
 }
 
-/// The ⋯ in its ghost tile (the box is the solid, so the glyph stays a line), lit under the
-/// pointer; opens the row's verbs as the system menu (the platform idiom for verbs). Replaces the
-/// rails' hover-only `RowOverflow`s. A `Menu`, not a `Button`, so it wears the kit's face by hand.
+/// The ⋯ (a line glyph: the tile, when it has one, is the solid), lit under the pointer; opens the
+/// row's verbs as the system menu (the platform idiom for verbs). Replaces the rails' hover-only
+/// `RowOverflow`s. A `Menu`, not a `Button`, so it wears the kit's face by hand. At rest on the ground
+/// it is `.plain` — the glyph alone; on the highlighted row (`.raised`) it wears the ghost tile: nine
+/// boxed ⋯ down a light rail beside the rows' outlined badges read as a grid, so the box comes with
+/// the row's own lift. Pinned (`kind(on:)`).
 struct ConsoleRowOverflow: View {
     let verbs: [ConsoleVerb]
 
     @State private var hovering = false
     @Environment(\.consoleSurface) private var surface
 
+    /// The ⋯'s kind on a surface: the ghost tile on the highlighted row, the bare glyph on the ground.
+    static func kind(on surface: ConsoleFill.Surface) -> ConsoleButtonStyle.Kind { surface == .raised ? .ghost : .plain }
+
     var body: some View {
         Menu { ConsoleVerbMenu(verbs: verbs) } label: {
-            ConsoleButtonFace(kind: .ghost, iconOnly: true, height: 20, small: true, surface: surface, hovering: hovering) {
+            ConsoleButtonFace(kind: Self.kind(on: surface), iconOnly: true, height: 20, small: true, surface: surface, hovering: hovering) {
                 Image(systemName: ConsoleGlyph.ellipsis).font(.system(size: 13, weight: .semibold))
             }
         }

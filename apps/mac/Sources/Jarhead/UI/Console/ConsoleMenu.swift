@@ -115,7 +115,13 @@ struct ConsoleMenuField<Value: Hashable>: View {
     @FocusState private var focused: Bool
     /// True while the keyboard put the focus here (Tab, `focus:`, Esc's return); a click clears it — the ring is the keyboard's alone.
     @State private var keyboard = false
+    /// Set by the layer's monitor on a mouse-DOWN on this field while its popup is open (`ConsoleFloat.fieldDown`).
+    /// The down moves focus off the popup (the field is `.focusable()`), whose `leave()` would close the menu before
+    /// the up arrived — and the Button's up would then find it closed and open it again (Kevin's "click twice").
+    /// While this is set the popup's close is skipped; the up's `toggle()` clears it and does the one `hide()`.
+    @State private var closingByField = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.consoleTitleBand) private var titleBand
 
     var body: some View {
         Button(action: toggle) { face }
@@ -131,7 +137,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
             .animation(Motion.snappy, value: open)
             .animation(Motion.snappy, value: shownTitle)
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame = $0 }
-            .consoleFloat(id, kind: .menu, on: open, dismiss: hide) { ConsoleMenuPopup(spec: spec) }
+            .consoleFloat(id, kind: .menu, on: open, dismiss: hide, fieldDown: fieldDown) { ConsoleMenuPopup(spec: spec) }
             .onReceive(NotificationCenter.default.publisher(for: ConsoleSession.previewNotification), perform: preview)
             .accessibilityLabel(label ?? ConsoleMenuWords.fallbackLabel)
             .accessibilityValue(title(value))
@@ -155,12 +161,25 @@ struct ConsoleMenuField<Value: Hashable>: View {
     }
 
     /// The keys (Space, Return, ↓) open; the click toggles — the layer lets the mouse-down on the
-    /// field through, so the field alone closes its own menu, once.
+    /// field through, so the field alone closes its own menu, once: the toggle is decided at the
+    /// down (`fieldDown`), the up carries it out.
     private func show() { guard enabled, !open else { return }; open = true; ConsolePress.report?("menu: opened \(id)") }
-    private func toggle() { if open { hide() } else { show() } }
+    private func toggle() {
+        let byField = closingByField
+        closingByField = false
+        if open || byField { hide() } else { show() }
+    }
 
-    /// The layer's dismiss and the popup's close: focus comes back to the field.
+    /// The monitor saw a mouse-down on this field with the popup open: the up will close it.
+    private func fieldDown() { if open { closingByField = true } }
+
+    /// The popup's own close (Tab, Esc with no text, focus leaving it) — skipped while the field's
+    /// mouse-down is what took the focus: that click's up is the close.
+    private func closeFromPopup() { if closingByField { return }; hide() }
+
+    /// The layer's dismiss and the field's toggle: focus comes back to the field.
     private func hide() {
+        closingByField = false
         guard open else { return }
         open = false
         focused = true
@@ -184,7 +203,7 @@ struct ConsoleMenuField<Value: Hashable>: View {
                         group: savedGroup, groupCount: groupCount, groupCaption: groupCaption, dim: dim, disabled: disabled, loaded: loaded,
                         foot: foot, head: head, filter: ConsoleMenuModel.showsFilter(filter, count: allOptions.count), filterNoun: filterNoun,
                         width: ConsoleMenuModel.width(field: frame.width, minimum: width ?? 220, bounds: bounds, anchorMinX: frame.minX).w,
-                        listMax: listMax, pick: choose, close: hide)
+                        listMax: listMax, pick: choose, close: closeFromPopup)
     }
 
     // The `saved` value's group, badge and provenance fold into the site's closures.
@@ -201,10 +220,12 @@ struct ConsoleMenuField<Value: Hashable>: View {
         return { $0 == saved.value ? saved.provenance : (meta?($0) ?? "") }
     }
 
-    /// The window's content rect, the space the root's float layer draws in.
+    /// The window's content rect less its title band — the space the root's float layer places in (the same
+    /// inset the layer applies), so a popup flipped above the composer sizes its list to stop under the chrome.
     private var bounds: CGRect {
         let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible && $0.contentView != nil }
-        return CGRect(origin: .zero, size: window?.contentView?.bounds.size ?? CGSize(width: 1180, height: 760))
+        let whole = CGRect(origin: .zero, size: window?.contentView?.bounds.size ?? CGSize(width: 1180, height: 760))
+        return ConsoleFloatPlacement.insetTop(whole, by: titleBand)
     }
 
     /// As many rows as fit between the field and the window's margin, then the list scrolls;
@@ -233,7 +254,7 @@ struct ConsoleMenuFieldLabel: View {
                 .contentTransition(.opacity)
             if let badge { ConsoleBadge(word: badge) }
             Spacer(minLength: 4)
-            Image(systemName: "chevron.up.chevron.down")
+            Image(systemName: ConsoleGlyph.picker)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(open ? ConsoleTheme.fg : ConsoleTheme.fg3)
         }

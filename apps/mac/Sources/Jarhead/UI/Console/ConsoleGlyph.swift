@@ -5,7 +5,11 @@ import Foundation
 // a stepper's ±, a chevron, the ⋯ in its ghost tile — stays a line, because the box is its solid.
 // Arrows and × have no filled form except the `.circle.fill` family, right on an icon-only button
 // of 24 pt or more and wrong inside a field or beside a word; a line glyph beside a word keeps the
-// line (the tile is the solid there). `check-kit` pins that every name on `all` is filled or kept.
+// line (the tile is the solid there). `check-kit` pins that every name on `all` is filled or kept —
+// and, over the sources (design13 review), that no `systemName:` / `systemImage:` literal is left in
+// UI/Console and that every member here is drawn somewhere: `all` describes what is on screen.
+// Two surfaces draw their own literals and are not on this enum: the island (UI/Orb/NotchPanel) and the
+// transport table (Model/AppState) — the orb harness compiles without the Console kit.
 
 enum ConsoleGlyph {
     // MARK: verbs — filled
@@ -16,22 +20,23 @@ enum ConsoleGlyph {
     static let reload = "arrow.clockwise.circle.fill"
     /// Undo / Restore when the strip is too narrow for the word.
     static let undo = "arrow.uturn.backward.circle.fill"
-    /// Jump to newest / Load earlier as icon-only 24 chips.
-    static let newest = "arrow.down.circle.fill"
-    static let earlier = "arrow.up.circle.fill"
     /// The Agents rail's search button.
     static let search = "magnifyingglass.circle.fill"
     /// A lone dismiss × on a card or a toast.
     static let dismiss = "xmark.circle.fill"
     /// An external link beside its word (Setup's "Get a key", "Open ollama.com").
     static let externalLink = "arrow.up.right.square.fill"
-    /// The island's Window box, beside its three filled neighbours.
-    static let islandWindow = "rectangle.inset.filled"
+    /// Reveal in Finder (a conversation's file, the Trash) — beside its word and as the file row's mark.
+    static let folder = "folder.fill"
+    /// The Ledger day's `Live` button back to the Now stream.
+    static let live = "bolt.fill"
     /// The status menu's Quit, Ask for everything and Voice ▸ rows.
     static let quit = "power.circle.fill"
     static let ask = "checklist.checked"
     static let voice = "person.wave.2.fill"
-    /// The transport, already solid.
+    /// Switch now when the composer is too narrow for the word (design13 review: the fit at the window's minimum).
+    static let switchVoice = "arrow.triangle.2.circlepath.circle.fill"
+    /// The transport (the composer's Stop, the status menu's Mute and Stop, a thread pane's Resume · Pause · Stop, the empty stream's Go), already solid.
     static let stop = "stop.fill"
     static let play = "play.fill"
     static let pause = "pause.fill"
@@ -46,9 +51,14 @@ enum ConsoleGlyph {
     static let magnifier = "magnifyingglass"
     /// The ⋯ in its ghost tile.
     static let ellipsis = "ellipsis"
-    /// Row and disclosure chevrons; the menu field's picker chevron.
+    /// Row and disclosure chevrons; the menu field's picker chevron; the back buttons' chevron beside their word.
     static let chevron = "chevron.right"
+    static let chevronLeft = "chevron.left"
     static let picker = "chevron.up.chevron.down"
+    /// The verb menu's ✓ on the current pick — NSMenu draws its own.
+    static let checkmark = "checkmark"
+    /// The Circled card's skeleton before its screenshot lands — information, not a verb.
+    static let scopeMark = "scope"
     /// The stepper's cells.
     static let plus = "plus"
     static let minus = "minus"
@@ -56,10 +66,6 @@ enum ConsoleGlyph {
     static let circle = "pencil.and.outline"
     /// Summon Orb — no filled twin.
     static let summon = "cursorarrow.click.2"
-    /// The island's timer pill — information, not a verb.
-    static let timer = "timer"
-    /// Connecting "…" on the transport — a state, not a verb.
-    static let connecting = "ellipsis"
     /// A line glyph beside a word on a ghost button: the tile is the solid.
     static let reloadLine = "arrow.clockwise"
     static let earlierLine = "arrow.up"
@@ -67,13 +73,13 @@ enum ConsoleGlyph {
     static let undoLine = "arrow.uturn.backward"
 
     /// The chrome that stays a line.
-    static let keep: Set<String> = [cross, magnifier, ellipsis, chevron, picker, plus, minus, circle, summon, timer,
+    static let keep: Set<String> = [cross, magnifier, ellipsis, chevron, chevronLeft, picker, checkmark, scopeMark, plus, minus, circle, summon,
                                     reloadLine, earlierLine, newestLine, undoLine]
 
     /// Every name above, for the pin.
-    static let all: [String] = [send, reload, undo, newest, earlier, search, dismiss, externalLink, islandWindow, quit, ask, voice,
-                                stop, play, pause, mic, muted, cross, magnifier, ellipsis, chevron, picker, plus, minus, circle,
-                                summon, timer, connecting, reloadLine, earlierLine, newestLine, undoLine]
+    static let all: [String] = [send, reload, undo, search, dismiss, externalLink, folder, live, quit, ask, voice, switchVoice,
+                                stop, play, pause, mic, muted, cross, magnifier, ellipsis, chevron, chevronLeft, picker, checkmark, scopeMark,
+                                plus, minus, circle, summon, reloadLine, earlierLine, newestLine, undoLine]
 
     /// The rule as a predicate: filled (`.fill` / `.filled` / `.checked`), or on the keep-list.
     static func filledOrKept(_ name: String) -> Bool {
