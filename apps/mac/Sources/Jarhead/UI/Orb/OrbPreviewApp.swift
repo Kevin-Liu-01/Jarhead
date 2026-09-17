@@ -3369,7 +3369,6 @@ extension OrbPreviewDelegate {
         screenRecordingSeen = nil
     }
 
-    /// ⌥⇧Return, the words, Return; then ⌥⇧Return, words, Escape — the field's whole contract in one script.
     /// "what@t;…" → [(what, t)], the ORB_NOTCH_PRESS grammar.
     static func parsePressList(_ spec: String?, knob: String) -> [(String, Double)] {
         (spec ?? "").split(separator: ";").compactMap { entry -> (String, Double)? in
@@ -3473,6 +3472,7 @@ extension OrbPreviewDelegate {
               "NotchPanel.stopDim: asleep 0.45, every other phase 1")
     }
 
+    /// ⌥⇧Return, the words, Return; then ⌥⇧Return, words, Escape — the field's whole contract in one script.
     func notchFieldScript(text: String) {
         let before = notchSends.total
         var s1 = (pinned: false, focused: false, key: false, swallowed: false)
