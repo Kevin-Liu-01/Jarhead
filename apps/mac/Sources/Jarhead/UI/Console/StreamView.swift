@@ -1304,14 +1304,16 @@ struct LightboxView: View {
 /// 48pt, owns its top rule: Go/Pause (the transport's one button — `play.fill` as the
 /// filled accent while asleep, a ghost while paused, `pause.fill` in session, a quiet
 /// "…" while connecting where a press stops; ⌘P here, ⌥⇧Space anywhere), Mute (enabled
-/// only in session), the field, Send (filled accent only while there is text), Stop
-/// (filled red while the snapshot holds a running delegation and for Motion.slow
-/// (400 ms) after a press — the flash is the only local state, and it lets go on its
-/// own). Go/Pause,
-/// Send and Stop are enabled in every phase: a Stop must land whatever is happening,
-/// and a Go after a Stop must not find the button gone. Pause and Stop both close the
-/// session (the meter stops); a pause keeps the conversation, and typing while paused
-/// just sends — the engine resumes first.
+/// only in session), Builder G's voice chip, the field, Send (a filled arrow, the accent only while
+/// there is text), Stop. Stop's kind and word are pure functions of the phase (design13 § Stop):
+/// a ghost in session, filled red while the snapshot holds a running delegation and for
+/// Motion.slow (400 ms) after a press that had something to stop — the flash is the only local
+/// state, and it lets go on its own — and **spent** while asleep with nothing running: grey on
+/// its tile, the word **Stopped**, still a button. A press from asleep dips and never flashes:
+/// red would claim a stop that did not happen. Go/Pause, Send and Stop are enabled in every
+/// phase: a Stop must land whatever is happening, and a Go after a Stop must not find the
+/// button gone. Pause and Stop both close the session (the meter stops); a pause keeps the
+/// conversation, and typing while paused just sends — the engine resumes first.
 struct ComposerBar: View {
     let phase: Phase
     let stopHot: Bool
@@ -1347,6 +1349,30 @@ struct ComposerBar: View {
         ComposerWords.keepsText(phase: phase, typedWakes: typedWakes)
     }
 
+    // MARK: Stop, pure (pinned by check-kit)
+
+    /// The Stop button's kind: red while a delegation runs or the press is fresh, spent — grey,
+    /// still enabled — while asleep with nothing running, a ghost in every other phase.
+    static func stopKind(phase: Phase, hot: Bool, flashing: Bool) -> ConsoleButtonStyle.Kind {
+        if hot || flashing { return .danger }
+        return phase == .asleep ? .spent : .ghost
+    }
+
+    /// The Stop button's word: the past tense once the deed is done, for as long as the phase
+    /// is asleep (no timer); Stop whenever there is, or could be, something to stop.
+    static func stopWord(phase: Phase, hot: Bool) -> String {
+        phase == .asleep && !hot ? ComposerWords.stopped : ComposerWords.stop
+    }
+
+    /// Whether a press flashes red: only a press that had something to stop. From asleep the
+    /// button dips (the press wash) and stays grey — red would claim a stop that did not happen.
+    static func stopFlashes(phaseAtPress: Phase) -> Bool {
+        phaseAtPress != .asleep
+    }
+
+    private var stopKind: ConsoleButtonStyle.Kind { ComposerBar.stopKind(phase: phase, hot: stopHot, flashing: stopFlashing) }
+    private var stopWord: String { ComposerBar.stopWord(phase: phase, hot: stopHot) }
+
     /// The Go/Pause button's spoken name, for accessibility.
     private var transportWord: String {
         switch AppState.transportPress(for: phase) {
@@ -1357,63 +1383,27 @@ struct ComposerBar: View {
     }
 
     var body: some View {
-        let look = AppState.transportLabel(for: phase)
         VStack(spacing: 0) {
             ConsoleHairline()
             HStack(spacing: 8) {
-                Button(action: transport.toggle) {
-                    // Go ↔ Pause ↔ "…": the glyph swaps with the symbol replace effect while the
-                    // button style crossfades its fill (ConsoleButtonBody animates `kind`).
-                    Image(systemName: look.symbol).font(.system(size: 13, weight: .medium))
-                        .contentTransition(ConsoleMotion.symbol)
-                        // Connecting: the "…" sits back; the press is a stop.
-                        .opacity(connecting ? 0.55 : 1)
-                        .animation(Motion.fade, value: look.symbol)
-                        .animation(Motion.fade, value: connecting)
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: AppState.transportFilled(for: phase) ? .primary : .ghost, iconOnly: true, height: 32))
-                .consoleHelp(look.help, key: HelpCopy.go.key, id: StreamTipWords.goId)
-                .accessibilityLabel(transportWord)
-
-                Button { actions.send(muted ? .unmute : .mute) } label: {
-                    Image(systemName: muted ? "mic.slash.fill" : "mic.fill").font(.system(size: 13, weight: .medium))
-                        .contentTransition(ConsoleMotion.symbol)
-                        .animation(Motion.fade, value: muted)
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
-                .disabled(!inSession)
-                .consoleHelp(muted ? HelpCopy.unmute : HelpCopy.mute, id: StreamTipWords.muteId)
-                .accessibilityLabel(muted ? "Unmute" : "Mute")
-
+                transportButton
+                muteButton
+                // ── Builder G's slot: the voice chip (`VoiceChip`, `🇬🇧 Ballad ⌄`) sits here, between Mute and the field. ──
                 TextField(placeholder, text: $text)
                     .consoleField(height: 32, focused: focused)
                     .focused($focused)
                     .onSubmit(submit)
                     .onExitCommand { focused = false }
-
-                Button(action: submit) {
-                    Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, iconOnly: true, height: 32))
-                .disabled(!hasText)
-                .consoleHelp(HelpCopy.send, id: StreamTipWords.sendId)
-                .accessibilityLabel("Send")
-
-                Button(action: actions.stop) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "stop.fill").font(.system(size: 10))
-                        Text("Stop")
-                    }
-                }
-                .buttonStyle(ConsoleButtonStyle(kind: stopHot || stopFlashing ? .danger : .ghost, height: 32))
-                .consoleHelp(HelpCopy.stopAll, id: StreamTipWords.stopId)
-                .accessibilityLabel("Stop")
+                sendButton
+                stopButton
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
         }
         .onChange(of: session.composerFocusRequest) { focused = true }
         .onChange(of: session.stopFlash) {
-            // The press is felt at once, whatever the engine does with it.
+            // The press is felt at once — when there was something to stop. `phase` here is the
+            // phase at the press: the engine's asleep arrives with the next snapshot.
+            guard ComposerBar.stopFlashes(phaseAtPress: phase) else { return }
             stopFlashing = true
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(Self.stopFlashSeconds * 1_000_000_000))
@@ -1422,10 +1412,75 @@ struct ComposerBar: View {
         }
     }
 
+    /// Go ↔ Pause ↔ "…": the glyph swaps with the symbol replace effect while the button style
+    /// crossfades its fill (ConsoleButtonBody animates `kind`).
+    private var transportButton: some View {
+        let look = AppState.transportLabel(for: phase)
+        return Button(action: transport.toggle) {
+            Image(systemName: look.symbol).font(.system(size: 13, weight: .medium))
+                .contentTransition(ConsoleMotion.symbol)
+                // Connecting: the "…" sits back; the press is a stop.
+                .opacity(connecting ? 0.55 : 1)
+                .animation(Motion.fade, value: look.symbol)
+                .animation(Motion.fade, value: connecting)
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: AppState.transportFilled(for: phase) ? .primary : .ghost, iconOnly: true, height: 32))
+        .consoleHelp(look.help, key: HelpCopy.go.key, id: StreamTipWords.goId)
+        .accessibilityLabel(transportWord)
+    }
+
+    private var muteButton: some View {
+        Button { actions.send(muted ? .unmute : .mute) } label: {
+            Image(systemName: muted ? ConsoleGlyph.muted : ConsoleGlyph.mic).font(.system(size: 13, weight: .medium))
+                .contentTransition(ConsoleMotion.symbol)
+                .animation(Motion.fade, value: muted)
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: true, height: 32))
+        .disabled(!inSession)
+        .consoleHelp(muted ? HelpCopy.unmute : HelpCopy.mute, id: StreamTipWords.muteId)
+        .accessibilityLabel(muted ? "Unmute" : "Mute")
+    }
+
+    /// Send: a solid arrow (`ConsoleGlyph.send`), the accent only while there is text.
+    private var sendButton: some View {
+        Button(action: submit) {
+            Image(systemName: ConsoleGlyph.send).font(.system(size: 13, weight: .semibold))
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: hasText ? .primary : .ghost, iconOnly: true, height: 32))
+        .disabled(!hasText)
+        .consoleHelp(HelpCopy.send, id: StreamTipWords.sendId)
+        .accessibilityLabel("Send")
+    }
+
+    /// Stop: one width across the word change (the hidden `Stopped` sizes the label, so the field
+    /// beside it never jitters); the kind crossfades on Motion.snappy (ConsoleButtonBody animates
+    /// `kind`), the word on `.contentTransition(.opacity)`; the tip says why it is grey.
+    private var stopButton: some View {
+        Button(action: actions.stop) {
+            HStack(spacing: 6) {
+                Image(systemName: ConsoleGlyph.stop).font(.system(size: 10))
+                ZStack {
+                    Text(ComposerWords.stopped).hidden()
+                    Text(stopWord).contentTransition(.opacity)
+                }
+                .animation(Motion.snappy, value: stopWord)
+            }
+        }
+        .buttonStyle(ConsoleButtonStyle(kind: stopKind, height: 32))
+        .consoleHelp(stopKind == .spent ? HelpCopy.stopSpent : HelpCopy.stopAll, id: StreamTipWords.stopId)
+        .accessibilityLabel(stopWord)
+    }
+
     private func submit() {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         actions.send(.sayText(t))
         if !ComposerBar.keepsText(phase: phase, typedWakes: typedWakes) { text = "" }
     }
+}
+
+/// The Stop button's two words (design13 § Stop): the verb, and the past tense once the deed is done.
+extension ComposerWords {
+    static let stop = "Stop"
+    static let stopped = "Stopped"
 }

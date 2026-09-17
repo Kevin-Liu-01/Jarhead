@@ -28,6 +28,8 @@ enum HelpCopy {
     static let pause = Entry(name: "Pause", hint: "Close the session — the context stays", key: "⌘P")
     static let stop = Entry(name: "Stop", hint: "Stop this turn — the threads carry on", key: "⌥⌘.")
     static let stopAll = Entry(name: "Stop all", hint: "Stop everything — close the session, sleep", key: "⌘.")
+    /// The composer's Stop while asleep (design13 § Stop): the button is spent — grey, still a button — and the tip says why.
+    static let stopSpent = Entry(name: "Stop", hint: "Stopped — nothing running", key: "⌘.")
     static let check = Entry(name: "Check", hint: "Probe the brain again")
     static let search = Entry(name: "Search", hint: "Find a line in every conversation", key: "⌘F")
     static let circle = Entry(name: "Circle", hint: "Circle something — needs Screen Recording", key: "⌥⇧C")
@@ -87,7 +89,7 @@ enum HelpCopy {
     /// The status menu row (and the Dock menu's); the key rides last as the menu's own equivalent.
     static let recordingRow = Entry(name: "Recording", hint: "Hand back the mic, guard the echo — apps keep their sound", key: "⌥⇧R")
 
-    static let all: [Entry] = [go, pause, stop, stopAll, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
+    static let all: [Entry] = [go, pause, stop, stopAll, stopSpent, check, search, circle, mute, unmute, send, sendAsleep, sendYes, sendNo, allow, deny,
                                backStream, backStreamEsc, backNow, latest, undoCleared, retryPage, undoMove, liveThread, liveWriting, liveQuiet,
                                pinned, restoreTrash, restoreArchive, logView, conversationView,
                                resumeThread("Slack"), pauseThread("Slack"), stopThread("Slack"), allowThread("Slack"), denyThread("Slack"),

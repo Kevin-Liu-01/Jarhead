@@ -148,6 +148,16 @@ final class StatusItem: NSObject {
         return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg)
     }
 
+    /// The Stop row's word: `Stopped` while asleep (nothing to stop), `Stop` in every other phase.
+    static func stopTitle(for phase: Phase) -> String {
+        phase == .asleep ? StatusWords.stopped : StatusWords.stop
+    }
+
+    /// A spent row's title: the word in the secondary colour at the menu's own size.
+    static func spentTitle(_ word: String) -> NSAttributedString {
+        NSAttributedString(string: word, attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.menuFont(ofSize: 0)])
+    }
+
     /// The Go/Pause row's title: the transport's word for the phase.
     static func transportTitle(for phase: Phase) -> String {
         switch AppState.transportPress(for: phase) {
@@ -239,13 +249,15 @@ final class StatusItem: NSObject {
         menu.addItem(recording)
 
         // Stop is never disabled: it must land in every phase, connected or not (the
-        // local speaker flush still happens).
-        let stop = NSMenuItem(title: "Stop", action: #selector(doStop), keyEquivalent: "\u{1b}")
+        // local speaker flush still happens). Asleep, the deed is done: the row reads `Stopped`
+        // in the secondary colour (design13 § Stop) — grey, still a row that acts.
+        let stop = NSMenuItem(title: StatusItem.stopTitle(for: phase), action: #selector(doStop), keyEquivalent: "\u{1b}")
         stop.keyEquivalentModifierMask = [.option]
         stop.target = self
         stop.isEnabled = true
         stop.image = StatusItem.symbol("stop.fill")
         stop.toolTip = "Stop everything — close the session, sleep (⌥⎋)"
+        if phase == .asleep { stop.attributedTitle = StatusItem.spentTitle(StatusWords.stopped) }
         menu.addItem(stop)
 
         menu.addItem(.separator())
@@ -437,4 +449,10 @@ final class StatusItem: NSObject {
         image.isTemplate = true
         return image
     }
+}
+
+/// The status menu's words (design13): every visible literal once. Builder G adds `voice` beside these.
+enum StatusWords {
+    static let stop = "Stop"
+    static let stopped = "Stopped"
 }

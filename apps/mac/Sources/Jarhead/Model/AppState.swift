@@ -1327,10 +1327,14 @@ extension AppState {
     /// one "Stopped" toast (the Console's pill and the orb's). A site adds only its own
     /// local red flash of the button; the toast and the clear are done here, once.
     public func transportStop() {
+        let alreadyAsleep = snapshot.phase == .asleep
         send(.stop)
         NotificationCenter.default.post(name: AppState.stopPressedNotification, object: nil)
         overlayCommands.send(.clear)
-        toast("Stopped")
+        // Asleep, there is nothing to stop: the engine's own toast says "nothing running", and a
+        // "Stopped" here would claim a stop that did not happen (design13 § Stop). The command still
+        // goes — the daemon may hold something the app does not show.
+        if !alreadyAsleep { toast("Stopped") }
     }
 }
 
