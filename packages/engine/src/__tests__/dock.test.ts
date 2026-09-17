@@ -22,6 +22,10 @@ const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`..
 const TWO = fixture("dock-two-tiles.xml");
 const CLEAN = fixture("dock-clean.xml");
 const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
+// The reading hands helper as `lsappinfo list` printed it on 2026-09-17: LaunchServices checked it in as a
+// second Foreground "Jarhead" from the same bundle — the second tile no plist repair removes.
+const HELPER = { pid: 66017, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/jarhead-hands", type: "Foreground" };
+const HELPER_CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover";
 
 interface Call {
   readonly cmd: string;
@@ -282,4 +286,27 @@ test("dockProblemText: two tiles with a pin is the line; more is the count; a re
   // A pin at the old build path.
   assert.equal(Engine.dockProblemText(read(fixture("dock-stale-url.xml"))), "The Dock's Jarhead pin points at file:///Users/kevinliu/jarvis/build/Jarhead.app/");
   assert.deepEqual(Engine.DOCK_REMEDY, REMEDY);
+});
+
+test("dockProblemText with helperTiles: a clean plist and one Foreground jarhead-hands is two tiles with the cause and the Console's remedy; the same helper over a recent tile is still two, not three; no helper is today's line", () => {
+  const read = (xml: string): Parameters<typeof Engine.dockProblemText>[0] => {
+    const a = readDock(fake({ exports: [xml] }).exec);
+    if ("skipped" in a) throw new Error(a.skipped);
+    return a;
+  };
+  const clean = read(CLEAN);
+  assert.equal(clean.pinned, 1);
+  assert.equal(clean.recent, 0);
+  // The helper's tile is drawn before `recent-apps` has caught up: the row names it, the pin is fine.
+  assert.equal(Engine.dockProblemText({ ...clean, helperTiles: [HELPER] }), `Two Jarhead tiles in the Dock — ${HELPER_CLAUSE}`);
+  // The leftover already in `recent-apps` is the helper's own tile parked: one tile, not one more.
+  const two = read(TWO);
+  assert.equal(two.recent, 1);
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER] }), `Two Jarhead tiles in the Dock — ${HELPER_CLAUSE}`);
+  // Two helpers over the one leftover: three tiles, both pids.
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [HELPER, { ...HELPER, pid: 66020 }] }), "3 Jarhead tiles in the Dock — jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then Fix the Dock clears the leftover");
+  // No helper (an empty list, or nobody read `lsappinfo`): today's lines, no clause.
+  assert.equal(Engine.dockProblemText({ ...two, helperTiles: [] }), "Two Jarhead tiles in the Dock");
+  assert.equal(Engine.dockProblemText({ ...clean, helperTiles: [] }), undefined);
+  assert.equal(Engine.dockProblemText(clean), undefined);
 });
