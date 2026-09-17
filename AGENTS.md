@@ -621,7 +621,19 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   so `pnpm build:mac` rsyncs INTO `/Applications/Jarhead.app` (the directory and its
   inode never change; each changed file is renamed in so the running app keeps its
   mapped inodes), verifies the INSTALLED copy, refreshes LaunchServices and only
-  READS the Dock (`pnpm jarhead dock --fix` repairs it). The rollback is git — `git
+  READS the Dock (`pnpm jarhead dock --fix` repairs it). The second cause of a
+  second tile is a helper inside the bundle: LaunchServices reads the enclosing
+  app's Info.plist (`LSUIElement` false) for `jarhead-hands`, so a helper that
+  never sets its own activation policy checks in as a second Foreground "Jarhead"
+  — one running tile per helper, parked in `recent-apps` when it exits, back
+  within seconds of any `killall Dock`. `packages/hands/native/main.swift` sets
+  `NSApp.setActivationPolicy(.prohibited)` before any AppKit call (never an
+  embedded `__info_plist` with a bundle id — it would change the nested code's
+  signing identifier); the one-Jarhead pass reads `lsappinfo list` and names a
+  Foreground helper (`running.helperTiles`) instead of promising `dock --fix`
+  repairs it; `smoke.mjs` asserts the spawned helper's type is never Foreground.
+  Verify after a rebuild and relaunch, read-only: `lsappinfo info $(pgrep -f
+  jarhead-hands)` shows no ASN or a non-Foreground type. The rollback is git — `git
   checkout <previous> && pnpm build:mac`; `JARHEAD_INSTALL_SNAPSHOT=1` opts into a
   `Jarhead.app.zip` archive of the installed bundle under `build/previous/` and the
   printed `ditto -x -k … && rsync …` line. The rsync flags and what each forbids
