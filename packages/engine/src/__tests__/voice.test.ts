@@ -484,3 +484,33 @@ test("a reconnect whose start fails (the network still down) keeps the conversat
     await engine.stop();
   }
 });
+
+test("voice.reopen keeps utterance ids unique across the switch: the held session's rows and the new session's never share an id, and the last words are the new ones", async () => {
+  const w = world();
+  const { engine, lives, brain, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    delegate(w, "what's up", "item_a");
+    nextUtterance(w);
+    delegate(w, "hello", "item_a2");
+    await settle();
+    // The switch waits for a running task: finish it first, as Kevin's Switch now finds it.
+    brain.resolve?.({ status: "done", summary: "not much" });
+    await settle();
+    engine.updateSettings({ voice: "marin", accent: "british" });
+    clock.t += 700;
+    await engine.command({ type: "voice.reopen" });
+    assert.equal(lives.length, 2, "the switch opened a new session");
+    delegate(w, "nice", "item_b");
+    await settle();
+    const t = engine.snapshot().transcript;
+    assert.ok(t.length >= 3, `three utterances on the record, got ${t.length}`);
+    assert.equal(new Set(t.map((i) => i.id)).size, t.length, "held and live utterances never share an id");
+    assert.equal(t.at(-1)!.text, "nice");
+  } finally {
+    await engine.stop();
+  }
+});

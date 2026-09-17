@@ -22,7 +22,9 @@ enum StreamEntry: Identifiable, Equatable {
 
     var id: String {
         switch self {
-        case .utterance(let t): return "t:\(t.id)"
+        // id + clock: the engine numbers utterances per daemon life now, but day files written before that carry
+        // `t_1…` per session, and a ForEach with two equal ids draws the first row for both. `at` is set once.
+        case .utterance(let t): return "t:\(t.id)@\(Int(t.at))"
         case .delegation(let d): return "d:\(d.id)"
         case .system(let s): return s.id
         }

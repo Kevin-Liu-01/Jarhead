@@ -217,6 +217,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** Kevin cleared the Now stream at this wall-clock ms: items at or before it are hidden from the snapshot only. */
   private nowClearedAt: number | undefined;
   /**
+   * One utterance counter for the engine's life: every session's Transcript draws its ids from
+   * here, so a held `t_n` and a live `t_n` never meet in one snapshot (the Console keys rows by id).
+   */
+  private utteranceSeq = 0;
+  /**
    * The open session's transcript. Session-timeline ms restart with every session,
    * so each gets its own: a Delegator's request window (`since(lastDelegationEnd)`)
    * over a shared one would carry every earlier utterance into a resumed session's
@@ -670,7 +675,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private newTranscript(): Transcript {
     // The engine's clock, like every other timestamp here: a cleared Now stream compares item.at against it (K1).
     // Read lazily — the first transcript is a field initializer, built before the constructor body sets `this.now`.
-    const t = new Transcript(() => this.now());
+    const t = new Transcript(() => this.now(), 400, () => `t_${++this.utteranceSeq}`);
     t.onChange((item, kind) => {
       if (kind === "final") {
         this.ledger.append({ at: item.at, type: item.speaker === "kevin" ? "heard" : "said", item });
