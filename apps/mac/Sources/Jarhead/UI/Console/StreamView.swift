@@ -1301,6 +1301,27 @@ struct LightboxView: View {
 
 // MARK: - Composer
 
+/// How the composer shares its width when a pick waits (design13 review): Go · Mute · Send · Stop keep
+/// their widths; the field is held at `fieldFloor` while the voice cluster — the chip's three faces
+/// (`VoiceChipFace.Tier`) and Switch now's word or glyph — gives; only when the smallest cluster no
+/// longer fits beside the floor does the field shrink, to `fieldLeast` at the window's minimum
+/// (`ConsoleLayout.streamMinWidth`, 420: field ≈ 66 with the flag-alone chip and the glyph). Pure, pinned.
+enum ComposerFit {
+    /// Go · Mute · Send (32 each) · Stop (one width, the hidden `Stopped`, 88) · seven 8-pt gaps · the 12-pt insets.
+    static let fixed: CGFloat = 32 + 32 + 32 + 88 + 7 * 8 + 24
+    /// The cluster at its smallest — the flag-alone chip (≈ 50) · 8 · the icon-only Switch now (32) — with room to spare.
+    static let clusterMin: CGFloat = 96
+    /// The field the chip's words yield to before the field gives (the 1180 window's waits state keeps its full chip above it).
+    static let fieldFloor: CGFloat = 128
+    /// The field's least: what the minimum window leaves it, so nothing overflows.
+    static let fieldLeast: CGFloat = 48
+
+    /// The field's minimum for a composer this wide: the floor while the smallest cluster still fits beside it, else what is left.
+    static func fieldMin(width: CGFloat) -> CGFloat {
+        max(fieldLeast, min(fieldFloor, width - fixed - clusterMin))
+    }
+}
+
 /// 48pt, owns its top rule: Go/Pause (the transport's one button — `play.fill` as the
 /// filled accent while asleep, a ghost while paused, `pause.fill` in session, a quiet
 /// "…" while connecting where a press stops; ⌘P here, ⌥⇧Space anywhere), Mute (enabled
@@ -1326,6 +1347,9 @@ struct ComposerBar: View {
     @EnvironmentObject private var session: ConsoleSession
     @State private var text = ""
     @State private var stopFlashing = false
+    /// The composer's own width (the stream column's): `ComposerFit.fieldMin` reads it, so the field is
+    /// held at its floor while the voice cluster gives, and gives itself only at the window's minimum.
+    @State private var width: CGFloat = ConsoleLayout.defaultSize.width
     @FocusState private var focused: Bool
 
     /// How long Stop stays red for a press: a larger change of state, Motion.slow.
@@ -1389,9 +1413,12 @@ struct ComposerBar: View {
                 transportButton
                 muteButton
                 // ── Builder G's slot: the voice chip (`VoiceChip`, `🇬🇧 Ballad ⌄`) sits here, between Mute and the field. ──
+                // Sized before the field (priority 1) with what the field's minimum leaves it: its faces pick themselves.
                 VoiceChipSlot()
+                    .layoutPriority(1)
                 TextField(placeholder, text: $text)
                     .consoleField(height: 32, focused: focused)
+                    .frame(minWidth: ComposerFit.fieldMin(width: width))
                     .focused($focused)
                     .onSubmit(submit)
                     .onExitCommand { focused = false }
@@ -1400,6 +1427,7 @@ struct ComposerBar: View {
             }
             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
         }
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
         .onChange(of: session.composerFocusRequest) { focused = true }
         .onChange(of: session.stopFlash) {
             // The press is felt at once — when there was something to stop. `phase` here is the
@@ -1466,6 +1494,8 @@ struct ComposerBar: View {
                 }
                 .animation(Motion.snappy, value: stopWord)
             }
+            // The word's width, never squeezed: the field and the voice cluster are what give (ComposerFit).
+            .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(ConsoleButtonStyle(kind: stopKind, height: 32))
         .consoleHelp(stopKind == .spent ? HelpCopy.stopSpent : HelpCopy.stopAll, id: StreamTipWords.stopId)

@@ -31,6 +31,8 @@ enum ConsoleGlyph {
     static let quit = "power.circle.fill"
     static let ask = "checklist.checked"
     static let voice = "person.wave.2.fill"
+    /// Switch now when the composer is too narrow for the word (design13 review: the fit at the window's minimum).
+    static let switchVoice = "arrow.triangle.2.circlepath.circle.fill"
     /// The transport, already solid.
     static let stop = "stop.fill"
     static let play = "play.fill"
@@ -71,7 +73,7 @@ enum ConsoleGlyph {
                                     reloadLine, earlierLine, newestLine, undoLine]
 
     /// Every name above, for the pin.
-    static let all: [String] = [send, reload, undo, newest, earlier, search, dismiss, externalLink, islandWindow, quit, ask, voice,
+    static let all: [String] = [send, reload, undo, newest, earlier, search, dismiss, externalLink, islandWindow, quit, ask, voice, switchVoice,
                                 stop, play, pause, mic, muted, cross, magnifier, ellipsis, chevron, picker, plus, minus, circle,
                                 summon, timer, connecting, reloadLine, earlierLine, newestLine, undoLine]
 

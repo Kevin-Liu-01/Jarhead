@@ -150,29 +150,64 @@ struct VoiceChip: View, Equatable {
 }
 
 /// `[8] 🇬🇧 [5] Ballad sans 12 medium fg [6 · waits] [8] chevron 9 fg3 [8]` — the style pads the 8s.
+/// Three faces, widest first, in a `ViewThatFits`: the room the composer leaves the chip picks one
+/// (`ComposerFit` — the field is held at its floor, then the chip gives its badge, then its name,
+/// then Switch now gives its word; only then does the field shrink to its least). The accessibility
+/// value is the whole chip whatever face is drawn.
 struct VoiceChipFace: View {
     let name: String
     let flag: String?
     let waits: Bool
     let open: Bool
 
+    /// The faces: `🇬🇧 Ballad waits ⌄` · `🇬🇧 Ballad ⌄` · `🇬🇧 ⌄` (the name stays when the accent has no flag).
+    enum Tier: CaseIterable { case full, name, flag }
+
+    /// What a face draws — pure, pinned by `check-kit`.
+    static func shows(_ tier: Tier, flag: String?, waits: Bool) -> (flag: Bool, name: Bool, waits: Bool) {
+        switch tier {
+        case .full: return (flag != nil, true, waits)
+        case .name: return (flag != nil, true, false)
+        case .flag: return (flag != nil, flag == nil, false)
+        }
+    }
+
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            VoiceChipTierFace(name: name, flag: flag, waits: waits, open: open, tier: .full)
+            VoiceChipTierFace(name: name, flag: flag, waits: waits, open: open, tier: .name)
+            VoiceChipTierFace(name: name, flag: flag, waits: waits, open: open, tier: .flag)
+        }
+        .animation(Motion.snappy, value: waits)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(VoiceWords.label)
+        .accessibilityValue(waits ? "\(VoiceSwitchWords.chip(name: name, flag: flag)) · \(VoiceSwitchWords.waits)" : VoiceSwitchWords.chip(name: name, flag: flag))
+    }
+}
+
+/// One face of the chip, sized to its words (never truncated: the tier above it is what gives).
+struct VoiceChipTierFace: View {
+    let name: String
+    let flag: String?
+    let waits: Bool
+    let open: Bool
+    let tier: VoiceChipFace.Tier
+
+    var body: some View {
+        let shows = VoiceChipFace.shows(tier, flag: flag, waits: waits)
         HStack(spacing: 0) {
-            if let flag { Text(flag).font(ConsoleTheme.sans(12)).padding(.trailing, 5) }
-            Text(name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
-                .contentTransition(.opacity)
-            if waits { ConsoleBadge(word: .word(VoiceSwitchWords.waits)).padding(.leading, 6).transition(Motion.appear) }
+            if shows.flag, let flag { Text(flag).font(ConsoleTheme.sans(12)).padding(.trailing, shows.name ? 5 : 0) }
+            if shows.name {
+                Text(name).font(ConsoleTheme.sans(12, .medium)).foregroundStyle(ConsoleTheme.fg).lineLimit(1)
+                    .contentTransition(.opacity)
+            }
+            if shows.waits { ConsoleBadge(word: .word(VoiceSwitchWords.waits)).padding(.leading, 6).transition(Motion.appear) }
             Image(systemName: ConsoleGlyph.picker)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(open ? ConsoleTheme.fg : ConsoleTheme.fg3)
                 .padding(.leading, 8)
         }
-        // The chip keeps its words: beside Switch now the field is what gives, never the name.
         .fixedSize(horizontal: true, vertical: false)
-        .animation(Motion.snappy, value: waits)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(VoiceWords.label)
-        .accessibilityValue(waits ? "\(VoiceSwitchWords.chip(name: name, flag: flag)) · \(VoiceSwitchWords.waits)" : VoiceSwitchWords.chip(name: name, flag: flag))
     }
 }
 
@@ -203,7 +238,9 @@ struct VoicePopupHead: View {
 
 /// Switch now — the one paid restart, behind an explicit press: `pause({quiet})` + `connect("voice
 /// change")` on the engine (`EngineCommand.voiceReopen`). Primary 32 beside the chip; the rail's
-/// verb size in Settings. Disabled (.45) with the busy tip while the engine would refuse it.
+/// verb size in Settings. Disabled (.45) with the busy tip while the engine would refuse it. The word,
+/// or — when the composer is too narrow for it beside the flag-alone chip and the field's least —
+/// the one filled glyph (`ConsoleGlyph.switchVoice`); the tip and the accessibility label say the verb either way.
 struct VoiceSwitchButton: View {
     let enabled: Bool
     var height: CGFloat = VoiceChipWords.height
@@ -213,14 +250,17 @@ struct VoiceSwitchButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(VoiceSwitchWords.switchNow, action: action)
-            .buttonStyle(ConsoleButtonStyle(kind: kind, height: height, small: small))
-            .disabled(!enabled)
-            // One line, one width: the field beside it gives, never the verb.
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
-            .consoleHelp(VoiceSwitch.tip(enabled: enabled), id: id)
-            .accessibilityLabel(VoiceSwitchWords.switchNow)
+        ViewThatFits(in: .horizontal) {
+            Button(VoiceSwitchWords.switchNow, action: action)
+                .buttonStyle(ConsoleButtonStyle(kind: kind, height: height, small: small))
+            Button(action: action) { Image(systemName: ConsoleGlyph.switchVoice).font(.system(size: 13, weight: .semibold)) }
+                .buttonStyle(ConsoleButtonStyle(kind: kind, iconOnly: true, height: height, small: small))
+        }
+        .disabled(!enabled)
+        // Sized before the chip beside it: the chip's words give first, the verb's last.
+        .layoutPriority(1)
+        .consoleHelp(VoiceSwitch.tip(enabled: enabled), id: id)
+        .accessibilityLabel(VoiceSwitchWords.switchNow)
     }
 }
 

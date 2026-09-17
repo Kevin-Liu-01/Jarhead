@@ -815,7 +815,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         case "voice-chip": defaultActions = "check-kit@0.3,menuOpen:\(VoiceChipWords.id)@0.6,probe-floats@1.0,snap:preview-console-voice-chip-open@1.1,"
             // Three presses 0.2 s apart, not one burst: two ↓ 40 ms apart in the filter popup can land as one step under load.
             + "keyDown:down@1.3,keyDown:down@1.5,keyDown:return@1.7,probe-floats@1.9,check-floats:none@1.95,probe-press@2.0,check-press:setSettings@2.05,probe-voice@2.1,"
-            + "snap:preview-console-voice-chip-waits@2.2,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
+            + "snap:preview-console-voice-chip-waits@2.2,check-composer-fit@2.3,click:\(VoiceChipWords.switchId)@2.4,probe-press@2.9,check-press:setSettings+voiceReopen@2.95,"
             + "menuOpen:\(VoiceChipWords.id)@3.1,keyDown:tab@3.5,probe-floats@3.9,check-floats:\(VoiceChipWords.id)@3.95,keyDown:left@4.0,probe-voice@4.3,"
             + "keyDown:escape@4.4,probe-floats@4.8"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
@@ -1138,6 +1138,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                 checkPress(String(action.dropFirst("check-press:".count)), stamp: stamp)
             } else if action == "check-composer-free" {
                 checkComposerFree(stamp: stamp)
+            } else if action == "check-composer-fit" {
+                checkComposerFit(stamp: stamp)
             } else if action == "check-kit" {
                 checkKit(stamp: stamp)
             } else if action == "check-stream" {
@@ -3553,6 +3555,33 @@ extension PreviewDelegate {
         print("check: \(free ? "all ok" : "FAILED") (composer) at \(stamp)s")
     }
 
+    /// `check-composer-fit` (design13 review): the composer's six controls, by their tracked frames, sit in order
+    /// inside the window with a field between the voice cluster and Send at least `ComposerFit.fieldLeast` wide —
+    /// run in the waits state at 1180 and at the window's minimum (PREVIEW_WINDOW_SIZE=984x520), where the chip
+    /// and Switch now must have given before the field did. `composer-fit:` prints the frames.
+    func checkComposerFit(stamp: String) {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        let ids = [StreamTipWords.goId, StreamTipWords.muteId, VoiceChipWords.id, VoiceChipWords.switchId, StreamTipWords.sendId, StreamTipWords.stopId]
+        let present = ids.compactMap { id in ConsoleClickTargets.frames[id].map { (id, $0) } }
+        let width = jarheadWindow?.contentView?.bounds.width ?? 0
+        print("composer-fit: " + present.map { String(format: "%@ x=%.0f w=%.0f", $0.0, $0.1.minX, $0.1.width) }.joined(separator: " · ") + String(format: " · window %.0f at %@s", width, stamp))
+        expect("composer: every control tracked", present.map(\.0).joined(separator: " "), ids.joined(separator: " "))
+        let ordered = zip(present, present.dropFirst()).allSatisfy { $0.1.maxX <= $1.1.minX + 0.5 }
+        expect("composer: controls in order, none overlapping", "\(ordered)", "true")
+        let inside = present.allSatisfy { $0.1.minX >= -0.5 && $0.1.maxX <= width + 0.5 }
+        expect("composer: every control inside the window", "\(inside)", "true")
+        if let cluster = ConsoleClickTargets.frames[VoiceChipWords.switchId] ?? ConsoleClickTargets.frames[VoiceChipWords.id], let send = ConsoleClickTargets.frames[StreamTipWords.sendId] {
+            let field = send.minX - cluster.maxX - 16
+            expect(String(format: "composer: the field between the cluster and Send ≥ %.0f", ComposerFit.fieldLeast), String(format: "%.0f ≥ least %@", field, field >= ComposerFit.fieldLeast ? "true" : "false"), String(format: "%.0f ≥ least true", field))
+        }
+        print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (composer) at \(stamp)s")
+    }
+
     /// `probe-floats`: the rect of every float the layer has placed, in the root's space.
     func probeFloats(stamp: String) {
         let placed = ConsoleFloatSlot.placed
@@ -3680,6 +3709,12 @@ extension PreviewDelegate {
         let asleep = VoiceMenuModel.rows(voice: "marin", accent: "british", session: nil, phase: .asleep, busy: false)
         expect("status voice submenu: no Switch now asleep", "\(asleep.first?.kind == .switchNow) \(VoiceMenuModel.value(voice: "marin", accent: "british"))", "false Marin 🇬🇧")
         expect("chip ids", [VoiceChipWords.id, VoiceChipWords.switchId, VoiceChipWords.tipId].joined(separator: " "), "stream.voice stream.switch stream.voice.tip")
+        // The fit (design13 review): the field's minimum per composer width, the chip's faces.
+        expect("composer fit: field min at 618 (1180 window) · 420 (the minimum) · 300", "\(Int(ComposerFit.fieldMin(width: 618))) \(Int(ComposerFit.fieldMin(width: 420))) \(Int(ComposerFit.fieldMin(width: 300)))", "128 60 48")
+        expect("composer fit: fixed spend · smallest cluster", "\(Int(ComposerFit.fixed)) \(Int(ComposerFit.clusterMin))", "264 96")
+        func face(_ t: VoiceChipFace.Tier, _ flag: String?, _ waits: Bool) -> String { let s = VoiceChipFace.shows(t, flag: flag, waits: waits); return "\(s.flag ? "flag" : "-")/\(s.name ? "name" : "-")/\(s.waits ? "waits" : "-")" }
+        expect("chip faces with a flag, waits: full · name · flag", [face(.full, "🇬🇧", true), face(.name, "🇬🇧", true), face(.flag, "🇬🇧", true)].joined(separator: " "), "flag/name/waits flag/name/- flag/-/-")
+        expect("chip faces without a flag: the name stays; no waits without a wait", [face(.full, nil, true), face(.flag, nil, false), face(.full, "🇬🇧", false)].joined(separator: " "), "-/name/waits -/name/- flag/name/-")
         expect("popup measures: 256 above the composer · 258 in the rail · the head strip 28", "\(Int(VoiceChipWords.popupWidth)) \(Int(VoiceChipWords.settingsPopupWidth)) \(Int(ConsoleMenuPopupLayout.stripHeight)) \(Int(ConsoleMenuPopupLayout.chrome(filter: true, foot: true, head: true) - ConsoleMenuPopupLayout.chrome(filter: true, foot: true)))", "256 258 28 29")
         expect("language hint", ConsoleTheme.languageHint, "English · awake, Switch now · asleep, the next Go")
         expect("setup hint", VoiceSwitchWords.setupHint, "English at all times · heard at the first Go")
