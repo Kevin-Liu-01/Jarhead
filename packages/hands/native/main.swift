@@ -5,6 +5,15 @@ _ = typeCancelHandlerInstalled
 import AppKit
 import IOKit.hid
 
+// A helper inside Jarhead.app inherits the app's Info.plist (LSUIElement false), so LaunchServices
+// would register it as a Foreground app: a second "Jarhead" Dock tile per helper process. Say what
+// we are before AppKit checks us in. `.prohibited`, not `.accessory`: no UI, no windows. CGEvent
+// posting, AX reads, NSPasteboard, NSRunningApplication.activate and NSWorkspace.openApplication
+// all keep working from a prohibited process. Never an embedded __info_plist with a bundle id:
+// it would change the nested code's ad-hoc signing identifier that the --deep verify expects.
+_ = NSApplication.shared
+NSApp.setActivationPolicy(.prohibited)
+
 // jarhead-hands: resident macOS "hands" helper for Jarhead.
 // Newline-delimited JSON over stdin/stdout. One request per line, one response per request,
 // processed serially in arrival order. Debug output goes to stderr only (JARHEAD_HANDS_DEBUG=1).

@@ -10,7 +10,10 @@ import { dirname, join } from "node:path";
  * passes in, so a scripted run pins the order and every fail path without touching
  * /Applications. The one rule under all of it: /Applications/Jarhead.app is updated
  * in place — files renamed in, the directory (and its inode, which the Dock's
- * bookmark keys on) never recreated.
+ * bookmark keys on) never recreated. That keeps the pin valid; it is not the only
+ * way to a second tile — a helper inside the bundle that never sets its activation
+ * policy is checked in as a second Foreground "Jarhead" (see dock.ts, jarhead-hands'
+ * main.swift), and no install can fix that one.
  */
 
 export interface TargetProbe {

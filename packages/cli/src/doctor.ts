@@ -264,7 +264,10 @@ export function installChecks(deps: InstallCheckDeps = {}): Check[] {
     const needsFix = (before?.changes.length ?? 0) > 0;
     // No pin is nothing the fix can do (pinning is Kevin's), but a row that asks him to drag the app is not "ok".
     const unpinned = before !== undefined && before.pinned === 0;
-    add({ group: "app", name: "dock", status: needsFix || unpinned ? "warn" : "ok", detail: describeDock(before).replace(/^Dock: /, ""), required: false, fix: needsFix ? repair : undefined });
+    // A helper LaunchServices counts as a Foreground Jarhead is a tile `dock --fix` cannot remove: the fix is the rebuild.
+    const helperTile = audit.running.helperTiles.length > 0;
+    const fix = helperTile ? `${rebuild}, quit and relaunch Jarhead, then ${repair}` : needsFix ? repair : undefined;
+    add({ group: "app", name: "dock", status: needsFix || unpinned || helperTile ? "warn" : "ok", detail: describeDock(before).replace(/^Dock: /, ""), required: false, fix });
   }
   return out;
 }

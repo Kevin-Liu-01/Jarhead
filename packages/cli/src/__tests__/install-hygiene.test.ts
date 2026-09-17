@@ -5,9 +5,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { INSTALLED_URL } from "../install/dock.ts";
+import { INSTALLED_URL, describeHelperTiles, helperTilesOf, parseLsAppInfoList } from "../install/dock.ts";
 import { LSREGISTER } from "../install/launchservices.ts";
-import { LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
+import { LSAPPINFO, LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, readRunning, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
 import { dictGet, dictSet, int, parsePlistXml, serializePlistXml, stringAt } from "../install/plist.ts";
 
 /**
@@ -20,9 +20,42 @@ const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./
 const TWO = fixture("dock-two-tiles.xml");
 const CLEAN = fixture("dock-clean.xml");
 const DUMP = fixture("ls-dump-bundle.txt");
+const SEP = "--------------------------------------------------------------------------------";
 const INSTALLED = "/Applications/Jarhead.app";
 const ROOTS = ["/Users/kevinliu/.jarhead/worktrees", "/Users/kevinliu/.jarhead/trash", "/Users/kevinliu/.Trash", "/Users/kevinliu/jarvis/build/stage", "/Users/kevinliu/jarvis/build/previous"];
 const STALE = ["/Users/kevinliu/.jarhead/worktrees/se_x/apps/mac/.build/ear-probe/EarProbe.app", "/Users/kevinliu/.Trash/Jarhead.app", "/Users/kevinliu/jarvis/build/stage/Jarhead.app"];
+
+// `lsappinfo list` as Kevin's Mac printed it on 2026-09-17: the app (the pinned tile), a node
+// process with no bundle, and — RUNNING_HELPER only — the reading hands helper LaunchServices
+// checked in as a second Foreground "Jarhead" from the same bundle (the second Dock tile).
+const RUNNING_APP = `115) "Jarhead" ASN:0x0-0xd23822b: 
+    bundleID="com.kevinliu.jarhead"
+    bundle path="/Applications/Jarhead.app"
+    executable path="/Applications/Jarhead.app/Contents/MacOS/Jarhead"
+    pid = 3125 type="Foreground" flavor=3 Version="2.0.0" fileType="APPL" creator="????" Arch=ARM64 
+    coalition: 92615  { 3125 3390 3391 3393 3394 66017 }
+    launch time =  2026/09/16 16:48:05 ( 18 hours, 44 minutes, 59.712 seconds ago )
+    checkin time = 2026/09/16 16:48:05 ( 18 hours, 44 minutes, 59.3858 seconds ago )
+116) "npm exec vite --port 5198 --strictPort" ASN:0x0-0xdba4b97: 
+    bundleID=[ NULL ] 
+    bundle path="/Users/kevinliu/.nvm/versions/node/v24.13.0/bin/node"
+    executable path="/Users/kevinliu/.nvm/versions/node/v24.13.0/bin/node"
+    pid = 52305 !cgsConnection !signalled type="BackgroundOnly" flavor=[ NULL ]  Version=[ NULL ]  Arch=ARM64 
+    checkin time = 2026/09/17 10:07:44 ( 1 hours, 25 minutes, 20.4732 seconds ago )
+`;
+const HELPER_BLOCK = `122) "Jarhead" ASN:0x0-0xdbb8bab: 
+    bundleID="com.kevinliu.jarhead"
+    bundle path="/Applications/Jarhead.app"
+    executable path="/Applications/Jarhead.app/Contents/MacOS/jarhead-hands"
+    pid = 66017 !signalled type="Foreground" flavor=3 Version="2.0.0" fileType="APPL" creator="????" Arch=ARM64 
+    parentASN="Jarhead" ASN:0x0-0xd23822b:  (inferred)
+    checkin time = 2026/09/17 10:32:45 ( 1 hours, 19.5711 seconds ago )
+`;
+const RUNNING_HELPER = RUNNING_APP + HELPER_BLOCK;
+/** The Bundle table after the -u loop did its work: the stale records gone, everything else kept. */
+const CLEAN_DUMP = DUMP.split(SEP).filter((b) => !STALE.some((p) => b.includes(p))).join(SEP);
+const HELPER = { pid: 66017, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/jarhead-hands", type: "Foreground" };
+const CLAUSE = "jarhead-hands pid 66017 is a Foreground app (the second tile) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover";
 
 interface Call {
   readonly cmd: string;
@@ -32,7 +65,7 @@ interface Call {
 }
 
 /** Answers by (cmd, first args); exports are consumed in order so a race can be scripted. */
-function fake(script: { exports: readonly string[]; dumps?: readonly string[]; dumpResult?: ExecResult; unregisterFails?: readonly string[]; importCode?: number; killallCode?: number; exportCode?: number }): { exec: Exec; calls: Call[] } {
+function fake(script: { exports: readonly string[]; dumps?: readonly string[]; dumpResult?: ExecResult; unregisterFails?: readonly string[]; importCode?: number; killallCode?: number; exportCode?: number; running?: string; runningResult?: ExecResult }): { exec: Exec; calls: Call[] } {
   const calls: Call[] = [];
   const exports = [...script.exports];
   const dumps = [...(script.dumps ?? [DUMP, DUMP])];
@@ -50,6 +83,7 @@ function fake(script: { exports: readonly string[]; dumps?: readonly string[]; d
     }
     if (cmd === "defaults" && args[0] === "import") return { code: script.importCode ?? 0, stdout: "", stderr: script.importCode ? "import failed" : "" };
     if (cmd === "killall") return { code: script.killallCode ?? 0, stdout: "", stderr: "" };
+    if (cmd === LSAPPINFO && args[0] === "list") return script.runningResult ?? ok(script.running ?? RUNNING_APP);
     return { code: 127, stdout: "", stderr: `unexpected ${cmd}` };
   };
   return { exec, calls };
@@ -60,7 +94,7 @@ const base = { installed: INSTALLED, staleRoots: ROOTS, exists: () => true, log:
 
 test("hygiene fix, two tiles: -f, dump, -u per stale path, re-dump, export, export (mod-count), import of the audited document, killall Dock, export (after)", () => {
   const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
-  const { exec, calls } = fake({ exports: [TWO, TWO, CLEANED] });
+  const { exec, calls } = fake({ exports: [TWO, TWO, CLEANED], dumps: [DUMP, CLEAN_DUMP] });
   const r = runHygiene({ ...base, mode: "fix", exec });
   assert.deepEqual(argv(calls), [
     ["lsregister", "-f", INSTALLED],
@@ -69,6 +103,7 @@ test("hygiene fix, two tiles: -f, dump, -u per stale path, re-dump, export, expo
     ["lsregister", "-u", STALE[1]!],
     ["lsregister", "-u", STALE[2]!],
     ["lsregister", "-dump", "Bundle"],
+    ["lsappinfo", "list"],
     ["defaults", "export", "com.apple.dock"],
     ["defaults", "export", "com.apple.dock"],
     ["defaults", "import", "com.apple.dock"],
@@ -89,6 +124,7 @@ test("hygiene fix, two tiles: -f, dump, -u per stale path, re-dump, export, expo
   assert.equal(r.dock.restarted, true);
   assert.equal(r.dock.rounds, 1);
   assert.deepEqual(r.launchServices.unregistered, STALE);
+  assert.deepEqual(r.launchServices.remaining, [], "the re-dump proves it");
   assert.equal(r.launchServices.refreshed, true);
   assert.match(r.line, /^one jarhead  LaunchServices: \/Applications\/Jarhead\.app registered · 3 stale records unregistered · Dock: 1 pinned, 0 recent \(removed 1 recent tile, pin rebuilt, Dock restarted\)$/);
 });
@@ -145,9 +181,11 @@ test("hygiene audit (doctor, `jarhead dock`): dump and export only — no -f, no
   const r = runHygiene({ ...base, mode: "audit", exec });
   assert.deepEqual(argv(calls), [
     ["lsregister", "-dump", "Bundle"],
+    ["lsappinfo", "list"],
     ["defaults", "export", "com.apple.dock"],
   ]);
   assert.equal(r.launchServices.refreshed, false);
+  assert.deepEqual(r.running, { helperTiles: [] }, "the app's own Foreground process is the pinned tile, not a helper");
   assert.deepEqual(r.launchServices.unregistered, []);
   assert.deepEqual(r.launchServices.remaining.map((x) => x.path), STALE, "what a fix would unregister");
   assert.equal(r.dock.imported, false);
@@ -178,6 +216,88 @@ test("hygiene install (pnpm build:mac): LaunchServices is refreshed and cleaned 
   const verified = fake({ exports: [TWO] });
   runHygiene({ ...base, mode: "install", exec: verified.exec, verifyUnregister: true });
   assert.equal(verified.calls.filter((c) => c.args[0] === "-dump").length, 2);
+  // The re-dump is the proof: a -u that exited 0 but left its row (the Trash copy, 2026-09-16) is named in the log and stays in `remaining`.
+  const lines: string[] = [];
+  const lying = fake({ exports: [TWO], dumps: [DUMP, DUMP] });
+  const r3 = runHygiene({ ...base, mode: "fix", exec: lying.exec, log: (l) => void lines.push(l) });
+  assert.deepEqual(r3.launchServices.unregistered, STALE, "-u exited 0 three times");
+  assert.deepEqual(r3.launchServices.remaining.map((x) => x.path), STALE, "the second dump still holds them");
+  assert.ok(lines.some((l) => l === `[one-jarhead] lsregister -u /Users/kevinliu/.Trash/Jarhead.app exited 0 but the record is still in the Bundle table`), lines.join("\n"));
+  assert.match(r3.line, /registered · also \/Users\/kevinliu\/\.jarhead\/worktrees.*, \/Users\/kevinliu\/\.Trash\/Jarhead\.app, /, "the line counts only what the re-dump proves gone");
+  assert.ok(!/stale records unregistered/.test(r3.line));
+});
+
+test("hygiene: a Foreground jarhead-hands in `lsappinfo list` is a helper tile — the line names the pid and the rebuild, never `--fix repairs it`; a fix still drops the leftover but says not repaired; a clean plist with the helper alive is still two tiles", () => {
+  // audit (doctor, `jarhead dock`): the clause replaces the --fix promise.
+  const audit = fake({ exports: [TWO], running: RUNNING_HELPER });
+  const r = runHygiene({ ...base, mode: "audit", exec: audit.exec });
+  assert.deepEqual(r.running, { helperTiles: [HELPER] });
+  assert.deepEqual(r.dock.before?.helperTiles, [HELPER], "the audit the doctor and the engine read carries the cause");
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent — two tiles; ${CLAUSE}`);
+  assert.ok(!/repairs it/.test(r.line));
+  // fix: the recent-apps leftover goes (it is a leftover), the pin is rebuilt, and the line refuses to call that repaired.
+  const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
+  const fix = fake({ exports: [TWO, TWO, CLEANED], dumps: [DUMP, CLEAN_DUMP], running: RUNNING_HELPER });
+  const f = runHygiene({ ...base, mode: "fix", exec: fix.exec });
+  assert.equal(f.dock.imported, true, "the persisted leftover is still removed");
+  assert.equal(f.dock.restarted, true);
+  assert.equal(fix.calls.filter((c) => c.cmd === LSAPPINFO).length, 1, "one lsappinfo read per pass; the repair's re-reads are Dock exports only");
+  assert.deepEqual(f.dock.after?.helperTiles, [HELPER], "the helper outlives the repair");
+  assert.match(f.line, new RegExp(`Dock: 1 pinned, 0 recent; ${CLAUSE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(removed 1 recent tile, pin rebuilt, Dock restarted — not repaired: the helper's tile returns while it lives\\)$`));
+  assert.ok(!/repairs it/.test(f.line));
+  // a clean plist while the helper lives: the Dock draws the running tile before it writes recent-apps.
+  const clean = fake({ exports: [CLEAN], dumps: [DUMP, CLEAN_DUMP], running: RUNNING_HELPER });
+  const c = runHygiene({ ...base, mode: "fix", exec: clean.exec });
+  assert.equal(c.dock.imported, false, "nothing in the plist to repair");
+  assert.equal(c.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · 3 stale records unregistered · Dock: 1 pinned, 0 recent; ${CLAUSE} (untouched)`);
+});
+
+test("hygiene: no helper in `lsappinfo list` (the app alone, a node process, a BackgroundOnly helper) is today's line; a failed or throwing lsappinfo skips the read, keeps the Dock half and says so", () => {
+  const quiet = RUNNING_APP + HELPER_BLOCK.replace('type="Foreground"', 'type="BackgroundOnly"');
+  const r = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], running: quiet }).exec });
+  assert.deepEqual(r.running, { helperTiles: [] }, "a helper that set its activation policy is not a tile");
+  assert.equal(r.line, `one jarhead  LaunchServices: /Applications/Jarhead.app registered · also ${STALE.join(", ")} · Dock: 1 pinned, 1 recent — two tiles (pnpm jarhead dock --fix repairs it)`);
+  assert.equal(r.dock.before?.helperTiles, undefined, "no helpers → the audit is the plain plist audit");
+  const failed = runHygiene({ ...base, mode: "audit", exec: fake({ exports: [TWO], runningResult: { code: 1, stdout: "", stderr: "lsappinfo: no LaunchServices\nmore" } }).exec });
+  assert.deepEqual(failed.running, { helperTiles: [], skipped: "lsappinfo list failed (1): lsappinfo: no LaunchServices" });
+  assert.equal(failed.dock.before?.recent, 1, "the Dock is still read");
+  assert.match(failed.line, / · running: skipped \(lsappinfo list failed \(1\): lsappinfo: no LaunchServices\)$/);
+  // The doctor's scripted exec throws on a command it did not expect: a throw reads as skipped, never as a crash of the whole pass.
+  const throwing: Exec = (cmd, args, opts) => {
+    if (cmd === LSAPPINFO) throw new Error("unexpected lsappinfo list");
+    return fake({ exports: [TWO] }).exec(cmd, args, opts);
+  };
+  const t = runHygiene({ ...base, mode: "audit", exec: throwing });
+  assert.equal(t.running.skipped, "lsappinfo list threw: unexpected lsappinfo list");
+  assert.equal(t.dock.before?.pinned, 1);
+  // readRunning alone: `lsappinfo list`, the cap when given, the rule applied.
+  const calls: Call[] = [];
+  const exec: Exec = (cmd, args, opts) => {
+    calls.push({ cmd, args: [...args], ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) });
+    return { code: 0, stdout: RUNNING_HELPER, stderr: "" };
+  };
+  assert.deepEqual(readRunning(exec, { timeoutMs: 3000 }), { helperTiles: [HELPER] });
+  assert.deepEqual(calls, [{ cmd: "lsappinfo", args: ["list"], timeoutMs: 3000 }]);
+  assert.deepEqual(readRunning(exec), { helperTiles: [HELPER] });
+  assert.equal(calls[1]?.timeoutMs, undefined, "no cap unless asked (the CLI keeps defaultExec's 20 s)");
+});
+
+test("lsappinfo list parsing: a block per process with pid, bundleID (NULL → undefined), executable path and type; the helper rule is Jarhead's id + Foreground + not the app's own executable; the clause names pids", () => {
+  const apps = parseLsAppInfoList(RUNNING_HELPER);
+  assert.deepEqual(apps, [
+    { pid: 3125, bundleId: "com.kevinliu.jarhead", executable: "/Applications/Jarhead.app/Contents/MacOS/Jarhead", type: "Foreground" },
+    { pid: 52305, bundleId: undefined, executable: "/Users/kevinliu/.nvm/versions/node/v24.13.0/bin/node", type: "BackgroundOnly" },
+    HELPER,
+  ]);
+  assert.deepEqual(helperTilesOf(apps), [HELPER]);
+  assert.deepEqual(helperTilesOf(apps, { installed: "/Users/kevinliu/jarvis/build/stage/Jarhead.app" }).map((a) => a.pid), [3125, 66017], "a different install path makes the /Applications app a helper too");
+  assert.deepEqual(helperTilesOf(apps, { bundleId: "com.kevinliu.jarvis" }), []);
+  assert.deepEqual(parseLsAppInfoList(""), []);
+  assert.deepEqual(parseLsAppInfoList('1) "gone" ASN:0x0-0x1:\n    bundleID=[ NULL ] \n    pid =  !cgsConnection type=[ NULL ]\n'), [], "an ASN without a pid is skipped");
+  assert.equal(describeHelperTiles([HELPER]), CLAUSE);
+  assert.equal(describeHelperTiles([HELPER], "Fix the Dock"), CLAUSE.replace("then dock --fix clears", "then Fix the Dock clears"));
+  assert.equal(describeHelperTiles([HELPER, { ...HELPER, pid: 66020 }]), "jarhead-hands pids 66017, 66020 are Foreground apps (the extra tiles) — the pin is fine; rebuild the helper (pnpm build:mac) and relaunch, then dock --fix clears the leftover");
+  assert.equal(describeHelperTiles([]), "");
 });
 
 test("hygiene: every lsregister call gets the long timeout (the Bundle dump is 2 s idle, over a minute under load); lsTimeoutMs overrides it", () => {

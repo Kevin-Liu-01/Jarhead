@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
-import { DOCK_DOMAIN, INSTALLED_APP, INSTALLED_URL, JARHEAD_BUNDLE_ID, auditDock, describeDock, describeDockChanges, modCountOf, type DockAudit } from "./dock.ts";
+import { DOCK_DOMAIN, INSTALLED_APP, INSTALLED_URL, JARHEAD_BUNDLE_ID, auditDock, describeDock, describeDockChanges, helperTilesOf, modCountOf, parseLsAppInfoList, type DockAudit, type RunningApp } from "./dock.ts";
 import { LSREGISTER, describeLaunchServices, parseLsBundleDump, staleJarheadRecords, type LsRecord, type StaleRule } from "./launchservices.ts";
 import { parsePlistXml, serializePlistXml } from "./plist.ts";
 
@@ -19,6 +19,11 @@ import { parsePlistXml, serializePlistXml } from "./plist.ts";
  *            keep one pin stripped to the keys the Dock rebuilds its bookmark from →
  *            `defaults import` behind a mod-count race check → `killall Dock` only when
  *            something was written — `pnpm jarhead dock --fix`, JARHEAD_INSTALL_HYGIENE=fix
+ *
+ * Every mode also reads `lsappinfo list` once (`readRunning`, beside the Dock export,
+ * ~50 ms, no lsd wait): a helper from the bundle that LaunchServices counts as a
+ * Foreground "Jarhead" is a tile the plist repair cannot remove, so the line names it
+ * (`running.helperTiles`) and never claims the Dock is repaired while one lives.
  *
  * The Dock half stands alone as `readDock` (one export) and `repairDock` (the rounds,
  * the import, `killall Dock`): the engine's startup audit and its Fix the Dock remedy
@@ -99,6 +104,11 @@ export interface HygieneReport {
     readonly rounds: number;
     readonly skipped?: string;
   };
+  /** What `lsappinfo list` said: the Foreground Jarhead processes that are not the app (each a tile), or why it was not read. */
+  readonly running: {
+    readonly helperTiles: readonly RunningApp[];
+    readonly skipped?: string;
+  };
   readonly line: string;
 }
 
@@ -149,27 +159,40 @@ export function runHygiene(opts: HygieneOptions): HygieneReport {
       }
       remaining = stale.filter((r) => !unregistered.includes(r.path));
       if (verifyUnregister) {
+        // The re-dump is the proof: a -u that exited 0 and left its row (the Trash copy has) is said so.
         const second = dump();
         if ("skipped" in second) log(`[one-jarhead] ${second.skipped} — trusting the -u exit codes`);
-        else remaining = staleJarheadRecords(second.records, rule);
+        else {
+          remaining = staleJarheadRecords(second.records, rule);
+          for (const rec of remaining) if (unregistered.includes(rec.path)) log(`[one-jarhead] lsregister -u ${rec.path} exited 0 but the record is still in the Bundle table`);
+        }
       }
     }
     ls = { refreshed, records: first.records, stale, unregistered, remaining };
   }
 
+  // ---- Running processes: the helper tiles no plist repair can remove
+  const ran = readRunning(exec, { bundleId, installed });
+  const running: HygieneReport["running"] = "skipped" in ran ? { helperTiles: [], skipped: ran.skipped } : { helperTiles: ran.helperTiles };
+  if (running.skipped) log(`[one-jarhead] ${running.skipped}`);
+  const withHelpers = (a: DockAudit): DockAudit => (running.helperTiles.length ? { ...a, helperTiles: running.helperTiles } : a);
+
   // ---- Dock (readDock / repairDock below: the engine's Fix-the-Dock runs the same two, without lsregister)
   const dockOpts = { bundleId, installedUrl, log, ...(opts.maxDockRounds !== undefined ? { maxRounds: opts.maxDockRounds } : {}) };
   let dock: HygieneReport["dock"];
-  const before = readDock(exec, dockOpts);
-  if ("skipped" in before) {
-    dock = { before: undefined, after: undefined, imported: false, restarted: false, rounds: 0, skipped: before.skipped };
-  } else if (!mutateDock || before.changes.length === 0) {
+  const read = readDock(exec, dockOpts);
+  if ("skipped" in read) {
+    dock = { before: undefined, after: undefined, imported: false, restarted: false, rounds: 0, skipped: read.skipped };
+  } else if (!mutateDock || read.changes.length === 0) {
+    const before = withHelpers(read);
     dock = { before, after: before, imported: false, restarted: false, rounds: 0 };
   } else {
-    dock = repairDock(exec, before, dockOpts);
+    // The repair removes the leftover entry either way; the helper's tile outlives it, so the report keeps naming it.
+    const r = repairDock(exec, read, dockOpts);
+    dock = { ...r, before: withHelpers(read), after: r.after ? withHelpers(r.after) : undefined };
   }
 
-  const partial = { mode: opts.mode, launchServices: ls, dock, line: "" };
+  const partial = { mode: opts.mode, launchServices: ls, dock, running, line: "" };
   const line = hygieneLine({ ...partial, installed, bundleId });
   const report: HygieneReport = { ...partial, line };
   log(line);
@@ -197,6 +220,25 @@ export interface DockOnlyOptions {
 
 /** The exec options a Dock call carries: the cap when one was given, nothing otherwise (so the CLI's argv trace is unchanged). */
 const timeoutOf = (opts: DockOnlyOptions): { readonly timeoutMs?: number } => (opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {});
+
+export const LSAPPINFO = "lsappinfo";
+
+/**
+ * READ what LaunchServices has checked in: `lsappinfo list` (one command, ~50 ms, no
+ * lsd wait, no write) → the Foreground Jarhead processes that are not the app itself.
+ * Each is a Dock tile while it lives and a `recent-apps` leftover once it exits. An
+ * exec that throws (a scripted one) reads as skipped, like a failed command.
+ */
+export function readRunning(exec: Exec, opts: { readonly bundleId?: string; readonly installed?: string; readonly timeoutMs?: number } = {}): { helperTiles: RunningApp[] } | { skipped: string } {
+  let r: ExecResult;
+  try {
+    r = exec(LSAPPINFO, ["list"], opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {});
+  } catch (e) {
+    return { skipped: `lsappinfo list threw: ${(e as Error).message}` };
+  }
+  if (r.code !== 0) return { skipped: `lsappinfo list failed (${r.code})${r.stderr.trim() ? `: ${firstLine(r.stderr)}` : ""}` };
+  return { helperTiles: helperTilesOf(parseLsAppInfoList(r.stdout), { ...(opts.bundleId !== undefined ? { bundleId: opts.bundleId } : {}), ...(opts.installed !== undefined ? { installed: opts.installed } : {}) }) };
+}
 
 /**
  * READ the Dock: `defaults export com.apple.dock -` (through cfprefsd) → the audit.
@@ -276,16 +318,22 @@ export function repairDock(exec: Exec, before: DockAudit, opts: DockOnlyOptions 
 /** The `one jarhead` line under `install`: what LaunchServices holds and what the Dock shows. */
 export function hygieneLine(r: Omit<HygieneReport, "line"> & { readonly installed?: string; readonly bundleId?: string }): string {
   const installed = r.installed ?? INSTALLED_APP;
-  const ls = r.launchServices.skipped ? `LaunchServices: skipped (${r.launchServices.skipped})` : describeLaunchServices(r.launchServices.records, r.launchServices.remaining, r.launchServices.unregistered, installed);
+  // Only a record the re-dump no longer holds counts as unregistered on the line; one that -u'd "fine" but stayed is still "also …".
+  const gone = r.launchServices.unregistered.filter((path) => !r.launchServices.remaining.some((x) => x.path === path));
+  const ls = r.launchServices.skipped ? `LaunchServices: skipped (${r.launchServices.skipped})` : describeLaunchServices(r.launchServices.records, r.launchServices.remaining, gone, installed);
+  // A live helper tile is the one thing the repair cannot remove: the line never says --fix repairs it, nor that a fix did.
+  const helper = r.running.helperTiles.length > 0;
   let dock: string;
   if (r.dock.skipped && !r.dock.imported) dock = `${describeDock(r.dock.before)} — ${r.dock.skipped}`;
   else if (r.dock.imported) {
     const did = describeDockChanges(r.dock.before?.changes ?? []);
-    dock = `${describeDock(r.dock.after)} (${did}${r.dock.restarted ? ", Dock restarted" : ", Dock not restarted"})`;
+    const restart = r.dock.restarted ? ", Dock restarted" : ", Dock not restarted";
+    dock = `${describeDock(r.dock.after)} (${did}${restart}${helper ? " — not repaired: the helper's tile returns while it lives" : ""})`;
   } else if (r.dock.before && r.dock.before.changes.length > 0) {
-    dock = `${describeDock(r.dock.before)} (pnpm jarhead dock --fix repairs it)`;
+    dock = helper ? describeDock(r.dock.before) : `${describeDock(r.dock.before)} (pnpm jarhead dock --fix repairs it)`;
   } else dock = `${describeDock(r.dock.before)} (untouched)`;
-  return `one jarhead  ${ls} · ${dock}`;
+  const ran = r.running.skipped ? ` · running: skipped (${r.running.skipped})` : "";
+  return `one jarhead  ${ls} · ${dock}${ran}`;
 }
 
 /** The lsregister argv for a fresh registration of the installed bundle, pinned for the tests. */

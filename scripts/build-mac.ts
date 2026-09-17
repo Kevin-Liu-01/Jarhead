@@ -135,7 +135,10 @@ run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
 // 5. Install IN PLACE. Exactly one launchable Jarhead exists on this Mac — /Applications —
 // so the Dock, LaunchServices' recents and TCC never see two identities. Its directory
 // is never recreated: the Dock's pinned tile keeps a bookmark keyed on that directory's
-// inode, and rm + cp gave it a new one every build (that was the second Dock tile).
+// inode, and rm + cp gave it a new one every build (the first cause of a second Dock
+// tile; the second was jarhead-hands checking in as a Foreground app from the same
+// bundle — fixed in the helper's main.swift with setActivationPolicy(.prohibited), and
+// named by the one-Jarhead line below when a helper still does).
 // rsync renames each changed file over the old name (never --inplace: the running app
 // keeps its mapped, signed Mach-O), --delete-after drops what the stage no longer has,
 // and it is the INSTALLED copy that is verified. build/Jarhead.app stays a symlink to it.
