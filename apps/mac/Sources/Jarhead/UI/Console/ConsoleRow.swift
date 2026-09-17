@@ -3,7 +3,9 @@ import AppKit
 
 // The Console's list row and what every dense list shares: `ConsoleRow` (28 one line · 40 with a
 // meta line · +16 per extra title line · 44 on the agents rail while a figure ticks, 28 otherwise), `ConsoleGroupHead` (22, sticky),
-// `ConsoleRowOverflow` (the ⋯ drawn at rest — nothing is revealed under the pointer),
+// `ConsoleRowOverflow` (the ⋯ drawn at rest in a ghost tile — nothing is revealed under the pointer;
+// the row's controls sit on `.raised` while the row is hovered or selected, so their tiles step
+// off the highlight, design13),
 // `ConsoleFocusRing` (the keyboard's one ring), `ConsoleListKeys` + `ConsoleListFocus` (↑↓ ⏎ → ←
 // Esc and type-ahead over a list's ids) and `ConsoleListModel` (pure: heights, stepping,
 // type-ahead, the memory kinds, the ledger's months — pinned by `check-kit`). A row's verbs are
@@ -183,6 +185,9 @@ struct ConsoleRow: View {
     static let overflowWidth: CGFloat = 20
     static let verbWidth: CGFloat = 60
 
+    /// The surface under a row's controls: `.raised` on the highlight (hovered or selected), else the ground. Pinned.
+    static func surface(selected: Bool, hovering: Bool) -> ConsoleFill.Surface { selected || hovering ? .raised : .ground }
+
     var minHeight: CGFloat { ConsoleListModel.height(lines: lines, meta: meta != nil || meter != nil, rail: rail) }
 
     var body: some View {
@@ -200,7 +205,11 @@ struct ConsoleRow: View {
         .accessibilityValue([value, badge.map(ConsoleBadge.text)].compactMap { $0 }.joined(separator: " "))
         .accessibilityHint(accessibilityHint ?? card?.spoken ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .overlay(alignment: .topTrailing) { ConsoleRowControls(row: self).padding(.top, 4).padding(.trailing, 12) }
+        .overlay(alignment: .topTrailing) {
+            ConsoleRowControls(row: self)
+                .environment(\.consoleSurface, ConsoleRow.surface(selected: selected, hovering: hovering && !disabled))
+                .padding(.top, 4).padding(.trailing, 12)
+        }
         .modifier(ConsoleFocusRing(on: focused))
         .opacity(disabled ? 0.45 : (sitsBack ? 0.62 : 1))
         .contextMenu { if case .ellipsis(let verbs) = trailing { ConsoleVerbMenu(verbs: verbs) } }
@@ -458,20 +467,20 @@ struct ConsoleOptionalTip: ViewModifier {
     }
 }
 
-/// The ⋯ drawn at rest at fg3, lit to fg2 under the pointer; opens the row's verbs as the
-/// system menu (the platform idiom for verbs). Replaces the rails' hover-only `RowOverflow`s.
+/// The ⋯ in its ghost tile (the box is the solid, so the glyph stays a line), lit under the
+/// pointer; opens the row's verbs as the system menu (the platform idiom for verbs). Replaces the
+/// rails' hover-only `RowOverflow`s. A `Menu`, not a `Button`, so it wears the kit's face by hand.
 struct ConsoleRowOverflow: View {
     let verbs: [ConsoleVerb]
 
     @State private var hovering = false
+    @Environment(\.consoleSurface) private var surface
 
     var body: some View {
         Menu { ConsoleVerbMenu(verbs: verbs) } label: {
-            Image(systemName: "ellipsis").font(.system(size: 13, weight: .medium))
-                .foregroundStyle(hovering ? ConsoleTheme.fg2 : ConsoleTheme.fg3)
-                .frame(width: ConsoleRow.overflowWidth, height: 20)
-                .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? ConsoleTheme.hover : .clear))
-                .contentShape(Rectangle())
+            ConsoleButtonFace(kind: .ghost, iconOnly: true, height: 20, small: true, surface: surface, hovering: hovering) {
+                Image(systemName: ConsoleGlyph.ellipsis).font(.system(size: 13, weight: .semibold))
+            }
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
