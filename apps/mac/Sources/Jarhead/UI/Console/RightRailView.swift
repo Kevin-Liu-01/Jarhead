@@ -181,8 +181,6 @@ enum SettingsWords {
     // tips (verb first, ≤ 60, no full stop)
     static let languageTip = "Speaks English whatever language it hears"
     static let accentTip = "How the English sounds — best-effort on the voice's side"
-    /// design13: the two Switch now tips ride on HelpCopy (check-copy pins them).
-    static let switchNowTip = VoiceSwitchWords.switchTipBusy
     static let notchTip = "The orb lives and sleeps in the notch"
     static let freeTip = "The orb floats free and stays where it last worked"
     static let learnNowTip = "Read what has not been read yet, now"
