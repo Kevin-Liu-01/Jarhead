@@ -140,6 +140,13 @@
 #                                                                                                     # the timer's lip pill, the ring's pill "Wake up, Kevin · Snooze ⌥⇧S" once folded (→ notch-island-alarm-folded.png),
 #                                                                                                     # then awake: the chip order ring > question > marks > timer > problem
 #     ring-dead-time ORB_NOTCH_RING=… ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_QUESTION_AT=ring-end ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
+#     click-*    design13 (Builder C): a real down / up through NotchPanel.sendEvent with no pointer approach —
+#                click-open ORB_NOTCH_CLICK="stop@3.2" (island open: accepts at the down, one route at the up);
+#                click-folded ORB_FLEET=… ORB_NOTCH_QUESTION=… ORB_NOTCH_CLICK="thread:Slack@4.9" (folded again after the
+#                script's leave: the click on the peek opens it, the route waits for the springs — `pendingPress`);
+#                click-dead-time ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING=… ORB_NOTCH_RING_AT=3.0 ORB_NOTCH_CLICK="done@3.2;done@3.9"
+#                (the ring lands on the open island: Done inside 500 ms flashes and routes nothing; Done again routes)
+#     stop-dim   ORB_NOTCH_STOP_DIM_AT=3.2 (awake → 1) and stop-dim-asleep ORB_NOTCH_PHASE=asleep (→ 0.45; notch-island-asleep.png)
 #                                                                                                     # Done ends the ring and the question lands in the same turn: a deny 150 ms later sends nothing
 #                                                                                                     # (the consent boxes' 500 ms dead-time), the one at +850 ms is the thread's answer
 #     kind-*     ORB_NOTCH_KIND=plain|question|marks forces the display's kind, ORB_NOTCH_KIND_AT="kind@4.2" swaps it with the
@@ -234,6 +241,13 @@ if [[ "${1:-}" == "--notch-checks" ]]; then
     ORB_NOTCH_MARKS="pending:640x400@-40@Slack" ORB_NOTCH_SHOT_TAG=recording
   recipe ring-dead-time 5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_QUESTION_AT=ring-end \
     ORB_NOTCH_PRESS="done@3.0;deny@3.25;deny@3.9"
+  # design13 (Builder C): real clicks through NotchPanel.sendEvent, no pointer approach first (the monitor race, the
+  # folded island's deferred route, the dead-time's felt-but-dropped press), and the Stop box's .45 while asleep.
+  recipe click-open 5 ORB_NOTCH_CLICK="stop@3.2"
+  recipe click-folded 6.5 ORB_FLEET="$FLEET" ORB_NOTCH_QUESTION="Slack:Send it?" ORB_NOTCH_CLICK="thread:Slack@4.9"
+  recipe click-dead-time 5.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_RING="07:10 · Wake up, Kevin" ORB_NOTCH_RING_AT=3.0 ORB_NOTCH_CLICK="done@3.2;done@3.9"
+  recipe stop-dim 4.5 ORB_NOTCH_STOP_DIM_AT=3.2
+  recipe stop-dim-asleep 4.5 ORB_NOTCH_PHASE=asleep ORB_NOTCH_STOP_DIM_AT=3.2
   echo
   echo "summary (every check: line, deduplicated by text):"
   cat "$ROOT"/*/run.log | grep -E "check:" | sed -E 's/^ *[0-9.]+ s //' | sed -E 's/ (OK|FAIL)( \(.*| :.*)?$/ \1/' | sort -u

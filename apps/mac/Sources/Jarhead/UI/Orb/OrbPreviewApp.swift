@@ -285,6 +285,14 @@ import SwiftUI
 //   ORB_NOTCH_PRESS="what@t;…"   a press on that island control at t (the pointer approaches first): circle, window,
 //                          ask, clear, allow, deny, mark:0, forget:0, thread:Slack, threadStop:Slack, console, sleep,
 //                          remedy, field, face (a thread's name or id); each press prints what it sent and earns its check
+//   ORB_NOTCH_CLICK="what@t;…"   design13 (Builder C): a real mouse down / up on that control, posted through
+//                          NotchPanel.sendEvent at the control's centre in the open layout (clamped into the folded
+//                          ink while folded), with NO prior pointer approach. Earns: the panel accepts the mouse at the
+//                          down (`sendEvent` → `pointer(at:)`, the monitor race); folded → 0 routes at the up and
+//                          exactly one after the springs settle (`pendingPress`); open → one route at the up; inside
+//                          the consent boxes' 500 ms dead-time → the box flashes (`previewFlashPress`) and 0 routes
+//   ORB_NOTCH_STOP_DIM_AT=t   read the Stop box's dim at t: `island stop dim asleep → 0.45` / `awake → 1`, and the pure
+//                          `NotchPanel.stopDim` pin
 //   ORB_NOTCH_ACTIVE=t|1   NSApp.activate at t (1 = 3.0 s): the Window check's "app active" half
 //   ORB_NOTCH_TYPE="text@t"   ⌥⇧Return at t (OrbPanelController.sayLine), the words, Return; then again with Escape
 //   ORB_NOTCH_ESC_AT=t     Escape: the field lets go (text kept), or mark mode is cancelled (a posted key event)
@@ -2997,6 +3005,12 @@ extension OrbPreviewDelegate {
         for (name, t) in presses {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchPress(name) }
         }
+        for (name, t) in Self.parsePressList(env["ORB_NOTCH_CLICK"], knob: "ORB_NOTCH_CLICK") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchClick(name) }
+        }
+        if let t = Double(env["ORB_NOTCH_STOP_DIM_AT"] ?? "") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.notchStopDimCheck() }
+        }
         if let spec = env["ORB_NOTCH_ACTIVE"], let t = spec == "1" ? 3.0 : Double(spec) {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
                 guard let self else { return }
@@ -3360,6 +3374,104 @@ extension OrbPreviewDelegate {
     }
 
     /// ⌥⇧Return, the words, Return; then ⌥⇧Return, words, Escape — the field's whole contract in one script.
+    /// "what@t;…" → [(what, t)], the ORB_NOTCH_PRESS grammar.
+    static func parsePressList(_ spec: String?, knob: String) -> [(String, Double)] {
+        (spec ?? "").split(separator: ";").compactMap { entry -> (String, Double)? in
+            let parts = entry.split(separator: "@").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, let t = Double(parts[1]), !parts[0].isEmpty else {
+                if !entry.isEmpty { print("\(knob): could not parse \(entry); want what@t") }
+                return nil
+            }
+            return (parts[0], t)
+        }
+    }
+
+    /// Everything a press can route to, as one count: commands sent, plus the dock's own openers.
+    var notchRoutes: Int { notchSends.total + openConsoleCalls + openThreadCalls + beginMarkModeCalls }
+
+    /// What one ORB_NOTCH_CLICK saw at its down and up, carried to its checks 0.7 s later.
+    struct NotchClickSeen {
+        var name = "", modeBefore = "", modeAtDown = ""
+        var ignoredBefore = true, ignoredAtDown = true, dead = false
+        var routesBefore = 0, sendsBefore = 0, routesAtUp = 0
+        var flashAtUp: String?, pendingAtUp: String?
+    }
+
+    /// The point to click for a control: its centre in the open layout — while folded, clamped into the
+    /// ink actually drawn (the peek), since a real click can only land on ink. Window coordinates.
+    func notchClickPoint(_ name: String, view: NotchView) -> NSPoint? {
+        guard let hit = orb.previewNotchHitList.first(where: { $0.name == name }) else { return nil }
+        let island = view.previewIslandOpenRect
+        var r = hit.rect.offsetBy(dx: island.minX, dy: island.minY)
+        if orb.previewNotchMode != "island" {
+            let ink = view.previewIslandRectRaw
+            let cut = r.intersection(ink)
+            if !cut.isNull, cut.width > 2, cut.height > 2 { r = cut }
+        }
+        return view.convert(NSPoint(x: r.midX, y: r.midY), to: nil)
+    }
+
+    /// One real click on the island through NotchPanel.sendEvent — no pointer approach first.
+    func notchClick(_ raw: String) {
+        let name = pressName(raw)
+        guard let view = notchView, let panel = notchPanel else { check(false, "notch-click \(name): the notch panel is up"); return }
+        guard let p = notchClickPoint(name, view: view) else {
+            check(false, "notch-click \(name): the control is in the open layout", "hit list \(orb.previewNotchHitList.map(\.name))")
+            return
+        }
+        var seen = NotchClickSeen(name: name, modeBefore: orb.previewNotchMode, ignoredBefore: panel.ignoresMouseEvents)
+        seen.dead = orb.previewNotchMiddleDead
+        seen.routesBefore = notchRoutes
+        seen.sendsBefore = notchSends.total
+        let n = panel.windowNumber
+        let t = ProcessInfo.processInfo.systemUptime
+        guard let down = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: t, windowNumber: n, context: nil, eventNumber: 9101, clickCount: 1, pressure: 1),
+              let up = NSEvent.mouseEvent(with: .leftMouseUp, location: p, modifierFlags: [], timestamp: t + 0.06, windowNumber: n, context: nil, eventNumber: 9102, clickCount: 1, pressure: 0) else { return }
+        panel.sendEvent(down)
+        seen.ignoredAtDown = panel.ignoresMouseEvents
+        seen.modeAtDown = orb.previewNotchMode
+        print(stamp, "notch click \(raw) at window \(Int(p.x)),\(Int(p.y)): mode \(seen.modeBefore) -> \(seen.modeAtDown), ignoresMouse \(seen.ignoredBefore ? 1 : 0) -> \(seen.ignoredAtDown ? 1 : 0), dead \(seen.dead ? 1 : 0)")
+        fflush(stdout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+            guard let self else { return }
+            panel.sendEvent(up)
+            seen.routesAtUp = self.notchRoutes - seen.routesBefore
+            seen.flashAtUp = view.previewFlashPress
+            seen.pendingAtUp = view.previewPendingPress
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.notchClickChecks(seen, view: view) }
+        }
+    }
+
+    /// The check lines one click earns, by the state it was clicked in.
+    private func notchClickChecks(_ seen: NotchClickSeen, view: NotchView) {
+        let after = notchRoutes - seen.routesBefore
+        let sent = Array(notchSends.all.dropFirst(seen.sendsBefore))
+        let flash = seen.flashAtUp ?? "none"
+        let pending = seen.pendingAtUp ?? "none"
+        let tail = "mode \(seen.modeBefore) -> \(seen.modeAtDown); routes at up \(seen.routesAtUp), after 0.7 s \(after) (sent \(sent.isEmpty ? "nothing" : sent.joined(separator: ", "))); flash at up \(flash); pending \(pending); settled \(view.previewSpringsSettled ? 1 : 0)"
+        check(!seen.ignoredAtDown, "notch-click \(seen.name): the panel accepts the mouse at the down with no prior approach (sendEvent → pointer(at:))",
+              "ignoresMouseEvents \(seen.ignoredBefore ? 1 : 0) -> \(seen.ignoredAtDown ? 1 : 0); \(tail)")
+        if seen.dead {
+            check(seen.flashAtUp == seen.name && after == 0, "notch-click \(seen.name) inside 500 ms of a kind change → the box flashes, 0 routes (felt, not routed)", tail)
+        } else if seen.modeBefore != "island" {
+            check(seen.routesAtUp == 0 && seen.pendingAtUp == seen.name && after == 1 && view.previewSpringsSettled,
+                  "notch-click \(seen.name) on the folded island → opens, 0 routes at the up, one once the springs settle", tail)
+        } else {
+            check(seen.routesAtUp == 1 && after == 1, "notch-click \(seen.name) on the open island → one route at the up", tail)
+        }
+    }
+
+    /// ORB_NOTCH_STOP_DIM_AT: the Stop box's alpha step by phase, drawn and pure.
+    func notchStopDimCheck() {
+        let phase = state.snapshot.phase
+        let dim = orb.previewNotchBoxDim("stop")
+        let want: CGFloat = phase == .asleep ? 0.45 : 1
+        let word = phase == .asleep ? "asleep → 0.45" : "awake → 1"
+        check(abs(dim - want) < 0.001, "island stop dim \(word)", "phase \(phase.rawValue), drawn dim \(String(format: "%.2f", dim)), hittable \(orb.previewNotchHitList.contains { $0.name == "stop" } ? 1 : 0)")
+        check(NotchPanel.stopDim(.asleep) == 0.45 && NotchPanel.stopDim(.listening) == 1 && NotchPanel.stopDim(.paused) == 1,
+              "NotchPanel.stopDim: asleep 0.45, every other phase 1")
+    }
+
     func notchFieldScript(text: String) {
         let before = notchSends.total
         var s1 = (pinned: false, focused: false, key: false, swallowed: false)
