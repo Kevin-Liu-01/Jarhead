@@ -455,7 +455,7 @@ struct CrashNoticeRow: View {
                             .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                             .consoleHelp(NowWords.detailsTip)
                         Button { withAnimation(Motion.gentle) { state.dismissCrash() } } label: {
-                            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                            Image(systemName: ConsoleGlyph.dismiss).font(.system(size: 14, weight: .semibold))
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
                         .accessibilityLabel(NowWords.dismiss)
@@ -701,7 +701,7 @@ struct NowPanel: View {
                     }
                     .padding(.top, 2)
                 }
-                Button { actions.beginMarkMode() } label: { Label(NowWords.circleSomething, systemImage: "pencil.and.outline") }
+                Button { actions.beginMarkMode() } label: { Label(NowWords.circleSomething, systemImage: ConsoleGlyph.circle) }
                     .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 26, small: true))
                     .consoleHelp(HelpCopy.circle)
             }
@@ -1223,7 +1223,7 @@ private struct MarkThumb: View {
     /// The × at the top-right corner while hovering: this one mark leaves, the others stay.
     private var forgetButton: some View {
         Button { actions.send(.markRemove(id: mark.id)) } label: {
-            Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(ConsoleTheme.fg)
+            Image(systemName: ConsoleGlyph.cross).font(.system(size: 9, weight: .bold)).foregroundStyle(ConsoleTheme.fg)
                 .frame(width: 16, height: 16)
                 .background(ConsoleTheme.ground.opacity(0.94))
                 .overlay(Rectangle().stroke(ConsoleTheme.hairFrame, lineWidth: 1))
@@ -1935,7 +1935,7 @@ struct SettingsPanel: View {
                 .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
                 .consoleHelp(SettingsWords.sweepGoTip)
                 Button { withAnimation(Motion.snappy) { sweepArmed = false } } label: {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                    Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
                 .consoleHelp(SettingsWords.keepAll)

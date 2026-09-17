@@ -541,7 +541,7 @@ struct AgentsRail: View, Equatable {
                 actions.send(.agentRefresh)
                 if !Motion.reduced { withAnimation(Motion.gentle) { refreshSpin += 360 } }
             } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
+                Image(systemName: ConsoleGlyph.reload).font(.system(size: 16, weight: .semibold))
                     .rotationEffect(.degrees(refreshSpin))
             }
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
@@ -1186,7 +1186,7 @@ private struct JarheadRailHead: View {
                                        onExit: { withAnimation(Motion.gentle) { session.closeSearch() } })
                         .animation(Motion.snappy, value: hitCount)
                     Button { withAnimation(Motion.gentle) { session.closeSearch() } } label: {
-                        Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                        Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
                     .consoleHelp(AgentsRailWords.closeSearch, key: "Esc")
@@ -1198,7 +1198,7 @@ private struct JarheadRailHead: View {
             } else {
                 ConsoleSectionHead("Jarhead", count: count) {
                     Button { withAnimation(Motion.gentle) { session.openSearch() } } label: {
-                        Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .semibold))
+                        Image(systemName: ConsoleGlyph.search).font(.system(size: 16, weight: .semibold))
                     }
                     .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 24))
                     .consoleHelp(HelpCopy.search.hint, key: HelpCopy.search.key)
@@ -1262,7 +1262,7 @@ private struct SelectionStrip: View {
             HStack(spacing: 6) { verbs(words: words) }
                 .fixedSize()
             Button { withAnimation(Motion.gentle) { session.clearSelection() } } label: {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
             }
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
             .consoleHelp("Clear the selection")
@@ -1287,7 +1287,7 @@ private struct SelectionStrip: View {
             }
         }
         if !inactive.isEmpty {
-            verb("Restore", "arrow.uturn.backward", words: words, help: "Bring the selected conversations back") {
+            verb("Restore", ConsoleGlyph.undo, words: words, help: "Bring the selected conversations back") {
                 let picked = inactive
                 withAnimation(Motion.gentle) { session.clearSelection() }
                 actions.cleanup(.restore(picked))
@@ -1297,7 +1297,7 @@ private struct SelectionStrip: View {
 
     private func verb(_ title: String, _ symbol: String, words: Bool, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            if words { Text(title) } else { Image(systemName: symbol).font(.system(size: 11, weight: .medium)) }
+            if words { Text(title) } else { Image(systemName: symbol).font(.system(size: 13, weight: .medium)) }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, iconOnly: !words, height: 22, small: true))
         .consoleHelp(help)

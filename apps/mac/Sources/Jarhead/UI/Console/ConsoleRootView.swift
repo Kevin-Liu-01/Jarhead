@@ -414,7 +414,7 @@ struct CleanupToastView: View {
                     .consoleHelp(HelpCopy.undoMove)
             }
             Button(action: dismiss) {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+                Image(systemName: ConsoleGlyph.dismiss).font(.system(size: 14, weight: .semibold))
             }
             .buttonStyle(ConsoleButtonStyle(kind: .plain, iconOnly: true, height: 22))
             .fixedSize()

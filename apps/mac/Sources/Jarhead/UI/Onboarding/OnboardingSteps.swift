@@ -87,7 +87,7 @@ struct OnboardingVoiceStep: View, Equatable {
                         } label: {
                             HStack(spacing: 4) {
                                 Text("Get a key")
-                                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                                Image(systemName: ConsoleGlyph.externalLink).font(.system(size: 10, weight: .semibold))
                             }
                         }
                         .buttonStyle(ConsoleButtonStyle(kind: .plain, height: 22, small: true))
@@ -361,7 +361,7 @@ struct OnboardingBrainStep: View, Equatable {
         } label: {
             HStack(spacing: 4) {
                 Text("Open ollama.com")
-                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                Image(systemName: ConsoleGlyph.externalLink).font(.system(size: 10, weight: .semibold))
             }
         }
         .buttonStyle(ConsoleButtonStyle(kind: .ghost, height: 22, small: true))
@@ -481,7 +481,7 @@ struct OnboardingAgentsStep: View, Equatable {
                     if !Motion.reduced { withAnimation(Motion.gentle) { refreshSpin += 360 } }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: ConsoleGlyph.reloadLine).font(.system(size: 11, weight: .semibold))
                             .rotationEffect(.degrees(refreshSpin))
                         Text("Refresh")
                     }

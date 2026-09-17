@@ -4,16 +4,37 @@ import AppKit
 // The Console's segmented control — one struct, three sizes (`.rail` 28 · `.row` 26 · `.toggle`
 // 22), `fixedSize` a parameter, not a copy. On = inverted (fg fill, ground letters); hover
 // `hover`; focused = the accent ring around the box; ← → pick the neighbour, Space the next.
+// The box rests on `ConsoleFill.rest(on:)` (design13): `lift` under the off cells on ground,
+// `liftRaised` on a raised surface. A title may lead with an emoji flag (`🇬🇧 UK`): the flag draws
+// at sans 11 before the word, in colour on the ON cell and at .85 on the off cells.
 // `ConsoleToggle` is two cells of it that read `On | Off` — a word, not a blue switch, the same
 // in an inactive window. `ConsoleStepper` is one box: − · value + unit · +.
 
 enum ConsoleSegmentWords {
     static let on = "On"
     static let off = "Off"
-    static let minus = "minus"
-    static let plus = "plus"
+    static let minus = ConsoleGlyph.minus
+    static let plus = ConsoleGlyph.plus
     static let decrease = "Less"
     static let increase = "More"
+    /// The flag's quiet on an off cell (an emoji ignores `foregroundStyle`).
+    static let flagRest: Double = 0.85
+}
+
+/// A segment's title in two pieces: a leading emoji flag (two regional-indicator scalars and a
+/// space) and the word. Pure, pinned by `check-kit`.
+enum ConsoleSegmentTitle {
+    static func split(_ title: String) -> (flag: String?, word: String) {
+        let scalars = Array(title.unicodeScalars)
+        guard scalars.count > 3, isIndicator(scalars[0]), isIndicator(scalars[1]), scalars[2] == " " else { return (nil, title) }
+        var flag = String.UnicodeScalarView()
+        flag.append(scalars[0]); flag.append(scalars[1])
+        var word = String.UnicodeScalarView()
+        word.append(contentsOf: scalars[3...])
+        return (String(flag), String(word))
+    }
+
+    private static func isIndicator(_ s: Unicode.Scalar) -> Bool { (0x1F1E6...0x1F1FF).contains(s.value) }
 }
 
 /// One option of a segmented control: the active one filled with the text colour and lettered
@@ -34,9 +55,7 @@ struct ConsoleSegmentOption: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(font)
-                .foregroundStyle(on ? ConsoleTheme.ground : (hovering ? ConsoleTheme.fg : ConsoleTheme.fg2))
+            ConsoleSegmentText(title: title, font: font, on: on, hovering: hovering)
                 .lineLimit(1)
                 .padding(.horizontal, fixed ? 10 : 0)
                 .frame(maxWidth: fixed ? nil : .infinity)
@@ -55,6 +74,27 @@ struct ConsoleSegmentOption: View {
         .animation(ConsoleMotion.hover, value: hovering)
         .animation(Motion.snappy, value: on)
         .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// The cell's words: a leading flag at sans 11 (in colour on the ON cell, .85 on an off cell),
+/// then the word in the control's font; ground letters on the ON cell, fg2 lifting to fg.
+struct ConsoleSegmentText: View {
+    let title: String
+    let font: Font
+    let on: Bool
+    let hovering: Bool
+
+    private var tone: Color { on ? ConsoleTheme.ground : (hovering ? ConsoleTheme.fg : ConsoleTheme.fg2) }
+
+    var body: some View {
+        let parts = ConsoleSegmentTitle.split(title)
+        HStack(spacing: 4) {
+            if let flag = parts.flag {
+                Text(flag).font(ConsoleTheme.sans(11)).opacity(on ? 1 : ConsoleSegmentWords.flagRest)
+            }
+            Text(parts.word).font(font).foregroundStyle(tone)
+        }
     }
 }
 
@@ -78,6 +118,7 @@ struct ConsoleSegments<Value: Hashable>: View {
 
     @Namespace private var thumb
     @FocusState private var focused: Bool
+    @Environment(\.consoleSurface) private var surface
 
     static func height(_ size: Size) -> CGFloat {
         switch size {
@@ -102,6 +143,7 @@ struct ConsoleSegments<Value: Hashable>: View {
         }
         .frame(height: height)
         .fixedSize(horizontal: fixedSize || cellWidth != nil, vertical: false)
+        .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleFill.rest(on: surface)))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(focused ? ConsoleTheme.accent : ConsoleTheme.hair, lineWidth: 1))
         .focusable()
@@ -181,6 +223,7 @@ struct ConsoleStepper: View {
 
     @State private var draft = ""
     @FocusState private var focused: Bool
+    @Environment(\.consoleSurface) private var surface
 
     var body: some View {
         HStack(spacing: 0) {
@@ -191,7 +234,7 @@ struct ConsoleStepper: View {
             ConsoleStepperCell(symbol: ConsoleSegmentWords.plus, label: ConsoleSegmentWords.increase, enabled: value < range.upperBound) { nudge(1) }
         }
         .frame(width: 122, height: 26)
-        .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
+        .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleFill.rest(on: surface)))
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(focused ? ConsoleTheme.accent : ConsoleTheme.hair, lineWidth: 1))
         .animation(Motion.snappy, value: focused)

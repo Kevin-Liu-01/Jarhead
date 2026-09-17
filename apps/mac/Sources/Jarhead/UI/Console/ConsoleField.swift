@@ -1,7 +1,8 @@
 import SwiftUI
 import AppKit
 
-// The Console's text field: one struct, four heights, one blur rule. `ground` flat, one hairline
+// The Console's text field: one struct, four heights, one blur rule. A `lift` tile (design13:
+// `ConsoleFill.rest(on:)`, so a field on a raised surface steps up with it), one hairline
 // that turns accent while focused and red (with a shake) on a rejection — never a second stroke.
 // A leading glyph (the magnifier, a key), a trailing slot (× while text · a count · a 22 pt verb),
 // and the commit rule spelled once (`ConsoleField.Commit`): Return commits · Esc cancels · focus
@@ -18,8 +19,8 @@ enum ConsoleFieldWords {
     static let saving = "Saving…"
     static let onFile = "on file"
     static let secretHint = "Written once, never shown again"
-    static let magnifier = "magnifyingglass"
-    static let cross = "xmark"
+    static let magnifier = ConsoleGlyph.magnifier
+    static let cross = ConsoleGlyph.cross
 }
 
 /// Text field chrome as a modifier (`.consoleField(mono:height:focused:error:grows:)`): the kit's
@@ -33,6 +34,8 @@ struct ConsoleFieldModifier: ViewModifier {
     var error = false
     var grows = false
 
+    @Environment(\.consoleSurface) private var surface
+
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
@@ -42,7 +45,7 @@ struct ConsoleFieldModifier: ViewModifier {
             .padding(.horizontal, 10)
             .padding(.vertical, grows ? 5 : 0)
             .frame(minHeight: height, maxHeight: grows ? nil : height)
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
+            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleFill.rest(on: surface)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(error ? ConsoleTheme.error : (focused ? ConsoleTheme.accent : ConsoleTheme.hair), lineWidth: 1))
             // The ring answers focus and a rejection at once.
             .animation(Motion.snappy, value: error)
@@ -171,7 +174,7 @@ struct ConsoleField: View {
     }
 }
 
-/// The box: ground flat, the one ring (hair → accent → red), radius 6, the shake on a rejection.
+/// The box: the `lift` tile, the one ring (hair → accent → red), radius 6, the shake on a rejection.
 struct ConsoleFieldBox<C: View>: View {
     let size: ConsoleField.Size
     let focused: Bool
@@ -179,6 +182,8 @@ struct ConsoleFieldBox<C: View>: View {
     let grows: Bool
     let shakes: CGFloat
     @ViewBuilder let content: () -> C
+
+    @Environment(\.consoleSurface) private var surface
 
     private var ring: Color { error ? ConsoleTheme.error : (focused ? ConsoleTheme.accent : ConsoleTheme.hair) }
 
@@ -188,7 +193,7 @@ struct ConsoleFieldBox<C: View>: View {
             .padding(.horizontal, size == .edit ? 8 : 10)
             .padding(.vertical, grows ? 5 : 0)
             .frame(minHeight: h, maxHeight: grows ? nil : h)
-            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.ground))
+            .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleFill.rest(on: surface)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(ring, lineWidth: 1))
             .modifier(ConsoleShake(shakes: shakes))
             .animation(Motion.snappy, value: error)

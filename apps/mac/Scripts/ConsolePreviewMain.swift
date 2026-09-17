@@ -162,6 +162,11 @@ import SwiftUI
 //                    the list the keys, `keyDown:cmd-down` floats its verbs (Rename · Pin · Archive · Move to
 //                    Trash) as ConsoleMenuRows under the row; `probe-floats:` names `rail.chain.<id>.verbs`.
 //                    in console-preview.sh and render today's UI until their builder lands.
+//   PREVIEW_SCENARIO=buttons        design13 (Builder E): the window shows `ConsoleButtonSheet` — the kit's kinds ×
+//                                   states (rest / hover / pressed / disabled forced through `ConsoleButtonFace`),
+//                                   the segments with flags, the field, the stepper, a raised card's controls and
+//                                   the outline → filled glyph twins; `check-kit` pins the fill / border / foreground /
+//                                   dims helpers, the glyph rule and the segment flag split (checkKitButtons)
 //   PREVIEW_APPEARANCE=dark|light   (default dark; the `light` scenario is live data in aqua)
 //   PREVIEW_STATE_DIR               where screenshot paths resolve
 //   PREVIEW_SHOT_PNG                the screenshot step's file inside that dir
@@ -591,6 +596,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             frame.size = NSSize(width: max(wanted.width, window.minSize.width), height: max(wanted.height, window.minSize.height))
             window.setFrame(frame, display: true)
             window.center()
+            // `buttons`: the kit's sheet in the Console's window, so snap/shot and the title lookups hold.
+            if scenario == "buttons" { window.contentView = NSHostingView(rootView: ConsoleButtonSheet()) }
             // The app's own install (ConsoleRootView.onAppear) reads NSApp.keyWindow at each click; an
             // accessory harness behind the Terminal is rarely key, so the `undo` / `undo-toast` /
             // `redo` probes would find an empty manager. Name this window's outright, a turn after
@@ -763,6 +770,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // snaps, presses Space (`send:` carries {"audio":{"recording":true}} and nothing else; the harness echoes the block into
         // the snapshot as the daemon would), then the engine's second read-back `recording-macbook` lands (Hears MacBook 48 kHz ·
         // echo guarded, Shared with QuickTime Player.), the hint appears, the head is folded and snapped with `[recording]`.
+        case "buttons": defaultActions = "check-kit@0.3,focus:\(ConsoleButtonSheetWords.fieldFocusedId)@0.8"
         case "settings-audio": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5"
         case "toggle-recording": defaultActions = "check-kit@0.3,micRoute:aec-airpods@0.5,focus:\(SettingsWords.recording)@1.0,"
             + "snap:preview-console-toggle-recording-focused@1.4,keyDown:space@1.6,micRoute:recording-macbook@1.9,"
@@ -3529,6 +3537,7 @@ extension PreviewDelegate {
         failed += checkKitRail()
         failed += checkKitAutomations()
         failed += checkKitAudio()
+        failed += checkKitButtons()
         print("check: \(failed == 0 ? "all ok" : "\(failed) FAILED") (kit) at \(stamp)s")
     }
 
@@ -3804,6 +3813,42 @@ extension PreviewDelegate {
     }
 
     /// The audio pass's pure words as `check:` lines; returns how many failed (folded into `check-kit`'s total).
+    /// The fill rule's pure pins (design13, Builder E): `ConsoleFill`, the button helpers, the glyph rule,
+    /// the segment flag split, the row controls' surface — and that every glyph name is an SF Symbol.
+    func checkKitButtons() -> Int {
+        var failed = 0
+        func expect(_ name: String, _ got: String, _ want: String) {
+            let ok = got == want
+            if !ok { failed += 1 }
+            print("check: \(ok ? "ok  " : "FAIL") \(name) → '\(got)'\(ok ? "" : " (want '\(want)')")")
+        }
+        typealias Style = ConsoleButtonStyle
+        expect("fill on ground → lift", "\(ConsoleFill.rest(on: .ground) == ConsoleTheme.lift) \(ConsoleFill.restName(on: .ground))", "true lift")
+        expect("fill on raised → liftRaised", "\(ConsoleFill.rest(on: .raised) == ConsoleFill.liftRaised) \(ConsoleFill.restName(on: .raised))", "true liftRaised")
+        let ghostGround = Style.fill(kind: .ghost, surface: .ground, hovering: false, pressed: false) == ConsoleTheme.lift
+        let ghostRaised = Style.fill(kind: .ghost, surface: .raised, hovering: false, pressed: false) == ConsoleFill.liftRaised
+        let spentGround = Style.fill(kind: .spent, surface: .ground, hovering: false, pressed: false) == ConsoleTheme.lift
+        let plainClear = Style.fill(kind: .plain, surface: .ground, hovering: true, pressed: false) == Color.clear
+        expect("ghost rest fill (ground · raised · spent · plain clear)", "\(ghostGround) \(ghostRaised) \(spentGround) \(plainClear)", "true true true true")
+        expect("primary fill accent, pressed .8", "\(Style.fill(kind: .primary, surface: .ground, hovering: false, pressed: false) == ConsoleTheme.accent) \(Style.fill(kind: .primary, surface: .ground, hovering: false, pressed: true) == ConsoleTheme.accent.opacity(0.8))", "true true")
+        expect("wash: pressed active · hover hover · filled none", "\(Style.wash(kind: .ghost, hovering: true, pressed: true) == ConsoleTheme.active) \(Style.wash(kind: .spent, hovering: true, pressed: false) == ConsoleTheme.hover) \(Style.wash(kind: .primary, hovering: true, pressed: true) == Color.clear)", "true true true")
+        expect("spent border → hairRow", "\(Style.border(kind: .spent, enabled: true) == ConsoleTheme.hairRow) \(ConsoleFill.lineName(spent: true, enabled: true))", "true hairRow")
+        expect("ghost border → hair · disabled → hairRow", "\(Style.border(kind: .ghost, enabled: true) == ConsoleTheme.hair) \(Style.border(kind: .ghost, enabled: false) == ConsoleTheme.hairRow) \(ConsoleFill.lineName(spent: false, enabled: false))", "true true hairRow")
+        expect("spent foreground → fg3 (rest and lit)", "\(Style.foreground(kind: .spent, lit: false) == ConsoleTheme.fg3) \(Style.foreground(kind: .spent, lit: true) == ConsoleTheme.fg3)", "true true")
+        expect("ghost foreground → fg2 at rest, fg lit", "\(Style.foreground(kind: .ghost, lit: false) == ConsoleTheme.fg2) \(Style.foreground(kind: .ghost, lit: true) == ConsoleTheme.fg)", "true true")
+        expect("disabled ghost keeps fill → dims false / primary true", "\(Style.dims(kind: .ghost)) \(Style.dims(kind: .primary)) \(Style.dims(kind: .spent)) \(Style.dims(kind: .danger)) \(Style.dims(kind: .plain))", "false true false true false")
+        expect("glyphs filled → all .fill/.filled or keep", ConsoleGlyph.violations.joined(separator: ","), "")
+        expect("glyphs: the rule catches a bare arrow", "\(ConsoleGlyph.filledOrKept("arrow.up.right")) \(ConsoleGlyph.filledOrKept(ConsoleGlyph.send)) \(ConsoleGlyph.filledOrKept(ConsoleGlyph.cross))", "false true true")
+        expect("glyphs: send · dismiss · quit · ask", [ConsoleGlyph.send, ConsoleGlyph.dismiss, ConsoleGlyph.quit, ConsoleGlyph.ask].joined(separator: " "), "arrowshape.up.fill xmark.circle.fill power.circle.fill checklist.checked")
+        let missing = ConsoleGlyph.all.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        expect("glyphs: every name is an SF Symbol", missing.joined(separator: ","), "")
+        let split = ConsoleSegmentTitle.split
+        func show(_ t: String) -> String { "\(split(t).flag ?? "nil")|\(split(t).word)" }
+        expect("segments: a leading flag splits off the title", [show("🇬🇧 UK"), show("None"), show("🇺🇸 American"), show("🇬🇧"), show("Off")].joined(separator: " · "), "🇬🇧|UK · nil|None · 🇺🇸|American · nil|🇬🇧 · nil|Off")
+        expect("row controls: raised on the highlight", "\(ConsoleRow.surface(selected: false, hovering: false)) \(ConsoleRow.surface(selected: true, hovering: false)) \(ConsoleRow.surface(selected: false, hovering: true))", "ground raised raised")
+        return failed
+    }
+
     func checkKitAudio() -> Int {
         var failed = 0
         func expect(_ name: String, _ got: String, _ want: String) {
@@ -4176,5 +4221,222 @@ extension PreviewDelegate {
         let restoreName = restoreWire["name"] as? String ?? ""
         expect("recipe.restore on the wire", restoreType + " " + restoreName, "recipe.restore old-sync")
         return failed
+    }
+}
+
+// MARK: - design13 (Builder E): the kinds × states sheet
+
+/// The sheet's words, on an enum like every other visible literal.
+enum ConsoleButtonSheetWords {
+    static let title = "ConsoleButtonStyle · the fill rule"
+    static let sub = "a tile one step off its surface + a hairline · every state a change of those two layers · disabled keeps the tile · spent is enabled · no sheen"
+    static let states = ["rest", "hover", "pressed", "disabled"]
+    static let kinds = ["ghost · words", "ghost · glyph", "primary", "danger", "spent", "plain · chrome"]
+    static let segments = "segments · flags"
+    static let toggle = "toggle"
+    static let field = "text field"
+    static let stepper = "stepper"
+    static let raised = "on a raised surface (a card, a popup foot) · rest = liftRaised"
+    static let glyphs = "control glyphs · outline → filled twin (ConsoleGlyph; check-kit pins the suffix)"
+    static let switchNow = "Switch now"
+    static let reload = "Reload"
+    static let cont = "Continue"
+    static let stop = "Stop"
+    static let stopped = "Stopped"
+    static let restore = "Restore"
+    static let clear = "Clear"
+    static let placeholder = "type here"
+    static let typed = "typ"
+    static let unit = "min"
+    static let fieldId = "buttons.field"
+    static let fieldFocusedId = "buttons.field2"
+    static let accents = ["🇺🇸 US", "🇬🇧 UK", "None"]
+    static let twins: [(String, String, String)] = [
+        ("arrow.up", ConsoleGlyph.send, "Send — a solid arrow"), ("arrow.clockwise", ConsoleGlyph.reload, "Reload · Refresh, icon-only"),
+        ("arrow.uturn.backward", ConsoleGlyph.undo, "Undo · Restore, icon-only"), ("arrow.down", ConsoleGlyph.newest, "Jump to newest"),
+        ("magnifyingglass", ConsoleGlyph.search, "Agents rail search"), ("xmark", ConsoleGlyph.dismiss, "a lone dismiss on a card"),
+        ("macwindow", ConsoleGlyph.islandWindow, "island Window"), ("power", ConsoleGlyph.quit, "status menu Quit"),
+    ]
+}
+
+/// The sheet: the kinds down, the states across, then the other controls, a raised card, the glyph twins.
+struct ConsoleButtonSheet: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(ConsoleButtonSheetWords.title).font(ConsoleTheme.sans(13, .semibold)).foregroundStyle(ConsoleTheme.fg)
+                Text(ConsoleButtonSheetWords.sub).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+                ConsoleButtonSheetHeader()
+                ForEach(Array(ConsoleButtonSheetWords.kinds.enumerated()), id: \.offset) { index, name in
+                    ConsoleButtonSheetRow(index: index, name: name)
+                }
+                ConsoleButtonSheetControls()
+                ConsoleButtonSheetRaised()
+                ConsoleButtonSheetGlyphs()
+            }
+            .padding(24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConsoleTheme.ground)
+    }
+}
+
+/// `rest · hover · pressed · disabled` over the four columns.
+struct ConsoleButtonSheetHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            Color.clear.frame(width: 130, height: 1)
+            ForEach(ConsoleButtonSheetWords.states, id: \.self) { word in
+                Text(word).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).frame(width: 150, alignment: .leading)
+            }
+        }
+    }
+}
+
+/// One kind across the four states, every state forced through `ConsoleButtonFace`.
+struct ConsoleButtonSheetRow: View {
+    let index: Int
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(name).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).frame(width: 130, alignment: .leading)
+            ForEach(0..<4, id: \.self) { column in
+                ConsoleButtonSheetCell(index: index, column: column).frame(width: 150, alignment: .leading)
+            }
+        }
+        .frame(height: 32)
+    }
+}
+
+/// The face for (kind, state): column 0 rest · 1 hover · 2 pressed · 3 disabled.
+struct ConsoleButtonSheetCell: View {
+    let index: Int
+    let column: Int
+
+    private var kind: ConsoleButtonStyle.Kind {
+        switch index {
+        case 0, 1: return .ghost
+        case 2: return .primary
+        case 3: return .danger
+        case 4: return .spent
+        default: return .plain
+        }
+    }
+
+    var body: some View {
+        let enabled = column != 3, hovering = column == 1, pressed = column == 2
+        switch index {
+        case 1:
+            ConsoleButtonFace(kind: kind, iconOnly: true, height: 28, enabled: enabled, hovering: hovering, pressed: pressed) {
+                Image(systemName: ConsoleGlyph.reload).font(.system(size: 16, weight: .semibold))
+            }
+        case 5:
+            ConsoleButtonFace(kind: kind, iconOnly: true, height: 22, enabled: enabled, hovering: hovering, pressed: pressed) {
+                Image(systemName: ConsoleGlyph.cross).font(.system(size: 10, weight: .semibold))
+            }
+        default:
+            ConsoleButtonFace(kind: kind, enabled: enabled, hovering: hovering, pressed: pressed) { ConsoleButtonSheetLabel(index: index) }
+        }
+    }
+}
+
+/// The words of a row: Switch now · Continue · ■ Stop · ■ Stopped.
+struct ConsoleButtonSheetLabel: View {
+    let index: Int
+
+    var body: some View {
+        switch index {
+        case 2: Text(ConsoleButtonSheetWords.cont)
+        case 3: Label(ConsoleButtonSheetWords.stop, systemImage: ConsoleGlyph.stop).labelStyle(ConsoleButtonSheetStopLabel())
+        case 4: Label(ConsoleButtonSheetWords.stopped, systemImage: ConsoleGlyph.stop).labelStyle(ConsoleButtonSheetStopLabel())
+        default: Text(ConsoleButtonSheetWords.switchNow)
+        }
+    }
+}
+
+/// ■ at 9 before the word, the composer's Stop face.
+struct ConsoleButtonSheetStopLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.font(.system(size: 9, weight: .bold))
+            configuration.title
+        }
+    }
+}
+
+/// The segments with flags, the toggle, two fields (the second takes `focus:buttons.field2`), the stepper.
+struct ConsoleButtonSheetControls: View {
+    @State private var accent = "🇬🇧 UK"
+    @State private var on = true
+    @State private var text = ""
+    @State private var typed = ConsoleButtonSheetWords.typed
+    @State private var minutes = 12
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row(ConsoleButtonSheetWords.segments) {
+                ConsoleSegments(value: accent, options: ConsoleButtonSheetWords.accents, title: { $0 }, pick: { accent = $0 }, size: .row).frame(width: 240)
+                ConsoleSegments(value: ConsoleButtonSheetWords.accents[0], options: ConsoleButtonSheetWords.accents, title: { $0 }, pick: { _ in }, size: .row).frame(width: 240)
+            }
+            row(ConsoleButtonSheetWords.toggle) { ConsoleToggle(on: on, hint: "wakes on launch", flip: { on = $0 }) }
+            row(ConsoleButtonSheetWords.field) {
+                ConsoleField(text: $text, placeholder: ConsoleButtonSheetWords.placeholder, size: .row, id: ConsoleButtonSheetWords.fieldId).frame(width: 240)
+                ConsoleField(text: $typed, placeholder: ConsoleButtonSheetWords.placeholder, size: .row, trailing: .clear, id: ConsoleButtonSheetWords.fieldFocusedId).frame(width: 240)
+            }
+            row(ConsoleButtonSheetWords.stepper) { ConsoleStepper(value: minutes, unit: ConsoleButtonSheetWords.unit, set: { minutes = $0 }) }
+        }
+        .padding(.top, 6)
+    }
+
+    private func row<C: View>(_ name: String, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 12) {
+            Text(name).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium).frame(width: 130, alignment: .leading)
+            content()
+        }
+    }
+}
+
+/// A raised card: its controls read `.raised` and rest on `liftRaised`, so they step off the card.
+struct ConsoleButtonSheetRaised: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(ConsoleButtonSheetWords.raised).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+            HStack(spacing: 8) {
+                Button(ConsoleButtonSheetWords.restore) {}.buttonStyle(ConsoleButtonStyle(kind: .ghost))
+                ConsoleRowOverflow(verbs: [ConsoleVerb(id: "restore", title: ConsoleButtonSheetWords.restore)])
+                Button(ConsoleButtonSheetWords.switchNow) {}.buttonStyle(ConsoleButtonStyle(kind: .primary))
+                Button { } label: { ConsoleButtonSheetLabel(index: 4) }.buttonStyle(ConsoleButtonStyle(kind: .spent))
+                Button(ConsoleButtonSheetWords.clear) {}.buttonStyle(ConsoleButtonStyle(kind: .ghost)).disabled(true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(ConsoleTheme.raised))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ConsoleTheme.hair, lineWidth: 1))
+        .environment(\.consoleSurface, .raised)
+        .padding(.top, 6)
+    }
+}
+
+/// Outline → filled twin, each in its ghost tile, the site named beside.
+struct ConsoleButtonSheetGlyphs: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(ConsoleButtonSheetWords.glyphs).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.titanium)
+            ForEach(Array(ConsoleButtonSheetWords.twins.enumerated()), id: \.offset) { _, twin in
+                HStack(spacing: 10) {
+                    tile(twin.0)
+                    Image(systemName: "arrow.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(ConsoleTheme.fg3)
+                    tile(twin.1)
+                    Text(twin.2).font(ConsoleTheme.mono(11)).foregroundStyle(ConsoleTheme.fg2)
+                }
+            }
+        }
+        .padding(.top, 6)
+    }
+
+    private func tile(_ name: String) -> some View {
+        ConsoleButtonFace(kind: .ghost, iconOnly: true, height: 28) { Image(systemName: name).font(.system(size: 14, weight: .semibold)) }
     }
 }
