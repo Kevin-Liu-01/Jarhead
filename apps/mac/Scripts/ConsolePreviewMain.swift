@@ -134,8 +134,9 @@ import SwiftUI
 //                    `probe-floats: settings.voice`), one click on Stop closes Voice and presses it (`press: stop`,
 //                    `probe-floats: none`), Voice open again and one click on its own field closes it and does not
 //                    reopen it (`none`). `tip-click` pins Stop's tip and clicks Stop: one `press: stop` and
-//                    `tip: hidden stream.stop` on the same click. `cold-click` clicks Go with the app deactivated
-//                    and the window not key (`click:stream.go:cold`): `press: go` on the first click. Each ends
+//                    `tip: hidden stream.stop` on the same click. `cold-click` clicks Go once the app IS inactive
+//                    and the window not key (`click:stream.go:cold`, the precondition its own `check:` line): `press: go`
+//                    on the first click. Each ends
 //                    `check-press:` and `check: all ok (kit)`; the kit pins `floats: a tip/menu never consumes a click`.
 //     composer-stop = Stop's face (design13, Builder F): the live fixture with no running delegation (Stop a ghost),
 //                    `snap` in session, ONE click on Stop (`press: stop`, the 0.4 s red flash), `phase:asleep` as the
@@ -271,9 +272,12 @@ import SwiftUI
 //     click:(x,y)          a left click at that point of the content view (points from its top-left),
 //                          down and up through sendEvent; prints the first responder before and after
 //     click:<id>           the same at the centre of the control with that id (ConsoleClickTargets.frames:
-//                          every tip trigger and menu field with an id); `click:<id>:cold` deactivates the
-//                          app first and does not make the window key — the first click on an inactive
-//                          window must act (ConsoleHostingView.acceptsFirstMouse)
+//                          every tip trigger and menu field with an id); `click:<id>:cold` first hands
+//                          activation to Finder and waits until the app IS inactive (polled, ≤ 1 s; a bare
+//                          NSApp.deactivate() never flips isActive) and never makes the window key — the first
+//                          click on an inactive window must act (ConsoleHostingView.acceptsFirstMouse); prints
+//                          `check: … cold click → the app inactive, the window not key` with the state at the
+//                          down, then takes activation back
 //     probe-press          print the press trail so far (`press: <verb>` from ConsoleActions.send / .stop
 //                          and the transport, `menu-pick: <id> <value>`, `menu: opened|closed <id>` — the
 //                          lines ConsolePress.report prints as they happen, stamped)
@@ -790,7 +794,8 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
             + "menuOpen:settings.voice@2.9,probe-floats@3.3,click:settings.voice@3.4,probe-floats@4.0,check-floats:none@4.05,probe-press@4.1,check-press:stop@4.15"
         case "tip-click": defaultActions = "check-kit@0.3,tipOpen:stream.stop@0.6,probe-floats@1.0,snap:preview-console-tip-click-pinned@1.05,click:stream.stop@1.1,"
             + "probe-floats@1.7,check-floats:none@1.75,probe-press@1.9,check-press:stop@1.95"
-        case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@0.8,probe-press@1.4,check-press:go@1.45"
+        // The cold click waits for the app to go inactive (Finder forward, ≤ 1 s) before its down, so the probe sits well after.
+        case "cold-click": defaultActions = "check-kit@0.3,click:stream.go:cold@1.1,probe-press@2.4,check-press:go@2.45"
         // Stop's face (design13, Builder F): the ghost in session, one press (the flash runs to 1.4 s), the engine's
         // asleep, the spent face at rest, a second press snapped 0.15 s later — inside where a flash would show red.
         case "composer-stop": defaultActions = "check-kit@0.3,snap:preview-console-composer-stop-session@0.8,click:stream.stop@1.0,phase:asleep@1.2,"
@@ -3466,16 +3471,62 @@ extension PreviewDelegate {
     }
 
     /// `click:(x,y)` — points from the content view's top-left; `click:<id>` — the centre of that control's
-    /// tracked frame (ConsoleClickTargets); `:cold` — the app deactivated, the window left un-key, so the
-    /// click is an inactive window's first. A left mouse down and up through sendEvent either way.
+    /// tracked frame (ConsoleClickTargets); `:cold` — the app inactive and the window not key first, so the
+    /// click is an inactive window's first (`coldClick`). A left mouse down and up through sendEvent either way.
     func click(_ spec: String, stamp: String) {
         let cold = spec.hasSuffix(":cold")
         let target = cold ? String(spec.dropLast(":cold".count)) : spec
         guard let window = jarheadWindow, let content = window.contentView, let top = Self.clickPoint(target) else {
             print("action: click \(spec) → want (x,y) or a tracked id (\(ConsoleClickTargets.frames.keys.sorted().joined(separator: " "))) and a window"); return
         }
+        if cold { coldClick(target, top: top, window: window, content: content, stamp: stamp); return }
+        window.makeKeyAndOrderFront(nil)
+        deliverClick(target, top: top, window: window, content: content, cold: false, stamp: stamp)
+    }
+
+    /// The cold click: activation is handed to another app first — `NSApp.deactivate()` alone leaves `isActive`
+    /// true (no one else asked for activation, so the window server keeps it here), so Finder, always running
+    /// and never this app, is asked to come forward; `isActive` flips a turn or more later and is polled every
+    /// 20 ms for up to 1 s — THEN the down and up: the first mouse-down on a window that is not key in an
+    /// inactive app, which AppKit hands the hit view only through `acceptsFirstMouse`. The precondition is
+    /// printed and pinned (`check: … cold click → the app inactive, the window not key`), and the app takes
+    /// activation back afterwards for the actions that follow. Behind the lock screen the harness is never
+    /// active, so the wait is nothing and the click is cold as it stands.
+    private func coldClick(_ target: String, top: CGPoint, window: NSWindow, content: NSView, stamp: String) {
+        if NSApp.isActive { Self.handActivationAway() }
+        awaitInactive(until: Date().addingTimeInterval(1.0)) { [weak self] in
+            guard let self else { return }
+            let inactive = !NSApp.isActive, unkey = !window.isKeyWindow
+            let word = inactive && unkey ? "ok  " : "FAIL"
+            print("check: \(word) cold click → the app inactive, the window not key (active=\(NSApp.isActive) key=\(window.isKeyWindow)) at \(self.wallStamp)s")
+            self.deliverClick(target, top: top, window: window, content: content, cold: true, stamp: stamp)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Finder asked forward (the one app sure to be running that is not this one); `NSApp.deactivate()` only when
+    /// there is no Finder to ask, and then the check line will most likely say so.
+    private static func handActivationAway() {
+        guard let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first else {
+            NSApp.deactivate()
+            print("action: cold click → no Finder to ask forward; NSApp.deactivate() asked")
+            return
+        }
+        let asked = finder.activate(from: .current, options: [])
+        let answer = asked ? "accepted" : "refused"
+        print("action: cold click → Finder asked to come forward (\(answer))")
+    }
+
+    /// Runs `then` once the app is inactive, or once the wait is spent (the check line says which).
+    private func awaitInactive(until deadline: Date, then: @escaping () -> Void) {
+        if !NSApp.isActive || Date() >= deadline { then(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in self?.awaitInactive(until: deadline, then: then) }
+    }
+
+    /// The down and up at `top` (content top-left points) through NSApp.sendEvent, with the state around it printed.
+    private func deliverClick(_ target: String, top: CGPoint, window: NSWindow, content: NSView, cold: Bool, stamp: String) {
         let point = NSPoint(x: top.x, y: content.bounds.height - top.y)
-        if cold { NSApp.deactivate() } else { window.makeKeyAndOrderFront(nil) }
         let key = "key=\(window.isKeyWindow) active=\(NSApp.isActive)"
         let before = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
         let hit = content.hitTest(point).map { view -> String in
@@ -3491,7 +3542,9 @@ extension PreviewDelegate {
             }
         }
         let after = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        print("action: click \(target) (\(Int(top.x)),\(Int(top.y)))\(cold ? " cold" : "") at \(stamp)s → \(key); hit \(hit); firstResponder \(before) → \(after)")
+        var when = "at \(stamp)s"
+        if cold { when = "cold at \(stamp)s, delivered at \(wallStamp)s" }
+        print("action: click \(target) (\(Int(top.x)),\(Int(top.y))) \(when) → \(key); hit \(hit); firstResponder \(before) → \(after)")
     }
 
     /// `(x,y)` as given, or the centre of the frame tracked under that id; nil when neither.
