@@ -574,6 +574,9 @@ test("parser: results whose call is out of view are kept as orphans and adopted 
 
 // -------------------------------------------------------------------- paging ---
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 test("open: the 50 MB fixture's newest page — cold and warm timings, cursor, exact ids", async () => {
   const { claude: cl, codex: cx } = fixtures();
   for (const [name, gen, make] of [["Claude", cl, claude], ["Codex", cx, codex]] as const) {
@@ -585,8 +588,8 @@ test("open: the 50 MB fixture's newest page — cold and warm timings, cursor, e
     const again = await new TranscriptSource({ path: gen.path, makeParser: make }).page({ limit: 60 });
     const warm = ms(warm0);
     measure(`open 50 MB ${name} (newest 60)`, `cold ${cold} ms, warm ${warm} ms`);
-    assert.ok(cold < 300, `${name} cold under 300 ms (${cold} ms)`);
-    assert.ok(warm < 30, `${name} warm under 30 ms (${warm} ms)`);
+    assert.ok(cold < 300 * RUNNER_SLACK, `${name} cold under ${300 * RUNNER_SLACK} ms (${cold} ms)`);
+    assert.ok(warm < 30 * RUNNER_SLACK, `${name} warm under ${30 * RUNNER_SLACK} ms (${warm} ms)`);
     assert.deepEqual(page.messages.map((m) => m.id), gen.ids.slice(-60));
     assert.deepEqual(again.messages, page.messages);
     assert.equal(page.complete, false);
