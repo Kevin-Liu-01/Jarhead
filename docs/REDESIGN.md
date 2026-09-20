@@ -347,7 +347,7 @@ latency call.
 packages/protocol   the contract: snapshot, events, commands, ledger rows, settings (Swift mirror: apps/mac/…/Model/Protocol.swift)
 packages/live       GPT-Live-1 client: session, typed events, transcript, appends, the language section
 packages/hands      the toolset over the helper: the computer family (17), HandsPool (focus + background), FocusLease, ConfirmationState, SplitHands
-packages/hands/native  jarhead-hands: 29 ops, newline JSON, ScreenCaptureKit + CGEvent + AX + compiled Apple events; built by scripts/build-hands.ts
+packages/hands/native  jarhead-hands: the helper's ops as newline JSON, ScreenCaptureKit + CGEvent + AX + compiled Apple events; built by scripts/build-hands.ts
 packages/agents     connectors: sessions (Claude Code / Codex / other CLIs on disk or running), claude-code (Agent SDK; continues a session)
 packages/brain      Delegator + ToolRunner + one Brain per BrainKind (§3, Plane 2), the tool table, reflexes, self-edit, the MCP bridge for Codex
 packages/memory     @jarhead/memory: the append-only store of one-sentence items about Kevin, extraction, embeddings, recall (§19)

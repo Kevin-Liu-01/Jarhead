@@ -93,12 +93,12 @@ Only `wake-brain` spends anything, and only after these words, said by the voice
 recorded on the row as `confirmed.heard`:
 
 > "this wakes the brain — not the voice — while Jarhead is asleep: about **N** brain minute(s) per
-> fire on Kevin's plan, up to **M** a day; its one-line answer is spoken by the local speaker /
+> fire on your plan, up to **M** a day; its one-line answer is spoken by the local speaker /
 > shown as a banner"
 
 `N = ceil(budget.seconds / 60)`, `M` = Settings › Automations › Brain minutes (default 5; 0 turns
 the kind off for every row). Under a local brain the line says "a model warm-up on this Mac"
-instead of "on Kevin's plan". The row wears the `billed` badge; its card reads `≈ 2 brain min per
+instead of "on your plan". The row wears the `billed` badge; its card reads `≈ 2 brain min per
 fire · 3 of 5 today`. Every other kind's card reads `cost · nothing billed`. The daily budget is
 recomputed from the ledger at each midnight and at start, so a restart cannot forget spend; a
 row over budget is a `failed` row and the `automation.budget` problem, never a question.
