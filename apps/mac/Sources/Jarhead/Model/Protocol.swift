@@ -588,8 +588,20 @@ public struct Settings: Codable, Equatable {
     public var automations: AutomationSettings?
     /// design12: the audio block (Recording). nil from a daemon before the field.
     public var audio: AudioSettings?
+    /// What the user is called: what the brain reads and Setup › Welcome / Settings › Session
+    /// show. "" = unset (the engine falls back to the account's full name); nil from a daemon
+    /// before the field.
+    public var userName: String?
 
     public var livesInNotch: Bool { orbHome == "notch" }
+    /// The name as typed, trimmed; "" when unset or from a daemon before the field.
+    public var userNameSet: String { (userName ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Mirror of core's `effectiveUserName(settings, fallback)`: the set name, else `fallback`
+    /// (the app passes NSFullUserName(), the engine the account's RealName).
+    public func userName(or fallback: String) -> String {
+        let set = userNameSet
+        return set.isEmpty ? fallback : set
+    }
     /// The block, or the contract's default when the daemon predates it.
     public var automationSettings: AutomationSettings { automations ?? .standard }
     /// The audio block, or the contract's default when the daemon predates it.
@@ -715,7 +727,9 @@ public struct DataPath: Codable, Equatable, Identifiable {
 
 /// Configuration health without secrets: key presence and the last probe.
 public struct SetupStatus: Codable, Equatable {
-    public enum KeyState: String, Codable { case ok, missing, invalid, unchecked
+    /// `noLiveModel`: the key answered (not 401) but the Live model probe came back 404 — the
+    /// key works, GPT-Live-1 is not on it; the first wake would fail with the voice.key problem.
+    public enum KeyState: String, Codable { case ok, missing, invalid, unchecked, noLiveModel
         public init(from decoder: Decoder) throws { self = KeyState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unchecked }
     }
     public enum BrainState: String, Codable { case ok, unavailable, unchecked
@@ -1555,6 +1569,8 @@ public struct SettingsPatch: Equatable {
     public var automations: AutomationSettings?
     /// Replaces the whole audio block (Settings › Audio › Recording, the status menu, ⌥⇧R — `set-settings` only).
     public var audio: AudioSettings?
+    /// The user's name; "" clears it (the engine falls back to the account's full name).
+    public var userName: String?
 
     public init(voice: String? = nil, brain: BrainKind? = nil, brainModel: String? = nil, brainBaseUrl: String?? = nil, effort: String? = nil,
                 onboarded: Bool? = nil, micDeviceId: String?? = nil, idleSleepMinutes: Double? = nil, autoWake: Bool? = nil, orbPosition: OrbPosition? = nil,
@@ -1575,6 +1591,9 @@ public struct SettingsPatch: Equatable {
 
     /// The audio block, set after init (design12).
     public mutating func setAudio(_ a: AudioSettings) { audio = a }
+
+    /// The user's name, set after init (Setup › Welcome, Settings › Session); trimmed, "" = unset.
+    public mutating func setUserName(_ name: String) { userName = name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     public var json: [String: Any] {
         var o: [String: Any] = [:]
@@ -1603,6 +1622,7 @@ public struct SettingsPatch: Equatable {
         if let v = warmThreads { o["warmThreads"] = v }
         if let v = automations { o["automations"] = v.json }
         if let v = audio { o["audio"] = v.json }
+        if let v = userName { o["userName"] = v }
         return o
     }
 }
