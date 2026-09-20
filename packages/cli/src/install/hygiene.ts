@@ -337,11 +337,6 @@ export function hygieneLine(r: Omit<HygieneReport, "line"> & { readonly installe
   return `one jarhead  ${ls} · ${dock}${ran}`;
 }
 
-/** The lsregister argv for a fresh registration of the installed bundle, pinned for the tests. */
-export function lsregisterRefreshArgs(installed = INSTALLED_APP): string[] {
-  return ["-f", installed];
-}
-
 function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }

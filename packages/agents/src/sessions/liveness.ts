@@ -85,5 +85,3 @@ export function deriveStatus(e: Evidence, now: number, l: Leases = DEFAULT_LEASE
   return working ? { status: "working", hint: "running" } : { status: "idle", hint: "quiet" };
 }
 
-/** Statuses `waitSettled` and the brain's agent_wait treat as settled: nothing more will come without a nudge. */
-export const SETTLED_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>(["idle", "blocked", "done", "ended", "offline"]);

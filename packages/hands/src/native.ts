@@ -291,6 +291,8 @@ export interface NativeHandsProcessOptions {
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
   private child: ChildProcess | undefined;
+  /** Set by stop(): the next exit of that child was asked for and is not a warning. */
+  private stoppedChild: ChildProcess | undefined;
   private readonly pending = new Map<string, Pending>();
   private seq = 0;
   private splitter = new LineSplitter();
@@ -338,7 +340,10 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
         reject(e);
       });
       child.on("exit", (code, signal) => {
-        log.warn(`helper exited (code ${code}, signal ${signal})`);
+        const asked = this.stoppedChild === child;
+        if (asked) this.stoppedChild = undefined;
+        if (asked) log.debug(`helper exited (code ${code}, signal ${signal}) — stopped`);
+        else log.warn(`helper exited (code ${code}, signal ${signal})`);
         // After restart() a successor may already be running: only the current child
         // clears the slot and fails the pending requests; a late exit of an old one
         // must not orphan the new helper (which then leaks as a second process).
@@ -483,6 +488,7 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
   stop(): void {
     const child = this.child;
     this.child = undefined;
+    this.stoppedChild = child;
     this.failAll({ code: "unavailable", message: "hands helper stopped" });
     try {
       child?.stdin?.end();

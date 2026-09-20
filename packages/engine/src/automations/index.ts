@@ -73,7 +73,6 @@ export const ALIVE_EVERY_MS = 60_000;
 
 /** The brain's `automation_change` verbs, one word each (packages/brain declares them; the surfaces send the same set). */
 export type ChangeVerb = AutomationVerb;
-export const CHANGE_VERBS: ReadonlySet<string> = new Set<ChangeVerb>(["snooze", "done", "skip", "pause", "resume", "trash", "restore", "run"]);
 
 export type ArmOrigin = "brain" | "console" | "cli";
 
