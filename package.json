@@ -1,7 +1,8 @@
 {
   "name": "jarhead",
   "version": "2.0.0",
-  "description": "Voice-first Mac assistant that uses the computer for you. GPT-Live-1 full-duplex voice behind an on-device wake word and Touch ID; vendor-neutral brains (Codex, Claude Code, any API); native Swift hands, two at once; a Console into every coding-agent session; a dithered ASCII blob in the notch. Rewrites itself in a worktree, with your yes.",
+  "description": "Voice-first Mac assistant that uses the computer for you. GPT-Live-1 voice behind a wake word; brains: Codex, Claude Code, an API or a local model; Swift hands in parallel threads; alarms and automations that fire while it sleeps; a notch island control surface; a Console into every coding-agent session; memory. Rewrites itself, with your yes.",
+  "author": "Kevin Liu",
   "private": true,
   "license": "MIT",
   "repository": {
