@@ -512,9 +512,9 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   needs lives in the Codex addendum.
 - Jarhead's Codex runs in a private `CODEX_HOME` (`~/.jarhead/codex-home`:
   auth.json symlinked to `~/.codex/auth.json`, a config.toml with only the model
-  keys, no AGENTS.md, empty skills). Kevin's global `~/.codex/AGENTS.md` points at
-  `~/Documents/GitHub/kevin-wiki`, which no longer exists (the wiki is
-  `~/repos/Kevin-Wiki-v3`); inherited, it cost 22.5 s of a 40.8 s wiki search.
+  keys, no AGENTS.md, empty skills). An inherited `~/.codex` is a cost: the user's
+  global `~/.codex/AGENTS.md` pointed at a folder that no longer existed, and that one
+  stale instruction cost 22.5 s of a 40.8 s wiki search.
 - GPT-Live-1 streams output audio continuously, silence included: `earHeld()`
   judged "the voice is speaking" on frame ARRIVAL and held the ear for the whole
   session (0 reflex fires in 39 production delegations). Judge speaking on the
