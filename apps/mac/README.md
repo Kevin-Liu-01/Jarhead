@@ -16,7 +16,7 @@ Jarhead.app ──spawns──► node tsx packages/daemon/src/main.ts --socket 
 ```sh
 cd apps/mac
 swift build
-JARHEAD_REPO=/Users/kevinliu/jarvis .build/debug/Jarhead
+JARHEAD_REPO=$PWD/.. .build/debug/Jarhead
 ```
 
 `JARHEAD_REPO` is optional when the binary lives under `apps/mac/.build`: the app
