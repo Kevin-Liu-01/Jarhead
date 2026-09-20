@@ -123,7 +123,10 @@ export function historyPrompt(task: BrainTask, userName = "Kevin"): string {
  * items come from @jarhead/memory already cut to BRAIN_MEMORY_TOKENS; this file
  * adds the label and nothing else.
  */
-export const MEMORY_PROMPT_LABEL = "What you know about Kevin (durable memory; use it, do not repeat it back, do not say you remembered):";
+export function memoryPromptLabel(userName = "Kevin"): string {
+  return `What you know about ${userName} (durable memory; use it, do not repeat it back, do not say you remembered):`;
+}
+export const MEMORY_PROMPT_LABEL = memoryPromptLabel();
 
 function promptParts(task: BrainTask, userName: string, regions: string): string[] {
   return [
@@ -134,7 +137,7 @@ function promptParts(task: BrainTask, userName: string, regions: string): string
     regions,
     task.dialogue ? `Recent conversation:\n${task.dialogue}` : "",
     // After the conversation, before the reflex notes: context about Kevin, not about this request.
-    task.memory ? `${MEMORY_PROMPT_LABEL}\n${task.memory}` : "",
+    task.memory ? `${memoryPromptLabel(userName)}\n${task.memory}` : "",
     task.notes?.length ? `Already done or found by Jarhead for this request (do not repeat it):\n${task.notes.map((n) => `- ${n}`).join("\n")}` : "",
   ].filter(Boolean);
 }

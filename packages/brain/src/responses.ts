@@ -28,12 +28,15 @@ export interface ResponsesBrainOptions {
   readonly effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
   readonly runner: ToolRunner;
   readonly webSearch?: boolean | undefined;
+  /** What the standing orders call the person Jarhead works for (release F1). */
+  readonly userName?: string | undefined;
 }
 
 export interface ResponsesConfigOptions {
   readonly model?: string | undefined;
   readonly effort?: ResponsesBrainOptions["effort"] | undefined;
   readonly webSearch?: boolean | undefined;
+  readonly userName?: string | undefined;
 }
 
 export function responsesDelegationConfig(opts: ResponsesConfigOptions): { type: "responses"; responses: ResponsesDelegationConfig } {
@@ -42,7 +45,7 @@ export function responsesDelegationConfig(opts: ResponsesConfigOptions): { type:
     responses: {
       // Settings.brainModel is "" for "the backend's default"; only a real id overrides.
       model: opts.model || DEFAULT_RESPONSES_MODEL,
-      instructions: brainSystemPrompt(),
+      instructions: brainSystemPrompt(opts.userName),
       tools: [...ALL_TOOL_SPECS.map(toFunctionTool), ...(opts.webSearch === false ? [] : [{ type: "web_search" }])],
       tool_choice: "auto",
       parallel_tool_calls: false,

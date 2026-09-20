@@ -41,6 +41,8 @@ export interface ClaudeBrainOptions {
   readonly settingSources?: readonly string[];
   readonly dropApiKey?: boolean;
   readonly sdk?: SdkLike;
+  /** What the standing orders call the person Jarhead works for (release F1); the engine passes the effective name. */
+  readonly userName?: string | undefined;
   /** Test seam: builds the MCP server config from tool specs. */
   readonly mcpFactory?: (specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>) => Promise<Record<string, unknown>>;
 }
@@ -101,7 +103,7 @@ export class ClaudeBrain implements Brain {
         ...(this.opts.model ? { model: this.opts.model } : {}),
         ...(this.opts.effort ? { effort: this.opts.effort } : {}),
         ...(this.opts.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: this.opts.pathToClaudeCodeExecutable } : {}),
-        systemPromptAppend: brainSystemPrompt(),
+        systemPromptAppend: brainSystemPrompt(this.opts.userName),
         // The brain's transcript is Jarhead's, not Kevin's: keep it out of his resume list.
         persistSession: false,
         mcpServers: { jarhead: mcp },
@@ -316,7 +318,7 @@ export class ClaudeBrain implements Brain {
       // this user turn (ClaudeSession builds Anthropic-shaped content), and the prompt
       // says what each one is.
       const attachments = loadAttachments(task);
-      const prompt = delegationPrompt(task, undefined, attachments);
+      const prompt = delegationPrompt(task, this.opts.userName, attachments);
       try {
         session.send(prompt, attachments.map((a) => ({ pngBase64: a.pngBase64 })));
       } catch (e) {

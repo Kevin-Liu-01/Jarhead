@@ -14,7 +14,7 @@ export { ResponsesBrain, responsesDelegationConfig, progressLine } from "./respo
 export { ClaudeBrain, zodShape } from "./claude.ts";
 export { Delegator, STOP_NAME_WAIT_MS, NAMED_STOP_FRAGMENT_ECHO_MS } from "./delegator.ts";
 export type { DelegatorOptions, DelegatorThreads, ThreadFloor, DelegationTimingsExtra } from "./delegator.ts";
-export { AnthropicBrain, anthropicReasoning, claudeGeneration, delegationPrompt, historyPrompt, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
+export { AnthropicBrain, anthropicReasoning, claudeGeneration, delegationPrompt, historyPrompt, memoryPromptLabel, MEMORY_PROMPT_LABEL, resolveAnthropicModel, toAnthropicTool } from "./anthropic.ts";
 export { OpenAICompatibleBrain, OpenAIChatTransport, detectCapabilities, isLoopbackHost, isPrivateHost, normalizeBaseUrl, resolveCompatibleApiKey, stripReasoning, toChatTool } from "./compatible.ts";
 export type { ChatTransport, ChatTransportRequest, ChatTurn, RawToolCall } from "./compatible.ts";
 export {
@@ -43,7 +43,7 @@ export {
   LOCAL_DROP_ORDER,
 } from "./local.ts";
 export type { LocalBrainOptions } from "./local.ts";
-export { CodexBrain, CODEX_MCP_SERVER, codexAddendum, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "./codex.ts";
+export { CodexBrain, CODEX_MCP_SERVER, codexAddendum, codexBaseInstructions, renderCarry, codexBundleCandidates, codexConfigModel, codexEffort, codexEnv, codexExecArgs, codexSignedIn, daemonPidAt, findCodexBinary, probeCodex, socketAnswers } from "./codex.ts";
 export type { CodexProbe } from "./codex.ts";
 export { CodexAppServer, appServerArgs } from "./codex-app-server.ts";
 export { codexMcpConfigArgs, codexUserMcpServers } from "./codex-config.ts";

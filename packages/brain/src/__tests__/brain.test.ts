@@ -12,7 +12,8 @@ import { Delegator } from "../delegator.ts";
 import { ResponsesBrain, responsesDelegationConfig } from "../responses.ts";
 import { zodShape, ClaudeBrain } from "../claude.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
-import { codexAddendum } from "../codex.ts";
+import { codexAddendum, codexBaseInstructions } from "../codex.ts";
+import { delegationPrompt, memoryPromptLabel, MEMORY_PROMPT_LABEL } from "../anthropic.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt, type Brain, type BrainResult, type BrainSink, type BrainTask } from "../brain.ts";
 
 class FakeHands implements NativeHands {
@@ -385,4 +386,32 @@ test("voiceFirstTool: the brain's first acting tool is spoken as its step lands,
   assert.ok(spoke.firstCommentaryAt !== undefined && spoke.firstCommentaryAt <= spoke.at("Looking in the wiki.")!, "the brain's own first line stamps it");
   const off = await run(false, "tool-first");
   assert.deepEqual(off.said, ["Three pages mention design."], "off unless the engine asks for it");
+});
+
+// ------------------------------------------------------ the user's name ---
+
+test("release F1: the standing orders, the Codex base instructions and addendum, the delegation prompt and the memory label take the user's name — a different name renders the same words with no literal Kevin, and the ceilings do not move", () => {
+  const words = (s: string): number => s.split(/\s+/).filter(Boolean).length;
+  const kevin = brainSystemPrompt();
+  const sam = brainSystemPrompt("Sam");
+  assert.doesNotMatch(sam, /Kevin/);
+  assert.match(sam, /You are the brain of Jarhead, Sam's desktop assistant on his Mac/);
+  assert.match(sam, /2\. Sam's explicit instructions/);
+  assert.match(sam, /When Sam asks to change Jarhead itself, call self_edit/);
+  assert.equal(sam.replaceAll("Sam", "Kevin"), kevin, "only the name moves");
+  assert.equal(words(sam), words(kevin));
+  assert.ok(words(sam) <= 1250, `${words(sam)} words`);
+  for (const [f, label] of [[codexBaseInstructions, "base"], [codexAddendum, "addendum"]] as const) {
+    const a = f();
+    const b = f("Sam");
+    assert.doesNotMatch(b, /Kevin(?!-Wiki)/, `${label}: only the wiki checkout's path keeps the word`);
+    assert.equal(b.replaceAll("Sam", "Kevin"), a, `${label}: only the name moves`);
+  }
+  const task = { id: "t1", request: "open the budget", dialogue: "Sam: open the budget", kevinDialogue: "open the budget", memory: "- Sam prefers short answers.", confirmation: false } as unknown as Parameters<typeof delegationPrompt>[0];
+  const prompt = delegationPrompt(task, "Sam", []);
+  assert.doesNotMatch(prompt, /Kevin/);
+  assert.match(prompt, /^Sam said: "open the budget"/m);
+  assert.ok(prompt.includes(`${memoryPromptLabel("Sam")}\n- Sam prefers short answers.`), "the memory label carries the name");
+  assert.equal(memoryPromptLabel("Sam"), "What you know about Sam (durable memory; use it, do not repeat it back, do not say you remembered):");
+  assert.equal(memoryPromptLabel(), MEMORY_PROMPT_LABEL, "the default label is unchanged");
 });

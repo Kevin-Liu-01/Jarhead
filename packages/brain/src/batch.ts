@@ -26,10 +26,10 @@ export function allReadOnly(calls: readonly BatchCall[]): boolean {
 }
 
 /** Why the rest of an ordered batch was not run, or undefined when this outcome lets the batch go on. */
-export function haltReason(call: BatchCall, outcome: RunOutcome): string | undefined {
+export function haltReason(call: BatchCall, outcome: RunOutcome, userName = "Kevin"): string | undefined {
   switch (outcome.result.kind) {
     case "needs-confirmation":
-      return `not run: ${call.name} is waiting for Kevin's answer; ask him and stop`;
+      return `not run: ${call.name} is waiting for ${userName}'s answer; ask him and stop`;
     case "error":
       return /^refused:/.test(outcome.result.message) ? `not run: ${call.name} was refused earlier in this turn` : `not run: ${call.name} failed earlier in this turn (${outcome.result.message.slice(0, 120)})`;
     default:
@@ -57,7 +57,7 @@ export async function runToolBatch(
     opts.before?.(c);
     const outcome = await runner.run(c.name, c.input);
     out.push(outcome);
-    halted = haltReason(c, outcome);
+    halted = haltReason(c, outcome, runner.userName);
   }
   return out;
 }
