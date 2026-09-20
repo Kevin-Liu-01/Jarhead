@@ -1316,8 +1316,9 @@ enum ComposerFit {
         var word = true
     }
 
-    /// Go · Mute · Send (32 each) · Stop (one width, the hidden `Stopped`, 88) · seven 8-pt gaps · the 12-pt insets.
-    static let fixed: CGFloat = 32 + 32 + 32 + 88 + 7 * 8 + 24
+    /// Go · Mute · Send (32 each) · Stop (one width, the hidden `Stopped`, 88) · seven 8-pt gaps (56) · the 12-pt
+    /// insets (24) = 264. One literal: CI's older Swift cannot type-check the sum of six integer literals as a CGFloat.
+    static let fixed: CGFloat = 264
     /// The field the chip's words yield to before the field gives (the 1180 window's composer, 616 wide, keeps its full chip above it).
     static let fieldFloor: CGFloat = 120
     /// The field's least: what the minimum window leaves it, so nothing overflows.
