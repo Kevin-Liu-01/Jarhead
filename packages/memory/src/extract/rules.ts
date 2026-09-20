@@ -87,57 +87,61 @@ function preferenceObjectOk(object: string): boolean {
   return tokens(object).size >= 1;
 }
 
-/** The first-person patterns as third-person sentences; undefined when none fits. */
-function shapeOf(t: string): Shape | undefined {
+/** The first-person patterns as third-person sentences about `who`; undefined when none fits. */
+function shapeOf(t: string, who: string): Shape | undefined {
   let m = RE_PREFER.exec(t);
   if (m && preferenceObjectOk(m[2]!)) {
     const verb = PREFER_VERBS[m[1]!.toLowerCase().replace(/'/g, "")] ?? PREFER_VERBS[m[1]!.toLowerCase()] ?? m[1]!;
-    return { kind: "preference", text: `Kevin ${verb} ${m[2]!}`, importance: 0.6, confidence: 0.7 };
+    return { kind: "preference", text: `${who} ${verb} ${m[2]!}`, importance: 0.6, confidence: 0.7 };
   }
   m = RE_NAME.exec(t);
-  if (m && !m[1]!.split(/\s+/).some((w) => NAME_DENY.has(w.toLowerCase()))) return { kind: "fact", text: `Kevin goes by ${capitalize(m[1]!.trim())}`, importance: 1.0, confidence: 0.9 };
+  if (m && !m[1]!.split(/\s+/).some((w) => NAME_DENY.has(w.toLowerCase()))) return { kind: "fact", text: `${who} goes by ${capitalize(m[1]!.trim())}`, importance: 1.0, confidence: 0.9 };
   m = RE_MY_X_IS.exec(t);
   if (m) {
     const noun = m[1]!.toLowerCase().trim();
     const kind: MemoryKind = CONTACT_NOUNS.has(noun) ? "contact" : PLACE_NOUNS.has(noun) ? "place" : "fact";
-    return { kind, text: `Kevin's ${noun} is ${m[2]!}`, importance: 0.6, confidence: 0.7 };
+    return { kind, text: `${who}'s ${noun} is ${m[2]!}`, importance: 0.6, confidence: 0.7 };
   }
   m = RE_FROM_NOW.exec(t);
-  if (m) return { kind: "procedure", text: `How Kevin likes it done: ${m[1]!}`, importance: 0.8, confidence: 0.8 };
+  if (m) return { kind: "procedure", text: `How ${who} likes it done: ${m[1]!}`, importance: 0.8, confidence: 0.8 };
   m = RE_ALWAYS.exec(t);
-  if (m && !/^mind\b/i.test(m[2]!) && tokens(m[2]!).size >= 2) return { kind: "procedure", text: `How Kevin likes it done: ${m[1]!.toLowerCase()} ${m[2]!}`, importance: 0.8, confidence: 0.8 };
+  if (m && !/^mind\b/i.test(m[2]!) && tokens(m[2]!).size >= 2) return { kind: "procedure", text: `How ${who} likes it done: ${m[1]!.toLowerCase()} ${m[2]!}`, importance: 0.8, confidence: 0.8 };
   m = RE_SPEAK.exec(t);
-  if (m) return { kind: "preference", text: `Kevin wants answers in ${capitalize(m[1]!.toLowerCase())}`, importance: 1.0, confidence: 0.9 };
+  if (m) return { kind: "preference", text: `${who} wants answers in ${capitalize(m[1]!.toLowerCase())}`, importance: 1.0, confidence: 0.9 };
   return undefined;
 }
 
 /** The "remember" capture, rewritten to the third person when a pattern fits, else recorded as asked. */
-function rememberShape(sub: string): Shape {
-  const s = shapeOf(sub);
+function rememberShape(sub: string, who: string): Shape {
+  const s = shapeOf(sub, who);
   if (s) return { ...s, importance: 0.9, confidence: 0.9 };
   let m = RE_I_AM_FULL.exec(sub);
-  if (m) return { kind: "fact", text: `Kevin is ${m[1]!}`, importance: 0.9, confidence: 0.9 };
+  if (m) return { kind: "fact", text: `${who} is ${m[1]!}`, importance: 0.9, confidence: 0.9 };
   m = RE_MY.exec(sub);
-  if (m) return { kind: "fact", text: `Kevin's ${m[1]!}`, importance: 0.9, confidence: 0.9 };
-  return { kind: "fact", text: `Kevin asked Jarhead to remember: ${sub}`, importance: 0.9, confidence: 0.9 };
+  if (m) return { kind: "fact", text: `${who}'s ${m[1]!}`, importance: 0.9, confidence: 0.9 };
+  return { kind: "fact", text: `${who} asked Jarhead to remember: ${sub}`, importance: 0.9, confidence: 0.9 };
 }
 
 export class RulesExtractor implements Extractor {
   readonly kind = "rules" as const;
 
+  /** `userName`: what the third-person sentences call him ("<Name> prefers …"); default "Kevin". */
+  constructor(private readonly userName = "Kevin") {}
+
   /**
    * One of Kevin's lines → a candidate, or undefined when no rule fits. Kevin's
-   * words only: a line of Jarhead's must never be passed here.
+   * words only: a line of Jarhead's must never be passed here. `userName` is the
+   * subject of the sentence minted.
    */
-  static classify(kevinLine: string): Candidate | undefined {
+  static classify(kevinLine: string, userName = "Kevin"): Candidate | undefined {
     const t = clean(kevinLine);
     if (t.length < 4) return undefined;
     const rem = RE_REMEMBER.exec(t);
     if (rem) {
-      const s = rememberShape(rem[1]!.trim());
+      const s = rememberShape(rem[1]!.trim(), userName);
       return { kind: s.kind, text: s.text, subjects: subjectsOf(s.text), importance: s.importance, confidence: s.confidence, evidence: [], origin: "kevin" };
     }
-    const s = shapeOf(t);
+    const s = shapeOf(t, userName);
     if (!s) return undefined;
     return { kind: s.kind, text: s.text, subjects: subjectsOf(s.text), importance: s.importance, confidence: s.confidence, evidence: [], origin: "extracted" };
   }
@@ -146,7 +150,7 @@ export class RulesExtractor implements Extractor {
     const out: Candidate[] = [];
     for (const line of input.lines) {
       if (line.speaker !== "Kevin") continue;
-      const c = RulesExtractor.classify(line.text);
+      const c = RulesExtractor.classify(line.text, this.userName);
       if (!c) continue;
       out.push({ ...c, evidence: [line.n] });
       if (out.length >= MAX_CANDIDATES) break;

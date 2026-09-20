@@ -1,7 +1,7 @@
 import type { Candidate, Decision, ExtractInput, Neighbour } from "../types.ts";
 import { ExtractUnavailableError, type DecideContext, type Decider, type Extractor } from "./extractor.ts";
 import { parseCandidates, parseDecision } from "./parse.ts";
-import { DECIDE_INSTRUCTIONS, DECIDE_SCHEMA, DECIDE_SCHEMA_NAME, EXTRACT_INSTRUCTIONS, EXTRACT_SCHEMA, EXTRACT_SCHEMA_NAME, renderDecideUser, renderExtractUser, stripBounds } from "./prompt.ts";
+import { DECIDE_INSTRUCTIONS, DECIDE_SCHEMA, DECIDE_SCHEMA_NAME, extractInstructions, EXTRACT_SCHEMA, EXTRACT_SCHEMA_NAME, renderDecideUser, renderExtractUser, stripBounds } from "./prompt.ts";
 import { RulesDecider } from "./rules.ts";
 
 /** A local model reads a whole closed conversation; a cold load and a 27B model at a few tokens a second want minutes, not the Responses extractor's 20 s. */
@@ -36,6 +36,8 @@ export interface ChatExtractorOptions {
   readonly decideTimeoutMs?: number;
   /** LM Studio's optional bearer (JARHEAD_BRAIN_API_KEY); Ollama wants none. */
   readonly apiKey?: string;
+  /** What the transcript and the minted sentences call the user (release F1); default "Kevin". */
+  readonly userName?: string;
 }
 
 interface ChatCompletion {
@@ -91,6 +93,7 @@ export class ChatExtractor implements Extractor, Decider {
   private readonly decideTimeoutMs: number;
   private readonly apiKey: string | undefined;
   private readonly thinking: boolean;
+  private readonly userName: string | undefined;
   private readonly rules = new RulesDecider();
   /** True after a 400 on response_format json_schema: the schema rides in the user text from then on. */
   private jsonObjectOnly = false;
@@ -104,6 +107,7 @@ export class ChatExtractor implements Extractor, Decider {
     this.decideTimeoutMs = opts.decideTimeoutMs ?? CHAT_DECIDE_TIMEOUT_MS;
     this.apiKey = opts.apiKey;
     this.thinking = opts.thinking ?? false;
+    this.userName = opts.userName;
   }
 
   /** Ollama reads `reasoning_effort` on /v1 as `think`: "none" turns it off; gpt-oss knows only low/medium/high, so "low" is its floor. */
@@ -117,7 +121,7 @@ export class ChatExtractor implements Extractor, Decider {
   }
 
   async extract(input: ExtractInput, signal?: AbortSignal): Promise<Candidate[]> {
-    const json = await this.call(EXTRACT_INSTRUCTIONS, renderExtractUser(input), EXTRACT_SCHEMA_NAME, EXTRACT_SCHEMA, this.extractTimeoutMs, signal);
+    const json = await this.call(extractInstructions(this.userName), renderExtractUser(input, this.userName), EXTRACT_SCHEMA_NAME, EXTRACT_SCHEMA, this.extractTimeoutMs, signal);
     return parseCandidates(json);
   }
 

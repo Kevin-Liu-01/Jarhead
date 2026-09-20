@@ -1,8 +1,12 @@
 import type { MemoryItem } from "@jarhead/protocol";
 import type { Candidate, ExtractInput, Neighbour } from "../types.ts";
 
-/** The Responses `instructions` for extraction — durable things about Kevin, one sentence each, with evidence. */
-export const EXTRACT_INSTRUCTIONS = `You maintain Jarhead's durable memory of Kevin, the one person it works for. You read a transcript of one voice conversation between Kevin and Jarhead (his Mac assistant) and return only what is worth knowing about Kevin NEXT WEEK: standing preferences, stable facts about him and his world, how he wants recurring tasks done, people and places he refers to by name, and notable episodes worth recalling later.
+/** The Responses `instructions` for extraction — durable things about the user, one sentence each, with evidence; `userName` is what the transcript calls him. */
+export function extractInstructions(userName = "Kevin"): string {
+  return EXTRACT_TEMPLATE.replaceAll("Kevin", userName);
+}
+/** The instructions as written, with the author's name; `extractInstructions` substitutes it. */
+export const EXTRACT_INSTRUCTIONS: string = `You maintain Jarhead's durable memory of Kevin, the one person it works for. You read a transcript of one voice conversation between Kevin and Jarhead (his Mac assistant) and return only what is worth knowing about Kevin NEXT WEEK: standing preferences, stable facts about him and his world, how he wants recurring tasks done, people and places he refers to by name, and notable episodes worth recalling later.
 
 Rules.
 1. One sentence per item, third person, present tense, at most 200 characters, starting with "Kevin", the named person, or the named place: "Kevin prefers …", "Kevin's dentist is …", "How Kevin likes it done: …".
@@ -12,6 +16,7 @@ Rules.
 5. kind: preference (how he likes things), fact (about him or his world), procedure (how a recurring task is done, as steps in one sentence), contact (a person: who they are to Kevin), place (a location and what it is to him), episode (a dated thing that happened, worth recalling; say when).
 6. importance 1 to 5: 5 shapes most interactions (his name, his language, how brief he wants answers); 3 is useful sometimes; 1 is trivia. confidence 0 to 1: how sure the transcript makes you (a hedge or a likely mishearing lowers it).
 7. Return an empty list when nothing qualifies. Do not invent, generalise or embellish.`;
+const EXTRACT_TEMPLATE = EXTRACT_INSTRUCTIONS;
 
 /** Used only when a candidate sits in the similarity band, or above it with different words. */
 export const DECIDE_INSTRUCTIONS = `Jarhead's memory already holds items close to a new candidate. Decide one of: UPDATE when the candidate is the same thing said again or said more precisely (give the single best merged sentence, third person, at most 200 characters); NOOP when the candidate adds nothing; ADD when it is a different thing. Set contradicts to true when the candidate reverses or replaces an existing item; then op is ADD and target is the item it replaces.`;
@@ -59,9 +64,9 @@ export const DECIDE_SCHEMA = {
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-/** The user content: the numbered conversation, then what Jarhead worked on. */
-export function renderExtractUser(input: ExtractInput): string {
-  const parts = [`Conversation on ${input.day} (Kevin's local day), lines numbered:`, ...input.lines.map((l) => `${l.n} ${l.speaker}: ${l.text}`)];
+/** The user content: the numbered conversation (the user's lines labelled with his name), then what Jarhead worked on. */
+export function renderExtractUser(input: ExtractInput, userName = "Kevin"): string {
+  const parts = [`Conversation on ${input.day} (${userName}'s local day), lines numbered:`, ...input.lines.map((l) => `${l.n} ${l.speaker === "Kevin" ? userName : l.speaker}: ${l.text}`)];
   if (input.requests.length > 0) {
     parts.push("Requests Jarhead worked on and how they ended:");
     for (const r of input.requests) parts.push(`- "${clip(r.request, 160)}" — ${r.status}${r.summary ? `: ${clip(r.summary, 200)}` : ""}`);

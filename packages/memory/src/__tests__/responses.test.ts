@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ExtractUnavailableError } from "../extract/extractor.ts";
-import { DECIDE_INSTRUCTIONS, EXTRACT_INSTRUCTIONS, EXTRACT_MAX_ITEMS, EXTRACT_SCHEMA, renderExtractUser, stripBounds } from "../extract/prompt.ts";
+import { DECIDE_INSTRUCTIONS, EXTRACT_INSTRUCTIONS, EXTRACT_MAX_ITEMS, EXTRACT_SCHEMA, extractInstructions, renderExtractUser, stripBounds } from "../extract/prompt.ts";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel, ResponsesExtractor } from "../extract/responses.ts";
 import { OPENAI_THRESHOLDS } from "../limits.ts";
 import { postFilter } from "../merge.ts";
@@ -156,4 +156,20 @@ test("pickMemoryModel: prefers the newest gpt-*-mini text model, undated over da
   assert.equal(pickMemoryModel(["gpt-5-mini-2025-08-07"]), "gpt-5-mini-2025-08-07", "a dated id when nothing else exists");
   assert.equal(pickMemoryModel(["gpt-4o", "gpt-live-1", "gpt-4o-mini-tts", "gpt-5-nano"]), undefined);
   assert.equal(pickMemoryModel([]), undefined);
+});
+
+test("release F1: the extractor's instructions and transcript carry the user's name — the rules say \"Sam prefers …\", the lines are labelled \"Sam:\", no literal Kevin; the extractor option threads it into the request", async () => {
+  const sam = extractInstructions("Sam");
+  assert.doesNotMatch(sam, /Kevin/);
+  assert.match(sam, /durable memory of Sam, the one person it works for/);
+  assert.match(sam, /starting with "Sam", the named person, or the named place: "Sam prefers …", "Sam's dentist is …", "How Sam likes it done: …"/);
+  assert.match(sam, /at least one cited line must be Sam's \("Sam:"\)/);
+  assert.equal(sam.replaceAll("Sam", "Kevin"), EXTRACT_INSTRUCTIONS, "only the name moves");
+  assert.equal(extractInstructions(), EXTRACT_INSTRUCTIONS);
+  assert.equal(renderExtractUser(input, "Sam"), ["Conversation on 2026-09-11 (Sam's local day), lines numbered:", "1 Sam: call me Kev", "2 Jarhead: Sure, Kev.", "3 Sam: I prefer short answers", "4 Jarhead: Noted.", "Requests Jarhead worked on and how they ended:", '- "open the diff for the auth branch" — done: Opened it.'].join("\n"));
+  const ff = fakeFetch(() => jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ items: [] }) }] }] }));
+  await new ResponsesExtractor({ apiKey: () => "sk-test", fetchImpl: ff.fetch, backoffMs: 0, userName: "Sam" }).extract(input);
+  const body = ff.calls[0]!.body as Record<string, unknown>;
+  assert.equal(body["instructions"], sam);
+  assert.equal(body["input"], renderExtractUser(input, "Sam"));
 });

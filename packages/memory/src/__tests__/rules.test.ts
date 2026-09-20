@@ -98,3 +98,29 @@ test("rules decider: ≥ update → UPDATE with the candidate's words (newest wi
   assert.ok(!isReversal("Kevin's dentist is Dr. Patel", "Kevin's doctor is Dr. Patel"), "dentist/doctor is not a reversal");
   assert.deepEqual(await d.decide(c, [{ item: existing, sim: 0.65 }], { ...ctx, thresholds: { update: 0.6, band: 0.4, dup: 0.7 } }), { op: "UPDATE", target: "m_1", text: "Kevin prefers light mode", contradicts: false, replaces: true }, "the embedder's own table decides the lane");
 });
+
+test("release F1: the rules mint sentences about whoever the name says — the same shapes with Sam as subject, no literal Kevin; the extractor instance carries the name, and the default stays Kevin", async () => {
+  for (const [line, kind, text] of cases) {
+    const c = RulesExtractor.classify(line, "Sam");
+    assert.ok(c, `no candidate for: ${line}`);
+    assert.equal(c.kind, kind, line);
+    assert.equal(c.text, text.replace(/^(How )?Kevin/, "$1Sam"), `${line}: the subject moves, a name the user spoke ("Kevin Liu") stays`);
+    assert.doesNotMatch(c.text.replace(/Kevin Liu/, ""), /Kevin/, `${line}: only a name the user spoke ("My name is Kevin Liu") may keep the word`);
+  }
+  assert.equal(RulesExtractor.classify("I prefer short answers")?.text, "Kevin prefers short answers", "the default is unchanged");
+  const input: ExtractInput = {
+    day: "2026-09-11",
+    lines: [
+      { n: 1, speaker: "Kevin", text: "I prefer short answers", at: 1 } as ExtractLine,
+      { n: 2, speaker: "Jarhead", text: "I prefer long ones", at: 2 } as ExtractLine,
+      { n: 3, speaker: "Kevin", text: "remember that my wife is Anna", at: 3 } as ExtractLine,
+    ],
+    requests: [],
+    kevinLines: 2,
+    pendingKevinLines: 2,
+    upToAt: 3,
+    truncated: false,
+  } as ExtractInput;
+  const out = await new RulesExtractor("Sam").extract(input);
+  assert.deepEqual(out.map((c) => c.text), ["Sam prefers short answers", "Sam's wife is Anna"], "the user's lines only, in his name");
+});

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BRAIN_MEMORY_TOKENS, VOICE_MEMORY_TOKENS } from "@jarhead/protocol";
 import { localDay } from "../extract/input.ts";
-import { BRAIN_MEMORY_LABEL, renderBrainBlock, renderVoiceBlock, VOICE_FOOTER, VOICE_HEADER } from "../render.ts";
+import { BRAIN_MEMORY_LABEL, brainMemoryLabel, renderBrainBlock, renderVoiceBlock, VOICE_FOOTER, VOICE_HEADER, voiceHeader } from "../render.ts";
 import { estimateTokens } from "../tokens.ts";
 import { item, T0 } from "./helpers.ts";
 
@@ -76,4 +76,22 @@ test("an episode recalled nine times (sources capped at 8) still renders the dat
   // no sources at all: the day memory learned it
   const bare = item({ id: "ep3", text: "Kevin fixed the printer", kind: "episode", createdAt: first + 5 * DAY, sources: [] });
   assert.equal(renderBrainBlock([bare]).text, `- Kevin fixed the printer (${localDay(first + 5 * DAY)})`);
+});
+
+test("release F1: the voice header and the procedure prefix take the user's name; a procedure the rules already phrased (in any name) is not prefixed twice; the defaults are unchanged", () => {
+  const items = [
+    item({ id: "m_1", text: "Sam prefers short answers", kind: "preference" }),
+    item({ id: "m_2", text: "read the diff before calling a PR fine", kind: "procedure" }),
+    item({ id: "m_3", text: "How Kevin likes it done: ask before pushing", kind: "procedure" }),
+  ];
+  const voice = renderVoiceBlock(items, VOICE_MEMORY_TOKENS, "Sam");
+  assert.equal(voice.text, "# Sam, in brief\nSam prefers short answers. How Sam likes it done: read the diff before calling a PR fine. How Kevin likes it done: ask before pushing.\nUse this quietly; never announce that you remember it.");
+  const brain = renderBrainBlock(items, BRAIN_MEMORY_TOKENS, "Sam");
+  assert.equal(brain.text, "- Sam prefers short answers\n- How Sam likes it done: read the diff before calling a PR fine\n- How Kevin likes it done: ask before pushing");
+  assert.equal(voiceHeader("Sam"), "# Sam, in brief");
+  assert.equal(voiceHeader(), VOICE_HEADER);
+  assert.equal(VOICE_HEADER, "# Kevin, in brief");
+  assert.equal(brainMemoryLabel("Sam"), "What you know about Sam (durable memory; use it, do not repeat it back, do not say you remembered):");
+  assert.equal(brainMemoryLabel(), BRAIN_MEMORY_LABEL);
+  assert.match(renderVoiceBlock(items).text ?? "", /^# Kevin, in brief\n/, "the default stays Kevin");
 });

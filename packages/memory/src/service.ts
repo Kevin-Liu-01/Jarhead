@@ -43,6 +43,8 @@ export interface MemoryServiceOptions {
   readonly fallbackExtractor?: Extractor;
   readonly maxChars?: number;
   readonly retrieveTimeoutMs?: number;
+  /** What the rendered blocks and the rules' sentences call the user (release F1); default "Kevin". */
+  readonly userName?: string;
 }
 
 export type IngestReason = "nothing-new" | "too-few-lines" | "trashed" | "embedding-failed";
@@ -114,6 +116,7 @@ export class MemoryService {
   private readonly log: Pick<Logger, "info" | "warn">;
   private readonly maxChars: number | undefined;
   private readonly retrieveTimeoutMs: number;
+  private readonly userName: string;
   private readonly deferred = new Map<string, Deferred>();
   /** Sessions whose approved run has rows left to read (`more`): the gate does not judge them again. */
   private readonly continuing = new Set<string>();
@@ -131,7 +134,8 @@ export class MemoryService {
     this.store.load();
     this.embedder = opts.embedder;
     this.extractor = opts.extractor;
-    this.fallback = opts.fallbackExtractor ?? new RulesExtractor();
+    this.userName = opts.userName || "Kevin";
+    this.fallback = opts.fallbackExtractor ?? new RulesExtractor(this.userName);
     this.decider = opts.decider ?? new RulesDecider();
     this.redact = opts.redact;
     this.onRow = opts.onRow;
@@ -449,7 +453,7 @@ export class MemoryService {
     const q = query.trim();
     const vec = q ? await this.queryVector(q, opts.timeoutMs ?? this.retrieveTimeoutMs, opts.signal) : undefined;
     const r = retrieve(items, { ...(q ? { query: { text: q, vec } } : {}), embedder: this.embedder, now: this.now(), budgetTokens: BRAIN_MEMORY_TOKENS });
-    const block = renderBrainBlock(r.picked, BRAIN_MEMORY_TOKENS);
+    const block = renderBrainBlock(r.picked, BRAIN_MEMORY_TOKENS, this.userName);
     this.lastUsedIds = block.ids.slice(0, 8);
     this.budgetUsed = { ...this.budgetUsed, brain: block.tokens };
     return block;
@@ -460,7 +464,7 @@ export class MemoryService {
     const items = this.retrievable();
     if (items.length === 0) return { tokens: 0, ids: [] };
     const r = retrieve(items, { embedder: this.embedder, now: this.now(), budgetTokens: VOICE_MEMORY_TOKENS });
-    const block = renderVoiceBlock(r.picked, VOICE_MEMORY_TOKENS);
+    const block = renderVoiceBlock(r.picked, VOICE_MEMORY_TOKENS, this.userName);
     this.budgetUsed = { ...this.budgetUsed, voice: block.tokens };
     return block;
   }
@@ -480,7 +484,7 @@ export class MemoryService {
   private async rememberNow(text: string, kind: MemoryKind | undefined, origin: MemoryOrigin): Promise<RememberResult | undefined> {
     const line = text.trim().replace(/\s+/g, " ");
     if (!line || this.redact(line) !== line) return undefined;
-    const classified = RulesExtractor.classify(line);
+    const classified = RulesExtractor.classify(line, this.userName);
     const c: Candidate = classified
       ? { ...classified, ...(kind ? { kind } : {}), origin }
       : { kind: kind ?? "fact", text: line, subjects: subjectsOf(line), importance: 0.9, confidence: 0.9, evidence: [], origin };

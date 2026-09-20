@@ -1,7 +1,7 @@
 import type { Candidate, Decision, ExtractInput, Neighbour } from "../types.ts";
 import { ExtractUnavailableError, type DecideContext, type Decider, type Extractor } from "./extractor.ts";
 import { parseCandidates, parseDecision } from "./parse.ts";
-import { DECIDE_INSTRUCTIONS, DECIDE_SCHEMA, DECIDE_SCHEMA_NAME, EXTRACT_INSTRUCTIONS, EXTRACT_SCHEMA, EXTRACT_SCHEMA_NAME, renderDecideUser, renderExtractUser, stripBounds } from "./prompt.ts";
+import { DECIDE_INSTRUCTIONS, DECIDE_SCHEMA, DECIDE_SCHEMA_NAME, extractInstructions, EXTRACT_SCHEMA, EXTRACT_SCHEMA_NAME, renderDecideUser, renderExtractUser, stripBounds } from "./prompt.ts";
 import { RulesDecider } from "./rules.ts";
 
 /**
@@ -48,6 +48,8 @@ export interface ResponsesExtractorOptions {
   readonly baseUrl?: string;
   /** Sent as `reasoning.effort` for reasoning models (gpt-5*, o*); undefined = decide by the id. */
   readonly reasoningEffort?: "minimal" | "low" | "none";
+  /** What the transcript and the minted sentences call the user (release F1); default "Kevin". */
+  readonly userName?: string;
 }
 
 /** A 400 that names one of these is the strict validator refusing a schema bound; the bounds are the post-filter's job anyway. */
@@ -94,7 +96,7 @@ export class ResponsesExtractor implements Extractor, Decider {
   }
 
   async extract(input: ExtractInput, signal?: AbortSignal): Promise<Candidate[]> {
-    const json = await this.call(EXTRACT_INSTRUCTIONS, renderExtractUser(input), EXTRACT_SCHEMA_NAME, EXTRACT_SCHEMA, signal);
+    const json = await this.call(extractInstructions(this.opts.userName), renderExtractUser(input, this.opts.userName), EXTRACT_SCHEMA_NAME, EXTRACT_SCHEMA, signal);
     return parseCandidates(json);
   }
 
