@@ -343,10 +343,13 @@ macOS 14+, Apple silicon, Xcode's toolchain, Node ≥ 24, pnpm 10. An `OPENAI_AP
 ```bash
 pnpm install
 pnpm build:hands            # the Swift helper → build/jarhead-hands
-pnpm run doctor             # keys, brain, permissions, sessions, signing, wake word, install, dock
 pnpm build:mac              # builds, signs, installs /Applications/Jarhead.app IN PLACE
-open -a Jarhead
+open -a Jarhead             # first launch opens Setup, which writes your key to ~/.jarhead/env
+pnpm run doctor             # keys, brain, permissions, sessions, signing, wake word, install, dock — red on the key until Setup has written it
 ```
+
+Moved the checkout? Run `pnpm build:mac` again: the bundle remembers where the repo
+is, and a stale path stops the daemon (the error names `JARHEAD_REPO`).
 
 Sign with a real identity before the first `build:mac`, or every rebuild resets the
 permission grants: an Apple Development or Developer ID identity in the keychain is
@@ -470,7 +473,7 @@ change to Jarhead and restart it?" and fast-forwards `main` only on your yes;
 **Or by hand.**
 
 ```bash
-pnpm run check                                 # typecheck + tests + doctor; green before and after
+pnpm run check                                 # typecheck + tests + doctor; green before and after (the doctor needs a key in ~/.jarhead/env)
 pnpm test                                      # node:test over packages/*/src/**/*.test.ts
 node --import tsx --test packages/core/src/__tests__/policy.test.ts
 JARHEAD_AUTO_WAKE=0 pnpm jarheadd              # the engine alone, quiet
