@@ -18,7 +18,7 @@
   "scripts": {
     "doctor": "tsx scripts/doctor.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test 'packages/*/src/**/*.test.ts' 'scripts/**/*.test.ts'",
+    "test": "node --import tsx --test --test-concurrency=4 'packages/*/src/**/*.test.ts' 'scripts/**/*.test.ts'",
     "check": "pnpm run typecheck && pnpm run test && pnpm run doctor",
     "jarhead": "tsx packages/cli/src/main.ts",
     "build:hands": "tsx scripts/build-hands.ts",

@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# tsx runs on esbuild's platform binary; the postinstall check is not needed, so pnpm 10 need not ask.
+ignoredBuiltDependencies:
+  - esbuild
