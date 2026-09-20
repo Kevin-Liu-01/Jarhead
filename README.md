@@ -386,6 +386,8 @@ The state directory is `~/.jarhead`:
 | `settings.json` | what Setup and the Console set |
 | `ledger/<day>.jsonl` | everything that happened, append-only |
 | `shots/` | what the brain saw, by day |
+| `memory/` | what it knows about you: `memory.jsonl` (append-only), `index.json`, `embeddings.jsonl` |
+| `automations/jobs.ndjson` | the automations journal, append-only; compacted journals move to `trash/automations/` |
 | `trash/`, `trash/shots/` | days and screenshots that were moved, by rename |
 | `crashes/<time>.txt` | crash reports |
 | `worktrees/` | self-edits in progress |
