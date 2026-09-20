@@ -1,5 +1,5 @@
 import { logger } from "@jarhead/core";
-import { HANDS_BUSY_PREFIX, NativeRequestError, type FrontmostInfo, type NativeHands, type UserIdle } from "./native.ts";
+import { isHandsBusyMessage, NativeRequestError, type FrontmostInfo, type NativeHands, type UserIdle } from "./native.ts";
 import type { ToolResult } from "./toolset.ts";
 
 /**
@@ -86,6 +86,8 @@ export interface FocusLeaseOptions {
    * wait out KEVIN_QUIET_MS for nothing. Default: `hands`.
    */
   readonly userIdle?: NativeHands | undefined;
+  /** The user's name in the thread gate's reasons (release F1), read live; default "Kevin". */
+  readonly userName?: (() => string) | undefined;
   readonly now?: () => number;
   /** Test seam: the wait between polls (a virtual clock advances instead of sleeping). */
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
@@ -281,12 +283,13 @@ export class FocusLease {
    */
   private async threadGate(actor: string): Promise<string | undefined> {
     const idle = await this.idleHands.request<UserIdle>("user_idle", {}, 1500).catch(() => undefined);
-    if (idle && idle.foreignMs < KEVIN_QUIET_MS) return "Kevin is using the keyboard or mouse";
+    const who = this.opts.userName?.() || "Kevin";
+    if (idle && idle.foreignMs < KEVIN_QUIET_MS) return `${who} is using the keyboard or mouse`;
     const front = await this.front();
     const mine = this.remembered.get(actor);
     if (front && mine && !this.isActivated(front.app) && !sameApp(mine, front.app)) {
       // He switched here himself; the thread is never re-fronted behind him.
-      return `Kevin is using ${front.app}`;
+      return `${who} is using ${front.app}`;
     }
     return undefined;
   }
@@ -449,7 +452,7 @@ export function isBusyResult(r: ToolResult | unknown): boolean {
   if (r instanceof NativeRequestError) return r.detail.code === "busy";
   if (typeof r !== "object" || r === null) return false;
   const t = r as { kind?: unknown; message?: unknown };
-  return t.kind === "error" && typeof t.message === "string" && (t.message.startsWith("busy: ") || t.message.startsWith(HANDS_BUSY_PREFIX));
+  return t.kind === "error" && typeof t.message === "string" && (t.message.startsWith("busy: ") || isHandsBusyMessage(t.message));
 }
 
 function sameApp(a: string, b: string): boolean {

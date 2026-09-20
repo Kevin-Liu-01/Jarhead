@@ -1,4 +1,4 @@
-export { NativeHandsProcess, NativeRequestError, HELPER_PERMISSION_KINDS, TYPE_CANCEL_SIGNAL, USER_IDLE_NONE_MS, HANDS_BUSY_PREFIX, scrubHandsEnv } from "./native.ts";
+export { NativeHandsProcess, NativeRequestError, HELPER_PERMISSION_KINDS, TYPE_CANCEL_SIGNAL, USER_IDLE_NONE_MS, HANDS_BUSY_PREFIX, HELPER_BUSY_SUBJECT, handsBusyPrefix, isHandsBusyMessage, nameBusyMessage, scrubHandsEnv } from "./native.ts";
 export type { NativeHands, HelloPermissions, HelperPermissionKind, DisplayInfo, ScreenshotResult, FrontmostInfo, WindowInfo, FocusedText, ElementInfo, NativeHandsProcessOptions, AxNodeInfo, FindElementResult, AxTreeResult, BrowserTab, TypeResult, UserIdle } from "./native.ts";
 export { Screen, fitScale, DEFAULT_SHOT_BUDGET, QUICK_SHOT_BUDGET } from "./screen.ts";
 export type { ShotBudget } from "./screen.ts";

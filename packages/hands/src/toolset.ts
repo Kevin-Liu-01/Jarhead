@@ -276,6 +276,8 @@ export interface ToolsetOptions {
    * locked-screen and wrong-app legs come from the hands themselves.
    */
   readonly presenceAt?: () => number | undefined;
+  /** The user's name in the questions the brain relays (release F1), read live; default "Kevin". */
+  readonly userName?: () => string;
 }
 
 const SCROLL_PX_PER_CLICK = 60;
@@ -288,6 +290,11 @@ export class ComputerToolset {
   readonly confirmations: ConfirmationState;
   private readonly policy: (ctx: ActionContext) => Decision;
   private readonly now: () => number;
+
+  /** The user's name as the questions say it (the engine's effective name; "Kevin" when none is wired). */
+  private who(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
 
   constructor(private readonly opts: ToolsetOptions) {
     this.screen = opts.screen ?? new Screen();
@@ -579,9 +586,9 @@ export class ComputerToolset {
         if (decision.verdict === "confirm") {
           const what = `click "${el.label}" in ${found.app}`;
           // A hold registers nothing: there is no question for a yes to answer (see gate()).
-          if (decision.hold) return { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(what, decision, found.app) };
+          if (decision.hold) return { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(what, decision, found.app, this.who()) };
           const pending = this.confirmations.ask(what, "click_element", { name }, decision.grant ? { app: appKey, actionClass: decision.grant } : undefined);
-          return { kind: "needs-confirmation", pendingId: pending.id, question: question(what, decision, found.app) };
+          return { kind: "needs-confirmation", pendingId: pending.id, question: question(what, decision, found.app, this.who()) };
         }
         const button = input["button"] === "right" ? "right" : "left";
         const count = Number(input["count"]) === 2 ? 2 : 1;
@@ -759,11 +766,11 @@ export class ComputerToolset {
     // question for his next "yes" to answer — a bare yes when he is back must not land an
     // action whose real question ("about to click Send … looks irreversible") was never posed.
     // When he is back and asks again, the action comes through this gate whole and asks it.
-    if (decision.hold) return { decision, result: { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(description, decision, app) }, probes };
+    if (decision.hold) return { decision, result: { kind: "needs-confirmation", pendingId: HOLD_ID, question: question(description, decision, app, this.who()) }, probes };
     const pending = this.confirmations.ask(description, member, input, decision.grant ? { app: appKey, actionClass: decision.grant } : undefined);
     return {
       decision,
-      result: { kind: "needs-confirmation", pendingId: pending.id, question: question(description, decision, app) },
+      result: { kind: "needs-confirmation", pendingId: pending.id, question: question(description, decision, app, this.who()) },
       probes,
     };
   }
@@ -774,10 +781,10 @@ export class ComputerToolset {
  * the class for the conversation. A presence hold is not a question: Kevin is not at the Mac,
  * so the brain says the one line (naming what waits) and waits for him, not for a yes.
  */
-function question(description: string, decision: Decision, app: string): string {
-  if (decision.hold || decision.reason.includes(PRESENCE_ABSENT)) return `Not now: about to ${description} — ${decision.reason}. Nothing was done, and nothing is waiting for a yes. Tell Kevin in one short sentence and stop; when he is back and asks again, the action asks its own question then.`;
+function question(description: string, decision: Decision, app: string, who = "Kevin"): string {
+  if (decision.hold || decision.reason.includes(PRESENCE_ABSENT)) return `Not now: about to ${description} — ${decision.reason}. Nothing was done, and nothing is waiting for a yes. Tell ${who} in one short sentence and stop; when he is back and asks again, the action asks its own question then.`;
   const keeps = decision.grant ? ` A yes also covers ${decision.grant === "type" ? "typing" : "clicks"}${app ? ` in ${app}` : ""} for the rest of this conversation; destructive controls, settings and switches still ask.` : "";
-  return `About to ${description}. ${decision.reason}.${keeps} Ask Kevin to confirm out loud, then stop; do not retry until he says yes.`;
+  return `About to ${description}. ${decision.reason}.${keeps} Ask ${who} to confirm out loud, then stop; do not retry until he says yes.`;
 }
 
 /** What the helper did to deliver the text, in the words the model reads: where, how, and whether it was checked. */

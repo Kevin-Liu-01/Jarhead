@@ -46,8 +46,23 @@ export interface UserIdle {
 /** What `user_idle` reports when the session has never seen that kind of event (JSON has no Infinity). */
 export const USER_IDLE_NONE_MS = 1e12;
 
-/** The first words of every `busy` message, so a runner can spot the refusal in a ToolResult without the code. */
-export const HANDS_BUSY_PREFIX = "Kevin used the keyboard/mouse";
+/** The first words of every `busy` message with the user's name in front (release F1): "<Name> used the keyboard/mouse". */
+export function handsBusyPrefix(userName = "Kevin"): string {
+  return `${userName} used the keyboard/mouse`;
+}
+/** The prefix with the default name; runners spot the refusal with `isHandsBusyMessage`, whatever the name. */
+export const HANDS_BUSY_PREFIX = handsBusyPrefix();
+/** The helper knows no name: its `busy` message opens with this subject, and the client puts the user's name there. */
+export const HELPER_BUSY_SUBJECT = "the user";
+const HELPER_BUSY_HEAD = /^(?:the user|Kevin) used the keyboard\/mouse\b/;
+/** A `busy` refusal as a ToolResult message, with or without the "busy: " code and whatever the name in front. */
+export function isHandsBusyMessage(message: string): boolean {
+  return /^(?:busy: )?[^\n]{1,80}? used the keyboard\/mouse\b/.test(message);
+}
+/** The helper's `busy` message with the user's name as its subject; other messages pass through. */
+export function nameBusyMessage(message: string, userName: string): string {
+  return HELPER_BUSY_HEAD.test(message) ? message.replace(HELPER_BUSY_HEAD, handsBusyPrefix(userName)) : message;
+}
 
 /**
  * The environment a helper is spawned with: the daemon's minus Jarhead's keys. The
@@ -287,6 +302,8 @@ export interface NativeHandsProcessOptions {
   readonly probeImpl?: () => Promise<HelloPermissions>;
   /** The environment to spawn from (default `process.env`). Jarhead's keys are stripped from it either way. */
   readonly env?: NodeJS.ProcessEnv;
+  /** The user's name for the helper's `busy` refusals (release F1), read live; default "Kevin". */
+  readonly userName?: (() => string) | undefined;
 }
 
 export class NativeHandsProcess extends EventEmitter implements NativeHands {
@@ -420,7 +437,8 @@ export class NativeHandsProcess extends EventEmitter implements NativeHands {
     if (msg.ok === true) p.resolve(msg.result ?? {});
     else {
       const code = String(msg.error?.code ?? "internal") as NativeError["code"];
-      p.reject(new NativeRequestError({ code, message: String(msg.error?.message ?? "unknown helper error") }));
+      const raw = String(msg.error?.message ?? "unknown helper error");
+      p.reject(new NativeRequestError({ code, message: code === "busy" ? nameBusyMessage(raw, this.opts.userName?.() || "Kevin") : raw }));
     }
   }
 

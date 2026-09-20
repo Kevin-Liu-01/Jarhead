@@ -206,7 +206,8 @@ func kevinBusyMs() -> Int? {
 /// The two refusals every acting op makes before its first post: Kevin's hands (unless `ownDriver`), then the front app (`expectFront`).
 func guardActing(_ params: Params, busyCheck: Bool = true) throws {
     if busyCheck, try params.bool("ownDriver") != true, let ms = kevinBusyMs() {
-        throw HandsError.busy("Kevin used the keyboard/mouse \(ms) ms ago; nothing was posted")
+        // The helper knows no name: the client (native.ts nameBusyMessage) puts the user's in front.
+        throw HandsError.busy("the user used the keyboard/mouse \(ms) ms ago; nothing was posted")
     }
     try requireFront(params)
 }

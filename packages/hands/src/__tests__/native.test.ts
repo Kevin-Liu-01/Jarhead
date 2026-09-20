@@ -141,3 +141,15 @@ test("two clients over two children: a cancel on one fails only its own pendings
   a.stop();
   b.stop();
 });
+
+test("release F1: the busy prefix is a function of the user's name; the helper's own subject (\"the user\", or the pre-release \"Kevin\") is renamed to it, other messages pass through, and a runner spots the refusal whatever the name", async () => {
+  const { handsBusyPrefix, HANDS_BUSY_PREFIX, isHandsBusyMessage, nameBusyMessage, HELPER_BUSY_SUBJECT } = await import("../native.ts");
+  assert.equal(handsBusyPrefix("Sam"), "Sam used the keyboard/mouse");
+  assert.equal(handsBusyPrefix(), HANDS_BUSY_PREFIX);
+  assert.equal(HANDS_BUSY_PREFIX, "Kevin used the keyboard/mouse");
+  assert.equal(nameBusyMessage(`${HELPER_BUSY_SUBJECT} used the keyboard/mouse 300 ms ago; nothing was posted`, "Sam"), "Sam used the keyboard/mouse 300 ms ago; nothing was posted");
+  assert.equal(nameBusyMessage("Kevin used the keyboard/mouse 0 ms ago; nothing was posted", "Sam"), "Sam used the keyboard/mouse 0 ms ago; nothing was posted", "a helper built before the release");
+  assert.equal(nameBusyMessage("front app moved", "Sam"), "front app moved");
+  for (const m of ["Sam used the keyboard/mouse 12 ms ago; nothing was posted", "busy: Kevin used the keyboard/mouse 0 ms ago; nothing was posted", "Ada Lovelace used the keyboard/mouse 5 ms ago"]) assert.ok(isHandsBusyMessage(m), m);
+  for (const m of ["refused: the keyboard/mouse", "front app moved", "Kevin is dictating"]) assert.equal(isHandsBusyMessage(m), false, m);
+});

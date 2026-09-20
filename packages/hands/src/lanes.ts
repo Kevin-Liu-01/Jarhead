@@ -53,8 +53,8 @@ export interface Floor {
 export const QUEUED_ID_PREFIX = "queued_";
 
 /** What the second hand's brain reads instead of a question: wait, do not retry. */
-export function queuedText(floor: { readonly laneName: string; readonly description: string }): string {
-  return `Queued behind ${floor.laneName}'s question: ${floor.description}. Kevin will be asked after that one; stop and wait (thread_wait), do not retry`;
+export function queuedText(floor: { readonly laneName: string; readonly description: string }, who = "Kevin"): string {
+  return `Queued behind ${floor.laneName}'s question: ${floor.description}. ${who} will be asked after that one; stop and wait (thread_wait), do not retry`;
 }
 
 /** "left click on "Send · AXButton" in Slack" → "left click on "Send" in Slack": what is spoken, without the accessibility roles. */
@@ -74,6 +74,9 @@ export class ConfirmationDesk {
    * @param speak how a promoted question reaches Kevin: the lane's name and the question, once
    * @param now the clock; `ttlMs` how long a queued question may wait before it is stale (the root's 3 min)
    */
+  /** The user's name in the queued texts (release F1); the engine points it at the effective name. */
+  userName: () => string = () => "Kevin";
+
   constructor(
     readonly root: ConfirmationState,
     private readonly speak: (laneName: string, question: string) => void,
@@ -231,7 +234,8 @@ export class ConfirmationDesk {
     const floor = this.floor;
     const q = this.queue.find((x) => x.id === result.pendingId);
     if (!q) return result;
-    return { ...result, question: floor ? queuedText(floor) : `Queued: ${q.description}. Kevin will be asked shortly; stop and wait (thread_wait), do not retry` };
+    const who = this.userName();
+    return { ...result, question: floor ? queuedText(floor, who) : `Queued: ${q.description}. ${who} will be asked shortly; stop and wait (thread_wait), do not retry` };
   }
 
   private unqueue(laneId: string): void {
