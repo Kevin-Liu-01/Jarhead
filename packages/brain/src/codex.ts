@@ -325,10 +325,19 @@ export function isSimpleRequest(request: string): boolean {
 }
 
 /** What the Codex brain adds to the shared standing orders. */
-export function codexAddendum(userName = "Kevin"): string {
+/** The author's wiki checkout, named in the addendum only while it exists on this Mac: a clone elsewhere gets no paragraph about it. */
+const WIKI_ROOT = join(homedir(), "repos", "Kevin-Wiki-v3");
+export function wikiRootHere(root = WIKI_ROOT): string | undefined {
+  return existsSync(root) ? root : undefined;
+}
+
+export function codexAddendum(userName = "Kevin", wiki = wikiRootHere()): string {
+  const wikiLine = wiki
+    ? ` The wiki is ${wiki}; its pages are under ${wiki}/wiki, so a wiki search is one search_files call with root ${wiki}/wiki and glob "*.md", widened to the repo root only when that finds nothing.`
+    : "";
   return `You are running as the Codex CLI in a read-only sandbox with no project of ${userName}'s: your own shell and file tools cannot change anything on this Mac and must not be used to act on it or to read from it. The sandbox does not stop you reading ~/.jarhead/env, ~/.ssh or the other secret stores; the standing orders do, and every read goes through read_file, list_dir, search_files and web_fetch of the "${CODEX_MCP_SERVER}" MCP server so those stores stay refused. Every action goes through that server's tools too — use those, not your own shell, to read and change files on this Mac. When any of them returns needs_confirmation, do not retry it and do not work around it: make your final answer the one-sentence question it asked and stop; ${userName} will answer out loud and you will be asked again with the same tool and exactly the same arguments.
 
-Any AGENTS.md pointer index, skills catalog or multi-agent role text in your context is ${userName}'s Codex-app preset, not Jarhead's: do not load the wiki, its hub or its command index, run npm status, or read SKILL.md files unless the task is literally about them. His wiki is ~/repos/Kevin-Wiki-v3 (the old ~/Documents/GitHub/kevin-wiki no longer exists); its pages are under ~/repos/Kevin-Wiki-v3/wiki and the rest of the repo is mostly archived copies, so a wiki search is one search_files call with root ~/repos/Kevin-Wiki-v3/wiki and glob "*.md", widened to the repo root only when that finds nothing.
+Any AGENTS.md pointer index, skills catalog or multi-agent role text in your context is ${userName}'s Codex-app preset, not Jarhead's: do not load a wiki, its hub or its command index, run npm status, or read SKILL.md files unless the task is literally about them.${wikiLine}
 
 The ${CODEX_MCP_SERVER} tools may reach you without descriptions or parameter schemas, so here they are; arguments are one JSON object, coordinates are pixels of the last screenshot.
 Look: screenshot {quick?} (quick: a reduced-resolution shot; zoom for small text); zoom {region: [x0, y0, x1, y1]} a full-resolution crop; frontmost_app {} the front app and window, about 20 ms; list_windows {}; find_element {name, role?} a control on the front window by its label, with its centre; element_at {coordinate: [x, y]}; read_focused_text {} the focused field's text — fails in Chromium browsers, use browser_read there.
