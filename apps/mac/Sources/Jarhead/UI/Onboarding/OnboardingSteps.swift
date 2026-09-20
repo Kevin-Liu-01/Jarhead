@@ -60,9 +60,13 @@ struct OnboardingWelcomeStep: View, Equatable {
             loadedFrom = userName
             name = OnboardingWelcomeStep.prefill(saved: userName, account: NSFullUserName())
         }
-        // A rename made elsewhere (the Console's Settings) reloads a clean draft.
+        // A rename made elsewhere (the Console's Settings) reloads a clean draft — one still holding
+        // what it was loaded with (the saved name, or the account pre-fill over an unset one); a
+        // name cleared elsewhere shows the pre-fill again. A field the user has typed in keeps its text.
         .onChange(of: userName) { _, new in
-            if loadedFrom == draft || draft.isEmpty { name = new }
+            let account = NSFullUserName()
+            let untouched = draft == OnboardingWelcomeStep.prefill(saved: loadedFrom ?? "", account: account)
+            if untouched || draft.isEmpty { name = OnboardingWelcomeStep.prefill(saved: new, account: account) }
             loadedFrom = new
         }
         // The typed name is a draft: Continue / Back / the rail save it rather than dropping it.
