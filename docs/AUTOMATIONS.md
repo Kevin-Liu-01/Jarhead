@@ -124,7 +124,7 @@ signal — `resync` decides each due row:
 | routine | never late — a 01:00 backup at 09:14 is a surprise, not a routine | skipped and counted (`missed 1`), the next occurrence armed |
 | watcher | n/a | the folder listing is re-baselined; files that landed while down are not replayed (a folder is not a queue) |
 
-The one Kevin-pressed mitigation is **Open at login** (Settings › Automations): the app registers
+The one mitigation you press is **Open at login** (Settings › Automations): the app registers
 itself with `SMAppService` on your press, so Jarhead and its daemon come back when you log in.
 Waking a closed lid needs root: `pnpm jarhead doctor` prints the exact `pmset` line for you to
 copy and never runs it. `Run now` is refused unless you are there (a session open, or presence

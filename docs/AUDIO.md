@@ -39,7 +39,7 @@ floor. On speakers the echo is loud and +12 dB over it is a shout — Recording 
 and the hint says so. A safety fuse: three consecutive turns in which everything Live heard was
 Jarhead's own last sentence send `mute` and toast `heard himself · muted — Recording off?`.
 
-## 3. Kevin's ten-second check
+## 3. The ten-second check
 
 1. Play Music on the AirPods. **Asleep**, it must stay full quality (before this pass it was narrowed).
 2. Say his name. It dips a little while he answers and comes back between sentences.
@@ -83,7 +83,7 @@ exit carries them (0 every check ok · 1 a FAIL · 3 refused) — the doctor rea
 | `recorder-probe.sh` (V3) | the terminal's mic grant | **plays sound.** A plain recorder (this binary as `--recorder`, what QuickTime is) on the default mic for 30 s; `afplay` speaks a clip 5→25 s; Jarhead's graph up 10→20 s; the clip through the graph's own player 12→17 s so the guard holds | `check: recorder level unchanged within 1 dB (recording)` · `check: tailLeakDbfs ≤ −50 (recording)` · coupling/residual/floor merged into `audio-probe.json` |
 | `duck-leak-probe.sh` (V2) | the terminal's system-audio-recording grant (macOS 14.2 process tap) | **plays sound.** A 20 s 1 kHz −20 dBFS tone through `afplay`, tapped per process; the graph up 5→15 s in `aec-default`, `aec-min-advanced`, `aec-min-plain`, `recording` | `ΔdB` per mode; `constant: advanced|plain is the smaller step`; or `tap is pre-duck — measure at the device` |
 
-Kevin's `AUDIO_PROBE_DIRECT=1 AUDIO_PROBE_MODE=recording apps/mac/Scripts/audio-probe.sh` is the
+`AUDIO_PROBE_DIRECT=1 AUDIO_PROBE_MODE=recording apps/mac/Scripts/audio-probe.sh` is the
 one-line check that Recording's graph comes up guarded on the ranked microphone.
 
 ## 6. The AirPods case
@@ -105,14 +105,14 @@ Asleep is fixed already: the listener no longer opens the headset mic.
 - `aec`: rung 1 (automatic wiring) refused −10875, rung 2 (input-rate) came up; `duck 10 advanced true, agc true, bypass false · raw 2108 duck 10 advanced true`; `isVoiceProcessingEnabled false` and the unit's `VPAUAggregateAudioDevice-0x…` gone 2 s after stop — `checks: 9 ok, 0 FAIL`.
 - `CADefaultDeviceAggregate-<pid>-0` is **AVAudioEngine's own** default-device aggregate (default input ≠ default output), created at the first plain attempt with no unit anywhere and alive as long as the engine object is; the unit's aggregate is the `VPAUAggregateAudioDevice-0x…` one. Anything that keys "the unit is released" on the `CADefaultDeviceAggregate` prefix will read a false positive.
 - `recording`: on this Mac the plain graph's `kAudioOutputUnitProperty_CurrentDevice` set on the input node's AU (the input-only built-in mic) knocked the output side out — `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` false, −10875 on every wiring — so the Recording ladder never came up (`checks: 2 ok, 1 FAIL`). Fixed in the integration pass: the set is skipped when the ranked mic already is the default, and otherwise it is a rung that can fail (`StartAttempt.pinDevice`; the ladder is ranked/hardware › ranked/automatic › default/hardware). Now rung 1 (hardware) comes up with `hears MacBook Pro Microphone 48000 Hz ×1 built-in · echo guarded`, `guard on, tail 301 ms`, no `VPAUAggregateAudioDevice` — `checks: 10 ok, 0 FAIL`; `aec` on the same run: rung 2, the unit's aggregate gone after stop — `checks: 10 ok, 0 FAIL`.
-- The terminal Kevin's agents run in inherits a microphone grant from its responsible process, so `AUDIO_PROBE_DIRECT=1` runs every silent mode without a TCC prompt.
+- A terminal that coding agents run in inherits a microphone grant from its responsible process, so `AUDIO_PROBE_DIRECT=1` runs every silent mode without a TCC prompt.
 
 ## 8. What the Console prints, and what to do
 
 | line | do |
 |---|---|
 | `Speaks · 16 kHz · narrowed` | the headset mic is held (Jarhead's unit or another app): make the MacBook mic the default in Sound settings, or turn Recording on |
-| `Using Kevin's AirPods Pro. Echo cancellation follows the system default; make MacBook Pro Microphone the default in Sound settings to use it.` | the one case the hint exists for — do that |
+| `Using AirPods Pro. Echo cancellation follows the system default; make MacBook Pro Microphone the default in Sound settings to use it.` | the one case the hint exists for — do that |
 | `Shared with QuickTime Player.` | fine while Recording is on; under echo cancellation the recorder sits beside the unit — turn Recording on for the take |
 | `Hears · no echo cancellation` | the unit refused every rung on this device pair; Jarhead runs guarded; the doctor's `voice processing` row fails and says which pair |
 | `heard himself · muted — Recording off?` | the fuse fired: Live heard Jarhead's own sentence three turns running; unmute, and turn Recording off unless you are recording |

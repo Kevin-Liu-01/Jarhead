@@ -1,5 +1,9 @@
 # The demo
 
+> The take that was posted (2026-09-11 build, 4 min 35 s) predates the island, the dithered
+> blob and the Console's left rail; the README's pictures are current. Below is the plan for a
+> ninety-second take.
+
 One take, ninety seconds, no cuts, the Mac's own audio. Latency is the product, so the
 recording has to show the gap between the last word and the first visible action. A cut
 would make people assume it was edited. Record with QuickTime (File › New Screen
@@ -33,7 +37,7 @@ Say each line at normal speed and then stop talking. The pauses are the demo.
 - Slack open on a DM to yourself (or a test channel) so "Ben" is a real, harmless target; Spotify open and signed in with a playlist literally named **Focus**; the wiki app open on any page.
 - Close everything else. Notifications off (Focus mode). Wi-Fi solid: the voice is a live socket.
 - Rehearse the sleep line once so the phrasing is one the grammar knows: "go to sleep", "goodnight jarhead", "that's all", "that will be all", "power down", "shut off". Not "shut down" and not "sleep" alone — those are deliberately not cues.
-- Know the recovery moves: **Pause** (the island's dot) closes the paid session and holds the conversation; **Go** resumes; the Console's **Stop** on a thread's row in the Threads rail ends that thread only.
+- Know the recovery moves: **Pause** (the island's Go/Pause circle) closes the paid session and holds the conversation; **Go** resumes; the Console's **Stop** on a thread's row in the Threads rail ends that thread only.
 - Fresh daemon: quit Jarhead fully, `open -a Jarhead`, wait for the island to show the gate. A stale daemon is the one thing that has bitten before.
 
 ## The thirty-second cut (social)

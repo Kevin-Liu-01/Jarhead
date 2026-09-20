@@ -212,8 +212,7 @@ click is play — the blob shivers and hops, nothing opens; the capsule is a
 double-click or the right-click menu, and the panel never activates the app, so
 the Console and Setup stay wherever they were.
 
-**The chrome follows Kevin's Prototemplate canon** (`~/repos/Prototemplate`,
-https://prototemplate.vercel.app): ink `#070707` / raised `#101010` / titanium
+**The chrome follows the Prototemplate canon** (https://prototemplate.vercel.app): ink `#070707` / raised `#101010` / titanium
 `#8a8f98` / paper `#fff`, white or ink text at 1.0 / 0.72 / 0.48, one accent
 (`#2f5ce0`, dark lift `#5b82ff`) for the single primary action and selection,
 1px hairlines drawn exactly once at three weights (structural 0.22, row 0.10,

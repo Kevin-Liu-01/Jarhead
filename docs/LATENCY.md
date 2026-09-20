@@ -1,5 +1,8 @@
 # Latency: from Kevin's words to a visible action (2026-09-11)
 
+> A dated engineering report from the author's Mac: the paths, session ids and load figures
+> below are that machine's. The README quotes the after-numbers of §7.
+
 Kevin: "simple commands like 'search the wiki for design' produce a visible
 action within two to five seconds after I finish speaking"; later, "tool uses
 should literally be sub 2 second". This is the report for that work: what was
