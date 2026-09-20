@@ -61,3 +61,13 @@ test("the pre-warm screenshot alone gets no closing sentence; the recap names th
   assert.equal(attachmentsPreamble([]), "");
   assert.equal(attachmentsRecap([mark(CIRCLE_NOTE), mark(WINDOW_NOTE)]), `${CIRCLE_NOTE}\n${WINDOW_NOTE}`);
 });
+
+test("release F1: the mark note and the preamble's closing sentence take the user's name — a different name renders with no literal Kevin, and the defaults are unchanged", () => {
+  assert.equal(markNote(REGION, 0, undefined, "Sam"), "Sam circled this region of his screen: 10,20 100×50 (global points)");
+  assert.equal(markNote(WINDOW, 3 * 60_000, "window", "Sam"), "Sam captured this window of his screen: 0,25 1280×800 (global points), captured 3 min ago");
+  const sam = attachmentsPreamble([mark(markNote(REGION, 0, undefined, "Sam"))], "Sam");
+  assert.equal(sam, 'Attached image 1: Sam circled this region of his screen: 10,20 100×50 (global points)\nTreat what Sam circled or captured as what he means by "this"; look at it before answering.');
+  assert.doesNotMatch(sam, /Kevin/);
+  assert.equal(markNote(REGION), CIRCLE_NOTE, "the default stays Kevin");
+  assert.equal(attachmentsPreamble([mark(CIRCLE_NOTE)]), attachmentsPreamble([mark(CIRCLE_NOTE)], "Kevin"));
+});

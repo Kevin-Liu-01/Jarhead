@@ -223,7 +223,7 @@ export class ResponsesBrain implements Brain {
     if (late) {
       content.push({
         type: "input_text",
-        text: "You answered before seeing what Kevin circled. Look at it now: if your answer changes or was missing what he meant by \"this\", give the corrected answer in one or two sentences; if it stands, answer \"done.\"",
+        text: `You answered before seeing what ${this.opts.userName ?? "Kevin"} circled. Look at it now: if your answer changes or was missing what he meant by "this", give the corrected answer in one or two sentences; if it stands, answer "done."`,
       });
     }
     live.createResponseItem({ type: "message", role: "user", content });

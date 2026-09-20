@@ -105,7 +105,7 @@ export function toAnthropicTool(spec: ToolSpec): Anthropic.Tool {
  * told about an image it does not get. Each transport carries the pixels its own way.
  */
 export function delegationPrompt(task: BrainTask, userName = "Kevin", attachments: readonly BrainAttachment[] | undefined = task.attachments): string {
-  return promptParts(task, userName, attachmentsPreamble(attachments)).join("\n\n");
+  return promptParts(task, userName, attachmentsPreamble(attachments, userName)).join("\n\n");
 }
 
 /**

@@ -570,7 +570,7 @@ export class ComputerToolset {
         // control (a dialog or a sheet may have covered it since the tree was built).
         const frame = el.x !== undefined && el.y !== undefined ? { x: el.x, y: el.y, w: el.w ?? 0, h: el.h ?? 0 } : undefined;
         const under = await this.underPoint(found.app, el.label, el.role, p, frame);
-        if (under.stopped) return { kind: "error", message: "stopped: Kevin pressed stop before this action ran" };
+        if (under.stopped) return { kind: "error", message: `stopped: ${this.who()} pressed stop before this action ran` };
         if (under.problem) return { kind: "error", message: under.problem };
         const confirmed = this.confirmations.consume("click_element", { name });
         // The policy judges the name the tree gave and whatever the point itself says; a standing
@@ -735,7 +735,7 @@ export class ComputerToolset {
       wantsFocus ? probe(hands.request<FocusedText>("focused_text", {}, 1500)) : Promise.resolve(undefined),
     ]);
     const probes = { ...(front ? { front } : {}), ...(el ? { element: el } : {}), ...(f ? { focused: f } : {}) };
-    if (stopped) return { decision: { verdict: "refuse", reason: "Kevin pressed stop" }, result: { kind: "error", message: "stopped: Kevin pressed stop before this action ran" }, probes };
+    if (stopped) return { decision: { verdict: "refuse", reason: `${this.who()} pressed stop` }, result: { kind: "error", message: `stopped: ${this.who()} pressed stop before this action ran` }, probes };
     // A coordinate action is aimed at the last screenshot: the display arrangement, the front
     // app and its front window must still be the ones that shot was taken under. The probe
     // that resolves the point reports what they are now; a different hash means the model is

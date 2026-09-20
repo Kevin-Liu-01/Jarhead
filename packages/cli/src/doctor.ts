@@ -394,7 +394,7 @@ export function memoryChecks(input: MemoryCheckInput): Check[] {
   const spend = "Dollars on the key, never the ChatGPT plan; ≤ 5 runs a day, ≤ ~8k in + 0.9k out each";
   const pin = plan.best && plan.best !== plan.runs ? (plan.pinned ? ` — the key also lists ${plan.best}` : ` — the key's best mini-class id is ${plan.best}: pin it with JARHEAD_MEMORY_MODEL=${plan.best}`) : "";
   if (!input.hasOpenAIKey) {
-    out.push({ group: "memory", name: "extractor", status: "ok", detail: "rules (regex over Kevin's lines) — no OPENAI_API_KEY; with one, a mini-class Responses model reads each closed conversation once", required: false });
+    out.push({ group: "memory", name: "extractor", status: "ok", detail: "rules (regex over the user's lines) — no OPENAI_API_KEY; with one, a mini-class Responses model reads each closed conversation once", required: false });
   } else if (plan.listed === false) {
     out.push({
       group: "memory",

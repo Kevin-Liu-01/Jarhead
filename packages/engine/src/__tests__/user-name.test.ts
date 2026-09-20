@@ -81,3 +81,30 @@ test("F4: the Live model probe — 404 is noLiveModel with the voice.key line an
     await engine.stop();
   }
 });
+
+test("F1: a rename while the brain runs restarts it — the standing orders, Codex's base and developer instructions and the memory extractor are built with the name — and a patch that leaves the name alone does not", async () => {
+  const w = world({ fallbackUserName: "Ada Lovelace" });
+  const { engine } = w;
+  const restarts: string[] = [];
+  const orig = engine.restartBrain.bind(engine);
+  engine.restartBrain = (reason: string) => {
+    restarts.push(reason);
+    return orig(reason);
+  };
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    assert.deepEqual(restarts, [], "a patch without the name restarts nothing");
+    engine.updateSettings({ userName: "Sam" });
+    assert.deepEqual(restarts, ["the user's name changed"]);
+    assert.equal(engine.userName, "Sam");
+    engine.updateSettings({ userName: " Sam " });
+    assert.deepEqual(restarts, ["the user's name changed"], "the same name with spaces around it is not a rename");
+    engine.updateSettings({ userName: null });
+    assert.deepEqual(restarts, ["the user's name changed", "the user's name changed"], "unsetting is a rename back to the account's name");
+    assert.equal(engine.userName, "Ada Lovelace");
+  } finally {
+    await engine.stop();
+  }
+});

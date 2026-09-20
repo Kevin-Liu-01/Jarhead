@@ -38,11 +38,11 @@ export function loadAttachments(task: BrainTask): LoadedAttachment[] {
  * the mark was made: a stroke is "circled this region", a front window captured
  * whole (`mark.window`, `source: "window"`) is "captured this window".
  */
-export function markNote(rect: Rect, ageMs = 0, source?: ScreenMark["source"]): string {
+export function markNote(rect: Rect, ageMs = 0, source?: ScreenMark["source"], userName = "Kevin"): string {
   const where = `${Math.round(rect.x)},${Math.round(rect.y)} ${Math.round(rect.w)}×${Math.round(rect.h)} (global points)`;
   const window = source === "window";
   const what = window ? "captured this window of his screen" : "circled this region of his screen";
-  return `Kevin ${what}: ${where}${markAge(ageMs, window ? "captured" : "circled")}`;
+  return `${userName} ${what}: ${where}${markAge(ageMs, window ? "captured" : "circled")}`;
 }
 
 function markAge(ageMs: number, verb: "circled" | "captured"): string {
@@ -57,10 +57,10 @@ function markAge(ageMs: number, verb: "circled" | "captured"): string {
  * Pass the images that actually go to the model with this prompt — the numbering
  * must match what the transport sends, not what the task listed.
  */
-export function attachmentsPreamble(attachments: readonly BrainAttachment[] | undefined): string {
+export function attachmentsPreamble(attachments: readonly BrainAttachment[] | undefined, userName = "Kevin"): string {
   if (!attachments || attachments.length === 0) return "";
   const lines = attachments.map((a, i) => `Attached image ${i + 1}: ${a.note}`);
-  if (attachments.some((a) => a.kind !== "screen")) lines.push("Treat what Kevin circled or captured as what he means by \"this\"; look at it before answering.");
+  if (attachments.some((a) => a.kind !== "screen")) lines.push(`Treat what ${userName} circled or captured as what he means by "this"; look at it before answering.`);
   return lines.join("\n");
 }
 

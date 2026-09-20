@@ -83,7 +83,7 @@ test("doctor: extractor row — names the model the engine WILL run (the default
 
   const noKey = row({ hasOpenAIKey: false, modelIds: undefined });
   assert.equal(noKey.status, "ok");
-  assert.match(noKey.detail, /^rules \(regex over Kevin's lines\) — no OPENAI_API_KEY/);
+  assert.match(noKey.detail, /^rules \(regex over the user's lines\) — no OPENAI_API_KEY/);
   assert.match(memoryChecks({ ...base, hasOpenAIKey: false, modelIds: undefined })[0]!.detail, /keywords \(no OPENAI_API_KEY — nothing leaves the Mac\)/);
 
   // Unpinned: the default runs; a newer mini on the key is a hint, not a claim.
