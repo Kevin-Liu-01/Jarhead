@@ -783,6 +783,11 @@ export class Engine extends EventEmitter<EngineEvents> {
     // Only the keys Settings has; nested objects merge field-wise so a file from before a field existed still validates.
     const known: Record<string, unknown> = {};
     for (const key of SETTINGS_KEYS) if (key in saved) known[key] = saved[key];
+    // A hand-edited `"userName": null` (or a number) means unset; the setter's guard covers a patch, this one the file (release F1).
+    if ("userName" in known && typeof known["userName"] !== "string") {
+      log.warn(`settings: userName ${JSON.stringify(known["userName"])} read as unset (a string)`);
+      known["userName"] = "";
+    }
     if ("workers" in saved && !("threads" in saved)) known["threads"] = saved["workers"]; // settings.json written before 2026-09-13 says `workers`
     const wake = known["wake"];
     // audio: absent before 2026-09-16 → DEFAULT_AUDIO. A missing known key is not "unknown", so the file is not rewritten; the block lands on the first set-settings after.

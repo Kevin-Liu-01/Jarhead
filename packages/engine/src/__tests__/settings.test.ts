@@ -211,3 +211,16 @@ test("reportAudioState keeps the app's frame in the snapshot with `since` stampe
   assert.equal(engine.snapshot().audioState, undefined, "the app left");
   assert.equal(engine.snapshot().settings.audio.recording, false, "the frame is state, never a setting: Recording stays as set-settings left it");
 });
+
+test("a hand-edited settings.json with `userName: null` or a number loads as unset (\"\"), and a later patch that leaves the name alone still saves — the setter's rename check never sees a non-string", () => {
+  for (const bad of [null, 42]) {
+    const stateDir = mkdtempSync(join(tmpdir(), "jh-settings-"));
+    writeFileSync(join(stateDir, "settings.json"), JSON.stringify({ userName: bad, voice: "marin" }));
+    const engine = bare(stateDir);
+    assert.equal(engine.currentSettings.userName, "", `${JSON.stringify(bad)} reads as unset`);
+    assert.doesNotThrow(() => engine.updateSettings({ idleSleepMinutes: 0 }), "a patch without the name does not throw");
+    assert.equal(engine.snapshot().settings.voice, "marin");
+    const saved = JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(saved["userName"], "", "the write after it stores the coerced value");
+  }
+});
