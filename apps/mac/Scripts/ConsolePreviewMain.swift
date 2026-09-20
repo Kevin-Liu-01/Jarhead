@@ -1758,7 +1758,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         // Memory: the rail's words.
         let items = fake.memoryItems()
         let pref = items.first { $0.id == "m_dark" }!
-        expect("memory meta: seen · age · by Kevin", MemoryFormat.meta(pref, now: fake.now), "seen 3× · 2d · by Kevin")
+        expect("memory meta: seen · age · by you", MemoryFormat.meta(pref, now: fake.now), "seen 3× · 2d · by you")
         let extracted = items.first { $0.id == "m_kev" }!
         expect("memory meta: extracted says nothing of its origin", MemoryFormat.meta(extracted, now: fake.now), "seen 5× · 12h")
         expect("memory tooltip: kind, scores, the sources", MemoryFormat.tooltip(pref).components(separatedBy: "\n").first ?? "", "preference · importance 0.9 · confidence 0.9")
@@ -1859,7 +1859,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
                AppState.railOrder([fake.thread(FakeData.spotifyId, status: .acting, startedAt: t0 + 100), fake.thread("t_b", status: .thinking, startedAt: t0 + 900)]).map(\.id).joined(separator: ","), "t_b,\(FakeData.spotifyId)")
         expect("rail rank: paused and queued are busy", "\(AppState.railRank(.paused))\(AppState.railRank(.queued))\(AppState.railRank(.waitingScreen))", "111")
         let statuses: [ThreadStatus] = [.idle, .queued, .starting, .thinking, .acting, .waitingScreen, .waitingKevin, .paused, .done, .failed, .stopped]
-        expect("status words", statuses.map(\.words).joined(separator: ", "), "idle, queued, starting, thinking, acting, waiting for the screen, waiting for Kevin, paused, done, failed, stopped")
+        expect("status words", statuses.map(\.words).joined(separator: ", "), "idle, queued, starting, thinking, acting, waiting for the screen, waiting for you, paused, done, failed, stopped")
         expect("isLive", statuses.map { $0.isLive ? "1" : "0" }.joined(), "11111111000")
         expect("isBusy (idle is live, not busy)", statuses.map { $0.isBusy ? "1" : "0" }.joined(), "01111111000")
         expect("glyphs: dots while idle/queued/starting/thinking/acting, symbols for the waits, paused and the ends",
@@ -4559,7 +4559,7 @@ extension PreviewDelegate {
         expect("add form: wire has no when key", whenKey + AutomationWords.dot + phraseKey, "absent · weekdays 09:00")
         // The cost line and the recipe line are core's policy words, verbatim: what the form shows is what the ledger records as heard.
         expect("add form: cost line (core's costLine, verbatim)", AutomationForm.costLine(AutomationForm.wakeBudget, cap: 5, local: false),
-               "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on Kevin's plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner")
+               "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on your plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner")
         expect("add form: cost line · local · one minute", AutomationForm.costLine(AutomationBudget(steps: 5, seconds: 60), cap: 3, local: true),
                "this wakes the brain — not the voice — while Jarhead is asleep: about 1 brain minute per fire a model warm-up on this Mac, up to 3 a day; its one-line answer is spoken by the local speaker / shown as a banner")
         let recipes = fake.automationSettings().recipes

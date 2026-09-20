@@ -108,7 +108,7 @@ private enum L: Int, CaseIterable {
         case .relaunchYesMid: return " of "
         case .relaunchYesEnd: return " in the last 10 min)\n"
         case .relaunchNo: return "relaunch: no — "
-        case .relaunchNoEnd: return " crashes in 10 minutes; staying down until Kevin opens Jarhead himself\n"
+        case .relaunchNoEnd: return " crashes in 10 minutes; staying down until you open Jarhead yourself\n"
         case .relaunchDisabled: return "relaunch: no — JARHEAD_NO_RELAUNCH=1\n"
         case .backtrace: return "\nbacktrace:\n"
         case .logHead: return "\nlog (last lines, oldest first):\n"

@@ -63,7 +63,7 @@ enum MemoryWords {
     static let edit = "Edit"
     static let kind = "Kind"
     static let forget = "Forget"
-    static let editPlaceholder = "One sentence about Kevin"
+    static let editPlaceholder = "One sentence about you"
     static let editHelp = "Return keeps the change — Esc cancels"
     static let editLabel = "Memory text"
     static let nothingUsed = "Nothing used yet."
@@ -84,12 +84,12 @@ enum MemoryWords {
 // MARK: - Formatting (pure)
 
 enum MemoryFormat {
-    /// `seen 4× · 3d` — how often the item was met and how long since; `· by Kevin` when he
+    /// `seen 4× · 3d` — how often the item was met and how long since; `· by you` when the user
     /// asked for it outright (origin kevin), `· tool` when a tool wrote it.
     static func meta(_ item: MemoryItem, now: Double) -> String {
         var parts = ["seen \(max(1, item.seenCount))×", ConsoleFormat.relative(item.lastSeenAt, now: now)]
         switch item.origin {
-        case "kevin": parts.append("by Kevin")
+        case "kevin": parts.append("by you")
         case "tool": parts.append("tool")
         default: break
         }

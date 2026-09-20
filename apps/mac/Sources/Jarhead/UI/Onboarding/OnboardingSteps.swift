@@ -10,9 +10,32 @@ import SwiftUI
 
 // MARK: - Welcome
 
+/// The hero, the promise, the daemon line — and the one field: the name the brain reads back
+/// (Settings.userName). It comes pre-filled with this Mac's account name (NSFullUserName()) when
+/// the engine has none; the draft is registered with the session, so Continue writes it through
+/// `set-settings`. Left empty, the engine falls back to the account's name itself.
 struct OnboardingWelcomeStep: View, Equatable {
     let connected: Bool
     let daemonDetail: String
+    /// Settings.userName as the engine has it, trimmed ("" = unset).
+    let userName: String
+    let actions: OnboardingActions
+
+    static func == (a: OnboardingWelcomeStep, b: OnboardingWelcomeStep) -> Bool {
+        a.connected == b.connected && a.daemonDetail == b.daemonDetail && a.userName == b.userName
+    }
+
+    @State private var name = ""
+    @State private var loadedFrom: String?
+
+    private var draft: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// The field differs from what the engine has (a pre-fill over an unset name counts).
+    private var dirty: Bool { draft != userName }
+
+    /// What the field starts with: the engine's name, else this Mac's account name.
+    static func prefill(saved: String, account: String) -> String {
+        saved.isEmpty ? account.trimmingCharacters(in: .whitespacesAndNewlines) : saved
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -22,8 +45,35 @@ struct OnboardingWelcomeStep: View, Equatable {
             OnboardingStatusLine(color: connected ? ConsoleTheme.acting : ConsoleTheme.muted,
                                  text: connected ? "Daemon connected" : "Daemon not connected",
                                  detail: daemonDetail)
+            VStack(alignment: .leading, spacing: 10) {
+                setupRow(OnboardingWords.nameRow) {
+                    ConsoleField(text: $name, placeholder: OnboardingWords.namePlaceholder, size: .row,
+                                 commit: ConsoleField.Commit(emptyClears: true), id: OnboardingWords.nameField,
+                                 accessibilityLabel: OnboardingWords.nameLabel, onCommit: save)
+                }
+                ConsoleHint(OnboardingWords.nameHint, indent: 0)
+            }
             ConsoleHint("Seven short steps. Everything here is also in the status menu under Set Up…", indent: 0)
         }
+        .onAppear {
+            guard loadedFrom == nil else { return }
+            loadedFrom = userName
+            name = OnboardingWelcomeStep.prefill(saved: userName, account: NSFullUserName())
+        }
+        // A rename made elsewhere (the Console's Settings) reloads a clean draft.
+        .onChange(of: userName) { _, new in
+            if loadedFrom == draft || draft.isEmpty { name = new }
+            loadedFrom = new
+        }
+        // The typed name is a draft: Continue / Back / the rail save it rather than dropping it.
+        .onChange(of: dirty, initial: true) { _, d in actions.draft(d, d ? save : nil) }
+    }
+
+    private func save() {
+        guard dirty else { return }
+        var patch = SettingsPatch()
+        patch.setUserName(draft)
+        actions.send(.setSettings(patch))
     }
 }
 
@@ -134,7 +184,7 @@ struct OnboardingVoiceStep: View, Equatable {
         switch setup.openaiKey {
         case .invalid: return "rejected"
         case .missing: return "missing"
-        case .ok, .unchecked: return OnboardingWords.keyOnFile
+        case .ok, .noLiveModel, .unchecked: return OnboardingWords.keyOnFile
         }
     }
 
@@ -144,6 +194,8 @@ struct OnboardingVoiceStep: View, Equatable {
         if pending { return Meta(color: ConsoleTheme.thinking, live: true, text: "Saving and checking…") }
         switch setup.openaiKey {
         case .ok: return Meta(color: ConsoleTheme.acting, live: false, text: "Key works", id: setup.liveModel)
+        // The key answered, the Live model probe did not (404): the first wake would fail with the voice.key problem.
+        case .noLiveModel: return Meta(color: ConsoleTheme.speaking, live: false, text: OnboardingWords.noLiveModel, detail: OnboardingWords.noLiveModelRemedy(setup.liveModel))
         case .invalid: return Meta(color: ConsoleTheme.error, live: false, text: "OpenAI rejected that key", detail: "Paste a fresh one and save again.")
         case .missing: return Meta(color: ConsoleTheme.speaking, live: false, text: "No key yet")
         case .unchecked:

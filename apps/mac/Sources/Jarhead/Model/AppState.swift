@@ -837,7 +837,7 @@ extension ThreadStatus {
         case .thinking: return "thinking"
         case .acting: return "acting"
         case .waitingScreen: return "waiting for the screen"
-        case .waitingKevin: return "waiting for Kevin"
+        case .waitingKevin: return "waiting for you"
         case .paused: return "paused"
         case .done: return "done"
         case .failed: return "failed"

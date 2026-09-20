@@ -169,7 +169,7 @@ enum ConsoleTheme {
     static func delegation(_ s: DelegationStatus) -> DelegationMeta {
         switch s {
         case .running: return DelegationMeta(label: "running", color: thinking, live: true, symbol: "circle.fill")
-        case .awaitingConfirmation: return DelegationMeta(label: "waiting for Kevin", color: speaking, live: true, symbol: "hand.raised.fill")
+        case .awaitingConfirmation: return DelegationMeta(label: "waiting for you", color: speaking, live: true, symbol: "hand.raised.fill")
         case .done: return DelegationMeta(label: "done", color: acting, live: false, symbol: "checkmark.circle.fill")
         case .failed: return DelegationMeta(label: "failed", color: error, live: false, symbol: "xmark.octagon.fill")
         case .cancelled: return DelegationMeta(label: "cancelled", color: fg3, live: false, symbol: "slash.circle.fill")

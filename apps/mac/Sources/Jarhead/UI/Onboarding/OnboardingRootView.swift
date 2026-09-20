@@ -40,6 +40,15 @@ enum OnboardingWords {
     static let passphraseSet = "set"
     static let openAIKey = "OPENAI_API_KEY"
     static let passphraseHint = "Set. Say it or type it when asked."
+    // Welcome: the name the brain reads back (Settings.userName); empty = the account's full name.
+    static let nameField = "setup.name"
+    static let nameRow = "Your name"
+    static let nameLabel = "Your name"
+    static let namePlaceholder = "your name"
+    static let nameHint = "What Jarhead calls you. Leave it empty to use this Mac's account name."
+    // Voice: the key answered but the Live model probe came back 404 (SetupStatus.openaiKey = noLiveModel).
+    static let noLiveModel = "Key works, but GPT-Live-1 is not on it"
+    static func noLiveModelRemedy(_ model: String) -> String { "Enable \(model) on the OpenAI project this key belongs to, or paste a key from one that has it, then Save & check." }
 }
 
 /// A key on the left, a control on the right, at the wizard's key width — `ConsoleFormRow` with
@@ -115,7 +124,7 @@ struct OnboardingRootView: View {
     private func content(model: OnboardingModel, report: OnboardingReport) -> some View {
         switch session.step {
         case .welcome:
-            OnboardingWelcomeStep(connected: model.connected, daemonDetail: model.daemonDetail).equatable()
+            OnboardingWelcomeStep(connected: model.connected, daemonDetail: model.daemonDetail, userName: model.userName, actions: actions).equatable()
         case .voice:
             OnboardingVoiceStep(setup: model.setup, voice: model.voice, accent: model.accent, actions: actions).equatable()
         case .brain:

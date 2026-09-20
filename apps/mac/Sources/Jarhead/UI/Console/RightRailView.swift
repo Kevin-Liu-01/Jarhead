@@ -23,6 +23,8 @@ enum SettingsWords {
     static let passphrase = "settings.passphrase"
     static let voiceKey = "settings.voiceKey"
     static let brainKey = "settings.brainKey"
+    /// Session › Name: the name the brain reads back (Settings.userName).
+    static let nameField = "settings.name"
     static let ledgerRetention = "settings.ledgerRetention"
     static let shotsRetention = "settings.shotsRetention"
     static let learnedTip = "settings.learned"
@@ -58,6 +60,7 @@ enum SettingsWords {
     static let effortLabel = "Effort"
     static let status = "Status"
     static let idleSleep = "Idle sleep"
+    static let nameRow = "Name"
     static let autoWakeRow = "Auto-wake"
     static let home = "Home"
     static let rememberRow = "Remember"
@@ -199,6 +202,8 @@ enum SettingsWords {
     static let noKeyTip = "No OpenAI key"
     static let uncheckedTip = "Not checked yet"
     static func keyWorks(_ model: String) -> String { "Works with \(model)" }
+    /// The key answered but the Live model probe came back 404 (SetupStatus.openaiKey = noLiveModel).
+    static func keyNoLiveModel(_ model: String) -> String { "Key works, but \(model) is not on it — enable it on the key's OpenAI project" }
     static let keyRejected = "Rejected by OpenAI — paste a fresh one"
     static let nothingHeard = "Nothing heard yet"
     // mic
@@ -226,6 +231,13 @@ enum SettingsWords {
     // a11y
     static let modelId = "Model id"
     static let serverURL = "Server base URL"
+    static let nameLabel = "Your name"
+    /// The field's placeholder: the name the engine falls back to (this Mac's account name).
+    static func namePlaceholder(_ account: String) -> String {
+        let a = account.trimmingCharacters(in: .whitespacesAndNewlines)
+        return a.isEmpty ? "your name" : a
+    }
+    static let nameTip = "What Jarhead calls you — empty uses this Mac's account name"
     static let localServerRoot = "Local server root"
     static let wakePhrasesLabel = "Wake phrases, comma separated"
     static let wakePassphraseLabel = "Wake passphrase"
@@ -1444,6 +1456,10 @@ struct SettingsPanel: View {
     /// must not send the same patch twice.
     @State private var brainSent: BrainDraft?
 
+    // Session › Name: the draft, and the last value sent and not yet echoed (commit + blur send once).
+    @State private var nameDraft = ""
+    @State private var nameSent: String?
+
     // Wake
     @State private var phrasesDraft = ""
     @State private var phrasesSent: [String]?
@@ -1452,6 +1468,16 @@ struct SettingsPanel: View {
     @State private var sweepArmed = false
 
     private func patch(_ p: SettingsPatch) { actions.send(.setSettings(p)) }
+
+    /// Session › Name: send the trimmed draft when it differs from what the engine has and from what was last sent.
+    private func commitName() {
+        let name = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name != settings.userNameSet, name != nameSent else { return }
+        nameSent = name
+        var p = SettingsPatch()
+        p.setUserName(name)
+        patch(p)
+    }
 
     private var brainSaved: BrainDraft {
         BrainDraft(kind: settings.brain, model: settings.brainModel, server: settings.brainBaseUrl ?? "")
@@ -1567,6 +1593,7 @@ struct SettingsPanel: View {
             NotificationCenter.default.post(name: MicRouteInfo.requestName, object: nil)
             modelDraft = settings.brainModel
             serverDraft = settings.brainBaseUrl ?? ""
+            nameDraft = settings.userNameSet
             phrasesDraft = wake.phrases.joined(separator: ", ")
         }
         // The daemon's echo: a draft that still says the old value follows; one mid-edit stays.
@@ -1846,6 +1873,19 @@ struct SettingsPanel: View {
                           summary: ConsoleDisclosureSummary.session(home: settings.livesInNotch ? SettingsWords.notch : SettingsWords.free, idleMinutes: Int(settings.idleSleepMinutes.rounded())),
                           size: .section, siblings: SettingsWords.folds, inset: true) {
             VStack(spacing: 2) {
+                // The name the brain reads back (Settings.userName); empty = this Mac's account name, which the
+                // placeholder shows. Return commits; an empty commit clears.
+                ConsoleFormRow(SettingsWords.nameRow) {
+                    ConsoleField(text: $nameDraft, placeholder: SettingsWords.namePlaceholder(NSFullUserName()), size: .row,
+                                 commit: ConsoleField.Commit(emptyClears: true), id: SettingsWords.nameField, accessibilityLabel: SettingsWords.nameLabel,
+                                 onCommit: { commitName() })
+                        .consoleHelp(SettingsWords.nameTip)
+                        .onChange(of: settings.userNameSet) { old, new in
+                            // A rename from elsewhere (Setup › Welcome) reloads a clean draft; our own echo lands the same way.
+                            if nameDraft == old || nameDraft == nameSent { nameDraft = new }
+                            if nameSent == new { nameSent = nil }
+                        }
+                }
                 ConsoleFormRow(SettingsWords.idleSleep) {
                     ConsoleStepper(value: Int(settings.idleSleepMinutes.rounded()), unit: SettingsWords.minutes, range: 1...240,
                                    id: SettingsWords.idle, accessibilityLabel: SettingsWords.idleLabel) { patch(SettingsPatch(idleSleepMinutes: Double($0))) }
@@ -2067,6 +2107,7 @@ struct SettingsPanel: View {
     private var voiceKeyStatus: SettingsSecretRow.Status {
         switch setup.openaiKey {
         case .ok: return SettingsSecretRow.Status(color: ConsoleTheme.acting, text: SettingsWords.onFile, help: SettingsWords.keyWorks(setup.liveModel))
+        case .noLiveModel: return SettingsSecretRow.Status(color: ConsoleTheme.speaking, text: SettingsWords.onFile, help: SettingsWords.keyNoLiveModel(setup.liveModel))
         case .invalid: return SettingsSecretRow.Status(color: ConsoleTheme.error, text: SettingsWords.rejected, help: SettingsWords.keyRejected)
         case .missing: return SettingsSecretRow.Status(color: ConsoleTheme.speaking, text: SettingsWords.missing, help: SettingsWords.noKeyTip)
         case .unchecked: return SettingsSecretRow.Status(color: ConsoleTheme.titanium, text: SettingsWords.onFile, help: SettingsWords.uncheckedTip)

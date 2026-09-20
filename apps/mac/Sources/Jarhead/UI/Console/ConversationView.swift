@@ -625,15 +625,15 @@ private struct UserTurn: View {
             ConsoleIcon(name: pending ? "clock.fill" : "person.fill", tint: ConsoleTheme.titanium)
                 .padding(.leading, iconGap)
                 .padding(.top, 4)
-                .consoleHelp(pending ? "Sent; waiting for the session to take it" : "Kevin")
-                .accessibilityLabel(pending ? "Kevin, sending" : "Kevin")
+                .consoleHelp(pending ? "Sent; waiting for the session to take it" : "You")
+                .accessibilityLabel(pending ? "You, sending" : "You")
             RightStamp(at: message.at).padding(.top, 7)
         }
         .padding(.vertical, 5)
         .opacity(pending ? 0.6 : 1)
         .animation(Motion.fade, value: pending)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Kevin\(pending ? ", pending" : ""): \(message.text)")
+        .accessibilityLabel("You\(pending ? ", pending" : ""): \(message.text)")
     }
 }
 

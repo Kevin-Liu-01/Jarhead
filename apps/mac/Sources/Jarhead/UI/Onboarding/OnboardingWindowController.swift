@@ -228,6 +228,8 @@ struct OnboardingModel: Equatable {
     /// The voice id and accent the engine has (Settings.voice, Settings.accent).
     var voice: String
     var accent: String
+    /// Settings.userName as the engine has it, trimmed; "" = unset (the account's name is used).
+    var userName: String
     var brain: BrainKind
     var brainModel: String
     var brainBaseUrl: String?
@@ -250,6 +252,7 @@ struct OnboardingModel: Equatable {
         setup = snap.setup
         voice = snap.settings.voice
         accent = snap.settings.accent
+        userName = snap.settings.userNameSet
         brain = snap.settings.brain
         brainModel = snap.settings.brainModel
         brainBaseUrl = snap.settings.brainBaseUrl
@@ -372,6 +375,7 @@ struct OnboardingReport: Equatable {
         let setup = m.setup
         switch setup.openaiKey {
         case .ok: voice = Line(mark: .ok, text: "OpenAI key works", id: setup.liveModel, detail: OnboardingReport.voiceDetail(m.voice, accent: m.accent))
+        case .noLiveModel: voice = Line(mark: .attention, text: OnboardingWords.noLiveModel, detail: OnboardingWords.noLiveModelRemedy(setup.liveModel))
         case .invalid: voice = Line(mark: .attention, text: "OpenAI rejected the key")
         case .missing: voice = Line(mark: .attention, text: "No OpenAI key")
         case .unchecked: voice = setup.secrets.openai ? Line(mark: .neutral, text: "OpenAI key on file, not checked yet") : Line(mark: .attention, text: "No OpenAI key")

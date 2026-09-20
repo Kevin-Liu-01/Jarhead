@@ -703,7 +703,7 @@ enum AutomationForm {
     static func costLine(_ budget: AutomationBudget, cap: Int, local: Bool) -> String {
         let n = max(1, Int((budget.seconds / 60).rounded(.up)))
         let minutes = n == 1 ? "brain minute" : "brain minutes"
-        let whereWord = local ? "a model warm-up on this Mac" : "on Kevin's plan"
+        let whereWord = local ? "a model warm-up on this Mac" : "on your plan"
         return "this wakes the brain — not the voice — while Jarhead is asleep: about \(n) \(minutes) per fire \(whereWord), up to \(cap) a day; its one-line answer is spoken by the local speaker / shown as a banner"
     }
 

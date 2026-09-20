@@ -724,7 +724,7 @@ struct UtteranceRow: View {
             ConsoleIcon(name: Self.symbol(for: item), tint: kevin ? ConsoleTheme.titanium : ConsoleTheme.speaking)
                 .padding(.leading, stampGap)
                 .consoleHelp(typed ? "Typed in the Console" : (kevin ? "Said" : "Jarhead"))
-                .accessibilityLabel(typed ? "Kevin, typed" : (kevin ? "Kevin" : "Jarhead"))
+                .accessibilityLabel(typed ? "You, typed" : (kevin ? "You" : "Jarhead"))
             HStack(alignment: .lastTextBaseline, spacing: 3) {
                 Text(item.text.isEmpty ? "…" : item.text)
                     .font(ConsoleTheme.sans(13))
@@ -1073,7 +1073,7 @@ struct StepRow: View {
                     }
                 }
             }
-            .accessibilityHint(waiting ? "Waiting for Kevin" : "")
+            .accessibilityHint(waiting ? "Waiting for you" : "")
         case .error:
             row("exclamationmark.triangle.fill", ConsoleTheme.error) {
                 Text(step.text ?? "").font(ConsoleTheme.sans(12)).foregroundStyle(ConsoleTheme.fg)
