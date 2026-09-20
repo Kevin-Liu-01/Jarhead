@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { INSTALLED_URL, describeHelperTiles, helperTilesOf, parseLsAppInfoList } from "../install/dock.ts";
+import { PIN_KEYS, INSTALLED_URL, describeHelperTiles, helperTilesOf, parseLsAppInfoList } from "../install/dock.ts";
 import { LSREGISTER } from "../install/launchservices.ts";
 import { LSAPPINFO, LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, readRunning, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
 import { dictGet, dictSet, int, parsePlistXml, serializePlistXml, stringAt } from "../install/plist.ts";
@@ -118,7 +118,7 @@ test("hygiene fix, two tiles: -f, dump, -u per stale path, re-dump, export, expo
   const apps = dictGet(doc, "persistent-apps");
   const pin = apps?.kind === "array" ? dictGet(apps.items[1]!, "tile-data") : undefined;
   assert.ok(pin && pin.kind === "dict");
-  assert.deepEqual(pin.entries.map(([k]) => k), ["bundle-identifier", "file-data", "file-label", "file-type"]);
+  assert.deepEqual(pin.entries.map(([k]) => k), [...PIN_KEYS], "the pin keeps its dates; only the bookmark went");
   assert.equal(stringAt(dictGet(pin, "file-data")!, "_CFURLString"), INSTALLED_URL);
   assert.equal(r.dock.imported, true);
   assert.equal(r.dock.restarted, true);

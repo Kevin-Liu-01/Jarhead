@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_FILE_TYPE, INSTALLED_URL, PIN_KEYS, auditDock, describeDock, describeDockChanges, findJarheadTiles, isJarheadTile, modCountOf, type DockTile } from "../install/dock.ts";
-import { dictGet, dictSet, integerAt, parsePlistXml, serializePlistXml, stringAt, type PlistNode } from "../install/plist.ts";
+import { dictGet, dictSet, int, integerAt, parsePlistXml, serializePlistXml, stringAt, type PlistNode } from "../install/plist.ts";
 
 /**
  * The Dock audit over Kevin's own two-tile document (sanitized): the recent tile
@@ -43,7 +43,7 @@ test("dock: the audit removes the recent tile, rebuilds the pin in place, and le
   );
   const rebuild = a.changes.find((c) => c.kind === "rebuild-pin");
   assert.ok(rebuild && rebuild.kind === "rebuild-pin");
-  assert.deepEqual(rebuild.dropped, ["book", "dock-extra", "file-mod-date", "is-beta", "parent-mod-date"]);
+  assert.deepEqual(rebuild.dropped, ["book"], "only the bookmark goes; the dates stay so the Dock keeps matching the running app to the pin");
   assert.equal(rebuild.urlWas, INSTALLED_URL);
   assert.notEqual(a.doc, doc, "a repaired document is a new object");
   assert.equal(a.modCount, "1427");
@@ -149,4 +149,24 @@ test("dock: a tile is Jarhead by exact bundle id or by a URL named Jarhead.app (
   assert.ok(!isJarheadTile({ ...base, bundleId: "com.kevinliu.jarhead.ear-probe", url: "file:///Users/kevinliu/jarvis/apps/mac/.build/ear-probe/EarProbe.app/" }));
   assert.ok(!isJarheadTile({ ...base, bundleId: "com.apple.Safari", url: "file:///Applications/Safari.app/" }));
   assert.ok(!isJarheadTile({ ...base, url: "not a url" }));
+});
+
+test("dock: a pin whose dates are 0 gets the bundle's dates when the caller can stat it; a real date is never overwritten; no stat, no invention", () => {
+  const doc = fixture("dock-two-tiles.xml");
+  const pinNode = tileNodes(doc, "persistent-apps")[1]!;
+  const pinData = dictGet(pinNode, "tile-data")!;
+  assert.equal(integerAt(pinData, "file-mod-date"), "0", "the fixture's pin is the stripped kind");
+  const filled = auditDock(doc, { modDates: { file: 3872775475, parent: 3872775000 } });
+  const filledData = dictGet(tileNodes(filled.doc, "persistent-apps")[1]!, "tile-data")!;
+  assert.equal(integerAt(filledData, "file-mod-date"), "3872775475");
+  assert.equal(integerAt(filledData, "parent-mod-date"), "3872775000");
+  const untouched = auditDock(doc);
+  assert.equal(integerAt(dictGet(tileNodes(untouched.doc, "persistent-apps")[1]!, "tile-data")!, "file-mod-date"), "0", "no stat, no invention");
+  const real = dictSet(pinNode, "tile-data", dictSet(dictSet(pinData, "file-mod-date", int("3872293232")), "parent-mod-date", int("3872293000")));
+  const apps = dictGet(doc, "persistent-apps")!;
+  const items = apps.kind === "array" ? apps.items.map((n, i) => (i === 1 ? real : n)) : [];
+  const kept = auditDock(dictSet(doc, "persistent-apps", { kind: "array", items }), { modDates: { file: 1, parent: 2 } });
+  const keptData = dictGet(tileNodes(kept.doc, "persistent-apps")[1]!, "tile-data")!;
+  assert.equal(integerAt(keptData, "file-mod-date"), "3872293232", "a real date is never overwritten");
+  assert.equal(integerAt(keptData, "parent-mod-date"), "3872293000");
 });

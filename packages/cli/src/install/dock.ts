@@ -27,8 +27,18 @@ export const INSTALLED_APP = "/Applications/Jarhead.app";
 export const INSTALLED_URL = "file:///Applications/Jarhead.app/";
 /** `file-type` most of Kevin's tiles carry; used only when a rebuilt pin has none. */
 export const DEFAULT_FILE_TYPE = "41";
-/** What a rebuilt pin keeps, in this order; `book`, the mod dates, `dock-extra` and `is-beta` are dropped so the Dock recomputes them. */
-export const PIN_KEYS = ["bundle-identifier", "file-data", "file-label", "file-type"] as const;
+/**
+ * What a rebuilt pin keeps, in the Dock's own order; only `book` is dropped, so the Dock recomputes the
+ * bookmark. The mod dates STAY: a pin written without them is stored as 0, and a pin whose dates are 0 is
+ * one the Dock no longer matches to the running app — every launch parked a "recent" Jarhead beside the pin
+ * (2026-09-20, the day `dock --fix` stripped them). A missing or zero date is filled from the bundle on disk
+ * when the caller can stat it (`DockOptions.modDates`), never invented.
+ */
+export const PIN_KEYS = ["bundle-identifier", "dock-extra", "file-data", "file-label", "file-mod-date", "file-type", "is-beta", "parent-mod-date"] as const;
+/** The Dock stores its dates as seconds since 1904-01-01 (the HFS epoch); Unix seconds + this. */
+export const HFS_EPOCH_OFFSET = 2_082_844_800;
+/** `file-mod-date` / `parent-mod-date` for a rebuilt pin, from the installed bundle's and its folder's mtimes. */
+export interface DockModDates { readonly file: number; readonly parent: number }
 
 export type DockList = "persistent-apps" | "recent-apps";
 
@@ -125,6 +135,8 @@ export function describeHelperTiles(helpers: readonly RunningApp[], remedy = "do
 export interface DockOptions {
   readonly bundleId?: string;
   readonly installedUrl?: string;
+  /** The bundle's dates on disk (HFS seconds), used only when the pin's own are missing or 0. */
+  readonly modDates?: DockModDates;
 }
 
 /** The path a `file:///…/` URL names, decoded; undefined for anything else. */
@@ -178,8 +190,8 @@ export function modCountOf(doc: PlistNode): string | undefined {
   return integerAt(doc, "mod-count");
 }
 
-/** The pin's `tile-data` reduced to what the Dock needs to rebuild its bookmark, pointed at the installed bundle. */
-function rebuiltTileData(data: PlistNode, installedUrl: string, bundleId: string): { node: PlistNode; dropped: string[] } {
+/** The pin's `tile-data` with `book` dropped (the Dock recomputes it), pointed at the installed bundle, its dates kept or filled. */
+function rebuiltTileData(data: PlistNode, installedUrl: string, bundleId: string, modDates?: DockModDates): { node: PlistNode; dropped: string[] } {
   const keep = new Set<string>(PIN_KEYS);
   const dropped = data.kind === "dict" ? data.entries.map(([k]) => k).filter((k) => !keep.has(k)) : [];
   let node = dictOnly(data, PIN_KEYS);
@@ -187,8 +199,18 @@ function rebuiltTileData(data: PlistNode, installedUrl: string, bundleId: string
   node = dictSet(node, "file-data", dict([["_CFURLString", str(installedUrl)], ["_CFURLStringType", int("15")]]));
   node = dictSet(node, "file-label", str("Jarhead"));
   if (!dictGet(node, "file-type")) node = dictSet(node, "file-type", int(DEFAULT_FILE_TYPE));
+  if (modDates) {
+    if (dateIsBlank(node, "file-mod-date")) node = dictSet(node, "file-mod-date", int(String(modDates.file)));
+    if (dateIsBlank(node, "parent-mod-date")) node = dictSet(node, "parent-mod-date", int(String(modDates.parent)));
+  }
   // dictOnly kept the pin's own order; PIN_KEYS is the order the Dock writes, so re-lay it.
   return { node: dictOnly(node, PIN_KEYS), dropped: dropped.sort() };
+}
+
+/** A date the Dock cannot match on: absent, or the 0 a stripped pin comes back with. */
+function dateIsBlank(node: PlistNode, key: string): boolean {
+  const v = integerAt(node, key);
+  return v === undefined || v === "0";
 }
 
 /**
@@ -222,7 +244,7 @@ export function auditDock(doc: PlistNode, opts: DockOptions = {}): DockAudit {
       .map((node, index) => {
         if (index !== keptPin.index) return node;
         const data = dictGet(node, "tile-data") ?? dict([]);
-        const rebuilt = rebuiltTileData(data, installedUrl, bundleId);
+        const rebuilt = rebuiltTileData(data, installedUrl, bundleId, opts.modDates);
         changes.push({ kind: "rebuild-pin", tile: keptPin, dropped: rebuilt.dropped, urlWas: keptPin.url });
         return dictSet(node, "tile-data", rebuilt.node);
       })

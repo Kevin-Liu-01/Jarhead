@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
-import { DOCK_DOMAIN, INSTALLED_APP, INSTALLED_URL, JARHEAD_BUNDLE_ID, auditDock, describeDock, describeDockChanges, helperTilesOf, modCountOf, parseLsAppInfoList, type DockAudit, type RunningApp } from "./dock.ts";
+import { HFS_EPOCH_OFFSET, DOCK_DOMAIN, INSTALLED_APP, INSTALLED_URL, JARHEAD_BUNDLE_ID, auditDock, describeDock, describeDockChanges, helperTilesOf, modCountOf, parseLsAppInfoList, type DockAudit, type RunningApp, type DockModDates } from "./dock.ts";
 import { LSREGISTER, describeLaunchServices, parseLsBundleDump, staleJarheadRecords, type LsRecord, type StaleRule } from "./launchservices.ts";
 import { parsePlistXml, serializePlistXml } from "./plist.ts";
 
@@ -253,7 +253,8 @@ export function readDock(exec: Exec, opts: DockOnlyOptions = {}): DockAudit | { 
   try {
     const doc = parsePlistXml(r.stdout);
     if (doc.kind !== "dict" || !doc.entries.some(([k]) => k === "persistent-apps")) return { skipped: "no persistent-apps in the Dock domain" };
-    return auditDock(doc, { bundleId, installedUrl });
+    const modDates = bundleModDates(urlPathOf(installedUrl));
+    return auditDock(doc, { bundleId, installedUrl, ...(modDates ? { modDates } : {}) });
   } catch (e) {
     return { skipped: `Dock plist unreadable: ${(e as Error).message}` };
   }
@@ -346,3 +347,21 @@ function firstLine(text: string): string {
 }
 
 export { modCountOf };
+
+/** The installed bundle's and its folder's mtimes as the Dock stores them (HFS seconds); undefined when the bundle is not on disk. */
+export function bundleModDates(bundlePath: string | undefined): DockModDates | undefined {
+  if (!bundlePath) return undefined;
+  try {
+    const file = Math.floor(statSync(bundlePath).mtimeMs / 1000) + HFS_EPOCH_OFFSET;
+    const parent = Math.floor(statSync(dirname(bundlePath)).mtimeMs / 1000) + HFS_EPOCH_OFFSET;
+    return { file, parent };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The path a `file:///…/` URL names, without its trailing slash; undefined for anything else. */
+function urlPathOf(url: string): string | undefined {
+  if (!url.startsWith("file://")) return undefined;
+  return decodeURIComponent(url.slice("file://".length)).replace(/\/$/, "");
+}
