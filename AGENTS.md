@@ -52,8 +52,11 @@ happens, a Swift helper owns the Mac.
   `send()` to an `ended` Codex session still resumes it.
 - **Delete; history is git.** Superseded code is removed outright — no alias
   shims, no deprecated fields, no fixtures of retired shapes. The one compatibility
-  kept: ledger day files from before 2026-09-13 hold `worker` rows, `step.worker` and
-  session rows without `language`; every reader skips them.
+  kept is files under `~/.jarhead` written before 2026-09-13: ledger day files hold
+  `worker` rows, `step.worker`, session rows without `language`, `pause` / `resume`
+  rows without a session, `"?"` closes and per-session utterance ids — every reader
+  skips or tolerates them; and `settings.json` says `workers` (read as `threads`) and
+  may carry `replayFinish` (dropped).
 - **Gated by policy, not by absence.** The brain can read, write, run, fetch and
   script anything on this Mac; `packages/core/src/policy.ts` decides per call
   (`classifyAction` / `classifyPath` / `classifyAppleScript` / `classifyUrl`):
