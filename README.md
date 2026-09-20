@@ -247,6 +247,7 @@ packages/hands/native  jarhead-hands: 29 ops, newline JSON, ScreenCaptureKit + C
 packages/agents     sessions on disk and running (Claude Code, Codex, other CLIs); claude-code continues one
 packages/brain      Delegator, ToolRunner, one Brain per kind, reflexes, self-edit, the MCP bridge for Codex
 packages/core       config, env, ledger, trash, policy, latency marks
+packages/memory     the memory store: extraction after a conversation closes, embeddings (OpenAI or local) with a keyword fallback, retrieval, the 250/120-token renders, forget/restore
 packages/engine     the Engine: sessions, transport, threads (table, scheduler, brain pool), sleep, problems, snapshots
 packages/daemon     jarheadd: the Engine over a unix socket
 packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, automations, recipes, …; the in-place installer
