@@ -15,7 +15,7 @@ export interface InstructionOptions {
 export function buildLiveInstructions(opts: InstructionOptions = {}): string {
   const user = opts.userName ?? "Kevin";
   const name = opts.assistantName ?? "Jarhead";
-  const caps = opts.backendCapabilities ?? DEFAULT_CAPABILITIES;
+  const caps = opts.backendCapabilities ?? defaultCapabilities(user);
   const gate = opts.alwaysOn
     ? `You are always listening in ${user}'s room. Only respond when ${user} is clearly talking to you: he says your name ("${name}", also heard as "jar head", "jarred", "jared"), or he is continuing an exchange you are in. Ignore other people, media, and ${user} talking to someone else: stay completely silent then, no backchannel.`
     : `Respond to what ${user} says to you.`;
@@ -55,6 +55,14 @@ ${user} can ask ${name} to change its own code. The backend does that in a separ
 # Names and numbers
 Repeat back unusual names, paths or numbers before acting on them when in doubt.`;
 }
+
+/** The backend's capability lines with the user's name where one line names him. */
+export function defaultCapabilities(user: string): readonly string[] {
+  return DEFAULT_CAPABILITIES.map((c) => c.replaceAll(DEFAULT_USER, user));
+}
+
+/** The name the capability lines below are written with; `defaultCapabilities` substitutes it. */
+const DEFAULT_USER = "Kevin";
 
 export const DEFAULT_CAPABILITIES: readonly string[] = [
   "see the screen (any display), read text on it, find and point at things, draw shapes on it to teach",

@@ -197,11 +197,11 @@ export class Transcript {
    * A compact dialogue rendering for the brain: the last `windowMs` of
    * conversation, both sides, oldest first.
    */
-  render(windowMs: number, uptoMs: number): string {
+  render(windowMs: number, uptoMs: number, userName = "Kevin"): string {
     const from = uptoMs - windowMs;
     return this.items
       .filter((i) => i.endMs >= from)
-      .map((i) => `${i.speaker === "kevin" ? "Kevin" : "Jarhead"}: ${i.text}`)
+      .map((i) => `${i.speaker === "kevin" ? userName : "Jarhead"}: ${i.text}`)
       .join("\n");
   }
 }

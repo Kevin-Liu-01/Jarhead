@@ -139,3 +139,12 @@ test("pushTyped: the item cap still holds when typed lines pour in", () => {
   for (let i = 0; i < 8; i++) t.pushTyped(`line ${i}`, i * 100);
   assert.deepEqual(t.all().map((i) => i.text), ["line 3", "line 4", "line 5", "line 6", "line 7"]);
 });
+
+test("release F1: render labels the user's lines with the given name (the default stays Kevin)", () => {
+  const t = new Transcript(() => 0);
+  t.push({ speaker: "kevin", delta: "hello", startMs: 0, endMs: 500 });
+  t.settle(3000);
+  t.push({ speaker: "jarhead", delta: "hi", startMs: 3100, endMs: 3300 });
+  assert.equal(t.render(10_000, 3300, "Sam"), "Sam: hello\nJarhead: hi");
+  assert.equal(t.render(10_000, 3300), "Kevin: hello\nJarhead: hi");
+});

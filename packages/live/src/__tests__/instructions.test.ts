@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CAPABILITIES, buildLiveInstructions } from "../instructions.ts";
+import { DEFAULT_CAPABILITIES, buildLiveInstructions, defaultCapabilities } from "../instructions.ts";
 
 /**
  * The voice's standing orders: the sleep cue ("night." and the words handed to the
@@ -101,4 +101,20 @@ test("automations (design11 § Voice): one capability line, one delegation claus
   // No second yes path: the two sentences relay the backend's question and its refusal; they never let the voice arm or approve anything itself.
   assert.doesNotMatch(safety, /you may (arm|approve|confirm) /);
   for (const once of ["say its cost line exactly as given", "refused, not asked", "asks to be woken", "say its line once, with its name, and nothing more", "it rings with you asleep"]) assert.equal(live.split(once).length - 1, 1, once);
+});
+
+test("release F1: the user's name is a variable — a different name renders everywhere the default did (the gate, the capability lines, sleep, safety) and never a literal Kevin; the words around it are the same", () => {
+  const kevin = buildLiveInstructions({ alwaysOn: true });
+  const sam = buildLiveInstructions({ alwaysOn: true, userName: "Sam" });
+  assert.doesNotMatch(sam, /Kevin/, "no literal Kevin when another name is given");
+  assert.match(sam, /You are always listening in Sam's room\. Only respond when Sam is clearly talking to you/);
+  assert.match(sam, /destructive ones \(deleting, force pushes, sudo, [^)]*\) need Sam's yes first/, "the capability lines carry the name too");
+  assert.match(sam, /apply only after Sam says yes to that exact question/);
+  assert.match(sam, /When Sam dismisses you/);
+  // Only the name moves: the same text with Sam put back to Kevin.
+  assert.equal(sam.replaceAll("Sam", "Kevin"), kevin);
+  assert.equal(words(sam), words(kevin), "the word budget does not move with the name");
+  assert.deepEqual(defaultCapabilities("Sam"), DEFAULT_CAPABILITIES.map((c) => c.replaceAll("Kevin", "Sam")));
+  assert.equal(defaultCapabilities("Sam").some((c) => /Kevin/.test(c)), false);
+  assert.deepEqual(defaultCapabilities("Kevin"), DEFAULT_CAPABILITIES);
 });
