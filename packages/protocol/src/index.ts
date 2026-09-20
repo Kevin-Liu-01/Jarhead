@@ -753,6 +753,12 @@ export interface Settings {
   readonly automations: AutomationSettings;
   /** The audio graph's one decision (design12): Recording on/off. The daemon keeps it; the app's graph reads it. */
   readonly audio: AudioSettings;
+  /**
+   * What the voice and the brain call the person they work for. "" = unset: the engine falls back to
+   * the account's full name (`effectiveUserName` in @jarhead/core). Setup › Welcome pre-fills it with
+   * NSFullUserName() and writes it on Continue; Settings › Session has the same field.
+   */
+  readonly userName: string;
 }
 
 export const DEFAULT_WAKE: WakeSettings = {
@@ -784,6 +790,7 @@ export const DEFAULT_SETTINGS: Settings = {
   warmThreads: 2,
   automations: DEFAULT_AUTOMATIONS,
   audio: DEFAULT_AUDIO,
+  userName: "",
 };
 
 /**
@@ -797,6 +804,7 @@ export const SETTINGS_KEYS = [
   "ledgerRetentionDays", "shotsRetentionDays", "threads", "language", "accent", "memory", "observe", "typedWakes", "threadOverflow", "warmThreads",
   "automations", // design11: the automations block joins SETTINGS_KEYS so settings.json keeps it
   "audio", // design12: the audio block joins SETTINGS_KEYS so settings.json keeps it
+  "userName", // release F1: the user's name is a setting ("" = the account's full name)
 ] as const satisfies readonly (keyof Settings)[];
 type SettingsKeysCover = Record<(typeof SETTINGS_KEYS)[number], 0>;
 const settingsKeysCoverEverything: Record<keyof Settings, 0> = {} as SettingsKeysCover;
@@ -807,8 +815,12 @@ void settingsKeysCoverEverything;
  * ever carrying a secret: presence of keys, and the last probe results.
  */
 export interface SetupStatus {
-  /** Result of the last `config.probe` for the OpenAI key that runs the voice. */
-  readonly openaiKey: "ok" | "missing" | "invalid" | "unchecked";
+  /**
+   * Result of the last `config.probe` for the OpenAI key that runs the voice. `noLiveModel`: the key
+   * answered (it is valid) but GET /v1/models/<liveModel> was 404 — the Live model is not enabled on
+   * that project, so the first wake would fail with the voice.key problem; Setup and the doctor say so.
+   */
+  readonly openaiKey: "ok" | "missing" | "invalid" | "noLiveModel" | "unchecked";
   readonly brain: "ok" | "unavailable" | "unchecked";
   readonly brainDetail: string;
   /** The backend actually running (what `auto` resolved to), if any. */

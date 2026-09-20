@@ -468,3 +468,19 @@ test("the audio.guard ledger row carries the counters the self-talk fuse reads, 
   assert.equal(row.type, "audio.guard");
   assert.ok(JSON.stringify(row).length < 200, "one row per turn stays small");
 });
+
+test("release F1: userName is a Settings key listed once, unset by default (\"\" = the account's full name), and a patch may set or clear it", () => {
+  assert.equal((SETTINGS_KEYS as readonly string[]).filter((k) => k === "userName").length, 1, "the cover pin compiles only with the key listed");
+  assert.equal((DEFAULT_SETTINGS as Settings).userName, "", "unset: the engine falls back to the account's name");
+  const set: SettingsPatch = { userName: "Sam" };
+  const clear: SettingsPatch = { userName: null };
+  assert.equal(set.userName, "Sam");
+  assert.equal(clear.userName, null);
+});
+
+test("release F4: SetupStatus.openaiKey has its own word for a valid key without the Live model — noLiveModel — beside ok, missing, invalid and unchecked", () => {
+  const states: readonly SetupStatus["openaiKey"][] = ["ok", "missing", "invalid", "noLiveModel", "unchecked"];
+  assert.equal(new Set(states).size, 5);
+  const status: SetupStatus = { openaiKey: "noLiveModel", brain: "unchecked", brainDetail: "", liveModel: "gpt-live-1", secrets: { openai: true, anthropic: false, brainApiKey: false }, local: LOCAL_NONE, dataPaths: [] };
+  assert.equal(status.openaiKey, "noLiveModel");
+});
