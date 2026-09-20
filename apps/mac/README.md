@@ -563,15 +563,16 @@ System Settings › Sound). Unknown ids fall back to the system default.
 ```
 Sources/Jarhead/App          main, AppDelegate, CrashGuard, StatusItem, Hotkeys, Menus
 Sources/Jarhead/Daemon       RepoLocator, DaemonProcess, Wire, EngineClient
-Sources/Jarhead/Audio        AudioEngine, ObjCTry (the Swift face of JHTry)
+Sources/Jarhead/Audio        AudioEngine, VoiceProcessingPolicy + VoiceProcessingKnobs (the graph's wiring ladder and the unit's properties), PrivateRoute (Jarhead's own aggregate device), EchoGuard + EchoGuardModel (the software echo guard on the plain graph), AudioStateReadback (the HAL as it is now), ObjCTry (the Swift face of JHTry)
 Sources/Jarhead/Ear          EarListener, SegmentedRecognizer, EarGrammar, EarThrottle, ReflexEar — the on-device ear behind the reflexes
 Sources/Jarhead/Wake         WakeGate, WakeWordListener, LocalAuth, LocalSpeaker
-Sources/Jarhead/Permissions  PermissionsKit (readers, panes), PermissionsRequests (one awaited prompt per kind), PermissionsCenter (the list, the sweep, the dry run)
-Sources/Jarhead/Model        Protocol.swift, AppState.swift (the contract; do not edit casually)
-Sources/Jarhead/UI           Dither, Motion; Orb (BlobField, BlobPhysics, BlobFleet + SatelliteBlob — one blob per thread, NotchPanel, NotchInk, OrbTrace), Overlay, Console, Onboarding
+Sources/Jarhead/Permissions  Permissions (PermissionsKit: the readers and panes), PermissionsRequests (one awaited prompt per kind), PermissionsSweep (PermissionsCenter: the list, the sweep, the dry run)
+Sources/Jarhead/System       Notifications (the banner for a fired automation), SignalObserver (app launch/quit, sleep/wake, lock, displays, clock jumps → `system.signal` frames)
+Sources/Jarhead/Model        Protocol.swift, AppState.swift (the contract; do not edit casually); ThreadStore (a thread's transcript pages), Remedy (a problem's remedy as a command), ProblemGlyphs, ComposerWords (the words the composer, the Say box and the thumbs share)
+Sources/Jarhead/UI           Dither, Motion, HelpCopy (every surface's tips, described once), Thumbnails (screenshots decoded off the main thread); Orb (BlobField, BlobPhysics, BlobFleet + SatelliteBlob — one blob per thread, BlobTrail, FleetBudget, NotchPanel, NotchInk, OrbTrace, OrbPanelController, OrbExpandedView, OrbPreviewApp), Overlay (OverlayManager, OverlayAnnotations, MarkMode, OverlayPreviewDemo), Console, Onboarding
 Sources/JarheadObjC          JHTry: the @try/@catch shim AVFoundation calls run inside
 Resources                    Info.plist, entitlements.plist, preview-icon-sizes.png (the icon contact strip; the harnesses' other preview-*.png are gitignored)
-Scripts                      orb-preview.sh (`--notch-checks`: every rule of the island as `check:` lines), console-preview.sh (scenarios incl. `threads`, `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, protocol-probe.sh (the Swift mirror against fixtures/snapshot-threads.json), permissions-probe.sh (read-only readers + dry-run sweep), appstate-bench.sh, *PreviewMain.swift / *ProbeMain.swift / AppStateBenchMain.swift; fixtures/ holds the probe fixture and the one fake screenshot the previews resolve
+Scripts                      orb-preview.sh (`--notch-checks`: every rule of the island as `check:` lines), console-preview.sh (scenarios incl. `threads`, `jarhead`, `jarhead-log`, `paused`), onboarding-preview.sh, protocol-probe.sh (the Swift mirror against fixtures/snapshot-threads.json), permissions-probe.sh (read-only readers + dry-run sweep), appstate-bench.sh, orb-home-probe.sh, ear-probe.sh, objc-try-probe.sh, audio-probe.sh, duck-probe.sh, duck-leak-probe.sh, recorder-probe.sh; *PreviewMain.swift / *ProbeMain.swift / AppStateBenchMain.swift; fixtures/ holds the probe fixture (snapshot-threads.json), the Console preview's ledger days (ledger-days.json) and the one fake screenshot the previews resolve
 ```
 
 `Scripts/appstate-bench.sh` runs the model's acceptance checks (apps/mac has no XCTest
