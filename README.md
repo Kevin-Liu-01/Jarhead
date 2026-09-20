@@ -422,7 +422,7 @@ In the Console: `⌘P` go / pause, `⌘.` stop. URLs: `jarhead://go`, `jarhead:/
 | Screen Recording, Accessibility | prompt · **required** | screenshots; clicks, typing, reading controls |
 | Input Monitoring | prompt · **required** | the keys watched while you circle or dictate |
 | Full Disk Access | **System Settings only** · **required** | Mail, Safari, Messages, the Trash, every guarded folder |
-| Automation | one prompt per target app · **required** | the browser fast path and AppleScript |
+| Automation | one prompt per target app, asked only for apps running at the time · **required** | the browser fast path and AppleScript |
 | Notifications, Camera, Contacts, Calendars, Reminders, Local Network | prompt | banners; the camera; who, when, what is due; devices nearby |
 | Desktop, Documents, Downloads | prompt | files there |
 
