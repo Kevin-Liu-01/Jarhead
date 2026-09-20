@@ -126,6 +126,6 @@ process, so the picker has one entry.
 | `the local model went quiet for 60 s` | spoken by the delegator; the server stalled — check `~/.ollama/logs/server.log` |
 | `the request did not fit qwen3.5:27b's 65536 context; say it in fewer steps` | spoken by the delegator; a smaller ask, or a model with a larger trained window |
 
-Nothing in this file is run by Jarhead. `ollama pull|rm|create|push|cp` and `lms get|import|rm` are
+Nothing in this file is run by Jarhead. `ollama pull|rm|create|push|cp|run|launch` and `lms get|import|rm` are
 `confirm` in `classifyAction`, so even the brain must pass the confirmation handshake before it
 fetches or removes weights.

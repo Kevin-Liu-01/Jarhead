@@ -30,7 +30,7 @@ Useful environment:
 
 | var | effect |
 |---|---|
-| `JARHEAD_AUTO_WAKE=0` | the daemon does not open a voice session on start (set this for every test launch) |
+| `JARHEAD_AUTO_WAKE=0` | the daemon does not open a voice session on start; it never auto-wakes while the wake gate is on, so this matters only with the gate off — set it for every headless test launch |
 | `JARHEAD_SOCKET=/path.sock` | use a private socket instead of `~/.jarhead/jarhead.sock` |
 | `JARHEAD_STATE_DIR` | state dir (`~/.jarhead` by default); `daemon.log` and `ledger/` live here |
 | `JARHEAD_REPO`, `JARHEAD_NODE` | override repo root / node binary |

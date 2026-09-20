@@ -78,7 +78,7 @@ happens, a Swift helper owns the Mac.
   `/api/delete`, `brew`, `ollama launch`, or starting a server. The row prints the
   command; Kevin runs it (`ProblemRemedy.copy` is text a surface offers to copy,
   never something it executes). The brain itself meets the same gate: in
-  `classifyAction`'s destructive-shell table `ollama (pull|rm|create|push|cp)` and
+  `classifyAction`'s destructive-shell table `ollama (pull|rm|create|push|cp|run|launch)` and
   `lms (get|import|rm)` are `confirm` — the model must pass the confirmation
   handshake before it fetches or deletes weights. `auto` never resolves to `local`;
   Kevin picks it. Everything Ollama-side is pinned by fake-server tests, since no

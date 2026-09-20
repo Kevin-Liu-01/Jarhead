@@ -306,7 +306,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 | delegation → first visible action, Codex through the app-server (canned hands, n = 6) | **4.4 s** median · 5.1 s p95 — was 12.5 s median / 17.5 s p90 in production |
 | delegation → verified completion (n = 10) | 8.9 s median · 25.6 s p95 — was 22.1 s / 40.7 s p90 |
 | one model generation (gpt-6-astra, the floor under the model path) | 3.8 s median · 6.0 s p95 in the same run (n = 24); 3.4 s median · 5.9 s p90 over 35 controlled generations before it |
-| speech end → delegation (Live's own transcription and decision) | 0.4 – 1.6 s |
+| speech end → delegation (Live's own transcription and decision, n = 4) | 0.4 – 1.6 s |
 | GPT-Live-1 reply, third-party measurement | 1.11 s median · 1.21 s p90 |
 | tool round trip, production ledger | 55 ms median · 211 ms p95 |
 | screenshot, warm full display (ScreenCaptureKit) | 48 – 75 ms |
@@ -359,7 +359,7 @@ First launch opens Setup. Then say "jarhead", pass Touch ID, talk. Reopen Setup 
 the menu-bar icon › *Set Up…*.
 
 ```bash
-pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown), threads N (M live), memory, problems
+pnpm jarhead status                 # phase, session voice, brain, hands, permissions 16/16, agents by status (working · idle · blocked · done · ended · unknown · offline), threads N (M live), memory, problems
 pnpm jarhead dock [--fix]           # one Jarhead: Dock tiles + LaunchServices records; --fix restarts the Dock once
 pnpm jarhead doctor                 # the same checks as pnpm run doctor (the memory group: counts, matching, the extractor model; the local group: server · model · embeddings; the privacy group: the four "where words go" rows)
 pnpm jarhead models [--json] [--server URL]   # the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use; no daemon needed; nothing is pulled
@@ -444,7 +444,7 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | *(automations)* | no env knob: the master switch, the kinds allowed while asleep, quiet hours, Snooze minutes, Brain minutes per day, the recipes and Open at login live under `automations` in `~/.jarhead/settings.json` (Console › Settings › Automations; `pnpm jarhead recipes` for the recipes — `trash` is Move to Trash, `restore` undoes it, nothing is deleted) |
 | `JARHEAD_CLAUDE_BIN`, `JARHEAD_CODEX_BIN`, `JARHEAD_CURSOR_AGENT_BIN` | the CLIs when they are not on PATH |
 | `JARHEAD_CODEX_SIMPLE_EFFORT`, `JARHEAD_CODEX_SERVICE_TIER`, `JARHEAD_CODEX_PRIME`, `JARHEAD_CODEX_BASE` | Codex tuning, all opt-in |
-| `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start — **every test launch** |
+| `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start; the daemon never auto-wakes while the wake gate is on, so this matters only with the gate off — set it for every headless test launch |
 | `JARHEAD_NO_AUDIO=1` | never touch the microphone (headless launches) |
 | `JARHEAD_STATE_DIR`, `JARHEAD_SOCKET`, `JARHEAD_REPO`, `JARHEAD_NODE`, `JARHEAD_HANDS_BIN` | where things are |
 | `JARHEAD_SIGN_IDENTITY` | the code-signing identity (`-` forces ad-hoc) |
