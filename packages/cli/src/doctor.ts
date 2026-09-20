@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
 import { AUTOMATION_GRACE_MS, AUTO_BRAIN_ORDER, BRAIN_MEMORY_TOKENS, DEFAULT_AUTOMATIONS, DEFAULT_WAKE, PERMISSION_KINDS, VOICE_MEMORY_TOKENS, automationKind, type AgentInfo, type AgentStatus, type AudioDeviceInfo, type AudioSettings, type AudioState, type Automation, type AutomationSettings, type BrainKind, type DataPath, type Grant, type LocalServerStatus, type MemorySummary, type MissedWhy, type PermissionInfo, type Permissions, type Phase, type Problem, type SetupStatus, type Snapshot, type WakeSettings, type Weekday } from "@jarhead/protocol";
-import { Ledger, REPO_ROOT, clockOf, dataPaths, expandPath, keySource, readConfig, secretsPresent } from "@jarhead/core";
+import { Ledger, REPO_ROOT, clockOf, dataPaths, expandPath, keySource, noLiveModelLine, readConfig, secretsPresent } from "@jarhead/core";
 import { inWords, recipeVerdict } from "./automations-cli.ts";
 import { DEFAULT_MEMORY_MODEL, pickMemoryModel } from "@jarhead/memory";
 import { defaultConnectors } from "@jarhead/agents";
@@ -1332,7 +1332,8 @@ export async function runChecks(opts: DoctorOptions = {}): Promise<Check[]> {
         required: true,
         fix: r.status === 200 ? undefined : src === "shell" ? "the shell's OPENAI_API_KEY is stale; put a working key in ~/.jarhead/env (it takes precedence)" : "replace OPENAI_API_KEY in ~/.jarhead/env with a working key",
       });
-      add({ group: "keys", name: cfg.liveModel, status: hasLive ? "ok" : "fail", detail: hasLive ? "available on this key" : "not listed for this key", required: true, fix: "the Live model must be enabled on the OpenAI project" });
+      // A valid key without the Live model (release F4): the same line the engine's voice.key problem and Setup › Voice show.
+      add({ group: "keys", name: cfg.liveModel, status: hasLive ? "ok" : "fail", detail: hasLive ? "available on this key" : noLiveModelLine(cfg.liveModel), required: true, fix: hasLive ? undefined : "enable the Live model on the OpenAI project, or use a key from a project that has it" });
       const backend = ids.has("gpt-5.6-terra");
       add({ group: "keys", name: "gpt-5.6-terra (openai brain)", status: backend ? "ok" : "warn", detail: backend ? "available" : "not listed; set JARHEAD_BRAIN_MODEL to an available Responses model", required: false });
     } catch (e) {

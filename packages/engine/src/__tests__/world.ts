@@ -839,7 +839,7 @@ export function world(extra: Partial<EngineOptions> = {}, where: { readonly dir?
   // `where.noHands`: no stand-in helper — the binary at config.handsBin does not exist, so the engine sees a helper that is not built.
   // `observeSettleMs: 0`: the observer's 150 ms settle before it reads the screen after an acting tool is real time
   // (an app's reaction), pointless against a fake helper that answers at once; the `now:` line itself still lands.
-  engine = new Engine({ config, connectors: [], brain, ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
+  engine = new Engine({ config, connectors: [], brain, fallbackUserName: "Kevin", ...(where.noHands ? {} : { hands, backgroundHands: handsBg }), makeLive, now: () => clock.t, earStableMs: 40, earCarefulMs: 70, observeSettleMs: 0, makeThreadBrain, exec: noShell, ...(fakeMemory ? { memory: { service: fakeMemory } } : {}), ...extra });
   // The real service's audit rows reach the ledger through the bridge's onRow; the fake's do the same here.
   if (fakeMemory) fakeMemory.onRow = (row) => engine.ledger.append(row);
   const events: EngineEvent[] = [];

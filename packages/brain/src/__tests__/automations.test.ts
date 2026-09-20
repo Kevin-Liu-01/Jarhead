@@ -146,7 +146,7 @@ test("wake-brain: confirm → needs_confirmation carrying the cost line, once; K
   const q = resultText(ask.result);
   assert.match(q, /^needs_confirmation: About to arm "rundown" — daily 18:00: wake the brain: "summarise what my agents did today"\./);
   assert.ok(q.includes(COST), q);
-  assert.match(q, /about 2 brain minutes per fire on Kevin's plan, up to 5 a day/);
+  assert.match(q, /about 2 brain minutes per fire on your plan, up to 5 a day/);
   assert.match(q, /call automation_set again with exactly the same arguments/);
   assert.match(q, /Ask Kevin to confirm out loud, then stop; do not retry until he says yes\./);
   assert.equal(toolset.confirmations.pending?.member, "automation_set");

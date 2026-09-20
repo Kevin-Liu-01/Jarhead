@@ -1378,7 +1378,7 @@ function clobberReason(command: string): string | undefined {
 export function costLine(budget: { readonly steps: number; readonly seconds: number }, cap: number, local: boolean): string {
   const n = Math.max(1, Math.ceil(budget.seconds / 60));
   const minutes = n === 1 ? "brain minute" : "brain minutes";
-  const where = local ? "a model warm-up on this Mac" : "on Kevin's plan";
+  const where = local ? "a model warm-up on this Mac" : "on your plan";
   return `this wakes the brain — not the voice — while Jarhead is asleep: about ${n} ${minutes} per fire ${where}, up to ${cap} a day; its one-line answer is spoken by the local speaker / shown as a banner`;
 }
 

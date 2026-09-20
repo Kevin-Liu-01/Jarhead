@@ -233,8 +233,8 @@ test("wake-brain: budget 0 refuses naming the setting; otherwise confirms with t
 });
 
 test("the cost line, verbatim: N = ceil(seconds / 60), singular at one, the plan or a warm-up", () => {
-  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on Kevin's plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
-  assert.equal(costLine({ steps: 4, seconds: 30 }, 3, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 1 brain minute per fire on Kevin's plan, up to 3 a day; its one-line answer is spoken by the local speaker / shown as a banner");
+  assert.equal(costLine({ steps: 8, seconds: 120 }, 5, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire on your plan, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
+  assert.equal(costLine({ steps: 4, seconds: 30 }, 3, false), "this wakes the brain — not the voice — while Jarhead is asleep: about 1 brain minute per fire on your plan, up to 3 a day; its one-line answer is spoken by the local speaker / shown as a banner");
   assert.equal(costLine({ steps: 8, seconds: 61 }, 5, true), "this wakes the brain — not the voice — while Jarhead is asleep: about 2 brain minutes per fire a model warm-up on this Mac, up to 5 a day; its one-line answer is spoken by the local speaker / shown as a banner");
 });
 

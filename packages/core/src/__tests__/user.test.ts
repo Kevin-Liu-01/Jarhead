@@ -41,3 +41,8 @@ test("accountFullName: dscl's RealName on darwin; the capitalised login name whe
   assert.equal(capitalizeName("kevin"), "Kevin");
   assert.equal(capitalizeName(""), "");
 });
+
+test("noLiveModelLine (release F4): the one line the engine's problem, Setup › Voice and the doctor's key row share", async () => {
+  const { noLiveModelLine } = await import("../user.ts");
+  assert.equal(noLiveModelLine("gpt-live-1"), "OpenAI key works, but gpt-live-1 is not on it — enable gpt-live-1 on the OpenAI project this key belongs to, or paste a key from a project that has it");
+});

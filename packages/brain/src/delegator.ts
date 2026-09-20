@@ -74,6 +74,8 @@ export interface DelegatorOptions {
   readonly ledger?: Ledger;
   /** How much dialogue to hand the brain. */
   readonly dialogueWindowMs?: number;
+  /** The user's name for the rendered dialogue's labels (release F1), read live; default "Kevin". */
+  readonly userName?: (() => string) | undefined;
   readonly now?: () => number;
   /** Regions Kevin circled since the last task; they ride with the next one and are then consumed. */
   readonly marks?: PendingMarks;
@@ -1077,7 +1079,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const task: BrainTask = {
       delegationId: liveId,
       request,
-      dialogue: transcript.render(windowMs, uptoMs),
+      dialogue: transcript.render(windowMs, uptoMs, this.opts.userName?.() || "Kevin"),
       // Kevin's side only, for the gates: the rendered dialogue above carries Jarhead's lines too.
       kevinDialogue: kevinLines(transcript, uptoMs - windowMs - 1),
       confirmation,

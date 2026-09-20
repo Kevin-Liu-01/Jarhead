@@ -135,10 +135,10 @@ export const SERIALIZER_BYPASS: ReadonlySet<string> = new Set([
 ]);
 
 /** batch.ts's words for a call not run because an earlier one in the same batch did not go through (serializer.test.ts pins them equal). */
-export function haltReasonFor(name: string, outcome: RunOutcome): string | undefined {
+export function haltReasonFor(name: string, outcome: RunOutcome, userName = "Kevin"): string | undefined {
   switch (outcome.result.kind) {
     case "needs-confirmation":
-      return `not run: ${name} is waiting for Kevin's answer; ask him and stop`;
+      return `not run: ${name} is waiting for ${userName}'s answer; ask him and stop`;
     case "error":
       return /^refused:/.test(outcome.result.message) ? `not run: ${name} was refused earlier in this turn` : `not run: ${name} failed earlier in this turn (${outcome.result.message.slice(0, 120)})`;
     default:
@@ -150,6 +150,8 @@ export interface ActingSerializerOptions {
   /** Tools that bypass the queue (default SERIALIZER_BYPASS); a runner subclass adds its own passive tools. */
   readonly bypass?: ReadonlySet<string>;
   readonly now?: () => number;
+  /** The user's name in the halt line (release F1), read live; default "Kevin". */
+  readonly userName?: () => string;
 }
 
 interface Queued {
@@ -214,7 +216,7 @@ export class ActingSerializer {
       out = { result: { kind: "error", message: (e as Error).message }, ms: 0 };
     }
     this.ran++;
-    const reason = haltReasonFor(name, out);
+    const reason = haltReasonFor(name, out, this.opts.userName?.() || "Kevin");
     // Halt what was queued behind this call at the moment it settled — not what comes later.
     if (reason) for (const q of this.queue) q.resolve(reason);
     this.finish(entry);

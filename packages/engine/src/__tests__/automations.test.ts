@@ -575,7 +575,7 @@ test("wake-brain-headless-no-session: a wake-brain fire runs ONE headless turn o
     const draft = (name: string, at: number, seconds = 60): AutomationSetInput => ({ name, when: { kind: "at", at }, then: [{ kind: "wake-brain", prompt: "summarise what my agents did today", budget: { steps: 5, seconds }, speak: true }], echo: "Wake the brain: summarise the agents." });
     const asked = engine.automations.arm(draft("rundown", clock.t + M), "brain", false);
     assert.equal(asked.kind, "confirm");
-    assert.match((asked as { question: string }).question, /about 1 brain minute per fire on Kevin's plan, up to 5 a day/, "the cost line is the question");
+    assert.match((asked as { question: string }).question, /about 1 brain minute per fire on your plan, up to 5 a day/, "the cost line is the question");
     const a = armed(w, engine.automations.arm(draft("rundown", clock.t + M), "brain", true));
     events.length = 0;
     tick(engine); // the scheduler's own tick tops the (never yet closed) pool up; from here the fire must add no boot

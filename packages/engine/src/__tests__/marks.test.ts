@@ -110,7 +110,7 @@ function world(): World {
   };
   const clock = { t: 1_757_500_000_000 };
   // Every engine in a test runs over the memory stand-in: the real service would build an OpenAI embedder over the fake key.
-  const engine = new Engine({ config, connectors: [], brain, makeLive: () => live as unknown as LiveSession, now: () => clock.t, exec: noShell, memory: { service: new FakeMemoryService() } });
+  const engine = new Engine({ config, connectors: [], brain, fallbackUserName: "Kevin", makeLive: () => live as unknown as LiveSession, now: () => clock.t, exec: noShell, memory: { service: new FakeMemoryService() } });
   const overlays: OverlayCommand[] = [];
   engine.on("overlay", (c) => {
     overlays.push(c);
@@ -389,7 +389,7 @@ test("marks: the stroke snaps to the LARGEST frame mostly inside it — a circle
   };
   const brain: Brain = { kind: "fake", start: async () => ({ ready: true, detail: "fake" }), handle: async () => ({ status: "done", summary: "done." }), cancel: async () => undefined, stop: async () => undefined };
   const hands = new SnapHands();
-  const engine = new Engine({ config, connectors: [], brain, hands, makeLive: () => new FakeLive() as unknown as LiveSession, exec: noShell, memory: { service: new FakeMemoryService() } });
+  const engine = new Engine({ config, connectors: [], brain, hands, fallbackUserName: "Kevin", makeLive: () => new FakeLive() as unknown as LiveSession, exec: noShell, memory: { service: new FakeMemoryService() } });
   const overlays: OverlayCommand[] = [];
   engine.on("overlay", (c) => overlays.push(c));
   const near = (a: number, b: number, tol = 1): boolean => Math.abs(a - b) <= tol;

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { join } from "node:path";
-import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, classifyAction, dataPaths, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
+import { HANDS_OFF_APPS, PRESENCE_WINDOW_MS, REPO_ROOT, accountFullName, classifyAction, dataPaths, effectiveUserName, noLiveModelLine, isLoopbackHost, writeEnvSecrets, secretsPresent, Ledger, Trash, logger, newId, readConfig, type JarheadConfig, type SweepResult } from "@jarhead/core";
 import { LiveSession, Transcript, buildLiveInstructions, classifyLiveError, languageSection, type SessionConfig } from "@jarhead/live";
 import { ComputerToolset, ConfirmationDesk, ConfirmationState, DEFAULT_SHOT_BUDGET, FocusLease, HELPER_PERMISSION_KINDS, HandsPool, QUICK_SHOT_BUDGET, ScreenStateCache, SplitHands, YES_PATTERN, axLabels, fakeHandsSpawn, renderCompositeLook, type ActionEvent, type AxNodeInfo, type AxTreeResult, type ElementInfo, type FocusedText, type FrontmostInfo, type HelloPermissions, type HelperPermissionKind, type NativeHands, type NativeHandsProcess, type ScreenshotResult, type ToolResult, type ToolsetOptions, type UserIdle, type WindowInfo } from "@jarhead/hands";
 import { AgentRegistry, DEFAULT_PAGE, defaultConnectors, splitAgentId, type AgentConnector, type TranscriptDelta, type TranscriptOptions, type TranscriptPage } from "@jarhead/agents";
@@ -136,6 +136,8 @@ export interface EngineOptions {
   readonly dockAuditDelayMs?: number;
   /** The memory module's seams: a whole fake service (tests), or the embedder / extractor / fetch the real one is built over. */
   readonly memory?: MemoryBridgeSeams;
+  /** The name behind an unset `Settings.userName` (release F1); default: the account's full name, read once (`accountFullName`). Tests pin it. */
+  readonly fallbackUserName?: string;
   /** Test seam: answers the local model server discovery instead of the three loopback ports. */
   readonly discoverLocal?: (o: { baseUrl?: string | undefined; ramBytes: number }) => Promise<LocalServerStatus>;
   /**
@@ -288,6 +290,18 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** The settings (`brainIdentity`) the last selection pass read; a patch that lands after that read runs one more pass. */
   private selectedAgainst: string | undefined;
   private setupProbe: { openaiKey: SetupStatus["openaiKey"]; brain: SetupStatus["brain"] } = { openaiKey: "unchecked", brain: "unchecked" };
+  /** The account's full name, read once on first use (`dscl`, guarded; the login name behind it) — what an unset `Settings.userName` means. */
+  private fallbackName: string | undefined;
+
+  /**
+   * What the voice, the brain, the tools and the Console call the person Jarhead works for
+   * (release F1): `Settings.userName` when set, else the account's full name. Read live
+   * everywhere through a getter, so a rename in Setup or Settings › Session lands at once.
+   */
+  get userName(): string {
+    this.fallbackName ??= this.opts.fallbackUserName ?? accountFullName();
+    return effectiveUserName(this.settings, this.fallbackName);
+  }
   /** Regions Kevin circled for Jarhead; the delegator hands the unconsumed ones to the brain. */
   protected marks: ScreenMark[] = [];
   /** Captures still in flight, by mark id; the delegator waits for them before taking the marks. */
@@ -444,15 +458,17 @@ export class Engine extends EventEmitter<EngineEvents> {
     // client scrubs every spawn).
     this.pool = new HandsPool({
       binPath: this.config.handsBin,
+      userName: () => this.userName,
       ...(opts.hands ? { spawnImpl: fakeHandsSpawn(opts.hands), assumeAvailable: true } : {}),
       ...(opts.backgroundHands ? { background: { spawnImpl: fakeHandsSpawn(opts.backgroundHands), assumeAvailable: true } } : {}),
       ...(opts.probePermissions ? { probeImpl: opts.probePermissions } : {}),
     });
     this.hands = this.pool.focus;
     this.desk = new ConfirmationDesk(this.confirmations, (name, question) => this.speakPromoted(name, question), this.now);
+    this.desk.userName = () => this.userName;
     // Over the ACTING helper: `user_idle` is judged against the events that helper posted itself
     // (its own typing is not Kevin's), and the re-front's `focus_app` is an acting op.
-    this.lease = new FocusLease({ hands: this.pool.focus, now: this.now });
+    this.lease = new FocusLease({ hands: this.pool.focus, now: this.now, userName: () => this.userName });
     // The main toolset reads on the reading helper and acts on the acting one (DECISIONS §11c): the gate's
     // probes, the observer's reads and the model's own looks never wait behind a `type` or an `open_app`.
     // No verdict moves — `expectFront`, `busy`, STALE_FRAME are judged in the acting helper and in the gate.
@@ -467,8 +483,9 @@ export class Engine extends EventEmitter<EngineEvents> {
       now: this.now,
       ...(opts.observeSettleMs !== undefined ? { settleMs: opts.observeSettleMs, slowSettleMs: opts.observeSettleMs } : {}),
     });
-    this.serializer = new ActingSerializer();
+    this.serializer = new ActingSerializer({ userName: () => this.userName });
     const toolsetBase: Omit<ToolsetOptions, "hands" | "screen" | "confirmations"> = {
+      userName: () => this.userName,
       excludePids: () => [...this.excludePids, process.pid],
       annotate: (cmd) => this.emit("overlay", cmd),
       onAction: (a) => this.onAction(a),
@@ -548,6 +565,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     const runnerBase: Omit<RunnerOptions, "toolset"> = {
       agents: this.agents,
+      userName: () => this.userName,
       // The automations table behind the brain's four tools, on the main runner and every lane runner alike.
       automations: this.automations,
       stateDir: this.config.stateDir,
@@ -604,6 +622,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       brainApiKey: () => (secretsPresent().brainApiKey ? this.config.brainApiKey : undefined),
       model: () => this.config.memoryModel,
       enabled: () => this.settings.memory !== false,
+      userName: () => this.userName,
       // Memory follows the SETTING: under `local` it runs on the server on this Mac, and while
       // that server is down it runs on keywords and rules — never on OpenAI, whatever brain the
       // fallback is running (docs/LOCAL.md §4).
@@ -636,7 +655,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       // the ear's stop is the old one — unless Live's fragments just stopped a thread by name: the same utterance.
       liveThreads: () => this.threads.table.spawnedLiveCount(),
       recentNamedStop: () => this.delegator?.namedStopEcho("live") ?? false,
-      onGateSpeech: () => this.gateSpeech("Kevin said stop"),
+      onGateSpeech: () => this.gateSpeech(`${this.userName} said stop`),
       // A dismissal ("go to sleep", "goodnight jarhead", "that's all"): the one sleep function, with the farewell.
       onSleep: (phrase) => void this.fallAsleep("said", { phrase, farewell: true }),
       // Room talk never sleeps it: a bare "goodnight" counts only mid-exchange (Jarhead spoke or was spoken to within
@@ -801,7 +820,16 @@ export class Engine extends EventEmitter<EngineEvents> {
         log.warn(`settings: unknown brain ${JSON.stringify(value)} dropped (one of ${BRAIN_KINDS.join(", ")})`);
         continue;
       }
+      if (key === "userName" && value !== null && value !== undefined && typeof value !== "string") {
+        log.warn(`settings: userName ${JSON.stringify(value)} dropped (a string)`);
+        continue;
+      }
       if (value === null) {
+        // Clearing the name means "unset" — the account's full name again (release F1).
+        if (key === "userName") {
+          next[key] = "";
+          continue;
+        }
         // Clearing is only meaningful for optional fields; required ones keep their value.
         if (key in DEFAULT_SETTINGS) continue;
         delete next[key];
@@ -812,10 +840,15 @@ export class Engine extends EventEmitter<EngineEvents> {
     }
     const before = this.settings;
     this.settings = next as unknown as Settings;
+    const renamed = (before.userName ?? "").trim() !== this.settings.userName.trim();
     // A different brain (or model / server) takes effect now, not at the next launch.
     if (this.brainStarted && (before.brain !== this.settings.brain || before.brainModel !== this.settings.brainModel || before.brainBaseUrl !== this.settings.brainBaseUrl || before.effort !== this.settings.effort)) {
       void this.restartBrain(`settings changed to ${this.settings.brain} ${this.settings.brainModel}`);
+    } else if (this.brainStarted && renamed) {
+      // A rename (release F1): the standing orders, Codex's base instructions and the memory extractor are all built with the name — rebuild them.
+      void this.restartBrain("the user's name changed");
     }
+    if (renamed) void this.memory.relink();
     // A voice, accent or language is fixed at session.start (session.update carries only the
     // delegation), so a pick while awake is silent until the next session — say so, and name
     // the verb that reopens now (Switch now → voice.reopen, Kevin-pressed only: never a paid start on a menu browse).
@@ -1350,7 +1383,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   /** The settings a selection reads: kind, model, server root, effort — what `updateSettings` restarts the brain for. */
   private brainIdentity(): string {
     const s = this.settings;
-    return `${s.brain}|${s.brainModel}|${s.brainBaseUrl ?? ""}|${s.effort}`;
+    return `${s.brain}|${s.brainModel}|${s.brainBaseUrl ?? ""}|${s.effort}|${this.userName}`;
   }
 
   /**
@@ -1438,8 +1471,10 @@ export class Engine extends EventEmitter<EngineEvents> {
           headers: { authorization: `Bearer ${this.config.openaiApiKey}` },
           signal: AbortSignal.timeout(8000),
         });
-        openaiKey = r.status === 200 ? "ok" : r.status === 401 ? "invalid" : r.status === 404 ? "ok" : "invalid";
-        if (r.status === 404) this.problemOf("voice.key", `OpenAI key works but ${this.config.liveModel} is not listed for it`, Engine.SETUP_REMEDY);
+        // 404: the key answered (so it is valid) but the Live model is not enabled on its project — its own
+        // word (release F4), never "ok": the first wake would fail with the voice.key problem below.
+        openaiKey = r.status === 200 ? "ok" : r.status === 401 ? "invalid" : r.status === 404 ? "noLiveModel" : "invalid";
+        if (r.status === 404) this.problemOf("voice.key", noLiveModelLine(this.config.liveModel), Engine.SETUP_REMEDY);
         // The key answered: a missing or stale key is not the problem any more; nor is reaching the host.
         if (r.status === 200) this.clearProblems("voice.key");
         this.clearProblems("voice.connection", (t) => t.startsWith("could not reach api.openai.com"));
@@ -1557,6 +1592,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             label: "Codex",
             brain: new CodexBrain({
               runner,
+              userName: this.userName,
               probe: codexProbe,
               stateDir: this.config.stateDir,
               socketPath: this.config.socketPath,
@@ -1572,6 +1608,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             label: "Claude Code",
             brain: new ClaudeBrain({
               runner,
+              userName: this.userName,
               stateDir: this.config.stateDir,
               // Under `auto` another vendor's leftover id must not sink the Claude login; an explicit choice keeps what Kevin set.
               ...(model && !(wanted === "auto" && foreignModel("claude-code", model)) ? { model } : {}),
@@ -1580,7 +1617,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             }),
           };
         case "anthropic-api":
-          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }) };
+          return { label: "Anthropic API", brain: new AnthropicBrain({ runner, userName: this.userName, apiKey: this.config.anthropicApiKey, model, effort: this.settings.effort, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }) };
         case "openai-compatible": {
           // Only a key Kevin set for this brain (JARHEAD_BRAIN_API_KEY) goes to an arbitrary
           // host; config.brainApiKey falls back to OPENAI_API_KEY, which belongs to OpenAI alone.
@@ -1592,7 +1629,7 @@ export class Engine extends EventEmitter<EngineEvents> {
           return {
             label: "OpenAI-compatible",
             ...(key.warning ? { warning: key.warning } : {}),
-            brain: new OpenAICompatibleBrain({ runner, baseUrl, apiKey: key.apiKey, model, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }),
+            brain: new OpenAICompatibleBrain({ runner, userName: this.userName, baseUrl, apiKey: key.apiKey, model, ...(spec ? { maxWallMs: spec.secondsCap * 1000 } : {}) }),
           };
         }
         case "local":
@@ -1603,6 +1640,7 @@ export class Engine extends EventEmitter<EngineEvents> {
             label: "Local",
             brain: new LocalBrain({
               runner,
+              userName: this.userName,
               baseUrl: this.settings.brainBaseUrl?.trim() || undefined,
               model: this.settings.brainModel.trim(),
               effort: this.settings.effort,
@@ -1620,7 +1658,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         case "openai-responses":
           if (spec) return undefined;
           // The model override only applies when Kevin chose this backend; under `auto` it may be another vendor's id.
-          return { label: "OpenAI Responses", brain: new ResponsesBrain({ runner: this.runner, model: wanted === "openai-responses" ? model : undefined, effort: "low" }) };
+          return { label: "OpenAI Responses", brain: new ResponsesBrain({ runner: this.runner, userName: this.userName, model: wanted === "openai-responses" ? model : undefined, effort: "low" }) };
       }
     };
     const threadFactoryFor = (kind: Kind): ThreadBrainFactory | undefined => (kind === "openai-responses" ? undefined : (spec) => build(kind, spec)?.brain);
@@ -1676,7 +1714,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.problemOf("brain.unavailable", `${candidate.label} brain unavailable (${r.detail}); ${order.length > 1 ? "trying the next backend" : "using the OpenAI backend instead"}`, Engine.BRAIN_REMEDY);
     }
     // An explicit choice that could not start: the Live session's own Responses delegation always can.
-    const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
+    const responses = new ResponsesBrain({ runner: this.runner, userName: this.userName, effort: "low" });
     const r = await responses.start();
     this.brain = responses;
     this.threadFactoryOfKind = undefined;
@@ -1741,7 +1779,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private async swapToResponses(reason: string): Promise<void> {
     this.problemOf("brain.unavailable", `brain failed (${reason}); switching to the OpenAI backend for the next session`, Engine.BRAIN_REMEDY);
     await this.brain?.stop();
-    const responses = new ResponsesBrain({ runner: this.runner, effort: "low" });
+    const responses = new ResponsesBrain({ runner: this.runner, userName: this.userName, effort: "low" });
     await responses.start();
     this.brain = responses;
     this.threadFactoryOfKind = undefined;
@@ -1769,10 +1807,10 @@ export class Engine extends EventEmitter<EngineEvents> {
     const brain = this.brain;
     const delegation =
       brain instanceof ResponsesBrain
-        ? responsesDelegationConfig({ model: this.settings.brain === "openai-responses" ? this.settings.brainModel : undefined, effort: "low" })
+        ? responsesDelegationConfig({ model: this.settings.brain === "openai-responses" ? this.settings.brainModel : undefined, effort: "low", userName: this.userName })
         : ({ type: "client" } as const);
-    const base = buildLiveInstructions({ alwaysOn: true });
-    const language = languageSection("Kevin", this.settings.language, this.settings.accent);
+    const base = buildLiveInstructions({ alwaysOn: true, userName: this.userName });
+    const language = languageSection(this.userName, this.settings.language, this.settings.accent);
     const about = this.memory.voiceBlock();
     return {
       model: this.config.liveModel,
@@ -2066,6 +2104,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       live,
       transcript: this.transcript,
       brain: this.brainProxy,
+      userName: () => this.userName,
       // Kevin hears the first acting tool as it lands ("clicking the search bar"), not
       // a narration generation before it: the model's first output is the tool call.
       voiceFirstTool: true,
@@ -2098,11 +2137,11 @@ export class Engine extends EventEmitter<EngineEvents> {
             },
           }),
       // Paused (or dictating, or going to sleep): delegations are recorded and refused, never run.
-      refuse: () => (this.paused ? "paused" : this.dictating ? "Kevin is dictating" : this.sleeping ? "going to sleep" : undefined),
+      refuse: () => (this.paused ? "paused" : this.dictating ? `${this.userName} is dictating` : this.sleeping ? "going to sleep" : undefined),
       // A spoken "stop" is an interrupt: the whole of what is running and being said ends; the session stays.
       onStop: (reason) => void this.interrupt(reason, "said"),
       // …and with ≥ 2 threads live the speech half comes first, on the stop word, while the work cut waits for a name.
-      onGateSpeech: () => this.gateSpeech("Kevin said stop"),
+      onGateSpeech: () => this.gateSpeech(`${this.userName} said stop`),
       // The session timeline's zero on the wall clock: the triggering utterance's end becomes timings.speechEndAt.
       sessionStartedAt: () => this.sessionStartedAt,
       // Live's path for a dismissal (the voice's attention gate is the addressing test there): the one sleep function.
@@ -2229,7 +2268,11 @@ export class Engine extends EventEmitter<EngineEvents> {
   static readonly FAREWELL_CAP_MS = 1800;
   /** Quiet after the farewell's first words (no transcript delta, no audible frame) before the close. */
   static readonly FAREWELL_QUIET_MS = 300;
-  static readonly FAREWELL_LINE = 'Kevin dismissed you. Say exactly one word — "night." — and nothing else.';
+  /** The farewell with the user's name (release F1); FAREWELL_LINE is the default name's, what the tests pin. */
+  static farewellLine(userName: string): string {
+    return `${userName} dismissed you. Say exactly one word — "night." — and nothing else.`;
+  }
+  static readonly FAREWELL_LINE = Engine.farewellLine("Kevin");
   /** The voice said its farewell on its own (Live's path) within this long: no second one is asked for. */
   private static readonly FAREWELL_SAID_MS = 2000;
 
@@ -2272,7 +2315,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         // Live's path: the voice may have said "night." before its delegation landed here — then only the word's tail is waited for.
         const said = this.transcript.last("jarhead");
         const alreadySaid = said !== undefined && t0 - said.at < Engine.FAREWELL_SAID_MS && /\b(night|sleeping)\b/i.test(said.text);
-        if (!alreadySaid) live.appendInstructions(null, Engine.FAREWELL_LINE);
+        if (!alreadySaid) live.appendInstructions(null, Engine.farewellLine(this.userName));
         await this.farewell(live, alreadySaid);
       }
       if (live && !this.connecting) {
@@ -2464,7 +2507,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (floor && floor.id !== MAIN_THREAD_ID) {
         const r = await this.threads.answerYes(floor.id);
         if (item) this.delegator?.typedHandled(item);
-        live.appendInstructions(null, r.ok ? `Kevin just typed "${t}": his yes went to ${floor.name}'s question. Say one word and wait.` : `Kevin just typed "${t}", but ${r.reason ?? "it was refused"}. Tell him in one sentence.`);
+        live.appendInstructions(null, r.ok ? `${this.userName} just typed "${t}": his yes went to ${floor.name}'s question. Say one word and wait.` : `${this.userName} just typed "${t}", but ${r.reason ?? "it was refused"}. Tell him in one sentence.`);
         log.info(`say-text: yes → ${floor.name} (${r.ok ? "relayed" : (r.reason ?? "refused")}) in ${Math.round(performance.now() - t0)} ms`);
         return;
       }
@@ -2493,14 +2536,14 @@ export class Engine extends EventEmitter<EngineEvents> {
       log.info(`say-text: ${t.length} chars → the session was reopened by the reflex (${(did || "handled").slice(0, 60)}) in ${Math.round(performance.now() - t0)} ms`);
       return;
     }
-    const typed = `Kevin just typed (treat it exactly like speech): "${t}".`;
+    const typed = `${this.userName} just typed (treat it exactly like speech): "${t}".`;
     live.appendInstructions(
       null,
       did === undefined
         ? `${typed} Respond to it now; delegate if it asks for anything the backend does.`
         : meta
           ? did
-            ? `${typed} Jarhead already answered it: "${did}" Say that to Kevin, in these words, and wait.`
+            ? `${typed} Jarhead already answered it: "${did}" Say that to ${this.userName}, in these words, and wait.`
             : `${typed} Jarhead already handled it. Say one word and wait.`
           : `${typed} Jarhead already did it: ${did} Say one word, or the answer, and wait.`,
     );
@@ -2548,7 +2591,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   async interrupt(source = "interrupt", how: "pressed" | "said" = "said"): Promise<void> {
     const t0 = this.now();
-    const reason = `Kevin ${how} stop`;
+    const reason = `${this.userName} ${how} stop`;
     const open = this.openSession();
     // The gate first, so a frame arriving between here and the flush is dropped too.
     if (open) this.outputGateUntil = t0 + Engine.OUTPUT_GATE_MS;
@@ -2613,7 +2656,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.ledgerResumeUsed = true;
     this.lostSession = undefined;
     this.dropHeldReconnect();
-    const { running, dropped, jobs, cancel } = this.cutEverything("Kevin pressed stop", "stop");
+    const { running, dropped, jobs, cancel } = this.cutEverything(`${this.userName} pressed stop`, "stop");
     this.endVoiceReconnect();
     // The stop row is written whenever there was something to stop — a pending reconnect
     // included, so the next process reads Kevin's word and does not resume the cut session.
@@ -2704,7 +2747,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.threads.speakQuestion(name, question)) return;
     const d = this.delegator?.active;
     if (d) this.delegator?.threadSay(d.id, "Jarhead", `May I ${question}? Say yes.`);
-    else this.live?.appendInstructions(null, `Your earlier question is Kevin's to answer now. Ask him: "${question}".`);
+    else this.live?.appendInstructions(null, `Your earlier question is ${this.userName}'s to answer now. Ask him: "${question}".`);
   }
 
   /** The delegation a main-lane task belongs to, with Kevin's words for the thread's gates; a thread of main's sits at depth one. */
@@ -2729,7 +2772,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const inner = this.opts.makeThreadBrain ?? this.threadFactoryOfKind;
     if (!inner) return undefined;
     return (spec) => {
-      if (spec.runner instanceof LaneRunner) spec.runner.setHooks({ serializer: serializerLike(new ActingSerializer()) });
+      if (spec.runner instanceof LaneRunner) spec.runner.setHooks({ serializer: serializerLike(new ActingSerializer({ userName: () => this.userName })) });
       return inner(spec);
     };
   }
@@ -2899,7 +2942,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       this.delegator.threadSay(d.id, "Jarhead", line);
       return;
     }
-    this.live?.appendInstructions(null, `Say this to Kevin now, in these words: "${line}" Then wait.`);
+    this.live?.appendInstructions(null, `Say this to ${this.userName} now, in these words: "${line}" Then wait.`);
   }
 
   // ---- the main thread's record: idle between turns, thinking/acting with the Delegator's phase, a question while one waits.
@@ -2954,7 +2997,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         this.toast("nothing running on the main thread", "info");
         return;
       }
-      await this.delegator.parkRunning("Kevin stopped this thread", { status: "cancelled", summary: "Kevin stopped this thread" });
+      await this.delegator.parkRunning(`${this.userName} stopped this thread`, { status: "cancelled", summary: `${this.userName} stopped this thread` });
       this.toast("main thread stopped", "info");
       log.info(`thread.stop main: parked ${running.id}; the threads carry on`);
       return;
@@ -3008,7 +3051,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         }
         this.desk.drop(ThreadAwareRunner.ACTOR);
         this.threads.publish(this.threads.table.status(MAIN_THREAD_ID, this.delegator?.active ? "thinking" : "idle"));
-        this.live?.appendInstructions(null, `Kevin denied "${question.slice(0, 160)}" in the Console. Say one word and wait.`);
+        this.live?.appendInstructions(null, `${this.userName} denied "${question.slice(0, 160)}" in the Console. Say one word and wait.`);
         this.toast("denied", "info");
         log.info(`thread.answer no main: dropped "${question.slice(0, 80)}"`);
         return;
@@ -3420,8 +3463,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.live?.appendInstructions(
       null,
       window
-        ? `Kevin just captured a window of his screen (${opts?.element?.app ?? "a window"}, ${Math.round(bbox.w)}×${Math.round(bbox.h)}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`
-        : `Kevin just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`,
+        ? `${this.userName} just captured a window of his screen (${opts?.element?.app ?? "a window"}, ${Math.round(bbox.w)}×${Math.round(bbox.h)}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`
+        : `${this.userName} just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`,
     );
     // What did he surround? The element under the stroke's centroid and the window
     // list say; the mark snaps to the smallest frame that holds the centroid and
@@ -3752,7 +3795,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       const item = whole[i];
       const text = item?.text.trim();
       if (!item || !text) continue;
-      const line = `${item.speaker === "kevin" ? "Kevin" : "Jarhead"}: ${text}`;
+      const line = `${item.speaker === "kevin" ? this.userName : "Jarhead"}: ${text}`;
       if (chars + line.length > Engine.CONTINUITY_CHARS) {
         // The most recent line always makes it, cut if it must.
         if (lines.length === 0) lines.unshift(line.slice(0, Engine.CONTINUITY_CHARS));
@@ -3769,10 +3812,10 @@ export class Engine extends EventEmitter<EngineEvents> {
       const name = Engine.voiceName(this.settings.voice);
       return [
         "# Continuity",
-        `Kevin switched your voice ${gap} ago: you now speak as ${name}. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
+        `${this.userName} switched your voice ${gap} ago: you now speak as ${name}. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        `Say exactly one line now — "${name} here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.`,
+        `Say exactly one line now — "${name} here." — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless he asks.`,
       ].join("\n");
     }
     if (how === "reconnected") {
@@ -3781,7 +3824,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         `The voice connection dropped ${gap} ago and just came back. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        "Carry on as before; do not recap or apologise. Say nothing now unless Kevin was mid-request — then answer it.",
+        `Carry on as before; do not recap or apologise. Say nothing now unless ${this.userName} was mid-request — then answer it.`,
       ].join("\n");
     }
     if (how === "restarted") {
@@ -3790,15 +3833,15 @@ export class Engine extends EventEmitter<EngineEvents> {
         `Jarhead's engine restarted ${seconds < 90 ? `${seconds} seconds` : `${minutes} minutes`} ago in the middle of this conversation (a crash, or an update). This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        'Say exactly one word now — "back" — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.',
+        `Say exactly one word now — "back" — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless he asks.`,
       ].join("\n");
     }
     return [
       "# Continuity",
-      `Kevin paused you ${when} and just resumed. This is the same conversation. What was said before the pause, most recent last:`,
+      `${this.userName} paused you ${when} and just resumed. This is the same conversation. What was said before the pause, most recent last:`,
       lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
       ...(task ? [task] : []),
-      "Carry on as before; do not recap unless he asks. Say nothing now: stay silent until Kevin speaks to you again.",
+      `Carry on as before; do not recap unless he asks. Say nothing now: stay silent until ${this.userName} speaks to you again.`,
     ].join("\n");
   }
 
@@ -3944,7 +3987,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     log.warn(`reflex mismatch: the ear heard "${heard}" and ran ${reflex.label}; Kevin said "${normalizeForLog(said)}"`);
     if (reflex.idempotent) return false;
     if (reflex.kind !== "type") {
-      this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but Kevin actually said "${normalizeForLog(said).slice(0, 80)}". Tell him in one short sentence what was done, then carry on with what he asked.`);
+      this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but ${this.userName} actually said "${normalizeForLog(said).slice(0, 80)}". Tell him in one short sentence what was done, then carry on with what he asked.`);
       return false;
     }
     const typed = String(reflex.input["text"]).slice(0, 60);
@@ -3953,14 +3996,14 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (f && /AXText(Field|Area)|AXComboBox|AXWebArea/.test(f.role) && !f.secure) {
         const r = await this.toolset.run("key", { text: "cmd+z" });
         if (r.kind === "text") {
-          this.live?.appendInstructions(null, `You typed "${typed}" by reflex but Kevin said something else; it has been undone. Tell him in one short sentence.`);
+          this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else; it has been undone. Tell him in one short sentence.`);
           return true;
         }
       }
     } catch (e) {
       log.debug(`undo after mismatch: ${(e as Error).message}`);
     }
-    this.live?.appendInstructions(null, `You typed "${typed}" by reflex but Kevin said something else, and it could not be undone (the focus is not in a text field). Tell him in one short sentence so he can fix it; do not type it again on top.`);
+    this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else, and it could not be undone (the focus is not in a text field). Tell him in one short sentence so he can fix it; do not type it again on top.`);
     return false;
   }
 
@@ -4068,7 +4111,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.dictating) this.lease.beginOp("dictation");
       else this.lease.release("dictation", "done");
     });
-    this.live?.appendInstructions(null, "Kevin is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says \"stop dictating\"; do not delegate what he says.");
+    this.live?.appendInstructions(null, `${this.userName} is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says "stop dictating"; do not delegate what he says.`);
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
     this.toast("dictating — say \"stop dictating\" to end", "info");
     this.recomputePhase();
@@ -4081,7 +4124,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.lease.release("dictation", "done");
     this.ledger.append({ at: this.now(), type: "dictation", state: "stopped", reason } as unknown as LedgerRow);
     if (reason !== "asleep") {
-      this.live?.appendInstructions(null, reason === "refused" ? "Dictation stopped: the focused field is a password field or a hands-off app, so nothing was typed. Tell Kevin in one sentence." : "Kevin stopped dictating. Say \"done\" and carry on.");
+      this.live?.appendInstructions(null, reason === "refused" ? `Dictation stopped: the focused field is a password field or a hands-off app, so nothing was typed. Tell ${this.userName} in one sentence.` : `${this.userName} stopped dictating. Say "done" and carry on.`);
       this.toast(reason === "refused" ? "dictation stopped: that field is off limits" : "dictation ended", reason === "refused" ? "warn" : "info");
     }
     this.recomputePhase();
@@ -4762,6 +4805,7 @@ export class Engine extends EventEmitter<EngineEvents> {
   private static readonly BRAIN_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "problem.retry", kind: "brain.unavailable" } };
   private static readonly LOCAL_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "problem.retry", kind: "brain.local" } };
   private static readonly SETUP_REMEDY: ProblemRemedy = { label: "Open Setup", open: "jarhead://setup" };
+
   private static readonly GO_REMEDY: ProblemRemedy = { label: "Retry", command: { type: "go" } };
   private static readonly LIMIT_REMEDY: ProblemRemedy = { label: "Retry in 30 s", command: { type: "problem.retry", kind: "voice.limit" } };
 

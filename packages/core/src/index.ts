@@ -16,5 +16,5 @@ export { parseWhen, nextFire, describe, describeEvent, describeInstant, inQuiet,
 export type { ParsedWhen } from "./schedule.ts";
 export { dataPaths } from "./privacy.ts";
 export type { DataPathsInput } from "./privacy.ts";
-export { effectiveUserName, accountFullName, parseRealName, capitalizeName } from "./user.ts";
+export { effectiveUserName, accountFullName, parseRealName, capitalizeName, noLiveModelLine } from "./user.ts";
 export type { AccountNameOptions } from "./user.ts";

@@ -63,3 +63,11 @@ function safeUsername(): string {
     return "";
   }
 }
+
+/**
+ * The voice.key line for a valid OpenAI key whose project has no Live model (release F4): the
+ * engine's problem, Setup › Voice, the report line and the doctor's key row all say it.
+ */
+export function noLiveModelLine(liveModel: string): string {
+  return `OpenAI key works, but ${liveModel} is not on it — enable ${liveModel} on the OpenAI project this key belongs to, or paste a key from a project that has it`;
+}

@@ -120,7 +120,8 @@ test("release F1: the rules mint sentences about whoever the name says — the s
     pendingKevinLines: 2,
     upToAt: 3,
     truncated: false,
-  } as ExtractInput;
+    dropped: 0,
+  };
   const out = await new RulesExtractor("Sam").extract(input);
   assert.deepEqual(out.map((c) => c.text), ["Sam prefers short answers", "Sam's wife is Anna"], "the user's lines only, in his name");
 });

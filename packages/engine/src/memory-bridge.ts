@@ -149,6 +149,8 @@ export interface MemoryBridgeOptions extends MemoryBridgeSeams {
   readonly local: () => LocalMemoryTarget | "offline" | undefined;
   /** The snapshot wants redrawing (counts, pending, the last run). */
   readonly onChange: () => void;
+  /** The user's name (release F1), read live: the extractor's subject, the transcript's label, the voice block's header. A change relinks. */
+  readonly userName?: (() => string) | undefined;
 }
 
 type MemoryCommand = Extract<EngineCommand, { type: `memory.${string}` }>;
@@ -241,10 +243,17 @@ export class MemoryBridge {
 
   /** The providers a target names, as one string: what `relink()` compares. */
   private identityOf(target: LocalMemoryTarget | "offline" | undefined): string {
-    if (target === "offline") return "keyword";
+    // The user's name is part of every identity: the extractors and the renderer are built with it, so a rename rebuilds them.
+    const who = `|who=${this.userName()}`;
+    if (target === "offline") return `keyword${who}`;
     // The token's presence is part of the identity: a `config.set-secrets` that adds one relinks onto a server that wanted it.
-    if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}|${this.opts.brainApiKey() ? "token" : ""}`;
-    return this.opts.apiKey() ? `openai|${this.opts.model() ?? ""}` : "keyword";
+    if (target) return `local|${target.baseUrl}|${target.embedModel ?? ""}|${target.chatModel}|${this.opts.brainApiKey() ? "token" : ""}${who}`;
+    return this.opts.apiKey() ? `openai|${this.opts.model() ?? ""}${who}` : `keyword${who}`;
+  }
+
+  /** The effective name as the engine reads it; "Kevin" when no getter is wired (tests). */
+  private userName(): string {
+    return this.opts.userName?.() || "Kevin";
   }
 
   /**
@@ -264,9 +273,10 @@ export class MemoryBridge {
     let extractor: Extractor;
     let decider: Decider;
     let maxChars: number | undefined;
+    const userName = this.userName();
     if (target === "offline") {
       embedder = this.opts.embedder ?? new KeywordEmbedder();
-      extractor = this.opts.extractor ?? new RulesExtractor();
+      extractor = this.opts.extractor ?? new RulesExtractor(userName);
       decider = this.opts.decider ?? new RulesDecider();
     } else if (target) {
       // The brain's token (an LM Studio bearer) goes with every call, or a token-protected server would give the brain and refuse memory.
@@ -286,13 +296,14 @@ export class MemoryBridge {
           ? new ChatExtractor({
               baseUrl: target.baseUrl,
               model: target.chatModel,
+              userName,
               ...(target.chatContext !== undefined ? { contextLength: target.chatContext } : {}),
               ...(target.thinking !== undefined ? { thinking: target.thinking } : {}),
               ...auth,
               ...(fetchImpl ? { fetchImpl } : {}),
             })
           : undefined;
-      extractor = this.opts.extractor ?? chat ?? new RulesExtractor();
+      extractor = this.opts.extractor ?? chat ?? new RulesExtractor(userName);
       decider = this.opts.decider ?? chat ?? new RulesDecider();
       maxChars = chat?.maxChars;
     } else {
@@ -303,8 +314,8 @@ export class MemoryBridge {
       if (withKey && !this.opts.model() && !this.opts.extractor && !this.pickedOnce) await this.pickModel();
       const model = this.opts.model() ?? this.pickedModel;
       embedder = this.opts.embedder ?? (withKey ? new OpenAIEmbedder({ apiKey, ...(fetchImpl ? { fetchImpl } : {}) }) : new KeywordEmbedder());
-      const responses = withKey && !this.opts.extractor ? new ResponsesExtractor({ apiKey, ...(model ? { model } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
-      extractor = this.opts.extractor ?? responses ?? new RulesExtractor();
+      const responses = withKey && !this.opts.extractor ? new ResponsesExtractor({ apiKey, userName, ...(model ? { model } : {}), ...(fetchImpl ? { fetchImpl } : {}) }) : undefined;
+      extractor = this.opts.extractor ?? responses ?? new RulesExtractor(userName);
       decider = this.opts.decider ?? responses ?? new RulesDecider();
     }
     // The assignment to MemoryServiceLike is the check that the package still has the shape the bridge calls.
@@ -315,6 +326,7 @@ export class MemoryBridge {
       extractor,
       decider,
       redact: this.opts.redact,
+      userName,
       retrieveTimeoutMs: RETRIEVE_RACE_MS,
       ...(maxChars !== undefined ? { maxChars } : {}),
       // The audit rows carry ids only (protocol LedgerRow memory.*); the words live in the store.
