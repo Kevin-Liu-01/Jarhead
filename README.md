@@ -349,8 +349,8 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 
 ## Install and run
 
-macOS 14+, Apple silicon, Xcode 15.3 or newer (the sources use Swift 5.10's `nonisolated(unsafe)`;
-`apps/mac/Package.swift` asks for swift-tools 5.9; CI builds with Xcode 16 on macos-15), Node ≥ 24,
+macOS 14+, Apple silicon, Xcode 15.3 or newer (the sources use Swift 5.10's `nonisolated(unsafe)` and
+`apps/mac/Package.swift` asks for swift-tools 5.10, so an older toolchain is refused before it compiles anything; CI builds with Xcode 16 on macos-15), Node ≥ 24,
 pnpm 10 — `corepack enable` gives you the version `package.json`'s `packageManager` names. An `OPENAI_API_KEY` for the voice; a brain
 you are already signed in to. What running it costs is under [Costs](#costs).
 
