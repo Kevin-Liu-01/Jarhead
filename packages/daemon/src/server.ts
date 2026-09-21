@@ -67,6 +67,8 @@ export interface EngineLike {
   /** How many clients look at the island / Console (the app's `hello { audio: true }`): running timers tick only while > 0. Optional, as above. */
   setViewers?(n: number): void;
   readonly config: { readonly stateDir: string };
+  /** The user's name as the refusals say it (the engine's effective name); a ToolHost may carry none. */
+  readonly userName?: string | undefined;
   /** The engine's ToolRunner; `tool.run` messages go through it. When it says it has no task attached (`attached === false`), calls are refused: nothing acts without a delegation. */
   readonly runner: { run(name: string, input: unknown): Promise<{ readonly result: ToolResult }>; readonly attached?: boolean };
   /**
@@ -83,12 +85,15 @@ export interface EngineLike {
  * answers for exactly that brain's thread id, or its every stamped call is refused as
  * unknown. A server built over a ToolHost answers `tool.run` and refuses or ignores the rest.
  */
-export type ToolHost = Pick<EngineLike, "runner" | "runnerFor">;
+export type ToolHost = Pick<EngineLike, "runner" | "runnerFor" | "userName">;
 
 /** A ToolHost as an engine: the runners are its, everything else is inert. */
 function toolOnlyEngine(host: ToolHost): EngineLike {
   const noRows = (): unknown[] => [];
   return {
+    get userName(): string | undefined {
+      return host.userName;
+    },
     on: () => undefined,
     snapshot: () => ({ phase: "asleep" }),
     command: async () => undefined,
@@ -432,7 +437,7 @@ export class DaemonServer extends EventEmitter<DaemonServerEvents> {
       }
       // An out-of-process brain may only act while a delegation has the runner: a Codex
       // turn that outlived a stop (interrupted before turn/start answered) gets a refusal, not a click.
-      if (runner.attached === false) return answer({ kind: "error", message: `refused: no task is running in Jarhead; ${name} was not run (Kevin stopped the task, or it finished)` });
+      if (runner.attached === false) return answer({ kind: "error", message: `refused: no task is running in Jarhead; ${name} was not run (${this.engine.userName || "Kevin"} stopped the task, or it finished)` });
     } catch (e) {
       return answer({ kind: "error", message: `refused: ${(e as Error).message}; ${name} was not run` });
     }

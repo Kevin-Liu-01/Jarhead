@@ -43,6 +43,8 @@ class FakeEngine extends EventEmitter implements EngineLike {
   };
   memory: EngineLike["memory"] = { list: () => [], search: async () => [] };
   config = { stateDir: "/tmp/jh-test" };
+  /** The engine's effective name, as the refusals say it. */
+  userName = "Kevin";
   toolCalls: { name: string; input: unknown }[] = [];
   /** `attached` undefined = a runner that does not say; false = no task attached, tool.run is refused. */
   runner: { attached?: boolean; run(name: string, input: unknown): Promise<{ result: ToolResult }> } = {
@@ -310,6 +312,7 @@ test("tool.run goes through the engine's runner and answers the asking client on
   await new Promise((r) => setTimeout(r, 80));
   // No task attached to the runner (a Codex turn that outlived a stop): refused before the runner sees it.
   engine.runner.attached = false;
+  engine.userName = "Sam";
   asker.sendJson({ type: "tool.run", id: "t6", name: "left_click", input: { coordinate: [1, 1] } });
   await new Promise((r) => setTimeout(r, 40));
   engine.runner.attached = true;
@@ -332,6 +335,7 @@ test("tool.run goes through the engine's runner and answers the asking client on
   assert.match((byId.get("t5") as { message: string }).message, /unknown tool format_disk/);
   assert.equal(byId.get("t6")?.kind, "error");
   assert.match((byId.get("t6") as { message: string }).message, /^refused: no task is running in Jarhead; left_click was not run/);
+  assert.equal((byId.get("t6") as { message: string }).message, "refused: no task is running in Jarhead; left_click was not run (Sam stopped the task, or it finished)", "the refusal says the user's name, never a literal Kevin");
   assert.equal(byId.get("t7")?.kind, "text", "with a task attached the same call runs");
   assert.deepEqual(engine.toolCalls.map((c) => c.name), ["frontmost_app", "screenshot", "run_shell", "zoom", "left_click"], "the refused call never reached the runner");
   assert.equal(seenByBystander.filter((m) => m.type === "tool.result").length, 0, "tool results are not broadcast");
