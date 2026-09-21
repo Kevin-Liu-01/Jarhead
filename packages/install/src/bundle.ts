@@ -57,8 +57,20 @@ export function probeTarget(path: string): TargetProbe {
   return { exists: true, isSymlink: false, isDirectory: st.isDirectory(), uid: st.uid, inode: st.ino, writable };
 }
 
-export function planInstall(probe: TargetProbe, uid: number, path = "/Applications/Jarhead.app"): InstallPlan {
-  if (!probe.exists) return { kind: "create" };
+/**
+ * `parent` is the probe of the target's directory, wanted only when the target is absent: a
+ * first install copies into it, and a standard (non-administrator) account cannot write
+ * /Applications — `cp -R` would only say "Permission denied". The refusal says what to do
+ * instead; there is no install-location knob to point at, so the answer is an administrator
+ * account. `user` names the account in that line (the uid when unknown).
+ */
+export function planInstall(probe: TargetProbe, uid: number, path = "/Applications/Jarhead.app", parent?: TargetProbe, user?: string): InstallPlan {
+  if (!probe.exists) {
+    if (parent?.exists && parent.writable === false) {
+      return { kind: "refuse", reason: `${dirname(path)} is not writable by ${user ?? `uid ${uid}`}: install from an administrator account`, hint: `the script never runs sudo` };
+    }
+    return { kind: "create" };
+  }
   if (probe.isSymlink) {
     return { kind: "refuse", reason: `${path} is a symlink to ${probe.linkTarget ?? "?"}; rsync would write into the target`, hint: `move it to the Trash in Finder (or mv it aside) and rerun pnpm build:mac` };
   }
@@ -268,6 +280,8 @@ export interface InstallSpec {
   readonly cleanup?: string;
   readonly bundleId: string;
   readonly uid: number;
+  /** The account's short name, for the not-writable line of a first install (the uid stands in when absent). */
+  readonly user?: string;
 }
 
 /** Every side effect of the install, injectable: build-mac.ts passes the real ones, the tests a recorder. */
@@ -296,8 +310,8 @@ export type InstallOutcome =
 
 /**
  * Step 5 of `pnpm build:mac`, in order: plan (refuse a symlink / file / other uid /
- * no write bit — or a snapshot path named `.app` — before anything is written) → first
- * install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
+ * no write bit, a parent directory this account cannot write into, or a snapshot path
+ * named `.app` — before anything is written) → first install `cp -R`, else snapshot to `previous` when one was asked for, then rsync in
  * place (never --inplace; `._*` in the itemized output means -E leaked and the build
  * fails) → verify the INSTALLED copy: strict + deep, the designated requirement's
  * identifier, a sha256 parity walk against the stage, the directory inode unchanged →
@@ -305,7 +319,10 @@ export type InstallOutcome =
  * snapshot was taken.
  */
 export function performInstall(spec: InstallSpec, io: InstallIO): InstallOutcome {
-  const plan = planInstall(io.probe(spec.installed), spec.uid, spec.installed);
+  const target = io.probe(spec.installed);
+  // Only a first install writes into the parent, so only then is it probed.
+  const parent = target.exists ? undefined : io.probe(dirname(spec.installed));
+  const plan = planInstall(target, spec.uid, spec.installed, parent, spec.user);
   if (plan.kind === "refuse") return { ok: false, what: `refusing to install: ${plan.reason}`, lines: [plan.hint] };
   if (spec.previous !== undefined && !snapshotNameOk(spec.previous)) {
     return { ok: false, what: `refusing to install: the snapshot path ${spec.previous} is not a .zip archive`, lines: ["LaunchServices registers any directory holding an Info.plist as a bundle — a second Jarhead; snapshot to a .zip archive (build/previous/Jarhead.app.zip)"] };

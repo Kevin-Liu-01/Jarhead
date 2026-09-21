@@ -17,6 +17,14 @@ import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, DITTO, RSYNC
 
 test("planInstall: absent → create; a directory Kevin owns → update with its inode; a symlink, a file, another uid or no write bit → refuse", () => {
   assert.deepEqual(planInstall({ exists: false, isSymlink: false, isDirectory: false }, 501), { kind: "create" });
+  // A first install into a parent this account can write (or one nobody probed): create.
+  const applications: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 0, inode: 2, writable: true };
+  assert.deepEqual(planInstall({ exists: false, isSymlink: false, isDirectory: false }, 501, "/Applications/Jarhead.app", applications, "sam"), { kind: "create" });
+  // A standard account's first install: /Applications is root's and not writable — refused with what to do, before cp -R could say Permission denied.
+  const standard = planInstall({ exists: false, isSymlink: false, isDirectory: false }, 502, "/Applications/Jarhead.app", { ...applications, writable: false }, "sam");
+  assert.deepEqual(standard, { kind: "refuse", reason: "/Applications is not writable by sam: install from an administrator account", hint: "the script never runs sudo" });
+  const noName = planInstall({ exists: false, isSymlink: false, isDirectory: false }, 502, "/Applications/Jarhead.app", { ...applications, writable: false });
+  assert.equal(noName.kind === "refuse" ? noName.reason : "", "/Applications is not writable by uid 502: install from an administrator account");
   assert.deepEqual(planInstall({ exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true }, 501), { kind: "update", inode: 103261417 });
   const link = planInstall({ exists: true, isSymlink: true, isDirectory: false, uid: 501, inode: 7, linkTarget: "/Users/kevinliu/jarvis/build/stage/Jarhead.app" }, 501);
   assert.equal(link.kind, "refuse");
@@ -288,11 +296,12 @@ test("performInstall, update with a snapshot asked for: the ditto archive is tak
   assert.deepEqual(bad.trace, ["probe /Applications/Jarhead.app"], "refused before the snapshot or any write");
 });
 
-test("performInstall, first install: cp -R of the stage into the parent directory, no snapshot, no inode check, the line says created", () => {
+test("performInstall, first install: the parent probed for the write bit, cp -R of the stage into it, no snapshot, no inode check, the line says created", () => {
   const created: TargetProbe = { ...DIR, inode: 555 };
-  const { io, trace, warnings } = scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }, created] });
+  const applications: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 0, inode: 2, writable: true };
+  const { io, trace, warnings } = scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }, applications, created] });
   const r = performInstall(SPEC, io);
-  assert.deepEqual(trace.slice(0, 3), ["probe /Applications/Jarhead.app", "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
+  assert.deepEqual(trace.slice(0, 4), ["probe /Applications/Jarhead.app", "probe /Applications", "exec cp -R /r/build/stage/Jarhead.app /Applications/", `exec ${CODESIGN} ${CODESIGN_VERIFY_ARGS.join(" ")} /Applications/Jarhead.app`]);
   assert.ok(!trace.some((t) => t.startsWith(`exec ${RSYNC}`)), "nothing to snapshot or sync into");
   assert.ok(trace.includes("relink /r/build/Jarhead.app -> /Applications/Jarhead.app"));
   assert.ok(r.ok);
@@ -301,12 +310,33 @@ test("performInstall, first install: cp -R of the stage into the parent director
     assert.match(r.line, /^install    \/Applications\/Jarhead\.app created \(inode 555\) · copied whole/);
   }
   assert.deepEqual(warnings, []);
-  const denied = performInstall(SPEC, scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }], cpCode: 1 }).io);
+  // The parent writable as far as the probe can tell, cp -R still failing: the bare error stands, with cp's own words.
+  const denied = performInstall(SPEC, scripted({ probes: [{ exists: false, isSymlink: false, isDirectory: false }, applications], cpCode: 1 }).io);
   assert.ok(!denied.ok);
   if (!denied.ok) {
     assert.equal(denied.what, "cp -R exited 1");
     assert.deepEqual(denied.lines, ["cp: /Applications/Jarhead.app: Permission denied"]);
   }
+});
+
+test("performInstall, first install by a standard account: /Applications not writable → refused with what to do, before cp -R or any other command; the user's name in the line, the uid when there is none", () => {
+  const absent: TargetProbe = { exists: false, isSymlink: false, isDirectory: false };
+  const rootOwned: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 0, inode: 2, writable: false };
+  const { io, trace } = scripted({ probes: [absent, rootOwned] });
+  const r = performInstall({ ...NO_SNAPSHOT, uid: 502, user: "sam" }, io);
+  assert.deepEqual(trace, ["probe /Applications/Jarhead.app", "probe /Applications"], "two probes, no command");
+  assert.ok(!r.ok);
+  if (!r.ok) {
+    assert.equal(r.what, "refusing to install: /Applications is not writable by sam: install from an administrator account");
+    assert.deepEqual(r.lines, ["the script never runs sudo"]);
+  }
+  const anonymous = performInstall({ ...NO_SNAPSHOT, uid: 502 }, scripted({ probes: [absent, rootOwned] }).io);
+  assert.ok(!anonymous.ok);
+  if (!anonymous.ok) assert.equal(anonymous.what, "refusing to install: /Applications is not writable by uid 502: install from an administrator account");
+  // An update never probes the parent: an existing bundle this account owns is rsynced in place whatever /Applications' write bit says.
+  const update = scripted({ probes: [DIR, DIR] });
+  assert.ok(performInstall(NO_SNAPSHOT, update.io).ok);
+  assert.ok(!update.trace.includes("probe /Applications"), update.trace.join("\n"));
 });
 
 test("performInstall refuses before anything runs: a symlink, a file, another uid or no write bit at the target means no command, no snapshot, the plan's own hint", () => {

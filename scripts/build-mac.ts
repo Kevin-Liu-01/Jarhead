@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
 import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/install";
@@ -198,7 +199,16 @@ const io: InstallIO = {
   compare: compareTrees,
   warn: (line) => console.warn(`[build-mac] ${line}`),
 };
-const outcome = performInstall({ stage: APP, installed: INSTALLED, ...(PREVIOUS !== undefined ? { previous: PREVIOUS } : {}), link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1 }, io);
+/** The account's short name for the not-writable line of a first install; userInfo throws on an account with no passwd entry, and the uid stands in then. */
+function accountName(): string | undefined {
+  try {
+    return userInfo().username || undefined;
+  } catch {
+    return undefined;
+  }
+}
+const user = accountName();
+const outcome = performInstall({ stage: APP, installed: INSTALLED, ...(PREVIOUS !== undefined ? { previous: PREVIOUS } : {}), link: LINK, cleanup: join(OUT, "stage"), bundleId: JARHEAD_BUNDLE_ID, uid: process.getuid?.() ?? -1, ...(user !== undefined ? { user } : {}) }, io);
 if (!outcome.ok) {
   console.error(`[build-mac] ${outcome.what}`);
   for (const l of outcome.lines) console.error(`           ${l}`);
