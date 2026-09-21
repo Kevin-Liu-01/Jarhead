@@ -2,7 +2,7 @@ import { logger } from "@jarhead/core";
 import type { LiveSession, ResponsesDelegationConfig } from "@jarhead/live";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
-import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
+import { toolSpecsFor, type ToolSpec } from "./tools.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { loadAttachments, type LoadedAttachment } from "./attachments.ts";
 
@@ -46,7 +46,7 @@ export function responsesDelegationConfig(opts: ResponsesConfigOptions): { type:
       // Settings.brainModel is "" for "the backend's default"; only a real id overrides.
       model: opts.model || DEFAULT_RESPONSES_MODEL,
       instructions: brainSystemPrompt(opts.userName),
-      tools: [...ALL_TOOL_SPECS.map(toFunctionTool), ...(opts.webSearch === false ? [] : [{ type: "web_search" }])],
+      tools: [...toolSpecsFor(opts.userName ?? "Kevin").map(toFunctionTool), ...(opts.webSearch === false ? [] : [{ type: "web_search" }])],
       tool_choice: "auto",
       parallel_tool_calls: false,
       reasoning: { effort: opts.effort ?? "low" },

@@ -2,7 +2,7 @@ import { logger } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
-import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
+import { ALL_TOOL_SPECS, toolSpecsFor, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
 import { delegationPrompt, historyPrompt } from "./anthropic.ts";
@@ -419,7 +419,7 @@ export class OpenAICompatibleBrain implements Brain {
     this.model = opts.model?.trim() || undefined;
     this.capabilities = { ...(this.baseUrl ? detectCapabilities(this.baseUrl) : { images: false }), ...(opts.capabilities ?? {}) };
     this.fetchImpl = opts.fetch ?? fetch;
-    this.tools = (opts.tools ?? ALL_TOOL_SPECS).map(toChatTool);
+    this.tools = toolSpecsFor(opts.userName ?? "Kevin", opts.tools ?? ALL_TOOL_SPECS).map(toChatTool);
     this.transport =
       opts.transport ??
       (this.baseUrl

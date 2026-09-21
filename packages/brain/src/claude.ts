@@ -4,7 +4,7 @@ import { logger } from "@jarhead/core";
 import { ClaudeSession, claudeEnv, loadSdk, type PermissionDecision, type SdkLike } from "@jarhead/agents";
 import type { Brain, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
-import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
+import { toolSpecsFor, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { delegationPrompt } from "./anthropic.ts";
 import { loadAttachments } from "./attachments.ts";
@@ -43,8 +43,8 @@ export interface ClaudeBrainOptions {
   readonly sdk?: SdkLike;
   /** What the standing orders call the person Jarhead works for (release F1); the engine passes the effective name. */
   readonly userName?: string | undefined;
-  /** Test seam: builds the MCP server config from tool specs. */
-  readonly mcpFactory?: (specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>) => Promise<Record<string, unknown>>;
+  /** Test seam: builds the MCP server config from tool specs (rendered in the user's name, which the server's instructions say too). */
+  readonly mcpFactory?: (specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>, userName: string) => Promise<Record<string, unknown>>;
 }
 
 export interface McpResult {
@@ -95,7 +95,8 @@ export class ClaudeBrain implements Brain {
     if (this.session) return { ready: this.ready, detail: this.readyDetail };
     try {
       const sdk = this.opts.sdk ?? (await loadSdk());
-      const mcp = await (this.opts.mcpFactory ?? defaultMcpFactory)(ALL_TOOL_SPECS, (name, args) => this.callTool(name, args));
+      const who = this.opts.userName ?? "Kevin";
+      const mcp = await (this.opts.mcpFactory ?? defaultMcpFactory)(toolSpecsFor(who), (name, args) => this.callTool(name, args), who);
       const session = new ClaudeSession({
         sdk,
         cwd: this.opts.cwd ?? process.env["HOME"] ?? "/",
@@ -345,13 +346,13 @@ export class ClaudeBrain implements Brain {
 }
 
 /** Build the in-process MCP server with the real Agent SDK. */
-async function defaultMcpFactory(specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>): Promise<Record<string, unknown>> {
+async function defaultMcpFactory(specs: readonly ToolSpec[], call: (name: string, args: unknown) => Promise<McpResult>, userName: string): Promise<Record<string, unknown>> {
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as unknown as {
     createSdkMcpServer: (o: { name: string; version?: string; instructions?: string; tools: unknown[] }) => unknown;
     tool: (name: string, description: string, shape: Record<string, unknown>, handler: (args: Record<string, unknown>) => Promise<McpResult>) => unknown;
   };
   const tools = specs.map((spec) => sdk.tool(spec.name, spec.description, zodShape(spec), (args) => call(spec.name, args)));
-  return sdk.createSdkMcpServer({ name: "jarhead", version: "2.0.0", instructions: "Jarhead's eyes, hands, and agents on Kevin's Mac.", tools }) as Record<string, unknown>;
+  return sdk.createSdkMcpServer({ name: "jarhead", version: "2.0.0", instructions: `Jarhead's eyes, hands, and agents on ${userName}'s Mac.`, tools }) as Record<string, unknown>;
 }
 
 /** Our tool schemas use a small vocabulary; map it to zod for the SDK. */

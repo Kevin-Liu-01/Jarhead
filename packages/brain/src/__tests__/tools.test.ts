@@ -11,7 +11,7 @@ import { htmlToText, parseDuckDuckGo } from "../web.ts";
 import { globToRegExp } from "../files.ts";
 import { redactSecrets, runShell, secretValues, truncateOutput } from "../shell.ts";
 import { zodShape } from "../claude.ts";
-import { ALL_TOOL_SPECS, AGENT_SPECS, OBSERVATION_CLAUSE, SELF_SPECS, SYSTEM_SPECS, THREAD_SPECS, specByName } from "../tools.ts";
+import { ALL_TOOL_SPECS, AGENT_SPECS, OBSERVATION_CLAUSE, SELF_SPECS, SYSTEM_SPECS, THREAD_SPECS, specByName, toolSpecsFor } from "../tools.ts";
 import { progressLine } from "../responses.ts";
 import { FakeHands, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
@@ -589,4 +589,33 @@ test("the user's name: the runner's refusals and questions say the name the engi
   const { runner: plain } = makeRunner({ home });
   plain.attach(makeSink().sink, makeTask("do a few things"));
   assert.match(resultText((await plain.run("run_shell", { command: "gh pr create --fill" })).result), /that posts to GitHub on Kevin's behalf; ask first\. Ask Kevin to confirm out loud/);
+});
+
+test("tool table: toolSpecsFor renders the table for another name — the same names, parameters, required, enums, order and count, no literal Kevin anywhere; the default is the table itself", () => {
+  assert.equal(toolSpecsFor("Kevin"), ALL_TOOL_SPECS, "the same reference: byte-identical for the prompt cache");
+  assert.equal(toolSpecsFor(""), ALL_TOOL_SPECS, "an unset name is the default");
+  const sam = toolSpecsFor("Sam");
+  assert.equal(sam.length, ALL_TOOL_SPECS.length);
+  assert.equal(sam.length, 71);
+  const strip = (v: unknown): unknown => JSON.parse(JSON.stringify(v, (k, x) => (k === "description" ? undefined : x)));
+  let named = 0;
+  for (const [i, spec] of ALL_TOOL_SPECS.entries()) {
+    const s = sam[i]!;
+    assert.equal(s.name, spec.name, `${i}: the same tool in the same place`);
+    assert.deepEqual(strip(s.parameters), strip(spec.parameters), `${spec.name}: parameters, required and enums are untouched`);
+    assert.deepEqual(s.parameters.required, spec.parameters.required, `${spec.name}: required`);
+    assert.doesNotMatch(JSON.stringify(s), /Kevin/, spec.name);
+    assert.equal(JSON.stringify(s).replace(/\bSam\b/g, "Kevin"), JSON.stringify(spec), `${spec.name}: only the name moves (whole word: "Same gates" stays)`);
+    if (/Kevin/.test(JSON.stringify(spec))) named++;
+  }
+  assert.ok(named >= 25, `${named} specs say the name in a description or a parameter description`);
+  const shell = sam.find((s) => s.name === "run_shell")!;
+  assert.match(shell.description, /^Run a shell command on Sam's Mac/);
+  assert.equal((shell.parameters.properties["cwd"] as { description: string }).description, "working directory (default Sam's home)", "parameter descriptions take the name too");
+  assert.match((sam.find((s) => s.name === "automation_set")!.parameters.properties["echo"] as { description: string }).description, /Sam's words: 'Weekdays at 07:10, ring "Wake up, Sam"\.'/);
+  // A subset renders the same way.
+  const subset = toolSpecsFor("Sam", [specByName("thread_start")!]);
+  assert.equal(subset.length, 1);
+  assert.match(subset[0]!.description, /named for Sam to hear \('Spotify', 'Slack'\)/);
+  assert.equal(toolSpecsFor("Kevin", subset), subset, "the default hands a subset back untouched too");
 });

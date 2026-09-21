@@ -381,3 +381,25 @@ export const ALL_TOOL_SPECS: readonly ToolSpec[] = [...COMPUTER_TOOL_SPECS, ...D
 export function specByName(name: string): ToolSpec | undefined {
   return ALL_TOOL_SPECS.find((t) => t.name === name);
 }
+
+/**
+ * The tool table with the user's name in its descriptions (the parameter descriptions that
+ * say it included); the default rendering is the table itself, the same reference, so the
+ * prompt cache keys on identical bytes. Names, parameters, `required`, enums, order and
+ * count never move: only the word does.
+ */
+export function toolSpecsFor(userName: string, specs: readonly ToolSpec[] = ALL_TOOL_SPECS): readonly ToolSpec[] {
+  if (!userName || userName === "Kevin") return specs;
+  return specs.map((spec) => ({ name: spec.name, description: spec.description.replaceAll("Kevin", userName), parameters: namedDescriptions(spec.parameters, userName) as ToolSpec["parameters"] }));
+}
+
+/** The same JSON Schema with every `description` string said with the name; every other key, value and order is untouched. */
+function namedDescriptions(value: unknown, userName: string): unknown {
+  if (Array.isArray(value)) return value.map((v) => namedDescriptions(v, userName));
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) out[key] = key === "description" && typeof v === "string" ? v.replaceAll("Kevin", userName) : namedDescriptions(v, userName);
+    return out;
+  }
+  return value;
+}

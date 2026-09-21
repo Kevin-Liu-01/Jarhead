@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult, typ
 import { logger, newId, readConfig, replaceDefaultSink } from "@jarhead/core";
 import type { ToolResult } from "@jarhead/hands";
 import { DaemonClient } from "@jarhead/daemon";
-import { ALL_TOOL_SPECS, specByName, type ToolSpec } from "./tools.ts";
+import { ALL_TOOL_SPECS, specByName, toolSpecsFor, type ToolSpec } from "./tools.ts";
 import { resultText } from "./runner.ts";
 
 /**
@@ -226,19 +226,23 @@ export interface BridgeOptions {
   readonly thread?: string | undefined;
   /** Test seam: replaces the socket round-trip. */
   readonly run?: ((name: string, input: unknown) => Promise<ToolResult>) | undefined;
+  /** What the server's instructions and the tool descriptions call the person Jarhead works for; default "Kevin" (the entry script has no channel for it yet). */
+  readonly userName?: string | undefined;
 }
 
 export function createBridgeServer(opts: BridgeOptions): Server {
   const socket = opts.run ? undefined : new SocketToolClient(opts.socketPath, { thread: opts.thread });
   const run = opts.run ?? ((name: string, input: unknown) => socket!.run(name, input, opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS));
+  const who = opts.userName ?? "Kevin";
+  const specs = toolSpecsFor(who);
   const server = new Server(
     { name: "jarhead", version: "2.0.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Jarhead's eyes, hands, and agents on Kevin's Mac. Take a screenshot before acting on anything you have not seen; a needs_confirmation result means: report the question and stop.",
+      instructions: `Jarhead's eyes, hands, and agents on ${who}'s Mac. Take a screenshot before acting on anything you have not seen; a needs_confirmation result means: report the question and stop.`,
     },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: ALL_TOOL_SPECS.map(toMcpTool) }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: specs.map(toMcpTool) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     if (!specByName(name)) return { content: [{ type: "text", text: `error: unknown tool ${name}` }], isError: true } satisfies CallToolResult;

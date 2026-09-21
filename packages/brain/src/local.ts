@@ -18,7 +18,7 @@ import {
   type RawToolCall,
 } from "./compatible.ts";
 import type { ToolRunner } from "./runner.ts";
-import { AGENT_SPECS, ALL_TOOL_SPECS, AUTOMATION_SPECS, BROWSER_SPECS, DRAW_SPECS, SELF_SPECS, THREAD_SPECS, specByName, type ToolSpec } from "./tools.ts";
+import { AGENT_SPECS, ALL_TOOL_SPECS, AUTOMATION_SPECS, BROWSER_SPECS, DRAW_SPECS, SELF_SPECS, THREAD_SPECS, specByName, toolSpecsFor, type ToolSpec } from "./tools.ts";
 
 /**
  * The local brain: a model on this Mac served by Ollama, LM Studio or llama.cpp.
@@ -802,7 +802,7 @@ export class LocalBrain implements Brain {
   private async buildInner(status: LocalServerStatus): Promise<{ ready: boolean; detail: string }> {
     const model = this.model!;
     const threads = this.opts.threads();
-    const wanted = LOCAL_TOOLS.filter((t) => threads || !t.name.startsWith("thread_"));
+    const wanted = toolSpecsFor(this.opts.userName ?? "Kevin", LOCAL_TOOLS.filter((t) => threads || !t.name.startsWith("thread_")));
     const fitted = fitTools({ ctx: this.numCtx, systemBytes: brainSystemPrompt(this.opts.userName).length, tools: wanted });
     this.tools = fitted.tools;
     this.dropped = fitted.dropped;

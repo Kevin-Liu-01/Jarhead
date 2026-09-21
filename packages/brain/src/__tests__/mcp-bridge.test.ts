@@ -7,10 +7,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { REPO_ROOT } from "@jarhead/core";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { SocketToolClient, toMcpContent, toMcpTool, runToolOverSocket, threadFromEnv } from "../mcp-bridge.ts";
+import { SocketToolClient, createBridgeServer, toMcpContent, toMcpTool, runToolOverSocket, threadFromEnv } from "../mcp-bridge.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 
 const BRIDGE = fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url));
@@ -280,5 +281,33 @@ test("mcp bridge: SocketToolClient keeps one connection, multiplexes calls in fl
   } finally {
     client.close();
     await server.close();
+  }
+});
+
+test("mcp bridge: the server states its instructions and lists the table in the user's name — Sam sees no literal Kevin and the same names in the same order; the default is the table as written", async () => {
+  for (const userName of ["Sam", undefined] as const) {
+    const server = createBridgeServer({ socketPath: "/nonexistent/jarhead.sock", run: async (name) => ({ kind: "text", text: `${name} ok` }), ...(userName ? { userName } : {}) });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(clientTransport);
+    try {
+      const instructions = client.getInstructions() ?? "";
+      assert.match(instructions, new RegExp(`^Jarhead's eyes, hands, and agents on ${userName ?? "Kevin"}'s Mac\\. Take a screenshot before acting`));
+      const listed = await client.listTools();
+      assert.deepEqual(listed.tools.map((t) => t.name), ALL_TOOL_SPECS.map((t) => t.name));
+      if (userName) {
+        assert.doesNotMatch(JSON.stringify(listed.tools), /Kevin/);
+        assert.match(listed.tools.find((t) => t.name === "run_shell")!.description ?? "", /^Run a shell command on Sam's Mac/);
+      } else {
+        assert.equal(listed.tools.find((t) => t.name === "screenshot")?.description, specByName("screenshot")!.description);
+        assert.match(listed.tools.find((t) => t.name === "run_shell")!.description ?? "", /^Run a shell command on Kevin's Mac/);
+      }
+      const r = await client.callTool({ name: "frontmost_app", arguments: {} });
+      assert.deepEqual(r.content, [{ type: "text", text: "frontmost_app ok" }], "the run seam answers whatever the name");
+    } finally {
+      await client.close();
+      await server.close();
+    }
   }
 });

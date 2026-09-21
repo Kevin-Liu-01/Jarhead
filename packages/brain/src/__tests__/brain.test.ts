@@ -11,7 +11,7 @@ import { ToolRunner, resultText } from "../runner.ts";
 import { Delegator } from "../delegator.ts";
 import { ResponsesBrain, responsesDelegationConfig } from "../responses.ts";
 import { zodShape, ClaudeBrain } from "../claude.ts";
-import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
+import { ALL_TOOL_SPECS, specByName, type ToolSpec } from "../tools.ts";
 import { codexAddendum, codexBaseInstructions } from "../codex.ts";
 import { delegationPrompt, memoryPromptLabel, MEMORY_PROMPT_LABEL } from "../anthropic.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt, type Brain, type BrainResult, type BrainSink, type BrainTask } from "../brain.ts";
@@ -85,6 +85,15 @@ test("tool specs are complete and map to zod shapes", () => {
   assert.deepEqual(Object.keys(shape).sort(), ["coordinate", "scroll_amount", "scroll_direction", "text"]);
   const cfg = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low" });
   assert.equal(cfg.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.match(JSON.stringify(cfg.responses.tools), /Kevin's Mac/, "the default table is the table as written");
+  // The user's name: the same table, rendered for Sam — no literal Kevin, the same names in the same order.
+  const sam = responsesDelegationConfig({ model: "gpt-5.6-terra", effort: "low", userName: "Sam" });
+  assert.equal(sam.responses.tools?.length, ALL_TOOL_SPECS.length + 1);
+  assert.doesNotMatch(JSON.stringify(sam.responses.tools), /Kevin/);
+  assert.doesNotMatch(sam.responses.instructions ?? "", /Kevin/);
+  const toolNames = (tools: unknown): string[] => (tools as Array<{ name?: string }>).map((t) => t.name ?? "").filter(Boolean);
+  assert.deepEqual(toolNames(sam.responses.tools), toolNames(cfg.responses.tools));
+  assert.equal(JSON.stringify(sam.responses.tools).replace(/\bSam\b/g, "Kevin"), JSON.stringify(cfg.responses.tools), "only the name moves");
 });
 
 /** A LiveSession stand-in with just the surface the delegator and the responses brain touch. */
@@ -414,4 +423,24 @@ test("release F1: the standing orders, the Codex base instructions and addendum,
   assert.ok(prompt.includes(`${memoryPromptLabel("Sam")}\n- Sam prefers short answers.`), "the memory label carries the name");
   assert.equal(memoryPromptLabel("Sam"), "What you know about Sam (durable memory; use it, do not repeat it back, do not say you remembered):");
   assert.equal(memoryPromptLabel(), MEMORY_PROMPT_LABEL, "the default label is unchanged");
+});
+
+test("claude brain: the MCP server is built from the table in the user's name — a Sam brain's factory gets specs with no literal Kevin and the name for its instructions; the default gets the table itself", async () => {
+  const { runner } = makeRunner();
+  const got: { specs: readonly ToolSpec[]; userName: string }[] = [];
+  const factory = async (specs: readonly ToolSpec[], _call: unknown, userName: string): Promise<Record<string, unknown>> => {
+    got.push({ specs, userName });
+    return {};
+  };
+  const sam = new ClaudeBrain({ runner, userName: "Sam", sdk: { query: () => { throw new Error("no sdk"); } }, mcpFactory: factory, authProbe: async () => "none" });
+  await sam.start();
+  assert.equal(got.length, 1);
+  assert.equal(got[0]!.userName, "Sam");
+  assert.deepEqual(got[0]!.specs.map((s) => s.name), ALL_TOOL_SPECS.map((s) => s.name));
+  assert.doesNotMatch(JSON.stringify(got[0]!.specs), /Kevin/);
+  assert.match(got[0]!.specs.find((s) => s.name === "run_shell")!.description, /^Run a shell command on Sam's Mac/);
+  const plain = new ClaudeBrain({ runner, sdk: { query: () => { throw new Error("no sdk"); } }, mcpFactory: factory, authProbe: async () => "none" });
+  await plain.start();
+  assert.equal(got[1]!.specs, ALL_TOOL_SPECS, "the default is the table itself, the same reference");
+  assert.equal(got[1]!.userName, "Kevin");
 });

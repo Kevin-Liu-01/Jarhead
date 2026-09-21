@@ -876,3 +876,23 @@ test("local: Settings.threads read live — thread_* leave the table without a r
 test("local: never-writes — no test above asked a local server for anything outside the allowlist", () => {
   assert.deepEqual(violations, []);
 });
+
+test("local: the tool table reaches the server in the user's name — a Sam brain's /api/chat body carries no literal Kevin in its tools, the same names in the same order, and the count in the detail does not move", async () => {
+  const fake: OllamaFake = { shows: 0, models: fixture("name") };
+  const server = await localServer(ollamaRoute(fake));
+  try {
+    const { runner } = makeRunner();
+    const brain = new LocalBrain({ runner, baseUrl: server.url, model: "qwen3.5:27b", effort: "medium", threads: () => true, ramBytes: RAM, userName: "Sam" });
+    const r = await brain.start();
+    assert.equal(r.ready, true, r.detail);
+    await brain.handle(makeTask("open the budget"), makeSink().sink);
+    const body = server.seen.filter((s) => s.path === "/api/chat")[0]!.body as { tools: Array<{ function: { name: string; description: string } }> };
+    assert.deepEqual(body.tools.map((t) => t.function.name), LOCAL_TOOLS.map((t) => t.name));
+    assert.doesNotMatch(JSON.stringify(body), /Kevin/, "nothing in the request says Kevin");
+    assert.match(body.tools.find((t) => t.function.name === "run_shell")!.function.description, /^Run a shell command on Sam's Mac/);
+    assert.match(brain.detail, new RegExp(`· ${LOCAL_TOOLS.length} tools`));
+    await brain.stop();
+  } finally {
+    await server.close();
+  }
+});

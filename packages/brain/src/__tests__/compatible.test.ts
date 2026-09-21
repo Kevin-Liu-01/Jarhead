@@ -561,3 +561,30 @@ test("compatible brain: usage becomes one note step per turn", async () => {
     await server.close();
   }
 });
+
+test("compatible brain: the tool table goes out in the user's name — a Sam brain's request carries no literal Kevin, the same names in the same order, a subset too; the default carries the table as written", async () => {
+  const server = await fakeServer((req) => (req.path === "/v1/models" ? { status: 200, json: MODELS } : { status: 200, json: completion({ role: "assistant", content: "ok" }) }));
+  try {
+    const { runner } = makeRunner();
+    const sam = new OpenAICompatibleBrain({ runner, baseUrl: server.url, model: "llama3.1", userName: "Sam" });
+    await sam.start();
+    await sam.handle(makeTask("open the budget"), makeSink().sink);
+    const body = server.seen[1]!.body as { tools: Array<{ function: { name: string; description: string } }> };
+    assert.deepEqual(body.tools.map((t) => t.function.name), ALL_TOOL_SPECS.map((t) => t.name));
+    assert.doesNotMatch(JSON.stringify(body), /Kevin/, "nothing in the request says Kevin: not the orders, not the table, not the prompt");
+    assert.match(body.tools.find((t) => t.function.name === "run_shell")!.function.description, /^Run a shell command on Sam's Mac/);
+    const subset = new OpenAICompatibleBrain({ runner, baseUrl: server.url, model: "llama3.1", userName: "Sam", tools: [specByName("thread_start")!] });
+    await subset.start();
+    await subset.handle(makeTask("x"), makeSink().sink);
+    const sub = server.seen[3]!.body as { tools: Array<{ function: { name: string; description: string } }> };
+    assert.deepEqual(sub.tools.map((t) => t.function.name), ["thread_start"]);
+    assert.match(sub.tools[0]!.function.description, /named for Sam to hear/);
+    const plain = new OpenAICompatibleBrain({ runner, baseUrl: server.url, model: "llama3.1" });
+    await plain.start();
+    await plain.handle(makeTask("x"), makeSink().sink);
+    const def = server.seen[5]!.body as { tools: Array<{ function: { description: string } }> };
+    assert.match(def.tools.find((t) => /^Run a shell command/.test(t.function.description))!.function.description, /on Kevin's Mac/, "the default is the table as written");
+  } finally {
+    await server.close();
+  }
+});
