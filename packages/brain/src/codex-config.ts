@@ -198,14 +198,20 @@ export interface CodexMcpConfig {
    * that thread's lane runner instead of the main brain's. Absent (or empty) for the main brain.
    */
   readonly thread?: string | undefined;
+  /**
+   * What the bridge calls the person Jarhead works for (the engine's effective name). Rides
+   * into the bridge's env as `JARHEAD_USER_NAME`, so the tool descriptions and the server
+   * instructions Codex reads say the user's name. Absent (or empty) = the bridge's default.
+   */
+  readonly userName?: string | undefined;
   /** MCP server start / per-tool budgets, in seconds. */
   readonly startupTimeoutSec?: number | undefined;
   readonly toolTimeoutSec?: number | undefined;
 }
 
-/** The bridge's environment as a TOML inline table: the daemon socket, and the thread id when this brain is a thread's. */
-export function codexBridgeEnv(o: Pick<CodexMcpConfig, "socketPath" | "thread">): string {
-  const pairs = [`JARHEAD_SOCKET=${toml(o.socketPath)}`, ...(o.thread ? [`JARHEAD_THREAD=${toml(o.thread)}`] : [])];
+/** The bridge's environment as a TOML inline table: the daemon socket, the thread id when this brain is a thread's, and the user's name when one is set. */
+export function codexBridgeEnv(o: Pick<CodexMcpConfig, "socketPath" | "thread" | "userName">): string {
+  const pairs = [`JARHEAD_SOCKET=${toml(o.socketPath)}`, ...(o.thread ? [`JARHEAD_THREAD=${toml(o.thread)}`] : []), ...(o.userName ? [`JARHEAD_USER_NAME=${toml(o.userName)}`] : [])];
   return `{${pairs.join(", ")}}`;
 }
 

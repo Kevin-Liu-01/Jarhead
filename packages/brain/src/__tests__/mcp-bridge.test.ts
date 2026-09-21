@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { REPO_ROOT } from "@jarhead/core";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
-import { SocketToolClient, createBridgeServer, toMcpContent, toMcpTool, runToolOverSocket, threadFromEnv } from "../mcp-bridge.ts";
+import { SocketToolClient, createBridgeServer, toMcpContent, toMcpTool, runToolOverSocket, threadFromEnv, userNameFromEnv } from "../mcp-bridge.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 
 const BRIDGE = fileURLToPath(new URL("../mcp-bridge.ts", import.meta.url));
@@ -176,6 +176,42 @@ test("mcp bridge: threadFromEnv reads JARHEAD_THREAD and treats unset, empty and
   assert.equal(threadFromEnv({ JARHEAD_THREAD: "" }), undefined);
   assert.equal(threadFromEnv({ JARHEAD_THREAD: "   " }), undefined);
   assert.equal(threadFromEnv({ JARHEAD_THREAD: " t_7f3a\n" }), "t_7f3a");
+});
+
+test("mcp bridge: userNameFromEnv reads JARHEAD_USER_NAME and treats unset, empty and blank as the default", () => {
+  assert.equal(userNameFromEnv({}), undefined);
+  assert.equal(userNameFromEnv({ JARHEAD_USER_NAME: "" }), undefined);
+  assert.equal(userNameFromEnv({ JARHEAD_USER_NAME: "   " }), undefined);
+  assert.equal(userNameFromEnv({ JARHEAD_USER_NAME: " Sam\n" }), "Sam");
+});
+
+test("mcp bridge: the stdio server started with JARHEAD_USER_NAME states its instructions and lists the table in that name — no literal Kevin reaches Codex, and tools/call still routes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "jh-bridge-"));
+  const socketPath = join(dir, "d.sock");
+  const engine = new FakeEngine();
+  const server = new DaemonServer(engine, socketPath);
+  await server.listen();
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [TSX, BRIDGE],
+    env: { ...(process.env as Record<string, string>), JARHEAD_SOCKET: socketPath, JARHEAD_USER_NAME: "Sam" },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "test", version: "0" });
+  await client.connect(transport);
+  try {
+    assert.match(client.getInstructions() ?? "", /^Jarhead's eyes, hands, and agents on Sam's Mac\. Take a screenshot before acting/);
+    const listed = await client.listTools();
+    assert.deepEqual(listed.tools.map((t) => t.name), ALL_TOOL_SPECS.map((t) => t.name), "the same table in the same order");
+    assert.doesNotMatch(JSON.stringify(listed.tools), /Kevin/);
+    assert.match(listed.tools.find((t) => t.name === "run_shell")!.description ?? "", /^Run a shell command on Sam's Mac/);
+    const text = await client.callTool({ name: "frontmost_app", arguments: {} });
+    assert.deepEqual(text.content, [{ type: "text", text: "frontmost_app → {}" }]);
+    assert.deepEqual(engine.calls, [{ name: "frontmost_app", input: {} }], "the main runner answered");
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });
 
 test("mcp bridge: the stdio server started with JARHEAD_THREAD routes every tools/call to that thread's lane", async () => {

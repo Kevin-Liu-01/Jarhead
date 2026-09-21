@@ -148,7 +148,7 @@ interface AppServerLog {
   requests: Array<{ id?: number; method: string; params?: Record<string, unknown> }>;
 }
 
-function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; authFile?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; lastTokens?: number; transport?: "auto" | "app-server" | "exec"; prime?: boolean; thread?: string; effort?: "low" | "medium"; simpleEffort?: "low"; env?: Record<string, string> }) {
+function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socketPath?: string; ownPid?: number; maxSteps?: number; maxWallMs?: number; killGraceMs?: number; configModel?: string; signedIn?: boolean; authFile?: boolean; appServer?: string; appServerStartTimeoutMs?: number; appServerPatienceMs?: number; appServerDelayMs?: number; tokens?: number; lastTokens?: number; transport?: "auto" | "app-server" | "exec"; prime?: boolean; thread?: string; userName?: string; effort?: "low" | "medium"; simpleEffort?: "low"; env?: Record<string, string> }) {
   const dir = mkdtempSync(join(tmpdir(), "jh-codex-"));
   const bin = fakeCodex(dir);
   const codexHome = fakeCodexHome(dir, { ...(opts.configModel ? { model: opts.configModel } : {}), ...(opts.signedIn !== undefined ? { signedIn: opts.signedIn } : {}), ...(opts.authFile !== undefined ? { authFile: opts.authFile } : {}) });
@@ -171,6 +171,7 @@ function makeBrain(t: TestContext, opts: { mode?: string; model?: string; socket
     appServerPatienceMs: opts.appServerPatienceMs,
     transport: opts.transport,
     thread: opts.thread,
+    userName: opts.userName,
     // The primer is one more turn on the fake; the tests that want it say so.
     primeThreads: opts.prime ?? false,
     // Jarhead's secrets are in the daemon's environment; none of them may reach Codex.
@@ -800,6 +801,28 @@ test("codex brain: a slow app-server never sits on a task's path — start() rep
   assert.equal(r2.status, "done");
   assert.equal(appServerLog().requests.filter((r) => r.method === "turn/start").length, 1);
   assert.match(brain.detail, /warm app-server/);
+});
+
+test("codex brain: the user's name rides to the bridge as JARHEAD_USER_NAME on both transports, after the socket and the thread, so the table Codex reads says it; a brain with no name carries the socket alone", async (t) => {
+  // exec argv: the env names the user; a thread's brain carries both keys in the same order codexBridgeEnv writes them.
+  const base = { cwd: "/c", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "/s.sock" };
+  const configs = (args: string[]): string[] => args.filter((_, i, a) => a[i - 1] === "-c");
+  const plain = configs(codexExecArgs(base));
+  const named = configs(codexExecArgs({ ...base, userName: "Sam" }));
+  const both = configs(codexExecArgs({ ...base, thread: "t_spotify", userName: "Sam" }));
+  assert.ok(plain.includes('mcp_servers.jarhead.env={JARHEAD_SOCKET="/s.sock"}'), plain.join(" | "));
+  assert.ok(named.includes('mcp_servers.jarhead.env={JARHEAD_SOCKET="/s.sock", JARHEAD_USER_NAME="Sam"}'), named.join(" | "));
+  assert.ok(both.includes('mcp_servers.jarhead.env={JARHEAD_SOCKET="/s.sock", JARHEAD_THREAD="t_spotify", JARHEAD_USER_NAME="Sam"}'), both.join(" | "));
+  assert.equal(plain.length, named.length, "the same -c pairs, only the env differs");
+  assert.deepEqual(configs(codexExecArgs({ ...base, userName: "" })), plain, "an empty name is no key");
+
+  // The warm transport: the app-server's argv carries it too.
+  const { brain, dir, appServerLog } = makeBrain(t, { appServer: "ok", userName: "Sam" });
+  assert.equal((await brain.start()).ready, true);
+  await new Promise((r) => setTimeout(r, 150));
+  const log = appServerLog();
+  assert.ok(configs(log.args).includes(`mcp_servers.jarhead.env={JARHEAD_SOCKET=${JSON.stringify(join(dir, "codex-tools.sock"))}, JARHEAD_USER_NAME="Sam"}`), configs(log.args).join(" | "));
+  await brain.stop();
 });
 
 test("codex brain: a spawned thread's brain — the thread id rides to the bridge as JARHEAD_THREAD on both transports, and its Codex thread is never primed even when asked", async (t) => {

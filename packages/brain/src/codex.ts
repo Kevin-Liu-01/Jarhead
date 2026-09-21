@@ -256,6 +256,8 @@ export interface CodexExecOptions {
   readonly trimPrompt?: boolean | undefined;
   /** A thread's brain: its bridge stamps every tool.run with this id (env JARHEAD_THREAD), so the daemon routes to that thread's lane. */
   readonly thread?: string | undefined;
+  /** The user's name for the bridge's env (JARHEAD_USER_NAME): the tool descriptions Codex reads say it. */
+  readonly userName?: string | undefined;
 }
 
 /** The argv of one delegation; the prompt itself arrives on stdin (`-`). */
@@ -666,9 +668,9 @@ export class CodexBrain implements Brain {
     return this.opts.serviceTier ?? (this.env()["JARHEAD_CODEX_SERVICE_TIER"]?.trim() || undefined);
   }
 
-  /** The thread id for the bridge's env (`codexMcpConfigArgs` reads `thread`), or nothing for the main brain. */
-  private threadConfig(): { readonly thread?: string } {
-    return this.opts.thread ? { thread: this.opts.thread } : {};
+  /** The bridge's env (`codexMcpConfigArgs` reads `thread` and `userName`): the thread id for a thread's brain, and the user's name when one is set. */
+  private bridgeConfig(): { readonly thread?: string; readonly userName?: string } {
+    return { ...(this.opts.thread ? { thread: this.opts.thread } : {}), ...(this.opts.userName ? { userName: this.opts.userName } : {}) };
   }
 
   private baseInstructions(): string | undefined {
@@ -763,7 +765,7 @@ export class CodexBrain implements Brain {
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
-      ...this.threadConfig(),
+      ...this.bridgeConfig(),
       developerInstructions: `${brainSystemPrompt(this.opts.userName)}\n\n${codexAddendum(this.opts.userName)}`,
       baseInstructions: this.baseInstructions(),
       primeThreads: this.primeThreads(),
@@ -1078,7 +1080,7 @@ export class CodexBrain implements Brain {
       tsxCli: this.tsxCli(),
       bridgePath: this.bridgePath(),
       socketPath: this.toolSocket,
-      ...this.threadConfig(),
+      ...this.bridgeConfig(),
       images: attached.map((a) => a.path),
       serviceTier: this.serviceTier(),
     });

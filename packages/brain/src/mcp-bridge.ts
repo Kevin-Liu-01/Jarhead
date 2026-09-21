@@ -25,6 +25,8 @@ import { resultText } from "./runner.ts";
  * (codex-config.ts puts it in the MCP server's env): every tool.run then names the
  * thread and the daemon routes it to that thread's lane runner — never to the main
  * brain's, which holds the pointer. Without it the bridge is the main brain's.
+ * `JARHEAD_USER_NAME=<name>` (codex-config.ts puts that in the env too) is what the
+ * tool descriptions and the server's instructions call the user; unset, they say the default.
  *
  * stdout is the MCP transport, so this process must never log there; the
  * default log sink is replaced with stderr before anything can speak.
@@ -39,6 +41,12 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 660_000;
 export function threadFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const thread = env["JARHEAD_THREAD"]?.trim();
   return thread ? thread : undefined;
+}
+
+/** The user's name a bridge process says, from its environment; unset, empty or blank = the default. */
+export function userNameFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const name = env["JARHEAD_USER_NAME"]?.trim();
+  return name ? name : undefined;
 }
 
 /** The spec's JSON Schema goes to the client verbatim; MCP's Tool shape is the same vocabulary. */
@@ -226,7 +234,7 @@ export interface BridgeOptions {
   readonly thread?: string | undefined;
   /** Test seam: replaces the socket round-trip. */
   readonly run?: ((name: string, input: unknown) => Promise<ToolResult>) | undefined;
-  /** What the server's instructions and the tool descriptions call the person Jarhead works for; default "Kevin" (the entry script has no channel for it yet). */
+  /** What the server's instructions and the tool descriptions call the person Jarhead works for; default "Kevin" (the entry script passes `userNameFromEnv()`). */
   readonly userName?: string | undefined;
 }
 
@@ -270,7 +278,8 @@ if (isEntryScript()) {
   replaceDefaultSink((level, scope, message) => process.stderr.write(`${new Date().toISOString().slice(11, 23)} ${level.padEnd(5)} ${scope}: ${message}\n`));
   const socketPath = readConfig().socketPath;
   const thread = threadFromEnv();
-  const server = createBridgeServer({ socketPath, thread });
+  const userName = userNameFromEnv();
+  const server = createBridgeServer({ socketPath, thread, userName });
   const onClose = server.onclose;
   server.onclose = () => {
     onClose?.();
@@ -278,5 +287,5 @@ if (isEntryScript()) {
   };
   process.stdin.on("end", () => process.exit(0));
   await server.connect(new StdioServerTransport());
-  log.debug(`serving ${ALL_TOOL_SPECS.length} tools over stdio; daemon at ${socketPath}${thread ? `; thread ${thread}` : ""}`);
+  log.debug(`serving ${ALL_TOOL_SPECS.length} tools over stdio; daemon at ${socketPath}${thread ? `; thread ${thread}` : ""}${userName ? `; for ${userName}` : ""}`);
 }

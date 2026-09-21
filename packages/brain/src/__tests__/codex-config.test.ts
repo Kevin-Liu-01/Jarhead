@@ -38,6 +38,22 @@ test("codex-config: a thread rides into the bridge env as JARHEAD_THREAD next to
   assert.equal(codexBridgeEnv({ socketPath: base.socketPath, thread: "t_7f3a" }), '{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_THREAD="t_7f3a"}');
 });
 
+test("codex-config: the user's name rides into the bridge env as JARHEAD_USER_NAME after the socket and the thread; an empty name is no key; nothing else in the argv moves", () => {
+  const plain = codexMcpConfigArgs(base);
+  const named = codexMcpConfigArgs({ ...base, userName: "Sam" });
+  assert.equal(named.length, plain.length);
+  const changed = plain.map((a, i) => [a, named[i]] as const).filter(([a, b]) => a !== b);
+  assert.deepEqual(changed, [
+    ['mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock"}', 'mcp_servers.jarhead.env={JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_USER_NAME="Sam"}'],
+  ]);
+  assert.equal(codexBridgeEnv({ socketPath: base.socketPath, thread: "t_7f3a", userName: "Sam" }), '{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_THREAD="t_7f3a", JARHEAD_USER_NAME="Sam"}');
+  assert.deepEqual(codexMcpConfigArgs({ ...base, userName: "" }), plain, "an empty name is no key");
+  assert.deepEqual(codexMcpConfigArgs({ ...base, userName: undefined }), plain);
+  // A name is a TOML basic string like the thread id: quotes and braces cannot break out of the table.
+  const hostile = 'S"} \\ am';
+  assert.equal(codexBridgeEnv({ socketPath: base.socketPath, userName: hostile }), `{JARHEAD_SOCKET="/Users/k/.jarhead/jarhead.sock", JARHEAD_USER_NAME=${JSON.stringify(hostile)}}`);
+});
+
 test("codex-config: the thread id is a TOML basic string — quotes, backslashes and a stray brace cannot break out of the inline table", () => {
   const hostile = 't"} \\ evil';
   const env = codexBridgeEnv({ socketPath: base.socketPath, thread: hostile });
