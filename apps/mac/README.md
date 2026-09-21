@@ -241,9 +241,13 @@ prompt. Preview: `Scripts/onboarding-preview.sh permissions`
 (`PREVIEW_SWEEP=asking|waiting|settings|folders|done`; `all` also shoots the step at
 620x1500, every row in one picture — the README's copy is `docs/media/onboarding-permissions.png`).
 
-The launch path still asks for the microphone first (`refreshMicrophoneGrant`), re-checks
-it on every activation, and answers the Console's microphone "Request" in-process; the
-speech prompt follows it once for the wake word.
+The launch path asks for the microphone (`refreshMicrophoneGrant`) once the first snapshot
+says Setup has run (`settings.onboarded`), re-checks it on every activation, and answers the
+Console's microphone "Request" in-process; the speech prompt follows it once for the wake
+word. On a fresh Mac (`onboarded` false) launch and activation only *read* the two grants —
+no system dialog lands before Setup's own window — Setup › Permissions asks for them in
+order (a grant the sweep makes is adopted at once, so the Wake step can listen), and the
+`onboarded` flip at Setup › Done runs the launch ask as usual.
 
 **Grants change while the app runs, and no relaunch is needed.** A running process
 may keep the TCC answer it got at launch (Screen Recording notoriously does), so

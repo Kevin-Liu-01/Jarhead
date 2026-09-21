@@ -39,6 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var audioGuardHeld = false
     private var audioSharedWith: String?
     private var speechRequested = false
+    /// Setup has run (the first real snapshot said `onboarded`, or the flip at Setup › Done):
+    /// the launch path may put up the Microphone and Speech Recognition dialogs itself.
+    /// Before that — a fresh Mac, Setup still to open — launch and activation only READ the
+    /// two grants, so no system dialog lands before a Jarhead window; Setup › Permissions asks
+    /// for them in order with the wizard's words on screen, and the flip runs the usual ask.
+    private var launchPromptsAllowed = false
     /// Phase and connection as last *published*. `@Published` emits in `willSet`, so
     /// inside a sink `state.phase` / `state.connected` still hold the previous value;
     /// these are fed from the sink payloads and are what the audio decision reads.
@@ -126,7 +132,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // every prompt and the "ask for everything" sweep happen here; the daemon only
         // hears the results (`permission` / `permissions` frames → snapshot.permissions).
         permissions = PermissionsCenter(state: state)
-        permissions.onOne = { [weak self] kind, grant, detail in self?.client.sendPermission(which: kind.rawValue, state: grant, detail: detail) }
+        permissions.onOne = { [weak self] kind, grant, detail in
+            guard let self else { return }
+            self.client.sendPermission(which: kind.rawValue, state: grant, detail: detail)
+            // A grant Setup's sweep (or a Request row) just made for the two kinds the launch
+            // path owns: adopt it without a second dialog, so the gate — and Setup › Wake's
+            // heard box — can listen before Done is pressed. Reads only; nothing re-asks.
+            if kind == .microphone, grant == .granted, self.micGrant != .granted { self.refreshMicrophoneGrant(openSettingsIfDenied: false, prompt: false) }
+            if kind == .speechRecognition, grant == .granted, !self.wake.speechAuthorized { self.adoptSpeechAuthorization() }
+        }
         permissions.onList = { [weak self] all in self?.client.sendPermissions(all: all) }
 
         // AppState handlers: UI code only ever talks to AppState. A few commands are
@@ -229,13 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Setup wizard on first run (once the daemon has told us the settings: the empty
-        // snapshot's defaults are skipped). The payload carries the value; the snapshot
-        // itself is still the old one in here.
+        // snapshot's defaults are skipped), and the launch path's permission asks, which wait
+        // for that same answer. The payload carries the value; the snapshot itself is still
+        // the old one in here.
         state.$snapshot
             .filter { $0 != .empty }
             .map { (s: Snapshot) -> Bool in s.settings.onboarded }
             .removeDuplicates()
-            .sink { [weak self] (onboarded: Bool) in MainActor.assumeIsolated { self?.checkFirstRun(onboarded: onboarded) } }
+            .sink { [weak self] (onboarded: Bool) in MainActor.assumeIsolated { self?.onboardedPublished(onboarded) } }
             .store(in: &cancellables)
 
         // Surface.
@@ -342,20 +357,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // in, to see the report written, the relaunch spawned and the notice on the next run.
         if let kind = ProcessInfo.processInfo.environment["JARHEAD_CRASH_TEST"] { CrashGuard.armTestCrash(kind) }
 
-        // Microphone: ask once, tell the daemon, and never start audio before we know.
+        // Microphone: read it now, tell the daemon, and never start audio before we know.
+        // The ASK waits for the first snapshot to say Setup has run (`onboardedPublished`):
+        // on a fresh Mac the Microphone and Speech Recognition dialogs used to land before
+        // any Jarhead window, with only the plist strings for context; Setup › Permissions
+        // asks for them now, in order, and Done runs this same call with the prompt allowed.
         // JARHEAD_NO_AUDIO=1 skips the request entirely (headless test launches).
         if ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] == "1" {
             appLog("JARHEAD_NO_AUDIO=1, audio disabled")
             return
         }
-        refreshMicrophoneGrant(openSettingsIfDenied: false)
+        refreshMicrophoneGrant(openSettingsIfDenied: false, prompt: launchPromptsAllowed)
     }
 
-    /// Ask TCC (prompting only when undetermined), tell the daemon, and start or stop
-    /// audio to match. Re-run on every activation so a grant made in System Settings
-    /// takes effect without a relaunch.
-    private func refreshMicrophoneGrant(openSettingsIfDenied: Bool) {
+    /// Ask TCC (prompting only when undetermined, and only with `prompt`), tell the daemon,
+    /// and start or stop audio to match. Re-run on every activation so a grant made in
+    /// System Settings takes effect without a relaunch. With `prompt` false an undecided
+    /// microphone stays undecided (nothing lands on screen) and a decided one is read as
+    /// usual; launch and activation pass `launchPromptsAllowed`, a Request passes true.
+    private func refreshMicrophoneGrant(openSettingsIfDenied: Bool, prompt: Bool = true) {
         guard ProcessInfo.processInfo.environment["JARHEAD_NO_AUDIO"] != "1" else { return }
+        if !prompt, PermissionsKit.microphoneStatus() == .unknown { return }
         PermissionsKit.requestMicrophone { [weak self] grant in
             guard let self else { return }
             let previous = self.micGrant
@@ -365,13 +387,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.permissions.set(.microphone, grant: grant)
             self.wake.setMicrophone(granted: grant == .granted)
             if grant == .granted, !self.speechRequested {
-                // Second prompt, once, right after the first: the wake word needs the
-                // on-device recogniser. Nothing is sent anywhere.
-                self.speechRequested = true
-                WakeWordListener.requestAuthorization { [weak self] ok, detail in
-                    self?.wake.setSpeechRecognition(authorized: ok, detail: detail)
-                    self?.permissions.set(.speechRecognition, grant: ok ? .granted : PermissionsKit.speechRecognitionStatus())
-                    if !ok { self?.state.toast("Wake word off: \(detail)", tone: .warn) }
+                if prompt {
+                    // Second prompt, once, right after the first: the wake word needs the
+                    // on-device recogniser. Nothing is sent anywhere.
+                    self.speechRequested = true
+                    WakeWordListener.requestAuthorization { [weak self] ok, detail in
+                        self?.wake.setSpeechRecognition(authorized: ok, detail: detail)
+                        self?.permissions.set(.speechRecognition, grant: ok ? .granted : PermissionsKit.speechRecognitionStatus())
+                        if !ok { self?.state.toast("Wake word off: \(detail)", tone: .warn) }
+                    }
+                } else {
+                    // Setup has not run: a grant already made counts; an undecided one waits for it.
+                    self.adoptSpeechAuthorization()
                 }
             }
             if grant == .denied {
@@ -386,6 +413,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Every value of `settings.onboarded` a real snapshot publishes: the first decides
+    /// whether Setup opens (`checkFirstRun`); a true one — at launch on a Mac that is set up,
+    /// or the flip when Setup › Done is pressed — lets the launch path ask for the microphone
+    /// and Speech Recognition itself, the ask a normal launch has always made.
+    private func onboardedPublished(_ onboarded: Bool) {
+        checkFirstRun(onboarded: onboarded)
+        guard onboarded, !launchPromptsAllowed else { return }
+        launchPromptsAllowed = true
+        refreshMicrophoneGrant(openSettingsIfDenied: false)
+    }
+
     /// First snapshot from the daemon: if setup never finished, open the wizard once.
     /// `onboarded` is the value just published.
     private func checkFirstRun(onboarded: Bool) {
@@ -394,10 +432,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !onboarded { onboarding.show() }
     }
 
+    /// The Speech Recognition grant as it stands, without a prompt: one Setup's sweep (or
+    /// System Settings) made counts now; an undecided or refused one is left to the ask
+    /// `launchPromptsAllowed` unlocks, which also says why the wake word is off.
+    private func adoptSpeechAuthorization() {
+        let (ok, detail) = WakeWordListener.currentAuthorization()
+        guard ok else { return }
+        wake.setSpeechRecognition(authorized: true, detail: detail)
+        permissions.set(.speechRecognition, grant: .granted)
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         // Back from System Settings, most likely: every grant is re-read, fresh.
         permissions?.appActivated()
-        if micGrant != .granted { refreshMicrophoneGrant(openSettingsIfDenied: false) }
+        if micGrant != .granted { refreshMicrophoneGrant(openSettingsIfDenied: false, prompt: launchPromptsAllowed) }
         // Speech Recognition is asked once, but a grant made later in System Settings
         // must count without a relaunch: re-read the status (no prompt) on activation.
         if speechRequested, !wake.speechAuthorized {
