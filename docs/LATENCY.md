@@ -266,11 +266,11 @@ AFTER run: 2026-09-12 03:23 UTC, load average 3.9 / 4.3 / 4.8, `--runs 2`, effor
 | click-search-type | 3.5 → 2.2 | 3.5 → 4.7 | 8.7 → 18.4 (25.6 and 11.2: one run re-verified with a screenshot, `click_element`, `type`, a screenshot — 7 generations) | 3 → 5.5 |
 | scroll-down | 6.0 → 4.7 | 6.0 → 4.7 | 13.0 → 12.2 | 3 → 3 |
 
-Overall, brain path (n = 10 delegations): first model tool 4.3 s → 4.5 s median, p95 11.6 s → 6.7 s; first action 4.3 s → 4.5 s median, p95 11.6 s → 5.1 s; done 9.9 s → 9.0 s median, p95 16.1 s → 25.6 s (the one 7-generation click run); generation gap 3.2 s → 3.9 s median (the model, unchanged within noise); rollovers 0 → 0; bootstrap calls 0 → 0 (the private home was already in for the before-worktree sample; the analysts' production baseline had 13). Against the production baseline (§3a): first action 12.5 s / p95 17.5 s → 4.5 s / p95 5.1 s; verified completion 22.1 s / p90 40.7 s → 9.0 s median.
+Overall, brain path (n = 10 delegations; the after figures are the medians of `docs/latency/after.json`'s `summary.brainPath.overall.metrics` rounded to one decimal — firstModelTool 4365 ms, firstAction 4365 ms, done 8937 ms — the same numbers §7 and the README quote): first model tool 4.3 s → 4.4 s median, p95 11.6 s → 6.7 s; first action 4.3 s → 4.4 s median, p95 11.6 s → 5.1 s; done 9.9 s → 8.9 s median, p95 16.1 s → 25.6 s (the one 7-generation click run); generation gap 3.2 s → 3.9 s median (the model, unchanged within noise); rollovers 0 → 0; bootstrap calls 0 → 0 (the private home was already in for the before-worktree sample; the analysts' production baseline had 13). Against the production baseline (§3a): first action 12.5 s / p95 17.5 s → 4.4 s / p95 5.1 s; verified completion 22.1 s / p90 40.7 s → 8.9 s median.
 
 Reflex path (reflexes on, the product path): open-safari 1 ms, scroll-down 1 ms, and **"search the wiki for design" 6 ms** (before-worktree: 13.8 s, it fell to the brain) — the target class is instant when the grammar catches it and the search field is exposed.
 
-Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): first action 4.7 s median / p95 5.4 s; done 9.5 s; generation gap 4.4 s median — no gain over medium (4.5 / 5.1 / 9.0 / 3.9). Effort is not a lever here; the knob stays opt-in (`JARHEAD_CODEX_SIMPLE_EFFORT`).
+Effort A/B (`--effort low`, `docs/latency/after-effort-low.json`, load 3.0): first action 4.7 s median / p95 5.4 s; done 9.5 s; generation gap 4.4 s median — no gain over medium (4.4 / 5.1 / 8.9 / 3.9). Effort is not a lever here; the knob stays opt-in (`JARHEAD_CODEX_SIMPLE_EFFORT`).
 
 ## 6. Regression checks
 
@@ -365,7 +365,7 @@ action and 8.9 s median to a verified finish.
 
 **2–5 s to a visible action after Kevin stops speaking — met at the top of the
 window on the model path, met outright on the reflex path.** On the brain path the
-first action lands 4.5 s after the delegation (median, p95 5.1 s, n = 6, load ≈ 4,
+first action lands 4.4 s after the delegation (median, p95 5.1 s, n = 6, load ≈ 4,
 canned hands); Live adds 0.4–1.6 s from speech end to delegation, so the spoken-word
 number is about 5–6 s — the edge of the window, not inside it, and the whole of it is
 one model generation (3.9 s median between consecutive tools, 6.0 s p95) plus ~0.7 s

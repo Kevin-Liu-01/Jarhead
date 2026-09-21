@@ -18,6 +18,16 @@ full duplex. The brain is whatever you already have a login for — Codex, Claud
 an API key, a local server. The hands are a Swift helper on the real Mac. A dithered
 ASCII blob in the notch shows the work, and every step lands in an append-only ledger.
 
+**Quick start** — signing, permissions and what it costs are under [Install and run](#install-and-run):
+
+```bash
+git clone https://github.com/Kevin-Liu-01/Jarhead.git && cd Jarhead
+pnpm install && pnpm build:hands      # Node ≥ 24, pnpm 10 (corepack enable), Xcode
+pnpm build:mac                        # builds, signs, installs /Applications/Jarhead.app
+open -a Jarhead                       # Setup opens: your OpenAI key, a brain, permissions
+# then say "jarhead", pass Touch ID, talk
+```
+
 ## What it does
 
 - 🎙️ **Talks like a person.** GPT-Live-1 listens and speaks at the same time; a spoken "stop" is the interrupt, not the end. About a second to the first word back, interruptible mid-sentence.
@@ -339,7 +349,10 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 
 ## Install and run
 
-macOS 14+, Apple silicon, Xcode's toolchain, Node ≥ 24, pnpm 10. An `OPENAI_API_KEY` for the voice; a brain you are already signed in to.
+macOS 14+, Apple silicon, Xcode 15 or newer (`apps/mac/Package.swift` asks for swift-tools 5.9;
+CI builds with Xcode 16 on macos-15), Node ≥ 24, pnpm 10 — `corepack enable` gives you the
+version `package.json`'s `packageManager` names. An `OPENAI_API_KEY` for the voice; a brain
+you are already signed in to. What running it costs is under [Costs](#costs).
 
 ```bash
 pnpm install
@@ -349,15 +362,21 @@ open -a Jarhead             # first launch opens Setup, which writes your key to
 pnpm run doctor             # keys, brain, permissions, sessions, signing, wake word, install, dock — red on the key until Setup has written it
 ```
 
+`~/.jarhead/env` is plain `KEY=value` lines (`#` starts a comment), mode 0600, written by
+Setup › Voice — or create it by hand with `OPENAI_API_KEY=…` before the first launch and
+Setup finds the key already there.
+
 Moved the checkout? Run `pnpm build:mac` again: the bundle remembers where the repo
 is, and a stale path stops the daemon (the error names `JARHEAD_REPO`).
 
 Sign with a real identity before the first `build:mac`, or every rebuild resets the
 permission grants: an Apple Development or Developer ID identity in the keychain is
 picked up on its own; without one, make a self-signed certificate — Keychain Access ›
-Certificate Assistant › Create a Certificate, type *Code Signing* — or set
-`JARHEAD_SIGN_IDENTITY`. `pnpm run doctor` names the identity on the installed app and
-warns on ad-hoc.
+Certificate Assistant › Create a Certificate, type *Code Signing*, marked trusted for Code
+Signing (Keychain Access › the certificate › Trust) so `security find-identity` lists it —
+or set `JARHEAD_SIGN_IDENTITY`. `pnpm build:mac` prints the identity it picked, and how,
+before it signs; `pnpm run doctor` names the identity on the installed app and warns on
+ad-hoc.
 
 First launch opens Setup. Then say "jarhead", pass Touch ID, talk. Reopen Setup from
 the menu-bar icon › *Set Up…*.
