@@ -226,7 +226,7 @@ export abstract class LeasedRunner extends ToolRunner {
     }
     if (busy === 0) return out;
     if (isBusyResult(out.result)) recordStep(this.sinkRef, name, args, out.result, out.ms);
-    else this.sinkRef?.step({ kind: "note", text: `waited ${this.clock() - t0} ms for Kevin's hands` });
+    else this.sinkRef?.step({ kind: "note", text: `waited ${this.clock() - t0} ms for ${this.userName}'s hands` });
     return out;
   }
 }
@@ -349,7 +349,7 @@ export class LaneRunner extends LeasedRunner {
    */
   private finish(name: string, out: RunOutcome): RunOutcome {
     let result = this.laneOpts.desk.render(out.result);
-    if (result.kind === "needs-confirmation" && result.question.includes("(thread_wait)")) result = { ...result, question: result.question.replace("(thread_wait)", "(end your turn; Jarhead resumes you when Kevin answers)") };
+    if (result.kind === "needs-confirmation" && result.question.includes("(thread_wait)")) result = { ...result, question: result.question.replace("(thread_wait)", `(end your turn; Jarhead resumes you when ${this.userName} answers)`) };
     this.laneOpts.onOutcome?.(name, result);
     return result === out.result ? out : { ...out, result };
   }

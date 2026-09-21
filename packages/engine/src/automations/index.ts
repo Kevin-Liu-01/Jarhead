@@ -127,6 +127,8 @@ export interface AutomationsOptions {
   readonly localBrain: () => boolean;
   /** The snapshot goes out (the LIST or a row changed). */
   readonly onChange: () => void;
+  /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
   readonly exec?: AutomationExec | undefined;
   readonly shell?: ShellRunner | undefined;
   readonly shellGate?: ShellGate | undefined;
@@ -213,6 +215,7 @@ export class Automations implements AutomationSource {
       problem: opts.problem,
       brainSpentToday: () => this.brainSpent + [...this.reservedBrain.values()].reduce((a, b) => a + b, 0),
       reserveBrain: (id, seconds) => this.reservedBrain.set(id, seconds),
+      userName: opts.userName,
     });
     this.watchers = new Watchers({ now: this.now, reader: opts.reader, shell, shellGate, settings: opts.settings, home: this.home, repoRoot: opts.repoRoot });
   }
@@ -638,7 +641,7 @@ export class Automations implements AutomationSource {
   arm(draft: AutomationSetInput, by: ArmOrigin, confirmed = false, ctx: ArmContext = {}): AutomationSetOutcome {
     const now = this.now();
     const name = String(draft.name ?? "").replace(/\s+/g, " ").trim();
-    if (!name) return { kind: "refused", reason: "an automation needs a name Kevin will hear" };
+    if (!name) return { kind: "refused", reason: `an automation needs a name ${this.opts.userName?.() || "Kevin"} will hear` };
     if (name.length > AUTOMATION_NAME_CHARS) return { kind: "refused", reason: `the name "${cut(name, 30)}" is too long (${AUTOMATION_NAME_CHARS} characters at most)` };
     if (this.table.nameTaken(name, draft.id)) return { kind: "refused", reason: `an automation named "${name}" is already set; pick another name, or change that one` };
     const then = Array.isArray(draft.then) ? draft.then : [];

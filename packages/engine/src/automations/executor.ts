@@ -28,8 +28,12 @@ export const DETAIL_CHARS = 200;
 const RECIPE_OUTPUT_CHARS = 120;
 /** How long `open` waits for `/usr/bin/open`. */
 const OPEN_TIMEOUT_MS = 10_000;
-/** A headless brain turn is told this much before Kevin's prompt. */
-const HEADLESS_NOTE = "You run headless for one of Kevin's automations while he is away: nobody answers a question, so never call a tool that would need his yes — answer with what you can see and do freely, in one or two sentences.";
+/** A headless brain turn is told this much before the user's prompt. */
+export function headlessNote(userName = "Kevin"): string {
+  return `You run headless for one of ${userName}'s automations while away: nobody answers a question, so never call a tool that would need a yes — answer with what you can see and do freely, in one or two sentences.`;
+}
+/** The default's text, for the pins. */
+export const HEADLESS_NOTE: string = headlessNote("Kevin");
 
 // -------------------------------------------------------------------- seams
 
@@ -116,6 +120,8 @@ export interface ExecutorOptions {
   readonly brainSpentToday: () => number;
   /** A fire about to wake the brain reserves its budget under its row's id, so two rows due in one tick cannot both pass the cap; the façade clears it when the fire settles. */
   readonly reserveBrain: (automationId: string, seconds: number) => void;
+  /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
 }
 
 export interface FireContext {
@@ -167,6 +173,11 @@ export function freeName(dir: string, name: string): string {
 
 export class AutomationExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
+
+  /** The user's name as every line here says it. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
 
   /** The island's line for a row: alarm "07:10 · name", timer "name · 12:00 is up", reminder "name", routine / watcher "name · what it did" (a reminder whose acting kind did something says so too). */
   line(a: Automation, dueAt: number, what?: string): string {
@@ -227,7 +238,7 @@ export class AutomationExecutor {
     const line = this.line(a, ctx.dueAt, what);
     const presses = this.presses(a, openTarget);
     const live = this.opts.live();
-    if (live && spoken.length > 0) live.appendInstructions(null, `Kevin's ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`);
+    if (live && spoken.length > 0) live.appendInstructions(null, `${this.userName}'s ${a.name} fired: say '${[...new Set(spoken)].join("; ")}' once, with its name, and nothing more.`);
     return { ok, actions, line, calm: this.calm(a, nextAt), detail: detail ? cut(this.opts.redact(detail), DETAIL_CHARS) : undefined, presses, ring, delegationId, brainSeconds, ms: this.opts.now() - t0 };
   }
 
@@ -354,7 +365,7 @@ export class AutomationExecutor {
     const secret = secretPathReason(into);
     if (secret) return { ok: false, detail: `${secret}; nothing is filed there` };
     if (isUnder(into, resolve(home, ".jarhead"))) return { ok: false, detail: "~/.jarhead is Jarhead's own; nothing is filed there" };
-    if (!isUnder(into, home)) return { ok: false, detail: `${action.into} is outside Kevin's home` };
+    if (!isUnder(into, home)) return { ok: false, detail: `${action.into} is outside ${this.userName}'s home` };
     if (!existsSync(src)) return { ok: false, detail: `${basename(src)} is gone before it could be filed` };
     try {
       mkdirSync(into, { recursive: true });
@@ -431,7 +442,7 @@ export class AutomationExecutor {
     const prompt = action.prompt.trim();
     const live = this.opts.live();
     if (live) {
-      live.appendInstructions(null, `Kevin's automation ${a.name} fired: do this now — "${cut(prompt, 400)}" — and tell him the result in one sentence.`);
+      live.appendInstructions(null, `${this.userName}'s automation ${a.name} fired: do this now — "${cut(prompt, 400)}" — and tell ${this.userName} the result in one sentence.`);
       return { ok: true, what: "asked the voice", detail: "awake: the voice took it; nothing spent from the automations budget" };
     }
     const cap = this.opts.settings().automations.wakeBudgetMinutesPerDay * 60;
@@ -488,11 +499,11 @@ export class AutomationExecutor {
       delegationId: `${lane.runner.laneId}/${id}`,
       thread: { id: lane.runner.laneId, name: a.name, lane: "background" },
       request: prompt,
-      dialogue: `Jarhead (asleep, for Kevin's automation "${a.name}"): ${prompt}`,
+      dialogue: `Jarhead (asleep, for ${this.userName}'s automation "${a.name}"): ${prompt}`,
       confirmation: false,
       offsetMs: 0,
       signal: abort.signal,
-      notes: [HEADLESS_NOTE],
+      notes: [headlessNote(this.userName)],
     };
     let result: BrainResult;
     try {

@@ -26,20 +26,25 @@ export function cutLine(text: string | undefined, max = THREAD_LINE_CHARS): stri
  * Byte-identical developer instructions across every process keep the prompt
  * cache warm (REDESIGN.md §18): nothing per thread goes anywhere but this text.
  */
-export function threadBrief(name: string, task: string, lane: ThreadLane, parentRequest: string): string {
+export function threadBrief(name: string, task: string, lane: ThreadLane, parentRequest: string, userName = "Kevin"): string {
   const laneText =
     lane === "background"
       ? "Lane: background — you have no pointer, keyboard or front app. Act through applescript (Apple events: Spotify, Music, Finder, Notes, Calendar…), the browser_* tools, the file tools, run_shell (never `open` an app or `osascript`) and the web. A tool that needs the screen is refused: do the rest and report that the screen is needed."
       : 'Lane: screen — you may click and type once the screen is yours; a tool that answers "waiting for the screen" means do the rest first, or call it again.';
-  return `Jarhead (to its thread ${name}): You are one of Jarhead's threads, named ${name}. Your one job: ${task.trim()} ${laneText} speak_progress speaks once per turn, as "${name}: …" — use it for one thing worth hearing, otherwise work in silence and end with one sentence of what you did; Jarhead speaks it for you. Never call thread_* or self_*. Kevin's own words, for names and gates: "${parentRequest.replace(/\s+/g, " ").trim().slice(0, 400)}".`;
+  return `Jarhead (to its thread ${name}): You are one of Jarhead's threads, named ${name}. Your one job: ${task.trim()} ${laneText} speak_progress speaks once per turn, as "${name}: …" — use it for one thing worth hearing, otherwise work in silence and end with one sentence of what you did; Jarhead speaks it for you. Never call thread_* or self_*. ${userName}'s own words, for names and gates: "${parentRequest.replace(/\s+/g, " ").trim().slice(0, 400)}".`;
 }
 
-/** "Kevin said yes": the resume text a confirmation turn appends to the brief. */
-export const CONFIRMATION_RESUME = "\n\nJarhead (to its thread): Kevin said yes. Call the same tool again with exactly the same arguments, then finish your job.";
+/** "<Name> said yes": the resume text a confirmation turn appends to the brief. */
+export function confirmationResume(userName = "Kevin"): string {
+  return `\n\nJarhead (to its thread): ${userName} said yes. Call the same tool again with exactly the same arguments, then finish your job.`;
+}
+
+/** The default's text, for the pins. */
+export const CONFIRMATION_RESUME: string = confirmationResume("Kevin");
 
 /** The continuation text after a pause. */
-export function resumeText(steps: number): string {
-  return `\n\nJarhead (to its thread): Kevin paused you at step ${steps}; carry on from where you were.`;
+export function resumeText(steps: number, userName = "Kevin"): string {
+  return `\n\nJarhead (to its thread): ${userName} paused you at step ${steps}; carry on from where you were.`;
 }
 
 /**

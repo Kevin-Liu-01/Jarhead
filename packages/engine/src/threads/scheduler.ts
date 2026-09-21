@@ -4,7 +4,7 @@ import { ComputerToolset, ConfirmationState, HOLD_ID, Screen, spokenQuestion, ty
 import { screenNote, type Brain, type BrainAttachment, type BrainResult, type BrainSink, type BrainTask, type RunOutcome, type RunnerOptions, type ThreadFloor, type ToolRunner } from "@jarhead/brain";
 import { MAIN_THREAD_ID, THREAD_MAX_LIVE, THREAD_NAME_CHARS, THREAD_SECONDS_DEFAULT, THREAD_SECONDS_MAX, THREAD_SPAWN_DEPTH, THREAD_STEPS_DEFAULT, THREAD_STEPS_MAX, type LedgerRow, type OverlayCommand, type Thread, type ThreadEvent, type ThreadStatus, type TranscriptItem } from "@jarhead/protocol";
 import { BrainPool, type PoolLane, type Ready } from "./brain-pool.ts";
-import { CONFIRMATION_RESUME, cutLine, phraseForLine, phraseForTool, resumeText, threadBrief } from "./lines.ts";
+import { confirmationResume, cutLine, phraseForLine, phraseForTool, resumeText, threadBrief } from "./lines.ts";
 import { LaneRunner, ThreadAwareRunner, type ActionObserverLike, type ActingSerializerLike, type SpawnLane } from "./runner.ts";
 import { ThreadEventCoalescer, ThreadTable, THREAD_EVENT_COALESCE_MS } from "./table.ts";
 import { ThreadLog, ThreadTurns, type ThreadTurn } from "./turns.ts";
@@ -126,6 +126,8 @@ export interface ThreadSchedulerOptions {
   readonly serializer?: ActingSerializerLike | undefined;
   /** How long a superseded turn's brain may take to let go (default SUPERSEDE_WAIT_MS; tests shorten it). */
   readonly supersedeWaitMs?: number | undefined;
+  /** The user's name as the lines say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
 }
 
 // -------------------------------------------------------------- the lane
@@ -286,6 +288,11 @@ export class ThreadScheduler {
   listChanges = 0;
   private readonly supersedeWaitMs: number;
 
+  /** The user's name as every line here says it. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
+
   constructor(private readonly opts: ThreadSchedulerOptions) {
     this.now = opts.now ?? Date.now;
     this.supersedeWaitMs = opts.supersedeWaitMs ?? SUPERSEDE_WAIT_MS;
@@ -323,7 +330,7 @@ export class ThreadScheduler {
         if (!job) return { kind: "error", message: `no thread named "${who}" in this task` };
         await this.stopJob(job, "brain", "stopped by the main brain");
         const t = this.table.get(job.id);
-        return { kind: "text", text: `${job.name} stopped (${t?.steps ?? 0} steps). Kevin was told: "${job.name} stopped."` };
+        return { kind: "text", text: `${job.name} stopped (${t?.steps ?? 0} steps). ${this.userName} was told: "${job.name} stopped."` };
       }
       default:
         return { kind: "error", message: `unknown thread tool ${name}` };
@@ -338,7 +345,7 @@ export class ThreadScheduler {
   start(parent: ThreadParent, spec: SpawnSpec): ToolResult {
     if (!this.opts.enabled()) return { kind: "error", message: "threads are off in Settings; do it yourself, one thing at a time" };
     const name = spec.name.replace(/\s+/g, " ").trim();
-    if (!name) return { kind: "error", message: "thread_start needs a name Kevin will hear (one word, usually the app)" };
+    if (!name) return { kind: "error", message: `thread_start needs a name ${this.userName} will hear (one word, usually the app)` };
     if (name.length > THREAD_NAME_CHARS) return { kind: "error", message: `thread name "${name}" is too long (at most ${THREAD_NAME_CHARS} characters)` };
     if (!spec.task.trim()) return { kind: "error", message: "thread_start needs a task, in full sentences" };
     if ((parent.depth ?? 0) >= THREAD_SPAWN_DEPTH) return { kind: "error", message: "refused: a thread never spawns a thread (depth one); do it yourself" };
@@ -392,7 +399,7 @@ export class ThreadScheduler {
       budget: { steps, seconds },
       turns: new ThreadTurns({ threadId: lane.id, now: this.now, ledger: this.opts.ledger, log: logRing }),
       log: logRing,
-      brief: threadBrief(name, spec.task, spec.lane, parent.request),
+      brief: threadBrief(name, spec.task, spec.lane, parent.request, this.userName),
       turn: undefined,
       settled: false,
       booted: false,
@@ -467,7 +474,7 @@ export class ThreadScheduler {
     const name = job.name;
     if (!t) return `${name}: gone`;
     const elapsed = Math.round(((t.doneAt ?? this.now()) - t.startedAt) / 1000);
-    const told = job.spoken ? ` (Kevin was told: "${job.spoken}")` : "";
+    const told = job.spoken ? ` (${this.userName} was told: "${job.spoken}")` : "";
     switch (t.status) {
       case "done":
         return `${name}: done — ${t.detail ?? "done"}${told}`;
@@ -476,11 +483,11 @@ export class ThreadScheduler {
       case "stopped":
         return `${name}: stopped — ${t.detail ?? "stopped"}${told}`;
       case "waiting-kevin":
-        return `${name}: awaiting Kevin's yes — ${job.question ?? t.question ?? t.detail ?? "a confirmation"} (${t.steps} steps, ${elapsed} s)`;
+        return `${name}: awaiting ${this.userName}'s yes — ${job.question ?? t.question ?? t.detail ?? "a confirmation"} (${t.steps} steps, ${elapsed} s)`;
       case "waiting-screen":
         return `${name}: waiting for the screen (${t.steps} steps, ${elapsed} s)${t.detail ? ` — ${t.detail}` : ""}`;
       case "paused":
-        return `${name}: paused by Kevin (${t.steps} steps, ${elapsed} s)`;
+        return `${name}: paused by ${this.userName} (${t.steps} steps, ${elapsed} s)`;
       default:
         return `${name}: still working (${t.steps} steps, ${elapsed} s)${t.detail ? ` — ${t.detail}` : ""}; thread_wait again or thread_stop it`;
     }
@@ -590,7 +597,7 @@ export class ThreadScheduler {
     }
     if (job.hold) {
       // A presence hold is not a question: Kevin is away, the thread says so and ends.
-      const line = job.question ?? result.summary ?? "Kevin is away; not now";
+      const line = job.question ?? result.summary ?? `${this.userName} is away; not now`;
       this.endJob(job, "failed", line, `${name}: ${cutLine(line)}`);
       return;
     }
@@ -917,7 +924,7 @@ export class ThreadScheduler {
   async stop(threadId: string, by: "kevin" | "brain" | "cut" = "kevin"): Promise<boolean> {
     const job = this.jobs.get(threadId);
     if (!job) return false;
-    await this.stopJob(job, by, by === "kevin" ? "Kevin stopped it" : by === "brain" ? "stopped by the main brain" : "cut");
+    await this.stopJob(job, by, by === "kevin" ? `${this.userName} stopped it` : by === "brain" ? "stopped by the main brain" : "cut");
     return true;
   }
 
@@ -942,7 +949,7 @@ export class ThreadScheduler {
     for (const item of opts.items ?? []) job.turns.utterance(item);
     if (!opts.items?.length) job.turns.system("keyboard", words);
     const kevinDialogue = [job.parent.kevinDialogue, words].filter((s): s is string => Boolean(s)).join("\n");
-    const spec: TurnSpec = { request: words, dialogue: `${job.brief}\n\nKevin (to ${job.name}): ${words}`, kevinDialogue, confirmation: false, marks: opts.marks };
+    const spec: TurnSpec = { request: words, dialogue: `${job.brief}\n\n${this.userName} (to ${job.name}): ${words}`, kevinDialogue, confirmation: false, marks: opts.marks };
     if (!job.booted) {
       // Its brain is still booting (0.5–7 s on this Mac): the words wait for it and become its first
       // turn — one `handle` on one brain, never two. A pause meanwhile is undone by the words.
@@ -950,7 +957,7 @@ export class ThreadScheduler {
       if (this.table.get(threadId)?.status === "paused") this.setStatus(job, "starting");
       return true;
     }
-    await this.supersede(job, "superseded by Kevin's follow-up");
+    await this.supersede(job, `superseded by ${this.userName}'s follow-up`);
     if (job.settled) return false;
     // A question the thread was waiting on goes with the turn that asked it — off the floor (or out of the
     // queue) BEFORE the next turn, or Kevin's later yes would arm an action nobody asked about any more
@@ -996,18 +1003,18 @@ export class ThreadScheduler {
     if (t.status === "waiting-kevin") {
       this.setStatus(job, "thinking");
       job.question = undefined;
-      void this.runTurn(job, { request: job.parent.request, dialogue: `${job.brief}${CONFIRMATION_RESUME}`, kevinDialogue: job.parent.kevinDialogue, confirmation: true });
+      void this.runTurn(job, { request: job.parent.request, dialogue: `${job.brief}${confirmationResume(this.userName)}`, kevinDialogue: job.parent.kevinDialogue, confirmation: true });
       return;
     }
     if (t.status === "paused") {
-      job.turns.system("play.fill", "Kevin resumed it");
+      job.turns.system("play.fill", `${this.userName} resumed it`);
       if (!job.booted) {
         // Paused while its brain booted: back to starting; the boot's end runs the first turn (or the follow-up that waited).
         this.setStatus(job, "starting");
         return;
       }
       this.setStatus(job, "thinking");
-      const spec = job.pendingTurn ?? { request: job.parent.request, dialogue: `${job.brief}${resumeText(t.steps)}`, kevinDialogue: job.parent.kevinDialogue, confirmation: false };
+      const spec = job.pendingTurn ?? { request: job.parent.request, dialogue: `${job.brief}${resumeText(t.steps, this.userName)}`, kevinDialogue: job.parent.kevinDialogue, confirmation: false };
       job.pendingTurn = undefined;
       void this.runTurn(job, spec);
     }
@@ -1045,7 +1052,7 @@ export class ThreadScheduler {
       return false;
     }
     if (this.table.get(threadId)?.status === "waiting-kevin") {
-      await this.stopJob(job, "kevin", "Kevin said no");
+      await this.stopJob(job, "kevin", `${this.userName} said no`);
       return true;
     }
     this.opts.desk.drop(threadId);
@@ -1070,7 +1077,7 @@ export class ThreadScheduler {
     if (!job || job.settled) return false;
     const t = this.table.get(threadId);
     if (!t || t.status === "paused") return false;
-    const reason = by === "kevin" ? "Kevin paused it" : "paused";
+    const reason = by === "kevin" ? `${this.userName} paused it` : "paused";
     if (!job.booted) {
       // Its brain is still booting: nothing to supersede; the boot's end finds it paused and runs no turn.
       this.setStatus(job, "paused", reason);
@@ -1087,8 +1094,8 @@ export class ThreadScheduler {
   }
 
   /** Global Pause: every live thread paused, brains interrupted, processes kept. */
-  async pauseAll(reason = "Kevin paused you"): Promise<void> {
-    await Promise.all([...this.jobs.values()].map((j) => this.pause(j.id, reason === "Kevin paused you" ? "kevin" : "cut")));
+  async pauseAll(by: "kevin" | "cut" = "kevin"): Promise<void> {
+    await Promise.all([...this.jobs.values()].map((j) => this.pause(j.id, by)));
   }
 
   /** Global Resume: continuation turns, oldest first. */

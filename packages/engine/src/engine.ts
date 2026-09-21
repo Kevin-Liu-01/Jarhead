@@ -498,6 +498,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       defaultConnectors({
         claudeModel: this.settings.brainModel,
         claudeBin: this.config.claudeBin,
+        userName: () => this.userName,
       });
     this.agents = new AgentRegistry(connectors);
     this.agents.onChange((list) => {
@@ -523,6 +524,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       emit: (e) => this.emit("event", e),
       problem: (kind, text, remedy) => this.problemOf(kind, text, remedy),
       clearProblems: (kind, where) => this.clearProblems(kind, where),
+      userName: () => this.userName,
       // Awake: a fire is delivered through the open session (one instruction), not the speaker.
       live: () => (this.live && !this.connecting && this.live.currentState === "started" ? this.live : undefined),
       brain: {
@@ -607,6 +609,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       memory: (query, signal) => this.memory.brainBlock(query, signal),
       look: () => this.compositeLook(),
       observer: this.observer,
+      userName: () => this.userName,
     });
     this.runner = new ThreadAwareRunner({ ...runnerBase, toolset: this.toolset, pool: this.threads, lease: this.lease, desk: this.desk, observer: this.observer, serializer: serializerLike(this.serializer) });
     // Durable memory (K: "jarhead preferences save across sessions"): built over the runner's
@@ -2192,7 +2195,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     });
     live.on("inputTranscript", (delta, s, e) => {
       if (!current()) return;
-      if (this.outputGateUntil) this.liftOutputGate("Kevin spoke");
+      if (this.outputGateUntil) this.liftOutputGate(`${this.userName} spoke`);
       this.kevinSpoke();
       this.transcript.push({ speaker: "kevin", delta, startMs: s, endMs: e });
     });
@@ -3989,7 +3992,7 @@ export class Engine extends EventEmitter<EngineEvents> {
    */
   private async undoMismatch(reflex: Reflex, heard: string, said: string): Promise<boolean> {
     this.ledger.append({ at: this.now(), type: "reflex.mismatch", action: reflex.label, heard, said } as unknown as LedgerRow);
-    log.warn(`reflex mismatch: the ear heard "${heard}" and ran ${reflex.label}; Kevin said "${normalizeForLog(said)}"`);
+    log.warn(`reflex mismatch: the ear heard "${heard}" and ran ${reflex.label}; ${this.userName} said "${normalizeForLog(said)}"`);
     if (reflex.idempotent) return false;
     if (reflex.kind !== "type") {
       this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but ${this.userName} actually said "${normalizeForLog(said).slice(0, 80)}". Tell him in one short sentence what was done, then carry on with what he asked.`);
@@ -4110,7 +4113,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     // waiting thread its three waits; it then reports "could not get the screen".)
     void this.lease.acquire("dictation", { priority: true }).then((g) => {
       if (!g.ok) {
-        log.debug(`dictation: the lease said ${g.reason}; typing anyway (Kevin's hands win)`);
+        log.debug(`dictation: the lease said ${g.reason}; typing anyway (${this.userName}'s hands win)`);
         return;
       }
       if (this.dictating) this.lease.beginOp("dictation");
@@ -5242,7 +5245,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     const startedAt = rows.findIndex((r) => r.type === "session.started" && r.sessionId === latest.id);
     const inside = startedAt >= 0 ? rows.slice(startedAt) : rows;
     if (inside.some((r) => r.type === "stop" && r.how === "pressed")) {
-      log.debug(`last session ${latest.id} was stopped by Kevin; nothing to resume`);
+      log.debug(`last session ${latest.id} was stopped by ${this.userName}; nothing to resume`);
       return;
     }
     const lastAt = inside.reduce((m, r) => Math.max(m, r.at), latest.startedAt);
@@ -5265,7 +5268,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     // Kevin's Stop inside the reconnect window after connection_lost is written after the
     // session's closed row — outside its span — so the day's own rows are asked.
     if (closed && this.stoppedAfter(closed.at, now)) {
-      log.debug(`last session ${latest.id} lost its connection and Kevin pressed stop before it reconnected; nothing to resume`);
+      log.debug(`last session ${latest.id} lost its connection and ${this.userName} pressed stop before it reconnected; nothing to resume`);
       return;
     }
     if (now - lastAt > Engine.LOST_SESSION_MAX_AGE_MS) {

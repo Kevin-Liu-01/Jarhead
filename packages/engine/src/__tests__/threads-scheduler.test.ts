@@ -11,6 +11,7 @@ import { MAIN_THREAD_ID, THREAD_MAX_LIVE, type LedgerRow, type OverlayCommand, t
 import { ACTING_HOLD_MS, ThreadTable } from "../threads/table.ts";
 import { THREAD_IDLE_END_MS, THREAD_PROGRESS_GAP_MS, ThreadScheduler, type ThreadBrainFactory, type ThreadParent, type ThreadVoice } from "../threads/scheduler.ts";
 import { LANE_REFUSAL } from "../threads/runner.ts";
+import { CONFIRMATION_RESUME, confirmationResume, resumeText, threadBrief } from "../threads/lines.ts";
 import { RecordingHands, settle, threadNameOf, until } from "./world.ts";
 
 /**
@@ -71,7 +72,7 @@ const fakeConnector: AgentConnector = {
   read: async () => "",
 };
 
-function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory?: (q: string, signal: AbortSignal) => Promise<string | undefined>; look?: () => Promise<string | undefined>; factory?: boolean; coalesceMs?: number; withMain?: boolean; /** A brain's `stop()` takes this long (a real app-server's does). */ stopDelayMs?: number; /** How long a superseded turn's brain may take to let go. */ supersedeWaitMs?: number; /** A brain's `handle` ignores `cancel()` and the abort: it never returns. */ deaf?: boolean } = {}): Harness {
+function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory?: (q: string, signal: AbortSignal) => Promise<string | undefined>; look?: () => Promise<string | undefined>; factory?: boolean; coalesceMs?: number; withMain?: boolean; /** A brain's `stop()` takes this long (a real app-server's does). */ stopDelayMs?: number; /** How long a superseded turn's brain may take to let go. */ supersedeWaitMs?: number; /** A brain's `handle` ignores `cancel()` and the abort: it never returns. */ deaf?: boolean; /** The user's name the lines say (default: none wired, so "Kevin"). */ userName?: string } = {}): Harness {
   const clock = { t: 1_757_500_000_000 };
   const now = (): number => clock.t;
   const dir = mkdtempSync(join(tmpdir(), "jh-threads-sched-"));
@@ -175,6 +176,7 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
   const agents = new AgentRegistry([fakeConnector], 0);
   const table = new ThreadTable({ now });
   if (o.withMain) table.started({ id: MAIN_THREAD_ID, name: "Jarhead", lane: "voice", status: "idle", task: "", apps: [], startedAt: clock.t, updatedAt: clock.t, turns: 0, steps: 0, waits: 0, budget: { steps: 40, seconds: 300 }, canSay: true, canStop: true });
+  const userName = o.userName;
   scheduler = new ThreadScheduler({
     now,
     ledger,
@@ -196,6 +198,7 @@ function harness(o: { spares?: number; enabled?: boolean; eyes?: boolean; memory
     eyes: o.eyes,
     look: o.look,
     supersedeWaitMs: o.supersedeWaitMs,
+    userName: userName ? () => userName : undefined,
   });
   (h as { scheduler: ThreadScheduler }).scheduler = scheduler;
   (h as { table: ThreadTable }).table = table;
@@ -1075,4 +1078,54 @@ test("answerNo on a live thread that is not waiting drops only its question and 
   await until(() => h.table.get(id)?.status === "stopped");
   assert.equal(await h.scheduler.answerNo(id), false, "finished");
   h.scheduler.dispose();
+});
+
+test("the user's name: the lines a thread's brain reads say the name — thread_start's refusal, the brief's gate line, a pause's detail and continuation, a stop's detail and thread_wait's told line; for another name no literal Kevin and the same words otherwise", async () => {
+  const lines: Record<"Kevin" | "Sam", string[]> = { Kevin: [], Sam: [] };
+  for (const who of ["Kevin", "Sam"] as const) {
+    const h = harness(who === "Sam" ? { userName: "Sam" } : {});
+    h.script = async () => undefined;
+    const task = { delegationId: "item_1", request: h.parent.request, dialogue: "", confirmation: false, offsetMs: 0, signal: new AbortController().signal };
+    const out = lines[who];
+    out.push(text(await h.scheduler.tool("thread_start", { name: "", task: "play Focus" }, { task })));
+    const started = await h.scheduler.tool("thread_start", { name: "Spotify", task: "play Focus", lane: "background" }, { task });
+    assert.equal(started.kind, "text", text(started));
+    await until(() => h.byName("Spotify")?.tasks.length === 1);
+    const fb = h.byName("Spotify")!;
+    const id = h.spawned()[0]!.id;
+    out.push(fb.tasks[0]!.dialogue);
+    assert.equal(await h.scheduler.pause(id), true);
+    out.push(h.table.get(id)!.detail ?? "");
+    await h.scheduler.resume(id);
+    await until(() => fb.tasks.length === 2);
+    out.push(fb.tasks[1]!.dialogue);
+    const waiting = h.scheduler.tool("thread_wait", { name: "Spotify", timeout: 5 }, { task });
+    await settle(20);
+    assert.equal(await h.scheduler.stopNamed("Spotify"), true);
+    out.push(text(await waiting));
+    out.push(h.table.get(id)!.detail ?? "");
+    h.scheduler.dispose();
+  }
+  // The defaults, as the older pins read them.
+  assert.equal(lines.Kevin[0], "thread_start needs a name Kevin will hear (one word, usually the app)");
+  assert.match(lines.Kevin[1]!, /Kevin's own words, for names and gates: "tell ben on slack/);
+  assert.equal(lines.Kevin[2], "Kevin paused it");
+  assert.match(lines.Kevin[3]!, /Kevin paused you at step 0; carry on from where you were\.$/);
+  assert.match(lines.Kevin[4]!, /^Spotify: stopped — Kevin stopped it \(Kevin was told: "Spotify stopped\."\)/);
+  assert.equal(lines.Kevin[5], "Kevin stopped it");
+  // Another name: the same six lines, the name in every one, no literal Kevin anywhere.
+  assert.equal(lines.Sam.length, lines.Kevin.length);
+  for (let i = 0; i < lines.Sam.length; i++) {
+    assert.doesNotMatch(lines.Sam[i]!, /Kevin/, lines.Sam[i]);
+    assert.match(lines.Sam[i]!, /Sam/, lines.Sam[i]);
+    assert.equal(lines.Sam[i]!.replaceAll("Sam", "Kevin"), lines.Kevin[i]!, `line ${i} reads the same for another name`);
+  }
+  // The pure texts, and the default constant the older imports read.
+  assert.equal(CONFIRMATION_RESUME, confirmationResume("Kevin"));
+  assert.equal(confirmationResume("Sam"), "\n\nJarhead (to its thread): Sam said yes. Call the same tool again with exactly the same arguments, then finish your job.");
+  assert.equal(resumeText(3), resumeText(3, "Kevin"));
+  assert.equal(resumeText(3, "Sam"), "\n\nJarhead (to its thread): Sam paused you at step 3; carry on from where you were.");
+  const brief = threadBrief("Spotify", "play Focus", "background", "play focus", "Sam");
+  assert.doesNotMatch(brief, /Kevin/);
+  assert.equal(brief.replaceAll("Sam", "Kevin"), threadBrief("Spotify", "play Focus", "background", "play focus"));
 });

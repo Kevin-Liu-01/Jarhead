@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { noLiveModelLine } from "@jarhead/core";
 import { Engine } from "../engine.ts";
-import { world } from "./world.ts";
+import { until, world } from "./world.ts";
 
 /**
  * The user's name is a setting (release F1): unset, the engine falls back to the account's
@@ -104,6 +104,46 @@ test("F1: a rename while the brain runs restarts it — the standing orders, Cod
     engine.updateSettings({ userName: null });
     assert.deepEqual(restarts, ["the user's name changed", "the user's name changed"], "unsetting is a rename back to the account's name");
     assert.equal(engine.userName, "Ada Lovelace");
+  } finally {
+    await engine.stop();
+  }
+});
+
+test("F1: another name flows into the threads and the automations — thread_start's refusal, a thread's brief and its stop, and a fired automation's nudge to the voice say Sam, with no literal Kevin", async () => {
+  const w = world({ fallbackUserName: "Sam", automations: { exec: { run: async () => ({ code: 0 }), hold: () => ({ kill: () => undefined }) } } });
+  const { engine, live, clock } = w;
+  try {
+    await engine.start();
+    await engine.ready();
+    engine.updateSettings({ idleSleepMinutes: 0 });
+    await engine.wake("test");
+    const said: string[] = [];
+    // Threads: the scheduler's refusal, the brief its brain reads, the detail a stop leaves on the record.
+    const parent = { id: "dlg_test", liveId: "item_1", request: "play focus on spotify", offsetMs: 0 };
+    const refused = engine.threads.start(parent, { name: "", task: "play Focus", lane: "background" });
+    assert.equal(refused.kind, "error");
+    said.push((refused as { message: string }).message);
+    assert.equal(said[0], "thread_start needs a name Sam will hear (one word, usually the app)");
+    const started = engine.threads.start(parent, { name: "Spotify", task: "play Focus", lane: "background" });
+    assert.equal(started.kind, "text", JSON.stringify(started));
+    await until(() => w.threads.byName("Spotify")?.tasks.length === 1);
+    said.push(w.threads.byName("Spotify")!.tasks[0]!.dialogue);
+    assert.match(said[1]!, /Sam's own words, for names and gates: "play focus on spotify"/);
+    const id = engine.threads.threads().find((t) => t.name === "Spotify")!.id;
+    assert.equal(await engine.threads.stop(id), true);
+    await until(() => engine.threads.threads().find((t) => t.id === id)?.status === "stopped");
+    said.push(engine.threads.threads().find((t) => t.id === id)!.detail ?? "");
+    assert.equal(said[2], "Sam stopped it");
+    // Automations: a fire while the session is open is one instruction to the voice, with the name in front.
+    live.instructions.length = 0;
+    const armed = engine.automations.arm({ name: "call mum", when: { kind: "at", at: clock.t + 60_000 }, then: [{ kind: "say", line: "call mum" }], clauses: { quiet: "override" }, echo: "In a minute, say call mum." }, "brain");
+    assert.equal(armed.kind, "armed", JSON.stringify(armed));
+    clock.t += 60_000;
+    (engine as unknown as { tick(): void }).tick();
+    await until(() => live.instructions.length > 0, 1500);
+    said.push(live.instructions[0]!);
+    assert.equal(said[3], "Sam's call mum fired: say 'call mum' once, with its name, and nothing more.");
+    for (const line of said) assert.doesNotMatch(line, /Kevin/, line);
   } finally {
     await engine.stop();
   }
