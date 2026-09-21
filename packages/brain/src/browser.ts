@@ -42,6 +42,8 @@ export interface BrowserToolsOptions {
   readonly hands: NativeHands;
   readonly toolset: ComputerToolset;
   readonly now?: () => number;
+  /** What the refusals and questions call the person Jarhead works for, read live; default "Kevin". */
+  readonly userName?: (() => string) | undefined;
 }
 
 interface PageFind {
@@ -107,6 +109,11 @@ export class BrowserTools {
 
   constructor(private readonly opts: BrowserToolsOptions) {
     this.now = opts.now ?? Date.now;
+  }
+
+  /** The user's name as the refusals and questions say it; "Kevin" when none is wired. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
   }
 
   // ------------------------------------------------------------ which browser
@@ -269,7 +276,7 @@ export class BrowserTools {
     let typed = false;
     if (js.ok) {
       const r = await this.runJs<{ ok: boolean; secure?: boolean; reason?: string; tag?: string; name?: string }>(app, typeScript(text));
-      if (r.secure) return { kind: "error", message: "refused: the focused field is a password field; Kevin types secrets himself" };
+      if (r.secure) return { kind: "error", message: `refused: the focused field is a password field; ${this.userName} types secrets` };
       if (r.ok) typed = true;
       else if (r.reason && !/not editable|no focused field/.test(r.reason)) return { kind: "error", message: r.reason };
     }
@@ -334,12 +341,12 @@ export class BrowserTools {
     ]);
     const url = about.url ?? page?.url;
     const confirmed = this.opts.toolset.confirmations.consume(kind, input);
-    const decision = classifyAction({ kind, app, target: about.target, text: about.text, url, secureField: focused?.secure === true, confirmed });
+    const decision = classifyAction({ kind, app, target: about.target, text: about.text, url, secureField: focused?.secure === true, confirmed, userName: this.userName });
     if (decision.verdict === "run") return { decision };
     if (decision.verdict === "refuse") return { decision, result: { kind: "error", message: `refused: ${decision.reason}` } };
     const what = kind === "browser_navigate" ? `open ${url}` : kind === "browser_type" ? `type "${(about.text ?? "").slice(0, 60)}" into the page` : `click "${about.target ?? ""}" on the page`;
     const pending = this.opts.toolset.confirmations.ask(`${what} in ${app}`, kind, input);
-    return { decision, result: { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${what} in ${app}${url && kind !== "browser_navigate" ? ` (${url.slice(0, 80)})` : ""}. ${decision.reason}. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.` } };
+    return { decision, result: { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${what} in ${app}${url && kind !== "browser_navigate" ? ` (${url.slice(0, 80)})` : ""}. ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` } };
   }
 
   // -------------------------------------------------------------- geometry

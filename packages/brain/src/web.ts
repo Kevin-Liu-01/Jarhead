@@ -20,6 +20,8 @@ export interface WebOptions {
   readonly cap?: number | undefined;
   readonly request?: string | undefined;
   readonly signal?: AbortSignal | undefined;
+  /** What a refusal calls the person Jarhead works for; default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 export interface FetchedPage {
@@ -39,7 +41,7 @@ export async function fetchReadable(url: string, opts: WebOptions = {}): Promise
   const cap = opts.cap ?? FETCH_CAP;
   let current = url.trim();
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const decision = classifyUrl({ url: current, request: opts.request });
+    const decision = classifyUrl({ url: current, request: opts.request, userName: opts.userName });
     if (decision.verdict !== "run") return { ok: false, decision, error: decision.reason };
     let res: Response;
     try {

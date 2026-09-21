@@ -114,6 +114,8 @@ export interface SelfEditOptions {
   /** Test seam: the check commands for a worktree; the default is pnpm's. */
   readonly checks?: ((ctx: CheckContext) => CheckCommand[]) | undefined;
   readonly now?: (() => number) | undefined;
+  /** What the agent prompt, the summary and the apply refusals call the person Jarhead works for, read live; default "Kevin". */
+  readonly userName?: (() => string) | undefined;
 }
 
 function isExecutable(p: string): boolean {
@@ -145,9 +147,9 @@ export function findClaudeBinary(explicit: string | undefined, env: NodeJS.Proce
 }
 
 /** What the coding agent is told besides the task. */
-export function selfEditPrompt(task: string, dir: string): string {
+export function selfEditPrompt(task: string, dir: string, userName = "Kevin"): string {
   return [
-    `You are making one change to Jarhead, Kevin's voice-first Mac assistant, in a git worktree at ${dir} (branch of main). Kevin asked, out loud: "${task}"`,
+    `You are making one change to Jarhead, ${userName}'s voice-first Mac assistant, in a git worktree at ${dir} (branch of main). ${userName} asked, out loud: "${task}"`,
     "Rules: follow AGENTS.md in the repo root. Keep `pnpm run check` green (typecheck, tests, doctor). Do not touch ~/.jarhead/env, the never-list in packages/core/src/policy.ts, the wake gate (apps/mac/Sources/Jarhead/Wake), or the confirmation handshake (ConfirmationState in packages/hands) unless the task names them; do not re-point their exports through another file either. Do not commit; Jarhead commits for you. Do not push. No new dependencies without a reason in your summary.",
     "When you are done, explain in a few plain sentences what you changed and why, naming the files. If the task cannot be done safely, say so and change nothing.",
   ].join("\n\n");
@@ -289,6 +291,11 @@ export class SelfEditManager {
     this.now = opts.now ?? Date.now;
     this.repoRoot = opts.repoRoot ?? REPO_ROOT;
     this.worktreesDir = opts.worktreesDir;
+  }
+
+  /** The user's name as the prompt, the summary and the refusals say it; "Kevin" when none is wired. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
   }
 
   // ---------------------------------------------------------------- records
@@ -493,7 +500,7 @@ export class SelfEditManager {
       const bad = rec.checks.find((c) => !c.ok);
       parts.push(`Checks red: ${bad?.name ?? "?"} failed${bad?.firstFailure ? ` — ${bad.firstFailure}` : bad?.skipped ? ` (${bad.skipped})` : ""}.`);
     }
-    if (rec.rails.length) parts.push(`This change touches Jarhead's own safety rails: ${rec.rails.join("; ")}. Applying it needs Kevin to name that rail himself.`);
+    if (rec.rails.length) parts.push(`This change touches Jarhead's own safety rails: ${rec.rails.join("; ")}. Applying it needs ${this.userName} to name that rail.`);
     parts.push(`Say the word to apply ${rec.id}, or ask what changed.`);
     return parts.join(" ");
   }
@@ -501,7 +508,7 @@ export class SelfEditManager {
   // ----------------------------------------------------------------- agent
 
   private async runAgent(rec: SelfEditRecord, budgetMs: number, signal: AbortSignal | undefined, progress: (line: string) => void): Promise<{ kind: SelfEditAgent; ok: boolean; summary: string }> {
-    const prompt = selfEditPrompt(rec.task, rec.dir);
+    const prompt = selfEditPrompt(rec.task, rec.dir, this.userName);
     const env = this.opts.env ?? process.env;
     const why: string[] = [];
     if (this.opts.codexBin !== false) {
@@ -715,11 +722,11 @@ export class SelfEditManager {
     if (rec.files.length === 0) return `self-edit ${rec.id} made no changes; nothing to apply`;
     if (rec.green !== true && !saysApplyAnyway(request)) {
       const bad = rec.checks.find((c) => !c.ok);
-      return `the checks were red (${bad ? `${bad.name}: ${bad.firstFailure ?? bad.skipped ?? "failed"}` : "not run"}); Kevin has to say to apply it anyway`;
+      return `the checks were red (${bad ? `${bad.name}: ${bad.firstFailure ?? bad.skipped ?? "failed"}` : "not run"}); ${this.userName} has to say to apply it anyway`;
     }
     if (rec.rails.length > 0) {
       const named = railsNamed(rec.rails, request);
-      if (!named.ok) return `this change touches Jarhead's own safety rails (${named.missing.join("; ")}) and Kevin's request did not name them; he has to say which rail he means`;
+      if (!named.ok) return `this change touches Jarhead's own safety rails (${named.missing.join("; ")}) and ${this.userName}'s request did not name them; ${this.userName} has to say which rail`;
     }
     return undefined;
   }

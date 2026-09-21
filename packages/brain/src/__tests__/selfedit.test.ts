@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { DaemonServer, type EngineLike } from "@jarhead/daemon";
 import type { ToolResult } from "@jarhead/hands";
 import { resultText } from "../runner.ts";
-import { RAILS, SelfEditManager, firstFailureLine, railsNamed, railsTouched, saysApplyAnyway, selfEditDoctorRow, selfEditPrompt } from "../selfedit.ts";
+import { RAILS, SelfEditManager, firstFailureLine, railsNamed, railsTouched, saysApplyAnyway, selfEditDoctorRow, selfEditPrompt, type SelfEditRecord } from "../selfedit.ts";
 import { makeRunner, makeSink, makeTask } from "./fakes.ts";
 
 /** The shared stand-in for the Codex CLI (speaks `codex exec --json`); see packages/agents. */
@@ -159,7 +159,7 @@ test("self_edit: red checks carry the first failure line; a rail is flagged; not
   const rail = manager(h, { FAKE_EDIT_FILE: "packages/core/src/policy.ts", FAKE_EDIT_TEXT: "export const LOOSER = true;" });
   const touched = await rail.edit("relax the policy");
   assert.deepEqual(touched.record.rails, ["the policy (packages/core/src/policy.ts)"]);
-  assert.match(touched.summary, /touches Jarhead's own safety rails: the policy \(packages\/core\/src\/policy\.ts\)\. Applying it needs Kevin to name that rail himself\./);
+  assert.match(touched.summary, /touches Jarhead's own safety rails: the policy \(packages\/core\/src\/policy\.ts\)\. Applying it needs Kevin to name that rail\./);
 
   const none = manager(h, {});
   const nothing = await none.edit("do nothing");
@@ -422,7 +422,7 @@ test("rails: security-critical files are rails as a whole, re-exports and new co
   assert.deepEqual(railsNamed([prompt], "change the prompts"), { ok: true, missing: [] }, "a plural still names it");
   assert.deepEqual(railsNamed([policy], "apply the policyx change"), { ok: false, missing: [policy] });
   // Jarhead's own summary must not count: the runner strips its lines, and the words alone are judged here.
-  const jarheadSummary = "Jarhead: This change touches Jarhead's own safety rails: the policy (packages/core/src/policy.ts). Applying it needs Kevin to name that rail himself.";
+  const jarheadSummary = "Jarhead: This change touches Jarhead's own safety rails: the policy (packages/core/src/policy.ts). Applying it needs Kevin to name that rail.";
   assert.deepEqual(railsNamed([policy], jarheadSummary), { ok: true, missing: [] }, "the words themselves name it — which is why the runner never feeds Jarhead's lines in");
 
   assert.ok(saysApplyAnyway("apply it anyway"));
@@ -488,4 +488,38 @@ test("self_apply with neither a restart hook nor a daemon socket says so instead
   assert.ok(!/restarts on the new code/.test(applied), applied);
   assert.equal(runner.selfEdit.restartPending, undefined, "nothing was scheduled, so nothing is pending");
   assert.ok(!/restart is pending/.test(await runner.selfEdit.status()));
+});
+
+// ------------------------------------------------------------ the user's name ---
+
+test("the user's name: the agent prompt and the spoken summary say the name the runner passes, with no pronoun after it; the default renders as before", () => {
+  const kevin = selfEditPrompt("fix the typo", "/wt");
+  const sam = selfEditPrompt("fix the typo", "/wt", "Sam");
+  assert.doesNotMatch(sam, /Kevin/);
+  assert.match(sam, /^You are making one change to Jarhead, Sam's voice-first Mac assistant, in a git worktree at \/wt \(branch of main\)\. Sam asked, out loud: "fix the typo"/);
+  assert.equal(sam.replaceAll("Sam", "Kevin"), kevin, "only the name moves");
+  const rec = {
+    id: "se_name",
+    task: "relax the policy",
+    branch: "jarhead/self-se_name",
+    dir: "/wt",
+    createdAt: 1,
+    updatedAt: 1,
+    status: "checked",
+    agent: "codex",
+    agentOk: true,
+    agentSummary: "",
+    files: ["packages/core/src/policy.ts"],
+    diffStat: " 1 file changed, 1 insertion(+)",
+    checks: [{ name: "typecheck", ok: true, ms: 1 }],
+    green: true,
+    rails: ["the policy (packages/core/src/policy.ts)"],
+  } satisfies SelfEditRecord;
+  const worktreesDir = join(tmpdir(), "jh-selfedit-name");
+  const forSam = new SelfEditManager({ worktreesDir, codexBin: false, claude: false, userName: () => "Sam" }).summary(rec);
+  const forKevin = new SelfEditManager({ worktreesDir, codexBin: false, claude: false }).summary(rec);
+  assert.doesNotMatch(forSam, /Kevin/);
+  assert.match(forSam, /This change touches Jarhead's own safety rails: the policy \(packages\/core\/src\/policy\.ts\)\. Applying it needs Sam to name that rail\. Say the word to apply se_name/);
+  assert.match(forKevin, /Applying it needs Kevin to name that rail\./);
+  assert.equal(forSam.replaceAll("Sam", "Kevin"), forKevin, "only the name moves");
 });

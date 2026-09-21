@@ -477,6 +477,11 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     this.commentaryQueue.clear();
   }
 
+  /** The user's name as the lines the voice reads and the Console shows say it; "Kevin" when none is wired. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
+
   /**
    * "stop" while anything runs — the brain's turn, or only a thread or two — ends
    * it. Checked on fragments so it lands fast; the engine's stop runs after the
@@ -512,10 +517,11 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
           this.armNamedStop(recent, delta, echo ? `the ear stopped ${this.namedStop!.name} by name ${this.now() - this.namedStop!.at} ms ago; these may be Live's words for it` : `${live} threads live`);
           return;
         }
-        log.info("Kevin said stop; cancelling");
+        const who = this.userName;
+        log.info(`${who} said stop; cancelling`);
         const onStop = this.opts.onStop;
-        if (onStop) queueMicrotask(() => onStop("Kevin said stop"));
-        else void this.cancel("Kevin said stop");
+        if (onStop) queueMicrotask(() => onStop(`${who} said stop`));
+        else void this.cancel(`${who} said stop`);
         return;
       }
     }
@@ -539,7 +545,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     for (const m of recent.matchAll(STOP_WORDS_ANYWHERE)) from = m.index ?? from;
     const text = from >= 0 ? recent.slice(from) : delta;
     const wait = this.opts.stopNameWaitMs ?? STOP_NAME_WAIT_MS;
-    log.info(`Kevin said stop (${why}); speech gated, the work cut waits ${wait} ms for a name`);
+    log.info(`${this.userName} said stop (${why}); speech gated, the work cut waits ${wait} ms for a name`);
     const onGate = this.opts.onGateSpeech;
     if (onGate) queueMicrotask(() => onGate());
     const timer = setTimeout(() => {
@@ -550,8 +556,8 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       }
       log.info("no thread named after the stop; cancelling everything");
       const onStop = this.opts.onStop;
-      if (onStop) onStop("Kevin said stop");
-      else void this.cancel("Kevin said stop");
+      if (onStop) onStop(`${this.userName} said stop`);
+      else void this.cancel(`${this.userName} said stop`);
     }, wait);
     timer.unref?.();
     this.pendingStop = { text, timer };
@@ -575,7 +581,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const name = String(reflex.input["name"] ?? "");
     // The ear's named stop stands as the fact when it served these words first (Live's echo must not overwrite its source).
     if (!this.namedStopEcho("ear") || this.namedStop?.name.toLowerCase() !== name.toLowerCase()) this.namedStop = { name, at: this.now(), via: "live" };
-    log.info(`Kevin said "${normalizeUtterance(p.text)}": stopping ${name} only`);
+    log.info(`${this.userName} said "${normalizeUtterance(p.text)}": stopping ${name} only`);
     void threads
       .stopNamed(name)
       .then((took) => {
@@ -822,7 +828,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       this.closeSlot(run, { status: "cancelled", summary: reason });
     }
     this.emit("cancelled", reason);
-    if (!opts.quiet) this.opts.live.appendInstructions(null, "Kevin cancelled the task. Acknowledge with one word and wait.");
+    if (!opts.quiet) this.opts.live.appendInstructions(null, `${this.userName} cancelled the task. Acknowledge with one word and wait.`);
     if (run) await this.opts.brain.cancel();
   }
 
@@ -841,7 +847,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const windowStart = this.running ? Math.max(this.lastDelegationEndMs, live.nowMs || this.running.delegation.offsetMs) : this.lastDelegationEndMs;
     const kevinSince = transcript.since(windowStart, "kevin");
     const requestItems = kevinSince.length > 0 ? kevinSince : [transcript.last("kevin")].filter((x): x is NonNullable<typeof x> => x !== undefined);
-    const request = requestItems.map((i) => i.text).join(" ").trim() || "(no transcript yet — ask what Kevin wants)";
+    const request = requestItems.map((i) => i.text).join(" ").trim() || `(no transcript yet — ask what ${this.userName} wants)`;
     const lastText = requestItems[requestItems.length - 1]?.text ?? request;
     // Live rejects non-null delegation ids on appends while a Responses backend
     // owns the task; general session context is the only channel then.
@@ -968,7 +974,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
       }
       old.abort.abort();
       if ((this.opts.threads?.running(old.delegation.id) ?? 0) > 0) {
-        this.park(old, "Kevin asked something else; the threads carry on", { status: "cancelled", summary: "Kevin asked something else; the threads carried on" });
+        this.park(old, `${this.userName} asked something else; the threads carry on`, { status: "cancelled", summary: `${this.userName} asked something else; the threads carried on` });
       } else {
         this.dropCommentary(old.delegation.id);
         this.finish(old.delegation.id, { status: "cancelled", summary: "superseded by a new request" });
@@ -1079,7 +1085,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     const task: BrainTask = {
       delegationId: liveId,
       request,
-      dialogue: transcript.render(windowMs, uptoMs, this.opts.userName?.() || "Kevin"),
+      dialogue: transcript.render(windowMs, uptoMs, this.userName),
       // Kevin's side only, for the gates: the rendered dialogue above carries Jarhead's lines too.
       kevinDialogue: kevinLines(transcript, uptoMs - windowMs - 1),
       confirmation,
@@ -1425,7 +1431,7 @@ export class Delegator extends EventEmitter<DelegatorEvents> {
     for (const m of pending) {
       if (!m.screenshotPath) continue;
       const what = m.element?.title || m.element?.app ? ` — ${[m.element?.role, m.element?.title ? `"${m.element.title}"` : undefined, m.element?.app ? `in ${m.element.app}` : undefined].filter(Boolean).join(" ")}` : "";
-      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: `${markNote(m.rect, now - m.at, m.source, this.opts.userName?.() || "Kevin")}${what}`, kind: "mark" });
+      attachments.push({ path: isAbsolute(m.screenshotPath) ? m.screenshotPath : join(source.stateDir, m.screenshotPath), mediaType: "image/png", note: `${markNote(m.rect, now - m.at, m.source, this.userName)}${what}`, kind: "mark" });
     }
     const ids = pending.map((m) => m.id);
     source.consume(ids);

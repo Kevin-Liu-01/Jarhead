@@ -566,3 +566,27 @@ test("applescript: native reads of secret stores, split literals and computed sh
   assert.equal(agent.result.kind, "needs-confirmation", resultText(agent.result));
   assert.match(resultText(agent.result), /Jarhead's own checkout/);
 });
+
+// ------------------------------------------------------------ the user's name ---
+
+test("the user's name: the runner's refusals and questions say the name the engine passes — the shell gate, the path gate, the URL gate and the AppleScript gate", async () => {
+  const home = fakeHome();
+  const { runner } = makeRunner({ home, userName: () => "Sam" });
+  assert.equal(runner.userName, "Sam");
+  runner.attach(makeSink().sink, makeTask("do a few things"));
+  const push = await runner.run("run_shell", { command: "gh pr create --fill" });
+  assert.equal(push.result.kind, "needs-confirmation");
+  assert.match(resultText(push.result), /that posts to GitHub on Sam's behalf; ask first\. Ask Sam to confirm out loud, then stop/);
+  const key = await runner.run("read_file", { path: join(home, ".ssh", "id_ed25519") });
+  assert.equal(key.result.kind, "error");
+  assert.match(resultText(key.result), /holds secrets; Jarhead never reads or writes it, and Sam handles it$/);
+  const page = await runner.run("web_fetch", { url: "http://192.168.1.20/status" });
+  assert.match(resultText(page.result), /refused: 192\.168\.1\.20 is a private address; Jarhead fetches it only when Sam names it/);
+  const admin = await runner.run("applescript", { script: 'do shell script "ls" with administrator privileges' });
+  assert.match(resultText(admin.result), /refused: that script needs an administrator password; Sam does that$/);
+  for (const r of [push, key, page, admin]) assert.doesNotMatch(resultText(r.result), /Kevin/);
+  // The default runner still says Kevin, word for word as before.
+  const { runner: plain } = makeRunner({ home });
+  plain.attach(makeSink().sink, makeTask("do a few things"));
+  assert.match(resultText((await plain.run("run_shell", { command: "gh pr create --fill" })).result), /that posts to GitHub on Kevin's behalf; ask first\. Ask Kevin to confirm out loud/);
+});

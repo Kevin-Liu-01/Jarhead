@@ -1331,3 +1331,29 @@ test("threads: the records are indexed — 300 delegations keep the last 200, an
   assert.equal(settled.at(-1), `${id}:done`);
   d.dispose();
 });
+
+// ------------------------------------------------------------ the user's name ---
+
+test("the user's name: the empty-transcript request, the stop reason and the cancel instruction say the name the engine passes", async () => {
+  const live = new FakeLive();
+  const transcript = new Transcript(() => 0);
+  const seen: BrainTask[] = [];
+  const brain = holdingBrain(seen);
+  const stops: string[] = [];
+  let clock = 100_000;
+  const d = new Delegator({ live: live as unknown as LiveSession, transcript, brain, confirmations: new ConfirmationState(), now: () => ++clock, commentaryCoalesceMs: 0, userName: () => "Sam", onStop: (r) => void stops.push(r) });
+  live.emit("delegation", "item_1", "client", 900);
+  await tick();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.request, "(no transcript yet — ask what Sam wants)", "nothing heard yet: the fallback names the user");
+  live.emit("inputTranscript", " stop");
+  await tick(0);
+  assert.deepEqual(stops, ["Sam said stop"], "the reason the engine records and the Console shows");
+  await d.cancel("Sam said stop");
+  await tick();
+  assert.equal(d.all()[0]!.status, "cancelled");
+  assert.equal(d.all()[0]!.summary, "Sam said stop");
+  assert.ok(live.sent.some((s) => s.type === "instructions" && s.payload.content === "Sam cancelled the task. Acknowledge with one word and wait."), "the voice hears the name");
+  assert.equal(live.sent.some((s) => /Kevin/.test(s.payload.content)), false);
+  d.dispose();
+});

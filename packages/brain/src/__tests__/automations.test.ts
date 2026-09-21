@@ -388,3 +388,23 @@ test("the table: four automation specs close ALL_TOOL_SPECS at 71, carry the rul
   assert.equal(p.split("\nLater. ").length - 1, 1, "once");
   assert.ok(!/[#*`]/.test(paragraph), "no markdown in a spoken paragraph");
 });
+
+// ------------------------------------------------------------ the user's name ---
+
+test("the user's name: the draft's three errors say the name the runner passes, the example line included; the default renders as before", () => {
+  const errorFor = (args: Record<string, unknown>, userName?: string): string => {
+    const r = userName === undefined ? draftFromArgs(args, NOW) : draftFromArgs(args, NOW, userName);
+    return "error" in r ? r.error : "";
+  };
+  const noName = {};
+  const noThen = { name: "Wake up", when: "7:10" };
+  const noEcho = { name: "Wake up", when: "7:10", then: [{ kind: "chime", line: "up" }] };
+  assert.equal(errorFor(noName, "Sam"), "name: a short name Sam will hear ('Wake up', 'pasta', 'standup notes')");
+  assert.equal(errorFor(noThen, "Sam"), "then: one to three actions, in order ([{ kind: 'chime', line: 'Wake up, Sam' }])");
+  assert.equal(errorFor(noEcho, "Sam"), `echo: one terse line in Sam's words saying exactly when and what ('Weekdays at 07:10, ring "Wake up".')`);
+  for (const args of [noName, noThen, noEcho]) {
+    assert.doesNotMatch(errorFor(args, "Sam"), /Kevin/);
+    assert.equal(errorFor(args, "Sam").replaceAll("Sam", "Kevin"), errorFor(args), "only the name moves");
+    assert.equal(errorFor(args, "Kevin"), errorFor(args), "the default is Kevin");
+  }
+});

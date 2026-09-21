@@ -115,7 +115,7 @@ export function prepareCodexHome(o: CodexHomeOptions): CodexHome {
     const copied = codexConfigTopLevel(source, CODEX_HOME_COPIED_KEYS);
     const lines = [
       "# Written by Jarhead (packages/brain/src/codex-config.ts) at every brain start; edits here are lost.",
-      `# Kevin's own Codex config is ${join(o.sourceHome, "config.toml")}; only its model lines are copied.`,
+      `# The user's own Codex config is ${join(o.sourceHome, "config.toml")}; only its model lines are copied.`,
       "# No plugins, marketplaces, notify hook, MCP servers or skills belong here: Jarhead's tools arrive as -c overrides.",
       ...CODEX_HOME_COPIED_KEYS.filter((k) => copied[k] !== undefined).map((k) => `${k} = ${toml(copied[k]!)}`),
       "",

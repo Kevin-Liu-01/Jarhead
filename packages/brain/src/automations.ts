@@ -120,22 +120,22 @@ const obj = (v: unknown): Record<string, unknown> | undefined => (typeof v === "
  * one place that says no. `when` is a clock phrase for core's `parseWhen`; `on` is a signal
  * object; a row has one of the two.
  */
-export function draftFromArgs(args: Record<string, unknown>, now: number): DraftParse {
+export function draftFromArgs(args: Record<string, unknown>, now: number, userName = "Kevin"): DraftParse {
   const name = str(args["name"]);
-  if (!name) return { error: "name: a short name Kevin will hear ('Wake up', 'pasta', 'standup notes')" };
+  if (!name) return { error: `name: a short name ${userName} will hear ('Wake up', 'pasta', 'standup notes')` };
   if (name.length > AUTOMATION_NAME_CHARS) return { error: `name: at most ${AUTOMATION_NAME_CHARS} characters ("${name.slice(0, AUTOMATION_NAME_CHARS)}…" is ${name.length})` };
 
   const when = parseTrigger(args, now);
   if ("error" in when) return when;
 
-  const then = parseActions(args["then"]);
+  const then = parseActions(args["then"], userName);
   if ("error" in then) return then;
 
   const clauses = parseClauses(obj(args["clauses"]) ?? {}, when.when, then.actions);
   if ("error" in clauses) return clauses;
 
   const echoRaw = str(args["echo"]);
-  if (!echoRaw) return { error: "echo: one terse line in Kevin's words saying exactly when and what ('Weekdays at 07:10, ring \"Wake up\".')" };
+  if (!echoRaw) return { error: `echo: one terse line in ${userName}'s words saying exactly when and what ('Weekdays at 07:10, ring "Wake up".')` };
   const echo = echoRaw.length > AUTOMATION_ECHO_CHARS ? `${echoRaw.slice(0, AUTOMATION_ECHO_CHARS - 1)}…` : echoRaw;
 
   const recipeCommand = str(args["recipeCommand"]);
@@ -165,8 +165,8 @@ function parseTrigger(args: Record<string, unknown>, now: number): { readonly wh
   return { when: { kind: "on", on: { ...on, kind } as unknown as Extract<AutomationWhen, { kind: "on" }>["on"] } };
 }
 
-function parseActions(raw: unknown): { readonly actions: readonly AutomationAction[] } | { readonly error: string } {
-  if (!Array.isArray(raw) || raw.length === 0) return { error: "then: one to three actions, in order ([{ kind: 'chime', line: 'Wake up, Kevin' }])" };
+function parseActions(raw: unknown, userName: string): { readonly actions: readonly AutomationAction[] } | { readonly error: string } {
+  if (!Array.isArray(raw) || raw.length === 0) return { error: `then: one to three actions, in order ([{ kind: 'chime', line: 'Wake up, ${userName}' }])` };
   if (raw.length > AUTOMATION_ACTIONS_MAX) return { error: `then: at most ${AUTOMATION_ACTIONS_MAX} actions; this has ${raw.length}` };
   const actions: AutomationAction[] = [];
   for (const [i, item] of raw.entries()) {
