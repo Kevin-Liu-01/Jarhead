@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AutomationAction } from "@jarhead/protocol";
-import { PRESENCE_ABSENT, TRASH_REASON, classifyAction, classifyAppleScript, classifyAutomation, classifyPath, classifyUrl, costLine, grantClassOf, isLoopbackHost, isPrivateHost, namedPaths, presenceGated, presenceReason, secretPathReason, shellCwdReason, type AutomationContext, type Decision, type Presence, type Verdict } from "../policy.ts";
+import { PRESENCE_ABSENT, TRASH_REASON, classifyAction, classifyAppleScript, classifyAutomation, classifyPath, classifyUrl, costLine, grantClassOf, isLoopbackHost, isPrivateHost, namedPaths, openPathReason, presenceGated, presenceReason, pressKeyReason, secretPathReason, shellCwdReason, shellNeverReason, type AutomationContext, type Decision, type Presence, type Verdict } from "../policy.ts";
 
 const HOME = "/Users/kevin";
 
@@ -824,4 +824,29 @@ test("the user's name: run / confirm / refuse across the hands, the shell, the p
   assert.equal(classifyPath({ path: "~/.jarhead/trash/x", access: "write", home: HOME_, userName: "Sam" }).reason, TRASH_REASON.replaceAll("Kevin", "Sam"));
   // The cost line is the question, word for word, behind the name.
   assert.equal(cases[cases.length - 1]![1]("Sam").reason, `Sam confirmed: ${costLine({ steps: 8, seconds: 120 }, 5, false)}`);
+});
+
+test("release F1: the three bare helpers render the default for an empty name, as nameOf does in every context — shellNeverReason, pressKeyReason, openPathReason", () => {
+  const logout = `osascript -e 'tell application "System Events" to log out'`;
+  const trash = "rm -rf ~/.jarhead/trash/2026-09-01";
+  for (const empty of ["", undefined] as const) {
+    assert.equal(shellNeverReason(logout, HOME, empty), shellNeverReason(logout, HOME));
+    assert.equal(shellNeverReason(trash, HOME, empty), shellNeverReason(trash, HOME));
+    assert.equal(pressKeyReason("cmd+q", empty), pressKeyReason("cmd+q"));
+    assert.equal(openPathReason("/Applications/1Password.app", HOME, empty), openPathReason("/Applications/1Password.app", HOME));
+  }
+  // The word is there, not a blank.
+  assert.equal(shellNeverReason(logout, HOME, ""), "that command powers the Mac off or logs Kevin out");
+  assert.equal(shellNeverReason(trash, HOME, ""), TRASH_REASON);
+  assert.match(pressKeyReason("cmd+q", "")!, /a notify can ask Kevin to press it$/);
+  assert.equal(openPathReason("/Applications/1Password.app", HOME, ""), "1Password is hands-off; Kevin opens it");
+  // A name still renders, with no literal Kevin.
+  assert.equal(shellNeverReason(logout, HOME, "Sam"), "that command powers the Mac off or logs Sam out");
+  assert.equal(shellNeverReason(trash, HOME, "Sam"), TRASH_REASON.replaceAll("Kevin", "Sam"));
+  assert.match(pressKeyReason("cmd+q", "Sam")!, /ask Sam to press it$/);
+  assert.equal(openPathReason("/Applications/1Password.app", HOME, "Sam"), "1Password is hands-off; Sam opens it");
+  // Nothing about the verdicts moved: a plain key, a plain document, a plain command are still fine.
+  assert.equal(pressKeyReason("cmd+s", ""), undefined);
+  assert.equal(openPathReason("~/Documents/report.pdf", HOME, ""), undefined);
+  assert.equal(shellNeverReason("ls -la", HOME, ""), undefined);
 });

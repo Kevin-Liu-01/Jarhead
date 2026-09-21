@@ -835,8 +835,9 @@ function withoutIdentityFlags(stmt: string): string {
 
 /** Why a shell command is refused outright, if it is. */
 export function shellNeverReason(text: string, home: string = homedir(), userName = "Kevin"): string | undefined {
+  const who = userName || "Kevin";
   for (const expansion of expandInner(text)) {
-    for (const { re, why } of NEVER_SHELL) if (re.test(expansion)) return `that command ${withName(why, userName)}`;
+    for (const { re, why } of NEVER_SHELL) if (re.test(expansion)) return `that command ${withName(why, who)}`;
     const norm = normalizeShell(expansion, home);
     const cleaned = statements(norm).map(withoutIdentityFlags).join(" ; ");
     const secret = secretPathReason(cleaned);
@@ -846,7 +847,7 @@ export function shellNeverReason(text: string, home: string = homedir(), userNam
     const sweep = secretSweepReason(norm);
     if (sweep) return sweep;
     const trash = trashReason(norm);
-    if (trash) return withName(trash, userName);
+    if (trash) return withName(trash, who);
     const home_ = homeSweepReason(norm);
     if (home_.refuse) return home_.refuse;
   }
@@ -1288,11 +1289,12 @@ const PRESS_MODIFIERS: Readonly<Record<string, string>> = { cmd: "cmd", command:
  * Judged at set-up and again by the executor before the key goes, so an older row cannot slip by.
  */
 export function pressKeyReason(key: string, userName = "Kevin"): string | undefined {
+  const who = userName || "Kevin";
   if (!PRESS_KEY.test(key)) return `"${key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`;
   const parts = key.toLowerCase().split("+").map((w) => w.trim()).filter(Boolean).map((w) => PRESS_MODIFIERS[w] ?? w);
   const has = (k: string): boolean => parts.includes(k);
   const never = parts.some((w) => PRESS_NEVER_KEYS.has(w)) || (has("cmd") && has("q")) || (has("cmd") && has("opt") && (has("esc") || has("escape")));
-  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask ${userName} to press it` : undefined;
+  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask ${who} to press it` : undefined;
 }
 const WAKE_PROMPT_CHARS = 400;
 const UNATTENDED_HINT = "a notify or a chime is";
@@ -1509,17 +1511,18 @@ export const OPEN_EXECUTABLE_EXT = /\.(app|command|tool|sh|zsh|bash|py|rb|pl|scp
  * execute-bit check at fire. Shared by the set-up gate and the executor so the two agree.
  */
 export function openPathReason(path: string, home: string = homedir(), userName = "Kevin"): string | undefined {
+  const who = userName || "Kevin";
   const p = expandPath(path.trim(), home).replace(/\/+$/, "");
   if (!p) return "open needs an app, an https URL or a path";
   const base = basename(p);
   if (/\.app$/i.test(base)) {
     const app = base.replace(/\.app$/i, "");
-    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; ${userName} opens it`;
+    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; ${who} opens it`;
     return `${base} is an app bundle; open the app by name instead (open { app: "${app}" })`;
   }
   if (/\.app(\/|$)/i.test(p)) return `${base} is inside an app bundle; nothing runs from an open`;
   if (OPEN_EXECUTABLE_EXT.test(base)) return `${base} would run when opened; an open never executes anything — a run-recipe does, with a yes`;
-  const d = classifyPath({ path: p, access: "read", home, userName });
+  const d = classifyPath({ path: p, access: "read", home, userName: who });
   return d.verdict === "run" ? undefined : d.reason;
 }
 
