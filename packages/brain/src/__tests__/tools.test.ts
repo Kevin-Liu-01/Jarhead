@@ -605,6 +605,7 @@ test("tool table: toolSpecsFor renders the table for another name — the same n
     assert.deepEqual(strip(s.parameters), strip(spec.parameters), `${spec.name}: parameters, required and enums are untouched`);
     assert.deepEqual(s.parameters.required, spec.parameters.required, `${spec.name}: required`);
     assert.doesNotMatch(JSON.stringify(s), /Kevin/, spec.name);
+    assert.doesNotMatch(JSON.stringify(spec), /\b(he|him|his|himself)\b/, `${spec.name}: no pronoun is assumed for the user, so the name renders for anyone`);
     assert.equal(JSON.stringify(s).replace(/\bSam\b/g, "Kevin"), JSON.stringify(spec), `${spec.name}: only the name moves (whole word: "Same gates" stays)`);
     if (/Kevin/.test(JSON.stringify(spec))) named++;
   }

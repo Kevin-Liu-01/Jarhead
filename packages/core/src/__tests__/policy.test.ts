@@ -818,8 +818,9 @@ test("the user's name: run / confirm / refuse across the hands, the shell, the p
   }
   assert.deepEqual([...verdicts].sort(), ["confirm", "refuse", "run"], "the set covers every verdict");
   assert.ok(named >= 30, `${named} of ${cases.length} reasons carry the name`);
-  // The constant keeps its value; the refusal built from it says the caller's name.
-  assert.match(TRASH_REASON, /Kevin's data/);
+  // The constant names the default with no pronoun after it; the refusal built from it says the caller's name.
+  assert.match(TRASH_REASON, /Kevin's data, and Reveal in Finder is how it is emptied$/);
+  assert.doesNotMatch(TRASH_REASON, /\b(he|him|his)\b/);
   assert.equal(classifyPath({ path: "~/.jarhead/trash/x", access: "write", home: HOME_, userName: "Sam" }).reason, TRASH_REASON.replaceAll("Kevin", "Sam"));
   // The cost line is the question, word for word, behind the name.
   assert.equal(cases[cases.length - 1]![1]("Sam").reason, `Sam confirmed: ${costLine({ steps: 8, seconds: 120 }, 5, false)}`);

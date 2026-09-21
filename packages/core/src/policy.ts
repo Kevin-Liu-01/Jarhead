@@ -314,7 +314,7 @@ function autostartReason(p: string, home: string, who: string): string | undefin
 }
 
 /** The trash is move-only: the one refusal both the path gate and the shell gate give for writing or deleting there. */
-export const TRASH_REASON = "the trash (~/.jarhead/trash) is move-only: whole days move in and out by rename and nothing is written or deleted there by a tool; Jarhead never deletes Kevin's data, and Reveal in Finder is how he empties it";
+export const TRASH_REASON = "the trash (~/.jarhead/trash) is move-only: whole days move in and out by rename and nothing is written or deleted there by a tool; Jarhead never deletes Kevin's data, and Reveal in Finder is how it is emptied";
 
 export type PathAccess = "read" | "write" | "delete";
 

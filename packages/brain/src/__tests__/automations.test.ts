@@ -341,10 +341,10 @@ test("the table: four automation specs close ALL_TOOL_SPECS at 71, carry the rul
   assert.deepEqual(ALL_TOOL_SPECS.slice(-4).map((s) => s.name), AUTOMATION_SPECS.map((s) => s.name), "AUTOMATION_SPECS close the table");
   const set = specByName("automation_set")!;
   // The rules the Contract table asks the description to carry.
-  assert.match(set.description, /Write `echo`: one terse line in Kevin's words saying exactly when and what, and say it to him/);
+  assert.match(set.description, /Write `echo`: one terse line in Kevin's words saying exactly when and what, and say it to Kevin/);
   assert.match(set.description, /The policy judges NOW, at set-up: a kind off in Settings, a non-https URL, a hands-off app, a recipe that would need a yes when it runs, a send\/type\/click\/delete\/pay, are refused with the reason and the nearest safe action/);
   assert.match(set.description, /run-recipe, press and wake-brain return needs_confirmation once, here/);
-  assert.match(set.description, /after his yes call again with exactly the same arguments; from then on it fires silently/);
+  assert.match(set.description, /ask in Kevin's words \(for wake-brain the question carries its cost.*\), and after Kevin's yes call again with exactly the same arguments; from then on it fires silently/);
   assert.match(set.description, /the question carries its cost: brain minutes per fire and the daily cap; relay it exactly/);
   assert.match(set.description, /Times are local; say the time back/);
   assert.match(set.description, /no session, no brain turn, nothing billed/);
