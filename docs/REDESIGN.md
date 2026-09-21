@@ -354,7 +354,8 @@ packages/memory     @jarhead/memory: the append-only store of one-sentence items
 packages/core       config, env, ledger, trash, policy (run / confirm / refuse), latency marks
 packages/engine     the Engine: sessions, the transport, threads (table, scheduler, brain pool), sleep, problems, permissions, snapshots
 packages/daemon     jarheadd: the Engine served over a unix socket (binary frames)
-packages/cli        `jarhead`: doctor, status, live (headless), probe, say, agents, hands, ledger, memory, bench, reflex-miss, dock, cmd <go|pause|resume|stop|interrupt|sleep|mute|unmute|agent.refresh|thread.*>; the in-place installer (`@jarhead/cli/install`)
+packages/cli        `jarhead`: doctor, status, live (headless), probe, say, agents, hands, ledger, memory, bench, reflex-miss, dock, cmd <go|pause|resume|stop|interrupt|sleep|mute|unmute|agent.refresh|thread.*>
+packages/install    the in-place installer (`@jarhead/install`): bundle compare/rsync, Dock and LaunchServices hygiene
 apps/mac            Jarhead.app (Swift): blob, notch, overlay, Console, Setup, audio, wake gate, ear, permissions, crash guard, daemon client, packaging
 ```
 
@@ -1795,7 +1796,7 @@ build:mac` updates the bundle in place and never replaces it. Step 5 of
    import com.apple.dock -` → `killall Dock` only when something was written. No pin
    → report only; pinning is Kevin's. `JARHEAD_INSTALL_HYGIENE=0` skips the pass.
 
-The library is `@jarhead/cli/install` (`packages/cli/src/install/`: an XML-plist
+The library is `@jarhead/install` (`packages/install/`: an XML-plist
 reader/writer that keeps `<data>` and 14-digit integers verbatim and re-serializes
 Apple's export byte for byte, the Dock audit, the lsregister parser and stale rule,
 the install plan/argv/parity, `performInstall` — steps 1–3 above as one function over
