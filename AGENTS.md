@@ -8,7 +8,12 @@ happens, a Swift helper owns the Mac.
 
 1. Read `docs/REDESIGN.md` — architecture, the four planes, hard rules.
 2. `pnpm run doctor` and read what it says before touching anything live.
-3. `pnpm run check` must be green before and after your change.
+3. `pnpm run check` must be green before and after your change. Wall-clock
+   ceilings in tests carry `RUNNER_SLACK` (×3 under `GITHUB_ACTIONS`, ×1 on a
+   Mac) and the `[measure]` lines keep the real numbers; the suite runs four
+   files at a time (`--test-concurrency=4`) because the timing asserts were
+   written for one Mac, not seventeen workers, and a timing failure under
+   `pnpm test` on a busy Mac is re-run alone before it is called a regression.
 
 ## Rules
 
