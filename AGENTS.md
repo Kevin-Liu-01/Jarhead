@@ -643,9 +643,11 @@ in a state a probe prints. `docs/AUDIO.md` is the reader's version; this is the 
   (never `-a`, `-E` or `--inplace`), the verify steps, the Dock repair and the
   `planInstall` refusals are apps/mac/README.md › Package; the CI rule (assert what
   openrsync's chatter *means*, never its shape) and the self-healing `dock` problem
-  row are docs/REDESIGN.md §14 "Learned since". Library: `@jarhead/cli/install`
-  (pure functions over parsed plists and lsregister dumps, one injectable `exec`;
-  every test runs in CI without a Dock).
+  row are docs/REDESIGN.md §14 "Learned since". Library: `@jarhead/install`
+  (`packages/install`, its own package: the engine reads the Dock through it and the
+  cli depends on the engine, so it lives in neither and the workspace graph has no
+  cycle; pure functions over parsed plists and lsregister dumps, one injectable
+  `exec`; every test runs in CI without a Dock).
 - **lsregister waits on lsd.** `lsregister -dump Bundle` is ~2 s on an idle Mac and
   66–85 s at load average 300 (a self-edit build under a running test suite); a
   20 s cap made the LaunchServices half of the one-Jarhead pass silently do nothing

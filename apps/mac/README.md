@@ -99,7 +99,7 @@ bundle), never `--inplace`. Then it verifies the INSTALLED copy, not the stage:
 `identifier "com.kevinliu.jarhead"` (what TCC keys the grants on), a sha256 walk
 proves the installed tree is exactly the signed stage, and the directory inode must
 be the one from before. A failure keeps the stage (the order and every fail path are
-`performInstall` in `@jarhead/cli/install`, pinned by a scripted test).
+`performInstall` in `@jarhead/install`, pinned by a scripted test).
 
 **The rollback is git.** The install keeps no copy of the previous bundle by default:
 `git checkout <previous> && pnpm build:mac` rebuilds and reinstalls it, in place, inode
@@ -122,7 +122,7 @@ Jarhead's recent tiles, keep one pin stripped to the keys the Dock rebuilds its
 bookmark from, `defaults import` behind a `mod-count` race check, `killall Dock` only
 when something was written); `JARHEAD_INSTALL_HYGIENE=0` skips the pass. `pnpm run
 doctor` shows `install`, `launch services` and `dock` rows, all read-only. The
-library is `@jarhead/cli/install` (`packages/cli/src/install/`), pure functions with
+library is `@jarhead/install` (`packages/install/`), pure functions with
 one injectable `exec`, tested without a Dock.
 
 Signing picks, in order: `JARHEAD_SIGN_IDENTITY` (use `-` to force ad-hoc), the

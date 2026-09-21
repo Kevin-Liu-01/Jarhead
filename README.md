@@ -250,7 +250,8 @@ packages/core       config, env, ledger, trash, policy, latency marks
 packages/memory     the memory store: extraction after a conversation closes, embeddings (OpenAI or local) with a keyword fallback, retrieval, the 250/120-token renders, forget/restore
 packages/engine     the Engine: sessions, transport, threads (table, scheduler, brain pool), sleep, problems, snapshots
 packages/daemon     jarheadd: the Engine over a unix socket
-packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, automations, recipes, …; the in-place installer
+packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, automations, recipes, …
+packages/install    the in-place installer: bundle compare/rsync, Dock and LaunchServices hygiene
 apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wake gate, permissions, crash guard, banners
 ```
 
