@@ -504,7 +504,8 @@ pnpm build:media                               # build:icon (the Dock icon, the 
 
 Protocol first: change `packages/protocol/src/index.ts`, then its Swift mirror
 `apps/mac/Sources/Jarhead/Model/Protocol.swift` (`apps/mac/Scripts/protocol-probe.sh`
-checks the mirror). CI runs `typecheck` + `test` and `build:hands` + `swift build` on
+checks the mirror). CI runs `typecheck` + `test`, `build:hands` + `swift build` + that
+probe, and a release build signed ad-hoc (`JARHEAD_BUILD_ONLY=1`, nothing installed) on
 macOS 15 (`.github/workflows/check.yml`).
 
 **Preview harnesses** render the UI over fake data with no daemon, no session and
