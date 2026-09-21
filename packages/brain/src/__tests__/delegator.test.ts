@@ -160,7 +160,7 @@ test("delegator: a confirmation question relayed as commentary is spoken even wh
   const live = new FakeLive();
   const transcript = new Transcript(() => 0);
   let hold: ((r: BrainResult) => void) | undefined;
-  const question = 'About to run "python edit_file.py" in ~/Documents. It edits a file outside the scratch folders. Ask Kevin to confirm out loud, then stop; do not retry until he says yes.';
+  const question = 'About to run "python edit_file.py" in ~/Documents. It edits a file outside the scratch folders. Ask Kevin to confirm out loud, then stop; do not retry until Kevin says yes.';
   const brain: Brain = {
     kind: "fake",
     start: async () => ({ ready: true, detail: "" }),

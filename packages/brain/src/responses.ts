@@ -221,9 +221,10 @@ export class ResponsesBrain implements Brain {
       { type: "input_image", image_url: `data:image/png;base64,${a.pngBase64}`, detail: "high" },
     ]);
     if (late) {
+      const who = this.opts.userName ?? "Kevin";
       content.push({
         type: "input_text",
-        text: `You answered before seeing what ${this.opts.userName ?? "Kevin"} circled. Look at it now: if your answer changes or was missing what he meant by "this", give the corrected answer in one or two sentences; if it stands, answer "done."`,
+        text: `You answered before seeing what ${who} circled. Look at it now: if your answer changes or was missing what ${who} meant by "this", give the corrected answer in one or two sentences; if it stands, answer "done."`,
       });
     }
     live.createResponseItem({ type: "message", role: "user", content });

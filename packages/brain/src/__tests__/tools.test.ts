@@ -576,7 +576,7 @@ test("the user's name: the runner's refusals and questions say the name the engi
   runner.attach(makeSink().sink, makeTask("do a few things"));
   const push = await runner.run("run_shell", { command: "gh pr create --fill" });
   assert.equal(push.result.kind, "needs-confirmation");
-  assert.match(resultText(push.result), /that posts to GitHub on Sam's behalf; ask first\. Ask Sam to confirm out loud, then stop/);
+  assert.match(resultText(push.result), /that posts to GitHub on Sam's behalf; ask first\. Ask Sam to confirm out loud, then stop; do not retry until Sam says yes\./);
   const key = await runner.run("read_file", { path: join(home, ".ssh", "id_ed25519") });
   assert.equal(key.result.kind, "error");
   assert.match(resultText(key.result), /holds secrets; Jarhead never reads or writes it, and Sam handles it$/);
@@ -588,7 +588,7 @@ test("the user's name: the runner's refusals and questions say the name the engi
   // The default runner still says Kevin, word for word as before.
   const { runner: plain } = makeRunner({ home });
   plain.attach(makeSink().sink, makeTask("do a few things"));
-  assert.match(resultText((await plain.run("run_shell", { command: "gh pr create --fill" })).result), /that posts to GitHub on Kevin's behalf; ask first\. Ask Kevin to confirm out loud/);
+  assert.match(resultText((await plain.run("run_shell", { command: "gh pr create --fill" })).result), /that posts to GitHub on Kevin's behalf; ask first\. Ask Kevin to confirm out loud, then stop; do not retry until Kevin says yes\./);
 });
 
 test("tool table: toolSpecsFor renders the table for another name — the same names, parameters, required, enums, order and count, no literal Kevin anywhere; the default is the table itself", () => {

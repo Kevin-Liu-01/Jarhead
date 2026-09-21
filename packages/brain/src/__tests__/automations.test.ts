@@ -148,7 +148,7 @@ test("wake-brain: confirm → needs_confirmation carrying the cost line, once; K
   assert.ok(q.includes(COST), q);
   assert.match(q, /about 2 brain minutes per fire on your plan, up to 5 a day/);
   assert.match(q, /call automation_set again with exactly the same arguments/);
-  assert.match(q, /Ask Kevin to confirm out loud, then stop; do not retry until he says yes\./);
+  assert.match(q, /Ask Kevin to confirm out loud, then stop; do not retry until Kevin says yes\./);
   assert.equal(toolset.confirmations.pending?.member, "automation_set");
   assert.equal(toolset.confirmations.pending?.grantable, undefined, "the yes is spent on this one row; nothing widens");
   assert.equal(source.rows.length, 0, "nothing armed before the yes");

@@ -476,7 +476,7 @@ test("responses brain: circled regions ride as an input_image item with the firs
     { type: "input_image", image_url: `data:image/png;base64,${PNG.toString("base64")}`, detail: "high" },
   ]);
   assert.equal(shown.content.length, 3);
-  assert.match(shown.content[2]!.text!, /^You answered before seeing what Kevin circled/);
+  assert.match(shown.content[2]!.text!, /^You answered before seeing what Kevin circled\. Look at it now: if your answer changes or was missing what Kevin meant by "this"/);
   let settled = false;
   void late.then(() => (settled = true));
   await sleep(10);

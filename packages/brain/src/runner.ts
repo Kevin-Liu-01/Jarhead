@@ -540,7 +540,7 @@ export class ToolRunner {
       default: {
         // One question, spent on this row: no grantable, so nothing outlives the yes.
         this.automationAsk = { key: key.set, heard: r.reason };
-        return this.ask(describeDraft(parsed.draft), "automation_set", key, { verdict: "confirm", reason: r.reason }, "It then fires unattended, with nobody there to stop it; after his yes call automation_set again with exactly the same arguments.");
+        return this.ask(describeDraft(parsed.draft), "automation_set", key, { verdict: "confirm", reason: r.reason }, `It then fires unattended, with nobody there to stop it; after ${this.userName}'s yes call automation_set again with exactly the same arguments.`);
       }
     }
   }
@@ -606,7 +606,7 @@ export class ToolRunner {
    */
   private ask(description: string, member: string, input: Record<string, unknown>, decision: Decision, extra = "", app = ""): ToolResult {
     const pending = this.opts.toolset.confirmations.ask(description, member, input, decision.grant && app ? { app, actionClass: decision.grant } : undefined);
-    return { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${description}.${extra ? ` ${extra}` : ""} ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until he says yes.` };
+    return { kind: "needs-confirmation", pendingId: pending.id, question: `About to ${description}.${extra ? ` ${extra}` : ""} ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` };
   }
 
   // --------------------------------------------------------------- shell
@@ -842,7 +842,7 @@ export class ToolRunner {
       const files = `${rec.files.slice(0, 5).map((f) => f.split("/").pop()).join(", ")}${rec.files.length > 5 ? ` and ${rec.files.length - 5} more` : ""}`;
       const decision: Decision = { verdict: "confirm", reason: `It changes ${rec.files.length} file${rec.files.length === 1 ? "" : "s"} (${files}); checks ${rec.green ? "green" : `red, applying anyway on ${this.userName}'s word`}${rec.rails.length ? `; it touches ${rec.rails.join("; ")}` : ""}` };
       const pending = this.opts.toolset.confirmations.ask(`apply self-edit ${id} to Jarhead and restart it`, "self_apply", { id });
-      return { kind: "needs-confirmation", pendingId: pending.id, question: `Apply the change to Jarhead and restart it? Self-edit ${id}: ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until he says yes.` };
+      return { kind: "needs-confirmation", pendingId: pending.id, question: `Apply the change to Jarhead and restart it? Self-edit ${id}: ${decision.reason}. Ask ${this.userName} to confirm out loud, then stop; do not retry until ${this.userName} says yes.` };
     }
     const r = await this.selfEdit.apply(id, { signal: this.signal, progress });
     const parts = [`Applied self-edit ${id} to main (${r.record.head ?? "?"}): ${r.record.files.length} file${r.record.files.length === 1 ? "" : "s"}.`];
