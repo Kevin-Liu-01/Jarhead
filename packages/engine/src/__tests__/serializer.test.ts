@@ -32,6 +32,9 @@ const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 test("haltReasonFor is batch.ts's haltReason, word for word", () => {
   for (const o of [question(), refused(), failed(), text()]) assert.equal(haltReasonFor("type", o), haltReason({ name: "type", input: {} }, o));
   assert.equal(haltReasonFor("type", text()), undefined);
+  // The user's name, with no pronoun after it — the same words in both places for another name too.
+  assert.equal(haltReasonFor("type", question(), "Sam"), "not run: type is waiting for Sam's answer; ask Sam and stop");
+  assert.equal(haltReasonFor("type", question(), "Sam"), haltReason({ name: "type", input: {} }, question(), "Sam"));
   assert.ok(READ_ONLY_TOOLS.size > 0 && [...READ_ONLY_TOOLS].every((t) => SERIALIZER_BYPASS.has(t)), "every look bypasses the queue");
   for (const t of ["thread_wait", "speak_progress", "agent_wait"]) assert.ok(SERIALIZER_BYPASS.has(t), `${t} never holds the acts behind it`);
   // The hands-free management tools: never behind an act, never halted by its question.
@@ -56,7 +59,7 @@ test("a thread_start / thread_stop / agent_start / agent_send issued alongside a
     click.resolve(question());
     assert.equal((await pClick).result.kind, "needs-confirmation");
     assert.deepEqual((await pMgmt).result, { kind: "text", text: "started Spotify alongside" }, `${mgmt} answers its own result`);
-    assert.deepEqual((await pTyped).result, { kind: "error", message: "not run: left_click is waiting for Kevin's answer; ask him and stop" }, "the act behind the click is halted, as before");
+    assert.deepEqual((await pTyped).result, { kind: "error", message: "not run: left_click is waiting for Kevin's answer; ask Kevin and stop" }, "the act behind the click is halted, as before");
     assert.equal(s.halted, 1);
     assert.equal(s.ran, 1, "the management tool is not counted as an act");
   }
@@ -94,7 +97,7 @@ test("I1: two acting calls issued together run in arrival order — the second s
 test("I2: a needs-confirmation from the first acting call makes the queued second answer batch.ts's text without touching the hands; a refusal and an error halt the same way; a call issued after the halt runs", async () => {
   // batch.ts names the call that did not go through (the one waiting for Kevin), the same words for every call behind it.
   for (const [outcome, expect] of [
-    [question(), "not run: left_click is waiting for Kevin's answer; ask him and stop"],
+    [question(), "not run: left_click is waiting for Kevin's answer; ask Kevin and stop"],
     [refused(), "not run: left_click was refused earlier in this turn"],
     [failed(), "not run: left_click failed earlier in this turn (no control named Save)"],
   ] as const) {

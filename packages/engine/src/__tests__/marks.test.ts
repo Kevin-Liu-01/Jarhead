@@ -216,8 +216,8 @@ test("marks: circled regions are recorded at once, captured without Jarhead's wi
       [marks[0]!, marks[1]!, marks[3]!].map((m) => join(engine.config.stateDir, m.screenshotPath!)),
     );
     assert.ok(attachments.every((a) => existsSync(a.path) && a.mediaType === "image/png"));
-    assert.equal(attachments[0]!.note, "Kevin circled this region of his screen: 10,20 100×50 (global points)");
-    assert.equal(attachments[2]!.note, "Kevin circled this region of his screen: 300,401 80×40 (global points)");
+    assert.equal(attachments[0]!.note, "Kevin circled this region of the screen: 10,20 100×50 (global points)");
+    assert.equal(attachments[2]!.note, "Kevin circled this region of the screen: 300,401 80×40 (global points)");
     marks = engine.snapshot().marks;
     assert.equal(marks.length, 4, "consumed marks stay for the Console");
     assert.ok(marks.every((m) => m.consumed));
@@ -241,7 +241,7 @@ test("marks: circled regions are recorded at once, captured without Jarhead's wi
     await settle();
     assert.equal(tasks.length, 3);
     assert.equal(tasks[2]!.attachments?.length, 1);
-    assert.equal(tasks[2]!.attachments![0]!.note, "Kevin circled this region of his screen: 1,1 2×2 (global points), circled 10 min ago", "the brain hears how old the circle is");
+    assert.equal(tasks[2]!.attachments![0]!.note, "Kevin circled this region of the screen: 1,1 2×2 (global points), circled 10 min ago", "the brain hears how old the circle is");
     (engine as unknown as { tick(): void }).tick();
     assert.equal(engine.snapshot().marks.length, 1, "consumed just now: kept for the Console although drawn ten minutes ago");
     assert.equal(engine.snapshot().marks[0]!.consumed, true);

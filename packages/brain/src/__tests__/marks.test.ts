@@ -56,7 +56,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const PNG = Buffer.from("PNG-A");
 const REGION: Rect = { x: 10.4, y: 20, w: 100, h: 50.6 };
-const NOTE = "Kevin circled this region of his screen: 10,20 100×51 (global points)";
+const NOTE = "Kevin circled this region of the screen: 10,20 100×51 (global points)";
 
 /** A state dir with one mark screenshot in it, and the attachment that points at it. */
 function markFixture(): { dir: string; attachment: BrainAttachment; rel: string } {
@@ -168,7 +168,7 @@ test("delegator: pending marks ride with the next task as absolute paths and are
   assert.equal(loaded.length, 1);
   assert.equal(loaded[0]!.pngBase64, PNG.toString("base64"));
   assert.equal(loaded[0]!.note, NOTE);
-  assert.match(attachmentsPreamble(seen[0]!.attachments), /^Attached image 1: Kevin circled this region of his screen: 10,20 100×51 \(global points\)\n/);
+  assert.match(attachmentsPreamble(seen[0]!.attachments), /^Attached image 1: Kevin circled this region of the screen: 10,20 100×51 \(global points\)\n/);
   assert.equal(attachmentsPreamble(undefined), "");
   assert.equal(attachmentsPreamble([]), "");
 
@@ -178,7 +178,7 @@ test("delegator: pending marks ride with the next task as absolute paths and are
   assert.equal(markNote(REGION, 5 * 3_600_000), `${NOTE}, circled 5 h ago`);
 
   // The prompt numbers the images that really go in; the history version names the regions without claiming pixels.
-  const two: BrainAttachment[] = [seen[0]!.attachments![0]!, { path: join(dir, "gone.png"), mediaType: "image/png", note: "Kevin circled this region of his screen: 0,0 5×5 (global points)" }];
+  const two: BrainAttachment[] = [seen[0]!.attachments![0]!, { path: join(dir, "gone.png"), mediaType: "image/png", note: "Kevin circled this region of the screen: 0,0 5×5 (global points)" }];
   const task = withAttachments(makeTask("what is this"), two);
   assert.match(delegationPrompt(task), /Attached image 1: .*10,20 100×51.*\nAttached image 2: .*0,0 5×5/);
   const onlyLoaded = delegationPrompt(task, "Kevin", loadAttachments(task));
@@ -186,7 +186,7 @@ test("delegator: pending marks ride with the next task as absolute paths and are
   assert.ok(!onlyLoaded.includes("Attached image 2"), onlyLoaded);
   assert.ok(!onlyLoaded.includes("0,0 5×5"), onlyLoaded);
   const history = historyPrompt(task);
-  assert.equal(history, `Kevin said: "what is this"\n\n${NOTE}\nKevin circled this region of his screen: 0,0 5×5 (global points)`);
+  assert.equal(history, `Kevin said: "what is this"\n\n${NOTE}\nKevin circled this region of the screen: 0,0 5×5 (global points)`);
   assert.equal(attachmentsRecap(undefined), "");
   assert.equal(historyPrompt(makeTask("plain")), delegationPrompt(makeTask("plain")));
 });
@@ -364,7 +364,7 @@ test("anthropic brain: circled regions go in as base64 image blocks ahead of the
     assert.equal(content.length, 2);
     assert.deepEqual(content[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG.toString("base64") } });
     assert.equal(content[1]!.type, "text");
-    assert.match(content[1]!.text!, /Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of his screen: 10,20 100×51 \(global points\)/);
+    assert.match(content[1]!.text!, /Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of the screen: 10,20 100×51 \(global points\)/);
 
     // No attachments → the plain string turn, and the earlier exchange is carried as text only.
     await brain.handle(makeTask("and now?"), makeSink().sink);
@@ -395,7 +395,7 @@ test("compatible brain: circled regions are image_url parts when the server take
     const t = server.seen[1]!.body as { messages: Array<{ role: string; content: unknown }> };
     assert.deepEqual(t.messages.map((m) => m.role), ["system", "user"]);
     assert.equal(typeof t.messages[1]!.content, "string");
-    assert.match(String(t.messages[1]!.content), /Kevin said: "what is this"\n\nKevin circled this region of his screen: 10,20 100×51 \(global points\)\n\nThis server cannot receive images/);
+    assert.match(String(t.messages[1]!.content), /Kevin said: "what is this"\n\nKevin circled this region of the screen: 10,20 100×51 \(global points\)\n\nThis server cannot receive images/);
     assert.ok(!String(t.messages[1]!.content).includes("Attached image"), "a text-only server is not told an image is attached");
 
     const withImages = new OpenAICompatibleBrain({ runner, baseUrl: server.url, model: "llama3.1", capabilities: { images: true } });
@@ -529,7 +529,7 @@ test("claude brain: circled regions go in as image blocks of the user turn throu
     assert.ok(Array.isArray(content));
     assert.deepEqual(content[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG.toString("base64") } });
     assert.equal(content[1]!.type, "text");
-    assert.match(content[1]!.text!, /Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of his screen: 10,20 100×51 \(global points\)/);
+    assert.match(content[1]!.text!, /Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of the screen: 10,20 100×51 \(global points\)/);
 
     // Without attachments the turn is the plain string it always was.
     assert.equal((await brain.handle(makeTask("and now?"), makeSink().sink)).status, "done");

@@ -82,7 +82,7 @@ test("compatible brain: the labelled part is in the user turn the server receive
 
     const png = join(dir, "mark_1.png");
     writeFileSync(png, "PNG");
-    const circled: BrainTask = { ...task, attachments: [{ path: png, mediaType: "image/png", note: "Kevin circled this region of his screen: 10,20 100×50 (global points)" }] };
+    const circled: BrainTask = { ...task, attachments: [{ path: png, mediaType: "image/png", note: "Kevin circled this region of the screen: 10,20 100×50 (global points)" }] };
     assert.equal((await brain.handle(circled, makeSink().sink)).status, "done");
     const textOnly = lastUser(1);
     assert.match(textOnly, /cannot receive images/, "the text-only path");

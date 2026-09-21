@@ -138,7 +138,7 @@ export const SERIALIZER_BYPASS: ReadonlySet<string> = new Set([
 export function haltReasonFor(name: string, outcome: RunOutcome, userName = "Kevin"): string | undefined {
   switch (outcome.result.kind) {
     case "needs-confirmation":
-      return `not run: ${name} is waiting for ${userName}'s answer; ask him and stop`;
+      return `not run: ${name} is waiting for ${userName}'s answer; ask ${userName} and stop`;
     case "error":
       return /^refused:/.test(outcome.result.message) ? `not run: ${name} was refused earlier in this turn` : `not run: ${name} failed earlier in this turn (${outcome.result.message.slice(0, 120)})`;
     default:

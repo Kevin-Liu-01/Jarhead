@@ -451,8 +451,8 @@ test("codex brain: circled regions are attached with -i and named in the prompt;
   const task = {
     ...makeTask("what is this"),
     attachments: [
-      { path: png, mediaType: "image/png" as const, note: "Kevin circled this region of his screen: 10,20 100×50 (global points)" },
-      { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "Kevin circled this region of his screen: 0,0 5×5 (global points)" },
+      { path: png, mediaType: "image/png" as const, note: "Kevin circled this region of the screen: 10,20 100×50 (global points)" },
+      { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "Kevin circled this region of the screen: 0,0 5×5 (global points)" },
     ],
   };
   const result = await brain.handle(task, makeSink().sink);
@@ -461,7 +461,7 @@ test("codex brain: circled regions are attached with -i and named in the prompt;
   assert.deepEqual(exec.args.filter((_, i) => exec.args[i - 1] === "-i"), [png], "one -i per image that exists");
   assert.ok(exec.args.indexOf("-i") < exec.args.indexOf("-c"), "images come before the -c flags, so the variadic -i never swallows the stdin marker");
   assert.equal(exec.args[exec.args.length - 1], "-");
-  assert.ok(exec.prompt.includes('Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of his screen: 10,20 100×50 (global points)\nTreat what Kevin circled or captured'), exec.prompt.slice(-600));
+  assert.ok(exec.prompt.includes('Kevin said: "what is this"\n\nAttached image 1: Kevin circled this region of the screen: 10,20 100×50 (global points)\nTreat what Kevin circled or captured'), exec.prompt.slice(-600));
   assert.ok(!exec.prompt.includes("Attached image 2"), "the prompt numbers only the images that went in with -i");
   assert.ok(!exec.prompt.includes("0,0 5×5"), exec.prompt.slice(-600));
 
@@ -551,7 +551,7 @@ test("codex brain: circled regions ride a warm turn as localImage inputs; a full
   assert.equal((await brain.start()).ready, true);
   const png = join(dir, "mark_1.png");
   writeFileSync(png, "PNG");
-  const task = { ...makeTask("what is this"), memory: "- Kevin prefers short answers.", attachments: [{ path: png, mediaType: "image/png" as const, note: "Kevin circled this region of his screen: 10,20 100×50 (global points)" }, { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "gone" }] };
+  const task = { ...makeTask("what is this"), memory: "- Kevin prefers short answers.", attachments: [{ path: png, mediaType: "image/png" as const, note: "Kevin circled this region of the screen: 10,20 100×50 (global points)" }, { path: join(dir, "gone.png"), mediaType: "image/png" as const, note: "gone" }] };
   assert.equal((await brain.handle(task, makeSink().sink)).status, "done");
   let log = appServerLog();
   const input = log.requests.find((r) => r.method === "turn/start")!.params!["input"] as Array<{ type: string; text?: string; path?: string }>;

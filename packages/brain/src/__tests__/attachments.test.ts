@@ -14,14 +14,14 @@ import { attachmentsPreamble, attachmentsRecap, markNote } from "../attachments.
 
 const REGION: Rect = { x: 10, y: 20, w: 100, h: 50.4 };
 const WINDOW: Rect = { x: 0, y: 25, w: 1280, h: 800 };
-const CIRCLE_NOTE = "Kevin circled this region of his screen: 10,20 100×50 (global points)";
-const WINDOW_NOTE = "Kevin captured this window of his screen: 0,25 1280×800 (global points)";
+const CIRCLE_NOTE = "Kevin circled this region of the screen: 10,20 100×50 (global points)";
+const WINDOW_NOTE = "Kevin captured this window of the screen: 0,25 1280×800 (global points)";
 
 const mark = (note: string): BrainAttachment => ({ path: "/tmp/never-read.png", mediaType: "image/png", note, kind: "mark" });
 
 test('a window mark is "captured this window"', () => {
   assert.equal(markNote(WINDOW, 0, "window"), WINDOW_NOTE);
-  assert.match(markNote(WINDOW, 0, "window"), /^Kevin captured this window of his screen: /);
+  assert.match(markNote(WINDOW, 0, "window"), /^Kevin captured this window of the screen: /);
   assert.doesNotMatch(markNote(WINDOW, 0, "window"), /circled/);
 });
 
@@ -43,7 +43,7 @@ test("the age suffix says captured for a window and circled for a stroke; under 
 });
 
 test("the preamble closes with the one sentence for both kinds, once, whether the marks are circles, windows or both", () => {
-  const sentence = 'Treat what Kevin circled or captured as what he means by "this"; look at it before answering.';
+  const sentence = 'Treat what Kevin circled or captured as "this"; look at it before answering.';
   const circles = attachmentsPreamble([mark(CIRCLE_NOTE)]);
   assert.equal(circles, `Attached image 1: ${CIRCLE_NOTE}\n${sentence}`);
   const windows = attachmentsPreamble([mark(WINDOW_NOTE)]);
@@ -63,11 +63,12 @@ test("the pre-warm screenshot alone gets no closing sentence; the recap names th
 });
 
 test("release F1: the mark note and the preamble's closing sentence take the user's name — a different name renders with no literal Kevin, and the defaults are unchanged", () => {
-  assert.equal(markNote(REGION, 0, undefined, "Sam"), "Sam circled this region of his screen: 10,20 100×50 (global points)");
-  assert.equal(markNote(WINDOW, 3 * 60_000, "window", "Sam"), "Sam captured this window of his screen: 0,25 1280×800 (global points), captured 3 min ago");
+  assert.equal(markNote(REGION, 0, undefined, "Sam"), "Sam circled this region of the screen: 10,20 100×50 (global points)");
+  assert.equal(markNote(WINDOW, 3 * 60_000, "window", "Sam"), "Sam captured this window of the screen: 0,25 1280×800 (global points), captured 3 min ago");
   const sam = attachmentsPreamble([mark(markNote(REGION, 0, undefined, "Sam"))], "Sam");
-  assert.equal(sam, 'Attached image 1: Sam circled this region of his screen: 10,20 100×50 (global points)\nTreat what Sam circled or captured as what he means by "this"; look at it before answering.');
+  assert.equal(sam, 'Attached image 1: Sam circled this region of the screen: 10,20 100×50 (global points)\nTreat what Sam circled or captured as "this"; look at it before answering.');
   assert.doesNotMatch(sam, /Kevin/);
+  assert.doesNotMatch(sam, /\b(he|him|his)\b/, "no pronoun rides after the name");
   assert.equal(markNote(REGION), CIRCLE_NOTE, "the default stays Kevin");
   assert.equal(attachmentsPreamble([mark(CIRCLE_NOTE)]), attachmentsPreamble([mark(CIRCLE_NOTE)], "Kevin"));
 });

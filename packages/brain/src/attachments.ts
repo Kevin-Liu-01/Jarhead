@@ -41,7 +41,7 @@ export function loadAttachments(task: BrainTask): LoadedAttachment[] {
 export function markNote(rect: Rect, ageMs = 0, source?: ScreenMark["source"], userName = "Kevin"): string {
   const where = `${Math.round(rect.x)},${Math.round(rect.y)} ${Math.round(rect.w)}×${Math.round(rect.h)} (global points)`;
   const window = source === "window";
-  const what = window ? "captured this window of his screen" : "circled this region of his screen";
+  const what = window ? "captured this window of the screen" : "circled this region of the screen";
   return `${userName} ${what}: ${where}${markAge(ageMs, window ? "captured" : "circled")}`;
 }
 
@@ -60,7 +60,7 @@ function markAge(ageMs: number, verb: "circled" | "captured"): string {
 export function attachmentsPreamble(attachments: readonly BrainAttachment[] | undefined, userName = "Kevin"): string {
   if (!attachments || attachments.length === 0) return "";
   const lines = attachments.map((a, i) => `Attached image ${i + 1}: ${a.note}`);
-  if (attachments.some((a) => a.kind !== "screen")) lines.push(`Treat what ${userName} circled or captured as what he means by "this"; look at it before answering.`);
+  if (attachments.some((a) => a.kind !== "screen")) lines.push(`Treat what ${userName} circled or captured as "this"; look at it before answering.`);
   return lines.join("\n");
 }
 
