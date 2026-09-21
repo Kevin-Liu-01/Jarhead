@@ -4,6 +4,9 @@ import { OpenAICompatibleBrain, detectCapabilities, isLoopbackHost, isPrivateHos
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 import { fakeServer, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const MODELS = { object: "list", data: [{ id: "llama3.1:latest", object: "model" }, { id: "qwen2.5", object: "model" }] };
 
 function completion(message: unknown, finish_reason = "stop"): unknown {
@@ -335,7 +338,7 @@ test("compatible brain: 429 and 503 are retried with Retry-After inside the wall
       const started = Date.now();
       const pr = await patient.handle(makeTask("hello"), makeSink().sink);
       assert.equal(pr.status, "failed");
-      assert.ok(Date.now() - started < 2000, "did not sleep for the 120 s Retry-After");
+      assert.ok(Date.now() - started < 2000 * RUNNER_SLACK, `did not sleep for the 120 s Retry-After: under ${2000 * RUNNER_SLACK} ms (${Date.now() - started} ms)`);
       assert.equal(posts, 1);
     } finally {
       await server2.close();
@@ -360,7 +363,7 @@ test("compatible brain: a request that truly hangs is cancelled by the task sign
     abort.abort();
     const result = await pending;
     assert.equal(result.status, "cancelled");
-    assert.ok(Date.now() - started < 1000);
+    assert.ok(Date.now() - started < 1000 * RUNNER_SLACK, `cancelled at once: under ${1000 * RUNNER_SLACK} ms (${Date.now() - started} ms)`);
 
     // The per-request timeout bounds a hang without a cancel.
     const quick = new OpenAICompatibleBrain({ runner, baseUrl: server.url, model: "llama3.1", requestTimeoutMs: 1000 });

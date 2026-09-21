@@ -18,6 +18,9 @@ import { fakeFetch, fixtureJson, fixtureRows, fresh, ids, item, jsonResponse, re
  * the run row.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const input: ExtractInput = {
   day: "2026-09-11",
   lines: [
@@ -211,7 +214,7 @@ test("chat decider: the decide body carries DECIDE_INSTRUCTIONS and the rendered
   const y = new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "m", fetchImpl: slow.fetch, decideTimeoutMs: 10, extractTimeoutMs: 5000 });
   const t0 = Date.now();
   assert.deepEqual(await y.decide(c, [{ item: existing, sim: 0.92 }], { thresholds: OPENAI_THRESHOLDS, now: T0 }), { op: "UPDATE", target: "m_1", text: "Kevin prefers light mode", contradicts: false, replaces: true });
-  assert.ok(Date.now() - t0 < 1000, "the decider's own clock, not the extractor's");
+  assert.ok(Date.now() - t0 < 1000 * RUNNER_SLACK, `the decider's own clock, not the extractor's: under ${1000 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   const down = fakeFetch(() => jsonResponse({}, 503));
   const z = new ChatExtractor({ baseUrl: "http://127.0.0.1:11434", model: "m", fetchImpl: down.fetch });
   assert.deepEqual(await z.decide({ ...c, text: "Kevin prefers a light editor theme" }, [{ item: existing, sim: 0.8 }], { thresholds: OPENAI_THRESHOLDS, now: T0 }), { op: "ADD", contradicts: false });

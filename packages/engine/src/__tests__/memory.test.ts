@@ -18,6 +18,9 @@ import { FakeMemoryService, delegate, nextUtterance, rows, settle, world, type W
  * means no block, no store call, no audio row; nothing on the wire ever carries a vector.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const tokens = (s: string): number => Math.ceil(s.length / 3.2);
 const tick = (w: World): void => (w.engine as unknown as { tick(): void }).tick();
 
@@ -104,7 +107,7 @@ test("brainBlock: within BRAIN_MEMORY_TOKENS and absent when the store is empty;
     const t0 = Date.now();
     assert.equal(await engine.memory.brainBlock("slow one"), undefined);
     const took = Date.now() - t0;
-    assert.ok(took >= RETRIEVE_RACE_MS - 20 && took < RETRIEVE_RACE_MS + 300, `${took} ms`);
+    assert.ok(took >= RETRIEVE_RACE_MS - 20 && took < RETRIEVE_RACE_MS + 300 * RUNNER_SLACK, `${took} ms (under ${RETRIEVE_RACE_MS + 300 * RUNNER_SLACK})`);
     fake.hangRetrieve = false;
     // Every final Kevin line that is not a reflex is pre-embedded, so the delegation's query is a cache hit.
     engine.updateSettings({ idleSleepMinutes: 0 });

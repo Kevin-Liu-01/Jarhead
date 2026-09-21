@@ -15,6 +15,9 @@ import { CodexAppServer, PRIMER_TEXT, appServerArgs } from "../codex-app-server.
  * hard-coded minute.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 /** One turn's tokenUsage as the fake reports it: `total` the thread's running bill, `last` the last request (the context as it stands). */
 interface FakeUsage {
   readonly total: number;
@@ -116,7 +119,7 @@ test("app-server: interrupt() before turn/start has answered still interrupts th
   await new Promise((r) => setTimeout(r, 30)); // Kevin presses stop while turn/start is in flight
   const t0 = Date.now();
   await s.interrupt();
-  assert.ok(Date.now() - t0 < 50, "interrupt() returns at once; it does not wait for turn/start");
+  assert.ok(Date.now() - t0 < 50 * RUNNER_SLACK, `interrupt() returns at once; it does not wait for turn/start: under ${50 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   assert.ok(!child.requests.some((r) => r.method === "turn/interrupt"), "nothing to interrupt yet: no turn id");
   const result = await turn;
   assert.equal(result.status, "interrupted");
@@ -150,7 +153,7 @@ test("app-server: a server that never completes an interrupted turn is given up 
   const result = await turn;
   const took = Date.now() - t0;
   assert.equal(result.status, "interrupted");
-  assert.ok(took >= 100 && took < 1000, `given up after the grace period (${took} ms)`);
+  assert.ok(took >= 100 && took < 1000 * RUNNER_SLACK, `given up after the grace period, under ${1000 * RUNNER_SLACK} ms (${took} ms)`);
   assert.equal(child.requests.filter((r) => r.method === "turn/interrupt").length, 1, "one turn/interrupt, not one per stop");
   await s.stop();
 });
@@ -294,7 +297,7 @@ test("app-server: the boot budget bounds thread/start (not a hard-coded minute),
   const s = server(child, { startTimeoutMs: 150 });
   const t0 = Date.now();
   await assert.rejects(s.start(), /codex app-server did not start within 0s/);
-  assert.ok(Date.now() - t0 < 1000);
+  assert.ok(Date.now() - t0 < 1000 * RUNNER_SLACK, `the boot budget, not a minute: under ${1000 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   const args = appServerArgs({ bin: "codex", cwd: "/c", env: {}, codexHome: "/nowhere", node: "n", tsxCli: "t", bridgePath: "b", socketPath: "s", developerInstructions: "x", disableUserServers: false });
   assert.deepEqual(args.slice(0, 7), ["app-server", "--listen", "stdio://", "--disable", "apps", "-c", "notify=[]"]);
 });

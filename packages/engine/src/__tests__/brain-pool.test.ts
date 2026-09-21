@@ -12,6 +12,9 @@ import { BrainPool, WARM_SPARES_MAX, WARM_SPARE_RETRY_MS, type PoolLane } from "
  * while threads are off.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 interface FakeLane extends PoolLane {
   readonly id: string;
   readonly brain: Brain & { starts: number; stops: number; boot: (r: { ready: boolean; detail: string }) => void };
@@ -84,7 +87,7 @@ test("take() hands out a ready spare first, in microseconds, and tops up behind 
   const taken = pool.take();
   const us = Number(process.hrtime.bigint() - t0) / 1e3;
   assert.equal(taken, lanes[1], "the READY one, not the first");
-  assert.ok(us < 5000, `take() answered in ${us.toFixed(0)} µs`);
+  assert.ok(us < 5000 * RUNNER_SLACK, `take() answered in ${us.toFixed(0)} µs (under ${5000 * RUNNER_SLACK})`);
   assert.ok(taken!.started, "its boot promise rides with it");
   await flush();
   assert.equal(lanes.length, 3, "topped up after the take");

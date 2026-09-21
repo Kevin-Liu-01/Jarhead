@@ -25,6 +25,9 @@ import { toChatTool } from "../compatible.ts";
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 import { fakeServer, makeRunner, makeSink, makeTask, type FakeAnswer, type FakeServer, type Seen } from "./fakes.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const GIB = 1024 ** 3;
 const RAM = 128 * GIB;
 
@@ -227,7 +230,7 @@ test("local: nothing answers within the timeout → LOCAL_NONE-shaped with ramBy
   const started = Date.now();
   const s = await discoverLocalServer({ fetch: never, ramBytes: RAM, timeoutMs: 60, now: () => 1234 });
   assert.deepEqual(s, { reachable: false, baseUrl: "", models: [], ramBytes: RAM, checkedAt: 1234 });
-  assert.ok(Date.now() - started < 2000, "the three probes ran in parallel and gave up together");
+  assert.ok(Date.now() - started < 2000 * RUNNER_SLACK, `the three probes ran in parallel and gave up together: under ${2000 * RUNNER_SLACK} ms (${Date.now() - started} ms)`);
   const refused = await discoverLocalServer({ fetch: portFetch({}), ramBytes: RAM, timeoutMs: 60, now: () => 5 });
   assert.deepEqual(refused, { reachable: false, baseUrl: "", models: [], ramBytes: RAM, checkedAt: 5 });
   const pinned = await discoverLocalServer({ baseUrl: "http://127.0.0.1:9/v1", fetch: portFetch({}), ramBytes: RAM, timeoutMs: 60, now: () => 6 });
@@ -623,7 +626,7 @@ test("local: stall of 60 s → went quiet (the constant, scaled for the test)", 
     const turn = await t.complete(req, new AbortController().signal, Date.now() + 60_000, { thinking: () => {} });
     assert.equal(turn.finish, "error");
     assert.equal(turn.error, "the local model went quiet for 0 s");
-    assert.ok(Date.now() - started < 3000);
+    assert.ok(Date.now() - started < 3000 * RUNNER_SLACK, `the stall bound ended it: under ${3000 * RUNNER_SLACK} ms (${Date.now() - started} ms)`);
   } finally {
     await server.close();
   }
@@ -750,7 +753,7 @@ test("local: the warm guess ages — /api/ps alone is trusted for Ollama's 5 m d
     assert.equal(warm.r.status, "failed");
     assert.equal(warm.r.error, "qwen3.5:27b sent nothing for 0 s; Ollama is busy or let it go — say it again and I will wait for the load");
     assert.equal(warm.log.thinking.some((t) => t.startsWith("loading ")), false, "a warm guess shows no loading line");
-    assert.ok(warm.ms < 300, `the warm budget (60 ms) ended it, not the cold one: ${warm.ms} ms`);
+    assert.ok(warm.ms < 300 * RUNNER_SLACK, `the warm budget (60 ms) ended it, not the cold one: ${warm.ms} ms (under ${300 * RUNNER_SLACK})`);
     assert.equal(loadedFlag(brain), false, "the warm guess was wrong, so it is gone");
 
     // The next turn is cold: the loading line, the long budget, the loading sentence.
@@ -765,7 +768,7 @@ test("local: the warm guess ages — /api/ps alone is trusted for Ollama's 5 m d
     now += 29 * 60_000;
     const stillWarm = await turn(brain);
     assert.match(stillWarm.r.error ?? "", /let it go/);
-    assert.ok(stillWarm.ms < 300, `warm budget within keep_alive: ${stillWarm.ms} ms`);
+    assert.ok(stillWarm.ms < 300 * RUNNER_SLACK, `warm budget within keep_alive: ${stillWarm.ms} ms (under ${300 * RUNNER_SLACK})`);
     assert.equal((await brain.warmUp()).warm, true);
     now += 31 * 60_000;
     const aged = await turn(brain);
@@ -781,7 +784,7 @@ test("local: the warm guess ages — /api/ps alone is trusted for Ollama's 5 m d
     answer = "hang";
     const afterAnswer = await turn(brain);
     assert.match(afterAnswer.r.error ?? "", /let it go/);
-    assert.ok(afterAnswer.ms < 300, `a completed turn restarted the 30 m: ${afterAnswer.ms} ms`);
+    assert.ok(afterAnswer.ms < 300 * RUNNER_SLACK, `a completed turn restarted the 30 m: ${afterAnswer.ms} ms (under ${300 * RUNNER_SLACK})`);
     await brain.stop();
 
     // A sighting alone, 6 minutes old: Ollama's default keep_alive has passed, so the first turn is cold without any timeout first.

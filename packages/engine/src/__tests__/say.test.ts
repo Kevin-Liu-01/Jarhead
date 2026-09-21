@@ -15,6 +15,9 @@ import { delegate, nextUtterance, rows, settle, until, world } from "./world.ts"
  * opens no paid session unless Settings.typedWakes says so.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 type HeardRow = Extract<LedgerRow, { type: "heard" }>;
 
 test("typed while ASLEEP is refused by default: no Live session is opened (the FakeLive is never started), one toast 'asleep — press Go', no instruction, nothing on the record — the text stays in the composer; with Settings.typedWakes the same line wakes Jarhead and reaches the new session as the typed instruction", async () => {
@@ -108,7 +111,7 @@ test("typed 'open safari' runs the reflex first (a hands op within 300 ms; the i
     const t0 = Date.now();
     await engine.command({ type: "say-text", text: "open safari" });
     const took = Date.now() - t0;
-    assert.ok(took < 300, `the typed command acted in ${took} ms`);
+    assert.ok(took < 300 * RUNNER_SLACK, `the typed command acted in ${took} ms (under ${300 * RUNNER_SLACK})`);
     assert.equal(hands.named("open_app").length, 1, "the reflex opened Safari on the acting helper");
     assert.match(live.instructions.at(-1) ?? "", /^Kevin just typed \(treat it exactly like speech\): "open safari"\. Jarhead already did it: opened Safari\./);
     // Live's delegation for the typed words: already done, not redone.

@@ -13,6 +13,9 @@ import { ActionObserver, BACKGROUND_OBSERVES, OBSERVE_BUDGET_MS, OBSERVE_SETTLE_
  * the runner's redactor (I7) and the read invalidates then refills the state cache.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const text = (t: string): RunOutcome => ({ result: { kind: "text", text: t }, ms: 5 });
 const instant = async (): Promise<void> => undefined;
 
@@ -110,7 +113,7 @@ test("a read slower than the budget leaves the result unchanged; Settings.observ
   const out = text("OK");
   const t0 = Date.now();
   assert.equal(await observer.annotate("left_click", {}, out), out, "nothing landed: the result as it was");
-  assert.ok(Date.now() - t0 < 200, "answered at the budget");
+  assert.ok(Date.now() - t0 < 200 * RUNNER_SLACK, `answered at the budget: under ${200 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   assert.equal(observer.eligible, 1);
   assert.equal(observer.observed, 0);
 

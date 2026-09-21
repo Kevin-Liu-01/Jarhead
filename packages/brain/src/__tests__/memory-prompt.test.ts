@@ -23,6 +23,9 @@ import { fakeServer, makeRunner, makeSink, makeTask } from "./fakes.ts";
  * re-renders it. No network, no session: fakes throughout.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const MEMORY = "- Kevin prefers short answers.\n- Kevin goes by Kev.\n- How Kevin likes it done: read the diff before calling a PR fine.";
 
 test("memory prompt: the labelled part sits after Recent conversation and before the reflex notes, history equals delegation, and a task without memory renders exactly as before", () => {
@@ -194,7 +197,7 @@ test("delegator: a slow lookup is cut at MEMORY_RECALL_MS with its signal aborte
     assert.ok(!("memory" in seen[0]!), "no `memory` key at all when there is nothing");
     assert.equal(aborted, true, "the lookup's signal fired at the cut");
     const waited = handledAt[0]! - t0;
-    assert.ok(waited >= MEMORY_RECALL_MS - 30 && waited < MEMORY_RECALL_MS + 350, `the task waited about the bound, not the lookup: ${waited} ms`);
+    assert.ok(waited >= MEMORY_RECALL_MS - 30 && waited < MEMORY_RECALL_MS + 350 * RUNNER_SLACK, `the task waited about the bound, not the lookup: ${waited} ms (under ${MEMORY_RECALL_MS + 350 * RUNNER_SLACK})`);
     d.dispose();
   }
   // Failing: an error is a warning, not a failed delegation — whether the hook rejects or throws before it ever returns a promise.

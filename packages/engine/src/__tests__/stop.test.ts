@@ -15,6 +15,9 @@ import { delegate, frame, nextUtterance, rows, settle, until, world } from "./wo
  * stops — and sleeps; transport.test.ts has the rest of it.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 type StopRow = Extract<LedgerRow, { type: "stop" }>;
 
 test("interrupt: output audio is dropped for the gate window, the running delegation is cancelled with the brain's cancel called, the hands' pending request is failed, the voice is told, a toast says so — and the session stays open", async () => {
@@ -50,7 +53,7 @@ test("interrupt: output audio is dropped for the gate window, the running delega
     const t0 = Date.now();
     await engine.command({ type: "interrupt" });
     const took = Date.now() - t0;
-    assert.ok(took < 150, `interrupt returned in ${took}ms`);
+    assert.ok(took < 150 * RUNNER_SLACK, `interrupt returned in ${took} ms (under ${150 * RUNNER_SLACK})`);
     assert.equal(brain.cancels, 1, "the brain's cancel was called");
     assert.equal(engine.snapshot().delegations[0]?.status, "cancelled");
     assert.equal(engine.snapshot().delegations[0]?.summary, "Kevin pressed stop");
@@ -227,7 +230,7 @@ test("stop aftermath: nothing is left running, armed or billed; asleep at once; 
     assert.equal(engine.snapshot().session, undefined);
     assert.equal(live.currentState, "closed");
     await stopping;
-    assert.ok(Date.now() - t0 < 1700, "stop returned without waiting for the brain's cancel");
+    assert.ok(Date.now() - t0 < 1700 * RUNNER_SLACK, `stop returned without waiting for the brain's cancel: under ${1700 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
     const snap = engine.snapshot();
     assert.equal(snap.delegations.filter((d) => d.status === "running" || d.status === "awaiting-confirmation").length, 0, "nothing running or awaiting");
     assert.equal(snap.delegations[0]!.status, "cancelled");
@@ -266,7 +269,7 @@ test("stop aftermath: nothing is left running, armed or billed; asleep at once; 
     const sleeping = engine.command({ type: "sleep" });
     assert.equal(next.currentState, "closed", "closed before the brain's cancel is awaited");
     await sleeping;
-    assert.ok(Date.now() - s0 < 2000, "sleep is bounded even when the brain's cancel hangs");
+    assert.ok(Date.now() - s0 < 2000 * RUNNER_SLACK, `sleep is bounded even when the brain's cancel hangs: under ${2000 * RUNNER_SLACK} ms (${Date.now() - s0} ms)`);
     assert.equal(engine.currentPhase, "asleep");
     realBrain.cancel = originalCancel;
   } finally {

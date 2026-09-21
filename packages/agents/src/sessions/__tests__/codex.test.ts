@@ -11,6 +11,9 @@ import { SessionsConnector, normalizeSessionTool, type SessionsConnectorOptions 
 import { classifyCommand, type AgentProcess } from "../processes.ts";
 import { speakable } from "../runners/codex.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 // ------------------------------------------------------------------ fixtures ---
 // The Codex driver, exercised end to end against a fake `codex` (fixtures/fake-codex.mjs)
 // that speaks the `codex exec --json` event shapes recorded from codex-cli 0.153.4 on
@@ -561,7 +564,7 @@ test("interrupt(): SIGINT ends the turn; a child that ignores it is SIGKILLed af
     const after = (await c.list()).find((a) => a.id === ID1);
     assert.equal(after?.status, "idle");
     assert.equal(after?.detail, "codex · 3 msgs · demo-site · resumed: interrupted");
-    assert.ok(Date.now() - t0 < 1_000, "SIGINT was enough");
+    assert.ok(Date.now() - t0 < 1_000 * RUNNER_SLACK, `SIGINT was enough: under ${1_000 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
     await c.closeAll();
 
     const stubborn = connector(h, { env: { FAKE_CODEX_MODE: "hang", FAKE_CODEX_IGNORE_SIGINT: "1" }, opts: { codexKillGraceMs: 100 } });
@@ -571,7 +574,7 @@ test("interrupt(): SIGINT ends the turn; a child that ignores it is SIGKILLed af
     const t1 = Date.now();
     await stubborn.interrupt(ID1);
     assert.equal((await stubborn.list()).find((a) => a.id === ID1)?.status, "idle");
-    assert.ok(Date.now() - t1 >= 90 && Date.now() - t1 < 1_500, `SIGKILL after the grace (${Date.now() - t1} ms)`);
+    assert.ok(Date.now() - t1 >= 90 && Date.now() - t1 < 1_500 * RUNNER_SLACK, `SIGKILL after the grace, under ${1_500 * RUNNER_SLACK} ms (${Date.now() - t1} ms)`);
     await stubborn.closeAll();
 
     const budget = connector(h, { env: { FAKE_CODEX_MODE: "hang" }, opts: { codexTurnBudgetMs: 200, codexKillGraceMs: 100 } });

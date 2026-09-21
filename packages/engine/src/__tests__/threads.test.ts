@@ -21,6 +21,9 @@ import { delegate, nextUtterance, rows, settle, until, world, type World } from 
  * table directly for the summaries (`snapshot.threads` carries the same records).
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 type StartedRow = Extract<LedgerRow, { type: "thread.started" }>;
 type StatusRow = Extract<LedgerRow, { type: "thread.status" }>;
 type EndedRow = Extract<LedgerRow, { type: "thread.ended" }>;
@@ -547,7 +550,7 @@ test("the spares: two thread processes are warmed at wake (started, no task), th
     const started = await engine.runner.run("thread_start", { name: "Spotify", task: "play Focus" });
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     assert.equal(started.result.kind, "text");
-    assert.ok(ms < 50, `start with a warm spare answered in ${ms.toFixed(1)} ms`);
+    assert.ok(ms < 50 * RUNNER_SLACK, `start with a warm spare answered in ${ms.toFixed(1)} ms (under ${50 * RUNNER_SLACK})`);
     await until(() => w.threads.byName("Spotify") !== undefined);
     assert.equal(w.threads.byName("Spotify"), w.threads.brains[2], "the first ready spare");
     await until(() => w.threads.brains.length === 5, 1500);

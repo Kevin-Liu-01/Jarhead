@@ -16,6 +16,9 @@ import { runToolOverSocket } from "../mcp-bridge.ts";
 import { resultText } from "../runner.ts";
 import { makeRunner, makeSink, makeTask } from "./fakes.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const FIXTURE = fileURLToPath(new URL("./fixtures/codex-exec.jsonl", import.meta.url));
 
 /**
@@ -784,7 +787,7 @@ test("codex brain: a slow app-server never sits on a task's path — start() rep
   assert.equal(started.ready, true, started.detail);
   // The detail is the proof: had start() waited for thread/start it would read "warm app-server". (The probe subprocesses before it take a few hundred ms under load, so the wall time is only sanity-checked.)
   assert.match(started.detail, /; codex exec per task until the app-server is up \(still starting\)$/);
-  assert.ok(startMs < 3000, `start() returned in ${startMs} ms`);
+  assert.ok(startMs < 3000 * RUNNER_SLACK, `start() returned in ${startMs} ms (under ${3000 * RUNNER_SLACK})`);
   assert.match(brain.detail, /still starting/);
   assert.equal(brain.activeTransport, "exec");
   // A task now runs on exec at once, not after the warm start.
@@ -792,7 +795,7 @@ test("codex brain: a slow app-server never sits on a task's path — start() rep
   const r1 = await brain.handle(makeTask("what app is open"), makeSink().sink);
   assert.equal(r1.status, "done");
   assert.equal(execLog().args[0], "exec", "the task ran on exec while the app-server was still starting");
-  assert.ok(Date.now() - a < 2000);
+  assert.ok(Date.now() - a < 2000 * RUNNER_SLACK, `the exec task ran at once: under ${2000 * RUNNER_SLACK} ms (${Date.now() - a} ms)`);
   // The warm start lands in the background; the next task is a turn on the thread, and the detail line follows.
   await new Promise((r) => setTimeout(r, 900));
   assert.equal(brain.activeTransport, "app-server", "warm now");

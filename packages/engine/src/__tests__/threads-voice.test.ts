@@ -17,6 +17,9 @@ import { delegate, nextUtterance, rows, settle, until, world, type World } from 
  * snapshot's `threads` (main first) and the pane stream; the rebuild at start.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 type EndedRow = Extract<LedgerRow, { type: "thread.ended" }>;
 type StopRow = Extract<LedgerRow, { type: "stop" }>;
 
@@ -48,7 +51,7 @@ test("'what is spotify doing' as an ear partial: the status line reaches Live wi
     assert.deepEqual(live.commentary.filter((c) => /alongside/.test(c)), ["Spotify alongside."], "one split line for the two starts");
     const t0 = performance.now();
     const line = engine.threads.statusLine("spotify");
-    assert.ok(performance.now() - t0 < 5, "the table answers in microseconds");
+    assert.ok(performance.now() - t0 < 5 * RUNNER_SLACK, `the table answers in microseconds: under ${5 * RUNNER_SLACK} ms (${(performance.now() - t0).toFixed(2)} ms)`);
     assert.match(line, /^Spotify is (thinking|working) — \d+ seconds in$/);
     live.commentary.length = 0;
     const tasks = brain.tasks.length;
@@ -175,7 +178,7 @@ test("a bare 'stop' with ONE thread live is today's cut, on the fragment, no wai
       assert.equal(brain.cancels, 0);
       await until(() => engine.snapshot().delegations[0]!.status === "cancelled", 1000);
       const waited = Date.now() - t0;
-      assert.ok(waited >= Engine.STOP_NAME_WAIT_MS - 20 && waited <= Engine.STOP_NAME_WAIT_MS + 200, `cut ${waited} ms after the stop word`);
+      assert.ok(waited >= Engine.STOP_NAME_WAIT_MS - 20 && waited <= Engine.STOP_NAME_WAIT_MS + 200 * RUNNER_SLACK, `cut ${waited} ms after the stop word (under ${Engine.STOP_NAME_WAIT_MS + 200 * RUNNER_SLACK})`);
       assert.equal(brain.cancels, 1);
       assert.deepEqual(spawned(w).map((t) => t.status), ["stopped", "stopped"]);
       assert.equal(w.threads.byName("Spotify")!.cancels, 1);

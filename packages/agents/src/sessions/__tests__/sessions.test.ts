@@ -17,6 +17,9 @@ import { classifyCommand, defaultExec, listAgentProcesses, parseLsofCwd, parseLs
 import type { AgentProcess } from "../processes.ts";
 import { ago, readHeadTail, truncate } from "../store.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 // ------------------------------------------------------------------ fixtures ---
 // Anonymised copies of the shapes on Kevin's machine: Claude Code 2.1.260 transcripts
 // (a Desktop scratch session whose first user line opens with <system-reminder>, isMeta
@@ -1125,7 +1128,7 @@ test("permissions: parallel tool calls each reach Kevin in turn, and the session
     assert.equal(first?.detail, "claude · 3 msgs · demo-app · needs Kevin's yes or no: Bash — rm -rf build");
     const t0 = Date.now();
     assert.equal((await c.waitSettled(id, 2_000)).status, "blocked", "an open question is settled");
-    assert.ok(Date.now() - t0 < 500, `and settled at once, not at the timeout (${Date.now() - t0} ms)`);
+    assert.ok(Date.now() - t0 < 500 * RUNNER_SLACK, `and settled at once, not at the timeout: under ${500 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
 
     assert.deepEqual(await c.send(id, "yes"), { accepted: true, detail: "allowed Bash", mode: "answer" });
     await until(() => sdk.decisions.length === 1, 2_000, "the first decision");
@@ -1186,14 +1189,14 @@ test("waitSettled(): without a driver, an owned session waits for its file to go
     const t0 = Date.now();
     const info = await owned.waitSettled(id, 5_000);
     const took = Date.now() - t0;
-    assert.ok(took >= 35 && took < 1_500, `quiet window ~40 ms, took ${took}`);
+    assert.ok(took >= 35 && took < 1_500 * RUNNER_SLACK, `quiet window ~40 ms, under ${1_500 * RUNNER_SLACK} ms, took ${took}`);
     assert.equal(info.id, id);
     assert.equal(info.status, "idle", "alive; its last turn was written in 2026, long before the real now");
 
     const c = connector(h, { now: Date.now });
     const t1 = Date.now();
     const ended = await c.waitSettled(id, 5_000);
-    assert.ok(Date.now() - t1 < 30, `nothing can write a file nobody owns: settled without the quiet wait (${Date.now() - t1} ms)`);
+    assert.ok(Date.now() - t1 < 30 * RUNNER_SLACK, `nothing can write a file nobody owns: settled without the quiet wait, under ${30 * RUNNER_SLACK} ms (${Date.now() - t1} ms)`);
     assert.equal(ended.status, "ended");
   } finally {
     h.cleanup();

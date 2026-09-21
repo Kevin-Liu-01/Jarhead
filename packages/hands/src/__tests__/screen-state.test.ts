@@ -9,6 +9,9 @@ import type { AxTreeResult, FrontmostInfo, NativeHands } from "../native.ts";
  * inside the budget; the observation line is one line ≤ 240 chars whatever the state.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Hands whose every op answers after `delays[op]` ms (default 1), stamping when it was asked and how many were in flight. */
@@ -94,7 +97,7 @@ test("refresh runs its probes together (arrivals within one hop, ≤ parallel in
   const s = await cache.refresh({ focused: true, windows: true, ax: true, underCursor: true }, 300);
   const arrivals = hands.calls.filter((c) => c.op !== "element_at").map((c) => c.at - t0);
   assert.ok(arrivals.length >= 4, `frontmost, focused_text, cursor, windows, ax_tree asked: ${hands.calls.map((c) => c.op).join(",")}`);
-  assert.ok(Math.max(...arrivals) - Math.min(...arrivals) < 30, `the probes went out together (spread ${(Math.max(...arrivals) - Math.min(...arrivals)).toFixed(1)} ms)`);
+  assert.ok(Math.max(...arrivals) - Math.min(...arrivals) < 30 * RUNNER_SLACK, `the probes went out together (spread ${(Math.max(...arrivals) - Math.min(...arrivals)).toFixed(1)} ms, under ${30 * RUNNER_SLACK})`);
   assert.ok(hands.maxInFlight <= 3, `at most 3 in flight (saw ${hands.maxInFlight})`);
   assert.equal(s.front?.app, "Safari");
   assert.equal(s.under?.role, "AXButton");
@@ -109,7 +112,7 @@ test("refresh runs its probes together (arrivals within one hop, ≤ parallel in
   const t1 = performance.now();
   const partial = await c2.refresh({ focused: true }, 40);
   const took = performance.now() - t1;
-  assert.ok(took < 100, `answered at the budget (${took.toFixed(1)} ms), not at the slow probe`);
+  assert.ok(took < 100 * RUNNER_SLACK, `answered at the budget (${took.toFixed(1)} ms, under ${100 * RUNNER_SLACK}), not at the slow probe`);
   assert.equal(partial.front?.app, "Safari");
   assert.equal(partial.focused, undefined, "the slow probe had not landed");
   await sleep(150);

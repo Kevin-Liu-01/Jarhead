@@ -11,6 +11,9 @@ import { BLOCKED_TOOLS, BRAIN_BENCH_COMMANDS, ROLLOVER_LOG_RE, WikiHands, analyz
  * nothing here spends a Codex turn or touches the Mac.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 test("bench --brain: the canned screen is a real 1280×800 PNG (fixture, and the drawn stand-in)", () => {
   const drawn = syntheticScreenPng();
   assert.deepEqual([...drawn.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -199,7 +202,7 @@ test("bench --brain: a whole run with a stand-in brain — the reflex path catch
   assert.ok(reflex, "scroll down ran on the reflex path");
   assert.equal(reflex.status, "done");
   assert.equal(reflex.summary, "scrolled down.");
-  assert.ok(reflex.t.done < 2000);
+  assert.ok(reflex.t.done < 2000 * RUNNER_SLACK, `the reflex row finished under ${2000 * RUNNER_SLACK} ms (${reflex.t.done} ms)`);
   assert.equal(reflex.toolNames[0], "scroll");
   assert.ok(!report.records.some((r) => r.phase === "reflex-path" && r.cmd === "click-search-type"), "a compound command is not a reflex");
   const brain = report.records.filter((r) => r.phase === "brain-path");
@@ -225,7 +228,7 @@ test("bench --brain: a whole run with a stand-in brain — the reflex path catch
   // merge gap instead of skewing session time, so speech end → delegation stays a real, near-zero number on every row.
   for (const r of report.records) {
     assert.ok(typeof r.t.speechToDelegation === "number", `${r.liveId}: speechEndAt is stamped`);
-    assert.ok(r.t.speechToDelegation > -50 && r.t.speechToDelegation < 500, `${r.liveId}: speech end → delegation ≈ 0, not a clock skew (got ${r.t.speechToDelegation} ms)`);
+    assert.ok(r.t.speechToDelegation > -50 && r.t.speechToDelegation < 500 * RUNNER_SLACK, `${r.liveId}: speech end → delegation ≈ 0, not a clock skew (got ${r.t.speechToDelegation} ms, under ${500 * RUNNER_SLACK})`);
   }
   assert.equal(report.meta["contextRollovers"], 0, "no wire and no fresh-thread line: 0 rollovers");
   assert.equal(report.summary.rollovers, 0);

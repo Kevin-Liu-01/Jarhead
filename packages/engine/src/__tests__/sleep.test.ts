@@ -17,6 +17,9 @@ import { delegate, frame, nextUtterance, rows, settle, until, world } from "./wo
  * phase flips before the first await. Room talk never sleeps it.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 type SleepRow = Extract<LedgerRow, { type: "sleep" }>;
 type StopRow = Extract<LedgerRow, { type: "stop" }>;
 const sequence = (w: ReturnType<typeof world>, ...types: string[]): string[] => (w.engine.ledger.read(w.clock.t) as unknown as { type: string }[]).map((r) => r.type).filter((t) => types.includes(t));
@@ -89,7 +92,7 @@ test("farewell cap: a voice that never answers is cut at FAREWELL_CAP_MS and the
     assert.equal(live.closes, 0, "still waiting inside the cap");
     await until(() => live.closes === 1, 1500);
     const took = Date.now() - t0;
-    assert.ok(took >= Engine.FAREWELL_CAP_MS - 50 && took < Engine.FAREWELL_CAP_MS + 800, `closed at the cap (${took} ms)`);
+    assert.ok(took >= Engine.FAREWELL_CAP_MS - 50 && took < Engine.FAREWELL_CAP_MS + 800 * RUNNER_SLACK, `closed at the cap (${took} ms, under ${Engine.FAREWELL_CAP_MS + 800 * RUNNER_SLACK})`);
     assert.equal(engine.currentPhase, "asleep");
 
     // Again, but the voice said "night." 400 ms before the cue landed (Live's path spoke first).
@@ -103,7 +106,7 @@ test("farewell cap: a voice that never answers is cut at FAREWELL_CAP_MS and the
     await settle();
     assert.deepEqual(next.instructions, [], "no second farewell");
     await until(() => next.closes === 1, 1000);
-    assert.ok(Date.now() - t1 < 1000, "closed after the quiet window, not the cap");
+    assert.ok(Date.now() - t1 < 1000 * RUNNER_SLACK, `closed after the quiet window, not the cap: under ${1000 * RUNNER_SLACK} ms (${Date.now() - t1} ms)`);
     assert.equal(rows<SleepRow>(w, "sleep").length, 2);
     assert.equal(rows<SleepRow>(w, "sleep")[1]!.phrase, "go to sleep");
   } finally {

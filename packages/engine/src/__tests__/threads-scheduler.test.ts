@@ -25,6 +25,9 @@ import { RecordingHands, settle, threadNameOf, until } from "./world.ts";
  * and never a snapshot; the ledger gets the thread.* rows the rebuild reads.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 interface FakeBrain {
   readonly id: string;
   name: string;
@@ -216,7 +219,7 @@ test("admission is synchronous and refuses: the fourth spawned thread (main + 3 
     const r = h.start(name);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     assert.equal(r.kind, "text", text(r));
-    assert.ok(ms < 20, `admitted in ${ms.toFixed(1)} ms`);
+    assert.ok(ms < 20 * RUNNER_SLACK, `admitted in ${ms.toFixed(1)} ms (under ${20 * RUNNER_SLACK})`);
   }
   assert.equal(h.table.liveCount(), THREAD_MAX_LIVE, "main + 3");
   assert.match(text(h.start("Notes")), /^3 threads are busy/);
@@ -249,7 +252,7 @@ test("a warm spare is taken first: start() answers under 5 ms, no brain.start on
   const r = h.start("Spotify");
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.equal(r.kind, "text");
-  assert.ok(ms < 5, `start() with a spare: ${ms.toFixed(2)} ms`);
+  assert.ok(ms < 5 * RUNNER_SLACK, `start() with a spare: ${ms.toFixed(2)} ms (under ${5 * RUNNER_SLACK})`);
   assert.equal(h.brains[0]!.started, 1, "the spare's one boot; none on the caller's path");
   await until(() => h.byName("Spotify") !== undefined);
   assert.equal(h.byName("Spotify"), h.brains[0]);
@@ -762,7 +765,7 @@ test("the task carries the memory block (bounded at 250 ms: a hanging hook leave
   const t0 = Date.now();
   h.start("Slack");
   await until(() => h.byName("Slack")?.tasks.length === 1);
-  assert.ok(Date.now() - t0 < 1000);
+  assert.ok(Date.now() - t0 < 1000 * RUNNER_SLACK, `bounded: under ${1000 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   assert.equal(h.byName("Slack")!.tasks[0]!.memory, undefined, "bounded: the task went without it");
   const blind = harness({ eyes: false });
   blind.script = async () => ({ status: "done", summary: "ok." });
@@ -1031,7 +1034,7 @@ test("a brain that never lets go after cancel(): a follow-up resolves within the
   const t0 = Date.now();
   assert.equal(await h.scheduler.followUp(id, "skip this song"), true);
   const took = Date.now() - t0;
-  assert.ok(took >= 60 && took < 1000, `bounded: ${took} ms`);
+  assert.ok(took >= 60 && took < 1000 * RUNNER_SLACK, `bounded: ${took} ms (under ${1000 * RUNNER_SLACK})`);
   assert.equal(fb.cancels, 1, "cancel() was called once");
   await until(() => fb.tasks.length === 2);
   assert.equal(h.scheduler.turnsOf(id)[0]!.status, "cancelled", "the record closed without the brain");

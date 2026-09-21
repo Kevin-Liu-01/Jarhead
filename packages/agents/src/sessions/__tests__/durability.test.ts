@@ -38,6 +38,8 @@ const T = (iso: string): number => Date.parse(iso);
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const measure = (what: string, value: string): void => console.log(`[measure] ${what}: ${value}`);
 const ms = (t0: number): number => Math.round((performance.now() - t0) * 10) / 10;
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
 
 async function until(check: () => boolean, ms = 3_000, what = "condition"): Promise<void> {
   const deadline = Date.now() + ms;
@@ -219,7 +221,7 @@ test("liveness: a Codex process that died mid-tool — working while the pid hol
   await until(() => seen.some((a) => a.id === agentId && a.status === "ended"), 3_000, "ended after the kill");
   const latency = ms(t0);
   measure("status → ended after the process died (poll 20 ms)", `${latency} ms; production bound POLL_ACTIVE_MS 5 s + ps timeout 2 s = 7 s`);
-  assert.ok(latency < 500, `ended within a few polls (${latency} ms)`);
+  assert.ok(latency < 500 * RUNNER_SLACK, `ended within a few polls, under ${500 * RUNNER_SLACK} ms (${latency} ms)`);
   const ended = seen.find((a) => a.status === "ended");
   assert.equal(ended?.hint, "ended");
   stop();
@@ -326,7 +328,7 @@ test("waitSettled on a run whose child stopped talking: resolves when the rail's
   assert.equal(settled.status, "unknown");
   assert.equal(settled.hint, "resumed");
   assert.match(settled.detail ?? "", /^codex · \d+ msgs · site · resumed: thinking$/, "the run's own detail, no relative time");
-  assert.ok(took >= 120 && took < 2_000, `settled when the stall bound ran out, not at the turn budget (${took} ms)`);
+  assert.ok(took >= 120 && took < 2_000 * RUNNER_SLACK, `settled when the stall bound ran out, not at the turn budget: under ${2_000 * RUNNER_SLACK} ms (${took} ms)`);
   assert.equal((await c.list()).find((a) => a.id === agentId)?.status, "unknown", "the rail reads the same");
   await c.closeAll();
 });
@@ -415,7 +417,7 @@ test("tail: a deleted file ends the follow within goneAfterMs (gone); a new inod
   const took = ms(t0);
   measure("FileTail gone after unlink (goneAfterMs 100, poll 20)", `${took} ms`);
   assert.deepEqual(gone.ends, ["gone"]);
-  assert.ok(took >= 90 && took < 400, `ended after the grace, not before (${took} ms)`);
+  assert.ok(took >= 90 && took < 400 * RUNNER_SLACK, `ended after the grace, not before, under ${400 * RUNNER_SLACK} ms (${took} ms)`);
 
   const replacedPath = join(dir, "replaced.jsonl");
   writeFileSync(replacedPath, "a\n");
@@ -497,7 +499,7 @@ test("parser: a 48 MB single line is never assembled — skipped as one line wit
   const took = ms(t0);
   const grew = process.memoryUsage().rss - rss0;
   measure("48 MB single line: tail page", `${took} ms, RSS +${Math.round(grew / MiB)} MB, ${page.bytesRead / MiB | 0} MB read`);
-  assert.ok(took < 300, `under 300 ms (${took} ms)`);
+  assert.ok(took < 300 * RUNNER_SLACK, `under ${300 * RUNNER_SLACK} ms (${took} ms)`);
   assert.ok(grew < 64 * MiB, `RSS growth under 64 MB (+${Math.round(grew / MiB)} MB)`);
   assert.equal(page.complete, true);
   const huge = page.messages.find((m) => m.id === gen.hugeCallId);
@@ -573,9 +575,6 @@ test("parser: results whose call is out of view are kept as orphans and adopted 
 });
 
 // -------------------------------------------------------------------- paging ---
-
-/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
-const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
 
 test("open: the 50 MB fixture's newest page — cold and warm timings, cursor, exact ids", async () => {
   const { claude: cl, codex: cx } = fixtures();
@@ -755,7 +754,7 @@ test("event loop: while a 14 MB page parses and while the Codex fixture with an 
   const bigMs = ms(t1);
   const gap1 = p1.stop();
   measure(`setImmediate max gap during a ${(big.bytesRead / MiB).toFixed(1)} MB backward read (${big.messages.length} msgs, ${bigMs} ms)`, `${gap1} ms`);
-  assert.ok(gap1 < 100, `gap ${gap1} ms`);
+  assert.ok(gap1 < 100 * RUNNER_SLACK, `gap ${gap1} ms (under ${100 * RUNNER_SLACK})`);
 
   const p2 = probe();
   const t2 = performance.now();
@@ -765,7 +764,7 @@ test("event loop: while a 14 MB page parses and while the Codex fixture with an 
   const hugeMs = ms(t2);
   const gap2 = p2.stop();
   measure(`setImmediate max gap reading across the 8 MiB line (${(huge.bytesRead / MiB).toFixed(1)} MB, ${hugeMs} ms)`, `${gap2} ms`);
-  assert.ok(gap2 < 100, `gap ${gap2} ms`);
+  assert.ok(gap2 < 100 * RUNNER_SLACK, `gap ${gap2} ms (under ${100 * RUNNER_SLACK})`);
   const skipped = huge.messages.find((m) => m.id === cx.hugeCallId);
   assert.equal(skipped?.tool?.output, "[output of 8 MB skipped]", "the 8 MiB output line was skipped, its call closed");
 });

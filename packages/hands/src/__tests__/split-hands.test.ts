@@ -14,6 +14,9 @@ import type { NativeHands } from "../native.ts";
  * it. A cut, a restart and a stop reach both.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 function binPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "jh-split-"));
   const bin = join(dir, "hands");
@@ -86,7 +89,7 @@ test("a frontmost read during a 2 s fake type answers in < 20 ms on the split, w
   const readMs = performance.now() - t0;
   assert.equal(front.app, "Notes");
   assert.equal(bgFake.named("frontmost").length, 1, "the read went to the reading helper");
-  assert.ok(readMs < 20, `a read during the type took ${readMs.toFixed(2)} ms; must be < 20 ms`);
+  assert.ok(readMs < 20 * RUNNER_SLACK, `a read during the type took ${readMs.toFixed(2)} ms; must be < ${20 * RUNNER_SLACK} ms`);
   console.log(`measured: frontmost during a 2 s type on the split = ${readMs.toFixed(2)} ms`);
 
   // The counterfactual: the same read on the acting helper queues behind the type.

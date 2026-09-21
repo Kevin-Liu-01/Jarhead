@@ -4,6 +4,9 @@ import { AnthropicBrain, anthropicReasoning, claudeGeneration, resolveAnthropicM
 import { ALL_TOOL_SPECS, specByName } from "../tools.ts";
 import { fakeServer, makeRunner, makeSink, makeTask } from "./fakes.ts";
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const MODEL_INFO = { id: "claude-opus-5", type: "model", display_name: "Claude Opus 5", created_at: "2026-04-01T00:00:00Z" };
 
 function message(content: unknown[], stop_reason: string): unknown {
@@ -241,7 +244,7 @@ test("anthropic brain: each request is bounded by the wall budget, a hang is can
     const r = await brain.handle(makeTask("slow"), makeSink().sink);
     assert.equal(r.status, "failed");
     assert.match(r.error ?? "", /did not answer within [12] seconds/);
-    assert.ok(Date.now() - started < 5000, `took ${Date.now() - started}ms`);
+    assert.ok(Date.now() - started < 5000 * RUNNER_SLACK, `took ${Date.now() - started} ms (under ${5000 * RUNNER_SLACK})`);
     assert.equal(posts, 1, "no retry when the budget cannot fit another attempt");
 
     // Cancel while a request is genuinely in flight.

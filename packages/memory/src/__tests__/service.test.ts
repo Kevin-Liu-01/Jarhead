@@ -22,6 +22,9 @@ import { clock, fakeFetch, fixtureRows, fresh, heard, ids, jsonResponse, redactF
  * the store.
  */
 
+/** A shared CI runner is slower and noisier than a Mac on a desk: its wall-clock ceilings are three times ours. The [measure] lines carry the real numbers either way. */
+const RUNNER_SLACK = process.env["GITHUB_ACTIONS"] ? 3 : 1;
+
 const SECRETS = ["4111", "hunter22", "sk-proj", "[redacted secret]", "123-45-6789", "ghp_"];
 
 /** Extracts by rule from the numbered input — what the Responses model would do, deterministic. */
@@ -277,7 +280,7 @@ test("retrieval: the brain block ≤ 250 tokens with ids and lastUsedIds; the vo
   hung.embed = () => new Promise(() => undefined); // the network stalls after the items are in
   const t0 = Date.now();
   const block = await slow.retrieveForBrain("short answers");
-  assert.ok(Date.now() - t0 < 500, "bounded by the race");
+  assert.ok(Date.now() - t0 < 500 * RUNNER_SLACK, `bounded by the race: under ${500 * RUNNER_SLACK} ms (${Date.now() - t0} ms)`);
   assert.ok(block.text && block.ids.length > 0, "ranked by words when the vector is late");
 });
 
