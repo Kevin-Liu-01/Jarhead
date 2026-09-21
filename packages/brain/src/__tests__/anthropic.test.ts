@@ -277,3 +277,28 @@ test("anthropic brain: each request is bounded by the wall budget, a hang is can
     await flaky.close();
   }
 });
+
+test("anthropic brain: the tool table goes out in the user's name — a Sam brain's request carries no literal Kevin, the same names in the same order; the default carries the table as written", async () => {
+  const server = await fakeServer((req) => {
+    if (req.method === "GET" && req.path.startsWith("/v1/models/")) return { status: 200, json: MODEL_INFO };
+    if (req.method === "POST" && req.path === "/v1/messages") return { status: 200, json: message([{ type: "text", text: "ok" }], "end_turn") };
+    return { status: 404, json: {} };
+  });
+  try {
+    const { runner } = makeRunner();
+    const sam = new AnthropicBrain({ runner, apiKey: "sk-ant-test", baseUrl: server.url, maxRetries: 0, userName: "Sam" });
+    assert.equal((await sam.start()).ready, true);
+    await sam.handle(makeTask("open the budget"), makeSink().sink);
+    const body = server.seen[1]!.body as { system: string; tools: Array<{ name: string; description: string }> };
+    assert.deepEqual(body.tools.map((t) => t.name), ALL_TOOL_SPECS.map((t) => t.name));
+    assert.doesNotMatch(JSON.stringify(body), /Kevin/, "nothing in the request says Kevin: not the orders, not the table, not the prompt");
+    assert.match(body.tools.find((t) => t.name === "run_shell")!.description, /^Run a shell command on Sam's Mac/);
+    const plain = new AnthropicBrain({ runner, apiKey: "sk-ant-test", baseUrl: server.url, maxRetries: 0 });
+    assert.equal((await plain.start()).ready, true);
+    await plain.handle(makeTask("x"), makeSink().sink);
+    const def = server.seen[3]!.body as { tools: Array<{ name: string; description: string }> };
+    assert.match(def.tools.find((t) => t.name === "run_shell")!.description, /on Kevin's Mac/, "the default is the table as written");
+  } finally {
+    await server.close();
+  }
+});

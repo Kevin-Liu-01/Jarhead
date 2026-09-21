@@ -4,7 +4,7 @@ import type { ToolResult } from "@jarhead/hands";
 import type { Effort } from "@jarhead/protocol";
 import type { Brain, BrainAttachment, BrainResult, BrainSink, BrainTask } from "./brain.ts";
 import { SYSTEM_PROMPT_VERSION, brainSystemPrompt } from "./brain.ts";
-import { ALL_TOOL_SPECS, type ToolSpec } from "./tools.ts";
+import { toolSpecsFor, type ToolSpec } from "./tools.ts";
 import { progressLine } from "./responses.ts";
 import { foreignModel } from "./models.ts";
 import { resultText, type ToolRunner } from "./runner.ts";
@@ -176,12 +176,14 @@ export class AnthropicBrain implements Brain {
   private readyDetail = "not started";
   private current: { task: BrainTask; abort: AbortController } | undefined;
   private history: Anthropic.MessageParam[] = [];
-  private readonly tools: Anthropic.Tool[] = ALL_TOOL_SPECS.map(toAnthropicTool);
+  /** The tool table in the user's name; the default is the table itself. */
+  private readonly tools: Anthropic.Tool[];
   private readonly reasoning: ReturnType<typeof anthropicReasoning>;
 
   constructor(private readonly opts: AnthropicBrainOptions) {
     this.model = resolveAnthropicModel(opts.model);
     this.reasoning = anthropicReasoning(this.model, opts.effort);
+    this.tools = toolSpecsFor(opts.userName ?? "Kevin").map(toAnthropicTool);
   }
 
   async start(): Promise<{ ready: boolean; detail: string }> {
