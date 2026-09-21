@@ -318,7 +318,7 @@ export class AutomationExecutor {
   private async open(action: Extract<AutomationAction, { kind: "open" }>, automationId: string): Promise<StepOutcome> {
     if (action.app) {
       if (HANDS_OFF_APPS.test(action.app)) return { ok: false, detail: `${action.app} is hands-off; not opened unattended` };
-      const d = classifyAction({ kind: "open_app", app: action.app, target: action.app, presence: { recent: false }, home: this.opts.home });
+      const d = classifyAction({ kind: "open_app", app: action.app, target: action.app, presence: { recent: false }, home: this.opts.home, userName: this.userName });
       if (d.verdict !== "run") return { ok: false, detail: d.hold ? `${action.app}: ${d.reason}` : `${action.app}: would need a yes; nobody to ask (${d.reason})` };
       try {
         const r = await this.opts.hands.request<{ readonly app?: string }>("open_app", { name: action.app, activate: true }, 8000);

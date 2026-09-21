@@ -4144,7 +4144,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (HANDS_OFF_APPS.test(app)) return false;
     // The focused field decides: a password field is never typed into.
     const focused = await this.hands.request<FocusedText>("focused_text", {}, 1500).catch(() => undefined);
-    const decision = classifyAction({ kind: "dictate", app, secureField: focused?.secure === true, text });
+    const decision = classifyAction({ kind: "dictate", app, secureField: focused?.secure === true, text, userName: this.userName });
     if (decision.verdict !== "run") return false;
     // `ownDriver`: Kevin is the one typing, so the helper's "Kevin used the keyboard" check does not apply (B2's type op reads it).
     const r = await this.toolset.run("type", { text, ownDriver: true });

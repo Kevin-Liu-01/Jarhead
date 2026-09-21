@@ -1395,5 +1395,6 @@ function toolHost(runner: ToolRunner, thread?: string): ToolHost {
   return {
     runner,
     runnerFor: (id) => (thread !== undefined && id === thread ? runner : undefined),
+    userName: runner.userName,
   };
 }

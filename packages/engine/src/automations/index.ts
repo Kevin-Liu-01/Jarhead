@@ -1032,7 +1032,7 @@ export class Automations implements AutomationSource {
     return liveRecipes(this.opts.settings().automations.recipes).map((r) => {
       const name = r.name.toLowerCase();
       const usedBy = rows.filter((a) => a.then.some((x) => x.kind === "run-recipe" && x.recipe.toLowerCase() === name) || (a.when.kind === "on" && a.when.on.kind === "recipe.red" && a.when.on.recipe.toLowerCase() === name)).map((a) => a.name);
-      const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
+      const d = classifyAction({ kind: "run_shell", text: r.command, confirmed: false, home: this.home, userName: this.opts.userName?.(), ...(r.cwd ? { cwd: expandPath(r.cwd, this.home) } : {}), ...(this.opts.repoRoot ? { repoRoot: this.opts.repoRoot } : {}) });
       return { recipe: r, asks: d.verdict !== "run", usedBy };
     });
   }
