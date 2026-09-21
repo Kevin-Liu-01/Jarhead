@@ -200,7 +200,7 @@ test("marks: circled regions are recorded at once, captured without Jarhead's wi
     assert.equal(engine.currentPhase, "listening");
     timeline.length = 0;
     await engine.command({ type: "mark.add", rect: { x: 300.4, y: 400.6, w: 80, h: 40 }, path: [{ x: 300, y: 400 }, { x: 380, y: 440 }] });
-    assert.deepEqual(live.instructions, ["Kevin just circled a region of his screen (80×40 at 300,401). The brain will see the image with the next task; acknowledge briefly if he is asking about it."]);
+    assert.deepEqual(live.instructions, ["Kevin just circled a region of the screen (80×40 at 300,401). The brain will see the image with the next task; acknowledge briefly if Kevin is asking about it."]);
     assert.deepEqual(timeline, ["live-note", "hands:element_at", "hands:windows", "hands:zoom", "overlay:orb.trace"]);
     marks = engine.snapshot().marks;
     assert.equal(marks.length, 4);
@@ -585,7 +585,7 @@ test("mark.window captures the front window whole: one mark with source window, 
     live.instructions.length = 0;
     await engine.command({ type: "mark.window" });
     assert.ok(await until(() => engine.snapshot().marks.length === 1, 2000));
-    assert.deepEqual(live.instructions, ["Kevin just captured a window of his screen (Safari, 800×600). The brain will see the image with the next task; acknowledge briefly if he is asking about it."]);
+    assert.deepEqual(live.instructions, ["Kevin just captured a window of the screen (Safari, 800×600). The brain will see the image with the next task; acknowledge briefly if Kevin is asking about it."]);
     m = engine.snapshot().marks[0]!;
     assert.equal(m.source, "window");
     // No front window: a warn toast, no mark. Hands failing: a toast, no throw, no mark.

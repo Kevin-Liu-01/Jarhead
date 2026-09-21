@@ -34,5 +34,5 @@ const ACCENT_CLAUSE: Readonly<Record<Accent, string>> = {
 /** The `# Language` section, exactly as DECISIONS pins it. */
 export function languageSection(user: string, language?: string, accent: Accent = "british"): string {
   const lang = languageName(language);
-  return `# Language\nSpeak ${lang}, ${ACCENT_CLAUSE[accent] ?? ""}whatever language you hear; if ${user} speaks another language, answer in ${lang} unless he asks you to switch.`;
+  return `# Language\nSpeak ${lang}, ${ACCENT_CLAUSE[accent] ?? ""}whatever language you hear; if ${user} speaks another language, answer in ${lang} unless asked to switch.`;
 }

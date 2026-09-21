@@ -21,11 +21,12 @@ test("languageName: en and en-GB are English; nothing and an unknown tag fall ba
 });
 
 test("languageSection: the exact text for each accent; none drops the fragment; the user's name is interpolated", () => {
-  assert.equal(languageSection("Kevin", "en", "american"), "# Language\nSpeak English, American accent, whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.");
-  assert.equal(languageSection("Kevin", "en", "british"), "# Language\nSpeak English, British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.");
-  assert.equal(languageSection("Kevin", "en", "none"), "# Language\nSpeak English, whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.");
+  assert.equal(languageSection("Kevin", "en", "american"), "# Language\nSpeak English, American accent, whatever language you hear; if Kevin speaks another language, answer in English unless asked to switch.");
+  assert.equal(languageSection("Kevin", "en", "british"), "# Language\nSpeak English, British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — whatever language you hear; if Kevin speaks another language, answer in English unless asked to switch.");
+  assert.equal(languageSection("Kevin", "en", "none"), "# Language\nSpeak English, whatever language you hear; if Kevin speaks another language, answer in English unless asked to switch.");
   assert.equal(languageSection("Kevin"), languageSection("Kevin", "en", "british"), "British English is the default");
   assert.match(languageSection("Sam", "en-GB", "none"), /if Sam speaks another language, answer in English/);
+  assert.doesNotMatch(languageSection("Sam", "en-GB", "none"), /Kevin|\b(he|him|his|himself)\b/, "the name or nothing, never a pronoun");
   for (const accent of ACCENTS) {
     const s = languageSection("Kevin", DEFAULT_SETTINGS.language, accent);
     assert.ok(!/[*`]/.test(s), "no markdown in a spoken prompt");

@@ -2515,7 +2515,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (floor && floor.id !== MAIN_THREAD_ID) {
         const r = await this.threads.answerYes(floor.id);
         if (item) this.delegator?.typedHandled(item);
-        live.appendInstructions(null, r.ok ? `${this.userName} just typed "${t}": his yes went to ${floor.name}'s question. Say one word and wait.` : `${this.userName} just typed "${t}", but ${r.reason ?? "it was refused"}. Tell him in one sentence.`);
+        live.appendInstructions(null, r.ok ? `${this.userName} just typed "${t}": that yes went to ${floor.name}'s question. Say one word and wait.` : `${this.userName} just typed "${t}", but ${r.reason ?? "it was refused"}. Tell ${this.userName} in one sentence.`);
         log.info(`say-text: yes → ${floor.name} (${r.ok ? "relayed" : (r.reason ?? "refused")}) in ${Math.round(performance.now() - t0)} ms`);
         return;
       }
@@ -2755,7 +2755,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     if (this.threads.speakQuestion(name, question)) return;
     const d = this.delegator?.active;
     if (d) this.delegator?.threadSay(d.id, "Jarhead", `May I ${question}? Say yes.`);
-    else this.live?.appendInstructions(null, `Your earlier question is ${this.userName}'s to answer now. Ask him: "${question}".`);
+    else this.live?.appendInstructions(null, `Your earlier question is ${this.userName}'s to answer now. Ask ${this.userName}: "${question}".`);
   }
 
   /** The delegation a main-lane task belongs to, with Kevin's words for the thread's gates; a thread of main's sits at depth one. */
@@ -3471,8 +3471,8 @@ export class Engine extends EventEmitter<EngineEvents> {
     this.live?.appendInstructions(
       null,
       window
-        ? `${this.userName} just captured a window of his screen (${opts?.element?.app ?? "a window"}, ${Math.round(bbox.w)}×${Math.round(bbox.h)}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`
-        : `${this.userName} just circled a region of his screen (${size}). The brain will see the image with the next task; acknowledge briefly if he is asking about it.`,
+        ? `${this.userName} just captured a window of the screen (${opts?.element?.app ?? "a window"}, ${Math.round(bbox.w)}×${Math.round(bbox.h)}). The brain will see the image with the next task; acknowledge briefly if ${this.userName} is asking about it.`
+        : `${this.userName} just circled a region of the screen (${size}). The brain will see the image with the next task; acknowledge briefly if ${this.userName} is asking about it.`,
     );
     // What did he surround? The element under the stroke's centroid and the window
     // list say; the mark snaps to the smallest frame that holds the centroid and
@@ -3823,7 +3823,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         `${this.userName} switched your voice ${gap} ago: you now speak as ${name}. This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        `Say exactly one line now — "${name} here." — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless he asks.`,
+        `Say exactly one line now — "${name} here." — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless asked.`,
       ].join("\n");
     }
     if (how === "reconnected") {
@@ -3841,7 +3841,7 @@ export class Engine extends EventEmitter<EngineEvents> {
         `Jarhead's engine restarted ${seconds < 90 ? `${seconds} seconds` : `${minutes} minutes`} ago in the middle of this conversation (a crash, or an update). This is the same conversation, picked up where it was cut. What was said before, most recent last:`,
         lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
         ...(task ? [task] : []),
-        `Say exactly one word now — "back" — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless he asks.`,
+        `Say exactly one word now — "back" — and then wait for ${this.userName}. Do not recap, do not apologise, do not redo the last task unless asked.`,
       ].join("\n");
     }
     return [
@@ -3849,7 +3849,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       `${this.userName} paused you ${when} and just resumed. This is the same conversation. What was said before the pause, most recent last:`,
       lines.length > 0 ? lines.join("\n") : "(nothing had been said yet)",
       ...(task ? [task] : []),
-      `Carry on as before; do not recap unless he asks. Say nothing now: stay silent until ${this.userName} speaks to you again.`,
+      `Carry on as before; do not recap unless asked. Say nothing now: stay silent until ${this.userName} speaks to you again.`,
     ].join("\n");
   }
 
@@ -3995,7 +3995,7 @@ export class Engine extends EventEmitter<EngineEvents> {
     log.warn(`reflex mismatch: the ear heard "${heard}" and ran ${reflex.label}; ${this.userName} said "${normalizeForLog(said)}"`);
     if (reflex.idempotent) return false;
     if (reflex.kind !== "type") {
-      this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but ${this.userName} actually said "${normalizeForLog(said).slice(0, 80)}". Tell him in one short sentence what was done, then carry on with what he asked.`);
+      this.live?.appendInstructions(null, `You ran "${reflex.label}" by reflex on words the on-device ear heard ("${heard}"), but ${this.userName} actually said "${normalizeForLog(said).slice(0, 80)}". Tell ${this.userName} in one short sentence what was done, then carry on with what was asked.`);
       return false;
     }
     const typed = String(reflex.input["text"]).slice(0, 60);
@@ -4004,14 +4004,14 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (f && /AXText(Field|Area)|AXComboBox|AXWebArea/.test(f.role) && !f.secure) {
         const r = await this.toolset.run("key", { text: "cmd+z" });
         if (r.kind === "text") {
-          this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else; it has been undone. Tell him in one short sentence.`);
+          this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else; it has been undone. Tell ${this.userName} in one short sentence.`);
           return true;
         }
       }
     } catch (e) {
       log.debug(`undo after mismatch: ${(e as Error).message}`);
     }
-    this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else, and it could not be undone (the focus is not in a text field). Tell him in one short sentence so he can fix it; do not type it again on top.`);
+    this.live?.appendInstructions(null, `You typed "${typed}" by reflex but ${this.userName} said something else, and it could not be undone (the focus is not in a text field). Tell ${this.userName} in one short sentence so it can be fixed; do not type it again on top.`);
     return false;
   }
 
@@ -4119,7 +4119,7 @@ export class Engine extends EventEmitter<EngineEvents> {
       if (this.dictating) this.lease.beginOp("dictation");
       else this.lease.release("dictation", "done");
     });
-    this.live?.appendInstructions(null, `${this.userName} is dictating into a field on his screen: his words are being typed as he says them. Stay completely silent until he says "stop dictating"; do not delegate what he says.`);
+    this.live?.appendInstructions(null, `${this.userName} is dictating into a field on the screen: the words are typed as they are spoken. Stay completely silent until ${this.userName} says "stop dictating"; do not delegate the dictated words.`);
     this.ledger.append({ at: this.now(), type: "dictation", state: "started" } as unknown as LedgerRow);
     this.toast("dictating — say \"stop dictating\" to end", "info");
     this.recomputePhase();

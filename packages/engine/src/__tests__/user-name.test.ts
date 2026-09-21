@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { noLiveModelLine } from "@jarhead/core";
 import { Engine } from "../engine.ts";
-import { until, world } from "./world.ts";
+import { haltReasonFor } from "../observe.ts";
+import { settle, until, world } from "./world.ts";
 
 /**
  * The user's name is a setting (release F1): unset, the engine falls back to the account's
@@ -109,9 +110,9 @@ test("F1: a rename while the brain runs restarts it — the standing orders, Cod
   }
 });
 
-test("F1: another name flows into the threads and the automations — thread_start's refusal, a thread's brief and its stop, and a fired automation's nudge to the voice say Sam, with no literal Kevin", async () => {
+test("F1: another name flows into the threads and the automations — thread_start's refusal, a thread's brief and its stop, a fired automation's nudge to the voice, a mark, dictation, the serializer's halt and the continuity after a pause say Sam, with no literal Kevin and no pronoun standing in for the name", async () => {
   const w = world({ fallbackUserName: "Sam", automations: { exec: { run: async () => ({ code: 0 }), hold: () => ({ kill: () => undefined }) } } });
-  const { engine, live, clock } = w;
+  const { engine, live, lives, clock } = w;
   try {
     await engine.start();
     await engine.ready();
@@ -143,7 +144,33 @@ test("F1: another name flows into the threads and the automations — thread_sta
     await until(() => live.instructions.length > 0, 1500);
     said.push(live.instructions[0]!);
     assert.equal(said[3], "Sam's call mum fired: say 'call mum' once, with its name, and nothing more.");
-    for (const line of said) assert.doesNotMatch(line, /Kevin/, line);
+    // The voice's other lines about the user: a mark, dictation, the serializer's halt, the continuity after a pause.
+    live.instructions.length = 0;
+    await engine.command({ type: "mark.add", rect: { x: 10, y: 20, w: 100, h: 50 } });
+    said.push(live.instructions[0] ?? "");
+    assert.equal(said[4], "Sam just circled a region of the screen (100×50 at 10,20). The brain will see the image with the next task; acknowledge briefly if Sam is asking about it.");
+    live.instructions.length = 0;
+    engine.ear("start dictating", true, 1, clock.t);
+    await settle();
+    assert.equal(engine.isDictating, true);
+    said.push(live.instructions.find((i) => /dictating/.test(i)) ?? "");
+    assert.equal(said[5], 'Sam is dictating into a field on the screen: the words are typed as they are spoken. Stay completely silent until Sam says "stop dictating"; do not delegate the dictated words.');
+    engine.ear("stop dictating", true, 2, clock.t);
+    await settle();
+    assert.equal(engine.isDictating, false);
+    said.push(haltReasonFor("left_click", { result: { kind: "needs-confirmation", question: "About to click Send?", pendingId: "confirm_1" }, ms: 1 }, "Sam") ?? "");
+    assert.equal(said[6], "not run: left_click is waiting for Sam's answer; ask Sam and stop");
+    await engine.command({ type: "pause" });
+    clock.t += 3 * 60_000;
+    await engine.command({ type: "resume" });
+    const resumed = lives.at(-1)!.config?.instructions ?? "";
+    said.push(resumed.slice(resumed.indexOf("# Continuity")));
+    assert.match(said[7]!, /^# Continuity\nSam paused you 3 minutes ago and just resumed\./);
+    assert.match(said[7]!, /Carry on as before; do not recap unless asked\. Say nothing now: stay silent until Sam speaks to you again\./);
+    for (const line of said) {
+      assert.doesNotMatch(line, /Kevin/, line);
+      assert.doesNotMatch(line, /\b(he|him|his|himself)\b/, `a pronoun stands in for the name: ${line}`);
+    }
   } finally {
     await engine.stop();
   }

@@ -177,7 +177,7 @@ test("a typed yes arms the main lane's pending question and Live's next delegati
     assert.equal(slack.tasks[1]!.confirmation, true);
     assert.equal(brain.cancels, cancels, "the main brain's turn was not superseded by a yes meant for a thread");
     assert.equal(engine.snapshot().delegations.find((d) => d.liveId === "item_2")!.status, "running");
-    assert.ok(live.instructions.some((i) => /his yes went to Slack's question/.test(i)), live.instructions.join(" | "));
+    assert.ok(live.instructions.some((i) => /that yes went to Slack's question/.test(i)), live.instructions.join(" | "));
     assert.equal(rows<HeardRow>(w, "heard").filter((r) => r.item.source === "typed" && r.item.text === "yes").length, 2, "both typed yeses are on the record");
   } finally {
     await engine.stop();

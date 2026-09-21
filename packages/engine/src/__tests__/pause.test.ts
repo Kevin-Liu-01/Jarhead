@@ -101,7 +101,7 @@ test("pause during a running task: the session closes (the meter stops), the tas
     assert.match(instructions, /Kevin paused you 3 minutes ago and just resumed/);
     assert.match(instructions, /Kevin: jarhead find the save button/, "the last heard line is in the continuity");
     assert.match(instructions, /Last task: "jarhead find the save button" — cancelled: paused/);
-    assert.match(instructions, /Carry on as before; do not recap unless he asks\./);
+    assert.match(instructions, /Carry on as before; do not recap unless asked\./);
     assert.ok(instructions.indexOf("# Personality") < instructions.indexOf("# Continuity"), "the continuity follows the standing instructions");
     const after: Snapshot = engine.snapshot();
     assert.equal(after.pause, undefined);

@@ -25,7 +25,7 @@ type Started = Extract<LedgerRow, { type: "session.started" }>;
 type Pause = Extract<LedgerRow, { type: "pause" }>;
 type Resume = Extract<LedgerRow, { type: "resume" }>;
 
-const LANGUAGE = "# Language\nSpeak English, British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — whatever language you hear; if Kevin speaks another language, answer in English unless he asks you to switch.";
+const LANGUAGE = "# Language\nSpeak English, British accent — calm, dry, precise, a touch wry, the manner of a well-read English butler-engineer — whatever language you hear; if Kevin speaks another language, answer in English unless asked to switch.";
 
 test("wake: ballad, English with a British accent; # Personality before # Language before # Kevin, in brief (before # Continuity on a resume); the started row and the snapshot say voice, language and accent", async () => {
   const w = world();
@@ -126,7 +126,7 @@ test("voice.reopen: exactly one pause row and one resume row, a new session with
     assert.match(text, /# Continuity/);
     assert.match(text, /Kevin switched your voice \d+ seconds? ago: you now speak as Verse\. This is the same conversation, picked up where it was cut\./);
     assert.match(text, /Kevin: jarhead what time is it/);
-    assert.ok(text.endsWith('Say exactly one line now — "Verse here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.'), `the continuity ends with the echo line: ${text.slice(-160)}`);
+    assert.ok(text.endsWith('Say exactly one line now — "Verse here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless asked.'), `the continuity ends with the echo line: ${text.slice(-160)}`);
     assert.doesNotMatch(text, /paused you|engine restarted|voice connection dropped/);
     assert.equal(rows<Pause>(w, "pause").length, 1);
     assert.equal(rows<Resume>(w, "resume").length, 1);
@@ -213,7 +213,7 @@ test("set_voice reflex, idle: 'switch voice to marin' typed patches the setting 
     const text = next.config?.instructions ?? "";
     assert.match(text, /# Continuity\nKevin switched your voice \d+ seconds? ago: you now speak as Marin\./);
     assert.match(text, /Kevin: jarhead what time is it/);
-    assert.ok(text.endsWith('Say exactly one line now — "Marin here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.'), text.slice(-160));
+    assert.ok(text.endsWith('Say exactly one line now — "Marin here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless asked.'), text.slice(-160));
     assert.equal(rows<Pause>(w, "pause").length, 1);
     assert.equal(rows<Resume>(w, "resume").length, 1);
     assert.equal(rows<Started>(w, "session.started")[1]!.resumedFrom, "sess_1");
@@ -255,7 +255,7 @@ test("set_voice reflex, an accent: 'speak with a british accent' typed while the
     assert.equal(lives.length, 2, "one reopen");
     const text = lives[1]!.config?.instructions ?? "";
     assert.match(text, /# Language\nSpeak English, British accent/);
-    assert.ok(text.endsWith('Say exactly one line now — "Ballad here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless he asks.'), text.slice(-160));
+    assert.ok(text.endsWith('Say exactly one line now — "Ballad here." — and then wait for Kevin. Do not recap, do not apologise, do not redo the last task unless asked.'), text.slice(-160));
     assert.equal(engine.snapshot().session?.accent, "british");
     assert.ok(events.some((e) => e.type === "toast" && e.text === "Ballad 🇬🇧 · one restart"));
     assert.ok(!events.some((e) => e.type === "toast" && /at the next wake/.test(e.text)));
