@@ -35,6 +35,8 @@ export interface ClaudeCodeConnectorOptions {
   /** watch(): stat interval when fs.watch cannot be used (default 1 s) and the burst window (default 50 ms). */
   readonly tailPollMs?: number;
   readonly tailCoalesceMs?: number;
+  /** The user's name as the refusals say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
 }
 
 export class ClaudeCodeConnector implements AgentConnector {
@@ -49,6 +51,11 @@ export class ClaudeCodeConnector implements AgentConnector {
 
   constructor(private readonly opts: ClaudeCodeConnectorOptions = {}) {
     this.store = new ClaudeStore(opts.claudeRoot ? { root: opts.claudeRoot } : {});
+  }
+
+  /** The user's name as every refusal here says it. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
   }
 
   private sdk(): Promise<SdkLike> {
@@ -102,7 +109,7 @@ export class ClaudeCodeConnector implements AgentConnector {
         return { accepted: true, detail: `allowed ${session.pendingPermissionTool}` };
       }
       if (/^\s*(no|n|deny|stop|don'?t)/i.test(text)) {
-        session.resolvePermission(false);
+        session.resolvePermission(false, `denied by ${this.userName}`);
         return { accepted: true, detail: "denied" };
       }
     }
@@ -119,7 +126,7 @@ export class ClaudeCodeConnector implements AgentConnector {
     const sdk = await this.sdk();
     const cwd = opts.cwd ?? process.cwd();
     const localId = `s${++this.seq}`;
-    const handler = this.opts.canUseTool ?? defaultCanUseTool;
+    const handler = this.opts.canUseTool ?? ((toolName: string, input: Record<string, unknown>, s: ClaudeSession): Promise<PermissionDecision> => defaultCanUseTool(toolName, input, s, this.userName));
     const session: ClaudeSession = new ClaudeSession({
       sdk,
       cwd,
@@ -176,7 +183,7 @@ export class ClaudeCodeConnector implements AgentConnector {
 
   /** Answer a blocked session's permission prompt by voice. */
   resolvePermission(id: string, allow: boolean): boolean {
-    return this.resolve(id).session.resolvePermission(allow);
+    return this.resolve(id).session.resolvePermission(allow, `denied by ${this.userName}`);
   }
 
   // ---------------------------------------------------------- conversations ---
@@ -288,11 +295,11 @@ const SAFE_BASH = /^\s*(ls|cat|head|tail|wc|pwd|echo|git (status|log|diff|branch
  * Coding agents started by voice get a tight default: read anything, run tests and
  * git queries, and stop for everything else so Kevin can say yes or no.
  */
-export async function defaultCanUseTool(toolName: string, input: Record<string, unknown>, _session: ClaudeSession): Promise<PermissionDecision> {
+export async function defaultCanUseTool(toolName: string, input: Record<string, unknown>, _session: ClaudeSession, userName = "Kevin"): Promise<PermissionDecision> {
   if (toolName.startsWith("mcp__jarhead__")) return { behavior: "allow" };
   if (READ_ONLY_TOOLS.has(toolName)) return { behavior: "allow" };
   if (toolName === "Bash" && typeof input["command"] === "string" && SAFE_BASH.test(input["command"])) return { behavior: "allow" };
   // Edits within the working tree are what a coding agent is for.
   if (toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit" || toolName === "NotebookEdit") return { behavior: "allow" };
-  return { behavior: "deny", message: `Jarhead needs Kevin's spoken yes before ${toolName}${typeof input["command"] === "string" ? `: ${String(input["command"]).slice(0, 80)}` : ""}` };
+  return { behavior: "deny", message: `Jarhead needs ${userName}'s spoken yes before ${toolName}${typeof input["command"] === "string" ? `: ${String(input["command"]).slice(0, 80)}` : ""}` };
 }

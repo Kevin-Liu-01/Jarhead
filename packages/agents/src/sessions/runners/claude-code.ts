@@ -26,6 +26,8 @@ export interface ClaudeCodeRunnerOptions {
   readonly systemDirs?: readonly string[];
   /** Sessions are named for the Console; the connector supplies its own naming. */
   readonly nameOf?: (s: DiscoveredSession) => string;
+  /** The user's name as the refusals say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
 }
 
 export class ClaudeCodeRunner implements SessionRunner {
@@ -33,6 +35,11 @@ export class ClaudeCodeRunner implements SessionRunner {
   private sdkPromise: Promise<SdkLike> | undefined;
 
   constructor(private readonly opts: ClaudeCodeRunnerOptions = {}) {}
+
+  /** The user's name as every line here says it. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
 
   private sdk(): Promise<SdkLike> {
     if (this.opts.sdk) return Promise.resolve(this.opts.sdk);
@@ -61,7 +68,7 @@ export class ClaudeCodeRunner implements SessionRunner {
   async canContinue(s: DiscoveredSession, snap: OwnershipSnapshot): Promise<Continuation> {
     if (snap.live.length > 0) {
       const where = snap.live.some((p) => p.interactive) ? "a terminal" : "Claude Desktop";
-      return { ok: false, reason: `that session is open in ${where}; ask Kevin to type it there or start a Jarhead session in that folder` };
+      return { ok: false, reason: `that session is open in ${where}; ask ${this.userName} to type it there or start a Jarhead session in that folder` };
     }
     if (snap.degraded) {
       // No owner found, but the search was incomplete. Resuming would append to a transcript
@@ -107,7 +114,7 @@ export class ClaudeCodeRunner implements SessionRunner {
       includePartialMessages: false,
       ...(opts.canUseTool ? { canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionDecision> => opts.canUseTool!(toolName, input, session) } : {}),
     });
-    const handle = new ClaudeRunHandle(session);
+    const handle = new ClaudeRunHandle(session, () => this.userName);
     const emit = (e: RunEvent): void => sink(e, handle);
     session.on("status", (status, detail) => emit({ type: "status", status, detail }));
     // The session id arrives with init; a new thread is filed by the connector on this event.
@@ -153,7 +160,11 @@ class ClaudeRunHandle implements RunHandle {
   /** Resolves once the CLI reports its session id (the SDK's init message); rejects if the session ends first. */
   readonly ready: Promise<void>;
 
-  constructor(readonly session: ClaudeSession) {
+  constructor(
+    readonly session: ClaudeSession,
+    /** The user's name, for the message a no carries. */
+    private readonly who: () => string = () => "Kevin",
+  ) {
     this.ready = new Promise<void>((resolve, reject) => {
       if (session.sessionId) {
         resolve();
@@ -204,7 +215,7 @@ class ClaudeRunHandle implements RunHandle {
   }
 
   resolvePermission(allow: boolean): boolean {
-    return this.session.resolvePermission(allow);
+    return this.session.resolvePermission(allow, `denied by ${this.who()}`);
   }
 
   interrupt(): Promise<void> {

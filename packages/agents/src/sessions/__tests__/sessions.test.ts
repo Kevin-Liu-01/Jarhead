@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentInfo } from "@jarhead/protocol";
 import { AsyncQueue } from "../../claude-code/queue.ts";
-import type { PermissionDecision, SdkLike, SdkMessage, SdkUserMessage } from "../../claude-code/session.ts";
+import { defaultCanUseTool } from "../../claude-code/connector.ts";
+import type { ClaudeSession, PermissionDecision, SdkLike, SdkMessage, SdkUserMessage } from "../../claude-code/session.ts";
 import { parseRegistryEntry, readClaudeRegistry, type SessionOwner } from "../claude-registry.ts";
 import { ClaudeStore, decodeProjectSlug, parseClaudeSession, userText } from "../claude-store.ts";
 import { CodexStore, idFromFilename, parseCodexSession } from "../codex-store.ts";
@@ -776,7 +777,7 @@ test("helpers: ago, truncate, parseSessionsAgentId, summarizeToolInput", () => {
 
 // ---------------------------------------------------------------- connector ---
 
-function connector(h: Home, over: { procs?: AgentProcess[]; sdk?: SdkLike; now?: () => number; permissionTimeoutMs?: number } = {}): SessionsConnector {
+function connector(h: Home, over: { procs?: AgentProcess[]; sdk?: SdkLike; now?: () => number; permissionTimeoutMs?: number; userName?: () => string } = {}): SessionsConnector {
   return new SessionsConnector({
     home: h.home,
     ...pinned(h.home),
@@ -784,6 +785,7 @@ function connector(h: Home, over: { procs?: AgentProcess[]; sdk?: SdkLike; now?:
     processes: async () => over.procs ?? [],
     ...(over.sdk ? { sdk: over.sdk } : {}),
     ...(over.permissionTimeoutMs !== undefined ? { permissionTimeoutMs: over.permissionTimeoutMs } : {}),
+    ...(over.userName ? { userName: over.userName } : {}),
     pollMs: 30,
     settlePollMs: 10,
     settleQuietMs: 40,
@@ -1222,4 +1224,56 @@ test("subscribe(): polling emits changed sessions only", async () => {
   } finally {
     h.cleanup();
   }
+});
+
+test("permissions, another name: the status line, the read, the timeout's and the no's refusals, the busy refusal and the default policy's deny say Sam — no literal Kevin, the same words otherwise", async () => {
+  const h = makeHome();
+  try {
+    h.realCwd(h.paths.s1, "/Users/kevinliu/demo-app");
+    h.touch(h.paths.s1, Date.now() - 60_000); // the real clock (deadlines), so the fixture must sit inside the 14-day window today
+    const id = `sessions:claude:${S1}`;
+    const sdk = fakeSdk("Build directory removed.", 10, { tool: "Bash", input: { command: "rm -rf build", description: "clean" } });
+    const c = connector(h, { sdk, now: Date.now, permissionTimeoutMs: 300, userName: () => "Sam" });
+    assert.equal((await c.send(id, "clean the build dir")).accepted, true);
+    await until(() => c.pendingPermission(id) !== undefined, 2_000, "the question");
+    const detail = (await c.list()).find((a) => a.id === id)?.detail ?? "";
+    assert.equal(detail, "claude · 3 msgs · demo-app · needs Sam's yes or no: Bash — rm -rf build");
+    assert.equal(detail.replaceAll("Sam", "Kevin"), "claude · 3 msgs · demo-app · needs Kevin's yes or no: Bash — rm -rf build", "the default's words otherwise");
+    const waiting = await c.read(id);
+    assert.match(waiting, /\nwaiting for Sam's yes or no before Bash: rm -rf build$/);
+    // No answer within the timeout: the deny the coding agent reads names the user, not the author.
+    await until(() => sdk.decisions.length === 1, 2_000, "the timeout");
+    assert.deepEqual(sdk.decisions[0], { behavior: "deny", message: "Sam did not answer within 0 s; Bash was not run" });
+    await c.waitSettled(id, 2_000);
+    // A no from the Console.
+    assert.equal((await c.send(id, "and again")).detail, "sent to the resumed session");
+    await until(() => c.pendingPermission(id) !== undefined, 2_000, "the second question");
+    assert.equal(c.resolvePermission(id, false), true);
+    await until(() => sdk.decisions.length === 2, 2_000, "the no");
+    assert.deepEqual(sdk.decisions[1], { behavior: "deny", message: "denied by Sam" });
+    await c.waitSettled(id, 2_000);
+    const refused = await c.read(id);
+    assert.match(refused, /\nrefused: denied by Sam$/);
+    for (const line of [detail, waiting, refused, ...sdk.decisions.map((d) => (d.behavior === "deny" ? d.message : ""))]) assert.doesNotMatch(line, /Kevin/, line);
+  } finally {
+    h.cleanup();
+  }
+  // The busy refusal: a session open in a terminal says whom to ask.
+  const h2 = makeHome();
+  try {
+    const cwd = h2.realCwd(h2.paths.s1, "/Users/kevinliu/demo-app");
+    h2.touch(h2.paths.s1, T("2026-09-01T10:01:00.000Z"));
+    const procs = [proc({ cwd, interactive: true, startedAt: T("2026-09-01T09:00:00.000Z") })];
+    const c2 = new SessionsConnector({ home: h2.home, ...pinned(h2.home), now: () => NOW, processes: async () => procs, sdk: fakeSdk(), processCacheMs: 0, pollMs: 30, userName: () => "Sam" });
+    const busy = await c2.send(`sessions:claude:${S1}`, "also fix logout");
+    assert.equal(busy.accepted, false);
+    assert.match(busy.detail ?? "", /; ask Sam to type it there or start a Jarhead session in that folder$/);
+    assert.doesNotMatch(busy.detail ?? "", /Kevin/);
+  } finally {
+    h2.cleanup();
+  }
+  // The default policy's deny, as a coding agent reads it; the default stays the author's name.
+  const session = undefined as unknown as ClaudeSession;
+  assert.deepEqual(await defaultCanUseTool("Bash", { command: "rm -rf x" }, session, "Sam"), { behavior: "deny", message: "Jarhead needs Sam's spoken yes before Bash: rm -rf x" });
+  assert.deepEqual(await defaultCanUseTool("Bash", { command: "rm -rf x" }, session), { behavior: "deny", message: "Jarhead needs Kevin's spoken yes before Bash: rm -rf x" });
 });

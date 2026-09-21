@@ -83,8 +83,10 @@ export interface SessionsConnectorOptions {
   readonly leases?: Partial<Leases>;
   /** How long a ps/lsof snapshot is reused across list()/health() calls. Default 5 s. */
   readonly processCacheMs?: number;
-  /** How long a resumed session waits for Kevin's yes/no before the tool is denied. Default 5 min. */
+  /** How long a resumed session waits for the user's yes/no before the tool is denied. Default 5 min. */
   readonly permissionTimeoutMs?: number;
+  /** The user's name as the status lines and the refusals say it (the engine's effective name; "Kevin" when none is wired). */
+  readonly userName?: (() => string) | undefined;
   readonly permissionMode?: string;
   /** Full override of the permission policy; the default allows read-only tools and asks Kevin for the rest. */
   readonly canUseTool?: (toolName: string, input: Record<string, unknown>, session: ClaudeSession) => Promise<PermissionDecision>;
@@ -326,6 +328,11 @@ export class SessionsConnector implements AgentConnector {
   private lastListedAt = 0;
   private othersCache: { at: number; names: string[] } | undefined;
 
+  /** The user's name as every line here says it. */
+  private get userName(): string {
+    return this.opts.userName?.() || "Kevin";
+  }
+
   constructor(private readonly opts: SessionsConnectorOptions = {}) {
     this.home = opts.home ?? homedir();
     this.registryDir = opts.registryDir ?? defaultClaudeSessionsDir(this.home);
@@ -357,6 +364,7 @@ export class SessionsConnector implements AgentConnector {
         ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
         dropApiKey,
         nameOf: sessionName,
+        userName: () => this.userName,
       }),
       codex: new CodexRunner({
         ...discovery,
@@ -481,7 +489,7 @@ export class SessionsConnector implements AgentConnector {
       // the first of several parallel asks is answered, while the next is still waiting.
       const ask = s.tool === "claude" ? this.headAsk(s.id) : undefined;
       const extra = ask
-        ? `needs Kevin's yes or no: ${ask.toolName}${ask.summary ? ` — ${ask.summary}` : ""}`
+        ? `needs ${this.userName}'s yes or no: ${ask.toolName}${ask.summary ? ` — ${ask.summary}` : ""}`
         : run.statusDetail
           ? `resumed: ${run.statusDetail}`
           : "resumed by Jarhead";
@@ -573,7 +581,7 @@ export class SessionsConnector implements AgentConnector {
     const when = ago(Math.max(s.lastActivityAt, run?.lastActivityAt ?? 0), this.now());
     const context = [sessionName(s), s.cwd, when].filter((x): x is string => Boolean(x)).join(" — ");
     const ask = s.tool === "claude" ? this.headAsk(s.id) : undefined;
-    if (ask) return `${context}\nwaiting for Kevin's yes or no before ${ask.toolName}${ask.summary ? `: ${ask.summary}` : ""}`;
+    if (ask) return `${context}\nwaiting for ${this.userName}'s yes or no before ${ask.toolName}${ask.summary ? `: ${ask.summary}` : ""}`;
     const text = run?.lastReply || s.lastAssistantText || (run?.status === "working" ? "(still working)" : "(no assistant reply recorded)");
     return `${context}\n${text}`;
   }
@@ -775,7 +783,7 @@ export class SessionsConnector implements AgentConnector {
     const runner = this.runnerFor(s.tool);
     const can = await runner.canContinue(s, await this.ownership(s));
     if (!can.ok) return { accepted: false, detail: can.reason };
-    const handler = this.opts.canUseTool ?? ((toolName: string, input: Record<string, unknown>, session: ClaudeSession) => this.askKevin(id, s.id, toolName, input, session));
+    const handler = this.opts.canUseTool ?? ((toolName: string, input: Record<string, unknown>, session: ClaudeSession) => this.askUser(id, s.id, toolName, input, session));
     const outcome = await runner.continue(s, text, can.mode, this.sinkFor(id, s), { canUseTool: handler });
     return this.fileOutcome(runKey(s.tool, s.id), outcome);
   }
@@ -838,7 +846,7 @@ export class SessionsConnector implements AgentConnector {
       this.opts.canUseTool ??
       ((toolName: string, input: Record<string, unknown>, session: ClaudeSession) => {
         const sid = session.sessionId ?? "";
-        return this.askKevin(filed?.id ?? agentId(this.kind, `${tool}:${sid}`), sid, toolName, input, session);
+        return this.askUser(filed?.id ?? agentId(this.kind, `${tool}:${sid}`), sid, toolName, input, session);
       });
     const handle = await runner.start(cwd, prompt, sink, { canUseTool: handler });
     try {
@@ -896,8 +904,8 @@ export class SessionsConnector implements AgentConnector {
    * resolvePermission(). Parallel tool calls queue up and reach him one at a time, each
    * with its own clock. No answer within the timeout denies the tool: closed, not open.
    */
-  private async askKevin(id: string, sid: string, toolName: string, input: Record<string, unknown>, session: ClaudeSession): Promise<PermissionDecision> {
-    const quick = await defaultCanUseTool(toolName, input, session);
+  private async askUser(id: string, sid: string, toolName: string, input: Record<string, unknown>, session: ClaudeSession): Promise<PermissionDecision> {
+    const quick = await defaultCanUseTool(toolName, input, session, this.userName);
     if (quick.behavior === "allow") return quick;
     return new Promise<PermissionDecision>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -920,7 +928,7 @@ export class SessionsConnector implements AgentConnector {
           void this.notify(id);
         },
         show: () => {
-          timer ??= setTimeout(() => ask.settle({ behavior: "deny", message: `Kevin did not answer within ${Math.round(this.permissionTimeoutMs / 1000)} s; ${toolName} was not run` }), this.permissionTimeoutMs);
+          timer ??= setTimeout(() => ask.settle({ behavior: "deny", message: `${this.userName} did not answer within ${Math.round(this.permissionTimeoutMs / 1000)} s; ${toolName} was not run` }), this.permissionTimeoutMs);
           timer.unref?.();
         },
       };
@@ -949,7 +957,7 @@ export class SessionsConnector implements AgentConnector {
     if (this.opts.canUseTool) return run.resolvePermission(allow);
     const ask = this.headAsk(sid);
     if (!ask) return false;
-    ask.settle(allow ? { behavior: "allow" } : { behavior: "deny", message: "denied by Kevin" });
+    ask.settle(allow ? { behavior: "allow" } : { behavior: "deny", message: `denied by ${this.userName}` });
     return true;
   }
 
