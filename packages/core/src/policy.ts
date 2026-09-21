@@ -63,6 +63,8 @@ export interface ActionContext {
   readonly home?: string | undefined;
   /** browser_*: the page the action lands on; payment and credential pages ask first. */
   readonly url?: string | undefined;
+  /** What the reasons call the person Jarhead works for (the engine's effective name); default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 export interface Decision {
@@ -94,6 +96,16 @@ export interface Presence {
   readonly unlocked?: boolean | undefined;
   /** The app the action lands on is the one in front. */
   readonly frontmost?: boolean | undefined;
+}
+
+/** The name the reasons use for the person Jarhead works for: the caller's, else the default. */
+function nameOf(ctx: { readonly userName?: string | undefined }): string {
+  return ctx.userName || "Kevin";
+}
+
+/** A fixed sentence written for the default name (a table's `why`, a constant), said with the caller's. */
+function withName(text: string, who: string): string {
+  return who === "Kevin" ? text : text.replaceAll("Kevin", who);
 }
 
 const READ_ONLY = new Set(["screenshot", "zoom", "cursor_position", "wait", "read", "list_windows", "focused_text", "element_at"]);
@@ -174,13 +186,14 @@ export function presenceGated(app: string | undefined, url: string | undefined):
 }
 
 /** Why a confirm-tier action in a presence-gated app waits for Kevin, if it does: the first leg known to be false. */
-export function presenceReason(ctx: Pick<ActionContext, "app" | "url" | "presence">): string | undefined {
+export function presenceReason(ctx: Pick<ActionContext, "app" | "url" | "presence" | "userName">): string | undefined {
   const p = ctx.presence;
   if (!p || !presenceGated(ctx.app, ctx.url)) return undefined;
+  const who = nameOf(ctx);
   const where = ctx.app ? ` in ${ctx.app}` : "";
   if (p.unlocked === false) return `the screen is locked, so nothing${where} happens now; ${PRESENCE_ABSENT}`;
   if (p.frontmost === false) return `${ctx.app ?? "the target app"} is not the app in front; ${PRESENCE_ABSENT}`;
-  if (p.recent === false) return `Kevin has not said anything for a minute, so this${where} waits; ${PRESENCE_ABSENT}`;
+  if (p.recent === false) return `${who} has not said anything for a minute, so this${where} waits; ${PRESENCE_ABSENT}`;
   return undefined;
 }
 
@@ -291,12 +304,12 @@ export function namedPaths(request: string | undefined, home: string = homedir()
 }
 
 /** Files and folders that decide what runs at login or in every shell; a write there is persistence, named folder or not. */
-function autostartReason(p: string, home: string): string | undefined {
+function autostartReason(p: string, home: string, who: string): string | undefined {
   const rel = p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p;
   if (/^~\/Library\/LaunchAgents(\/|$)/.test(rel) || /^\/Library\/Launch(Agents|Daemons)(\/|$)/.test(rel) || /^\/System\/Library\/Launch(Agents|Daemons)(\/|$)/.test(rel)) return "that changes what runs at login";
   if (/^~\/Library\/Application Support\/com\.apple\.backgroundtaskmanagement(\/|$)/.test(rel) || /^~\/\.config\/autostart(\/|$)/.test(rel)) return "that changes what runs at login";
-  if (/^~\/\.(zshrc|zprofile|zshenv|zlogin|zlogout|bashrc|bash_profile|bash_login|profile|hushlogin)$/.test(rel)) return "that changes every shell Kevin opens";
-  if (/^\/etc\/(paths|paths\.d\/|profile|zshrc|zprofile|bashrc|hosts|sudoers)/.test(rel)) return "that changes every shell Kevin opens";
+  if (/^~\/\.(zshrc|zprofile|zshenv|zlogin|zlogout|bashrc|bash_profile|bash_login|profile|hushlogin)$/.test(rel)) return `that changes every shell ${who} opens`;
+  if (/^\/etc\/(paths|paths\.d\/|profile|zshrc|zprofile|bashrc|hosts|sudoers)/.test(rel)) return `that changes every shell ${who} opens`;
   return undefined;
 }
 
@@ -326,6 +339,8 @@ export interface PathContext {
   readonly readThisTask?: boolean | undefined;
   /** The running Jarhead checkout (default REPO_ROOT); writes into it ask even when Kevin named the folder. */
   readonly repoRoot?: string | undefined;
+  /** What the reasons call the person Jarhead works for; default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 /**
@@ -337,24 +352,25 @@ export interface PathContext {
  */
 export function classifyPath(ctx: PathContext): Decision {
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   const p = expandPath(ctx.path, home);
   const real = ctx.realPath ? resolve(ctx.realPath) : p;
   const secret = secretPathReason(p) ?? (real !== p ? secretPathReason(real) : undefined);
-  if (secret) return refuse(`${secret} holds secrets; Jarhead never reads or writes it, and Kevin handles it himself`);
-  if (ctx.access === "read") return run("reading is harmless on Kevin's own machine");
+  if (secret) return refuse(`${secret} holds secrets; Jarhead never reads or writes it, and ${who} handles it`);
+  if (ctx.access === "read") return run(`reading is harmless on ${who}'s own machine`);
   const stateDir = resolve(home, ".jarhead");
   const targets = real !== p ? [p, real] : [p];
   // The trash (added 2026-09-12): where Kevin's moved conversations and screenshots live. Move-only — whole
   // days move in and out by rename(2), from the engine; no tool writes or deletes there, yes or no. Compared
   // case-folded: APFS is case-insensitive by default, so ~/.jarhead/Trash IS the trash.
   const trashDir = resolve(stateDir, "trash").toLowerCase();
-  if (targets.some((t) => isUnder(t.toLowerCase(), trashDir))) return refuse(TRASH_REASON);
-  if (ctx.confirmed) return run(`Kevin confirmed ${ctx.access === "delete" ? "deleting" : "writing"} ${p}`);
+  if (targets.some((t) => isUnder(t.toLowerCase(), trashDir))) return refuse(withName(TRASH_REASON, who));
+  if (ctx.confirmed) return run(`${who} confirmed ${ctx.access === "delete" ? "deleting" : "writing"} ${p}`);
   if (ctx.access === "delete") return confirm(`deleting ${p} cannot be undone; ask first`);
   if (targets.some((t) => isUnder(t, resolve(stateDir, "ledger")))) return confirm("the ledger is append-only; writing there needs a yes");
   if (targets.some((t) => t === resolve(stateDir, "settings.json"))) return confirm("settings.json carries the wake gate and the brain choice; changing it needs a yes");
   for (const t of targets) {
-    const auto = autostartReason(t, home);
+    const auto = autostartReason(t, home, who);
     if (auto) return confirm(`${auto}; ask first`);
   }
   const writable = [...tempRoots(home), stateDir, ...(ctx.writableRoots ?? []).map((r) => expandPath(r, home))];
@@ -365,10 +381,10 @@ export function classifyPath(ctx: PathContext): Decision {
   const roots = [...writable, ...namedPaths(ctx.request, home)];
   if (!targets.every((t) => roots.some((r) => isUnder(t, r)))) {
     const where = real !== p ? `${p} (really ${real})` : p;
-    return confirm(`${where} is outside the places Jarhead writes without asking (its worktrees, /tmp, ~/.jarhead, or a folder Kevin named); ask first`);
+    return confirm(`${where} is outside the places Jarhead writes without asking (its worktrees, /tmp, ~/.jarhead, or a folder ${who} named); ask first`);
   }
   if (ctx.exists && !ctx.readThisTask) return confirm(`${p} exists and was not read during this task; overwriting it needs a yes`);
-  return run(`writing ${p} is inside Jarhead's own places or a folder Kevin named`);
+  return run(`writing ${p} is inside Jarhead's own places or a folder ${who} named`);
 }
 
 // ------------------------------------------------------------------- shell ---
@@ -655,11 +671,11 @@ function killReason(text: string, owned: readonly number[]): string | undefined 
 }
 
 /** `env`, `printenv`, `export -p`, `set`, `ps -E`: the whole environment, which can carry keys Kevin's shell exported. */
-function envDumpReason(text: string): string | undefined {
+function envDumpReason(text: string, who: string): string | undefined {
   for (const stmt of statements(text)) {
     const s = stmt.replace(/^(?:[A-Za-z_]\w*=\S*\s+)+/, "").trim();
-    if (/^(?:\\|\/usr\/bin\/)?(env|printenv)(\s+(-0|--null))?\s*$/.test(s)) return "that dumps the environment, which can carry keys Kevin's shell exported";
-    if (/^(export(\s+-p)?|set|(declare|typeset)(\s+-[xp]+)?)\s*$/.test(s)) return "that dumps the shell's variables, which can carry keys Kevin's shell exported";
+    if (/^(?:\\|\/usr\/bin\/)?(env|printenv)(\s+(-0|--null))?\s*$/.test(s)) return `that dumps the environment, which can carry keys ${who}'s shell exported`;
+    if (/^(export(\s+-p)?|set|(declare|typeset)(\s+-[xp]+)?)\s*$/.test(s)) return `that dumps the shell's variables, which can carry keys ${who}'s shell exported`;
     if (/^ps\s+(-\w*[Ee]\w*|e\w*)(\s|$)/.test(s) || /^ps\b[^|;&]*\s-o\s+\S*(env|command=?\s*-E)/.test(s)) return "that dumps other processes' environments, which can carry keys";
     if (/^launchctl\s+(getenv|export)\b/.test(s)) return "that reads the login environment, which can carry keys";
   }
@@ -818,9 +834,9 @@ function withoutIdentityFlags(stmt: string): string {
 }
 
 /** Why a shell command is refused outright, if it is. */
-export function shellNeverReason(text: string, home: string = homedir()): string | undefined {
+export function shellNeverReason(text: string, home: string = homedir(), userName = "Kevin"): string | undefined {
   for (const expansion of expandInner(text)) {
-    for (const { re, why } of NEVER_SHELL) if (re.test(expansion)) return `that command ${why}`;
+    for (const { re, why } of NEVER_SHELL) if (re.test(expansion)) return `that command ${withName(why, userName)}`;
     const norm = normalizeShell(expansion, home);
     const cleaned = statements(norm).map(withoutIdentityFlags).join(" ; ");
     const secret = secretPathReason(cleaned);
@@ -830,7 +846,7 @@ export function shellNeverReason(text: string, home: string = homedir()): string
     const sweep = secretSweepReason(norm);
     if (sweep) return sweep;
     const trash = trashReason(norm);
-    if (trash) return trash;
+    if (trash) return withName(trash, userName);
     const home_ = homeSweepReason(norm);
     if (home_.refuse) return home_.refuse;
   }
@@ -884,12 +900,13 @@ function repoWriteReason(norm: string, repoNorm: string, cwdInRepo: boolean): st
 }
 
 /** Why a shell command needs a yes, if it does. */
-export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "ownedPids" | "scratchRoots" | "home" | "cwd" | "repoRoot"> = {}): string | undefined {
+export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "ownedPids" | "scratchRoots" | "home" | "cwd" | "repoRoot" | "userName"> = {}): string | undefined {
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   const repo = expandPath(ctx.repoRoot ?? REPO_ROOT, home);
   const cwdInRepo = ctx.cwd ? isUnder(expandPath(ctx.cwd, home), repo) : false;
   for (const expansion of expandInner(text)) {
-    for (const { re, why } of DESTRUCTIVE_SHELL) if (re.test(expansion)) return why;
+    for (const { re, why } of DESTRUCTIVE_SHELL) if (re.test(expansion)) return withName(why, who);
     const rm = rmReason(expansion, home, ctx.scratchRoots ?? []);
     if (rm) return rm;
     const kill = killReason(expansion, ctx.ownedPids ?? []);
@@ -898,7 +915,7 @@ export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "o
     if (mv) return mv;
     const trunc = truncateReason(expansion, home, ctx.scratchRoots ?? []);
     if (trunc) return trunc;
-    const dump = envDumpReason(expansion);
+    const dump = envDumpReason(expansion, who);
     if (dump) return dump;
     const egress = egressReason(expansion);
     if (egress) return egress;
@@ -914,7 +931,7 @@ export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "o
     if (SYSTEM_WRITE.test(expansion)) return "that writes into a system directory";
     if (SYSTEM_PATH.test(expansion) && !READ_ONLY_SHELL.test(expansion)) return "that touches a system directory";
     if (/\bosascript\b/.test(expansion)) {
-      const as = classifyAppleScript({ script: expansion, confirmed: false, home });
+      const as = classifyAppleScript({ script: expansion, confirmed: false, home, userName: ctx.userName });
       if (as.verdict === "confirm") return as.reason.replace(/; ask first$/, "");
     }
   }
@@ -923,20 +940,21 @@ export function shellDestructiveReason(text: string, ctx: Pick<ActionContext, "o
 
 function classifyShell(text: string, ctx: ActionContext): Decision {
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   if (!text.trim()) return refuse("empty command");
-  const never = shellNeverReason(text, home);
+  const never = shellNeverReason(text, home, who);
   if (never) return refuse(`${never}; it is on the never list`);
   if (ctx.cwd) {
     const cwd = shellCwdReason(ctx.cwd, home);
     if (cwd) return refuse(`${cwd}; it is on the never list`);
   }
   if (/\bosascript\b/.test(text)) {
-    const as = classifyAppleScript({ script: text, confirmed: ctx.confirmed, home, ownedPids: ctx.ownedPids });
+    const as = classifyAppleScript({ script: text, confirmed: ctx.confirmed, home, ownedPids: ctx.ownedPids, userName: ctx.userName });
     if (as.verdict === "refuse") return as;
   }
   const risk = shellDestructiveReason(text, ctx);
-  if (risk) return ctx.confirmed ? run("Kevin confirmed this command") : confirm(`${risk}; ask first`);
-  return run("nothing in that command is destructive on Kevin's own machine");
+  if (risk) return ctx.confirmed ? run(`${who} confirmed this command`) : confirm(`${risk}; ask first`);
+  return run(`nothing in that command is destructive on ${who}'s own machine`);
 }
 
 // ------------------------------------------------------------- applescript ---
@@ -948,6 +966,8 @@ export interface AppleScriptContext {
   readonly home?: string | undefined;
   /** The frontmost app: where keystrokes land when the script names no target of its own. */
   readonly app?: string | undefined;
+  /** What the reasons call the person Jarhead works for; default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 const TELL_APP = /\btell\s+(?:application|app|process)\s+"([^"]+)"/gi;
@@ -975,11 +995,12 @@ export function foldAppleScriptLiterals(script: string): string {
 export function classifyAppleScript(ctx: AppleScriptContext): Decision {
   const s = ctx.script;
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   if (!s.trim()) return refuse("empty script");
   if (/\btell\s+(application|app)\s+"(System Events|Finder|loginwindow)"[\s\S]*\b(shut down|restart|log out|sleep)\b/i.test(s) || /^\s*(shut down|restart|log out)\s*$/im.test(s)) {
-    return refuse("that script powers the Mac off, restarts it or logs Kevin out; it is on the never list");
+    return refuse(`that script powers the Mac off, restarts it or logs ${who} out; it is on the never list`);
   }
-  if (/with administrator privileges/i.test(s)) return refuse("that script needs an administrator password; Kevin does that himself");
+  if (/with administrator privileges/i.test(s)) return refuse(`that script needs an administrator password; ${who} does that`);
   const folded = foldAppleScriptLiterals(s);
   const norm = normalizeShell(folded, home);
   // HFS paths spell the separator as a colon ("Macintosh HD:Users:kevin:.aws:credentials").
@@ -1001,7 +1022,7 @@ export function classifyAppleScript(ctx: AppleScriptContext): Decision {
     const lit = /^"((?:[^"\\]|\\.)*)"(?:\s+(?:with|without|in|as|user name|password|altering)\b.*)?$/.exec(arg);
     if (!lit) return refuse("do shell script with a computed command cannot be checked; make it one literal string, or use run_shell");
     const inner = (lit[1] ?? "").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-    const d = classifyAction({ kind: "run_shell", text: inner, confirmed: ctx.confirmed, ownedPids: ctx.ownedPids, home });
+    const d = classifyAction({ kind: "run_shell", text: inner, confirmed: ctx.confirmed, ownedPids: ctx.ownedPids, home, userName: ctx.userName });
     if (d.verdict === "refuse") return d;
     if (d.verdict === "confirm") asks.push(d.reason.replace(/; ask first$/, ""));
   }
@@ -1009,9 +1030,9 @@ export function classifyAppleScript(ctx: AppleScriptContext): Decision {
   if (landsInFront && HANDS_OFF_APPS.test(ctx.app!)) asks.push(`${ctx.app} is in front and holds credentials or system settings; the keystrokes would land there`);
   const builtPath = /\bset\s+\w+\s+to\s+[^\n]*&[^\n]*/i.test(folded) || /\(\s*[^"\n()]*&[^"\n()]*\)/.test(folded);
   if (builtPath && /\b(read|open for access|POSIX file|POSIX path|alias|file)\b/i.test(folded)) asks.push("that script builds a file path from pieces the gate cannot read; one literal path, or read_file, would not need asking");
-  if (SENDS_MESSAGE.test(s) || /^\s*send\b/im.test(s)) asks.push("that sends a message on Kevin's behalf");
+  if (SENDS_MESSAGE.test(s) || /^\s*send\b/im.test(s)) asks.push(`that sends a message on ${who}'s behalf`);
   if (/\b(delete|empty(\s+the)?\s+trash|move\b[^\n]*\bto\s+(the\s+)?trash|erase)\b/i.test(s)) asks.push("that deletes something");
-  if (asks.length > 0) return ctx.confirmed ? run("Kevin confirmed this script") : confirm(`${asks.join("; ")}; ask first`);
+  if (asks.length > 0) return ctx.confirmed ? run(`${who} confirmed this script`) : confirm(`${asks.join("; ")}; ask first`);
   return run("nothing in that script sends, deletes or touches a hands-off app");
 }
 
@@ -1063,10 +1084,13 @@ export interface UrlContext {
   readonly url: string;
   /** Kevin's own words for this task; a private host is fetched only when he named it (or its port, or "localhost"). */
   readonly request?: string | undefined;
+  /** What the reasons call the person Jarhead works for; default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 /** https from the internet; http only to a private host Kevin named; never file:// or other schemes. */
 export function classifyUrl(ctx: UrlContext): Decision {
+  const who = nameOf(ctx);
   let u: URL;
   try {
     u = new URL(ctx.url.trim());
@@ -1080,8 +1104,8 @@ export function classifyUrl(ctx: UrlContext): Decision {
     const req = ctx.request ?? "";
     const port = u.port ? new RegExp(String.raw`(^|\D)${u.port}(\D|$)`) : undefined;
     const named = req.includes(host) || (isLoopbackHost(host) && /\b(localhost|local(?:\s+dev)?\s+server|127\.0\.0\.1|dev server|my server)\b/i.test(req)) || (port !== undefined && port.test(req));
-    if (!named) return refuse(`${host} is a private address; Jarhead fetches it only when Kevin names it`);
-    return run(`Kevin named ${host}`);
+    if (!named) return refuse(`${host} is a private address; Jarhead fetches it only when ${who} names it`);
+    return run(`${who} named ${host}`);
   }
   if (u.protocol === "http:") return refuse("only https is fetched from the internet");
   return run("an https page on the internet");
@@ -1125,14 +1149,15 @@ export function riskyUrlReason(url: string | undefined): string | undefined {
  * typing into a password field is refused, yes or no.
  */
 function classifyBrowser(kind: string, ctx: ActionContext): Decision {
+  const who = nameOf(ctx);
   if (BROWSER_READS.has(kind)) return run(`${kind} only reads the page`);
-  if (ctx.secureField && kind === "browser_type") return refuse("the focused field is a password field; Kevin types secrets himself");
+  if (ctx.secureField && kind === "browser_type") return refuse(`the focused field is a password field; ${who} types secrets`);
   const app = ctx.app ?? "";
-  if (HANDS_OFF_APPS.test(app)) return ctx.confirmed ? run(`Kevin confirmed acting in ${app}`) : confirm(`${app} holds credentials or system settings; ask before acting there`);
+  if (HANDS_OFF_APPS.test(app)) return ctx.confirmed ? run(`${who} confirmed acting in ${app}`) : confirm(`${app} holds credentials or system settings; ask before acting there`);
   const target = ctx.target ?? "";
-  if (IRREVERSIBLE.test(target)) return ctx.confirmed ? run(`Kevin confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
+  if (IRREVERSIBLE.test(target)) return ctx.confirmed ? run(`${who} confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
   const risky = riskyUrlReason(ctx.url);
-  if (risky) return ctx.confirmed ? run(`Kevin confirmed ${kind} on that page`) : confirm(`${risky}; ask first`);
+  if (risky) return ctx.confirmed ? run(`${who} confirmed ${kind} on that page`) : confirm(`${risky}; ask first`);
   return run(`${kind} is reversible on an ordinary page`);
 }
 
@@ -1142,9 +1167,10 @@ function classifyBrowser(kind: string, ctx: ActionContext): Decision {
  * refused rather than asked, because a question mid-sentence is worse than a no.
  */
 function classifyDictation(ctx: ActionContext): Decision {
-  if (ctx.secureField) return refuse("the focused field is a password field; Kevin types secrets himself");
+  const who = nameOf(ctx);
+  if (ctx.secureField) return refuse(`the focused field is a password field; ${who} types secrets`);
   const app = ctx.app ?? "";
-  if (HANDS_OFF_APPS.test(app)) return refuse(`${app} holds credentials or system settings; Kevin types there himself`);
+  if (HANDS_OFF_APPS.test(app)) return refuse(`${app} holds credentials or system settings; ${who} types there`);
   return run("dictation into an ordinary field");
 }
 
@@ -1168,6 +1194,7 @@ export function classifyAction(ctx: ActionContext): Decision {
 }
 
 function classifyActionCore(ctx: ActionContext): Decision {
+  const who = nameOf(ctx);
   const kind = ctx.kind.trim().toLowerCase();
   const app = ctx.app ?? "";
   const target = ctx.target ?? "";
@@ -1178,13 +1205,13 @@ function classifyActionCore(ctx: ActionContext): Decision {
   if (kind === "dictate") return classifyDictation(ctx);
 
   if (ctx.secureField && KEYS.has(kind)) {
-    return refuse("the focused field is a password field; Kevin types secrets himself");
+    return refuse(`the focused field is a password field; ${who} types secrets`);
   }
 
   if (kind === "run_shell") return classifyShell(text, ctx);
 
   if (HANDS_OFF_APPS.test(app) && (POINTER.has(kind) || KEYS.has(kind))) {
-    if (ctx.confirmed) return run(`Kevin confirmed acting in ${ctx.app}`);
+    if (ctx.confirmed) return run(`${who} confirmed acting in ${ctx.app}`);
     // The one question a yes may answer for the whole conversation (`grant`): acting in this
     // app, this class of action. A grant opens the app, not its destructive controls — a
     // "Delete" under a granted click still asks below.
@@ -1192,7 +1219,7 @@ function classifyActionCore(ctx: ActionContext): Decision {
   }
 
   if (IRREVERSIBLE.test(target)) {
-    return ctx.confirmed ? run(`Kevin confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
+    return ctx.confirmed ? run(`${who} confirmed "${target}"`) : confirm(`"${target}" looks irreversible or leaves the machine; ask first`);
   }
 
   if (POINTER.has(kind) || KEYS.has(kind) || kind === "open_app" || kind === "focus_app") {
@@ -1202,11 +1229,11 @@ function classifyActionCore(ctx: ActionContext): Decision {
       const word = GRANTED_STILL_ASKS.exec(target);
       if (role || word || !grantableIn(kind, app)) {
         const why = role ? `is a ${SETTING_ROLE[role[1]!.toLowerCase()] ?? "setting"} control` : word ? `says "${word[1]}", which changes a setting or hands something out` : "is not covered by a standing yes";
-        return confirm(`"${target}" in ${ctx.app} ${why}; Kevin's earlier yes does not cover it, ask first`);
+        return confirm(`"${target}" in ${ctx.app} ${why}; ${who}'s earlier yes does not cover it, ask first`);
       }
-      return run(`Kevin's earlier yes covers ${grantClassOf(kind) ?? kind} in ${ctx.app} for this conversation`);
+      return run(`${who}'s earlier yes covers ${grantClassOf(kind) ?? kind} in ${ctx.app} for this conversation`);
     }
-    return run(`${kind} is reversible on Kevin's own machine`);
+    return run(`${kind} is reversible on ${who}'s own machine`);
   }
 
   // Unknown kinds fail closed to a question, never to silence and never to action.
@@ -1240,6 +1267,8 @@ export interface AutomationContext {
   readonly request?: string | undefined;
   readonly home?: string | undefined;
   readonly repoRoot?: string | undefined;
+  /** What the reasons and the one question call the person Jarhead works for; default "Kevin". */
+  readonly userName?: string | undefined;
 }
 
 /** Trigger kinds typed for a later pass: never armed in pass 1, refused by name. */
@@ -1258,12 +1287,12 @@ const PRESS_MODIFIERS: Readonly<Record<string, string>> = { cmd: "cmd", command:
  * the Trash for good, `cmd+q` discards state, `cmd+shift+q` logs out, `cmd+opt+esc` force-quits.
  * Judged at set-up and again by the executor before the key goes, so an older row cannot slip by.
  */
-export function pressKeyReason(key: string): string | undefined {
+export function pressKeyReason(key: string, userName = "Kevin"): string | undefined {
   if (!PRESS_KEY.test(key)) return `"${key.slice(0, 40)}" is not a key or chord (letters, digits, + and spaces, up to 32)`;
   const parts = key.toLowerCase().split("+").map((w) => w.trim()).filter(Boolean).map((w) => PRESS_MODIFIERS[w] ?? w);
   const has = (k: string): boolean => parts.includes(k);
   const never = parts.some((w) => PRESS_NEVER_KEYS.has(w)) || (has("cmd") && has("q")) || (has("cmd") && has("opt") && (has("esc") || has("escape")));
-  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask Kevin to press it` : undefined;
+  return never ? `\`${key}\` deletes, quits or shuts something down; that key is never pressed unattended — a notify can ask ${userName} to press it` : undefined;
 }
 const WAKE_PROMPT_CHARS = 400;
 const UNATTENDED_HINT = "a notify or a chime is";
@@ -1402,7 +1431,7 @@ function recipeReason(name: string, ctx: AutomationContext, home: string): strin
   }
   const clobber = clobberReason(command);
   if (clobber) return clobber;
-  const d = classifyAction({ kind: "run_shell", text: command, confirmed: false, home, ...(known?.cwd ? { cwd: known.cwd } : {}), ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
+  const d = classifyAction({ kind: "run_shell", text: command, confirmed: false, home, userName: ctx.userName, ...(known?.cwd ? { cwd: known.cwd } : {}), ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
   if (d.verdict === "refuse") return d.reason;
   if (d.verdict === "confirm") return `${d.reason.replace(/; ask first$/, "")} — that would need a yes when it runs; nobody is there then — notify instead, or make it non-destructive`;
   return undefined;
@@ -1416,6 +1445,7 @@ function recipeReason(name: string, ctx: AutomationContext, home: string): strin
  */
 export function triggerReason(ctx: AutomationContext): string | undefined {
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   const w = ctx.when;
   const hasFile = ctx.then.some((a) => a.kind === "file");
   if (w.kind === "on") {
@@ -1427,7 +1457,7 @@ export function triggerReason(ctx: AutomationContext): string | undefined {
       const secret = secretPathReason(p);
       if (secret) return `${secret} holds secrets; Jarhead never watches it`;
       if (isUnder(p, resolve(home, ".jarhead"))) return "~/.jarhead is Jarhead's own; it is not watched";
-      if (!isUnder(p, home)) return `${w.on.path} is outside Kevin's home; folders are watched inside ~ only`;
+      if (!isUnder(p, home)) return `${w.on.path} is outside ${who}'s home; folders are watched inside ~ only`;
     }
     if (FOLDER_TRIGGERS.has(kind) && ctx.folderWatchers >= AUTOMATION_FOLDER_WATCHERS_MAX) return `${AUTOMATION_FOLDER_WATCHERS_MAX} folder watchers are already armed; trash one first`;
     if (w.on.kind === "recipe.red") {
@@ -1455,12 +1485,12 @@ export function triggerReason(ctx: AutomationContext): string | undefined {
 }
 
 /** A fixed line the local speaker reads or a banner shows: 1–AUTOMATION_LINE_CHARS chars, naming no secret. */
-function lineReason(line: string, what: string): string | undefined {
+function lineReason(line: string, what: string, who: string): string | undefined {
   const t = line.trim();
   if (!t) return `say what the ${what} should say`;
   if (t.length > AUTOMATION_LINE_CHARS) return `the local speaker reads a sentence, not a briefing (${t.length} chars, ${AUTOMATION_LINE_CHARS} at most) — use wake-brain for a briefing`;
   const secret = secretEnvReason(t) ?? secretPathReason(t);
-  if (secret) return `the ${what} names a secret (${secret}); Kevin handles those himself`;
+  if (secret) return `the ${what} names a secret (${secret}); ${who} handles those`;
   return undefined;
 }
 
@@ -1478,47 +1508,49 @@ export const OPEN_EXECUTABLE_EXT = /\.(app|command|tool|sh|zsh|bash|py|rb|pl|scp
  * path the read gate does not rate `run` (a secret store). Lexical: the executor adds the
  * execute-bit check at fire. Shared by the set-up gate and the executor so the two agree.
  */
-export function openPathReason(path: string, home: string = homedir()): string | undefined {
+export function openPathReason(path: string, home: string = homedir(), userName = "Kevin"): string | undefined {
   const p = expandPath(path.trim(), home).replace(/\/+$/, "");
   if (!p) return "open needs an app, an https URL or a path";
   const base = basename(p);
   if (/\.app$/i.test(base)) {
     const app = base.replace(/\.app$/i, "");
-    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; Kevin opens it himself`;
+    if (HANDS_OFF_APPS.test(app)) return `${app} is hands-off; ${userName} opens it`;
     return `${base} is an app bundle; open the app by name instead (open { app: "${app}" })`;
   }
   if (/\.app(\/|$)/i.test(p)) return `${base} is inside an app bundle; nothing runs from an open`;
   if (OPEN_EXECUTABLE_EXT.test(base)) return `${base} would run when opened; an open never executes anything — a run-recipe does, with a yes`;
-  const d = classifyPath({ path: p, access: "read", home });
+  const d = classifyPath({ path: p, access: "read", home, userName });
   return d.verdict === "run" ? undefined : d.reason;
 }
 
 /** An `open` target judged lexically, as the executor will judge it again at fire. */
 function openReason(a: { readonly app?: string; readonly url?: string; readonly path?: string }, ctx: AutomationContext, home: string): string | undefined {
+  const who = nameOf(ctx);
   if (a.app) {
-    if (HANDS_OFF_APPS.test(a.app)) return `${a.app} is hands-off; Kevin opens it himself`;
+    if (HANDS_OFF_APPS.test(a.app)) return `${a.app} is hands-off; ${who} opens it`;
     return undefined;
   }
   if (a.url) {
-    const d = classifyUrl({ url: a.url, ...(ctx.request ? { request: ctx.request } : {}) });
+    const d = classifyUrl({ url: a.url, userName: ctx.userName, ...(ctx.request ? { request: ctx.request } : {}) });
     if (d.verdict !== "run") return d.reason;
     const risky = riskyUrlReason(a.url);
-    if (risky) return `${risky}; Kevin opens those himself`;
+    if (risky) return `${risky}; ${who} opens those`;
     return undefined;
   }
-  if (a.path) return openPathReason(a.path, home);
+  if (a.path) return openPathReason(a.path, home, who);
   return "open needs an app, an https URL or a path";
 }
 
 /** Where `file` moves the triggering file: inside ~, never ~/.jarhead, never a secret store, a write the path gate rates run. */
 function fileReason(into: string, ctx: AutomationContext, home: string): string | undefined {
+  const who = nameOf(ctx);
   if (!into.trim()) return "file needs a folder to move into";
   const p = expandPath(into, home);
   const secret = secretPathReason(p);
   if (secret) return `${secret} holds secrets; nothing is filed there`;
   if (isUnder(p, resolve(home, ".jarhead"))) return "~/.jarhead is Jarhead's own; nothing is filed there";
-  if (!isUnder(p, home)) return `${into} is outside Kevin's home; files move inside ~ only`;
-  const d = classifyPath({ path: p, access: "write", home, request: ctx.request ?? into, ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
+  if (!isUnder(p, home)) return `${into} is outside ${who}'s home; files move inside ~ only`;
+  const d = classifyPath({ path: p, access: "write", home, request: ctx.request ?? into, userName: ctx.userName, ...(ctx.repoRoot ? { repoRoot: ctx.repoRoot } : {}) });
   return d.verdict === "run" ? undefined : d.reason;
 }
 
@@ -1530,15 +1562,16 @@ function fileReason(into: string, ctx: AutomationContext, home: string): string 
  */
 export function actionReason(action: AutomationAction, ctx: AutomationContext): Decision {
   const home = ctx.home ?? homedir();
+  const who = nameOf(ctx);
   const kind = String((action as { readonly kind?: unknown }).kind ?? "");
   switch (action.kind) {
     case "chime":
     case "say": {
-      const why = lineReason(action.line, action.kind);
+      const why = lineReason(action.line, action.kind, who);
       return why ? refuse(why) : run(`a ${action.kind} with a fixed line`);
     }
     case "notify": {
-      const why = lineReason(action.title, "banner") ?? (action.body ? lineReason(action.body, "banner's body") : undefined);
+      const why = lineReason(action.title, "banner", who) ?? (action.body ? lineReason(action.body, "banner's body", who) : undefined);
       if (why) return refuse(why);
       if (action.open) {
         const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(action.open) ? { url: action.open } : action.open.startsWith("/") || action.open.startsWith("~") ? { path: action.open } : { app: action.open };
@@ -1549,7 +1582,7 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
     }
     case "open": {
       const why = openReason(action, ctx, home);
-      return why ? refuse(why) : run("open is reversible on Kevin's own machine");
+      return why ? refuse(why) : run(`open is reversible on ${who}'s own machine`);
     }
     case "file": {
       const why = fileReason(action.into, ctx, home);
@@ -1564,7 +1597,7 @@ export function actionReason(action: AutomationAction, ctx: AutomationContext): 
     case "press": {
       if (!action.app.trim()) return refuse("press needs the app it lands in");
       if (HANDS_OFF_APPS.test(action.app)) return refuse(`${action.app} is hands-off; nothing is pressed there unattended`);
-      const never = pressKeyReason(action.key);
+      const never = pressKeyReason(action.key, who);
       if (never) return refuse(never);
       return confirm(`\`${action.key}\` will be pressed in ${action.app} unattended, only while it is in front and no password field has focus`);
     }
@@ -1619,5 +1652,5 @@ export function classifyAutomation(ctx: AutomationContext): Decision {
   }
   if (asks.length === 0) return run("nothing here needs a yes: fixed lines, reversible opens, moves inside ~");
   const question = asks.join("; ");
-  return ctx.confirmed ? run(`Kevin confirmed: ${question}`) : confirm(question);
+  return ctx.confirmed ? run(`${nameOf(ctx)} confirmed: ${question}`) : confirm(question);
 }

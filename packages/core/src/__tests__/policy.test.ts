@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PRESENCE_ABSENT, TRASH_REASON, classifyAction, classifyAppleScript, classifyPath, classifyUrl, grantClassOf, isLoopbackHost, isPrivateHost, namedPaths, presenceGated, presenceReason, secretPathReason, shellCwdReason, type Presence, type Verdict } from "../policy.ts";
+import type { AutomationAction } from "@jarhead/protocol";
+import { PRESENCE_ABSENT, TRASH_REASON, classifyAction, classifyAppleScript, classifyAutomation, classifyPath, classifyUrl, costLine, grantClassOf, isLoopbackHost, isPrivateHost, namedPaths, presenceGated, presenceReason, secretPathReason, shellCwdReason, type AutomationContext, type Decision, type Presence, type Verdict } from "../policy.ts";
 
 const HOME = "/Users/kevin";
 
@@ -747,4 +748,79 @@ test("trash: move-only — no tool writes or deletes under ~/.jarhead/trash, con
   assert.equal(classifyPath({ path: "~/.jarhead/Trash/x", access: "write", home: HOME }).verdict, "refuse");
   assert.equal(classifyPath({ path: "~/.JARHEAD/trash/x", access: "delete", home: HOME, confirmed: true }).verdict, "refuse");
   assert.equal(classifyPath({ path: "~/.jarhead/Trash/ledger/2026-09-10.jsonl", access: "read", home: HOME }).verdict, "run");
+});
+
+// ------------------------------------------------------------ the user's name ---
+
+/**
+ * Every reason, question and hold says the caller's name (`userName` on each context; the
+ * engine passes the effective one) and the default renders exactly as before. The verdicts,
+ * grants and holds are the same whatever the name: only the word moves.
+ */
+test("the user's name: run / confirm / refuse across the hands, the shell, the paths, AppleScript, URLs, the recipe path, the cost line and the automation gate render for Sam with the same verdict, grant and hold, the same words and no literal Kevin", () => {
+  const HOME_ = "/Users/sam";
+  const DOWNLOADS: AutomationContext["when"] = { kind: "on", on: { kind: "folder.file", path: "~/Downloads", glob: "*.pdf" } };
+  const settings: AutomationContext["settings"] = { enabled: true, unattended: ["chime", "say", "notify", "open", "file", "run-recipe", "press", "wake-brain"], wakeBudgetMinutesPerDay: 5, recipes: [] };
+  const auto = (then: readonly AutomationAction[], over: Partial<AutomationContext> = {}): AutomationContext => ({ when: { kind: "at", at: 1_789_243_208_790 }, clauses: { quiet: "respect" }, folderWatchers: 0, home: HOME_, repoRoot: `${HOME_}/jarvis`, settings, then, ...over });
+  const script = 'tell application "Mail" to send theMessage';
+  const cases: ReadonlyArray<readonly [string, (userName: string | undefined) => Decision]> = [
+    ["shell: plain run", (userName) => classifyAction({ kind: "run_shell", text: "ls -la", home: HOME_, userName })],
+    ["shell: a confirmed push", (userName) => classifyAction({ kind: "run_shell", text: "git push", home: HOME_, confirmed: true, userName })],
+    ["shell: the never list (a table's why)", (userName) => classifyAction({ kind: "run_shell", text: "osascript -e 'tell application \"System Events\" to log out'", home: HOME_, userName })],
+    ["shell: the destructive table's why", (userName) => classifyAction({ kind: "run_shell", text: "gh pr create --fill", home: HOME_, userName })],
+    ["shell: an environment dump", (userName) => classifyAction({ kind: "run_shell", text: "env", home: HOME_, userName })],
+    ["shell: the trash (a constant)", (userName) => classifyAction({ kind: "run_shell", text: "rm -rf ~/.jarhead/trash", home: HOME_, userName })],
+    ["hands: a reversible click", (userName) => classifyAction({ kind: "left_click", app: "Notes", target: "Bold", userName })],
+    ["hands: a hands-off app, confirmed", (userName) => classifyAction({ kind: "left_click", app: "1Password", target: "Copy", confirmed: true, userName })],
+    ["hands: a granted click on a setting still asks", (userName) => classifyAction({ kind: "left_click", app: "1Password", target: "AXCheckBox Autofill", granted: true, userName })],
+    ["hands: a granted click runs", (userName) => classifyAction({ kind: "left_click", app: "1Password", target: "Copy", granted: true, userName })],
+    ["hands: a password field", (userName) => classifyAction({ kind: "type", text: "hunter2", secureField: true, confirmed: true, userName })],
+    ["dictation: a hands-off app", (userName) => classifyAction({ kind: "dictate", app: "1Password", userName })],
+    ["browser: a payment page, confirmed", (userName) => classifyAction({ kind: "browser_click", app: "Google Chrome", url: "https://shop.example.com/checkout", target: "Continue", confirmed: true, userName })],
+    ["browser: a password field", (userName) => classifyAction({ kind: "browser_type", app: "Safari", text: "x", secureField: true, userName })],
+    ["presence: a hold", (userName) => classifyAction({ kind: "left_click", app: "Mail", target: "Send", presence: { recent: false, unlocked: true, frontmost: true }, userName })],
+    ["paths: a read", (userName) => classifyPath({ path: "~/notes.md", access: "read", home: HOME_, userName })],
+    ["paths: a secret store", (userName) => classifyPath({ path: "~/.ssh/id_ed25519", access: "read", home: HOME_, userName })],
+    ["paths: a write outside the places", (userName) => classifyPath({ path: "~/Documents/notes.md", access: "write", home: HOME_, userName })],
+    ["paths: a write into a named folder", (userName) => classifyPath({ path: "~/Documents/notes.md", access: "write", home: HOME_, request: "save it in ~/Documents", userName })],
+    ["paths: a confirmed write", (userName) => classifyPath({ path: "~/Documents/notes.md", access: "write", home: HOME_, confirmed: true, userName })],
+    ["paths: what runs in every shell", (userName) => classifyPath({ path: "~/.zshrc", access: "write", home: HOME_, request: "edit ~/.zshrc", userName })],
+    ["paths: the trash", (userName) => classifyPath({ path: "~/.jarhead/trash/ledger/a.jsonl", access: "write", home: HOME_, confirmed: true, userName })],
+    ["applescript: an administrator password", (userName) => classifyAppleScript({ script: 'do shell script "ls" with administrator privileges', home: HOME_, userName })],
+    ["applescript: sending a message", (userName) => classifyAppleScript({ script, home: HOME_, userName })],
+    ["applescript: sending, confirmed", (userName) => classifyAppleScript({ script, home: HOME_, confirmed: true, userName })],
+    ["urls: a private host nobody named", (userName) => classifyUrl({ url: "http://192.168.1.20/status", userName })],
+    ["urls: a private host the request named", (userName) => classifyUrl({ url: "http://192.168.1.20/status", request: "open the printer at 192.168.1.20", userName })],
+    ["automations: a file move outside the home", (userName) => classifyAutomation(auto([{ kind: "file", into: "/tmp/papers" }], { when: DOWNLOADS, userName }))],
+    ["automations: opening a hands-off app", (userName) => classifyAutomation(auto([{ kind: "open", app: "1Password" }], { userName }))],
+    ["automations: opening a hands-off bundle", (userName) => classifyAutomation(auto([{ kind: "open", path: "/Applications/1Password.app" }], { userName }))],
+    ["automations: opening a payment page", (userName) => classifyAutomation(auto([{ kind: "open", url: "https://paypal.com/myaccount" }], { userName }))],
+    ["automations: a key never pressed unattended", (userName) => classifyAutomation(auto([{ kind: "press", app: "Notes", key: "cmd+q" }], { userName }))],
+    ["automations: a line naming a secret", (userName) => classifyAutomation(auto([{ kind: "say", line: "the key is $OPENAI_API_KEY" }], { userName }))],
+    ["automations: a free open", (userName) => classifyAutomation(auto([{ kind: "open", app: "Notes" }], { userName }))],
+    ["recipe: one the gate would question at fire", (userName) => classifyAutomation(auto([{ kind: "run-recipe", recipe: "ship" }], { recipeCommand: "gh pr create --fill", userName }))],
+    ["recipe: confirmed", (userName) => classifyAutomation(auto([{ kind: "run-recipe", recipe: "tests" }], { recipeCommand: "pnpm test", confirmed: true, userName }))],
+    ["wake-brain: confirmed, the cost line", (userName) => classifyAutomation(auto([{ kind: "wake-brain", prompt: "what is in my inbox", budget: { steps: 8, seconds: 120 }, speak: true }], { confirmed: true, userName }))],
+  ];
+  const verdicts = new Set<Verdict>();
+  let named = 0;
+  for (const [label, judge] of cases) {
+    const kevin = judge("Kevin");
+    const sam = judge("Sam");
+    assert.deepEqual(judge(undefined), kevin, `${label}: no name is the default`);
+    assert.equal(sam.verdict, kevin.verdict, `${label}: the verdict does not move`);
+    assert.equal(sam.grant, kevin.grant, `${label}: the grant does not move`);
+    assert.equal(sam.hold, kevin.hold, `${label}: the hold does not move`);
+    assert.doesNotMatch(sam.reason, /Kevin/, `${label}: ${sam.reason}`);
+    assert.equal(sam.reason.replaceAll("Sam", "Kevin"), kevin.reason, `${label}: only the name moves`);
+    verdicts.add(kevin.verdict);
+    if (/Kevin/.test(kevin.reason)) named++;
+  }
+  assert.deepEqual([...verdicts].sort(), ["confirm", "refuse", "run"], "the set covers every verdict");
+  assert.ok(named >= 30, `${named} of ${cases.length} reasons carry the name`);
+  // The constant keeps its value; the refusal built from it says the caller's name.
+  assert.match(TRASH_REASON, /Kevin's data/);
+  assert.equal(classifyPath({ path: "~/.jarhead/trash/x", access: "write", home: HOME_, userName: "Sam" }).reason, TRASH_REASON.replaceAll("Kevin", "Sam"));
+  // The cost line is the question, word for word, behind the name.
+  assert.equal(cases[cases.length - 1]![1]("Sam").reason, `Sam confirmed: ${costLine({ steps: 8, seconds: 120 }, 5, false)}`);
 });

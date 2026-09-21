@@ -63,6 +63,6 @@ test("dictation: ordinary fields run; password fields and hands-off apps are ref
   assert.match(secure.reason, /password field/);
   const vault = classifyAction({ kind: "dictate", app: "1Password" });
   assert.equal(vault.verdict, "refuse");
-  assert.match(vault.reason, /types there himself/);
+  assert.match(vault.reason, /1Password holds credentials or system settings; Kevin types there$/);
   assert.equal(classifyAction({ kind: "dictate", app: "System Settings", confirmed: true }).verdict, "refuse", "a yes does not open a hands-off app to dictation");
 });
