@@ -18,7 +18,7 @@ import { LIST_STATES, ROW_VERBS, automationLine, landedAutomation, automationsLi
 import { PERMISSION_KINDS, type Automation, type AutomationState, type PermissionKind, type ShellRecipe } from "@jarhead/protocol";
 
 const HELP = `
-jarhead — voice-first computer use for Kevin's Mac
+jarhead — voice-first computer use for your Mac
 
   pnpm jarhead doctor                 keys, brain, hands, permissions, audio (voice processing · hears · speaks · other mic clients · recording · released at sleep · leak), local (server · model · embeddings), memory, privacy (where words go), agents, app (signing, wake word), toolchain
   pnpm jarhead doctor --test-audio    also run apps/mac/Scripts/audio-probe.sh --test --json: the graph as the app builds it, a 1 s chime through the player, the leak figure — refused while Jarhead is awake; nothing paid
@@ -34,12 +34,12 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead ledger search "<words>" [--limit N]   what was heard and said, and the delegations' requests and summaries, over the live days, newest first (50 by default, 200 at most)
   pnpm jarhead ledger --speed [--days N]   where the time went over the last N days (1): acting steps followed by a screenshot, results carrying the now: line,
                                       tool round trips by class (read-only target p95 ≤ 80 ms), generation gaps by what came before, first action, threads
-  pnpm jarhead reflex-miss [--days N]  the short commands Kevin said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
-  pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about Kevin: one sentence per item, over the daemon (50 by default, 200 at most)
+  pnpm jarhead reflex-miss [--days N]  the short commands you said that the grammar did not catch, grouped by head word (7 days) — the grammar grows from these
+  pnpm jarhead memory [list] [--state live|forgotten|archived|merged|all] [--limit N]   what Jarhead durably knows about you: one sentence per item, over the daemon (50 by default, 200 at most)
   pnpm jarhead memory search "<words>" [--limit N]   the items closest to the words (embeddings when a key is present, keywords without)
   pnpm jarhead memory forget <id>    hide an item from every prompt; it stays in Jarhead's own record under Forgotten. Nothing is deleted
   pnpm jarhead memory restore <id>   bring a forgotten or archived item back into use
-  pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in Kevin's words (redacted and refused like anything extracted)
+  pnpm jarhead memory add "<text>" [--kind preference|fact|episode|procedure|contact|place]   remember one thing now, in your words (redacted and refused like anything extracted)
   pnpm jarhead memory run            read the closed conversations not read yet, now (it runs on its own at a quiet moment; never while a voice session is open)
   pnpm jarhead models [--json] [--server URL]   the models on this Mac's local server (Ollama / LM Studio / llama.cpp): id · size · ctx · tools/vision/thinking/embedding · fit · which the brain and memory use
                                         (the embedding model memory uses has its own row); a cloud tag (remote_host set) runs on ollama.com and is not listed. No daemon needed.
@@ -79,13 +79,13 @@ jarhead — voice-first computer use for Kevin's Mac
   pnpm jarhead bench                  time the tool path: round trips, quick screenshot, delegation → first action, reflex, the ear's 250 ms path, stop (no API spend)
   pnpm jarhead bench --brain          the five representative commands on the REAL brain (Codex here) with a stand-in Live and canned hands:
                                       delegation → first thinking / first tool / first action / done, model steps, tool calls, rollovers,
-                                      bootstrap calls (docs/LATENCY.md). Nothing on the Mac is touched; the turns cost Kevin's ChatGPT plan.
+                                      bootstrap calls (docs/LATENCY.md). Nothing on the Mac is touched; the turns cost your ChatGPT plan.
 
 flags
   --speak        (probe) also play the voice through ffplay
   --timeout N    (probe) seconds to wait after the utterance (default 25)
   --runs N       (bench) samples per metric (default 5); (bench --brain) runs per command on the brain path (default 2)
-  --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on Kevin's login)
+  --codex        (bench) drive the real Codex brain for the delegation runs (a couple of tiny turns on your login)
   --fake-hands   (bench) answer the helper's requests in-process instead of the Swift helper
   --no-gate      (bench) do not exit non-zero when the ear's p95 to dispatch is over 250 ms with the real helper
   --effort E     (bench --brain) run the brain at effort low|medium|high|xhigh|max (default: the configured effort) — one flag for an A/B

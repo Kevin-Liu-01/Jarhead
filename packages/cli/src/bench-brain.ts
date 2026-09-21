@@ -931,7 +931,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
   const probe = standIn ? undefined : (opts.probe ?? (await probeCodex({ bin: base.codexBin })));
   const useCodex = probe !== undefined && probe.bin !== undefined && probe.signedIn;
   if (!standIn && !useCodex && !opts.allowApiSpend) {
-    throw new Error(`Codex is not available (${probe?.detail ?? "no probe"}); bench --brain runs on Kevin's ChatGPT plan only — the auto brain would spend API dollars. Pass --allow-api-spend to run on it anyway.`);
+    throw new Error(`Codex is not available (${probe?.detail ?? "no probe"}); bench --brain runs on your ChatGPT plan only — the auto brain would spend API dollars. Pass --allow-api-spend to run on it anyway.`);
   }
   const dir = mkdtempSync(join(tmpdir(), "jh-bb-"));
   const config: JarheadConfig = {
@@ -997,7 +997,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
 
   const load = loadavg().map((v) => v.toFixed(1)).join(" ");
   say(`bench --brain: ${runs} run(s) per command on the brain path${opts.noReflex ? " (reflexes off throughout)" : ", after the reflex path"}; effort ${effort}; load average ${load}`);
-  say(`brain: ${opts.brain ? `stand-in (${brain?.kind ?? "?"})` : useCodex ? "REAL Codex through the product's resident app-server — the turns run on Kevin's ChatGPT login and cost his ChatGPT plan, not dollars" : `auto (Codex is not available here: ${probe?.detail ?? "?"}) — --allow-api-spend given: the turns cost REAL API DOLLARS on whatever brain auto picks`}`);
+  say(`brain: ${opts.brain ? `stand-in (${brain?.kind ?? "?"})` : useCodex ? "REAL Codex through the product's resident app-server — the turns run on your ChatGPT login and cost your ChatGPT plan, not dollars" : `auto (Codex is not available here: ${probe?.detail ?? "?"}) — --allow-api-spend given: the turns cost REAL API DOLLARS on whatever brain auto picks`}`);
   say(`hands: canned (Safari in front on ${WIKI_TITLE}; screen ${screen.source === FIXTURE_PNG ? "fixture" : screen.source}, ${pngSize(screen.png).width}x${pngSize(screen.png).height}); Live: stand-in (no socket, no billing); nothing on this Mac is touched; blocked tools: ${[...BLOCKED_TOOLS].join(", ")}`);
 
   const meta: Record<string, unknown> = {
@@ -1011,7 +1011,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
     screen: screen.source,
     blockedTools: [...BLOCKED_TOOLS],
     stateDir: config.stateDir,
-    costs: opts.brain ? "nothing (stand-in brain)" : useCodex ? "Kevin's ChatGPT plan (Codex turns); no API dollars" : "REAL API DOLLARS on the brain auto picked (--allow-api-spend)",
+    costs: opts.brain ? "nothing (stand-in brain)" : useCodex ? "your ChatGPT plan (Codex turns); no API dollars" : "REAL API DOLLARS on the brain auto picked (--allow-api-spend)",
   };
 
   const records: RunRecord[] = [];
@@ -1025,7 +1025,7 @@ export async function runBrainBench(opts: BrainBenchOptions): Promise<BrainBench
   // whatever the probe said a moment ago.
   if (!standIn && !opts.allowApiSpend && (engine.brainInfo.kind !== "codex" || !engine.brainInfo.ready)) {
     await Promise.race([engine.stop(), new Promise((r) => setTimeout(r, 8000))]);
-    throw new Error(`Codex is not available (${engine.brainInfo.detail}; probe: ${codexDetail || probe?.detail || "?"}); bench --brain runs on Kevin's ChatGPT plan only — pass --allow-api-spend to run on the ${engine.brainInfo.kind} brain (API dollars).`);
+    throw new Error(`Codex is not available (${engine.brainInfo.detail}; probe: ${codexDetail || probe?.detail || "?"}); bench --brain runs on your ChatGPT plan only — pass --allow-api-spend to run on the ${engine.brainInfo.kind} brain (API dollars).`);
   }
   // The thread the last turn went out on: the start thread first; a run whose turn/start names another is a rollover.
   let lastThreadId: string | undefined;

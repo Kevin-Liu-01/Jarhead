@@ -402,7 +402,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
   };
 
   const load = loadavg().map((v) => v.toFixed(1)).join(" ");
-  log(`\n  bench: ${opts.runs} run(s); hands: ${useFakeHands ? "fake (in-process)" : `Swift helper at ${base.handsBin}`}; brain: ${opts.codex ? "real Codex (one tiny turn per run — this uses Kevin's ChatGPT login)" : "stand-in"}; load average ${load}`);
+  log(`\n  bench: ${opts.runs} run(s); hands: ${useFakeHands ? "fake (in-process)" : `Swift helper at ${base.handsBin}`}; brain: ${opts.codex ? "real Codex (one tiny turn per run — this uses your ChatGPT login)" : "stand-in"}; load average ${load}`);
   const t0 = Date.now();
   await engine.start();
   await engine.ready();
@@ -723,7 +723,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
       const probe = await runDuckProbe(opts.runs);
       for (const ms of probe.report.samples ?? []) add("barge-in: speech onset → −20 dB (duck probe)", ms);
       for (const ms of probe.report.unconfirmedRestoreMs ?? []) add("barge-in: cough / echo words, unconfirmed → back to unity", ms);
-      for (const ms of probe.report.speechEndToUnityMs ?? []) add("barge-in: confirmed, Kevin's last word → back to unity", ms);
+      for (const ms of probe.report.speechEndToUnityMs ?? []) add("barge-in: confirmed, the user's last word → back to unity", ms);
       for (const ms of probe.report.heldRestoreMs ?? []) add("barge-in: no confirmation, still speaking → back to unity", ms);
       if (probe.note) log(`  barge-in: ${probe.note}`);
       else {
@@ -762,7 +762,7 @@ export async function bench(opts: BenchOptions): Promise<BenchResult> {
     // 60 ms of speech energy + the rest of the 100 ms tap buffer it lands in + the 12 ms gain steps.
     "barge-in: speech onset → −20 dB (duck probe)": DUCK_TARGET_MS,
     // 250 ms quiet hold + the 50 ms poll + the tap's 100 ms delivery + the 300 ms ramp.
-    "barge-in: confirmed, Kevin's last word → back to unity": DUCK_RELEASE_TARGET_MS,
+    "barge-in: confirmed, the user's last word → back to unity": DUCK_RELEASE_TARGET_MS,
   };
   /** The ear rows are judged at p95 (the 250 ms promise is for every command, not the typical one), the acting-call row too (its settle is the cost); the rest at the median. */
   const judgedAtP95 = new Set(["ear: partial → dispatch", "ear: careful partial → dispatch", "ear: final → dispatch", "acting call incl. observation (mouse_move in place)"]);
