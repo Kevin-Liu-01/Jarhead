@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
 import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/install";
 import { ICON_SOURCES, staleAgainst } from "./icon-render.ts";
+import { chooseIdentity, identityLine, identityNames, type IdentityChoice } from "./sign-identity.ts";
 
 /**
  * Package the native macOS app: build/Jarhead.app.
@@ -15,6 +16,13 @@ import { ICON_SOURCES, staleAgainst } from "./icon-render.ts";
  * can have: a Dock icon and a stable TCC identity for the microphone, screen
  * recording and accessibility grants (the helper inherits it because the app is its
  * responsible process).
+ *
+ * JARHEAD_BUILD_ONLY=1 stops after the stage bundle is signed and `codesign --verify
+ * --strict` passes: the summary names the stage and nothing under /Applications is read or
+ * written (no snapshot, rsync, install verification, parity, inode check, hygiene or
+ * relink). CI runs the icon, the release build and the signing this way; so can a dry run.
+ * JARHEAD_SIGN_IDENTITY pins the signing identity (`-` = ad-hoc); without it the order is
+ * scripts/sign-identity.ts's, and the pick is printed before the first codesign call.
  */
 
 const OUT = join(REPO_ROOT, "build");
@@ -105,25 +113,28 @@ writeFileSync(join(resources, "jarhead.json"), `${JSON.stringify(manifest, null,
 // 4. Sign: helper first, then the app. Any real identity (Apple-issued or a local
 // self-signed certificate) gives the bundle a designated requirement that survives
 // rebuilds, so TCC keeps the microphone/screen/accessibility grants. Ad-hoc signing
-// keys them to the code hash, which changes every build.
-function pickIdentity(): string | undefined {
+// keys them to the code hash, which changes every build. The order (pinned → Apple
+// Development → Developer ID → a name for this app → a Code Signing name → the first
+// listed → ad-hoc) is chooseIdentity's, pinned by scripts/__tests__/sign-identity.test.ts;
+// the pick is printed before anything is signed. It used to fall to whatever certificate
+// the keychain listed first, and said so only in the summary after signing.
+function pickIdentity(): IdentityChoice {
   const pinned = process.env["JARHEAD_SIGN_IDENTITY"];
-  if (pinned) return pinned === "-" ? undefined : pinned;
-  try {
-    const out = execFileSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" });
-    const names = [...out.matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "").filter(Boolean);
-    return (
-      names.find((n) => n.startsWith("Apple Development")) ??
-      names.find((n) => n.startsWith("Developer ID Application")) ??
-      names[0]
-    );
-  } catch {
-    return undefined;
+  let names: string[] = [];
+  if (!pinned) {
+    try {
+      names = identityNames(execFileSync("security", ["find-identity", "-v", "-p", "codesigning"], { encoding: "utf8" }));
+    } catch {
+      // no keychain to ask (a headless runner): ad-hoc
+    }
   }
+  return chooseIdentity(names, pinned);
 }
 
 const entitlements = join(RESOURCES_SRC, "entitlements.plist");
-const identity = pickIdentity();
+const chosen = pickIdentity();
+const identity = chosen.identity;
+console.log(identityLine(chosen));
 const sign = identity ?? "-";
 // Timestamps only make sense for Apple-issued certificates (and need the network).
 const appleIssued = identity !== undefined && /^(Apple Development|Developer ID Application)/.test(identity);
@@ -131,6 +142,21 @@ const common = identity ? ["--force", ...(appleIssued ? ["--timestamp"] : []), "
 run("codesign", [...common, "--sign", sign, join(macos, "jarhead-hands")]);
 run("codesign", [...common, "--entitlements", entitlements, "--sign", sign, APP]);
 run("codesign", ["--verify", "--strict", "--verbose=1", APP]);
+const signedLine = identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)";
+
+// JARHEAD_BUILD_ONLY=1: the signed, verified stage is the product. Nothing below runs —
+// no snapshot, rsync, install verification, parity, inode check, hygiene or relink — and
+// nothing under /Applications is read or written. CI exercises icon → release build →
+// sign → verify this way (check.yml, ad-hoc); a dry run on a Mac with an install uses it too.
+if (process.env["JARHEAD_BUILD_ONLY"] === "1") {
+  const stagedSize = statSync(join(macos, "Jarhead")).size;
+  console.log(`
+  built      ${APP} (JARHEAD_BUILD_ONLY=1: signed and verified, not installed)
+  binary     ${(stagedSize / (1024 * 1024)).toFixed(1)} MiB
+  signed     ${signedLine}
+`);
+  process.exit(0);
+}
 
 // 5. Install IN PLACE. Exactly one launchable Jarhead exists on this Mac — /Applications —
 // so the Dock, LaunchServices' recents and TCC never see two identities. Its directory
@@ -194,7 +220,7 @@ console.log(`
   built      ${INSTALLED}
   binary     ${(size / (1024 * 1024)).toFixed(1)} MiB
   daemon     ${manifest.node} ${manifest.tsx} ${manifest.daemon}
-  signed     ${identity ?? "ad-hoc (TCC grants reset on every rebuild; create a code-signing certificate in Keychain Access or set JARHEAD_SIGN_IDENTITY)"}
+  signed     ${signedLine}
 
   ${installNote}
   ${oneJarhead}

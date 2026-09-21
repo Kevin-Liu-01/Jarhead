@@ -39,3 +39,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:hands
       - run: swift build --package-path apps/mac
+      # The contract probe: the Model, UI and Console sources compiled with the probe's own
+      # main, then the captured frames under Scripts/fixtures decoded as EngineClient would.
+      # No window, no TCC, no daemon, no Live session, nothing read from ~/.jarhead.
+      - run: bash apps/mac/Scripts/protocol-probe.sh
+
+  release:
+    name: release build + sign (ad-hoc)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:hands
+      # Icon, release build, stage, ad-hoc sign, strict verify — and stop: JARHEAD_BUILD_ONLY=1
+      # never installs, so nothing under /Applications is touched on the runner.
+      - run: JARHEAD_BUILD_ONLY=1 JARHEAD_SIGN_IDENTITY=- pnpm build:mac

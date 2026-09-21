@@ -452,7 +452,8 @@ Keys and knobs live in `~/.jarhead/env`. Everything below is optional.
 | `JARHEAD_AUTO_WAKE=0` | do not open a voice session on start; the daemon never auto-wakes while the wake gate is on, so this matters only with the gate off — set it for every headless test launch |
 | `JARHEAD_NO_AUDIO=1` | never touch the microphone (headless launches) |
 | `JARHEAD_STATE_DIR`, `JARHEAD_SOCKET`, `JARHEAD_REPO`, `JARHEAD_NODE`, `JARHEAD_HANDS_BIN` | where things are |
-| `JARHEAD_SIGN_IDENTITY` | the code-signing identity (`-` forces ad-hoc) |
+| `JARHEAD_SIGN_IDENTITY` | the code-signing identity (`-` forces ad-hoc); without it the pick is Apple Development, Developer ID, a certificate named for Jarhead, a Code Signing name, then the first listed — printed before anything is signed |
+| `JARHEAD_BUILD_ONLY=1` | stop `pnpm build:mac` once the stage bundle is signed and verified; nothing under `/Applications` is read or written (CI, a dry run) |
 | `JARHEAD_INSTALL_HYGIENE=0\|fix` | skip the Dock / LaunchServices pass, or repair the Dock |
 | `JARHEAD_INSTALL_SNAPSHOT=1` | take a rollback snapshot (a `Jarhead.app.zip` archive under `build/previous/`) before the in-place install; default off, git is the rollback |
 | `JARHEAD_LINGER_MS` | how long the daemon waits for a relaunch (90 000) |
