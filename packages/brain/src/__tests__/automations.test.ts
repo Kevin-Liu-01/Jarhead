@@ -378,7 +378,7 @@ test("the table: four automation specs close ALL_TOOL_SPECS at 71, carry the rul
   assert.match(paragraph, /automation_set arms "when X then Y" for the daemon: it fires with no session and no brain turn/);
   assert.match(paragraph, /Write the echo line in Kevin's words and say it; say the local time back/);
   assert.match(paragraph, /Free kinds arm silently: chime, say a fixed line you write now, notify, open an app or an https page, file a file into a folder/);
-  assert.match(paragraph, /run-recipe, press and wake-brain return needs_confirmation once, here — ask in Kevin's words, and on his yes call the same tool with exactly the same arguments; for the brain, the question you relay carries its cost/);
+  assert.match(paragraph, /run-recipe, press and wake-brain return needs_confirmation once, here — ask in Kevin's words, and on Kevin's yes call the same tool with exactly the same arguments; for the brain, the question you relay carries its cost/);
   assert.match(paragraph, /What the policy refuses stays refused; offer the safe kind it names, and never schedule a shell recipe that does the same thing/);
   assert.match(paragraph, /automation_list is the truth about what is set; automation_change snoozes, skips, pauses, bins \(nothing is deleted\); recipe_list shows the approved recipes/);
   const names = new Set(ALL_TOOL_SPECS.map((t) => t.name));
