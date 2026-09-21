@@ -35,6 +35,9 @@ importers:
       '@jarhead/hands':
         specifier: workspace:*
         version: link:packages/hands
+      '@jarhead/install':
+        specifier: workspace:*
+        version: link:packages/install
       '@jarhead/live':
         specifier: workspace:*
         version: link:packages/live
@@ -120,6 +123,9 @@ importers:
       '@jarhead/hands':
         specifier: workspace:*
         version: link:../hands
+      '@jarhead/install':
+        specifier: workspace:*
+        version: link:../install
       '@jarhead/live':
         specifier: workspace:*
         version: link:../live
@@ -156,15 +162,15 @@ importers:
       '@jarhead/brain':
         specifier: workspace:*
         version: link:../brain
-      '@jarhead/cli':
-        specifier: workspace:*
-        version: link:../cli
       '@jarhead/core':
         specifier: workspace:*
         version: link:../core
       '@jarhead/hands':
         specifier: workspace:*
         version: link:../hands
+      '@jarhead/install':
+        specifier: workspace:*
+        version: link:../install
       '@jarhead/live':
         specifier: workspace:*
         version: link:../live
@@ -183,6 +189,12 @@ importers:
       '@jarhead/protocol':
         specifier: workspace:*
         version: link:../protocol
+
+  packages/install:
+    dependencies:
+      '@jarhead/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/live:
     dependencies:

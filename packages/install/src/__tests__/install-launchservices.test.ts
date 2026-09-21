@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultRealpath, describeLaunchServices, jarheadRecords, parseLsBundleDump, staleJarheadRecords } from "../install/launchservices.ts";
+import { defaultRealpath, describeLaunchServices, jarheadRecords, parseLsBundleDump, staleJarheadRecords } from "../launchservices.ts";
 
 /**
  * `lsregister -dump Bundle` parsing and the stale rule. `open -a Jarhead` resolves by

@@ -3,11 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { installChecks, type Check } from "../doctor.ts";
-import { CODESIGN } from "../install/bundle.ts";
-import { LSREGISTER } from "../install/launchservices.ts";
-import type { Exec } from "../install/hygiene.ts";
-import type { TargetProbe } from "../install/bundle.ts";
-import { dictGet, dictSet, parsePlistXml, serializePlistXml, stringAt } from "../install/plist.ts";
+import { CODESIGN, LSREGISTER, dictGet, dictSet, parsePlistXml, serializePlistXml, stringAt, type Exec, type TargetProbe } from "@jarhead/install";
 
 /**
  * The doctor's app rows driven by a scripted exec and a scripted stat: they read the
@@ -16,7 +12,8 @@ import { dictGet, dictSet, parsePlistXml, serializePlistXml, stringAt } from "..
  * never an action the doctor takes itself.
  */
 
-const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)), "utf8");
+// The sanitized Dock exports and lsregister dump the install library's tests own; one copy, read from there.
+const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`../../../install/src/__tests__/fixtures/${name}`, import.meta.url)), "utf8");
 const INSTALLED = "/Applications/Jarhead.app";
 const dir: TargetProbe = { exists: true, isSymlink: false, isDirectory: true, uid: 501, inode: 103261417, writable: true };
 const ROOTS = ["/Users/kevinliu/.jarhead/worktrees", "/Users/kevinliu/.jarhead/trash", "/Users/kevinliu/.Trash", "/Users/kevinliu/jarvis/build/stage", "/Users/kevinliu/jarvis/build/previous"];

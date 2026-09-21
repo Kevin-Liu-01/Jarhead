@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { PlistSyntaxError, dictGet, dictOnly, dictSet, int, integerAt, parsePlistXml, serializePlistXml, str, stringAt } from "../install/plist.ts";
+import { PlistSyntaxError, dictGet, dictOnly, dictSet, int, integerAt, parsePlistXml, serializePlistXml, str, stringAt } from "../plist.ts";
 
 /**
  * The plist reader/writer over the exact subset `defaults export` emits. The Dock

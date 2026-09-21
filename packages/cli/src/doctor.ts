@@ -10,7 +10,7 @@ import { defaultConnectors } from "@jarhead/agents";
 import { EMBED_PREFERENCE, LOCAL_NUM_CTX_MAX, LOCAL_NUM_CTX_MIN, browserJsDoctor, discoverLocalServer, probeCodex, resolveLocalModel, selfEditDoctorRow, serverLabel, suggestedPull } from "@jarhead/brain";
 import { DaemonClient } from "@jarhead/daemon";
 import { NativeHandsProcess, type HelloPermissions } from "@jarhead/hands";
-import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, defaultExec, describeDock, planInstall, probeTarget, requirementHasIdentifier, runHygiene, type Exec, type TargetProbe } from "./install/index.ts";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, INSTALLED_APP, JARHEAD_BUNDLE_ID, defaultExec, describeDock, planInstall, probeTarget, requirementHasIdentifier, runHygiene, type Exec, type TargetProbe } from "@jarhead/install";
 
 /**
  * Preflight for the things that fail silently. Exits non-zero only on failures

@@ -10,7 +10,7 @@ import type { Brain, BrainResult, BrainSink, BrainTask, ToolRunner } from "@jarh
 import { FAKE_ACTING_OPS, HANDS_BUSY_PREFIX, KEVIN_QUIET_MS, NativeRequestError, USER_IDLE_NONE_MS, type NativeHands, type UserIdle } from "@jarhead/hands";
 import type { AgentConnector, SendResult, TranscriptDelta, TranscriptOptions, TranscriptPage } from "@jarhead/agents";
 import type { AgentInfo, AgentMessage, ConnectorHealth, EngineEvent, LedgerRow, LocalModel, LocalServerStatus, MemoryItem, MemoryKind, MemoryOrigin, MemoryState, MemorySummary, OverlayCommand } from "@jarhead/protocol";
-import type { Exec } from "@jarhead/cli/install";
+import type { Exec } from "@jarhead/install";
 import type { IngestOptions, IngestResult, RememberResult, Rendered } from "@jarhead/memory";
 import { Engine, type EngineOptions } from "../engine.ts";
 import type { MemoryServiceLike } from "../memory-bridge.ts";

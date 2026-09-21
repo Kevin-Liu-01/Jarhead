@@ -1,7 +1,8 @@
 /**
- * `@jarhead/cli/install`: the one-Jarhead install library. Imported by
- * scripts/build-mac.ts on its own so a build script does not drag the brain, the
- * hands and the daemon in through `@jarhead/cli`.
+ * `@jarhead/install`: the one-Jarhead install library, its own workspace package.
+ * scripts/build-mac.ts imports it without dragging the brain, the hands and the
+ * daemon in through `@jarhead/cli`, and the engine imports it without depending on
+ * the cli (which depends on the engine): no cycle in the workspace graph.
  */
 export { parsePlistXml, serializePlistXml, PlistSyntaxError, dictGet, dictSet, dictOnly, stringAt, integerAt, str, int, dict, array } from "./plist.ts";
 export type { PlistNode } from "./plist.ts";

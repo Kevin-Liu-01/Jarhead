@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, DITTO, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, snapshotNameOk, type InstallIO, type ParityReport, type TargetProbe } from "../install/bundle.ts";
+import { CODESIGN, CODESIGN_REQUIREMENT_ARGS, CODESIGN_VERIFY_ARGS, DITTO, RSYNC, compareTrees, installLine, parityOk, parseItemized, performInstall, planInstall, probeTarget, requirementHasIdentifier, rollbackLine, rsyncArgs, snapshotArgs, snapshotNameOk, type InstallIO, type ParityReport, type TargetProbe } from "../bundle.ts";
 
 /**
  * The install step's pure parts, and — on a Mac — openrsync itself between two temp

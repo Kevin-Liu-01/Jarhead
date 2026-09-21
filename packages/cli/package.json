@@ -7,8 +7,7 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./install": "./src/install/index.ts"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@jarhead/agents": "workspace:*",
@@ -17,6 +16,7 @@
     "@jarhead/daemon": "workspace:*",
     "@jarhead/engine": "workspace:*",
     "@jarhead/hands": "workspace:*",
+    "@jarhead/install": "workspace:*",
     "@jarhead/live": "workspace:*",
     "@jarhead/memory": "workspace:*",
     "@jarhead/protocol": "workspace:*"

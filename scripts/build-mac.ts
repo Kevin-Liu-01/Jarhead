@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "@jarhead/core";
-import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/cli/install";
+import { JARHEAD_BUNDLE_ID, compareTrees, defaultExec, performInstall, probeTarget, runHygiene, type InstallIO } from "@jarhead/install";
 import { ICON_SOURCES, staleAgainst } from "./icon-render.ts";
 
 /**

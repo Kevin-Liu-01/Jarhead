@@ -38,6 +38,7 @@
     "@jarhead/daemon": "workspace:*",
     "@jarhead/engine": "workspace:*",
     "@jarhead/hands": "workspace:*",
+    "@jarhead/install": "workspace:*",
     "@jarhead/live": "workspace:*",
     "@jarhead/memory": "workspace:*",
     "@jarhead/protocol": "workspace:*",

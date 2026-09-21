@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_FILE_TYPE, INSTALLED_URL, PIN_KEYS, auditDock, describeDock, describeDockChanges, findJarheadTiles, isJarheadTile, modCountOf, type DockTile } from "../install/dock.ts";
-import { dictGet, dictSet, int, integerAt, parsePlistXml, serializePlistXml, stringAt, type PlistNode } from "../install/plist.ts";
+import { DEFAULT_FILE_TYPE, INSTALLED_URL, PIN_KEYS, auditDock, describeDock, describeDockChanges, findJarheadTiles, isJarheadTile, modCountOf, type DockTile } from "../dock.ts";
+import { dictGet, dictSet, int, integerAt, parsePlistXml, serializePlistXml, stringAt, type PlistNode } from "../plist.ts";
 
 /**
  * The Dock audit over Kevin's own two-tile document (sanitized): the recent tile

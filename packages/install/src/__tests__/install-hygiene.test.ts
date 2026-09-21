@@ -5,10 +5,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PIN_KEYS, INSTALLED_URL, describeHelperTiles, helperTilesOf, parseLsAppInfoList } from "../install/dock.ts";
-import { LSREGISTER } from "../install/launchservices.ts";
-import { LSAPPINFO, LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, readRunning, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../install/hygiene.ts";
-import { dictGet, dictSet, int, parsePlistXml, serializePlistXml, stringAt } from "../install/plist.ts";
+import { PIN_KEYS, INSTALLED_URL, describeHelperTiles, helperTilesOf, parseLsAppInfoList } from "../dock.ts";
+import { LSREGISTER } from "../launchservices.ts";
+import { LSAPPINFO, LSREGISTER_TIMEOUT_MS, installedUrlOf, readDock, readRunning, repairDock, restartDock, runHygiene, type Exec, type ExecResult } from "../hygiene.ts";
+import { dictGet, dictSet, int, parsePlistXml, serializePlistXml, stringAt } from "../plist.ts";
 
 /**
  * The one-Jarhead pass with a scripted exec: which commands run, in which order, with

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { LSREGISTER, dictGet, dictSet, parsePlistXml, readDock, serializePlistXml, type Exec } from "@jarhead/cli/install";
+import { LSREGISTER, dictGet, dictSet, parsePlistXml, readDock, serializePlistXml, type Exec } from "@jarhead/install";
 import type { Problem, ProblemKind } from "@jarhead/protocol";
 import { Engine } from "../engine.ts";
 import { rows, until, world, type World } from "./world.ts";
@@ -20,7 +20,7 @@ import { rows, until, world, type World } from "./world.ts";
  */
 
 // The sanitized exports of Kevin's own Dock, shared with the install library's tests.
-const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`../../../cli/src/__tests__/fixtures/${name}`, import.meta.url)), "utf8");
+const fixture = (name: string): string => readFileSync(fileURLToPath(new URL(`../../../install/src/__tests__/fixtures/${name}`, import.meta.url)), "utf8");
 const TWO = fixture("dock-two-tiles.xml");
 const CLEAN = fixture("dock-clean.xml");
 const CLEANED = serializePlistXml(parsePlistXml(CLEAN));
