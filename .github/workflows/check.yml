@@ -60,3 +60,18 @@ jobs:
       # Icon, release build, stage, ad-hoc sign, strict verify — and stop: JARHEAD_BUILD_ONLY=1
       # never installs, so nothing under /Applications is touched on the runner.
       - run: JARHEAD_BUILD_ONLY=1 JARHEAD_SIGN_IDENTITY=- pnpm build:mac
+
+  site:
+    name: site (typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C site typecheck
+      - run: pnpm -C site build

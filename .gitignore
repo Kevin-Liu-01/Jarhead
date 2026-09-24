@@ -25,3 +25,5 @@ apps/mac/Resources/preview-*.png
 
 # Vercel CLI link for the site (site/ deploys as project jarhead)
 .vercel/
+.vercel
+.env*
