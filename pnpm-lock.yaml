@@ -218,6 +218,9 @@ importers:
 
   site:
     dependencies:
+      '@thesvg/react':
+        specifier: 3.3.8
+        version: 3.3.8(react@19.3.0)
       next:
         specifier: 16.3.6
         version: 16.3.6(@types/node@24.13.3)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -826,6 +829,12 @@ packages:
 
   '@tailwindcss/postcss@4.3.3':
     resolution: {integrity: sha512-JTSZZGQi1AyKirbLN3azmjVzef92tcX7h+iSqPdaeStyFpGpDlKvvpxeOE8njhbUanbRwr3z8DyzhICWnMtQeg==}
+
+  '@thesvg/react@3.3.8':
+    resolution: {integrity: sha512-6p7Js50t4oY3doJ9UvcJeIAlccAQqDUIi4mPI9T+on8n+Xxmdam3Syryxaay2SI3+pIfOfeQCNBshMeMUTfEkw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      react: '>=18'
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
@@ -1811,6 +1820,10 @@ snapshots:
       '@tailwindcss/oxide': 4.3.3
       postcss: 8.5.16
       tailwindcss: 4.3.3
+
+  '@thesvg/react@3.3.8(react@19.3.0)':
+    dependencies:
+      react: 19.3.0
 
   '@types/node@24.13.3':
     dependencies:
