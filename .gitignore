@@ -22,3 +22,6 @@ secrets/
 # The Swift harnesses write their pictures here; only the icon-size check is tracked.
 apps/mac/Resources/preview-*.png
 !apps/mac/Resources/preview-icon-sizes.png
+
+# Vercel CLI link for the site (site/ deploys as project jarhead)
+.vercel/

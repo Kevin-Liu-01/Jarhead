@@ -2,3 +2,5 @@
 out
 next-env.d.ts
 *.tsbuildinfo
+# generated from ../scripts/install.sh by scripts/copy-install.mjs
+public/install.sh
