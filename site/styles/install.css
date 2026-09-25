@@ -1,0 +1,417 @@
+/*
+ * install.css · b4 · the install plate, the Install section, the copy tile.
+ * Classes .ins-* only. Every colour is a --jh-* token from globals.css; every line is drawn once by
+ * its owner (the split owns its rules, a row owns its top rule, the plate its hairline).
+ */
+
+/* ---- the plate: the one dark artifact surface, in both themes ---- */
+.ins-plate {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "eyebrow copy"
+    "code code"
+    "note note";
+  column-gap: 12px;
+  row-gap: 8px;
+  align-items: center;
+  padding: 18px;
+  background: var(--jh-plate);
+  background-clip: padding-box;
+  color: var(--jh-plate-fg);
+  border: 1px solid var(--jh-plate-hair);
+  border-radius: var(--jh-radius);
+}
+/* 315 × ≤ 160: 14 + 36 (eyebrow row) + 6 + 34 (two code lines) + 6 + 45 (three note lines) + 14, plus the hairline */
+.ins-plate--desk {
+  width: 315px;
+  max-width: 100%;
+  padding: 14px;
+  row-gap: 6px;
+}
+.ins-plate--rail {
+  width: 100%;
+}
+.ins-plate--head {
+  margin-top: 0;
+}
+/* renderField writes the inline size after mount; 0 × 0 until then, so the first paint has no 300 × 150 default box to shift */
+.ins-plate-field {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  height: 0;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+.ins-plate > :not(.ins-plate-field) {
+  position: relative;
+}
+.ins-plate-eyebrow {
+  grid-area: eyebrow;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  color: var(--jh-plate-fg-2);
+  white-space: nowrap;
+}
+.ins-plate-copy {
+  grid-area: copy;
+  justify-self: end;
+}
+.ins-plate-code {
+  grid-area: code;
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--jh-plate-fg);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.ins-plate--desk .ins-plate-code {
+  font-size: 12.5px;
+  line-height: 17px;
+}
+.ins-plate-note {
+  grid-area: note;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--jh-plate-fg-2);
+}
+.ins-plate--desk .ins-plate-note {
+  font-size: 11px;
+  line-height: 15px;
+  letter-spacing: -0.005em;
+}
+.ins-plate-note a {
+  color: var(--jh-plate-fg);
+  text-decoration: underline;
+  text-decoration-color: var(--jh-plate-hair);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--jh-instant) var(--jh-ease-out);
+}
+.ins-plate-note a:hover {
+  text-decoration-color: var(--jh-plate-fg);
+}
+
+/* ---- the copy tile: a real button, --jh-lift plus a hairline, radius 6 ---- */
+.ins-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--jh-hair);
+  border-radius: var(--jh-radius);
+  background: var(--jh-lift);
+  background-clip: padding-box;
+  color: var(--jh-fg);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--jh-instant) var(--jh-ease-out),
+    border-color var(--jh-instant) var(--jh-ease-out),
+    color var(--jh-instant) var(--jh-ease-out);
+}
+.ins-copy:hover {
+  background: var(--jh-lift-raised);
+}
+.ins-copy:active {
+  background: var(--jh-active);
+}
+.ins-copy--sm {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+.ins-copy svg {
+  flex: none;
+  fill: currentColor;
+}
+.ins-copy.is-done,
+.ins-copy.is-done:hover {
+  background: var(--jh-accent);
+  border-color: var(--jh-accent);
+  color: var(--jh-on-accent);
+}
+.ins-plate .ins-copy {
+  background: var(--jh-plate-lift);
+  border-color: var(--jh-plate-hair);
+  color: var(--jh-plate-fg);
+}
+.ins-plate .ins-copy:hover {
+  background: color-mix(in srgb, var(--jh-plate-lift), var(--jh-plate-fg) 8%);
+}
+.ins-plate .ins-copy.is-done,
+.ins-plate .ins-copy.is-done:hover {
+  background: var(--jh-accent);
+  border-color: var(--jh-accent);
+  color: var(--jh-on-accent);
+}
+/* the textarea the fallback copies from: in the document, out of sight, never focus-visible */
+.ins-copy-ta {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---- the 2/3 + 1/3 row under the plate ---- */
+.ins-split {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  margin-top: 36px;
+  border-top: 1px solid var(--jh-hair);
+}
+.ins-col {
+  min-width: 0;
+}
+.ins-col--commands {
+  padding-right: 28px;
+}
+.ins-col--checks {
+  padding-left: 28px;
+  border-left: 1px solid var(--jh-hair);
+}
+
+/* the command rows */
+.ins-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ins-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  column-gap: 14px;
+  align-items: center;
+  min-height: 52px;
+  padding: 12px 0;
+}
+.ins-row + .ins-row {
+  border-top: 1px solid var(--jh-hair-row);
+}
+.ins-row-n,
+.ins-step-n {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 20px;
+  letter-spacing: 0.01em;
+  color: var(--jh-fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.ins-row-body {
+  min-width: 0;
+}
+.ins-row-cmd {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--jh-fg);
+  overflow-wrap: anywhere;
+}
+.ins-row-note {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--jh-fg-2);
+  max-width: 52ch;
+}
+.ins-row-copy {
+  align-self: center;
+}
+.ins-row--spoken {
+  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 44px;
+}
+.ins-row-text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--jh-fg-2);
+}
+.ins-row-note code,
+.ins-keys code,
+.ins-req code,
+.ins-step code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--jh-fg);
+}
+
+/* the keys and signing paragraph, beside the commands, aligned to the command column */
+.ins-keys {
+  margin: 0;
+  padding: 16px 0 0 54px;
+  border-top: 1px solid var(--jh-hair-row);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--jh-fg-2);
+  max-width: 62ch;
+}
+.ins-hotkeys {
+  padding: 18px 0 4px 54px;
+}
+
+/* the checklists: Requirements · 6, Setup · 7 */
+.ins-list + .ins-list {
+  margin-top: 12px;
+  padding-top: 4px;
+  border-top: 1px solid var(--jh-hair);
+}
+.ins-list-head {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--jh-titanium);
+  border-bottom: 1px solid var(--jh-hair-row);
+}
+.ins-list-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--jh-fg-3);
+  white-space: pre;
+}
+.ins-req,
+.ins-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ins-req li,
+.ins-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+  padding: 11px 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--jh-fg-2);
+}
+.ins-req li + li,
+.ins-step + .ins-step {
+  border-top: 1px solid var(--jh-hair-row);
+}
+.ins-req svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  fill: var(--jh-titanium);
+}
+.ins-step-name {
+  font-weight: 500;
+  color: var(--jh-fg);
+}
+
+/* the onboarding 2 × 2 beside the permissions note */
+.ins-setup {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 36px;
+  align-items: start;
+  margin-top: 36px;
+  padding-top: 36px;
+  border-top: 1px solid var(--jh-hair);
+}
+.ins-shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 310px));
+  gap: 12px;
+}
+.ins-perm {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--jh-fg-2);
+  max-width: 52ch;
+}
+
+/* ---- narrower than the desk: the split stacks ---- */
+@media (max-width: 1023px) {
+  .ins-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ins-col--commands {
+    padding-right: 0;
+  }
+  .ins-col--checks {
+    margin-top: 24px;
+    padding-left: 0;
+    padding-top: 4px;
+    border-left: 0;
+    border-top: 1px solid var(--jh-hair);
+  }
+  .ins-setup {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 24px;
+  }
+}
+
+/* ---- phones: the one-liner wraps, Copy goes full width under it, rows wrap with the tile at the right ---- */
+@media (max-width: 719px) {
+  .ins-plate,
+  .ins-plate--desk {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "eyebrow"
+      "code"
+      "copy"
+      "note";
+    padding: 16px;
+    row-gap: 10px;
+  }
+  .ins-plate-copy {
+    justify-self: stretch;
+  }
+  .ins-plate-copy .ins-copy {
+    width: 100%;
+    height: 36px;
+  }
+  .ins-plate-code,
+  .ins-plate--desk .ins-plate-code {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .ins-row {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: start;
+    padding: 12px 0;
+  }
+  .ins-row--spoken {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+  .ins-row-copy {
+    padding-top: 0;
+  }
+  .ins-keys,
+  .ins-hotkeys {
+    padding-left: 0;
+  }
+  .ins-shots {
+    grid-template-columns: minmax(0, 310px);
+  }
+}

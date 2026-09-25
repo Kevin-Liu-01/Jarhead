@@ -1,0 +1,171 @@
+/*
+ * The desk (design.md §4, §2.1): the 1170 × 690 stage of Kevin's Mac at 1:1, the menu bar, the
+ * notch, the island in its states, the pill, the Console window, the target ring, the blob, the
+ * two real-DOM bands, the phone stage under 720 px, the nav mark and the footer's orb field.
+ * Every class is .desk-*; every colour is a --jh-* token; the phase colour arrives as --desk-phase
+ * (set inline from the kind). The island is a screen: black-and-orb in both themes, its whites
+ * composed from --jh-paper with color-mix, its box hairline the plate's (.22).
+ */
+
+/* ---- the stage and its scale ladder: 1 at ≥ 1202 px, (100vw − 32) / 1170 to 720, the phone stage under ---- */
+.desk { position: relative; --desk-s: 1; --desk-phase: var(--jh-listening); --desk-eye-ink: color-mix(in srgb, var(--desk-phase) 15%, var(--jh-paper)); --desk-white-92: color-mix(in srgb, var(--jh-paper) 92%, transparent); --desk-white-72: color-mix(in srgb, var(--jh-paper) 72%, transparent); --desk-white-48: color-mix(in srgb, var(--jh-paper) 48%, transparent); --desk-box: color-mix(in srgb, var(--jh-desk-notch) 35%, transparent); font-family: var(--font-sans); font-feature-settings: "cv11", "ss01", "ss03"; }
+.desk-stagebox { position: relative; height: calc(690px * var(--desk-s)); overflow: hidden; }
+.desk-scale { position: relative; width: 1170px; height: 690px; transform: scale(var(--desk-s)); transform-origin: top left; overflow: hidden; contain: layout paint; }
+@media (max-width: 1201px) { .desk { --desk-s: tan(atan2(100vw - 32px, 1170px)); } }
+@media (max-width: 719px) {
+  .desk { --desk-s: tan(atan2(100vw - 32px, 460px)); }
+  .desk-stagebox { height: calc(272px * var(--desk-s) + 168px); margin: 0 16px; } /* the stage's 272 scaled + the 168 px blob on screen */
+  .desk-scale { width: 460px; height: calc(272px + 168px / var(--desk-s)); }
+}
+.desk-ground { position: absolute; right: 0; bottom: 0; image-rendering: pixelated; pointer-events: none; }
+
+/* ---- the menu bar (§4.2): 33 px, the harness's flat bar, Inter ≤ 500 ---- */
+.desk-bar { position: absolute; left: 0; top: 0; right: 0; height: 33px; background: var(--jh-desk-bar); color: var(--jh-desk-bar-fg); display: flex; align-items: center; gap: 20px; padding: 0 16px; font-size: 13px; font-weight: 400; letter-spacing: -.005em; font-variant-numeric: tabular-nums; z-index: 1; }
+.desk-bar-app { font-weight: 500; }
+.desk-bar-apple { flex: none; }
+.desk-bar-r { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.desk-status { width: 18px; height: 18px; border-radius: 50%; border: 2px solid currentColor; position: relative; }
+.desk-status::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: currentColor; transition: opacity var(--jh-drift) var(--jh-ease-in-out), transform var(--jh-drift) var(--jh-ease-in-out); }
+.desk[data-kind="asleep"] .desk-status::after, .desk[data-kind="alarm"] .desk-status::after { transform: scale(.6); opacity: .45; } /* the 10 px core to 6, by transform */
+.desk-bar-clock { white-space: nowrap; }
+
+/* ---- the notch column and the island's fillets (§4.3) ---- */
+.desk-notch { position: absolute; left: calc(50% - 92.5px); top: 0; width: 185px; height: 33px; background: var(--jh-desk-notch); z-index: 3; }
+.desk-fillet { position: absolute; top: 19px; width: 14px; height: 14px; z-index: 3; background: radial-gradient(circle at 0 0, transparent 13.5px, var(--jh-desk-notch) 14px); transition: opacity var(--jh-slow) var(--jh-ease-out); }
+.desk-fillet-l { left: calc(50% - 92.5px - 14px); }
+.desk-fillet-r { left: calc(50% + 92.5px); background: radial-gradient(circle at 100% 0, transparent 13.5px, var(--jh-desk-notch) 14px); }
+.desk[data-island="tucked"] .desk-fillet { opacity: 0; transition-timing-function: var(--jh-ease-in); }
+
+/* ---- the island: one shape, three states (§4.3–4.4) ---- */
+.desk-island { position: absolute; left: calc(50% - 210px); top: 33px; width: 420px; height: 184px; background: var(--jh-desk-notch); border-radius: 18px 18px 12px 12px; overflow: hidden; z-index: 4; color: var(--jh-paper); transition: width var(--jh-slow) var(--jh-ease-out), height var(--jh-slow) var(--jh-ease-out), left var(--jh-slow) var(--jh-ease-out), border-radius var(--jh-slow) var(--jh-ease-out); }
+.desk-island[data-state="peek"] { width: 240px; height: 26px; left: calc(50% - 120px); border-radius: 0 0 12px 12px; }
+.desk-island[data-state="tucked"] { width: 185px; height: 12px; left: calc(50% - 92.5px); border-radius: 0 0 12px 12px; transition-timing-function: var(--jh-ease-in); }
+.desk-ink { position: absolute; left: 0; top: 0; image-rendering: pixelated; }
+.desk-island[data-state="tucked"] .desk-ink { visibility: hidden; }
+.desk-island > * { position: absolute; }
+.desk-anchor, .desk-display, .desk-foot, .desk-hair { transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
+.desk-island:not([data-state="open"]) .desk-anchor, .desk-island:not([data-state="open"]) .desk-display, .desk-island:not([data-state="open"]) .desk-foot { opacity: 0; pointer-events: none; }
+.desk-display[data-swap], .desk-foot[data-swap] { opacity: 0; }
+.desk-anchor, .desk-display, .desk-foot { left: 0; top: 0; width: 100%; height: 100%; }
+.desk-anchor > *, .desk-display > *, .desk-foot > * { position: absolute; }
+
+/* the anchor: the face at (57, 40), the word, Go · Stop · Mute */
+.desk-eyes { left: 57px; top: 40px; width: 0; height: 0; font: 700 27px/1 var(--font-mono); white-space: nowrap; transition: transform var(--jh-quick) var(--jh-ease-out); }
+.desk-eyes span, .desk-lipface span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); }
+.desk-eye-under { color: var(--jh-desk-notch); font-size: calc(1.12em + 1.6px); }
+.desk-eye-top { color: var(--desk-eye-ink); transition: color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-word { left: 14px; top: 60px; width: 86px; height: 16px; font-size: 12px; font-weight: 500; line-height: 16px; text-align: center; color: var(--desk-white-92); }
+.desk-word-x { position: relative; display: block; }
+.desk-word-x > span { position: absolute; left: 0; right: 0; top: 0; }
+.desk-word-out { animation: desk-word-out var(--jh-drift) var(--jh-ease-in-out) forwards; }
+.desk-word-in { animation: desk-word-in var(--jh-drift) var(--jh-ease-in-out) both; }
+@keyframes desk-word-out { to { opacity: 0; } }
+@keyframes desk-word-in { from { opacity: 0; } to { opacity: 1; } }
+.desk-go { left: 14px; top: 123px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--desk-phase); display: flex; align-items: center; justify-content: center; color: var(--jh-paper); transition: border-color var(--jh-drift) var(--jh-ease-in-out); }
+.desk-box { background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; color: var(--desk-white-92); }
+.desk-stop { left: 42px; top: 122px; width: 26px; height: 24px; }
+.desk-mute { left: 74px; top: 122px; width: 26px; height: 24px; }
+.desk-mute.is-dim { opacity: .4; }
+
+/* the display: head, hero, the kind's middle */
+.desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 500 11px/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.desk-meter { image-rendering: pixelated; display: block; }
+.desk-meter-head { width: 100px; height: 6px; }
+.desk-head-work { display: inline-flex; align-items: center; gap: 6px; }
+.desk-glyphs { color: var(--desk-white-48); letter-spacing: .02em; white-space: pre; }
+.desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: 18px; line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
+.desk-hero.is-question { color: var(--jh-paper); }
+.desk-hero.is-mono { font-family: var(--font-mono); font-size: 17px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.desk-hero-dim { display: block; color: var(--desk-white-48); font-family: var(--font-sans); font-size: 13px; letter-spacing: -.005em; }
+.desk-tiles { left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+.desk-tile { position: absolute; top: 80px; width: 140px; height: 32px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 3px 8px; font-size: 11px; line-height: 1.2; }
+.desk-tile-name { display: flex; align-items: center; gap: 5px; font-weight: 500; color: var(--jh-paper); }
+.desk-tile-name i { width: 6px; height: 6px; background: var(--jh-acting); border-radius: 1px; }
+.desk-tile-s { display: block; font: 500 10px/1.2 var(--font-mono); color: var(--desk-white-72); font-variant-numeric: tabular-nums; }
+.desk-tile-stop { position: absolute; right: 8px; top: 10px; width: 8px; height: 8px; background: var(--desk-white-92); border-radius: 1px; }
+.desk-btn { height: 28px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 500; color: var(--desk-white-92); }
+.desk-btn.is-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* the control row: the Say box and the strip */
+.desk-say { left: 114px; top: 122px; width: 176px; height: 24px; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 0 8px; display: flex; align-items: center; justify-content: flex-end; overflow: hidden; font-size: 11.5px; color: var(--jh-paper); white-space: nowrap; }
+.desk-say-ph { color: var(--desk-white-48); margin-right: auto; }
+.desk-say[data-typed] .desk-say-ph { display: none; }
+.desk-typed { flex: none; }
+.desk-caret { flex: none; width: 1px; height: 13px; background: var(--jh-paper); margin-left: 1px; animation: desk-caret .5s steps(1) infinite; }
+.desk[data-still] .desk-caret { animation: none; }
+@keyframes desk-caret { 50% { opacity: 0; } }
+.desk-strip { top: 122px; height: 24px; display: flex; background: var(--desk-box); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); overflow: hidden; color: var(--desk-white-92); }
+.desk-strip i { flex: 1; display: flex; align-items: center; justify-content: center; }
+.desk-strip i + i { border-left: 1px solid var(--jh-plate-hair); }
+.desk-strip-foot { top: 156px; }
+
+/* the foot */
+.desk-foot-l { left: 14px; top: 160px; width: 40px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.desk-foot-l.is-wide { width: 300px; }
+.desk-meter-foot { left: 60px; top: 165px; width: 88px; height: 6px; }
+.desk-foot-r { left: 156px; top: 160px; width: 186px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out), opacity var(--jh-quick); }
+.desk-island[data-state="tucked"] .desk-hair { animation: desk-breathe 4s ease-in-out infinite; }
+.desk[data-still] .desk-hair { animation: none; }
+@keyframes desk-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
+
+/* the lip and the peek: the face alone */
+.desk-lipface { left: 50%; top: 50%; width: 0; height: 0; font: 700 9px/1 var(--font-mono); white-space: nowrap; opacity: 0; transition: opacity var(--jh-quick) var(--jh-ease-in-out); }
+.desk-lipface .desk-eye-top { color: var(--jh-desk-lip); }
+.desk-island[data-state="tucked"] .desk-lipface, .desk-island[data-state="peek"] .desk-lipface { opacity: 1; }
+.desk-island[data-state="tucked"] .desk-lipface[data-face=". ."] .desk-eye-top { color: var(--desk-white-72); }
+.desk-island[data-state="peek"] .desk-lipface { font-size: 17px; }
+.desk-island[data-state="peek"] .desk-lipface .desk-eye-top { color: var(--desk-eye-ink); }
+
+/* the pill slot: 20 px, 6 under the lip */
+.desk-pill { position: absolute; left: 50%; top: 51px; transform: translateX(-50%); height: 20px; padding: 0 10px; border-radius: var(--jh-radius); background: var(--jh-screen-raised); border: 1px solid var(--jh-plate-hair); color: var(--desk-white-72); font: 500 11px/18px var(--font-mono); white-space: nowrap; opacity: 0; z-index: 4; transition: opacity var(--jh-quick) var(--jh-ease-in-out); pointer-events: none; }
+.desk-pill[data-on] { opacity: 1; }
+
+/* ---- the Console window (§4.6) and its dithered floor ---- */
+.desk-console-box { position: absolute; left: 40px; top: 226px; width: 708px; height: 456px; transform: scale(var(--desk-console-k, 1)); transform-origin: top left; z-index: 2; }
+.desk-console { position: absolute; left: 0; top: 0; width: 708px; height: 456px; border-radius: 11px; overflow: hidden; border: 1px solid var(--jh-hair-frame); background: var(--jh-screen-ink); z-index: 2; }
+.desk-console picture, .desk-console img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.desk-console-shadow { position: absolute; left: -7px; top: -3px; image-rendering: pixelated; pointer-events: none; z-index: 1; }
+
+/* ---- the target ring and the blob (§4.7) ---- */
+.desk-ring { position: absolute; left: 1102px; top: 370px; width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--jh-acting); z-index: 2; }
+.desk-ring::after { content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--jh-acting); }
+.desk-blob { position: absolute; left: 850px; top: 300px; width: 300px; height: 300px; z-index: 3; cursor: pointer; -webkit-tap-highlight-color: transparent; background: url("/blob-still.png") center / 100% 100% no-repeat; will-change: transform, opacity; }
+.desk-blob[data-live] { background-image: none; }
+.desk-blob canvas { position: absolute; left: 0; top: 0; }
+.desk-blob-field { image-rendering: pixelated; }
+.desk-blob-face { image-rendering: auto; }
+
+/* ---- the two real-DOM bands: in the stage at ≥ 720, in flow under it ---- */
+.desk-bands { position: absolute; left: 0; top: 0; width: 1170px; height: 690px; transform: scale(var(--desk-s)); transform-origin: top left; pointer-events: none; z-index: 5; }
+.desk-band-l { position: absolute; left: 40px; top: 50px; width: 315px; pointer-events: auto; }
+.desk-band-r { position: absolute; left: 815px; top: 46px; width: 315px; pointer-events: auto; }
+.desk-phases { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 14px; }
+.desk-phase-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border-radius: var(--jh-radius); background: var(--jh-lift); border: 1px solid var(--jh-hair); background-clip: padding-box; font: 500 11.5px/1 var(--font-sans); letter-spacing: -.005em; color: var(--jh-fg-2); cursor: pointer; white-space: nowrap; transition: background var(--jh-instant) var(--jh-ease-out), border-color var(--jh-instant) var(--jh-ease-out), color var(--jh-instant) var(--jh-ease-out); }
+.desk-phase-btn:hover { background: var(--jh-lift-raised); }
+.desk-phase-btn[aria-pressed="true"] { border-color: var(--jh-fg); color: var(--jh-fg); }
+.desk-phase-face { font: 700 11px/1 var(--font-mono); }
+
+/* ---- the caption under the desk, the nav mark, the footer field ---- */
+.desk-caption { padding: 12px var(--jh-gut) 14px; font: 500 11.5px/1.6 var(--font-mono); letter-spacing: .01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; }
+.desk-mark { display: inline-block; image-rendering: pixelated; vertical-align: middle; }
+.desk-orbfield { position: relative; width: 100%; overflow: hidden; }
+.desk-orbfield canvas { position: absolute; right: 0; bottom: 0; image-rendering: pixelated; pointer-events: none; }
+
+/* ---- the phone stage (§2.1 · 390): bar + notch + island, the blob under it beside a 22 px ring, no Console ---- */
+@media (max-width: 719px) {
+  .desk-bar-m, .desk-bar-r svg { display: none; }
+  .desk-console-box { display: none; }
+  .desk-blob { left: calc(230px - 84px / var(--desk-s)); top: 236px; width: calc(168px / var(--desk-s)); height: calc(168px / var(--desk-s)); } /* 168 px on screen: sized against the scale, centred on the stage */
+  .desk-ring { left: calc(230px + 96px / var(--desk-s)); top: calc(236px + 66px / var(--desk-s)); width: calc(22px / var(--desk-s)); height: calc(22px / var(--desk-s)); } /* 22 px on screen, 12 px off the blob's edge */
+  .desk-bands { position: static; transform: none; width: auto; height: auto; display: flex; flex-direction: column; gap: 20px; padding: 20px 16px 4px; pointer-events: auto; }
+  .desk-band-l, .desk-band-r { position: static; width: auto; }
+  .desk-band-r { order: -1; }
+  .desk-phases { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .desk-caption { padding: 12px 16px 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-caret, .desk-hair, .desk-word-in, .desk-word-out { animation: none; }
+  .desk-word-out { display: none; } /* no animationend to settle on: the old word must not sit under the new one */
+}

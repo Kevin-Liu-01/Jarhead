@@ -4,3 +4,5 @@ next-env.d.ts
 *.tsbuildinfo
 # generated from ../scripts/install.sh by scripts/copy-install.mjs
 public/install.sh
+# copied from ../docs/media by scripts/copy-media.mjs
+public/media/

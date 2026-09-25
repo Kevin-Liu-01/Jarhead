@@ -1,102 +1,272 @@
 @import "tailwindcss";
 
 /*
- * Jarhead's site wears the Console's palette (Prototemplate canon: ink, raised ink,
- * titanium, paper, one accent). Every colour below derives from those four plus alpha.
- * Light is the default sheet on :root; dark is a token remap under html[data-theme="dark"]
- * and, with no stored choice, under prefers-color-scheme. Pages read --jh-* only.
+ * jarhead.kevinliu.studio · the token sheet (design.md §3.1), the reset, the type scale, the line-law
+ * devices and the shell's own classes (.jh-*). Four colours, one accent, every line drawn once by one
+ * owner, no shadows. Light on :root; dark is a token remap under html[data-theme="dark"], stamped
+ * before paint by lib/theme.ts. No prefers-color-scheme block anywhere. No raw hex outside this sheet.
  */
 :root {
-  --jh-ink: #070707;
-  --jh-ink-raised: #101010;
-  --jh-titanium: #8a8f98;
-  --jh-paper: #ffffff;
-  --jh-accent: #2f5ce0;
-  --jh-accent-lift: #5b82ff;
-  --jh-listening: #5ad7ff;
-  --jh-thinking: #b48cff;
-
-  --jh-ground: var(--jh-paper);
-  --jh-raised: #f6f6f6;
-  --jh-fg: var(--jh-ink);
-  --jh-fg-2: rgba(7, 7, 7, 0.72);
-  --jh-fg-3: rgba(7, 7, 7, 0.48);
-  --jh-fg-4: rgba(7, 7, 7, 0.3);
-  --jh-hair: rgba(7, 7, 7, 0.18);
-  --jh-hair-row: rgba(7, 7, 7, 0.09);
-  --jh-hair-frame: rgba(7, 7, 7, 0.62);
-  --jh-hover: rgba(7, 7, 7, 0.04);
-  --jh-active: rgba(7, 7, 7, 0.07);
-  --jh-lift: rgba(7, 7, 7, 0.08);
-  --jh-hatch: rgba(7, 7, 7, 0.06);
-  --jh-plate: var(--jh-ink-raised); /* the one dark artifact surface: code, config, the installer */
-  --jh-plate-fg: var(--jh-paper);
-
-  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: light;
+  /* the four colours (PT/DESIGN.md §1; ConsoleTheme.swift:14-19) */
+  --jh-ink: #070707; --jh-ink-raised: #101010; --jh-titanium: #8a8f98; --jh-paper: #ffffff;
+  /* surfaces */
+  --jh-ground: #ffffff; --jh-raised: #f6f6f6; --jh-whisper: #f2f5fd;
+  --jh-plate: #101010; --jh-plate-fg: rgba(255, 255, 255, 0.87); --jh-plate-fg-2: rgba(255, 255, 255, 0.62);
+  --jh-plate-hair: rgba(255, 255, 255, 0.22); --jh-plate-lift: rgba(255, 255, 255, 0.10);
+  /* ink steps 1 / .72 / .48 / .30 */
+  --jh-fg: #070707; --jh-fg-2: rgba(7, 7, 7, 0.72); --jh-fg-3: rgba(7, 7, 7, 0.48); --jh-fg-4: rgba(7, 7, 7, 0.30);
+  /* lines: structural / row / frame, 1px each, drawn once by one owner */
+  --jh-hair: rgba(7, 7, 7, 0.18); --jh-hair-row: rgba(7, 7, 7, 0.09); --jh-hair-frame: rgba(7, 7, 7, 0.62);
+  --jh-hatch: rgba(7, 7, 7, 0.085); --jh-cross: rgba(7, 7, 7, 0.38);
+  /* states */
+  --jh-hover: rgba(7, 7, 7, 0.04); --jh-active: rgba(7, 7, 7, 0.07); --jh-lift: rgba(7, 7, 7, 0.08);
+  --jh-lift-raised: rgba(7, 7, 7, 0.12); --jh-thumb: rgba(7, 7, 7, 0.32); --jh-scrim: rgba(0, 0, 0, 0.6);
+  /* the one accent: focus ring, the pressed state, the Copy's confirmed tile */
+  --jh-accent: #2f5ce0; --jh-on-accent: #ffffff;
+  /* phases: dots, halos, rings, hairlines, the blob's halo; never a wash; same in both themes */
+  --jh-listening: #5ad7ff; --jh-speaking: #ffb454; --jh-thinking: #b48cff; --jh-acting: #6ee7a0;
+  --jh-error: #ff5d6c; --jh-asleep: #7a6a5a; --jh-muted: #6b7280; --jh-connecting: #9fb4c8;
+  --jh-paused: #8a8f98; --jh-mark: #ffb454;
+  /* screens: a capture sits on its own baked ground in both themes (facts-media §2) */
+  --jh-screen: #0b0c10; --jh-screen-ink: #070707; --jh-screen-raised: #101010;
+  --jh-blob-ground: #0b0c10; --jh-blob-text: #e8eaf0;
+  /* the drawn Mac */
+  --jh-desk-bar: rgba(236, 236, 240, 0.92); --jh-desk-bar-fg: #070707; --jh-desk-notch: #000000;
+  --jh-desk-lip: #4a4d55; --jh-light-red: #ff5f57; --jh-light-yellow: #febc2e; --jh-light-green: #28c840;
+  /* agent marks */
+  --jh-mark-claude: #d97757; --jh-mark-gemini: #4796e3; --jh-mark-opencode: #6ee7a0; --jh-mark-amp: #ffb454;
+  /* geometry */
+  --jh-radius: 6px; --jh-rail: 1170px; --jh-gut: clamp(20px, 3.1vw, 36px); --jh-nav: 58px;
+  /* type */
+  --font-sans: var(--font-inter), "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* motion (Motion.swift:22-64) */
+  --jh-instant: 80ms; --jh-quick: 160ms; --jh-base: 240ms; --jh-slow: 400ms; --jh-drift: 600ms; --jh-pulse: 1.6s;
+  --jh-ease-out: cubic-bezier(0.16, 1, 0.3, 1); --jh-ease-in: cubic-bezier(0.7, 0, 0.84, 0); --jh-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
-
 html[data-theme="dark"] {
-  --jh-ground: var(--jh-ink);
-  --jh-raised: var(--jh-ink-raised);
-  --jh-fg: var(--jh-paper);
-  --jh-fg-2: rgba(255, 255, 255, 0.72);
-  --jh-fg-3: rgba(255, 255, 255, 0.48);
-  --jh-fg-4: rgba(255, 255, 255, 0.3);
-  --jh-hair: rgba(255, 255, 255, 0.22);
-  --jh-hair-row: rgba(255, 255, 255, 0.1);
-  --jh-hair-frame: rgba(255, 255, 255, 0.55);
-  --jh-hover: rgba(255, 255, 255, 0.05);
-  --jh-active: rgba(255, 255, 255, 0.08);
-  --jh-lift: rgba(255, 255, 255, 0.1);
-  --jh-hatch: rgba(255, 255, 255, 0.07);
   color-scheme: dark;
+  --jh-ground: #070707; --jh-raised: #101010; --jh-whisper: #161e35;
+  --jh-fg: #ffffff; --jh-fg-2: rgba(255, 255, 255, 0.72); --jh-fg-3: rgba(255, 255, 255, 0.48); --jh-fg-4: rgba(255, 255, 255, 0.30);
+  --jh-hair: rgba(255, 255, 255, 0.22); --jh-hair-row: rgba(255, 255, 255, 0.10); --jh-hair-frame: rgba(255, 255, 255, 0.55);
+  --jh-hatch: rgba(255, 255, 255, 0.07); --jh-cross: rgba(255, 255, 255, 0.34);
+  --jh-hover: rgba(255, 255, 255, 0.05); --jh-active: rgba(255, 255, 255, 0.08); --jh-lift: rgba(255, 255, 255, 0.10);
+  --jh-lift-raised: rgba(255, 255, 255, 0.16); --jh-thumb: rgba(242, 242, 240, 0.32);
+  --jh-accent: #5b82ff;
+  --jh-desk-bar: #2a2b30; --jh-desk-bar-fg: rgba(255, 255, 255, 0.9);
+  /* plate, phases, screens, marks, lights do not remap */
 }
 
-* {
-  margin: 0;
-  box-sizing: border-box;
-}
-
+/* ---------- reset ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
 html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  overflow-x: clip;
   scrollbar-width: thin;
-  scrollbar-color: var(--jh-fg-4) transparent;
+  scrollbar-color: var(--jh-thumb) transparent;
 }
-
-html,
-body {
-  background: var(--jh-ground);
-}
-
+html, body { background: var(--jh-ground); }
 body {
   color: var(--jh-fg);
   font-family: var(--font-sans);
-  font-feature-settings: "cv11", "ss01", "ss03", "calt", "liga";
-  font-optical-sizing: auto;
+  font-size: 15px;
   line-height: 1.5;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  font-optical-sizing: auto;
+}
+h1, h2, h3, h4 { font-weight: 500; line-height: 1.06; letter-spacing: -0.028em; font-feature-settings: "cv11", "ss01"; }
+b, strong { font-weight: 500; }
+a { color: inherit; text-decoration: none; }
+img, canvas, svg { display: block; }
+img { max-width: 100%; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+ul, ol { list-style: none; padding: 0; }
+figure { margin: 0; }
+code, kbd, pre, samp { font-family: var(--font-mono); }
+::selection { background: var(--jh-accent); color: var(--jh-on-accent); }
+:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
+
+/* ---------- type scale (design.md §3.2): Inter, weight cap 500 ---------- */
+.jh-h1 { font-size: clamp(32px, 3.4vw, 48px); line-height: 1.02; font-weight: 500; letter-spacing: -0.03em; text-wrap: balance; }
+.jh-h2 { font-size: clamp(26px, 2.6vw, 36px); line-height: 1.06; font-weight: 500; letter-spacing: -0.025em; max-width: 22ch; text-wrap: balance; }
+.jh-display { font-size: clamp(56px, 6vw, 88px); line-height: 1; font-weight: 500; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+.jh-lead { font-size: 15px; line-height: 1.6; color: var(--jh-fg-2); max-width: 60ch; }
+.jh-h3 { font-size: 16.5px; line-height: 1.25; font-weight: 500; letter-spacing: -0.015em; }
+.jh-p { font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 52ch; }
+.jh-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; letter-spacing: 0.01em; }
+.jh-label { font-size: 11px; line-height: 1.4; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jh-fg-3); }
+.jh-foot { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; letter-spacing: 0.14em; text-transform: uppercase; color: var(--jh-fg-4); font-variant-numeric: tabular-nums; }
+.jh-fig { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: 0.01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; }
+.jh-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- the rail: 1170 inside, border-inline drawn once, the outer pair at ±10 by one pseudo ---------- */
+.jh-rail { position: relative; box-sizing: content-box; max-width: var(--jh-rail); margin: 0 auto; border-inline: 1px solid var(--jh-hair); }
+.jh-rail::before { content: ""; position: absolute; inset: 0 -11px; border-inline: 1px solid var(--jh-hair); pointer-events: none; }
+.jh-cross { position: absolute; width: 11px; height: 11px; pointer-events: none; z-index: 1;
+  background: linear-gradient(var(--jh-cross), var(--jh-cross)) 5px 0 / 1px 11px no-repeat, linear-gradient(var(--jh-cross), var(--jh-cross)) 0 5px / 11px 1px no-repeat; }
+
+/* a section owns one bottom rule; the hatch band between the story and the ledgers owns that boundary instead */
+.jh-sec { padding: 72px var(--jh-gut) 64px; border-bottom: 1px solid var(--jh-hair); scroll-margin-top: var(--jh-nav); min-width: 0; }
+.jh-sec:has(+ .jh-hatch) { border-bottom: 0; }
+.jh-sec-head { margin-bottom: 36px; }
+.jh-sec-head .jh-h2 { margin-top: 14px; }
+.jh-sec-head .jh-lead { margin-top: 12px; }
+.jh-hatch { height: 42px; border-bottom: 1px solid var(--jh-hair);
+  background: repeating-linear-gradient(-45deg, transparent 0, transparent 6px, var(--jh-hatch) 6px, var(--jh-hatch) 7px); }
+/* full-rail children drop the gutter (the Console in Hands, the seam grid flush at the rail) */
+.jh-flush { margin-inline: calc(-1 * var(--jh-gut)); }
+.jh-grid.jh-flush { padding-inline: 0; }
+
+/* the seam grid: the ground is the seam; cards draw no border */
+.jh-grid { display: grid; gap: 1px; padding: 1px; background: var(--jh-hair); background-clip: padding-box; min-width: 0; }
+.jh-grid.jh-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.jh-grid.jh-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.jh-grid.jh-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.jh-card { background: var(--jh-ground); background-clip: padding-box; padding: 22px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.jh-card.jh-span-2 { grid-column: span 2; }
+.jh-card.jh-span-3 { grid-column: span 3; }
+.jh-card.jh-rows-2 { grid-row: span 2; }
+.jh-card > .jh-fig { margin-top: auto; padding-top: 6px; }
+@media (max-width: 1000px) {
+  .jh-grid.jh-cols-3, .jh-grid.jh-cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .jh-card.jh-span-3 { grid-column: span 2; }
+}
+@media (max-width: 640px) {
+  .jh-grid.jh-cols-2, .jh-grid.jh-cols-3, .jh-grid.jh-cols-4 { grid-template-columns: minmax(0, 1fr); }
+  .jh-card.jh-span-2, .jh-card.jh-span-3 { grid-column: span 1; }
+  .jh-card.jh-rows-2 { grid-row: span 1; }
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
+/* rows: the row owns every structural line */
+.jh-row { min-height: 44px; padding: 14px 0; }
+.jh-row + .jh-row { border-top: 1px solid var(--jh-hair-row); }
 
-:focus-visible {
-  outline: 1px solid var(--jh-fg);
-  outline-offset: 2px;
-}
+/* frames: on pictures only */
+.jh-shot { border: 1px solid var(--jh-hair-frame); border-radius: var(--jh-radius); overflow: hidden; }
+.jh-screen { max-width: 100%; min-width: 0; }
+.jh-screen-box { position: relative; background: var(--jh-screen); }
+.jh-screen.is-ink .jh-screen-box { background: var(--jh-screen-ink); }
+.jh-screen.is-raised .jh-screen-box { background: var(--jh-screen-raised); }
+.jh-screen-box > img { width: 100%; height: auto; }
+.jh-screen-box.has-aspect > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.jh-screen > figcaption { margin-top: 10px; }
 
+/* controls: a tile plus a hairline, radius 6; ink on a border only as a state; the solid CTA in --jh-fg */
+.jh-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: var(--jh-radius);
+  font-size: 13.5px; font-weight: 500; letter-spacing: -0.005em; line-height: 1; white-space: nowrap; text-decoration: none; cursor: pointer;
+  border: 1px solid transparent; background-clip: padding-box; color: var(--jh-fg);
+  transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out), border-color var(--jh-instant) var(--jh-ease-out); }
+.jh-btn-sm { height: 30px; padding: 0 10px; font-size: 13px; }
+.jh-btn-tile { background-color: var(--jh-lift); border-color: var(--jh-hair); }
+.jh-btn-tile:hover { background-color: var(--jh-lift-raised); }
+.jh-btn-tile:active { background-color: var(--jh-active); border-color: var(--jh-fg); }
+.jh-btn-solid { background-color: var(--jh-fg); border-color: var(--jh-fg); color: var(--jh-ground); }
+.jh-btn-solid:hover { background-color: var(--jh-fg-2); border-color: transparent; }
+.jh-btn-solid:active { background-color: var(--jh-fg); border-color: var(--jh-fg); }
+.jh-btn-text { padding: 0 6px; color: var(--jh-fg-2); }
+.jh-btn-text:hover { color: var(--jh-fg); background-color: var(--jh-hover); }
+.jh-btn-text:active { background-color: var(--jh-active); }
+.jh-btn[aria-pressed="true"] { border-color: var(--jh-fg); }
+.jh-btn > svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
+.jh-btn-sm > svg { width: 14px; height: 14px; }
+.jh-btn.is-icon { width: 36px; padding: 0; }
+.jh-btn-sm.is-icon { width: 30px; }
+.jh-icon { fill: currentColor; flex: none; pointer-events: none; }
+
+.jh-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.jh-chip { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.3; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
+  padding: 3px 8px; border-radius: var(--jh-radius); background: var(--jh-lift); color: var(--jh-fg-2); white-space: nowrap; }
+
+/* the skip link: visible on focus only, moves by transform and opacity */
+.jh-skip { position: absolute; left: 12px; top: 11px; z-index: 40; display: inline-flex; align-items: center; height: 36px; padding: 0 14px;
+  border-radius: var(--jh-radius); background: var(--jh-fg); color: var(--jh-ground); font-size: 13.5px; font-weight: 500; opacity: 0; transform: translateY(-64px); pointer-events: none; }
+.jh-skip:focus-visible { opacity: 1; transform: none; pointer-events: auto; }
+
+/* the theme toggle: a 32 px tile, the glyph by CSS content on html[data-theme] so it is right before hydration */
+.jh-theme { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--jh-radius);
+  background: var(--jh-lift); border: 1px solid var(--jh-hair); background-clip: padding-box; font-size: 16px; font-weight: 400; line-height: 1; color: var(--jh-fg);
+  transition: background-color var(--jh-instant) var(--jh-ease-out), border-color var(--jh-instant) var(--jh-ease-out); }
+.jh-theme:hover { background: var(--jh-lift-raised); }
+.jh-theme:active { background: var(--jh-active); border-color: var(--jh-fg); }
+.jh-theme::before { content: "◐"; }
+html[data-theme="dark"] .jh-theme::before { content: "◑"; }
+
+/* ---------- nav: 58 px, sticky, opaque, one hairline below ---------- */
+.jh-nav { position: sticky; top: 0; z-index: 20; height: var(--jh-nav); background: var(--jh-ground); border-bottom: 1px solid var(--jh-hair); }
+.jh-nav-in { position: relative; max-width: calc(var(--jh-rail) + 2px); height: 100%; margin: 0 auto; padding: 0 var(--jh-gut); display: flex; align-items: center; gap: 18px; }
+.jh-brand { display: inline-flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+.jh-nav-links { display: flex; gap: 18px; margin-left: 10px; font-size: 13.5px; color: var(--jh-fg-2); }
+.jh-nav-links a { transition: color var(--jh-instant) var(--jh-ease-out); }
+.jh-nav-links a:hover { color: var(--jh-fg); }
+.jh-nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* ---------- hero: the headline row, then the desk (b2) ---------- */
+.jh-hero { position: relative; }
+/* 24/20 instead of 28/24 and 1.1:1 instead of 640:490, so the row is 154 and the desk's Console clears the fold at 1440×900 (NOTES.md) */
+.jh-hero-row { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px var(--jh-gut); padding: 24px var(--jh-gut) 20px; align-items: end; border-bottom: 1px solid var(--jh-hair); }
+.jh-hero-row .jh-lead { font-size: 15px; line-height: 1.5; max-width: none; }
+.jh-hero-row .jh-fig { margin-top: 8px; }
+@media (max-width: 820px) { .jh-hero-row { grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; } }
+
+/* ---------- the phase column: dot · word · hint · face ---------- */
+.jh-phase { --jh-phase: var(--jh-fg-3); display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.jh-phase-dot { position: relative; width: 6px; height: 6px; border-radius: 50%; background: var(--jh-phase); flex: none; }
+.jh-phase-dot.is-live::after { content: ""; position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--jh-phase); opacity: 0;
+  animation: jh-ring var(--jh-pulse) var(--jh-ease-out) infinite; }
+@keyframes jh-ring { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(2.4); opacity: 0; } }
+.jh-phase-word { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jh-fg); white-space: nowrap; }
+.jh-phase-hint { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.01em; color: var(--jh-fg-3); white-space: nowrap; }
+.jh-phase-face { font-family: var(--font-mono); font-weight: 700; font-size: 12px; letter-spacing: 0.06em; color: var(--jh-fg-2); white-space: nowrap; }
+.jh-phase-sep { color: var(--jh-fg-4); font-family: var(--font-mono); font-size: 11.5px; }
+.jh-phase.is-desk { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto auto; column-gap: 10px; row-gap: 4px; align-items: center; }
+.jh-phase.is-desk .jh-phase-dot { grid-row: 1; }
+.jh-phase.is-desk .jh-phase-word { grid-row: 1; font-size: 16px; letter-spacing: -0.01em; text-transform: none; }
+.jh-phase.is-desk .jh-phase-hint { grid-column: 2; grid-row: 2; font-family: var(--font-sans); font-size: 13.5px; letter-spacing: 0; color: var(--jh-fg-2); white-space: normal; }
+.jh-phase.is-desk .jh-phase-face { grid-column: 2; grid-row: 3; font-size: 22px; margin-top: 6px; color: var(--jh-fg); }
+.jh-phase.is-desk .jh-phase-sep { display: none; }
+
+/* ---------- the dithered ground: absolute, fills its positioned parent, pinned bottom-right ---------- */
+.jh-ground { position: absolute; right: 0; bottom: 0; image-rendering: pixelated; pointer-events: none; }
+
+/* ---------- footer: the orb field band, the words at the right, the disclosure under ---------- */
+.jh-footer-band { position: relative; height: 360px; overflow: hidden; }
+.jh-footer-field { position: absolute; inset: 0; }
+.jh-footer-words { position: absolute; right: var(--jh-gut); top: 50%; transform: translateY(-50%); width: min(480px, calc(100% - 2 * var(--jh-gut))); display: flex; flex-direction: column; gap: 12px; }
+.jh-footer-name { font-size: 32px; line-height: 1; font-weight: 500; letter-spacing: -0.03em; }
+.jh-footer-line { font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 46ch; }
+.jh-footer-meta { margin-top: 6px; color: var(--jh-fg-2); display: flex; flex-wrap: wrap; gap: 0 6px; align-items: center; }
+.jh-footer-meta a { display: inline-flex; align-items: center; gap: 2px; color: var(--jh-fg-2); transition: color var(--jh-instant) var(--jh-ease-out); }
+.jh-footer-meta a:hover { color: var(--jh-fg); }
+.jh-footer-meta a > svg:first-child { margin-right: 3px; }
+.jh-footer-note { padding: 20px var(--jh-gut) 28px; border-top: 1px solid var(--jh-hair); font-size: 12.5px; line-height: 1.6; color: var(--jh-fg-3); max-width: 90ch; }
+
+/* ---------- reduced motion: the only !important on the site ---------- */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  .jh-phase-dot.is-live::after { display: none; }
+}
+
+/* ---------- the phone ladder under 720 ---------- */
+@media (max-width: 720px) {
+  :root { --jh-gut: 16px; }
+  .jh-rail { border-inline: 0; }
+  .jh-rail::before, .jh-cross { display: none; }
+  body { font-size: 15px; line-height: 1.6; }
+  .jh-h1 { font-size: 2.25rem; line-height: 1.1; }
+  .jh-h2 { font-size: 1.62rem; line-height: 1.18; }
+  .jh-h3 { font-size: 1.125rem; line-height: 1.35; }
+  .jh-lead, .jh-hero-row .jh-lead { font-size: 16px; line-height: 1.55; }
+  .jh-p { font-size: 13.5px; line-height: 1.5; }
+  .jh-sec { padding: 48px var(--jh-gut) 40px; }
+  .jh-sec-head { margin-bottom: 28px; }
+  .jh-card { padding: 18px; }
+  .jh-nav-links, .jh-nav-gh { display: none; }
+  .jh-hero-row { padding: 24px var(--jh-gut) 20px; }
+  .jh-footer-band { height: 240px; }
+  .jh-footer-words { top: auto; bottom: 20px; left: var(--jh-gut); right: var(--jh-gut); width: auto; transform: none; gap: 8px; }
+  .jh-footer-name { font-size: 26px; }
 }

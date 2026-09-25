@@ -2,12 +2,12 @@
   "name": "@jarhead/site",
   "version": "2.0.0",
   "private": true,
-  "description": "jarhead.kevinliu.studio — the landing page",
+  "description": "jarhead.kevinliu.studio, the landing page",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/copy-install.mjs",
+    "predev": "node scripts/copy-install.mjs && node scripts/copy-media.mjs",
     "dev": "next dev --port 3939",
-    "prebuild": "node scripts/copy-install.mjs",
+    "prebuild": "node scripts/copy-install.mjs && node scripts/copy-media.mjs",
     "build": "next build",
     "start": "next start --port 3939",
     "typecheck": "tsc -p tsconfig.json --noEmit"

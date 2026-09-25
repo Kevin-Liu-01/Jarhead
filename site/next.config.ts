@@ -3,7 +3,10 @@ import type { NextConfig } from "next";
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  images: { formats: ["image/avif", "image/webp"] },
+  // Next 16 would otherwise write AGENTS.md and CLAUDE.md into site/ on every dev start.
+  agentRules: false,
+  // The captures are the repo's own files, served as they are: a dithered JPEG must never be re-encoded.
+  images: { unoptimized: true },
   async headers() {
     return [
       {
