@@ -8,11 +8,10 @@ import "@/styles/install.css";
 
 export { metadata, viewport } from "@/lib/metadata";
 
-// Inter 4.1 (rsms), self-hosted: the variable roman and italic, every weight in two files.
+// Inter 4.1 (rsms), self-hosted: the variable roman, every weight in one file. Nothing on the page is italic.
 const inter = localFont({
   src: [
     { path: "./fonts/InterVariable.woff2", weight: "100 900", style: "normal" },
-    { path: "./fonts/InterVariable-Italic.woff2", weight: "100 900", style: "italic" },
   ],
   variable: "--font-inter",
   display: "swap",

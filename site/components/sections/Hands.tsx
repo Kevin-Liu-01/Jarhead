@@ -1,78 +1,41 @@
 import type { JSX } from "react";
 import { Section } from "@/components/ui/Section";
-import { Card, CardGrid } from "@/components/ui/CardGrid";
-import { Screen, ThemeImage } from "@/components/ui/Screen";
-import { Chips } from "@/components/ui/Chips";
-import { DitherGround } from "@/components/ui/DitherGround";
-import { HANDS } from "@/content/copy";
+import { Plate } from "@/components/ui/Plate";
+import { ThemeImage } from "@/components/ui/Screen";
+import { Figure } from "@/components/ui/Figure";
+import { Block } from "./Block";
+import { HANDS, NUMBERS } from "@/content/copy";
+import { after, head, row } from "./cut";
 
-/** 04 · Hands: the ten families, the overlay at rail width, the Console at the full rail on its floor, the faces. */
+const TOOLS = row(NUMBERS.tiles, 9); // `71` · tools in ten families · README:332
+/** The ten families, each cut to its name before the deck's own joiner (HANDS.chips, README:37). */
+const FAMILIES = HANDS.chips.map((c) => head(c));
+
+/** 04 · Hands: the Console pair at half its pixel size on the plate; 71 as display type over the ten families as one block. */
 export function Hands(): JSX.Element {
   return (
-    <Section id={HANDS.id} phase="acting" face={HANDS.face} h2={HANDS.h2} lead={HANDS.lead} className="sec-hands">
-      <div className="sec-hands-chips">
-        <Chips items={HANDS.chips} />
-      </div>
-      <div className="sec-hands-overlay">
-        <Screen {...HANDS.overlay} ground="ink" aspect="1600/589" sizes="(min-width: 1202px) 1170px, 100vw" />
-      </div>
-      <div className="sec-cards">
-      <CardGrid cols={3}>
-        <Card>
-          <Screen {...HANDS.workShot} aspect="16/9" position="100% 0" />
-          <h3 className="sec-h3">{HANDS.work.h3}</h3>
-          <p className="sec-p">{HANDS.work.p}</p>
-          <div className="sec-fig sec-fig--push">{HANDS.work.fig}</div>
-        </Card>
-        <Card>
-          <Screen {...HANDS.circleShot} aspect="16/9" />
-          <h3 className="sec-h3">{HANDS.circle.h3}</h3>
-          <p className="sec-p">{HANDS.circle.p}</p>
-          <div className="sec-fig sec-fig--push">{HANDS.circle.fig}</div>
-        </Card>
-        <Card>
-          <div className="sec-notch-band">
-            <div>
-              <Screen {...HANDS.notchTucked} maxWidth={460} />
-              <div className="sec-fig sec-notch-cap">{HANDS.notchTuckedCap}</div>
-            </div>
-            <div>
-              <Screen {...HANDS.notchPeek} maxWidth={460} />
-              <div className="sec-fig sec-notch-cap">{HANDS.notchPeekCap}</div>
-            </div>
+    <Section
+      id={HANDS.id}
+      phase="acting"
+      h2={HANDS.h2}
+      lead={after(HANDS.lead, "71 tools in ten families. ")} // README:37; the count is the plate's figure
+      lines={[
+        { glyph: "bell", text: HANDS.problems.h3 }, // README:52
+        { glyph: "target", text: HANDS.circle.h3 }, // README:43
+        { glyph: "window", text: HANDS.agents.h3 }, // README:42
+      ]}
+    >
+      <Plate>
+        <div className="sec-frame">
+          <figure className="jh-shot sec-console">
+            <ThemeImage dark={HANDS.consoleDark} light={HANDS.consoleLight} width={1600} height={1030} sizes="(min-width: 860px) 800px, 100vw" />
+          </figure>
+          <div className="sec-hands-ladder">
+            <Figure value={TOOLS.figure} label={TOOLS.label} size="md" />
+            <Block items={FAMILIES} />
           </div>
-          <h3 className="sec-h3">{HANDS.notch.h3}</h3>
-          <p className="sec-p">{HANDS.notch.p}</p>
-        </Card>
-        <Card span={3}>
-          <div className="sec-console-floor">
-            <DitherGround />
-            <div className="sec-console">
-              <ThemeImage dark={HANDS.consoleDark} light={HANDS.consoleLight} width={1600} height={1030} sizes="(min-width: 1202px) 1170px, 100vw" />
-            </div>
-          </div>
-          <div className="sec-console-text">
-            <div>
-              <h3 className="sec-h3">{HANDS.agents.h3}</h3>
-              <p className="sec-p">{HANDS.agents.p}</p>
-              <div className="sec-fig">{HANDS.agents.fig}</div>
-            </div>
-            <p className="sec-cap">{HANDS.consoleCap}</p>
-          </div>
-        </Card>
-        <Card span={2}>
-          <Screen {...HANDS.facesShot} aspect="1600/1451" />
-          <h3 className="sec-h3">{HANDS.faces.h3}</h3>
-          <p className="sec-p">{HANDS.faces.p}</p>
-        </Card>
-        <Card>
-          <Screen {...HANDS.problemsShot} aspect="3/5" position="100% 0" />
-          <h3 className="sec-h3">{HANDS.problems.h3}</h3>
-          <p className="sec-p">{HANDS.problems.p}</p>
-          <div className="sec-fig sec-fig--push">{HANDS.problems.fig}</div>
-        </Card>
-      </CardGrid>
-      </div>
+        </div>
+      </Plate>
     </Section>
   );
 }

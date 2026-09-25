@@ -1,156 +1,115 @@
 /*
- * sections.css · b3 · the story sections 01–06, Numbers, Costs, Made. Classes .sec-* only.
- * Every colour is a --jh-* token from globals.css. Every line is drawn by one owner: the seam grid
- * (.jh-grid), the row (.jh-row), the frame (.jh-shot) or the plate; nothing here draws a border
- * that could sit beside one of those. Copy never sits within 20 px of a hairline.
+ * sections.css · d3 · the ruled plate. One head row and one plate per section, classes .sec-* only.
+ * Every colour is a --jh-* token from globals.css. Every line is drawn by one owner: the plate draws
+ * its two hairlines, the picture its frame, the hatch its boundary; nothing else here draws a border.
+ * Copy never sits within 20 px of a hairline. Inter weight 500 at most; mono for figures and blocks.
+ * The three head lines sit on a fixed 20 px filled-glyph column (the Console's icon column, titanium).
  */
 
-/* ---------- shared type inside the sections (design.md §3.2) ---------- */
-.sec-h3 { font-size: 16.5px; font-weight: 500; letter-spacing: -.015em; line-height: 1.25; color: var(--jh-fg); }
-.sec-p { font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 52ch; }
-.sec-h3 + .sec-p { margin-top: 8px; }
-.sec-fig { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-fig--push { margin-top: auto; padding-top: 8px; }
-.sec-fig--wrap { overflow-wrap: anywhere; max-width: 44ch; }
-.sec-p + .sec-fig { margin-top: 10px; }
-.sec-note { font-size: 12.5px; line-height: 1.6; color: var(--jh-fg-3); max-width: 84ch; overflow-wrap: anywhere; }
-.sec-cap { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; max-width: 44ch; margin-top: 10px; }
-.sec-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--jh-fg-3); font-weight: 500; margin-bottom: 8px; }
-.sec-block { min-width: 0; }
-.sec-block > .sec-h3 + .sec-p { margin-top: 10px; }
+/* ---------- the head row: the h2 at the left (with the phase as one dot), the lead and the lines at the right ---------- */
+.sec-head { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 6fr); gap: 20px var(--jh-gut); align-items: start; margin-bottom: 32px; }
+.sec-h2 { position: relative; font-size: clamp(34px, 3.2vw, 46px); line-height: 1; font-weight: 500; letter-spacing: -.03em; color: var(--jh-fg); }
+/* the phase as one dot in the margin, hung left of the text column so every h2 aligns */
+.sec-dot { position: absolute; left: -22px; top: 50%; width: 9px; height: 9px; margin-top: -3px; border-radius: 50%; background: var(--jh-phase, var(--jh-fg-3)); }
+.sec-copy { min-width: 0; padding-top: 4px; }
+.sec-lead { font-size: 16px; line-height: 1.55; color: var(--jh-fg-2); max-width: 56ch; }
+.sec-lines { display: flex; flex-direction: column; gap: 9px; margin-top: 20px; }
+.sec-line { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: center; min-width: 0; }
+.sec-line-g { display: flex; align-items: center; justify-content: center; width: 20px; height: 22px; color: var(--jh-titanium); }
+.sec-line-g > svg { width: 16px; height: 16px; fill: currentColor; }
+.sec-line-t { font-size: 16px; font-weight: 500; letter-spacing: -.01em; line-height: 1.4; color: var(--jh-fg); }
 
-/* ---------- ledgers: the row owns its rule ---------- */
-.sec-ledger { display: flex; flex-direction: column; }
-.sec-row { display: grid; align-items: baseline; column-gap: 20px; row-gap: 4px; min-width: 0; }
-.sec-row + .sec-row { border-top: 1px solid var(--jh-hair-row); }
-.sec-row-n { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .01em; color: var(--jh-fg-3); line-height: 20px; white-space: nowrap; font-variant-numeric: tabular-nums; grid-area: n; }
-.sec-row-h3 { grid-area: h; font-size: 16.5px; font-weight: 500; letter-spacing: -.015em; line-height: 20px; color: var(--jh-fg); }
-.sec-row-h3--mono { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-row-p { grid-area: p; font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 60ch; }
-.sec-row-v { grid-area: v; font-family: var(--font-mono); font-size: 12.5px; line-height: 20px; letter-spacing: .01em; color: var(--jh-fg); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-/* article: the title over its line, the § column at the left */
-.sec-ledger--article .sec-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "h" "p"; }
-.sec-ledger--article .sec-row--n { grid-template-columns: 40px minmax(0, 1fr); grid-template-areas: "n h" "n p"; column-gap: 0; }
-.sec-ledger--article .sec-row-p { margin-top: 2px; }
-/* table: title · line · value side by side */
-.sec-ledger--table .sec-row { grid-template-columns: minmax(0, .9fr) minmax(0, 1.7fr); grid-template-areas: "h p"; }
-.sec-ledger--table .sec-row--v { grid-template-columns: minmax(0, .8fr) minmax(0, 1.5fr) auto; grid-template-areas: "h p v"; }
-.sec-ledger--table .sec-row-h3 { font-size: 14px; letter-spacing: -.01em; }
-.sec-ledger--table .sec-row-h3--mono { font-size: 13px; letter-spacing: 0; }
-.sec-ledger--table .sec-row--v .sec-row-v { text-align: right; white-space: nowrap; color: var(--jh-fg); }
-/* figure: title · mono value */
-.sec-ledger--figure .sec-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); grid-template-areas: "h v"; }
-.sec-ledger--figure .sec-row-h3 { font-size: 13.5px; font-weight: 400; letter-spacing: 0; color: var(--jh-fg-2); line-height: 1.55; }
-.sec-ledger--figure .sec-row-h3--mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--jh-fg-2); }
-.sec-ledger--figure .sec-row-v { line-height: 1.55; overflow-wrap: anywhere; }
-@media (max-width: 720px) {
-  .sec-ledger--table .sec-row, .sec-ledger--table .sec-row--v { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "h v" "p p"; }
-  .sec-ledger--table .sec-row:not(.sec-row--v) { grid-template-columns: minmax(0, 1fr); grid-template-areas: "h" "p"; }
-  .sec-ledger--figure .sec-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "h" "v"; }
+/* ---------- the plate: flush at the rail, its two hairlines, the dithered ground behind, the picture at scale on it ---------- */
+/* the hairline composites on the page ground, never on the plate's own fill (PT/DESIGN.md §2, defect 3): on paper the ink edge is the seam; the fill is the longhand so no shorthand resets the clip */
+.sec-plate { position: relative; overflow: hidden; border-block: 1px solid var(--jh-hair); background-color: var(--jh-ground); background-clip: padding-box; }
+.sec-plate.is-ink { border-color: var(--jh-plate-hair); background-color: var(--jh-plate); color: var(--jh-plate-fg); }
+.sec-plate-in { position: relative; padding: 36px var(--jh-gut); }
+.sec-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 32px var(--jh-gut); align-items: center; }
+.sec-frame > * { min-width: 0; }
+
+/* the crop box: the image at its true scale, anchored; the box keeps its aspect when the column is narrower */
+.jh-crop { position: relative; width: calc(var(--crop-w) * 1px); max-width: 100%; aspect-ratio: var(--crop-w) / var(--crop-h); background: var(--jh-screen); }
+.jh-crop.is-ink { background: var(--jh-screen-ink); }
+.jh-crop.is-raised { background: var(--jh-screen-raised); }
+.jh-crop > img { position: absolute; width: calc(var(--crop-img-w) * 1px); max-width: none; height: auto; left: calc(var(--crop-x) * 1%); top: calc(var(--crop-y) * 1%); transform: translate(calc(var(--crop-x) * -1%), calc(var(--crop-y) * -1%)); }
+
+/* ---------- figures as display type ---------- */
+.sec-figure { min-width: 0; color: var(--jh-fg); }
+.sec-figure-v { font-weight: 500; letter-spacing: -.04em; line-height: .95; font-variant-numeric: tabular-nums; font-feature-settings: "cv11", "ss01"; white-space: nowrap; }
+.sec-figure.is-lg .sec-figure-v { font-size: clamp(60px, 8vw, 116px); }
+.sec-figure.is-md .sec-figure-v { font-size: clamp(44px, 4.6vw, 66px); }
+.sec-figure.is-sm .sec-figure-v { font-size: clamp(30px, 2.9vw, 42px); letter-spacing: -.03em; }
+.sec-figure-l { font-size: 15px; line-height: 1.45; color: var(--jh-fg-2); margin-top: 12px; max-width: 34ch; }
+.sec-figure.is-sm .sec-figure-l { font-size: 13.5px; margin-top: 6px; max-width: none; }
+.sec-fig { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
+.sec-figure .sec-fig { margin-top: 10px; max-width: 72ch; }
+.sec-seg { white-space: nowrap; } /* one ` · `-joined segment; a label or proof breaks only at the joiners, never inside a date */
+.sec-plate.is-ink .sec-figure, .sec-plate.is-ink .sec-fig { color: var(--jh-plate-fg); }
+
+/* ---------- a block of short mono lines set like the standing orders ---------- */
+.sec-block { min-width: 0; }
+.sec-block-list { display: flex; flex-direction: column; gap: 2px; font-family: var(--font-mono); font-size: 15px; line-height: 1.6; letter-spacing: 0; color: var(--jh-fg); font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
+.sec-block-list li { white-space: nowrap; }
+.sec-block .sec-fig { margin-top: 14px; }
+
+/* ---------- 03 · Threads and 06 · Sleep: the island at 1:1 in its drawn menu-bar strip (globals.css .jh-strip*) ---------- */
+.sec-strip { width: 680px; max-width: 100%; }
+
+/* ---------- 01 · Wake: the gate at 1:1, the five faces drawn large ---------- */
+.sec-faces { display: flex; flex-wrap: wrap; gap: 28px 36px; justify-content: center; }
+.sec-face { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.sec-face-eyes { font-family: var(--font-mono); font-weight: 500; font-size: 38px; line-height: 1; letter-spacing: .06em; color: var(--jh-fg); white-space: pre; }
+.sec-face-l { font-family: var(--font-mono); font-size: 11px; line-height: 1; letter-spacing: .01em; color: var(--jh-fg-3); }
+
+/* ---------- 04 · Hands: the Console pair at half its pixel size; 71 over the ten families ---------- */
+.sec-console { width: 800px; max-width: 100%; background: var(--jh-screen-ink); }
+.sec-console picture, .sec-console img { display: block; width: 100%; height: auto; }
+.sec-hands-ladder { display: flex; flex-direction: column; gap: 22px; }
+
+/* ---------- 05 · Rails: the never-list on the ink plate; label, seven lines, the one line under them, all at the left where the field is flat ink (the accent pools lower right). The closing line is set in --jh-plate-fg: under 720 it spans the rail into the pool, where the .62 step reads 3.1:1 on the accent's cell and .87 reads 4.7 ---------- */
+.sec-never { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "k" "list" "line"; gap: 22px var(--jh-gut); }
+.sec-never-k { grid-area: k; font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--jh-plate-fg-2); line-height: 1.5; }
+.sec-never-list { grid-area: list; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: clamp(17px, 1.6vw, 22px); line-height: 1.45; color: var(--jh-plate-fg); font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
+.sec-never-p { grid-area: line; justify-self: start; font-size: 15px; line-height: 1.55; color: var(--jh-plate-fg); max-width: 40ch; }
+
+/* ---------- Numbers: 3 ms with its provenance, three more latencies as secondary figures ---------- */
+.sec-frame--figures { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: end; }
+.sec-figures { display: flex; flex-direction: column; gap: 22px; }
+
+/* ---------- Costs: one plate, the figure at the left, what costs nothing at the right, on one baseline ---------- */
+.sec-frame--costs { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: end; padding: 12px 0 4px; }
+.sec-costs-figure .sec-figure-l { max-width: none; }
+.sec-costs-lines { padding-bottom: 2px; }
+
+/* ---------- narrower rails: the frames stack ---------- */
+@media (max-width: 1000px) {
+  .sec-frame, .sec-frame--figures, .sec-frame--costs { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* ---------- 01 · Wake ---------- */
-.sec-wake-row { display: grid; grid-template-columns: minmax(0, 520px) minmax(0, 1fr); gap: 28px var(--jh-gut); align-items: center; margin-bottom: 36px; }
-.sec-wake-row .sec-block { padding: 4px 0; }
-.sec-faces { display: flex; gap: 22px; list-style: none; padding: 0; margin: 26px 0 0; overflow-x: auto; scrollbar-width: none; }
-.sec-faces::-webkit-scrollbar { display: none; }
-.sec-face { display: flex; flex-direction: column; align-items: center; gap: 9px; flex: none; }
-.sec-face-eyes { font-family: var(--font-mono); font-weight: 700; font-size: 22px; line-height: 1; letter-spacing: .05em; color: var(--jh-fg); white-space: pre; }
-.sec-face-l { font-family: var(--font-mono); font-size: 11px; line-height: 1; letter-spacing: .01em; color: var(--jh-fg-3); }
-@media (max-width: 820px) { .sec-wake-row { grid-template-columns: minmax(0, 1fr); align-items: start; } }
-
-/* ---------- 02 · Say ---------- */
-.sec-say-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 28px var(--jh-gut); align-items: start; margin-bottom: 36px; }
-.sec-say-left { min-width: 0; display: flex; flex-direction: column; }
-.sec-say-left .sec-note { margin-top: 18px; }
-.sec-say-shot { display: flex; justify-content: flex-end; min-width: 0; }
-.sec-say-strip { margin-top: 32px; }
-.sec-say-head { font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--jh-fg-4); padding-bottom: 10px; line-height: 1.5; }
-.sec-say-list { list-style: none; margin: 0; padding: 0; }
-.sec-say-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
-.sec-said { font-size: 15px; font-weight: 500; letter-spacing: -.01em; line-height: 1.4; color: var(--jh-fg); }
-.sec-back { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-2); font-variant-numeric: tabular-nums; }
-@media (max-width: 820px) { .sec-say-row { grid-template-columns: minmax(0, 1fr); } .sec-say-shot { justify-content: flex-start; } }
-
-/* ---------- 03 · Threads: two cards on the seam grid; the render stays at its own size ---------- */
-.sec-threads .sec-note { margin-top: 6px; }
-
-/* ---------- 04 · Hands ---------- */
-.sec-hands-chips { margin-bottom: 24px; }
-.sec-hands-overlay { margin-bottom: 36px; }
-.sec-notch-band { display: flex; flex-direction: column; gap: 14px; }
-.sec-notch-cap { margin-top: 8px; }
-.sec-console-floor { position: relative; padding: 28px; border-radius: var(--jh-radius); overflow: hidden; background: var(--jh-raised); }
-.sec-console { position: relative; border-radius: 11px; overflow: hidden; border: 1px solid var(--jh-hair-frame); background: var(--jh-screen-ink); }
-.sec-console picture, .sec-console img { display: block; width: 100%; height: auto; }
-.sec-console-text { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 12px var(--jh-gut); align-items: end; margin-top: 8px; }
-.sec-console-text .sec-cap { margin-top: 0; max-width: none; }
-@media (max-width: 820px) { .sec-console-text { grid-template-columns: minmax(0, 1fr); align-items: start; } }
+/* ---------- the phone ladder under 720 ---------- */
 @media (max-width: 720px) {
-  .sec-console-floor { padding: 16px; }
-  .sec-console { aspect-ratio: 3 / 4; }
+  .sec-head { grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 24px; }
+  .sec-h2 { font-size: 2.25rem; }
+  .sec-h2:has(.sec-dot) { padding-left: 20px; }
+  .sec-dot { left: 0; }
+  .jh-crop.is-fit > img { width: 100%; }
+  .sec-copy { padding-top: 0; }
+  .sec-lead { font-size: 16px; line-height: 1.5; }
+  .sec-lines { margin-top: 16px; gap: 8px; }
+  .sec-line-t { font-size: 15px; }
+  .sec-plate-in { padding: 20px var(--jh-gut); }
+  .sec-frame { gap: 22px; }
+  .sec-figure.is-lg .sec-figure-v { font-size: 60px; }
+  .sec-figure.is-md .sec-figure-v { font-size: 44px; }
+  .sec-figure.is-sm .sec-figure-v { font-size: 30px; }
+  /* the five faces in one row: no wrap, spread across the rail, a scroll only if the rail is narrower than they are */
+  .sec-faces { flex-wrap: nowrap; gap: 20px 12px; justify-content: space-between; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .sec-faces::-webkit-scrollbar { display: none; }
+  .sec-face { flex: none; gap: 10px; }
+  .sec-face-eyes { font-size: 26px; }
+  .sec-console { aspect-ratio: 3 / 4; overflow: hidden; }
   .sec-console picture { height: 100%; }
   .sec-console img { height: 100%; object-fit: cover; object-position: 45% 0; }
-}
-
-/* ---------- 05 · Rails ---------- */
-/* the precedence line belongs to the head: Rails sets the lead-to-line gap itself (14 px) so it does not depend on b1's head margin */
-.sec-rails .jh-sec-head { margin-bottom: 14px; }
-.sec-precedence { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .01em; line-height: 1.5; color: var(--jh-fg-3); margin: 0 0 32px; }
-.sec-rails-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 28px var(--jh-gut); align-items: start; }
-.sec-rails-left { min-width: 0; }
-.sec-rails-left .sec-ledger { margin-top: 10px; }
-.sec-never { background: var(--jh-plate); color: var(--jh-plate-fg); border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius); padding: 20px 22px 22px; }
-.sec-never-k { font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--jh-plate-fg-2); line-height: 1.5; }
-.sec-never-list { font-family: var(--font-mono); font-size: 13.5px; line-height: 1.7; color: var(--jh-plate-fg); margin-top: 8px; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-never-dot { color: var(--jh-plate-fg-2); }
-.sec-never-p { font-size: 13px; line-height: 1.55; color: var(--jh-plate-fg-2); margin-top: 10px; max-width: 60ch; }
-.sec-stack { display: flex; flex-direction: column; min-width: 0; }
-.sec-stack-item { padding: 22px 0; }
-.sec-stack-item:first-child { padding-top: 0; }
-.sec-stack-item + .sec-stack-item { border-top: 1px solid var(--jh-hair-row); }
-.sec-stack-item .jh-shot-box + .sec-h3 { margin-top: 16px; }
-@media (max-width: 820px) { .sec-rails-row { grid-template-columns: minmax(0, 1fr); } }
-
-/* ---------- 06 · Sleep: cards on the seam grid ---------- */
-
-/* ---------- Numbers ---------- */
-.sec-display-row { display: flex; flex-direction: column; gap: 10px; margin-bottom: 36px; }
-.sec-display { color: var(--jh-fg); }
-.sec-display-line { max-width: 60ch; }
-.sec-stats { margin-bottom: 36px; }
-.sec-stat { display: flex; flex-direction: column; gap: 6px; min-height: 108px; }
-.sec-stat-v { font-size: 32px; line-height: 1; font-weight: 500; letter-spacing: -.03em; font-variant-numeric: tabular-nums; color: var(--jh-fg); white-space: nowrap; }
-.sec-stat-u { font-size: 14px; letter-spacing: -.01em; color: var(--jh-fg-2); }
-.sec-stat-l { font-size: 13.5px; line-height: 1.4; color: var(--jh-fg-2); margin-top: 4px; max-width: 26ch; }
-.sec-stat-p { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-3); margin-top: auto; padding-top: 12px; font-variant-numeric: tabular-nums; }
-.sec-numbers-rows { margin-bottom: 24px; }
-@media (max-width: 720px) { .sec-stat { min-height: 0; } .sec-stat-v { font-size: 28px; } }
-
-/* ---------- Costs ---------- */
-.sec-costs-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 28px var(--jh-gut); align-items: start; }
-.sec-costs-left { min-width: 0; }
-.sec-costs-shot { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; }
-.sec-costs-shot .sec-cap { max-width: 300px; width: 100%; }
-@media (max-width: 820px) { .sec-costs-row { grid-template-columns: minmax(0, 1fr); } .sec-costs-shot { align-items: flex-start; } }
-
-/* ---------- Made ---------- */
-.sec-wide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px var(--jh-gut); align-items: baseline; }
-.sec-wide .sec-h3 + .sec-p { margin-top: 0; }
-.sec-wide .sec-p { max-width: 64ch; }
-@media (max-width: 820px) { .sec-wide { grid-template-columns: minmax(0, 1fr); } .sec-wide .sec-h3 + .sec-p { margin-top: 8px; } }
-
-/* ---------- the phone ladder under 720: every section stacks (the StatGrid stays 2 x 8) ---------- */
-@media (max-width: 720px) {
-  .sec-cards > * { grid-template-columns: minmax(0, 1fr); }
-  .sec-cards > * > * { grid-column: span 1; grid-row: span 1; }
-  .sec-h3 { font-size: 1.125rem; line-height: 1.35; }
-  .sec-p { font-size: 15px; line-height: 1.6; }
-  .sec-row-h3 { font-size: 1.125rem; line-height: 1.35; }
-  .sec-row-p { font-size: 15px; line-height: 1.6; }
-  .sec-said { font-size: 16px; }
-  .sec-note { font-size: 13.5px; line-height: 1.5; }
-  .sec-precedence { margin: 0 0 24px; }
-  .sec-wake-row, .sec-say-row, .sec-costs-row { margin-bottom: 28px; }
-  .sec-display-row, .sec-stats { margin-bottom: 28px; }
+  .sec-block-list { font-size: 14px; }
+  .sec-frame--costs { padding: 4px 0 0; }
 }

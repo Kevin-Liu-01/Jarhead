@@ -1,7 +1,8 @@
 /*
- * install.css · b4 · the install plate, the Install section, the copy tile.
- * Classes .ins-* only. Every colour is a --jh-* token from globals.css; every line is drawn once by
- * its owner (the split owns its rules, a row owns its top rule, the plate its hairline).
+ * install.css · the install plate, the Install section (re-composed for the ruled rail: the plate,
+ * the four rows beside the six checks, then the Permissions plate), the copy tile. Classes .ins-*
+ * only. Every colour is a --jh-* token from globals.css; every line is drawn once by its owner
+ * (the split owns its rules, a row owns its top rule, the plate its hairline).
  */
 
 /* ---- the plate: the one dark artifact surface, in both themes ---- */
@@ -24,7 +25,7 @@
   border: 1px solid var(--jh-plate-hair);
   border-radius: var(--jh-radius);
 }
-/* 315 × ≤ 160: 14 + 36 (eyebrow row) + 6 + 34 (two code lines) + 6 + 45 (three note lines) + 14, plus the hairline */
+/* 315 × 174: 14 + 36 (eyebrow row) + 6 + 51 (the one-liner on three lines, its runs held whole) + 6 + 45 (three note lines) + 14, plus the hairline */
 .ins-plate--desk {
   width: 315px;
   max-width: 100%;
@@ -36,6 +37,15 @@
 }
 .ins-plate--head {
   margin-top: 0;
+}
+/* the Permissions plate closes the section; the split above it keeps 36 px of air */
+.ins-perm-plate {
+  margin-top: 36px;
+}
+.ins-perm {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 /* renderField writes the inline size after mount; 0 × 0 until then, so the first paint has no 300 × 150 default box to shift */
 .ins-plate-field {
@@ -70,18 +80,23 @@
   font-size: 14px;
   line-height: 1.5;
   color: var(--jh-plate-fg);
-  overflow-wrap: anywhere;
-  word-break: break-all;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+/* one held run of the one-liner: the command, the URL up to its script, the script, the pipe; the line breaks only between them, never inside the host */
+.ins-plate-seg {
+  white-space: nowrap;
 }
 .ins-plate--desk .ins-plate-code {
   font-size: 12.5px;
   line-height: 17px;
 }
+/* the note runs into the plate's lower-right corner, where the field pools to the accent: the .62 step reads 3.1:1 on that cell, .87 reads 4.7; the link keeps its underline as its mark */
 .ins-plate-note {
   grid-area: note;
   font-size: 12.5px;
   line-height: 1.5;
-  color: var(--jh-plate-fg-2);
+  color: var(--jh-plate-fg);
 }
 .ins-plate--desk .ins-plate-note {
   font-size: 11px;
@@ -89,7 +104,6 @@
   letter-spacing: -0.005em;
 }
 .ins-plate-note a {
-  color: var(--jh-plate-fg);
   text-decoration: underline;
   text-decoration-color: var(--jh-plate-hair);
   text-underline-offset: 2px;
@@ -175,7 +189,7 @@
 /* ---- the 2/3 + 1/3 row under the plate ---- */
 .ins-split {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   margin-top: 36px;
   border-top: 1px solid var(--jh-hair);
 }
@@ -207,8 +221,7 @@
 .ins-row + .ins-row {
   border-top: 1px solid var(--jh-hair-row);
 }
-.ins-row-n,
-.ins-step-n {
+.ins-row-n {
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 20px;
@@ -226,6 +239,10 @@
   line-height: 1.5;
   color: var(--jh-fg);
   overflow-wrap: anywhere;
+}
+/* a chained command breaks only before its `&&` on the rail; on the phone the column is too narrow for that, so it wraps as text again */
+.ins-cmd-seg {
+  white-space: nowrap;
 }
 .ins-row-note {
   margin-top: 3px;
@@ -247,44 +264,22 @@
   color: var(--jh-fg-2);
 }
 .ins-row-note code,
-.ins-keys code,
-.ins-req code,
-.ins-step code {
+.ins-req code {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--jh-fg);
 }
 
-/* the keys and signing paragraph, beside the commands, aligned to the command column */
-.ins-keys {
-  margin: 0;
-  padding: 16px 0 0 54px;
-  border-top: 1px solid var(--jh-hair-row);
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--jh-fg-2);
-  max-width: 62ch;
-}
-.ins-hotkeys {
-  padding: 18px 0 4px 54px;
-}
-
-/* the checklists: Requirements · 6, Setup · 7 */
-.ins-list + .ins-list {
-  margin-top: 12px;
-  padding-top: 4px;
-  border-top: 1px solid var(--jh-hair);
-}
+/* the checklist: Requirements · 6, then the six checks as one block like the standing orders (no row rules) */
 .ins-list-head {
   display: flex;
   align-items: center;
-  height: 44px;
+  height: 36px;
   margin: 0;
   font-size: 12px;
   font-weight: 500;
   line-height: 1;
   color: var(--jh-titanium);
-  border-bottom: 1px solid var(--jh-hair-row);
 }
 .ins-list-count {
   font-family: var(--font-mono);
@@ -293,59 +288,26 @@
   color: var(--jh-fg-3);
   white-space: pre;
 }
-.ins-req,
-.ins-steps {
+.ins-req {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.ins-req li,
-.ins-step {
+.ins-req li {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   column-gap: 12px;
   align-items: start;
-  padding: 11px 0;
+  padding: 5px 0;
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--jh-fg-2);
-}
-.ins-req li + li,
-.ins-step + .ins-step {
-  border-top: 1px solid var(--jh-hair-row);
 }
 .ins-req svg {
   width: 16px;
   height: 16px;
   margin-top: 2px;
   fill: var(--jh-titanium);
-}
-.ins-step-name {
-  font-weight: 500;
-  color: var(--jh-fg);
-}
-
-/* the onboarding 2 × 2 beside the permissions note */
-.ins-setup {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 36px;
-  align-items: start;
-  margin-top: 36px;
-  padding-top: 36px;
-  border-top: 1px solid var(--jh-hair);
-}
-.ins-shots {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 310px));
-  gap: 12px;
-}
-.ins-perm {
-  margin: 0;
-  font-size: 13.5px;
-  line-height: 1.55;
-  color: var(--jh-fg-2);
-  max-width: 52ch;
 }
 
 /* ---- narrower than the desk: the split stacks ---- */
@@ -362,10 +324,6 @@
     padding-top: 4px;
     border-left: 0;
     border-top: 1px solid var(--jh-hair);
-  }
-  .ins-setup {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 24px;
   }
 }
 
@@ -407,11 +365,10 @@
   .ins-row-copy {
     padding-top: 0;
   }
-  .ins-keys,
-  .ins-hotkeys {
-    padding-left: 0;
+  .ins-cmd-seg {
+    white-space: normal;
   }
-  .ins-shots {
-    grid-template-columns: minmax(0, 310px);
+  .ins-perm-plate {
+    margin-top: 28px;
   }
 }

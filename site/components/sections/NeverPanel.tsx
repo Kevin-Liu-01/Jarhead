@@ -1,18 +1,15 @@
-import { Fragment, type JSX } from "react";
+import type { JSX } from "react";
 
-/** The never-list on the plate: the same ink in both themes. */
+/** The never-list set like the standing orders: the plate's own label, seven short lines, the one line under them. */
 export function NeverPanel({ label, list, line }: { readonly label: string; readonly list: readonly string[]; readonly line: string }): JSX.Element {
   return (
     <div className="sec-never">
       <div className="sec-never-k">{label}</div>
-      <p className="sec-never-list">
-        {list.map((item, i) => (
-          <Fragment key={item}>
-            {i > 0 ? <span className="sec-never-dot" aria-hidden="true"> · </span> : null}
-            <span className="sec-never-item">{item}</span>
-          </Fragment>
+      <ol className="sec-never-list">
+        {list.map((item) => (
+          <li key={item}>{item}</li>
         ))}
-      </p>
+      </ol>
       <p className="sec-never-p">{line}</p>
     </div>
   );

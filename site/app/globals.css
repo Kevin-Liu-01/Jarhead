@@ -33,6 +33,8 @@
   --jh-blob-ground: #0b0c10; --jh-blob-text: #e8eaf0;
   /* the drawn Mac */
   --jh-desk-bar: rgba(236, 236, 240, 0.92); --jh-desk-bar-fg: #070707; --jh-desk-notch: #000000;
+  /* the island strip: the render's own bar and ground as a browser paints the PNG's gAMA chunk (#2a2b30 → #25272c, #0b0c10 → #030407), so the strip continues the render without a seam; the same in both themes */
+  --jh-island-bar: #25272c; --jh-island-notch: #000000; --jh-island-ground: #030407; --jh-island-fg: rgba(255, 255, 255, 0.9);
   --jh-desk-lip: #4a4d55; --jh-light-red: #ff5f57; --jh-light-yellow: #febc2e; --jh-light-green: #28c840;
   /* agent marks */
   --jh-mark-claude: #d97757; --jh-mark-gemini: #4796e3; --jh-mark-opencode: #6ee7a0; --jh-mark-amp: #ffb454;
@@ -92,14 +94,7 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 
 /* ---------- type scale (design.md §3.2): Inter, weight cap 500 ---------- */
 .jh-h1 { font-size: clamp(32px, 3.4vw, 48px); line-height: 1.02; font-weight: 500; letter-spacing: -0.03em; text-wrap: balance; }
-.jh-h2 { font-size: clamp(26px, 2.6vw, 36px); line-height: 1.06; font-weight: 500; letter-spacing: -0.025em; max-width: 22ch; text-wrap: balance; }
-.jh-display { font-size: clamp(56px, 6vw, 88px); line-height: 1; font-weight: 500; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
 .jh-lead { font-size: 15px; line-height: 1.6; color: var(--jh-fg-2); max-width: 60ch; }
-.jh-h3 { font-size: 16.5px; line-height: 1.25; font-weight: 500; letter-spacing: -0.015em; }
-.jh-p { font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 52ch; }
-.jh-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; letter-spacing: 0.01em; }
-.jh-label { font-size: 11px; line-height: 1.4; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jh-fg-3); }
-.jh-foot { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; letter-spacing: 0.14em; text-transform: uppercase; color: var(--jh-fg-4); font-variant-numeric: tabular-nums; }
 .jh-fig { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: 0.01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; }
 .jh-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -109,51 +104,16 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 .jh-cross { position: absolute; width: 11px; height: 11px; pointer-events: none; z-index: 1;
   background: linear-gradient(var(--jh-cross), var(--jh-cross)) 5px 0 / 1px 11px no-repeat, linear-gradient(var(--jh-cross), var(--jh-cross)) 0 5px / 11px 1px no-repeat; }
 
-/* a section owns one bottom rule; the hatch band between the story and the ledgers owns that boundary instead */
-.jh-sec { padding: 72px var(--jh-gut) 64px; border-bottom: 1px solid var(--jh-hair); scroll-margin-top: var(--jh-nav); min-width: 0; }
+/* a section owns one bottom rule; the hatch band after it owns that boundary instead (styles/sections.css draws the head and the plate) */
+.jh-sec { padding: 56px var(--jh-gut) 0; border-bottom: 1px solid var(--jh-hair); scroll-margin-top: var(--jh-nav); min-width: 0; }
 .jh-sec:has(+ .jh-hatch) { border-bottom: 0; }
-.jh-sec-head { margin-bottom: 36px; }
-.jh-sec-head .jh-h2 { margin-top: 14px; }
-.jh-sec-head .jh-lead { margin-top: 12px; }
 .jh-hatch { height: 42px; border-bottom: 1px solid var(--jh-hair);
   background: repeating-linear-gradient(-45deg, transparent 0, transparent 6px, var(--jh-hatch) 6px, var(--jh-hatch) 7px); }
-/* full-rail children drop the gutter (the Console in Hands, the seam grid flush at the rail) */
+/* full-rail children drop the gutter (the plates) */
 .jh-flush { margin-inline: calc(-1 * var(--jh-gut)); }
-.jh-grid.jh-flush { padding-inline: 0; }
 
-/* the seam grid: the ground is the seam; cards draw no border */
-.jh-grid { display: grid; gap: 1px; padding: 1px; background: var(--jh-hair); background-clip: padding-box; min-width: 0; }
-.jh-grid.jh-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.jh-grid.jh-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.jh-grid.jh-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.jh-card { background: var(--jh-ground); background-clip: padding-box; padding: 22px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.jh-card.jh-span-2 { grid-column: span 2; }
-.jh-card.jh-span-3 { grid-column: span 3; }
-.jh-card.jh-rows-2 { grid-row: span 2; }
-.jh-card > .jh-fig { margin-top: auto; padding-top: 6px; }
-@media (max-width: 1000px) {
-  .jh-grid.jh-cols-3, .jh-grid.jh-cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .jh-card.jh-span-3 { grid-column: span 2; }
-}
-@media (max-width: 640px) {
-  .jh-grid.jh-cols-2, .jh-grid.jh-cols-3, .jh-grid.jh-cols-4 { grid-template-columns: minmax(0, 1fr); }
-  .jh-card.jh-span-2, .jh-card.jh-span-3 { grid-column: span 1; }
-  .jh-card.jh-rows-2 { grid-row: span 1; }
-}
-
-/* rows: the row owns every structural line */
-.jh-row { min-height: 44px; padding: 14px 0; }
-.jh-row + .jh-row { border-top: 1px solid var(--jh-hair-row); }
-
-/* frames: on pictures only */
+/* frames: on pictures only (the crop box and the Console pair in styles/sections.css) */
 .jh-shot { border: 1px solid var(--jh-hair-frame); border-radius: var(--jh-radius); overflow: hidden; }
-.jh-screen { max-width: 100%; min-width: 0; }
-.jh-screen-box { position: relative; background: var(--jh-screen); }
-.jh-screen.is-ink .jh-screen-box { background: var(--jh-screen-ink); }
-.jh-screen.is-raised .jh-screen-box { background: var(--jh-screen-raised); }
-.jh-screen-box > img { width: 100%; height: auto; }
-.jh-screen-box.has-aspect > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.jh-screen > figcaption { margin-top: 10px; }
 
 /* controls: a tile plus a hairline, radius 6; ink on a border only as a state; the solid CTA in --jh-fg */
 .jh-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: var(--jh-radius);
@@ -176,10 +136,6 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 .jh-btn.is-icon { width: 36px; padding: 0; }
 .jh-btn-sm.is-icon { width: 30px; }
 .jh-icon { fill: currentColor; flex: none; pointer-events: none; }
-
-.jh-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.jh-chip { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.3; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
-  padding: 3px 8px; border-radius: var(--jh-radius); background: var(--jh-lift); color: var(--jh-fg-2); white-space: nowrap; }
 
 /* the skip link: visible on focus only, moves by transform and opacity */
 .jh-skip { position: absolute; left: 12px; top: 11px; z-index: 40; display: inline-flex; align-items: center; height: 36px; padding: 0 14px;
@@ -220,7 +176,7 @@ html[data-theme="dark"] .jh-theme::before { content: "◑"; }
 @keyframes jh-ring { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(2.4); opacity: 0; } }
 .jh-phase-word { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--jh-fg); white-space: nowrap; }
 .jh-phase-hint { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.01em; color: var(--jh-fg-3); white-space: nowrap; }
-.jh-phase-face { font-family: var(--font-mono); font-weight: 700; font-size: 12px; letter-spacing: 0.06em; color: var(--jh-fg-2); white-space: nowrap; }
+.jh-phase-face { font-family: var(--font-mono); font-weight: 500; font-size: 12px; letter-spacing: 0.06em; color: var(--jh-fg-2); white-space: nowrap; }
 .jh-phase-sep { color: var(--jh-fg-4); font-family: var(--font-mono); font-size: 11.5px; }
 .jh-phase.is-desk { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto auto; column-gap: 10px; row-gap: 4px; align-items: center; }
 .jh-phase.is-desk .jh-phase-dot { grid-row: 1; }
@@ -230,19 +186,36 @@ html[data-theme="dark"] .jh-theme::before { content: "◑"; }
 .jh-phase.is-desk .jh-phase-sep { display: none; }
 
 /* ---------- the dithered ground: absolute, fills its positioned parent, pinned bottom-right ---------- */
-.jh-ground { position: absolute; right: 0; bottom: 0; image-rendering: pixelated; pointer-events: none; }
+.jh-ground { position: absolute; right: 0; bottom: 0; width: 0; height: 0; image-rendering: pixelated; pointer-events: none; } /* 0 × 0 until renderField writes the inline size, so the first paint has no 300 × 150 default box to shift */
 
-/* ---------- footer: the orb field band, the words at the right, the disclosure under ---------- */
-.jh-footer-band { position: relative; height: 360px; overflow: hidden; }
+/* ---------- the island strip: a drawn menu bar around an island render at 1:1, scaled as one under 460 ---------- */
+.jh-strip-box { container-type: inline-size; min-width: 0; }
+.jh-strip { --s: min(1, tan(atan2(100cqw, 460px))); --bar: calc(32.5px * var(--s)); position: relative; height: calc(280px * var(--s)); background: var(--jh-island-ground); }
+/* the bar is drawn over the render's own bar (clipped away under it): the notch column and its two 14 px concave fillets, as the desk draws them */
+.jh-strip-bar { position: absolute; left: 0; right: 0; top: 0; height: var(--bar); z-index: 1; background: var(--jh-island-bar); color: var(--jh-island-fg);
+  display: flex; align-items: center; gap: calc(9px * var(--s)); padding: 0 calc(16px * var(--s)); font-size: calc(13px * var(--s)); font-weight: 500; letter-spacing: -0.005em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.jh-strip-apple { width: calc(14px * var(--s)); height: calc(14px * var(--s)); flex: none; }
+.jh-strip-r { margin-left: auto; display: flex; align-items: center; gap: calc(14px * var(--s)); }
+.jh-strip-status { width: calc(18px * var(--s)); height: calc(18px * var(--s)); border-radius: 50%; border: 2px solid currentColor; position: relative; }
+.jh-strip-status::after { content: ""; position: absolute; inset: 22%; border-radius: 50%; background: currentColor; opacity: 0.45; }
+.jh-strip-glyph { width: calc(16px * var(--s)); height: calc(16px * var(--s)); }
+.jh-strip-notch { position: absolute; left: calc(50% - 92.5px * var(--s)); top: 0; width: calc(185px * var(--s)); height: var(--bar); background: var(--jh-island-notch); }
+.jh-strip-fillet { position: absolute; top: calc(var(--bar) - 14px * var(--s)); width: calc(14px * var(--s)); height: calc(14px * var(--s)); background: radial-gradient(circle at 0 0, transparent calc(13.5px * var(--s)), var(--jh-island-notch) calc(14px * var(--s))); }
+.jh-strip-fillet-l { left: calc(50% - 92.5px * var(--s) - 14px * var(--s)); }
+.jh-strip-fillet-r { left: calc(50% + 92.5px * var(--s)); background: radial-gradient(circle at 100% 0, transparent calc(13.5px * var(--s)), var(--jh-island-notch) calc(14px * var(--s))); }
+.jh-strip-img { position: absolute; left: 50%; top: 0; width: calc(460px * var(--s)); height: calc(250px * var(--s)); transform: translateX(-50%); clip-path: inset(var(--bar) 0 0 0); }
+
+/* ---------- footer: the orb field band, the words at the right, the disclosure under; the band owns the one rule between them, at rail width ---------- */
+.jh-footer-band { position: relative; height: 360px; overflow: hidden; border-bottom: 1px solid var(--jh-hair); }
 .jh-footer-field { position: absolute; inset: 0; }
 .jh-footer-words { position: absolute; right: var(--jh-gut); top: 50%; transform: translateY(-50%); width: min(480px, calc(100% - 2 * var(--jh-gut))); display: flex; flex-direction: column; gap: 12px; }
 .jh-footer-name { font-size: 32px; line-height: 1; font-weight: 500; letter-spacing: -0.03em; }
 .jh-footer-line { font-size: 13.5px; line-height: 1.55; color: var(--jh-fg-2); max-width: 46ch; }
-.jh-footer-meta { margin-top: 6px; color: var(--jh-fg-2); display: flex; flex-wrap: wrap; gap: 0 6px; align-items: center; }
-.jh-footer-meta a { display: inline-flex; align-items: center; gap: 2px; color: var(--jh-fg-2); transition: color var(--jh-instant) var(--jh-ease-out); }
-.jh-footer-meta a:hover { color: var(--jh-fg); }
+/* the meta line in --jh-fg, not the .72 step: its right end reaches the band's accent pool (under 720 the whole line does), where .72 white reads 3.7:1 and white 5.6; the link has no brighter step to answer hover with */
+.jh-footer-meta { margin-top: 6px; color: var(--jh-fg); display: flex; flex-wrap: wrap; gap: 0 6px; align-items: center; }
+.jh-footer-meta a { display: inline-flex; align-items: center; gap: 2px; }
 .jh-footer-meta a > svg:first-child { margin-right: 3px; }
-.jh-footer-note { padding: 20px var(--jh-gut) 28px; border-top: 1px solid var(--jh-hair); font-size: 12.5px; line-height: 1.6; color: var(--jh-fg-3); max-width: 90ch; }
+.jh-footer-note { padding: 20px var(--jh-gut) 28px; font-size: 12.5px; line-height: 1.6; color: var(--jh-fg-3); max-width: 90ch; }
 
 /* ---------- reduced motion: the only !important on the site ---------- */
 @media (prefers-reduced-motion: reduce) {
@@ -257,16 +230,16 @@ html[data-theme="dark"] .jh-theme::before { content: "◑"; }
   .jh-rail::before, .jh-cross { display: none; }
   body { font-size: 15px; line-height: 1.6; }
   .jh-h1 { font-size: 2.25rem; line-height: 1.1; }
-  .jh-h2 { font-size: 1.62rem; line-height: 1.18; }
-  .jh-h3 { font-size: 1.125rem; line-height: 1.35; }
   .jh-lead, .jh-hero-row .jh-lead { font-size: 16px; line-height: 1.55; }
-  .jh-p { font-size: 13.5px; line-height: 1.5; }
-  .jh-sec { padding: 48px var(--jh-gut) 40px; }
-  .jh-sec-head { margin-bottom: 28px; }
-  .jh-card { padding: 18px; }
+  .jh-sec { padding: 40px var(--jh-gut) 0; }
   .jh-nav-links, .jh-nav-gh { display: none; }
   .jh-hero-row { padding: 24px var(--jh-gut) 20px; }
-  .jh-footer-band { height: 240px; }
-  .jh-footer-words { top: auto; bottom: 20px; left: var(--jh-gut); right: var(--jh-gut); width: auto; transform: none; gap: 8px; }
+  /* the orb whole at the top-left (OrbField paints it at x 110, y 100, r 72 under the same query), the words stacked under it at the gutter, never on its halo (design.md §2.12) */
+  .jh-footer-band { height: 400px; }
+  .jh-footer-band .jh-footer-field { min-height: 100%; } /* the field's inline 360 grows to the band */
+  .jh-footer-words { left: var(--jh-gut); right: var(--jh-gut); top: auto; bottom: 28px; transform: none; width: auto; gap: 8px; }
+  .jh-footer-band .jh-footer-field canvas { right: auto; left: 0; } /* the field is 448 wide on a 390 rail: pinned left, the orb stays whole and the surplus clips at the right */
   .jh-footer-name { font-size: 26px; }
+  .jh-footer-line { font-size: 13px; }
+  .jh-strip-glyph { display: none; }
 }

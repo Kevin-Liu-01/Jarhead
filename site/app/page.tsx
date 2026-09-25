@@ -13,6 +13,7 @@ import { Threads } from "@/components/sections/Threads";
 import { Wake } from "@/components/sections/Wake";
 import { Hatch } from "@/components/ui/Hatch";
 
+/** The ruled rail: the desk, then one head row and one plate per section, a hatch spacer owning every boundary. */
 export default function Page() {
   return (
     <>
@@ -22,17 +23,25 @@ export default function Page() {
         <Hero />
         <Hatch />
         <Wake />
+        <Hatch />
         <Say />
+        <Hatch />
         <Threads />
+        <Hatch />
         <Hands />
+        <Hatch />
         <Rails />
+        <Hatch />
         <Sleep />
         <Hatch />
         <Numbers />
+        <Hatch />
         <Costs />
+        <Hatch />
         <Made />
         <Hatch />
         <Install />
+        <Hatch />
       </main>
       <Footer />
     </>

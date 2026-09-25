@@ -17,7 +17,7 @@
   .desk-stagebox { height: calc(272px * var(--desk-s) + 168px); margin: 0 16px; } /* the stage's 272 scaled + the 168 px blob on screen */
   .desk-scale { width: 460px; height: calc(272px + 168px / var(--desk-s)); }
 }
-.desk-ground { position: absolute; right: 0; bottom: 0; image-rendering: pixelated; pointer-events: none; }
+.desk-ground { position: absolute; right: 0; bottom: 0; width: 0; height: 0; image-rendering: pixelated; pointer-events: none; } /* 0 × 0 until renderGround writes the inline size, so the first paint has no 300 × 150 default box to shift */
 
 /* ---- the menu bar (§4.2): 33 px, the harness's flat bar, Inter ≤ 500 ---- */
 .desk-bar { position: absolute; left: 0; top: 0; right: 0; height: 33px; background: var(--jh-desk-bar); color: var(--jh-desk-bar-fg); display: flex; align-items: center; gap: 20px; padding: 0 16px; font-size: 13px; font-weight: 400; letter-spacing: -.005em; font-variant-numeric: tabular-nums; z-index: 1; }

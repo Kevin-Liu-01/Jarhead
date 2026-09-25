@@ -1,59 +1,50 @@
-import { Screen } from "@/components/ui/Screen";
+import { Crop } from "@/components/ui/Crop";
+import { Figure } from "@/components/ui/Figure";
+import { Plate } from "@/components/ui/Plate";
 import { Section } from "@/components/ui/Section";
-import {
-  KEYS_PARAGRAPH,
-  ONBOARDING,
-  ONBOARDING_SIZE,
-  PERMISSIONS_NOTE,
-  SECTION_H2,
-  SECTION_ID,
-  SECTION_LABEL,
-  SECTION_LEAD,
-} from "@/content/install";
-import { CommandRows, RichText } from "./CommandRows";
-import { Hotkeys } from "./Hotkeys";
+import { Block } from "@/components/sections/Block";
+import { after, row, upTo } from "@/components/sections/cut";
+import { NUMBERS } from "@/content/copy";
+import { ONBOARDING, ONBOARDING_SIZE, PERMISSIONS_NOTE, SECTION_H2, SECTION_ID, SECTION_LEAD } from "@/content/install";
+import { CommandRows } from "./CommandRows";
 import { InstallPlate } from "./InstallPlate";
 import { Requirements } from "./Requirements";
-import { SetupSteps } from "./SetupSteps";
+
+/** `16 permissions, 7 required` (NUMBERS.tiles[9].proof, README:332) cut into the figure, its label and its proof. */
+const PERMS = upTo(row(NUMBERS.tiles, 9).proof, " · ");
+const PERMS_FIGURE = upTo(PERMS, " ");
+const PERMS_LABEL = upTo(after(PERMS, " "), ",");
+const PERMS_PROOF = after(PERMS, ", ");
+/** The seven required permissions, cut from PERMISSIONS_NOTE (README:437-452), one per line. */
+const REQUIRED = upTo(after(PERMISSIONS_NOTE, "seven required: "), ".").split(", ");
+const PERMISSIONS_SHOT = ONBOARDING[2]; // Setup, Permissions
 
 /**
- * Section 11 (design.md §2.11): the rail plate with the one-liner (the dominant element), then the
- * 2/3 + 1/3 row (the command rows, the keys and signing paragraph, the hotkeys · the six requirements
- * and the seven Setup steps), then the onboarding 2 × 2 beside the permissions note.
+ * Section 11: the rail plate with the one-liner, then the four command rows beside the six
+ * requirements, then one plate: the Permissions step at 1:1 with `16` as display type and the seven
+ * required names as one block.
  */
 export function Install() {
   return (
-    <Section id={SECTION_ID} label={SECTION_LABEL} h2={SECTION_H2} lead={SECTION_LEAD}>
+    <Section id={SECTION_ID} h2={SECTION_H2} lead={SECTION_LEAD}>
       <InstallPlate variant="rail" className="ins-plate--head" />
       <div className="ins-split">
         <div className="ins-col ins-col--commands">
           <CommandRows />
-          <p className="ins-keys">
-            <RichText parts={KEYS_PARAGRAPH} />
-          </p>
-          <Hotkeys />
         </div>
         <div className="ins-col ins-col--checks">
           <Requirements />
-          <SetupSteps />
         </div>
       </div>
-      <div className="ins-setup">
-        <div className="ins-shots">
-          {ONBOARDING.map((s) => (
-            <Screen
-              key={s.src}
-              src={s.src}
-              alt={s.alt}
-              width={ONBOARDING_SIZE.width}
-              height={ONBOARDING_SIZE.height}
-              maxWidth={ONBOARDING_SIZE.maxWidth}
-              ground="screen"
-            />
-          ))}
+      <Plate className="ins-perm-plate">
+        <div className="sec-frame">
+          <Crop src={PERMISSIONS_SHOT.src} alt={PERMISSIONS_SHOT.alt} width={ONBOARDING_SIZE.width} height={ONBOARDING_SIZE.height} scale={1} box={[620, 552]} fit />
+          <div className="ins-perm">
+            <Figure value={PERMS_FIGURE} label={PERMS_LABEL} proof={PERMS_PROOF} size="lg" />
+            <Block items={REQUIRED} />
+          </div>
         </div>
-        <p className="ins-perm">{PERMISSIONS_NOTE}</p>
-      </div>
+      </Plate>
     </Section>
   );
 }

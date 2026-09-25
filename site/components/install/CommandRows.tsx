@@ -1,9 +1,25 @@
+import { Fragment } from "react";
 import { COMMANDS, type Rich } from "@/content/install";
 import { CopyButton } from "./CopyButton";
 
 /** Renders a Rich run: strings as text, `{ code }` as <code>. Shared by the Install lane's lists. */
 export function RichText({ parts }: { readonly parts: Rich }) {
   return <>{parts.map((p, i) => (typeof p === "string" ? p : <code key={i}>{p.code}</code>))}</>;
+}
+
+/** A command verbatim, with a line-break opportunity only before each `&&`: a chained command never wraps mid-word on the rail. */
+function Command({ cmd }: { readonly cmd: string }) {
+  const parts = cmd.split(" && ");
+  return (
+    <code className="ins-row-cmd">
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 ? " " : null}
+          <span className="ins-cmd-seg">{i > 0 ? `&& ${part}` : part}</span>
+        </Fragment>
+      ))}
+    </code>
+  );
 }
 
 /**
@@ -18,7 +34,7 @@ export function CommandRows() {
           <li key={row.n} className="ins-row">
             <span className="ins-row-n">{row.n}</span>
             <div className="ins-row-body">
-              <code className="ins-row-cmd">{row.cmd}</code>
+              <Command cmd={row.cmd} />
               <p className="ins-row-note">
                 <RichText parts={row.note} />
               </p>

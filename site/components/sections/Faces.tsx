@@ -1,7 +1,7 @@
 import type { JSX } from "react";
 import type { FacePair } from "@/content/copy";
 
-/** The gate's faces: bold mono 22 px pairs over mono 11 px labels; a horizontal scroll under 720. The glyph pair is hidden from readers; the label carries the meaning. */
+/** The gate's faces drawn large: mono 500 pairs over mono 11 px labels. The glyph pair is hidden from readers; the label carries the meaning. */
 export function Faces({ items }: { readonly items: readonly FacePair[] }): JSX.Element {
   return (
     <ul className="sec-faces">

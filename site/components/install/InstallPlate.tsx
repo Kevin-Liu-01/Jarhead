@@ -15,6 +15,17 @@ import { CopyButton } from "./CopyButton";
 
 export { ONE_LINER };
 
+/**
+ * The one-liner's four held runs. It may wrap only after `curl -fsSL`, before `install.sh` and before
+ * `| sh`, never inside the host (a URL split mid-word reads as two tokens); the text stays
+ * byte-identical to ONE_LINER, which is what the Copy tile copies. Checked here at build.
+ */
+const CMD = "curl -fsSL";
+const SCRIPT = "install.sh";
+const TAIL = "| sh";
+const HOST = INSTALL_URL.slice(0, -SCRIPT.length);
+if (!INSTALL_URL.endsWith(SCRIPT) || `${CMD} ${HOST}${SCRIPT} ${TAIL}` !== ONE_LINER) throw new Error("the one-liner's runs drifted from ONE_LINER");
+
 /** The banner's recipe (facts-canon.md §7): INK_STOPS, 5 bands, 4 CSS px cells. */
 const CELL = 4;
 const BANDS = 5;
@@ -86,7 +97,11 @@ export function InstallPlate({ variant, className }: InstallPlateProps) {
       <div className="ins-plate-copy">
         <CopyButton text={ONE_LINER} label={PLATE_COPY_LABEL} />
       </div>
-      <code className="ins-plate-code">{ONE_LINER}</code>
+      <code className="ins-plate-code">
+        <span className="ins-plate-seg">{CMD}</span> <span className="ins-plate-seg">{HOST}</span>
+        <wbr />
+        <span className="ins-plate-seg">{SCRIPT}</span> <span className="ins-plate-seg">{TAIL}</span>
+      </code>
       <p className="ins-plate-note">{note}</p>
     </div>
   );

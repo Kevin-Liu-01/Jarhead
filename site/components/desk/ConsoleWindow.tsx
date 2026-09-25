@@ -42,6 +42,7 @@ export function ConsoleWindow(): ReactElement {
           height={1030}
           sizes="708px"
           priority
+          phone="none" // .desk-console-box is display: none under 720 px (desk.css): fetch nothing there
         />
       </div>
     </div>

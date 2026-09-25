@@ -1,34 +1,32 @@
 import type { JSX } from "react";
 import { Section } from "@/components/ui/Section";
-import { Card, CardGrid } from "@/components/ui/CardGrid";
-import { Screen } from "@/components/ui/Screen";
-import { MADE } from "@/content/copy";
+import { Plate } from "@/components/ui/Plate";
+import { Crop } from "@/components/ui/Crop";
+import { Figure } from "@/components/ui/Figure";
+import { MADE, NUMBERS } from "@/content/copy";
+import { row, upTo } from "./cut";
 
-/** Made: the icon strip in a two-row card, then how it is built. */
+const TOKENS = row(NUMBERS.tiles, 7); // `10.7` k · input tokens on a cold Codex thread · README:324
+
+/** Made: the Dock icon's five sizes at 1:1 on the plate, the cold-thread token cut as display type beside them. */
 export function Made(): JSX.Element {
   return (
-    <Section id={MADE.id} label={MADE.label} h2={MADE.h2} lead={MADE.lead} className="sec-made">
-      <div className="sec-cards">
-      <CardGrid cols={3}>
-        <Card rows={2}>
-          <Screen {...MADE.icons} ground="raised" maxWidth={320} />
-          <h3 className="sec-h3">{MADE.dithered.h3}</h3>
-          <p className="sec-p">{MADE.dithered.p}</p>
-        </Card>
-        {MADE.cards.map((c) => (
-          <Card key={c.h3} h3={c.h3} fig={c.fig}>
-            <p className="sec-p">{c.p}</p>
-          </Card>
-        ))}
-        <Card span={3}>
-          <div className="sec-wide">
-            <h3 className="sec-h3">{MADE.homes.h3}</h3>
-            <p className="sec-p">{MADE.homes.p}</p>
-            <div className="sec-fig">{MADE.homes.fig}</div>
-          </div>
-        </Card>
-      </CardGrid>
-      </div>
+    <Section
+      id={MADE.id}
+      h2={MADE.h2}
+      lead={upTo(MADE.lead, " The app spawns")} // the first sentence, README:213-250
+      lines={[
+        { glyph: "grid", text: MADE.dithered.h3 }, // README:59
+        { glyph: "apple", text: row(MADE.cards, 0).h3 }, // README:55
+        { glyph: "play", text: row(MADE.cards, 2).h3 }, // README:53
+      ]}
+    >
+      <Plate>
+        <div className="sec-frame">
+          <Crop {...MADE.icons} scale={1} box={[640, 310]} ground="raised" fit />
+          <Figure value={`${TOKENS.figure}${TOKENS.unit}`} label={TOKENS.label} proof={upTo(TOKENS.proof, " · the private")} size="lg" /> {/* `from 22.3k · −52 %`: the whole proof wraps to two lines beside the 640 px plate at 1440; the cut keeps the figure's proof on one line */}
+        </div>
+      </Plate>
     </Section>
   );
 }

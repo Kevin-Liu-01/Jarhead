@@ -2,8 +2,8 @@ import Apple from "@thesvg/react/apple";
 import type { ReactElement } from "react";
 
 /**
- * The glyphs: Heroicons 20 solid (MIT) where one exists, hand-drawn 20-box paths for the Mac
- * facsimile. Inline paths, viewBox 0 0 20 20, fill: currentColor; only names with an importer ship.
+ * The glyphs: Heroicons 20 solid (MIT) where one exists (lock-closed, speaker-wave and bookmark
+ * carry the section lines), hand-drawn 20-box paths for the Mac facsimile. Inline paths, viewBox 0 0 20 20, fill: currentColor; only names with an importer ship.
  * The Apple mark is a brand, so it comes from thesvg.org (@thesvg/react, mono, currentColor; ICONS.md).
  */
 export type IconName =
@@ -23,7 +23,10 @@ export type IconName =
   | "wifi"
   | "battery"
   | "apple"
-  | "bell";
+  | "bell"
+  | "lock"
+  | "speaker"
+  | "bookmark";
 
 type IconProps = { readonly size?: number; readonly className?: string };
 type IconFn = (p: IconProps) => ReactElement;
@@ -60,6 +63,17 @@ const PATHS: Record<Exclude<IconName, "apple">, { readonly d: string; readonly e
   bell: {
     evenodd: true,
     d: "M10 2a6 6 0 0 0-6 6c0 1.887-.454 3.665-1.257 5.234a.75.75 0 0 0 .515 1.076 32.91 32.91 0 0 0 3.256.508 3.5 3.5 0 0 0 6.972 0 32.903 32.903 0 0 0 3.256-.508.75.75 0 0 0 .515-1.076A11.448 11.448 0 0 1 16 8a6 6 0 0 0-6-6ZM8.05 14.943a33.54 33.54 0 0 0 3.9 0 2 2 0 0 1-3.9 0Z",
+  },
+  lock: {
+    evenodd: true,
+    d: "M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z",
+  },
+  speaker: {
+    d: "M10 3.75a.75.75 0 0 0-1.264-.546L5.203 6.5H2.667a.75.75 0 0 0-.7.48A6.985 6.985 0 0 0 1.5 9.5c0 .887.165 1.737.468 2.52.111.29.39.48.7.48h2.535l3.533 3.296A.75.75 0 0 0 10 15.25V3.75ZM15.95 5.05a.75.75 0 0 0-1.06 1.061 5.5 5.5 0 0 1 0 7.778.75.75 0 0 0 1.06 1.06 7 7 0 0 0 0-9.899ZM13.829 7.172a.75.75 0 0 0-1.061 1.06 2.5 2.5 0 0 1 0 3.536.75.75 0 0 0 1.06 1.06 4 4 0 0 0 0-5.656Z",
+  },
+  bookmark: {
+    evenodd: true,
+    d: "M10 2c-1.716 0-3.408.106-5.07.31C3.806 2.45 3 3.414 3 4.517V17.25a.75.75 0 0 0 1.075.676L10 15.082l5.925 2.844A.75.75 0 0 0 17 17.25V4.517c0-1.103-.806-2.068-1.93-2.207A41.403 41.403 0 0 0 10 2Z",
   },
   // Hand-drawn, 20-box: the island's strip glyphs and the menu bar's.
   target: { evenodd: true, d: "M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 2a6 6 0 1 1 0 12 6 6 0 0 1 0-12Zm0 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z" },
@@ -116,4 +130,7 @@ export const Icon: Record<IconName, IconFn> = {
   battery: make("battery"),
   apple: AppleMark,
   bell: make("bell"),
+  lock: make("lock"),
+  speaker: make("speaker"),
+  bookmark: make("bookmark"),
 };
