@@ -18,7 +18,15 @@ full duplex. The brain is whatever you already have a login for — Codex, Claud
 an API key, a local server. The hands are a Swift helper on the real Mac. A dithered
 ASCII blob in the notch shows the work, and every step lands in an append-only ledger.
 
-**Quick start** — signing, permissions and what it costs are under [Install and run](#install-and-run):
+**Quick start** — one line ([jarhead.kevinliu.studio](https://jarhead.kevinliu.studio); the script is
+[`scripts/install.sh`](scripts/install.sh): it checks macOS 14+ on Apple silicon, Xcode's tools, Node 24 and pnpm,
+clones to `~/jarhead`, runs the four commands below and opens the app; keys go into `~/.jarhead/env` by Setup, never by the script):
+
+```bash
+curl -fsSL https://jarhead.kevinliu.studio/install.sh | sh
+```
+
+Or by hand — signing, permissions and what it costs are under [Install and run](#install-and-run):
 
 ```bash
 git clone https://github.com/Kevin-Liu-01/Jarhead.git && cd Jarhead
@@ -262,6 +270,7 @@ packages/engine     the Engine: sessions, transport, threads (table, scheduler, 
 packages/daemon     jarheadd: the Engine over a unix socket
 packages/cli        pnpm jarhead: doctor, status, ledger, bench, cmd, dock, automations, recipes, …
 packages/install    the in-place installer: bundle compare/rsync, Dock and LaunchServices hygiene
+site                the landing page (jarhead.kevinliu.studio): Next, Inter, the Console's palette; serves scripts/install.sh at /install.sh
 apps/mac            Jarhead.app: blob, notch, overlay, Console, Setup, audio, wake gate, permissions, crash guard, banners
 ```
 
@@ -349,6 +358,7 @@ Measured on this Mac and written down; the harnesses are in the repo. Sources:
 
 ## Install and run
 
+The site is [jarhead.kevinliu.studio](https://jarhead.kevinliu.studio) (`site/`, a Next app; `pnpm -C site dev`).
 macOS 14+, Apple silicon, Xcode 15.3 or newer (the sources use Swift 5.10's `nonisolated(unsafe)` and
 `apps/mac/Package.swift` asks for swift-tools 5.10, so an older toolchain is refused before it compiles anything; CI builds with Xcode 16 on macos-15), Node ≥ 24,
 pnpm 10 — `corepack enable` gives you the version `package.json`'s `packageManager` names. An `OPENAI_API_KEY` for the voice; a brain
