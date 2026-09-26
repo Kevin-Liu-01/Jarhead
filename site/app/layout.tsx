@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { THEME_BOOT } from "@/lib/theme";
 import "./globals.css";
 import "@/styles/kit.css";
+import "@/styles/mr.css";
 import "@/styles/desk.css";
 import "@/styles/hero.css";
 import "@/styles/sections.css";

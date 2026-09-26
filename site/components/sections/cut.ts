@@ -43,3 +43,42 @@ export function need(text: string | undefined): string {
   if (text === undefined) throw new Error("deck string missing");
   return text;
 }
+
+/**
+ * Whole-sentence cuts (the copy editor's rule: a cut drops whole sentences from the front or the back and keeps
+ * the rest byte for byte). A sentence ends at a full stop followed by a space or the end; a full stop inside a
+ * figure (2.0.0, $0.05) or before a closing quote ("night.") does not end one.
+ */
+export function sentences(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "." && (i === text.length - 1 || text[i + 1] === " ")) {
+      out.push(text.slice(start, i + 1));
+      start = i + 2;
+    }
+  }
+  if (start < text.length) out.push(text.slice(start));
+  return out;
+}
+
+/** The first `n` sentences. */
+export function first(text: string, n: number): string {
+  const s = sentences(text);
+  if (s.length < n) throw new Error(`fewer than ${n} sentences: ${text}`);
+  return s.slice(0, n).join(" ");
+}
+
+/** The sentences from `index` on (a suffix cut). */
+export function from(text: string, index: number): string {
+  const s = sentences(text);
+  if (s.length <= index) throw new Error(`no sentence ${index}: ${text}`);
+  return s.slice(index).join(" ");
+}
+
+/** One sentence by index. */
+export function nth(text: string, index: number): string {
+  const s = sentences(text)[index];
+  if (s === undefined) throw new Error(`no sentence ${index}: ${text}`);
+  return s;
+}

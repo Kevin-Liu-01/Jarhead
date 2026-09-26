@@ -1,37 +1,41 @@
 @import "tailwindcss";
 
 /*
- * jarhead.kevinliu.studio · AIR · the token sheet (facts-canon.md §1), the spacing scale (critique.md §2),
- * the reset, the type scale, the rail and the shell's own classes (.jh-*). Four colours, one accent, every
- * line drawn once by one owner, no shadows. Light on :root; dark is a token remap under
- * html[data-theme="dark"], stamped before paint by lib/theme.ts. No raw hex outside this sheet.
+ * jarhead.kevinliu.studio · FAITHFUL · the token sheet (facts-canon.md §1), Mailroom's spacing as --jh-* names
+ * (MAILROOM.md §2 "Spacing"; §6 do-not-take: map, never rename), the reset, the rail, the hatch band with its corner
+ * crosses, the nav and the footer. Four colours, one accent, every line drawn once by one owner, no shadows. Light on
+ * :root; dark is a token remap under html[data-theme="dark"], stamped before paint by lib/theme.ts. The inverse set
+ * (--jh-inv-*) is the other theme's values, read by the closing band alone. No raw hex outside this sheet.
  */
 :root {
   color-scheme: light;
   /* the four colours (PT/DESIGN.md §1; ConsoleTheme.swift:14-19) */
   --jh-ink: #070707; --jh-ink-raised: #101010; --jh-titanium: #8a8f98; --jh-paper: #ffffff;
-  /* surfaces */
+  /* surfaces: the ground stays the canon's ink, never Mailroom's #000 (facts-canon.md §1: the four colours, declared once) */
   --jh-ground: #ffffff; --jh-raised: #f6f6f6; --jh-whisper: #f2f5fd;
   --jh-plate: #101010; --jh-plate-fg: rgba(255, 255, 255, 0.87); --jh-plate-fg-2: rgba(255, 255, 255, 0.62); --jh-plate-fg-3: rgba(255, 255, 255, 0.48);
   --jh-plate-hair: rgba(255, 255, 255, 0.22); --jh-plate-hair-row: rgba(255, 255, 255, 0.10); --jh-plate-lift: rgba(255, 255, 255, 0.10); --jh-plate-hover: rgba(255, 255, 255, 0.05);
-  /* the plate's outer edge: on paper the ink edge is the line, so it draws none (PT singularity/styles.css:1480-1484); on ink it is the paper ring (PT/DESIGN.md §2) */
-  --jh-plate-edge: transparent;
   /* ink steps 1 / .72 / .48 / .30 */
   --jh-fg: #070707; --jh-fg-2: rgba(7, 7, 7, 0.72); --jh-fg-3: rgba(7, 7, 7, 0.48); --jh-fg-4: rgba(7, 7, 7, 0.30);
   /* lines: structural / row / frame, 1px each, drawn once by one owner */
   --jh-hair: rgba(7, 7, 7, 0.18); --jh-hair-row: rgba(7, 7, 7, 0.09); --jh-hair-frame: rgba(7, 7, 7, 0.62);
+  /* the hatch veil and the registration cross (PT/prototemplate.css:27; tokens.css:21) */
+  --jh-hatch: rgba(7, 7, 7, 0.085); --jh-cross: rgba(7, 7, 7, 0.38);
   /* states */
   --jh-hover: rgba(7, 7, 7, 0.04); --jh-active: rgba(7, 7, 7, 0.07); --jh-lift: rgba(7, 7, 7, 0.08);
   --jh-lift-raised: rgba(7, 7, 7, 0.12); --jh-thumb: rgba(7, 7, 7, 0.32); --jh-scrim: rgba(0, 0, 0, 0.6);
-  /* words in the quiet steps and the two tones, light only (kit/README Contrast): a WORD wears an ink-weight step of
-     the same hue so 10 to 12 px text reaches AA on paper; dots, glyph tints, hairlines and the blob keep the canon. */
+  /* words in the quiet steps and the two tones, light only (kit/README Contrast) */
   --jh-fg-3-word: rgba(7, 7, 7, 0.6); --jh-titanium-word: #585c64; --jh-speaking-word: #915608; --jh-error-word: #bb1b2b;
-  /* the one accent: the primary fill, the keyboard ring, the selection bar */
+  /* the one accent: the primary fill, the keyboard ring, the selection bar. The word on it follows the fill: paper on #2f5ce0 (5.63:1),
+     ink on the dark lift #5b82ff (5.8:1; the app's white word reads 3.45:1 there, under AA), so every accent remap carries its word */
   --jh-accent: #2f5ce0; --jh-on-accent: #ffffff;
+  --jh-plate-accent: #5b82ff; --jh-plate-on-accent: var(--jh-ink); /* the accent on the ink plate (the one-liner strip) and its word, both themes */
   /* phases: dots, halos, rings, hairlines, the blob's halo; never a wash; same in both themes */
   --jh-listening: #5ad7ff; --jh-speaking: #ffb454; --jh-thinking: #b48cff; --jh-acting: #6ee7a0;
   --jh-error: #ff5d6c; --jh-asleep: #7a6a5a; --jh-muted: #6b7280; --jh-connecting: #9fb4c8;
   --jh-paused: #8a8f98; --jh-mark: #ffb454;
+  /* the danger veil: the error tone as a thin 45° stripe inside a hatched pill (MAILROOM.md §2 .chip--danger, in Jarhead's red) */
+  --jh-error-veil: rgba(255, 93, 108, 0.16);
   /* screens: a capture sits on its own baked ground in both themes (facts-media §2) */
   --jh-screen: #0b0c10; --jh-screen-ink: #070707; --jh-screen-raised: #101010;
   --jh-blob-ground: #0b0c10; --jh-blob-text: #e8eaf0;
@@ -44,18 +48,15 @@
   --jh-mark-claude: #d97757; --jh-mark-gemini: #4796e3; --jh-mark-opencode: #6ee7a0; --jh-mark-amp: #ffb454;
   /* the kit: the Codex chip (BrandMarks.swift:22) and the seam, 2 px of ground outside a float's hairline (ConsoleTheme.swift:44) */
   --jh-mark-chip: #070707; --jh-seam: 2px;
-  /* geometry */
-  --jh-radius: 6px; --jh-rail: 1170px; --jh-gut: 48px; --jh-nav: 58px;
-  /* the spacing scale (critique.md §2): nine steps, each with one job; every block of air is one of these */
-  --jh-s1: 4px;    /* inside a control */
-  --jh-s2: 8px;    /* between two controls in a row; the icon column gap */
-  --jh-s3: 12px;   /* row padding; small gaps inside a plate */
-  --jh-s4: 20px;   /* h2 → lead; buttons → badges; the box-air floor from any hairline */
-  --jh-s5: 32px;   /* between row groups; lead → buttons; picture → rows at 390 */
-  --jh-s6: 48px;   /* the gutter; picture → rows; stage → segments */
-  --jh-s7: 64px;   /* plate padding; head → plate; words → stage */
-  --jh-s8: 96px;   /* section padding-bottom; the hero's top; segments → install */
-  --jh-s9: 160px;  /* section padding-top */
+  /* the inverse set: the other theme's values, for the closing band (ClosingBand.tsx:6-18's swap, as tokens) */
+  --jh-inv-ground: #070707; --jh-inv-raised: #101010; --jh-inv-fg: #ffffff; --jh-inv-fg-2: rgba(255, 255, 255, 0.72); --jh-inv-fg-3: rgba(255, 255, 255, 0.48);
+  --jh-inv-hair: rgba(255, 255, 255, 0.22); --jh-inv-hair-row: rgba(255, 255, 255, 0.10); --jh-inv-hair-frame: rgba(255, 255, 255, 0.55);
+  --jh-inv-hover: rgba(255, 255, 255, 0.05); --jh-inv-active: rgba(255, 255, 255, 0.08); --jh-inv-lift: rgba(255, 255, 255, 0.10); --jh-inv-lift-raised: rgba(255, 255, 255, 0.16);
+  --jh-inv-accent: #5b82ff; --jh-inv-on-accent: var(--jh-ink); --jh-inv-fg-3-word: rgba(255, 255, 255, 0.48); --jh-inv-titanium-word: #8a8f98; --jh-inv-error-word: #ff5d6c; --jh-inv-mark-chip: #101010;
+  /* geometry: the rail (prototemplate.css:32), Mailroom's gutter (globals.css:21), the 22 px hatch, the 58 px nav */
+  --jh-radius: 6px; --jh-rail: 1170px; --jh-nav: 58px; --jh-hatch-h: 22px;
+  --jh-gut: clamp(24px, 5vw, 72px);
+  --jh-sec-space: clamp(96px, 11.2vw, 176px); /* Mailroom's 9vw grown to SPACE.md §3's floor: 161 at 1440, 96 on the phone */
   /* type */
   --font-sans: var(--font-inter), "Inter", "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -68,17 +69,20 @@ html[data-theme="dark"] {
   --jh-ground: #070707; --jh-raised: #101010; --jh-whisper: #161e35;
   --jh-fg: #ffffff; --jh-fg-2: rgba(255, 255, 255, 0.72); --jh-fg-3: rgba(255, 255, 255, 0.48); --jh-fg-4: rgba(255, 255, 255, 0.30);
   --jh-hair: rgba(255, 255, 255, 0.22); --jh-hair-row: rgba(255, 255, 255, 0.10); --jh-hair-frame: rgba(255, 255, 255, 0.55);
+  --jh-hatch: rgba(255, 255, 255, 0.07); --jh-cross: rgba(255, 255, 255, 0.34);
   --jh-hover: rgba(255, 255, 255, 0.05); --jh-active: rgba(255, 255, 255, 0.08); --jh-lift: rgba(255, 255, 255, 0.10);
   --jh-lift-raised: rgba(255, 255, 255, 0.16); --jh-thumb: rgba(242, 242, 240, 0.32);
-  --jh-accent: #5b82ff;
-  /* the word on the lifted accent: white reads 3.45:1 on #5b82ff, so in dark the primary wears ink, 5.83:1 (kit/README, Contrast) */
-  --jh-on-accent: var(--jh-ink);
+  --jh-accent: #5b82ff; --jh-on-accent: var(--jh-ink);
   --jh-desk-bar: #2a2b30; --jh-desk-bar-fg: rgba(255, 255, 255, 0.9);
   --jh-mark-chip: #101010;
-  --jh-plate-edge: var(--jh-plate-hair);
   /* dark passes AA at the canon values, so the word aliases are the canon */
   --jh-fg-3-word: var(--jh-fg-3); --jh-titanium-word: var(--jh-titanium); --jh-speaking-word: var(--jh-speaking); --jh-error-word: var(--jh-error);
-  /* the plate (but for its edge), phases, screens, marks, lights do not remap */
+  /* the inverse set is the light sheet */
+  --jh-inv-ground: #ffffff; --jh-inv-raised: #f6f6f6; --jh-inv-fg: #070707; --jh-inv-fg-2: rgba(7, 7, 7, 0.72); --jh-inv-fg-3: rgba(7, 7, 7, 0.48);
+  --jh-inv-hair: rgba(7, 7, 7, 0.18); --jh-inv-hair-row: rgba(7, 7, 7, 0.09); --jh-inv-hair-frame: rgba(7, 7, 7, 0.62);
+  --jh-inv-hover: rgba(7, 7, 7, 0.04); --jh-inv-active: rgba(7, 7, 7, 0.07); --jh-inv-lift: rgba(7, 7, 7, 0.08); --jh-inv-lift-raised: rgba(7, 7, 7, 0.12);
+  --jh-inv-accent: #2f5ce0; --jh-inv-on-accent: #ffffff; --jh-inv-fg-3-word: rgba(7, 7, 7, 0.6); --jh-inv-titanium-word: #585c64; --jh-inv-error-word: #bb1b2b; --jh-inv-mark-chip: #070707;
+  /* plate, phases, screens, marks, lights do not remap */
 }
 
 /* ---------- reset ---------- */
@@ -91,6 +95,7 @@ html {
   overflow-x: clip;
   scrollbar-width: thin;
   scrollbar-color: var(--jh-thumb) transparent;
+  scroll-padding-top: calc(var(--jh-nav) + var(--jh-hatch-h) + 16px); /* an anchor jump clears the nav and its hatch (Mailroom globals.css:64) */
 }
 html, body { background: var(--jh-ground); }
 body {
@@ -116,12 +121,18 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 :focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
 .jh-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* ---------- the rail: 1170 inside, its two hairlines drawn once; no outer pair, no crosses ---------- */
-.jh-rail { position: relative; box-sizing: content-box; max-width: var(--jh-rail); margin: 0 auto; border-inline: 1px solid var(--jh-hair); }
-/* full-rail children drop the gutter (the plates) */
-.jh-flush { margin-inline: calc(-1 * var(--jh-gut)); }
-/* frames: on pictures only */
-.jh-shot { border: 1px solid var(--jh-hair-frame); border-radius: var(--jh-radius); overflow: hidden; }
+/* ---------- the rail: one bordered column for the nav, the hatches, main and the footer (MAILROOM.md §6 take 1; .frame globals.css:76-77) ---------- */
+.jh-rail { position: relative; width: min(calc(100% - 48px), var(--jh-rail)); margin-inline: auto; border-inline: 1px solid var(--jh-hair); }
+
+/* ---------- the hatch band: 22 px, a hairline above and below, a 45° veil; the crosses seat on the rail × hairline corners (globals.css:78-87; Section.tsx:5-14) ---------- */
+.jh-hatch { position: relative; height: var(--jh-hatch-h); border-block: 1px solid var(--jh-hair);
+  background: repeating-linear-gradient(45deg, transparent 0 6px, var(--jh-hatch) 6px 7px); }
+.jh-cross { position: absolute; z-index: 5; width: 11px; height: 11px; pointer-events: none;
+  background: linear-gradient(var(--jh-cross), var(--jh-cross)) 5px 0 / 1px 11px no-repeat, linear-gradient(var(--jh-cross), var(--jh-cross)) 0 5px / 11px 1px no-repeat; }
+.jh-cross--tl { top: -6px; left: -6px; }
+.jh-cross--tr { top: -6px; right: -6px; }
+.jh-cross--bl { bottom: -6px; left: -6px; }
+.jh-cross--br { bottom: -6px; right: -6px; }
 
 /* the skip link: visible on focus only, moves by transform and opacity */
 .jh-skip { position: absolute; left: 12px; top: 13px; z-index: 40; display: inline-flex; align-items: center; height: 32px; padding: 0 12px;
@@ -134,41 +145,41 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 .jh-theme::before { content: "◐"; }
 html[data-theme="dark"] .jh-theme::before { content: "◑"; }
 
-/* ---------- nav: 58 px, sticky, opaque, one hairline below; the mark, four links, GitHub · Install · the toggle ---------- */
-.jh-nav { position: sticky; top: 0; z-index: 20; height: var(--jh-nav); background: var(--jh-ground); border-bottom: 1px solid var(--jh-hair); }
-.jh-nav-in { position: relative; max-width: calc(var(--jh-rail) + 2px); height: 100%; margin: 0 auto; padding: 0 var(--jh-gut); display: flex; align-items: center; gap: var(--jh-s4); }
-.jh-brand { display: inline-flex; align-items: center; gap: 9px; min-height: 40px; font-size: 15px; font-weight: 500; letter-spacing: -0.01em; } /* 40 tall: the one tap target that was under the floor */
-.jh-nav-links { display: flex; gap: var(--jh-s4); margin-left: var(--jh-s3); font-size: 13.5px; color: var(--jh-fg-2); }
-/* each link is a 32-tall hit box like the canon's shell links (facts-canon §3 "shell button" height 32); the 2 px side pad is given back by the margin so the words do not move */
-.jh-nav-links a { display: inline-flex; align-items: center; min-height: 32px; padding: 0 2px; margin: 0 -2px; transition: color var(--jh-instant) var(--jh-ease-out); }
+/* ---------- nav: 58 px, sticky, opaque, one hairline below (layout.tsx:45-67 at Jarhead's height); the mark, five title-case links (MAILROOM.md §6 do not take: the 12 px caps links), the toggle tile and GitHub ---------- */
+.jh-nav { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--jh-nav); padding: 0 24px;
+  background: var(--jh-ground); border-bottom: 1px solid var(--jh-hair); }
+/* the seam under the nav is drawn once, by the nav (sticky, it owns that edge once scrolled); the hatch beneath it draws no top line (facts-canon.md §2 rule 1) */
+.jh-nav + .jh-hatch { border-top: 0; }
+.jh-brand { display: inline-flex; align-items: center; gap: 9px; min-height: 40px; font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+.jh-nav-links { display: flex; gap: 24px; font-size: 13.5px; font-weight: 500; color: var(--jh-fg-2); }
+.jh-nav-links a { display: inline-flex; align-items: center; min-height: 40px; transition: color var(--jh-instant) var(--jh-ease-out); }
 .jh-nav-links a:hover { color: var(--jh-fg); }
-.jh-nav-right { margin-left: auto; display: flex; align-items: center; gap: var(--jh-s2); }
+.jh-nav-right { display: flex; align-items: center; gap: 8px; }
+/* the phone's Install: the links fold away under 720, so the one primary stands in for them there and nowhere else */
+.jh-nav .jh-nav-install { display: none; }
 
-/* ---------- the footer: the orb field band, the words at the right, the disclosure under it ---------- */
-.jh-footer-band { position: relative; height: 320px; overflow: hidden; border-bottom: 1px solid var(--jh-hair); }
-.jh-footer-field { position: absolute; inset: 0; }
-.jh-footer-words { position: absolute; right: var(--jh-gut); top: 50%; transform: translateY(-50%); width: min(460px, calc(100% - 2 * var(--jh-gut))); display: flex; flex-direction: column; gap: var(--jh-s3); }
-.jh-footer-name { font-size: 32px; line-height: 1; font-weight: 500; letter-spacing: -0.03em; }
-.jh-footer-line { font-size: 15px; line-height: 1.55; color: var(--jh-fg-2); max-width: 40ch; }
-.jh-footer-row { margin-top: var(--jh-s2); display: flex; flex-wrap: wrap; align-items: center; gap: var(--jh-s2); }
-.jh-footer-note { padding: var(--jh-s5) var(--jh-gut) var(--jh-s6); font-size: 13px; line-height: 1.6; color: var(--jh-fg-3-word); max-width: 60ch; }
+/* ---------- the footer: one line of 12 px muted facts, the mark at the left (layout.tsx:71-74) ---------- */
+.jh-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 20px 24px; font-size: 12px; line-height: 1.6; color: var(--jh-fg-2); }
+.jh-footer-l { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.jh-footer-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.jh-footer-mono a:hover { color: var(--jh-fg); }
+.jh-footer-r { text-align: right; }
 
 /* ---------- reduced motion: the only !important on the site ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
 
-/* ---------- the phone ladder under 720 ---------- */
+/* ---------- the phone ladder under 720 (Mailroom .frame at 720; phone.png) ---------- */
 @media (max-width: 720px) {
-  :root { --jh-gut: 20px; --jh-s6: 32px; --jh-s7: 48px; --jh-s8: 64px; --jh-s9: 96px; }
-  .jh-rail { border-inline: 0; }
+  .jh-rail { width: calc(100% - 20px); }
   body { font-size: 15px; line-height: 1.6; }
-  .jh-nav-links, .jh-nav .jh-nav-gh { display: none; }
-  /* the orb whole at the top-left (OrbField paints it at x 110, y 100, r 72 under the same query), the words stacked under it */
-  .jh-footer-band { height: 380px; }
-  .jh-footer-band .jh-footer-field { min-height: 100%; }
-  .jh-footer-words { left: var(--jh-gut); right: var(--jh-gut); top: auto; bottom: var(--jh-s5); transform: none; width: auto; gap: var(--jh-s2); }
-  .jh-footer-band .jh-footer-field canvas { right: auto; left: 0; }
-  .jh-footer-name { font-size: 26px; }
-  .jh-footer-line { font-size: 14px; }
+  .jh-nav { padding: 0 16px; }
+  .jh-nav-links { display: none; }
+  .jh-nav .jh-nav-gh .kit-btn-label { display: none; } /* the mark alone, as Mailroom's phone header */
+  .jh-nav .jh-nav-gh { width: 40px; padding: 0; }
+  .jh-nav .jh-nav-install { display: inline-flex; }
+  .jh-footer-mono a { display: inline-flex; align-items: center; min-height: 40px; } /* a 40 px tap target (SPACE.md) */
+  .jh-footer { padding: 20px 16px; }
+  .jh-footer-r { text-align: left; }
 }

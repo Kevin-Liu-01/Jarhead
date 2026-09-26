@@ -68,12 +68,13 @@ function pairSpaced(p: string): string {
 
 /**
  * The desk (design.md §4, recomposed per SPACE.md §4): the 1170 × 560 stage of Kevin's Mac at 1:1 holding only the
- * menu bar, the notch, the island, the live blob and the target ring; the phone stage under 720 px; and the one rAF
+ * menu bar, the notch, the island, the live blob and the target ring; the phone stage under 720 px or when `compact`
+ * (the FAITHFUL hero's picture column, MAILROOM.md §1.1: the illustration at the right); and the one rAF
  * timeline that steps the island, the blob and the phase colour through the six kinds. `controls` renders after the
  * stage, outside the scaled layer, with the kind and `pick`, so the hero composes its own phase control under the
  * stage. `#still` and reduced motion give one pose.
  */
-export function Desk({ still: stillProp, controls }: { still?: boolean; controls?: (api: DeskApi) => ReactNode }): ReactElement {
+export function Desk({ still: stillProp, compact, controls }: { still?: boolean; /** The phone stage (460 wide: the bar, the notch, the island at 1:1, the blob under) regardless of the viewport: the hero's picture column. */ compact?: boolean; controls?: (api: DeskApi) => ReactNode }): ReactElement {
   const theme = useTheme();
   const [still, setStill] = useState(!!stillProp);
   const [view, setView] = useState<View>({ kind: "listening", beat: "none" });
@@ -159,8 +160,8 @@ export function Desk({ still: stillProp, controls }: { still?: boolean; controls
     if (!el) return;
     const apply = () => {
       const w = el.clientWidth;
-      const phone = window.innerWidth < 720;
-      const s = phone ? w / STAGE.phoneW : w >= STAGE.w - 4 ? 1 : w / STAGE.w; // the rail's own 1 px borders leave 1168: keep 1:1 and clip 2 px of ground
+      const phone = compact || window.innerWidth < 720;
+      const s = phone ? Math.min(1, w / STAGE.phoneW) : w >= STAGE.w - 4 ? 1 : w / STAGE.w; // the rail's own 1 px borders leave 1168: keep 1:1 and clip 2 px of ground
       tl.current.scale = s;
       el.style.setProperty("--desk-s", String(Math.round(s * 10000) / 10000));
       if (phone) el.dataset["phone"] = "";
@@ -174,7 +175,7 @@ export function Desk({ still: stillProp, controls }: { still?: boolean; controls
       ro.disconnect();
       window.removeEventListener("resize", apply);
     };
-  }, []);
+  }, [compact]);
 
   // The desktop ground: GROUND / PAPER, once per size and theme (the phone stage's height follows the scale, so it is measured).
   useEffect(() => {
@@ -407,7 +408,7 @@ export function Desk({ still: stillProp, controls }: { still?: boolean; controls
   const live = !still && !blobHidden;
 
   return (
-    <div ref={root} className="desk" style={style} data-still={still ? "" : undefined} data-kind={view.kind} data-island={islandState}>
+    <div ref={root} className={`desk${compact ? " is-compact" : ""}`} style={style} data-still={still ? "" : undefined} data-phone={compact ? "" : undefined} data-kind={view.kind} data-island={islandState}>
       <div className="desk-stagebox">
         <div ref={stage} className="desk-scale" data-desk-stage="">
           <canvas ref={ground} className="desk-ground" aria-hidden="true" />

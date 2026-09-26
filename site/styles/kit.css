@@ -37,12 +37,13 @@
     border-color var(--jh-instant) var(--jh-ease-out), opacity var(--jh-instant) var(--jh-ease-out);
 }
 .kit-btn--sm { padding: 0 8px; font-size: 11px; }
+.kit-btn--lg { padding: 0 14px; font-size: 13px; } /* the site's 40: the hero's two calls (MAILROOM.md §1.1 buttons), the phone's tap floor */
 .kit-btn--icon { width: var(--kit-h); padding: 0; }
 .kit-btn--ghost, .kit-btn--spent { background-color: var(--kit-lift, var(--jh-lift)); border-color: var(--jh-hair); }
 .kit-btn--spent { border-color: var(--jh-hair-row); color: var(--jh-fg-3-word); }
 .kit-btn--primary { background-color: var(--jh-accent); color: var(--jh-on-accent); }
-/* danger: the app's own fill, mirrored; its word reads 2.99:1 on the red in light (white; dark wears ink), so the site gives the kind
-   no word (an icon-only Stop at 24 or more, or none) and carries the error tone on a glyph and a badge instead (README, Contrast) */
+/* danger: the app's own fill, mirrored; its white word reads 2.99:1 on the red in both themes, so the site gives the kind no
+   word (an icon-only Stop at 24 or more, or none) and carries the error tone on a glyph and a badge instead (README, Contrast) */
 .kit-btn--danger { background-color: var(--jh-error); color: var(--jh-on-accent); }
 /* lit = enabled and (hovering or pressed): the wash is a second layer over the tile; the words go to --jh-fg */
 @media (hover: hover) {
@@ -64,6 +65,9 @@
 .kit-btn--primary[disabled], .kit-btn--danger[disabled], .kit-btn--primary[aria-disabled="true"], .kit-btn--danger[aria-disabled="true"] { opacity: 0.45; }
 /* the keyboard ring: the keyboard's alone, 1 px accent on the box edge (ConsoleTip.swift:268-292) */
 .kit-btn:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: -1px; }
+/* an accent-filled kind would swallow a ring on its own edge, so it takes the page's ring instead: 2 px of the ground it sits on,
+   then a 2 px accent line (globals.css :focus-visible); ghost, plain and spent keep the 1 px ring above */
+.kit-btn--primary:focus-visible, .kit-btn--danger:focus-visible { outline: 2px solid var(--jh-accent); outline-offset: 2px; }
 /* a word that changes keeps the button's width: the hidden word sits under the visible one (StreamView.swift:1396-1414) */
 .kit-btn-hold { display: grid; }
 .kit-btn-hold > span { grid-area: 1 / 1; text-align: center; }

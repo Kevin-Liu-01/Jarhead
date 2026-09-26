@@ -7,12 +7,12 @@ import { Icon } from "./Icons";
  * ground continues across the strip without a seam; the bar is drawn over the render's own (the
  * notch column, its fillets, the Apple mark, the app's name and the clock, the way the desk draws
  * them). Under 460 px of column the whole strip scales down as one (--s), never a fractional crop.
- * Framed like every picture (.jh-shot).
+ * Unframed, as every inner panel of a figure (mr.css .mr-panel): its own ground against the raised card is the edge.
  */
 export function IslandStrip({ src, alt, width, height, className }: { readonly src: string; readonly alt: string; readonly width: number; readonly height: number; readonly className?: string }) {
   return (
     <div className={`jh-strip-box${className ? ` ${className}` : ""}`}>
-      <div className="jh-strip jh-shot">
+      <div className="jh-strip">
         <div className="jh-strip-bar" aria-hidden="true">
           <Apple variant="mono" className="jh-strip-apple" aria-hidden="true" focusable="false" />
           <span className="jh-strip-app">Jarhead</span>

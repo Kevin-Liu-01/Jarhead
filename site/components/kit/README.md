@@ -23,7 +23,7 @@ Forced states for pictures and harnesses: `.is-hover` and `.is-active` mirror `:
 | `Badge.tsx` | `C/ConsoleBadge.swift:3-7` (a word in a box), `:52-57` (widths 62 · 46 · 30), `:86-100` (tones), `:120-126` (16 tall, padding 5, hairline, label) | `word?`, `figure?` (mono), `tone: rest \| speaking \| error`, `width?: 62 \| 46 \| 30` | `.kit-badge`, `--figure`, `[data-tone]`, `[data-width]` |
 | `Chip.tsx` | `C/ConsoleBadge.swift:130-158` (22 tall, radius 6, hairline; on = inverted; hover; count mono 11); the flow `C/MemoryRailView.swift:435` | `word`, `count?`, `on?`, `onToggle?` (→ `<button aria-pressed>`, else `<span>`) | `.kit-chip`, `.kit-chip-count`, `.kit-flow` |
 | `KeyCap.tsx` | `C/ConsoleBadge.swift:160-175` (mono 10, 16 tall, min 16, padding 4, hairline, radius 6); used last in a tip `C/ConsoleTip.swift:422, 465` | `children: string` | `.kit-key` (`<kbd>`) |
-| `Tip.tsx` | `C/ConsoleTip.swift:3-9` (the three tiers), `:49-64` (350 ms delay, 400 ms warm), `:202-213` (hide rules, a11y), `:268-292` (the keyboard ring), `:294-323` (`?` pins, Esc lets go), `:326-351` (raised, hair, the seam, arrival over quick), `:414-471` (line 28 tall · card 240-320); `C/ConsoleFloatPlacement.swift:9-71` (gap 4, margin 8, flip, the arrow ≥ 10 from a corner); `C/ConsoleFloat.swift:178-211` (never hit-tested) | `line?` + `keyCap?`, or `card?: { title, status?, badge?, lines?, foot?, last?, key? }`, `side: below \| above`, `pinned?` (inline, for pictures), `tap?` (a touch tap holds it: covers and figures, never a control that acts), `children` (the trigger; `aria-describedby` is wired after mount) | `.kit-tip`, `--line --card`, `[data-side]`, `.is-in`, `.is-pinned`, `.kit-tip-title -status -lines -foot -k -v -last`, `.kit-tip-anchor` |
+| `Tip.tsx` | `C/ConsoleTip.swift:3-9` (the three tiers), `:49-64` (350 ms delay, 400 ms warm), `:202-213` (hide rules, a11y), `:268-292` (the keyboard ring), `:294-323` (`?` pins, Esc lets go), `:326-351` (raised, hair, the seam, arrival over quick), `:414-471` (line 28 tall · card 240-320); `C/ConsoleFloatPlacement.swift:9-71` (gap 4, margin 8, flip, the arrow ≥ 10 from a corner); `C/ConsoleFloat.swift:178-211` (never hit-tested) | `line?` + `keyCap?`, or `card?: { title, status?, badge?, lines?, foot?, last?, key? }`, `side: below \| above`, `pinned?` (inline, for pictures), `children` (the trigger; `aria-describedby` is wired after mount) | `.kit-tip`, `--line --card`, `[data-side]`, `.is-in`, `.is-pinned`, `.kit-tip-title -status -lines -foot -k -v -last`, `.kit-tip-anchor` |
 | `Row.tsx` (`Row`, `Group`) | `C/ConsoleRow.swift:4-5` (28 · 40), `:188-216` (the overlay, verbWidth 60, raised under the controls), `:200` (padding 12), `:238-323` (the anatomy: icon column · title · badge · value · chevron · meta · meter), `:360-385` (selected = active + the 2 pt bar inset 4, hover), `:218` (.45 / .62), `:505-514` (the ring); `C/ConsoleFill.swift:12-13` | `icon?`, `title`, `mono?`, `size: 12 \| 13`, `badge?`, `value?`, `meta?`, `trailing?`, `chevron?`, `href?` or `act?` (the acting cover), `selected?`, `hover?`, `open?`, `disabled?`, `sitsBack?`, `describedBy?`, `as: li \| div`; `Group`: `head?`, `raised?` | `.kit-group`, `.kit-rows`, `.kit-row`, `-icon -main -line -title(.is-mono) -badge -value -meta -trailing -verb -chevron -act`, `.is-acting .is-selected .is-hover .is-open .sits-back`, `[aria-disabled]` |
 | `GroupHead.tsx` | `C/ConsoleRow.swift:389-440` (22 tall, sans 11 medium titanium, count and figure mono 11, one badge, padding 12, paints its surface, sticky) | `title`, `count?`, `figure?`, `badge?`, `trailing?`, `rule?`, `sticky?` | `.kit-group-head`, `--rule`, `.is-sticky`, `.kit-group-count -figure -trailing` |
 | `Meter.tsx` | `C/ConsoleRow.swift:316-319` (24 × 6, fill fg2, track active); `UI/Dither.swift:942-982` (the 8-cell Bayer edge); the site's `lib/dither.ts renderMeter` | `fraction`, `width` (24), `height` (6), `label?` | `.kit-meter` |
@@ -62,10 +62,7 @@ the agent marks are the app's own (`AgentMark`).
 - Springs (`Motion.snappy`) become `--jh-quick` on `--jh-ease-out`; a 1.5 pt cell becomes whole device pixels.
 - Under 720 px an acting control grows to 40 px, an acting row to 40; a fact row keeps the app's 28 (SPACE.md, tap targets).
 - A pinned tip (`pinned`) sits inline under its trigger instead of on the float layer: pictures and harnesses only.
-- The app has no touch. A touch never hovers, so a tip with `tap` (a row's cover, a display figure) opens on a completed
-  tap and holds until the next tap anywhere, a scroll or Esc; a tap on a control that acts (Copy) opens nothing.
 - The primary's press dims the whole button to .8 (the app dims the fill).
-- In dark the primary's word is ink on the lifted accent (`--jh-on-accent` remaps; the app draws white at 3.45:1).
 - The toggle's two cells are 29 inside the 1 px hairline, so the box is the app's 60 × 22 (the app's stroke sits inside its 60).
 - A row's hairline sits inside the 28 pitch (1 + 3 + 20 + 4) and a meta row is 40; the icon and the words of an acting row pass the pointer to the cover, the trailing controls keep theirs.
 
@@ -82,10 +79,11 @@ word in the alias and its hairline in the tone's canon colour. In dark each alia
 placeholder, `.kit-hint` (+ `.is-error`), `.kit-head`, `.kit-glyphs`. The site's own quiet lines (`.jh-fig`, `.sec-fig`,
 `.desk-caption`, the footer note, all `--jh-fg-3` at 11.5 to 12.5 px) are the designers' to move onto `--jh-fg-3-word`.
 
-The primary's white word reads 5.63:1 on `#2f5ce0` in light and **3.45:1 on `#5b82ff` in dark** (12 px 500; a 32-tall label
-does not reach 4.5 either), so in dark `--jh-on-accent` remaps to ink (`app/globals.css`; 5.83:1 on the lifted accent; the app draws
-white there, Kevin's call to keep or revert). The danger's white word reads **2.99:1 on `#ff5d6c`** in light (ink in dark, 6.75:1),
-so the site never gives `danger` a word: the never-list rows carry the error tone on the
+The word on the accent follows the fill: `--jh-on-accent` is paper on `#2f5ce0` (5.63:1, light) and `var(--jh-ink)` on the
+dark lift `#5b82ff` (5.8:1), where the app's white word reads **3.45:1** (12 px 500; a 32-tall label does not reach 4.5
+either). The pair travels with every accent remap: `--jh-inv-on-accent` in the closing band, `--jh-plate-on-accent` on the
+one-liner strip (`#5b82ff` in both themes, so ink in both). `danger` reads the same word token: white on `#ff5d6c` in light
+(**2.99:1**, canon-level, as the app draws it), ink in dark (6.75:1). So the site never gives `danger` a word: the never-list rows carry the error tone on the
 `xOctagon` glyph and a badge, and a danger button, if any, is icon-only at 24 or more (`aria-label` names it). In dark the
 canon's quiet words also fall short on one tile only, the raised plate's lift tile (`--jh-lift-raised` on `--jh-raised`): a
 spent word there reads 4.1:1 and a field's count 3.7:1; every other ground passes. The phase colours as glyph tints

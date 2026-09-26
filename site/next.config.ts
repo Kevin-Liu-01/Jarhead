@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
+  devIndicators: false,
   poweredByHeader: false,
   // Next 16 would otherwise write AGENTS.md and CLAUDE.md into site/ on every dev start.
   agentRules: false,

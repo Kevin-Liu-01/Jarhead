@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button, type ButtonKind, type ButtonSize } from "@/components/kit";
-import { PLATE_COPIED, PLATE_COPY } from "@/content/install";
+import { INSTALL } from "@/content/deck";
+
+const PLATE_COPY = INSTALL.copy;
+const PLATE_COPIED = INSTALL.copied;
 
 /** The confirmed word holds for one pulse (--jh-pulse, 1.6 s). */
 const HOLD_MS = 1600;

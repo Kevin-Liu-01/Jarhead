@@ -1,45 +1,63 @@
 /*
- * install.css · AIR · the Install section's plate: the ink one-liner strip with its two verbs, the By hand
- * fold with the four command rows, the Requirements group, then the one spoken line. Classes .ins-* only;
- * every colour a --jh-* token; every block of air a --jh-s* step; every line drawn once by its owner.
+ * install.css · FAITHFUL · Install inside the closing band (MAILROOM.md §6 take 12: "Jarhead's Install can end inside
+ * this band") as Mailroom's figure frame (take 8): under the centred head, one card at p-0 with a head row (the eyebrow
+ * left, the pill right) over a hairline, then the one-liner strip with Copy and its note linking the script, the fold with
+ * the four command rows, the Requirements group, then the one spoken line. Classes .ins-*; every colour a --jh-* token.
  */
 
-/* ---- the one-liner strip: the one dark artifact surface, in both themes, radius 6; its edge is the paper ring on ink, nothing on paper ---- */
-.ins-strip { position: relative; overflow: hidden; display: flex; align-items: center; gap: var(--jh-s4); padding: var(--jh-s4) 24px;
-  background: var(--jh-plate); background-clip: padding-box; color: var(--jh-plate-fg); border: 1px solid var(--jh-plate-edge); border-radius: var(--jh-radius);
+.ins-plate { margin-top: 40px; width: 100%; max-width: 840px; text-align: left; padding: 0; }
+
+/* ---- the figure head (TrashDiagram's header row): the deck's eyebrow at the left, the state pill at the right, one row hairline under ---- */
+.ins-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--jh-hair-row); }
+.ins-eyebrow { font-size: 12.5px; line-height: 20px; font-weight: 500; letter-spacing: 0.04em; color: var(--jh-titanium-word); }
+.ins-body { padding: 20px; }
+
+/* ---- the one-liner strip: the mono line on the one dark artifact surface (both themes), the verbs at the right ---- */
+.ins-strip { display: flex; align-items: center; gap: 16px; padding: 14px 16px 14px 20px; border: 1px solid var(--jh-plate-hair); border-radius: var(--jh-radius);
+  background: var(--jh-plate); background-clip: padding-box; color: var(--jh-plate-fg);
   /* the kit inside reads the strip's own steps */
   --jh-fg: var(--jh-plate-fg); --jh-fg-2: var(--jh-plate-fg-2); --jh-fg-3-word: var(--jh-plate-fg-2); --jh-hair: var(--jh-plate-hair); --jh-hair-row: var(--jh-plate-hair-row);
-  --jh-lift: var(--jh-plate-lift); --jh-hover: var(--jh-plate-hover); --jh-active: var(--jh-plate-lift); }
-.ins-strip > * { position: relative; }
-/* the field: the same ground renderer as the plates (DitherGround), pinned bottom-right so the whisper stays in the corner */
-.ins-strip > .ins-strip-field { position: absolute; }
-.ins-strip-code { flex: 1 1 auto; min-width: 0; display: block; font-family: var(--font-mono); font-size: 15px; line-height: 1.5; color: var(--jh-plate-fg); overflow-wrap: normal; word-break: normal; }
-/* one held run of the one-liner: the line breaks only between the runs, never inside the host */
+  --jh-lift: var(--jh-plate-lift); --jh-hover: var(--jh-plate-hover); --jh-active: var(--jh-plate-lift); --jh-accent: var(--jh-plate-accent); --jh-on-accent: var(--jh-plate-on-accent); }
+.ins-strip-code { flex: 1 1 auto; min-width: 0; display: block; font-family: var(--font-mono); font-size: 14.5px; line-height: 1.5; color: var(--jh-plate-fg); }
 .ins-strip-seg { white-space: nowrap; }
-/* the two verbs: the ghost that opens the script, then the primary at the edge */
-.ins-strip-acts { flex: none; display: flex; align-items: center; gap: var(--jh-s2); }
+.ins-strip-acts { flex: none; display: flex; align-items: center; gap: 8px; }
+/* the one note under the strip (Mailroom's note under the buttons: 14 px, muted); the script's URL is the link, underlined in the hairline, ink on hover */
+.ins-note { margin-top: 12px; padding: 0 4px; font-size: 14px; line-height: 1.6; color: var(--jh-fg-2); }
+.ins-note a { color: var(--jh-fg); text-decoration: underline; text-decoration-thickness: 1px; text-decoration-color: var(--jh-hair); text-underline-offset: 3px; overflow-wrap: anywhere; transition: text-decoration-color var(--jh-instant) var(--jh-ease-out); }
+.ins-note a:hover { text-decoration-color: var(--jh-fg); }
 
-/* ---- the fold and the group: s5 between the blocks ---- */
-.ins-fold { margin-top: var(--jh-s5); }
+/* ---- the fold and the group ---- */
+.ins-fold { margin-top: 16px; border-bottom: 0; }
 .ins-fold .kit-fold-head { padding: 0 12px; }
-.ins-group { margin-top: var(--jh-s5); }
-/* the command rows: the number in the icon column, the command mono, a ghost Copy in the verb slot */
+.ins-fold .kit-fold-body { padding-bottom: 4px; }
 .ins-n { font: 400 11px/20px var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
+.ins-rows { background: none; padding: 0; }
+.ins-rows .kit-row { padding: 10px 12px; }
+.ins-rows .kit-row + .kit-row { padding-top: 9px; }
 .ins-rows .kit-row-title.is-mono { font-size: 13px; }
 .ins-rows .kit-row-trailing { height: 24px; }
 .ins-rows .kit-row-verb { width: 72px; }
+.ins-group { margin-top: 20px; }
+.ins-group .kit-group-head { padding: 0 12px 8px; height: auto; background: none; }
+.ins-group .kit-row-icon > svg { color: var(--jh-titanium); }
+.ins-group .jh-mark-ink path { fill: currentColor; }
 
 /* ---- the spoken line ---- */
-.ins-then { margin-top: var(--jh-s5); padding: 0 12px; font-size: 17px; line-height: 1.5; color: var(--jh-fg); }
+.ins-then { margin-top: 24px; padding: 0 12px; font-size: 17px; line-height: 1.5; color: var(--jh-fg); }
 
-/* ---- phones: the one-liner wraps in its held runs, the two verbs share a row under it at 40, the rows' Copy is a 40 px ghost ---- */
+/* ---- phones: the one-liner wraps in its held runs, Copy fills a row under it, the fold's summary wraps under its count, the rows' Copy is a 40 px ghost ---- */
 @media (max-width: 720px) {
-  .ins-strip { flex-direction: column; align-items: stretch; gap: var(--jh-s3); padding: var(--jh-s4); }
-  .ins-strip-code { font-size: 13.5px; }
+  .ins-plate { margin-top: 32px; }
+  .ins-head { padding: 10px 16px; }
+  .ins-body { padding: 12px; }
+  .ins-strip { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px; }
+  .ins-strip-code { font-size: 13px; }
   .ins-strip-acts > *, .ins-strip-acts > .kit-tip-anchor > * { flex: 1 1 0; width: 100%; }
-  .ins-fold .kit-fold-summary { display: none; } /* the four verbs do not fit beside the title on a phone */
+  .ins-note { padding: 0 2px; }
+  .ins-fold .kit-fold-head { height: auto; min-height: 40px; flex-wrap: wrap; row-gap: 4px; padding: 8px 12px; }
+  .ins-fold .kit-fold-summary { flex: 1 1 100%; flex-wrap: wrap; row-gap: 4px; margin-left: 18px; overflow: visible; line-height: 1.3; }
   .ins-rows .kit-row { align-items: center; }
-  .ins-rows .kit-row-title.is-mono { overflow-wrap: anywhere; }
+  .ins-rows .kit-row-title.is-mono { overflow-wrap: anywhere; white-space: normal; }
   .ins-rows .kit-row-trailing { height: 40px; }
   .ins-rows .kit-row-verb { width: auto; }
   .ins-rows .kit-row .kit-btn { height: 40px; padding: 0 12px; }

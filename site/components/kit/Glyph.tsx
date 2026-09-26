@@ -208,9 +208,7 @@ const GLYPHS: Record<GlyphName, readonly Prim[]> = {
   stopCircle: [cut(DISC, rrect(7, 7, 6, 6, 1))],
   slashCircle: [cut(DISC, outline([[5.5, 14.5], [14.5, 5.5]], 1.5))],
   lock: [fill(rrect(4, 9, 12, 9, 2)), line("M6.75 9.5V7.25A3.25 3.25 0 0 1 13.25 7.25V9.5", 1.75)],
-  // key.fill: the bow r 4 with an r 1.5 hole at (6.5, 13.5), the shaft up the diagonal to (16.5, 3.5) seated on the bow
-  // (its end corners on the circle), one tooth off the shaft; the shaft and tooth share one nonzero path
-  key: [cut(disc(6.5, 13.5, 4), disc(6.5, 13.5, 1.5)), fill(`${outline([[9.22, 10.78], [16.5, 3.5]], 2.2)}${outline([[13, 7], [15.5, 9.5]], 2)}`)],
+  key: [line(disc(6.5, 13.5, 2.75), 2), line("M8.5 11.5L16.5 3.5M13 7L15.25 9.25", 2)],
   terminal: [cut(rrect(2, 3.5, 16, 13, 2), outline([[5.5, 7], [8.5, 10], [5.5, 13]], 1.5), poly([[10.5, 12.5], [14.5, 12.5], [14.5, 14], [10.5, 14]]))],
   dot: [fill(disc(10, 10, 3))],
   // ---- the site's own ----

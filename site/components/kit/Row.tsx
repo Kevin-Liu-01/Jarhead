@@ -33,8 +33,8 @@ export interface RowProps {
   readonly act?: ReactNode;
   /**
    * The row's story as a ConsoleTip (ConsoleRow.swift:207-211: the hint is the card's spoken form): the whole row is the
-   * trigger, through a focusable cover under the parts, so the tip shows on hover anywhere on the row, on a keyboard
-   * focus, and held on a touch tap (the cover's one job is the tip). The trailing controls keep their own pointer.
+   * trigger, through a focusable cover under the parts, so the tip shows on hover anywhere on the row and on a keyboard
+   * focus. The trailing controls keep their own pointer.
    */
   readonly tip?: Pick<TipProps, "line" | "keyCap" | "card" | "side">;
   readonly selected?: boolean;
@@ -73,7 +73,7 @@ export function Row({ icon, title, mono, size = 12, badge, value, meta, trailing
   ) : act ? (
     act
   ) : tip ? (
-    <Tip {...tip} tap>
+    <Tip {...tip}>
       <button type="button" className="kit-row-act" aria-label={name} />
     </Tip>
   ) : null;

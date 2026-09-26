@@ -1,0 +1,166 @@
+/*
+ * mr.css · FAITHFUL · Mailroom's devices on Jarhead's tokens (MAILROOM.md §2 and §6, the take-list): the section
+ * with its space, the two-line heading with the grey second line, the lede, the note, the card, the pill, the figure
+ * frame, the numbered triptych with its signal wires, the never-line, the stat cards, the trust cards, the two-column
+ * section, the closing band and the rise. Classes .mr-*; every colour a --jh-* token; weight ≤ 500; Inter.
+ */
+
+/* ---------- the section: Mailroom's section space above and below, the gutter each side (globals.css:88) ---------- */
+.mr-sec { padding: var(--jh-sec-space) var(--jh-gut); min-width: 0; }
+
+/* ---------- the two-line heading; line two in the lead's grey (page.tsx:17,56; MAILROOM.md §3 "The two-line heading") ---------- */
+.mr-h2 { font-size: clamp(34px, 4.6vw, 64px); line-height: 1.05; letter-spacing: -0.03em; font-weight: 500; color: var(--jh-fg); text-wrap: balance; }
+.mr-grey { color: var(--jh-fg-2); }
+.mr-lead { margin-top: 20px; font-size: clamp(17px, 1.5vw, 21px); line-height: 1.375; color: var(--jh-fg-2); max-width: 640px; text-wrap: pretty; }
+.mr-lead code, .mr-note code { font-size: 0.92em; }
+/* the muted note under the buttons; the lede after a grid (page.tsx:46, :89) */
+.mr-note { margin-top: 24px; font-size: 14px; line-height: 1.6; color: var(--jh-fg-2); }
+.mr-after { margin-top: 20px; }
+/* the three provenance lines beside the ledger: 14 px muted, one per line */
+.mr-lines { margin-top: 24px; display: grid; gap: 2px; font-size: 14px; line-height: 1.6; color: var(--jh-fg-2); }
+
+/* ---------- the card (globals.css:108-110): one hairline, radius 6, the raised step, 24 of padding ---------- */
+.mr-card { border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); background: var(--jh-raised); background-clip: padding-box; padding: 24px; min-width: 0; }
+
+/* ---------- the pill (globals.css:111-114): 24 tall, one hairline, muted words; on = inverted; danger = hatched in the error tone ---------- */
+.mr-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border: 1px solid var(--jh-hair); border-radius: 999px; background: var(--jh-raised); background-clip: padding-box;
+  font-size: 11.5px; line-height: 18px; font-weight: 500; letter-spacing: 0.02em; color: var(--jh-fg-2); white-space: nowrap; flex: none; }
+.mr-pill--on { background: var(--jh-fg); border-color: var(--jh-fg); color: var(--jh-ground); }
+.mr-pill--danger { color: var(--jh-error-word); border-color: color-mix(in srgb, var(--jh-error) 50%, transparent);
+  background-image: repeating-linear-gradient(45deg, transparent 0 3px, var(--jh-error-veil) 3px 4px); }
+.mr-pill .kit-dot { --kit-phase: var(--mr-phase, var(--jh-titanium)); }
+.mr-pill .kit-glyph, .mr-pill svg { width: 12px; height: 12px; }
+
+/* ---------- the figure frame (SearchDiagram / TrashDiagram; MAILROOM.md §1.3-1.4): the raised card, p-0, inner panels on the ground ---------- */
+.mr-figure { margin: 48px 0 0; border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); background: var(--jh-raised); background-clip: padding-box; overflow: hidden; min-width: 0; }
+.mr-figure-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; }
+.mr-fact { font-size: 13.5px; line-height: 20px; color: var(--jh-fg-2); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mr-fact b { font-weight: 500; color: var(--jh-fg); font-variant-numeric: tabular-nums; }
+.mr-figure-body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: center; padding: 0 20px 20px; }
+.mr-figure-body--stack { grid-template-columns: minmax(0, 1fr); }
+.mr-figure-body > * { min-width: 0; }
+.mr-panel { background: var(--jh-ground); border-radius: var(--jh-radius); overflow: hidden; }
+.mr-panel > picture, .mr-panel > img, .mr-panel picture img { display: block; width: 100%; height: auto; }
+.mr-rows { background: var(--jh-ground); border-radius: var(--jh-radius); padding: 4px 0; }
+.mr-rows .kit-row { padding: 12px 16px; }
+.mr-rows .kit-row + .kit-row { padding-top: 11px; }
+.mr-rows .kit-row-title { font-size: 13.5px; line-height: 20px; white-space: normal; overflow: visible; text-overflow: clip; } /* the lines are sentences: they wrap */
+.mr-rows .kit-row-icon > svg, .mr-rows .kit-row-icon > .kit-mark { color: var(--jh-titanium); }
+.mr-rows .kit-row-value { font-size: 12px; }
+.mr-figure-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--jh-hair-row); font-size: 12.5px; line-height: 1.5; color: var(--jh-fg-2); }
+
+/* ---------- the numbered triptych (RunFlow.tsx:60-95): three cards, two 108 px connector columns with a signal wire and a lowercase label ---------- */
+.mr-trip { margin-top: 48px; display: grid; grid-template-columns: minmax(0, 1fr) 108px minmax(0, 1fr) 108px minmax(0, 1fr); align-items: stretch; }
+.mr-tcard { position: relative; display: flex; flex-direction: column; }
+.mr-tnum { position: absolute; left: 16px; top: 12px; font: 500 11px/1 var(--font-mono); color: var(--jh-fg-2); font-variant-numeric: tabular-nums; }
+.mr-tile { display: block; width: 100%; height: auto; margin-top: 12px; }
+.mr-ttitle { margin-top: 8px; display: flex; align-items: center; gap: 8px; font-size: 16px; line-height: 1.3; font-weight: 500; color: var(--jh-fg); }
+.mr-ttitle .kit-glyph { color: var(--jh-fg); }
+.mr-tcap { margin-top: 4px; font-size: 14px; line-height: 1.375; color: var(--jh-fg-2); }
+.mr-conn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 0 6px; min-width: 0; }
+.mr-conn-h { display: block; width: 96px; height: 24px; overflow: visible; }
+.mr-conn-v { display: none; width: 24px; height: 56px; overflow: visible; }
+.mr-wire { stroke: var(--jh-fg); stroke-opacity: 0.45; stroke-width: 1.2; fill: none; vector-effect: non-scaling-stroke; }
+.mr-signal { stroke: var(--jh-fg); stroke-width: 1.4; fill: none; stroke-dasharray: 2 12; stroke-linecap: round; animation: mr-signal 3.2s linear infinite; vector-effect: non-scaling-stroke; }
+@keyframes mr-signal { to { stroke-dashoffset: -42; } }
+/* the tiles' own strokes: 1 px, non-scaling (iso.tsx) */
+.mr-iso { stroke-width: 1; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+
+/* ---------- the stat cards (page.tsx:104-118): three across, py-8, the figure leading-none, a five-word caption ---------- */
+.mr-stats { margin-top: 48px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.mr-stat { padding: 32px 24px; cursor: default; }
+.mr-stat-v { display: block; font-size: clamp(44px, 5.5vw, 72px); line-height: 1; font-weight: 500; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--jh-fg); }
+.mr-stat-l { display: block; margin-top: 12px; font-size: 16px; line-height: 1.4; color: var(--jh-fg-2); }
+
+/* ---------- the trust cards (page.tsx:122-131): 2 × 2, py-7, one sentence each ---------- */
+.mr-trust { margin-top: 48px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.mr-trust .mr-card { padding: 28px 24px; font-size: clamp(20px, 2.2vw, 28px); line-height: 1.25; font-weight: 500; letter-spacing: -0.02em; text-wrap: balance; }
+/* a hyphenated compound on a card stays whole: balance would otherwise break it at the hyphen (append- / only.) */
+.mr-nowrap { white-space: nowrap; }
+.mr-trust--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mr-trust--3 .mr-card { font-size: clamp(18px, 1.9vw, 24px); }
+/* the six brains on the card that names every brain: marks alone, 20 px, in the lead's grey */
+.mr-trust-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; color: var(--jh-fg-2); }
+.mr-trust-marks > svg { width: 20px; height: 20px; flex: none; }
+
+/* ---------- the never-line (page.tsx:89; MAILROOM.md §6 take 9): the hatched pill, then the seven items on one line with a dot between; the closing line under it ---------- */
+.mr-never { margin-top: 40px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px; font-size: clamp(17px, 1.35vw, 19px); line-height: 1.5; font-weight: 500; letter-spacing: -0.015em; color: var(--jh-fg); }
+.mr-never-item { display: inline-flex; align-items: center; gap: 14px; white-space: nowrap; } /* the dot travels with its item across a wrap */
+.mr-never-sep { color: var(--jh-fg-4); }
+
+/* ---------- the two-column section (page.tsx:94-100): the head left, the figure right ---------- */
+.mr-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px 64px; align-items: center; }
+.mr-two > * { min-width: 0; }
+.mr-two .mr-figure { margin-top: 0; }
+/* the ledger inside a figure: the lead figure on top, then label · value rows (JudgmentCard.tsx's dl) */
+.mr-ledger-top { display: flex; flex-direction: column; gap: 6px; padding: 20px 20px 18px; cursor: default; }
+.mr-ledger-v { font-size: clamp(40px, 3.6vw, 52px); line-height: 1; font-weight: 500; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; color: var(--jh-fg); }
+.mr-ledger-l { font-size: 14px; line-height: 1.4; color: var(--jh-fg-2); }
+.mr-ledger .kit-row { grid-template-columns: minmax(0, 1fr); padding: 10px 16px; } /* no icon column: label · value, as the JudgmentCard's dl */
+.mr-ledger .kit-row-icon { display: none; }
+.mr-ledger .kit-row + .kit-row { padding-top: 9px; }
+.mr-ledger .kit-row-title { font-size: 13px; line-height: 20px; white-space: normal; overflow: visible; text-overflow: clip; }
+.mr-ledger .kit-row-value { font-size: 12px; color: var(--jh-fg); }
+
+/* ---------- the closing band (ClosingBand.tsx): the page inverted by a token swap, centred ---------- */
+.mr-band { --jh-ground: var(--jh-inv-ground); --jh-raised: var(--jh-inv-raised); --jh-fg: var(--jh-inv-fg); --jh-fg-2: var(--jh-inv-fg-2); --jh-fg-3: var(--jh-inv-fg-3);
+  --jh-hair: var(--jh-inv-hair); --jh-hair-row: var(--jh-inv-hair-row); --jh-hair-frame: var(--jh-inv-hair-frame);
+  --jh-hover: var(--jh-inv-hover); --jh-active: var(--jh-inv-active); --jh-lift: var(--jh-inv-lift); --jh-lift-raised: var(--jh-inv-lift-raised);
+  --jh-accent: var(--jh-inv-accent); --jh-on-accent: var(--jh-inv-on-accent); --jh-fg-3-word: var(--jh-inv-fg-3-word); --jh-titanium-word: var(--jh-inv-titanium-word); --jh-error-word: var(--jh-inv-error-word); --jh-mark-chip: var(--jh-inv-mark-chip);
+  background: var(--jh-ground); color: var(--jh-fg); padding: var(--jh-sec-space) var(--jh-gut); min-width: 0; }
+.mr-band-in { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.mr-band-in .mr-h2 { margin-top: 24px; font-size: clamp(32px, 4.4vw, 60px); line-height: 1.12; letter-spacing: -0.03em; }
+.mr-band-in .mr-lead { font-size: 17px; line-height: 1.6; max-width: 520px; }
+
+/* ---------- the rise (globals.css:135-137): the hero's entrance, staggered by .08 s ---------- */
+.rise { animation: mr-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.rise-2 { animation-delay: 0.08s; }
+.rise-3 { animation-delay: 0.16s; }
+.rise-4 { animation-delay: 0.24s; }
+@keyframes mr-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* ---------- narrower rails ---------- */
+@media (max-width: 1000px) {
+  .mr-two { grid-template-columns: minmax(0, 1fr); gap: 48px; }
+  .mr-figure-body { grid-template-columns: minmax(0, 1fr); }
+  .mr-figure-body > .jh-strip-box { justify-self: center; }
+}
+
+/* ---------- the phone ladder (phone.png; RunFlow.tsx:71 the wire turns vertical) ---------- */
+@media (max-width: 720px) {
+  .mr-h2 { font-size: 34px; }
+  .mr-lead { font-size: 17px; }
+  .mr-figure { margin-top: 40px; }
+  .mr-figure-head { padding: 12px 16px; flex-wrap: wrap; }
+  .mr-fact { white-space: normal; overflow: visible; text-overflow: clip; }
+  .mr-figure-body { padding: 0 16px 16px; gap: 16px; }
+  .mr-rows .kit-row { padding: 12px; }
+  .mr-trip { margin-top: 40px; grid-template-columns: minmax(0, 1fr); }
+  .mr-conn { flex-direction: row; gap: 12px; padding: 12px 0; }
+  .mr-conn-h { display: none; }
+  .mr-conn-v { display: block; }
+  .mr-stats, .mr-trust, .mr-trust--3 { grid-template-columns: minmax(0, 1fr); margin-top: 40px; }
+  .mr-never { margin-top: 32px; font-size: 17px; gap: 10px 12px; }
+  .mr-never-item { gap: 12px; }
+  .mr-stat { padding: 24px 20px; }
+  .mr-trust .mr-card { padding: 22px 20px; font-size: 20px; }
+  .mr-ledger-top { padding: 16px 16px 14px; }
+  .mr-ledger .kit-row { padding: 10px 12px; }
+  .mr-band-in .mr-h2 { font-size: 32px; }
+}
+
+/* The footer's mono facts wrap between facts, never inside one (macOS 14+ stays whole). */
+.jh-footer-fact { white-space: nowrap; }
+
+/* Under 480 the Console render is a left-top crop at twice the width, so its rows stay legible instead of a 570 px squeeze. */
+@media (max-width: 480px) {
+  .mr-panel.jh-console { aspect-ratio: 4 / 5; overflow: hidden; }
+  .mr-panel.jh-console > picture { width: 200%; max-width: none; }
+  .mr-panel.jh-console picture img { width: 100%; height: auto; }
+}
+
+/* Under 420 the two-line h2 takes one clamp step down so Say and Threads keep three lines, never a one-word fourth. */
+@media (max-width: 420px) {
+  .mr-h2 { font-size: 30px; }
+}
+

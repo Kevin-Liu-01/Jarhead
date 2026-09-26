@@ -1,85 +1,52 @@
-import type { JSX } from "react";
-import { Glyph, Group, GroupHead, Row, Tip, type GlyphName } from "@/components/kit";
-import { Plate } from "@/components/ui/Plate";
-import { Section } from "@/components/ui/Section";
-import { COSTS, NUMBERS } from "@/content/copy";
-import { after, join, row, upTo } from "./cut";
+import type { ReactElement, ReactNode } from "react";
+import { Group, Row, Tip } from "@/components/kit";
+import { Figure } from "@/components/ui/Figure";
+import { Pill } from "@/components/ui/Pill";
+import { Heading, Lead } from "@/components/ui/Section";
+import { NUMBERS } from "@/content/deck";
+import { row } from "./cut";
+
+/** Eight of the fifteen figures as the ledger's rows; the rest live where they are the fact (Threads, Hands, Sleep, Costs). */
+const ROWS = [0, 1, 2, 3, 4, 7, 11, 13].map((i) => row(NUMBERS.figures, i));
+
+/** A date (2026-09-11) stays whole: on the phone the line would otherwise break at the hyphens inside it. A render split only; the text stays byte for byte the deck's. */
+function dated(s: string): ReactNode {
+  return s.split(/(\d{4}-\d{2}-\d{2})/).map((part, i) => (i % 2 ? <span key={i} className="mr-nowrap">{part}</span> : part));
+}
 
 /**
- * The display figure's line cut once: `ear final → hands dispatch` as the label, `median · 6 ms p95 · real helper · n = 50 ·
- * 2026-09-11` as the proof line on the page (facts-product.md §5.8: never 3 ms without its median, n and date), and the
- * same proof as the tip (README:313, docs/LATENCY.md:321).
+ * #numbers: Mailroom's two-column section (page.tsx:94-100; JudgmentCard): the h2, the lede and the three provenance
+ * lines at the left; at the right the ledger figure: the lead figure on top, then label · value rows, every tooltip a kit tip.
  */
-const DISPLAY_LABEL = upTo(NUMBERS.displayLine, " · ");
-const DISPLAY_PROOF = after(NUMBERS.displayLine, `${DISPLAY_LABEL} · `);
-
-/**
- * Six of the README's rows as kit rows: the deck's label, its figure as the value, its proof as the tip. A latency row
- * (`proof`) also carries its proof as the meta line, so the n and the date are on the page on every device (§5.8; a tip
- * is never the only carrier).
- */
-const LATENCY: ReadonlyArray<{ readonly i: number; readonly glyph: GlyphName; readonly proof?: true }> = [
-  { i: 2, glyph: "voice", proof: true }, // GPT-Live-1 reply · README:321
-  { i: 3, glyph: "play", proof: true }, // delegation to first visible action · README:317
-  { i: 4, glyph: "checkCircle", proof: true }, // delegation to verified completion · README:318
-  { i: 5, glyph: "reload", proof: true }, // tool round trip · README:322
-  { i: 7, glyph: "terminal" }, // input tokens on a cold Codex thread · README:324
-  { i: 14, glyph: "exclamationCircle" }, // the daemon lingers after a crash · README:331
-];
-const VOICE = row(COSTS.rows, 0); // The voice · GPT-Live-1 · README:325
-/** The voice row's title with its first sentence: the cost figure's tip title; the rest of the row is the tip's line. */
-const VOICE_TITLE = join(VOICE.title, upTo(VOICE.p, "."));
-const VOICE_STORY = after(VOICE.p, ". ");
-const NOTHING: ReadonlyArray<{ readonly i: number; readonly glyph: GlyphName }> = [
-  { i: 1, glyph: "pause" }, // Asleep · README:526
-  { i: 2, glyph: "stopCircle" }, // Paused or stopped · README:35
-  { i: 8, glyph: "terminal" }, // Benchmarks · README:529
-];
-
-const figure = (t: { figure: string; unit?: string }): string => (t.unit ? `${t.figure}${t.unit === "k" ? "" : " "}${t.unit}` : t.figure);
-
-/**
- * Numbers: 3 ms as the one display figure beside the latency rows; Costs as a second figure beside its three rows. Every
- * provenance is a tip; a latency's is also on the page, the one mono proof line under the figure and the meta line of its row.
- * The cost figure's line is the deck's own (`per second of open session, muted or not · $3 an hour of talking`, README:325,
- * README:526), so the clause that matters is visible and never only in a tip (facts-product.md §5.9).
- */
-export function Numbers(): JSX.Element {
+export function Numbers(): ReactElement {
   return (
-    <Section id={NUMBERS.id} h2={NUMBERS.h2} lead={NUMBERS.lead} /* README:307-309 */>
-      <Plate>
-        <div className="sec-frame sec-frame--figure">
-          <Tip card={{ title: NUMBERS.display, lines: [DISPLAY_PROOF] }} tap>
-            <button type="button" className="sec-figure" aria-label={join(NUMBERS.display, DISPLAY_LABEL)}>
-              <span className="sec-figure-v">{NUMBERS.display}</span>
-              <span className="sec-figure-l">{DISPLAY_LABEL}</span>
-              <span className="sec-figure-p">{DISPLAY_PROOF}</span>
-            </button>
-          </Tip>
-          <Group className="sec-rows">
-            {LATENCY.map(({ i, glyph, proof }) => {
-              const t = row(NUMBERS.tiles, i);
-              return (
-                <Row key={t.label} size={13} icon={<Glyph name={glyph} size={16} />} title={t.label} value={figure(t)} meta={proof ? t.proof : undefined} tip={{ card: { title: figure(t), lines: [t.proof] } }} />
-              );
-            })}
-          </Group>
+    <section id={NUMBERS.id} className="mr-sec">
+      <div className="mr-two">
+        <div>
+          <Heading h2={NUMBERS.h2} />
+          <Lead>{NUMBERS.lead}</Lead>
+          <div className="mr-lines">
+            {NUMBERS.lines.map((l) => (
+              <p key={l}>{dated(l)}</p>
+            ))}
+          </div>
         </div>
-        <div className="sec-frame sec-frame--figure">
-          <Tip card={{ title: VOICE_TITLE, lines: [VOICE_STORY] }} tap>
-            <button type="button" className="sec-figure is-md" aria-label={join(COSTS.display, COSTS.displayLine)}>
-              <span className="sec-figure-v">{COSTS.display}</span>
-              <span className="sec-figure-l">{COSTS.displayLine}</span>
-            </button>
-          </Tip>
-          <Group className="sec-rows" head={<GroupHead title={COSTS.h2} count={NOTHING.length} />}>
-            {NOTHING.map(({ i, glyph }) => {
-              const r = row(COSTS.rows, i);
-              return <Row key={r.title} size={13} icon={<Glyph name={glyph} size={16} />} title={r.title} value={r.value} tip={r.p ? { card: { title: r.title, lines: [r.p] } } : undefined} />;
-            })}
+        <Figure stack head={<Pill word={NUMBERS.label} />}>
+          <div className="mr-panel">
+            <Tip card={{ title: NUMBERS.display.value, lines: [NUMBERS.display.tip] }}>
+              <button type="button" className="mr-ledger-top" aria-label={`${NUMBERS.display.value} · ${NUMBERS.display.label}`}>
+                <span className="mr-ledger-v">{NUMBERS.display.value}</span>
+                <span className="mr-ledger-l">{NUMBERS.display.label}</span>
+              </button>
+            </Tip>
+          </div>
+          <Group className="mr-rows mr-ledger">
+            {ROWS.map((r) => (
+              <Row key={r.label} size={13} title={r.label} value={r.value} tip={{ card: { title: r.value, lines: [r.tip] } }} />
+            ))}
           </Group>
-        </div>
-      </Plate>
-    </Section>
+        </Figure>
+      </div>
+    </section>
   );
 }

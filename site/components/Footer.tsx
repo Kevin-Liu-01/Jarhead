@@ -1,28 +1,32 @@
-import Github from "@thesvg/react/github";
-import { OrbField } from "@/components/OrbField";
-import { Button, Chip } from "@/components/kit";
-import { REPO_URL } from "@/content/install";
+import { Fragment } from "react";
+import { Mark } from "@/components/Mark";
+import { FOOTER, REPO_URL } from "@/content/deck";
 
-/** The mark, the words, one ghost and two chips on the orb field band; the disclosure line under it, at most 60ch. */
+/** The mono line's facts, ` · `-joined in the deck (README:10, README:554, facts:15-16, README:362); the first is the repo link. */
+const FACTS = FOOTER.mono.split(" · ");
+const [GITHUB, ...REST] = FACTS;
+if (!GITHUB || REST.length !== 5) throw new Error("the footer's mono line drifted");
+
+/** Mailroom's footer (layout.tsx:71-74): one 12 px muted line, the mark at 16 and the facts at the left, the credits at the right. */
 export function Footer() {
   return (
-    <footer className="jh-rail jh-footer">
-      <div className="jh-footer-band">
-        <OrbField height={320} className="jh-footer-field" />
-        <div className="jh-footer-words">
-          <p className="jh-footer-name">Jarhead</p>
-          <p className="jh-footer-line">A voice-first Mac assistant that uses the computer for you.</p>
-          <div className="jh-footer-row">
-            <Button kind="ghost" size={28} href={REPO_URL} icon={<Github variant="mono" width={16} height={16} aria-hidden="true" focusable="false" />}>
-              GitHub
-            </Button>
-            <Chip word="MIT" />
-            <Chip word="v2.0.0" />
-          </div>
-        </div>
+    <footer id="footer" className="jh-rail jh-footer">
+      <div className="jh-footer-l">
+        <Mark size={16} />
+        <span className="jh-footer-mono">
+          <a href={REPO_URL} rel="noopener">
+            {GITHUB}
+          </a>
+          {REST.map((f) => (
+            <Fragment key={f}>
+              {" "}
+              <span className="jh-footer-fact">· {f}</span>
+            </Fragment>
+          ))}
+        </span>
       </div>
-      <p className="jh-footer-note">
-        Every picture on this page is rendered by the app&apos;s own preview harnesses over fixed fake data; none is a photo of a desktop. The alarm text says the author&apos;s name because the harness does. Brand marks from thesvg.org.
+      <p className="jh-footer-r">
+        {FOOTER.disclosures[3]} {FOOTER.disclosures[4]}
       </p>
     </footer>
   );

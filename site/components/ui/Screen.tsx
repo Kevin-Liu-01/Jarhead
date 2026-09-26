@@ -23,7 +23,6 @@ export function ThemeImage({
   light,
   width,
   height,
-  sizes,
   priority,
   phone,
   className,
@@ -32,7 +31,6 @@ export function ThemeImage({
   readonly light: { readonly src: string; readonly alt: string };
   readonly width: number;
   readonly height: number;
-  readonly sizes?: string;
   readonly priority?: boolean;
   readonly phone?: "none";
   readonly className?: string;
@@ -72,7 +70,6 @@ export function ThemeImage({
         alt={light.alt}
         width={width}
         height={height}
-        sizes={sizes}
         decoding="async"
         loading={priority ? undefined : "lazy"}
         fetchPriority={priority ? "high" : undefined}

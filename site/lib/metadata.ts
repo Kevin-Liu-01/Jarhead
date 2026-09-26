@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 
 /**
  * The page's metadata, in one place; `app/layout.tsx` re-exports both. The words are the
- * site's (README:7, README:16, README:13, README:352); the OG picture is `/og.png`
+ * deck's (COPY.md:251, COPY.md:36, COPY.md:40, COPY.md:268); the OG picture is `/og.png`
  * (`app/og.png/route.tsx`), the favicons are `scripts/make-icons.mts`'s output, the
  * manifest is `app/manifest.ts`. `app/icon.png` and `app/apple-icon.png` are Next's file
  * conventions, but Next links them only when `icons` is unset, so they are named in `icons`
@@ -12,10 +12,10 @@ import type { Metadata, Viewport } from "next";
 export const SITE_URL = "https://jarhead.kevinliu.studio";
 export const SITE_NAME = "Jarhead";
 
-/** 139 characters. */
-export const DESCRIPTION = "A voice-first Mac assistant that uses the computer for you. Say jarhead, pass Touch ID, talk. Open source, MIT, macOS 14+ on Apple silicon.";
+/** The footer line, the lead's first sentence, then three parts of the figures line. 125 characters. */
+export const DESCRIPTION = "A voice-first Mac assistant that uses the computer for you. Say jarhead, pass Touch ID, talk. MIT · macOS 14+ · Apple silicon";
 
-export const OG_IMAGE = { url: "/og.png", width: 1200, height: 630, alt: "Jarhead: the dithered orb wearing ^ ^ over an ink field", type: "image/png" } as const;
+export const OG_IMAGE = { url: "/og.png", width: 1200, height: 630, alt: "The dithered orb over an ink field.", type: "image/png" } as const;
 
 /** The two grounds, `--jh-ground` light and dark (globals.css); a meta value has no token to read. */
 export const THEME_COLOR_LIGHT = "#ffffff";

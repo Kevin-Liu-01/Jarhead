@@ -1,30 +1,34 @@
-import type { JSX } from "react";
-import { Glyph, Group, KeyCap, Row } from "@/components/kit";
+import type { ReactElement } from "react";
+import { Glyph, Group, Row } from "@/components/kit";
+import { Fact, Figure } from "@/components/ui/Figure";
 import { IslandStrip } from "@/components/ui/IslandStrip";
-import { Plate } from "@/components/ui/Plate";
+import { Pill } from "@/components/ui/Pill";
 import { Section } from "@/components/ui/Section";
-import { COSTS, SLEEP } from "@/content/copy";
-import { after, need, row, upTo } from "./cut";
+import { FOOTER, NUMBERS, SHOTS, SLEEP } from "@/content/deck";
+import { row } from "./cut";
 
-const SAYS = row(SLEEP.cards, 0); // Sleeps when you say so · README:46, README:326
-const RING = row(SLEEP.cards, 1); // The ring · README:281
-const FREE = row(SLEEP.cards, 2); // Asleep costs nothing · README:526
-const ASLEEP = row(COSTS.rows, 1); // Asleep · nothing · README:526
+const IDLE = row(NUMBERS.figures, 14); // `10 min` · idle sleep · README:335
 
-/** 06 · Sleep: the alarm ringing on the island at 1:1 in its strip beside three kit rows. */
-export function Sleep(): JSX.Element {
+/** #sleep: the h2, the lede, then the figure: the island ringing at 1:1 beside the three lines as rows; the foot names the alarm's fixed data. */
+export function Sleep(): ReactElement {
   return (
-    <Section id={SLEEP.id} h2={SLEEP.h2} lead={SLEEP.lead} /* README:46, README:277-281 */>
-      <Plate>
-        <div className="sec-frame">
-          <IslandStrip {...SLEEP.alarm} />
-          <Group className="sec-rows">
-            <Row size={13} icon={<Glyph name="hourglass" size={16} />} title={SAYS.h3} value={upTo(need(SAYS.fig), " · a setting")} tip={{ card: { title: SAYS.h3, lines: [upTo(SAYS.p, ' "Shut down')] } }} />
-            <Row size={13} icon={<Glyph name="exclamationCircle" size={16} />} title={RING.h3} trailing={<KeyCap>{upTo(need(RING.fig), " ")}</KeyCap>} tip={{ card: { title: RING.h3, lines: [after(RING.p, "same two buttons. ")] } }} />
-            <Row size={13} icon={<Glyph name="pause" size={16} />} title={FREE.h3} value={ASLEEP.value} tip={{ card: { title: FREE.h3, lines: [upTo(FREE.p, " Nothing fires")] } }} />
-          </Group>
-        </div>
-      </Plate>
+    <Section id={SLEEP.id} h2={SLEEP.h2} lead={SLEEP.lead}>
+      <Figure
+        head={
+          <>
+            <Pill phase={SLEEP.phase} />
+            <Fact value={IDLE.value} label={IDLE.label} />
+          </>
+        }
+        foot={FOOTER.disclosures[2]}
+      >
+        <IslandStrip {...SHOTS.islandAlarm} />
+        <Group className="mr-rows">
+          <Row size={13} icon={<Glyph name="pause" size={16} />} title={SLEEP.lines[0]} />
+          <Row size={13} icon={<Glyph name="ask" size={16} />} title={SLEEP.lines[1]} />
+          <Row size={13} icon={<Glyph name="quit" size={16} />} title={SLEEP.lines[2]} />
+        </Group>
+      </Figure>
     </Section>
   );
 }
