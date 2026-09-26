@@ -1,374 +1,47 @@
 /*
- * install.css · the install plate, the Install section (re-composed for the ruled rail: the plate,
- * the four rows beside the six checks, then the Permissions plate), the copy tile. Classes .ins-*
- * only. Every colour is a --jh-* token from globals.css; every line is drawn once by its owner
- * (the split owns its rules, a row owns its top rule, the plate its hairline).
+ * install.css · AIR · the Install section's plate: the ink one-liner strip with its two verbs, the By hand
+ * fold with the four command rows, the Requirements group, then the one spoken line. Classes .ins-* only;
+ * every colour a --jh-* token; every block of air a --jh-s* step; every line drawn once by its owner.
  */
 
-/* ---- the plate: the one dark artifact surface, in both themes ---- */
-.ins-plate {
-  position: relative;
-  overflow: hidden;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "eyebrow copy"
-    "code code"
-    "note note";
-  column-gap: 12px;
-  row-gap: 8px;
-  align-items: center;
-  padding: 18px;
-  background: var(--jh-plate);
-  background-clip: padding-box;
-  color: var(--jh-plate-fg);
-  border: 1px solid var(--jh-plate-hair);
-  border-radius: var(--jh-radius);
-}
-/* 315 × 174: 14 + 36 (eyebrow row) + 6 + 51 (the one-liner on three lines, its runs held whole) + 6 + 45 (three note lines) + 14, plus the hairline */
-.ins-plate--desk {
-  width: 315px;
-  max-width: 100%;
-  padding: 14px;
-  row-gap: 6px;
-}
-.ins-plate--rail {
-  width: 100%;
-}
-.ins-plate--head {
-  margin-top: 0;
-}
-/* the Permissions plate closes the section; the split above it keeps 36 px of air */
-.ins-perm-plate {
-  margin-top: 36px;
-}
-.ins-perm {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-/* renderField writes the inline size after mount; 0 × 0 until then, so the first paint has no 300 × 150 default box to shift */
-.ins-plate-field {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 0;
-  height: 0;
-  image-rendering: pixelated;
-  pointer-events: none;
-}
-.ins-plate > :not(.ins-plate-field) {
-  position: relative;
-}
-.ins-plate-eyebrow {
-  grid-area: eyebrow;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.1em;
-  color: var(--jh-plate-fg-2);
-  white-space: nowrap;
-}
-.ins-plate-copy {
-  grid-area: copy;
-  justify-self: end;
-}
-.ins-plate-code {
-  grid-area: code;
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--jh-plate-fg);
-  overflow-wrap: normal;
-  word-break: normal;
-}
-/* one held run of the one-liner: the command, the URL up to its script, the script, the pipe; the line breaks only between them, never inside the host */
-.ins-plate-seg {
-  white-space: nowrap;
-}
-.ins-plate--desk .ins-plate-code {
-  font-size: 12.5px;
-  line-height: 17px;
-}
-/* the note runs into the plate's lower-right corner, where the field pools to the accent: the .62 step reads 3.1:1 on that cell, .87 reads 4.7; the link keeps its underline as its mark */
-.ins-plate-note {
-  grid-area: note;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--jh-plate-fg);
-}
-.ins-plate--desk .ins-plate-note {
-  font-size: 11px;
-  line-height: 15px;
-  letter-spacing: -0.005em;
-}
-.ins-plate-note a {
-  text-decoration: underline;
-  text-decoration-color: var(--jh-plate-hair);
-  text-underline-offset: 2px;
-  transition: text-decoration-color var(--jh-instant) var(--jh-ease-out);
-}
-.ins-plate-note a:hover {
-  text-decoration-color: var(--jh-plate-fg);
-}
+/* ---- the one-liner strip: the one dark artifact surface, in both themes, radius 6; its edge is the paper ring on ink, nothing on paper ---- */
+.ins-strip { position: relative; overflow: hidden; display: flex; align-items: center; gap: var(--jh-s4); padding: var(--jh-s4) 24px;
+  background: var(--jh-plate); background-clip: padding-box; color: var(--jh-plate-fg); border: 1px solid var(--jh-plate-edge); border-radius: var(--jh-radius);
+  /* the kit inside reads the strip's own steps */
+  --jh-fg: var(--jh-plate-fg); --jh-fg-2: var(--jh-plate-fg-2); --jh-fg-3-word: var(--jh-plate-fg-2); --jh-hair: var(--jh-plate-hair); --jh-hair-row: var(--jh-plate-hair-row);
+  --jh-lift: var(--jh-plate-lift); --jh-hover: var(--jh-plate-hover); --jh-active: var(--jh-plate-lift); }
+.ins-strip > * { position: relative; }
+/* the field: the same ground renderer as the plates (DitherGround), pinned bottom-right so the whisper stays in the corner */
+.ins-strip > .ins-strip-field { position: absolute; }
+.ins-strip-code { flex: 1 1 auto; min-width: 0; display: block; font-family: var(--font-mono); font-size: 15px; line-height: 1.5; color: var(--jh-plate-fg); overflow-wrap: normal; word-break: normal; }
+/* one held run of the one-liner: the line breaks only between the runs, never inside the host */
+.ins-strip-seg { white-space: nowrap; }
+/* the two verbs: the ghost that opens the script, then the primary at the edge */
+.ins-strip-acts { flex: none; display: flex; align-items: center; gap: var(--jh-s2); }
 
-/* ---- the copy tile: a real button, --jh-lift plus a hairline, radius 6 ---- */
-.ins-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--jh-hair);
-  border-radius: var(--jh-radius);
-  background: var(--jh-lift);
-  background-clip: padding-box;
-  color: var(--jh-fg);
-  font-family: var(--font-sans);
-  font-size: 13.5px;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: -0.005em;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background var(--jh-instant) var(--jh-ease-out),
-    border-color var(--jh-instant) var(--jh-ease-out),
-    color var(--jh-instant) var(--jh-ease-out);
-}
-.ins-copy:hover {
-  background: var(--jh-lift-raised);
-}
-.ins-copy:active {
-  background: var(--jh-active);
-}
-.ins-copy--sm {
-  height: 30px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
-.ins-copy svg {
-  flex: none;
-  fill: currentColor;
-}
-.ins-copy.is-done,
-.ins-copy.is-done:hover {
-  background: var(--jh-accent);
-  border-color: var(--jh-accent);
-  color: var(--jh-on-accent);
-}
-.ins-plate .ins-copy {
-  background: var(--jh-plate-lift);
-  border-color: var(--jh-plate-hair);
-  color: var(--jh-plate-fg);
-}
-.ins-plate .ins-copy:hover {
-  background: color-mix(in srgb, var(--jh-plate-lift), var(--jh-plate-fg) 8%);
-}
-.ins-plate .ins-copy.is-done,
-.ins-plate .ins-copy.is-done:hover {
-  background: var(--jh-accent);
-  border-color: var(--jh-accent);
-  color: var(--jh-on-accent);
-}
-/* the textarea the fallback copies from: in the document, out of sight, never focus-visible */
-.ins-copy-ta {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  pointer-events: none;
-}
+/* ---- the fold and the group: s5 between the blocks ---- */
+.ins-fold { margin-top: var(--jh-s5); }
+.ins-fold .kit-fold-head { padding: 0 12px; }
+.ins-group { margin-top: var(--jh-s5); }
+/* the command rows: the number in the icon column, the command mono, a ghost Copy in the verb slot */
+.ins-n { font: 400 11px/20px var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
+.ins-rows .kit-row-title.is-mono { font-size: 13px; }
+.ins-rows .kit-row-trailing { height: 24px; }
+.ins-rows .kit-row-verb { width: 72px; }
 
-/* ---- the 2/3 + 1/3 row under the plate ---- */
-.ins-split {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  margin-top: 36px;
-  border-top: 1px solid var(--jh-hair);
-}
-.ins-col {
-  min-width: 0;
-}
-.ins-col--commands {
-  padding-right: 28px;
-}
-.ins-col--checks {
-  padding-left: 28px;
-  border-left: 1px solid var(--jh-hair);
-}
+/* ---- the spoken line ---- */
+.ins-then { margin-top: var(--jh-s5); padding: 0 12px; font-size: 17px; line-height: 1.5; color: var(--jh-fg); }
 
-/* the command rows */
-.ins-rows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.ins-row {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
-  column-gap: 14px;
-  align-items: center;
-  min-height: 52px;
-  padding: 12px 0;
-}
-.ins-row + .ins-row {
-  border-top: 1px solid var(--jh-hair-row);
-}
-.ins-row-n {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 20px;
-  letter-spacing: 0.01em;
-  color: var(--jh-fg-3);
-  font-variant-numeric: tabular-nums;
-}
-.ins-row-body {
-  min-width: 0;
-}
-.ins-row-cmd {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--jh-fg);
-  overflow-wrap: anywhere;
-}
-/* a chained command breaks only before its `&&` on the rail; on the phone the column is too narrow for that, so it wraps as text again */
-.ins-cmd-seg {
-  white-space: nowrap;
-}
-.ins-row-note {
-  margin-top: 3px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--jh-fg-2);
-  max-width: 52ch;
-}
-.ins-row-copy {
-  align-self: center;
-}
-.ins-row--spoken {
-  grid-template-columns: 40px minmax(0, 1fr);
-  min-height: 44px;
-}
-.ins-row-text {
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--jh-fg-2);
-}
-.ins-row-note code,
-.ins-req code {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--jh-fg);
-}
-
-/* the checklist: Requirements · 6, then the six checks as one block like the standing orders (no row rules) */
-.ins-list-head {
-  display: flex;
-  align-items: center;
-  height: 36px;
-  margin: 0;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--jh-titanium);
-}
-.ins-list-count {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--jh-fg-3);
-  white-space: pre;
-}
-.ins-req {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.ins-req li {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  column-gap: 12px;
-  align-items: start;
-  padding: 5px 0;
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--jh-fg-2);
-}
-.ins-req svg {
-  width: 16px;
-  height: 16px;
-  margin-top: 2px;
-  fill: var(--jh-titanium);
-}
-
-/* ---- narrower than the desk: the split stacks ---- */
-@media (max-width: 1023px) {
-  .ins-split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .ins-col--commands {
-    padding-right: 0;
-  }
-  .ins-col--checks {
-    margin-top: 24px;
-    padding-left: 0;
-    padding-top: 4px;
-    border-left: 0;
-    border-top: 1px solid var(--jh-hair);
-  }
-}
-
-/* ---- phones: the one-liner wraps, Copy goes full width under it, rows wrap with the tile at the right ---- */
-@media (max-width: 719px) {
-  .ins-plate,
-  .ins-plate--desk {
-    width: 100%;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      "eyebrow"
-      "code"
-      "copy"
-      "note";
-    padding: 16px;
-    row-gap: 10px;
-  }
-  .ins-plate-copy {
-    justify-self: stretch;
-  }
-  .ins-plate-copy .ins-copy {
-    width: 100%;
-    height: 36px;
-  }
-  .ins-plate-code,
-  .ins-plate--desk .ins-plate-code {
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .ins-row {
-    grid-template-columns: 30px minmax(0, 1fr) auto;
-    column-gap: 10px;
-    align-items: start;
-    padding: 12px 0;
-  }
-  .ins-row--spoken {
-    grid-template-columns: 30px minmax(0, 1fr);
-  }
-  .ins-row-copy {
-    padding-top: 0;
-  }
-  .ins-cmd-seg {
-    white-space: normal;
-  }
-  .ins-perm-plate {
-    margin-top: 28px;
-  }
+/* ---- phones: the one-liner wraps in its held runs, the two verbs share a row under it at 40, the rows' Copy is a 40 px ghost ---- */
+@media (max-width: 720px) {
+  .ins-strip { flex-direction: column; align-items: stretch; gap: var(--jh-s3); padding: var(--jh-s4); }
+  .ins-strip-code { font-size: 13.5px; }
+  .ins-strip-acts > *, .ins-strip-acts > .kit-tip-anchor > * { flex: 1 1 0; width: 100%; }
+  .ins-fold .kit-fold-summary { display: none; } /* the four verbs do not fit beside the title on a phone */
+  .ins-rows .kit-row { align-items: center; }
+  .ins-rows .kit-row-title.is-mono { overflow-wrap: anywhere; }
+  .ins-rows .kit-row-trailing { height: 40px; }
+  .ins-rows .kit-row-verb { width: auto; }
+  .ins-rows .kit-row .kit-btn { height: 40px; padding: 0 12px; }
+  .ins-then { font-size: 16px; }
 }

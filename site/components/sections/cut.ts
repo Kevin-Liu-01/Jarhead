@@ -37,3 +37,9 @@ export function row<T>(rows: readonly T[], i: number): T {
   if (r === undefined) throw new Error(`deck row ${i} missing`);
   return r;
 }
+
+/** A deck string that the layout needs; an optional field that is absent is a build error, never an empty tip. */
+export function need(text: string | undefined): string {
+  if (text === undefined) throw new Error("deck string missing");
+  return text;
+}

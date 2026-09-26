@@ -1,0 +1,46 @@
+/*
+ * hero.css · AIR · the three rows (SPACE.md §4): words · the stage · the phase control; install is the
+ * section after. One job per row, one dominant element per row, the spacing scale between them. Classes
+ * .hero-*; every colour a --jh-* token; the hero's rule at the bottom is the one line under row 3.
+ */
+
+.hero { padding: var(--jh-s8) var(--jh-gut) var(--jh-s8); border-bottom: 1px solid var(--jh-hair); scroll-margin-top: var(--jh-nav); min-width: 0; }
+
+/* ---- row 1 · words: the h1 alone at display size, the lead at a readable measure, two kit buttons, the badges ---- */
+.hero-h1 { font-size: clamp(44px, 5vw, 72px); line-height: 1.02; font-weight: 500; letter-spacing: -0.03em; text-wrap: balance; max-width: 15ch; }
+.hero-lead { margin-top: var(--jh-s5); font-size: 18px; line-height: 1.55; color: var(--jh-fg-2); max-width: 52ch; text-wrap: pretty; }
+.hero-actions { margin-top: var(--jh-s5); display: flex; flex-wrap: wrap; align-items: center; gap: var(--jh-s2); }
+.hero-actions .kit-btn { padding-inline: 14px; }
+.hero-badges { margin-top: var(--jh-s4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--jh-s2); }
+
+/* ---- row 2 · the stage: flush at the rail, its own two hairlines ---- */
+.hero-stage { margin-top: var(--jh-s7); }
+/* the desk root spans the rail so its scale measures 1170; the control row under it steps back into the gutter */
+.hero-stage .desk { margin-inline: calc(-1 * var(--jh-gut)); }
+.hero-stage .hero-phase { padding-inline: var(--jh-gut); }
+
+/* ---- row 3 · the phase control and its one hint line ---- */
+.hero-phase { margin-top: var(--jh-s6); display: flex; flex-wrap: wrap; align-items: center; gap: var(--jh-s3) var(--jh-s5); }
+.hero-hint { display: inline-flex; align-items: center; gap: var(--jh-s2); font-size: 13px; line-height: 20px; color: var(--jh-fg-2); white-space: nowrap; }
+.hero-hint .kit-dot { --kit-phase: var(--desk-phase, var(--jh-titanium)); }
+
+/* ---- the phone ladder ---- */
+@media (max-width: 720px) {
+  .hero { padding-top: var(--jh-s7); }
+  .hero-h1 { font-size: 40px; line-height: 1.05; }
+  .hero-lead { margin-top: var(--jh-s4); font-size: 17px; line-height: 1.5; }
+  .hero-actions { margin-top: var(--jh-s4); }
+  .hero-actions .kit-btn { flex: 1 1 0; }
+  .hero-badges { margin-top: var(--jh-s4); }
+  .hero-stage { margin-top: var(--jh-s6); }
+  .hero-stage .desk { margin-inline: 0; }
+  .hero-stage .hero-phase { padding-inline: 0; }
+  .hero-stage .desk-stagebox { border-inline: 1px solid var(--jh-hair); }
+  /* the six segments as a 2 × 3 grid of pressed tiles, 40 tall, the hint under */
+  .hero-phase { gap: var(--jh-s3); }
+  .hero-phase .kit-segments { width: 100%; flex-wrap: wrap; height: auto; }
+  .hero-phase .kit-seg { flex: 1 1 33.333%; height: 40px; }
+  .hero-phase .kit-seg:nth-child(3n + 1) { border-left: 0; }
+  .hero-phase .kit-seg:nth-child(n + 4) { border-top: 1px solid var(--jh-hair); }
+  .hero-phase .kit-seg[aria-checked="true"] { border-top-color: transparent; }
+}

@@ -1,115 +1,121 @@
 /*
- * sections.css · d3 · the ruled plate. One head row and one plate per section, classes .sec-* only.
- * Every colour is a --jh-* token from globals.css. Every line is drawn by one owner: the plate draws
- * its two hairlines, the picture its frame, the hatch its boundary; nothing else here draws a border.
- * Copy never sits within 20 px of a hairline. Inter weight 500 at most; mono for figures and blocks.
- * The three head lines sit on a fixed 20 px filled-glyph column (the Console's icon column, titanium).
+ * sections.css · AIR · one head and one plate per section, the plate holding a picture and kit rows.
+ * Classes .sec-* only; every colour a --jh-* token; every block of air a --jh-s* step. Every line is
+ * drawn once by one owner: the section its bottom rule, the plate its two hairlines, a picture its
+ * frame, the row group its row hairlines. No hatch bands. Copy never sits within 20 px of a hairline.
  */
 
-/* ---------- the head row: the h2 at the left (with the phase as one dot), the lead and the lines at the right ---------- */
-.sec-head { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 6fr); gap: 20px var(--jh-gut); align-items: start; margin-bottom: 32px; }
-.sec-h2 { position: relative; font-size: clamp(34px, 3.2vw, 46px); line-height: 1; font-weight: 500; letter-spacing: -.03em; color: var(--jh-fg); }
-/* the phase as one dot in the margin, hung left of the text column so every h2 aligns */
-.sec-dot { position: absolute; left: -22px; top: 50%; width: 9px; height: 9px; margin-top: -3px; border-radius: 50%; background: var(--jh-phase, var(--jh-fg-3)); }
-.sec-copy { min-width: 0; padding-top: 4px; }
-.sec-lead { font-size: 16px; line-height: 1.55; color: var(--jh-fg-2); max-width: 56ch; }
-.sec-lines { display: flex; flex-direction: column; gap: 9px; margin-top: 20px; }
-.sec-line { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; align-items: center; min-width: 0; }
-.sec-line-g { display: flex; align-items: center; justify-content: center; width: 20px; height: 22px; color: var(--jh-titanium); }
-.sec-line-g > svg { width: 16px; height: 16px; fill: currentColor; }
-.sec-line-t { font-size: 16px; font-weight: 500; letter-spacing: -.01em; line-height: 1.4; color: var(--jh-fg); }
+/* ---------- the section: s9 above, s8 below, one rule ---------- */
+.sec { padding: var(--jh-s9) var(--jh-gut) var(--jh-s8); border-bottom: 1px solid var(--jh-hair); scroll-margin-top: var(--jh-nav); min-width: 0; }
 
-/* ---------- the plate: flush at the rail, its two hairlines, the dithered ground behind, the picture at scale on it ---------- */
-/* the hairline composites on the page ground, never on the plate's own fill (PT/DESIGN.md §2, defect 3): on paper the ink edge is the seam; the fill is the longhand so no shorthand resets the clip */
+/* ---------- the head: the h2 alone, the lead under it at a readable measure ---------- */
+.sec-head { margin-bottom: var(--jh-s7); }
+.sec-h2 { font-size: clamp(40px, 4vw, 56px); line-height: 1; font-weight: 500; letter-spacing: -0.03em; color: var(--jh-fg); text-wrap: balance; }
+.sec-lead { margin-top: var(--jh-s4); font-size: 18px; line-height: 1.55; color: var(--jh-fg-2); max-width: 52ch; text-wrap: pretty; }
+
+/* ---------- the plate: flush at the rail, its two hairlines, the dithered ground behind, s7 of air inside ---------- */
 .sec-plate { position: relative; overflow: hidden; border-block: 1px solid var(--jh-hair); background-color: var(--jh-ground); background-clip: padding-box; }
-.sec-plate.is-ink { border-color: var(--jh-plate-hair); background-color: var(--jh-plate); color: var(--jh-plate-fg); }
-.sec-plate-in { position: relative; padding: 36px var(--jh-gut); }
-.sec-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 32px var(--jh-gut); align-items: center; }
-.sec-frame > * { min-width: 0; }
+.sec-plate-in { position: relative; padding: var(--jh-s7); }
+/* the ink plate: the one dark surface, both themes; its edge is the paper ring on ink and nothing on paper (the ink edge is the line);
+   the kit inside reads the plate's own steps through the same token names */
+.sec-plate.is-ink { border-color: var(--jh-plate-edge); background-color: var(--jh-plate); color: var(--jh-plate-fg);
+  --jh-fg: var(--jh-plate-fg); --jh-fg-2: var(--jh-plate-fg-2); --jh-fg-3: var(--jh-plate-fg-3); --jh-fg-3-word: var(--jh-plate-fg-2); --jh-titanium-word: var(--jh-plate-fg-2);
+  --jh-hair: var(--jh-plate-hair); --jh-hair-row: var(--jh-plate-hair-row); --jh-hover: var(--jh-plate-hover); --jh-active: var(--jh-plate-lift); --jh-lift: var(--jh-plate-lift);
+  --jh-ground: var(--jh-plate); --jh-error-word: var(--jh-error); }
 
-/* the crop box: the image at its true scale, anchored; the box keeps its aspect when the column is narrower */
+/* the frame inside a plate: a picture beside one row group, s6 between them */
+.sec-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--jh-s6); align-items: center; }
+.sec-frame > * { min-width: 0; }
+.sec-frame--stack { grid-template-columns: minmax(0, 1fr); justify-items: center; }
+.sec-frame--stack > * { width: 100%; }
+/* two short row groups side by side (Hands · Console), in the picture's own 800 column so no value sits far from its title */
+.sec-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--jh-s6); align-items: start; }
+.sec-frame--stack > .sec-groups { width: 800px; max-width: 100%; }
+.sec-groups > .kit-group + .kit-group { margin-top: 0; }
+.sec-frame--pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.sec-frame--figure { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+.sec-frame + .sec-frame { margin-top: var(--jh-s7); }
+
+/* ---------- the rows: the Console's row, opened up to a 44 px pitch at 13 px; the group's outer rule is the plate's ---------- */
+.sec-rows .kit-row { padding: 12px 12px; }
+.sec-rows .kit-row + .kit-row { padding-top: 11px; }
+.sec-rows .kit-row-title { font-size: 13px; }
+/* a latency row's proof line (its n and date) wraps under the title instead of leaving the plate */
+.sec-rows .kit-row-meta { white-space: normal; }
+.sec-rows .kit-group-head { padding-bottom: var(--jh-s2); height: auto; padding-top: 6px; background: none; } /* not sticky here, so it paints nothing over the plate's ground */
+.sec-rows .kit-group + .kit-group { margin-top: var(--jh-s5); }
+.sec-rows .kit-row-icon > .kit-agent-mark, .sec-rows .kit-row-icon > .kit-mark, .sec-rows .kit-row-icon > svg { color: var(--jh-titanium); }
+/* a brand mark with no mono variant wears the column's colour (ICONS.md §3: the text token, never the brand hex) */
+.jh-mark-ink path { fill: currentColor; }
+/* the never-list: the error tone on the glyph; the badge carries the word. The column paints its svg directly above, so the tone names the svg too */
+.sec-rows .is-danger .kit-row-icon, .sec-rows .is-danger .kit-row-icon > svg { color: var(--jh-error); }
+/* one line under a group, at the group's own inset */
+.sec-note { margin-top: var(--jh-s4); padding: 0 12px; font-size: 15px; line-height: 1.55; color: var(--jh-fg); max-width: 52ch; }
+.sec-plate.is-ink .sec-note { color: var(--jh-plate-fg); }
+
+/* ---------- the one display figure a section may keep: 500 tabular, its label under, the provenance in a tip ---------- */
+.sec-figure { display: block; min-width: 0; text-align: left; color: var(--jh-fg); cursor: default; border-radius: var(--jh-radius); }
+.sec-figure:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: 6px; }
+.sec-figure-v, .sec-figure-l { display: block; }
+.sec-figure-v { font-weight: 500; letter-spacing: -0.04em; line-height: 0.95; font-variant-numeric: tabular-nums; font-feature-settings: "cv11", "ss01"; white-space: nowrap; font-size: clamp(60px, 8vw, 116px); }
+.sec-figure.is-md .sec-figure-v { font-size: clamp(44px, 4.6vw, 66px); }
+/* 33ch: the cost figure's line (the deck's `per second of open session, muted or not · $3 an hour of talking`) breaks at its own · and never inside `muted or not` (294.6 px at 15 px; `· $3` would need 326.1) */
+.sec-figure-l { font-size: 15px; line-height: 1.45; color: var(--jh-fg-2); margin-top: var(--jh-s3); max-width: 33ch; }
+/* the one proof line a latency figure carries on the page (its median, n and date): the row meta's voice, mono 11 --jh-fg-3 */
+.sec-figure-p { margin-top: var(--jh-s2); font: 400 11px/1.5 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; white-space: normal; }
+
+/* ---------- the crop box (Wake): the image at its true scale, anchored; keeps its aspect when the column is narrower ---------- */
 .jh-crop { position: relative; width: calc(var(--crop-w) * 1px); max-width: 100%; aspect-ratio: var(--crop-w) / var(--crop-h); background: var(--jh-screen); }
-.jh-crop.is-ink { background: var(--jh-screen-ink); }
-.jh-crop.is-raised { background: var(--jh-screen-raised); }
 .jh-crop > img { position: absolute; width: calc(var(--crop-img-w) * 1px); max-width: none; height: auto; left: calc(var(--crop-x) * 1%); top: calc(var(--crop-y) * 1%); transform: translate(calc(var(--crop-x) * -1%), calc(var(--crop-y) * -1%)); }
 
-/* ---------- figures as display type ---------- */
-.sec-figure { min-width: 0; color: var(--jh-fg); }
-.sec-figure-v { font-weight: 500; letter-spacing: -.04em; line-height: .95; font-variant-numeric: tabular-nums; font-feature-settings: "cv11", "ss01"; white-space: nowrap; }
-.sec-figure.is-lg .sec-figure-v { font-size: clamp(60px, 8vw, 116px); }
-.sec-figure.is-md .sec-figure-v { font-size: clamp(44px, 4.6vw, 66px); }
-.sec-figure.is-sm .sec-figure-v { font-size: clamp(30px, 2.9vw, 42px); letter-spacing: -.03em; }
-.sec-figure-l { font-size: 15px; line-height: 1.45; color: var(--jh-fg-2); margin-top: 12px; max-width: 34ch; }
-.sec-figure.is-sm .sec-figure-l { font-size: 13.5px; margin-top: 6px; max-width: none; }
-.sec-fig { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; letter-spacing: .01em; color: var(--jh-fg-3); font-variant-numeric: tabular-nums; font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-figure .sec-fig { margin-top: 10px; max-width: 72ch; }
-.sec-seg { white-space: nowrap; } /* one ` · `-joined segment; a label or proof breaks only at the joiners, never inside a date */
-.sec-plate.is-ink .sec-figure, .sec-plate.is-ink .sec-fig { color: var(--jh-plate-fg); }
-
-/* ---------- a block of short mono lines set like the standing orders ---------- */
-.sec-block { min-width: 0; }
-.sec-block-list { display: flex; flex-direction: column; gap: 2px; font-family: var(--font-mono); font-size: 15px; line-height: 1.6; letter-spacing: 0; color: var(--jh-fg); font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-block-list li { white-space: nowrap; }
-.sec-block .sec-fig { margin-top: 14px; }
-
-/* ---------- 03 · Threads and 06 · Sleep: the island at 1:1 in its drawn menu-bar strip (globals.css .jh-strip*) ---------- */
-.sec-strip { width: 680px; max-width: 100%; }
-
-/* ---------- 01 · Wake: the gate at 1:1, the five faces drawn large ---------- */
-.sec-faces { display: flex; flex-wrap: wrap; gap: 28px 36px; justify-content: center; }
-.sec-face { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.sec-face-eyes { font-family: var(--font-mono); font-weight: 500; font-size: 38px; line-height: 1; letter-spacing: .06em; color: var(--jh-fg); white-space: pre; }
-.sec-face-l { font-family: var(--font-mono); font-size: 11px; line-height: 1; letter-spacing: .01em; color: var(--jh-fg-3); }
-
-/* ---------- 04 · Hands: the Console pair at half its pixel size; 71 over the ten families ---------- */
+/* ---------- the Console pair (Hands) at half its pixel size, on its own row of the plate; a crop of its stream under 720 (below) ---------- */
 .sec-console { width: 800px; max-width: 100%; background: var(--jh-screen-ink); }
 .sec-console picture, .sec-console img { display: block; width: 100%; height: auto; }
-.sec-hands-ladder { display: flex; flex-direction: column; gap: 22px; }
 
-/* ---------- 05 · Rails: the never-list on the ink plate; label, seven lines, the one line under them, all at the left where the field is flat ink (the accent pools lower right). The closing line is set in --jh-plate-fg: under 720 it spans the rail into the pool, where the .62 step reads 3.1:1 on the accent's cell and .87 reads 4.7 ---------- */
-.sec-never { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "k" "list" "line"; gap: 22px var(--jh-gut); }
-.sec-never-k { grid-area: k; font-family: var(--font-mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--jh-plate-fg-2); line-height: 1.5; }
-.sec-never-list { grid-area: list; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: clamp(17px, 1.6vw, 22px); line-height: 1.45; color: var(--jh-plate-fg); font-feature-settings: "ss02", "zero", "cv05", "cv11"; }
-.sec-never-p { grid-area: line; justify-self: start; font-size: 15px; line-height: 1.55; color: var(--jh-plate-fg); max-width: 40ch; }
+/* ---------- the island strip (Say · Sleep): a drawn menu bar around an island render at 1:1, scaled as one under 460 ---------- */
+.jh-strip-box { container-type: inline-size; min-width: 0; width: 460px; max-width: 100%; }
+.jh-strip { --s: min(1, tan(atan2(100cqw, 460px))); --bar: calc(32.5px * var(--s)); position: relative; height: calc(280px * var(--s)); background: var(--jh-island-ground); }
+.jh-strip-bar { position: absolute; left: 0; right: 0; top: 0; height: var(--bar); z-index: 1; background: var(--jh-island-bar); color: var(--jh-island-fg);
+  display: flex; align-items: center; gap: calc(9px * var(--s)); padding: 0 calc(16px * var(--s)); font-size: calc(13px * var(--s)); font-weight: 500; letter-spacing: -0.005em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.jh-strip-apple { width: calc(14px * var(--s)); height: calc(14px * var(--s)); flex: none; }
+.jh-strip-r { margin-left: auto; display: flex; align-items: center; gap: calc(14px * var(--s)); }
+.jh-strip-status { width: calc(18px * var(--s)); height: calc(18px * var(--s)); border-radius: 50%; border: 2px solid currentColor; position: relative; }
+.jh-strip-status::after { content: ""; position: absolute; inset: 22%; border-radius: 50%; background: currentColor; opacity: 0.45; }
+.jh-strip-glyph { width: calc(16px * var(--s)); height: calc(16px * var(--s)); }
+.jh-strip-notch { position: absolute; left: calc(50% - 92.5px * var(--s)); top: 0; width: calc(185px * var(--s)); height: var(--bar); background: var(--jh-island-notch); }
+.jh-strip-fillet { position: absolute; top: calc(var(--bar) - 14px * var(--s)); width: calc(14px * var(--s)); height: calc(14px * var(--s)); background: radial-gradient(circle at 0 0, transparent calc(13.5px * var(--s)), var(--jh-island-notch) calc(14px * var(--s))); }
+.jh-strip-fillet-l { left: calc(50% - 92.5px * var(--s) - 14px * var(--s)); }
+.jh-strip-fillet-r { left: calc(50% + 92.5px * var(--s)); background: radial-gradient(circle at 100% 0, transparent calc(13.5px * var(--s)), var(--jh-island-notch) calc(14px * var(--s))); }
+.jh-strip-img { position: absolute; left: 50%; top: 0; width: calc(460px * var(--s)); height: calc(250px * var(--s)); transform: translateX(-50%); clip-path: inset(var(--bar) 0 0 0); }
 
-/* ---------- Numbers: 3 ms with its provenance, three more latencies as secondary figures ---------- */
-.sec-frame--figures { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); align-items: end; }
-.sec-figures { display: flex; flex-direction: column; gap: 22px; }
-
-/* ---------- Costs: one plate, the figure at the left, what costs nothing at the right, on one baseline ---------- */
-.sec-frame--costs { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: end; padding: 12px 0 4px; }
-.sec-costs-figure .sec-figure-l { max-width: none; }
-.sec-costs-lines { padding-bottom: 2px; }
+/* the dithered ground: absolute, fills its positioned parent, pinned bottom-right */
+.jh-ground { position: absolute; right: 0; bottom: 0; width: 0; height: 0; image-rendering: pixelated; pointer-events: none; }
 
 /* ---------- narrower rails: the frames stack ---------- */
 @media (max-width: 1000px) {
-  .sec-frame, .sec-frame--figures, .sec-frame--costs { grid-template-columns: minmax(0, 1fr); }
+  .sec-frame, .sec-frame--pair, .sec-frame--figure, .sec-groups { grid-template-columns: minmax(0, 1fr); }
+  .sec-groups { gap: var(--jh-s5); }
+  .sec-frame > figure, .sec-frame > .jh-strip-box { justify-self: center; }
 }
 
 /* ---------- the phone ladder under 720 ---------- */
 @media (max-width: 720px) {
-  .sec-head { grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 24px; }
-  .sec-h2 { font-size: 2.25rem; }
-  .sec-h2:has(.sec-dot) { padding-left: 20px; }
-  .sec-dot { left: 0; }
+  .sec-head { margin-bottom: var(--jh-s7); }
+  .sec-h2 { font-size: 40px; }
+  .sec-lead { font-size: 17px; line-height: 1.5; }
+  .sec-plate-in { padding: var(--jh-s7) var(--jh-gut); }
+  .sec-frame { gap: var(--jh-s5); }
+  .sec-frame + .sec-frame { margin-top: var(--jh-s7); }
   .jh-crop.is-fit > img { width: 100%; }
-  .sec-copy { padding-top: 0; }
-  .sec-lead { font-size: 16px; line-height: 1.5; }
-  .sec-lines { margin-top: 16px; gap: 8px; }
-  .sec-line-t { font-size: 15px; }
-  .sec-plate-in { padding: 20px var(--jh-gut); }
-  .sec-frame { gap: 22px; }
-  .sec-figure.is-lg .sec-figure-v { font-size: 60px; }
+  /* the Console pair as a crop of its stream column (source x 362 to 1186 of 1600: both rail edges out, Allow · Deny whole), its type at 0.85 of its point size instead of a 350 px thumbnail; the whole frame from 721 up */
+  .sec-console { aspect-ratio: 4 / 5; }
+  .sec-console picture, .sec-console img { height: 100%; }
+  .sec-console img { object-fit: cover; object-position: 47% 0; }
+  .sec-figure-v { font-size: 60px; }
   .sec-figure.is-md .sec-figure-v { font-size: 44px; }
-  .sec-figure.is-sm .sec-figure-v { font-size: 30px; }
-  /* the five faces in one row: no wrap, spread across the rail, a scroll only if the rail is narrower than they are */
-  .sec-faces { flex-wrap: nowrap; gap: 20px 12px; justify-content: space-between; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-  .sec-faces::-webkit-scrollbar { display: none; }
-  .sec-face { flex: none; gap: 10px; }
-  .sec-face-eyes { font-size: 26px; }
-  .sec-console { aspect-ratio: 3 / 4; overflow: hidden; }
-  .sec-console picture { height: 100%; }
-  .sec-console img { height: 100%; object-fit: cover; object-position: 45% 0; }
-  .sec-block-list { font-size: 14px; }
-  .sec-frame--costs { padding: 4px 0 0; }
+  /* a row's words wrap instead of truncating; the value stays at the right */
+  .sec-rows .kit-row-title { flex: 1 1 auto; white-space: normal; overflow: visible; text-overflow: clip; }
+  .sec-rows .kit-row-value { flex: none; max-width: 55%; white-space: nowrap; }
+  .sec-rows .kit-row { min-height: 44px; }
+  .jh-strip-glyph { display: none; }
 }

@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Icon } from "@/components/ui/Icons";
+import { Button, type ButtonKind, type ButtonSize } from "@/components/kit";
 import { PLATE_COPIED, PLATE_COPY } from "@/content/install";
 
-/** The confirmed tile holds for one pulse (--jh-pulse, 1.6 s). */
+/** The confirmed word holds for one pulse (--jh-pulse, 1.6 s). */
 const HOLD_MS = 1600;
 
 export interface CopyButtonProps {
   readonly text: string;
-  readonly size?: "md" | "sm";
-  /** The accessible name. Defaults to `Copy: <text>` (the command rows); the plates pass their own. */
+  /** primary on the one-liner strip, ghost in a command row. */
+  readonly kind?: ButtonKind;
+  readonly size?: ButtonSize;
+  /** The accessible name. Defaults to `Copy: <text>` (the command rows); the strip passes its own. */
   readonly label?: string;
 }
 
@@ -34,7 +36,7 @@ function copyThroughTextarea(text: string): boolean {
   ta.setAttribute("readonly", "");
   ta.setAttribute("aria-hidden", "true");
   ta.tabIndex = -1;
-  ta.className = "ins-copy-ta";
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none";
   document.body.appendChild(ta);
   ta.focus();
   ta.select();
@@ -72,30 +74,19 @@ function useHeld(ms: number): readonly [boolean, () => void] {
 }
 
 /**
- * A real button tile: --jh-lift plus a hairline, radius 6 (on a plate, --jh-plate-lift and the plate
- * hairline through CSS). Clipboard glyph + Copy; on success, check + Copied on the accent for 1.6 s,
- * and the polite live region announces it. Enter and Space work because it is a <button>.
+ * The kit's natural spent (facts-kit.md §1.3): Copy (primary or ghost) → Copied (spent, its deed done) for 1.6 s,
+ * one width through the change, the polite live region announcing it. The glyph swaps copy → checkmark.
  */
-export function CopyButton({ text, size = "md", label }: CopyButtonProps) {
+export function CopyButton({ text, kind = "primary", size = 32, label }: CopyButtonProps) {
   const [done, arm] = useHeld(HOLD_MS);
-  const Glyph = done ? Icon.check : Icon.clipboard;
   const onClick = () => {
     void copyText(text).then((ok) => {
       if (ok) arm();
     });
   };
   return (
-    <button
-      type="button"
-      className={`ins-copy ins-copy--${size}${done ? " is-done" : ""}`}
-      aria-label={label ?? `Copy: ${text}`}
-      onClick={onClick}
-    >
-      <Glyph size={size === "sm" ? 13 : 14} />
-      <span className="ins-copy-label">{done ? PLATE_COPIED : PLATE_COPY}</span>
-      <span className="jh-sr" aria-live="polite">
-        {done ? PLATE_COPIED : ""}
-      </span>
-    </button>
+    <Button kind={done ? "spent" : kind} size={size} glyph={done ? "checkmark" : "copy"} hold={done ? PLATE_COPY : PLATE_COPIED} ariaLabel={label ?? `Copy: ${text}`} onClick={onClick}>
+      {done ? PLATE_COPIED : PLATE_COPY}
+    </Button>
   );
 }

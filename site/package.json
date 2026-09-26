@@ -10,7 +10,8 @@
     "prebuild": "node scripts/copy-install.mjs && node scripts/copy-media.mjs",
     "build": "next build",
     "start": "next start --port 3939",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:install": "sh scripts/check-install.sh"
   },
   "dependencies": {
     "@thesvg/react": "3.3.8",

@@ -1,0 +1,283 @@
+/*
+ * kit.css · the Console kit's web twins (components/kit/*). Every class is .kit-*; every colour is a
+ * --jh-* token from globals.css (no hex here). A control is a tile plus a hairline, radius 6, no shadow,
+ * no dither (ConsoleFill.swift:4-9; AGENTS.md:814). Three lines, each drawn once by one owner
+ * (ConsoleTheme.swift:21-33). The accent is spent on the primary fill, the keyboard ring and the 2 px
+ * selection bar alone (ConsoleTheme.swift:46). Hover answers in --jh-instant; the words and the glyph
+ * never move on hover or press (ConsoleTheme.swift:690-691; ConsoleButton.swift:6-7).
+ *
+ * Surfaces: a control reads its tile from --kit-lift, which .kit-raised (a plate, a popup, a hovered or
+ * selected row) lifts from --jh-lift to --jh-lift-raised (ConsoleFill.swift:14-22).
+ * Forced states for the gallery and the harness: .is-hover and .is-active mirror :hover and :active.
+ *
+ * Words: a word in the quiet step, in titanium or in a tone reads its colour from the --jh-*-word aliases (globals.css),
+ * which are the canon in dark and an ink-weight step of the same hue in light, so 10 to 12 px text reaches AA on paper;
+ * a dot, a glyph tint, a hairline keeps the canon token.
+ */
+
+.kit-raised { --kit-lift: var(--jh-lift-raised); --kit-surface: var(--jh-raised); }
+
+/* ---------- glyphs: the filled set on a 20-unit box; the icon column is 20 × 20, titanium (ConsoleTheme.swift:805-822) ---------- */
+.kit-glyph { display: block; flex: none; pointer-events: none; }
+.kit-icon { width: 20px; height: 20px; display: grid; place-items: center; flex: none; color: var(--jh-titanium); }
+/* a glyph that changes crossfades two stacked svgs over --jh-base; nothing cuts (ConsoleTheme.swift:818-820) */
+.kit-glyph-swap { position: relative; display: grid; }
+.kit-glyph-swap > .kit-glyph { grid-area: 1 / 1; transition: opacity var(--jh-base) var(--jh-ease-in-out); }
+.kit-glyph-swap > .kit-glyph[data-out="true"] { opacity: 0; }
+
+/* ---------- button: ghost · plain · primary · danger · spent (ConsoleButton.swift:28-63, 113-144) ---------- */
+.kit-btn {
+  --kit-h: 28px; --kit-wash: transparent;
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--kit-h); min-width: 0; padding: 0 10px; border: 1px solid transparent; border-radius: var(--jh-radius);
+  background-clip: padding-box; background-image: linear-gradient(var(--kit-wash), var(--kit-wash));
+  font: 500 12px/1 var(--font-sans); letter-spacing: -0.005em; color: var(--jh-fg-2); white-space: nowrap; text-decoration: none;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out),
+    border-color var(--jh-instant) var(--jh-ease-out), opacity var(--jh-instant) var(--jh-ease-out);
+}
+.kit-btn--sm { padding: 0 8px; font-size: 11px; }
+.kit-btn--icon { width: var(--kit-h); padding: 0; }
+.kit-btn--ghost, .kit-btn--spent { background-color: var(--kit-lift, var(--jh-lift)); border-color: var(--jh-hair); }
+.kit-btn--spent { border-color: var(--jh-hair-row); color: var(--jh-fg-3-word); }
+.kit-btn--primary { background-color: var(--jh-accent); color: var(--jh-on-accent); }
+/* danger: the app's own fill, mirrored; its word reads 2.99:1 on the red in light (white; dark wears ink), so the site gives the kind
+   no word (an icon-only Stop at 24 or more, or none) and carries the error tone on a glyph and a badge instead (README, Contrast) */
+.kit-btn--danger { background-color: var(--jh-error); color: var(--jh-on-accent); }
+/* lit = enabled and (hovering or pressed): the wash is a second layer over the tile; the words go to --jh-fg */
+@media (hover: hover) {
+  .kit-btn--ghost:hover, .kit-btn--plain:hover, .kit-btn--spent:hover { --kit-wash: var(--jh-hover); }
+  .kit-btn--ghost:hover, .kit-btn--plain:hover { color: var(--jh-fg); }
+}
+.kit-btn--ghost.is-hover, .kit-btn--plain.is-hover, .kit-btn--spent.is-hover { --kit-wash: var(--jh-hover); }
+.kit-btn--ghost.is-hover, .kit-btn--plain.is-hover { color: var(--jh-fg); }
+.kit-btn--ghost:active, .kit-btn--plain:active, .kit-btn--spent:active,
+.kit-btn--ghost.is-active, .kit-btn--plain.is-active, .kit-btn--spent.is-active { --kit-wash: var(--jh-active); }
+.kit-btn--ghost:active, .kit-btn--plain:active, .kit-btn--ghost.is-active, .kit-btn--plain.is-active { color: var(--jh-fg); }
+/* the app dims the accent fill to .8 on a press; the whole button takes it here */
+.kit-btn--primary:active, .kit-btn--danger:active, .kit-btn--primary.is-active, .kit-btn--danger.is-active { opacity: 0.8; }
+/* disabled: ghost · plain · spent keep the tile and dim the label alone; primary · danger dim whole (ConsoleButton.swift:65-71, 121, 127) */
+.kit-btn[disabled], .kit-btn[aria-disabled="true"] { cursor: default; pointer-events: none; }
+.kit-btn--ghost[disabled], .kit-btn--spent[disabled], .kit-btn--ghost[aria-disabled="true"], .kit-btn--spent[aria-disabled="true"] { border-color: var(--jh-hair-row); }
+.kit-btn--ghost[disabled] > *, .kit-btn--plain[disabled] > *, .kit-btn--spent[disabled] > *,
+.kit-btn--ghost[aria-disabled="true"] > *, .kit-btn--plain[aria-disabled="true"] > *, .kit-btn--spent[aria-disabled="true"] > * { opacity: 0.45; }
+.kit-btn--primary[disabled], .kit-btn--danger[disabled], .kit-btn--primary[aria-disabled="true"], .kit-btn--danger[aria-disabled="true"] { opacity: 0.45; }
+/* the keyboard ring: the keyboard's alone, 1 px accent on the box edge (ConsoleTip.swift:268-292) */
+.kit-btn:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: -1px; }
+/* a word that changes keeps the button's width: the hidden word sits under the visible one (StreamView.swift:1396-1414) */
+.kit-btn-hold { display: grid; }
+.kit-btn-hold > span { grid-area: 1 / 1; text-align: center; }
+.kit-btn-hold > span[aria-hidden="true"] { visibility: hidden; }
+
+/* ---------- badge: a word in a box, 16 tall, one hairline, no fill (ConsoleBadge.swift:3-7, 120-126) ---------- */
+.kit-badge { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 16px; padding: 0 5px;
+  border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); font: 500 10px/1 var(--font-sans); color: var(--jh-titanium-word); white-space: nowrap; flex: none; }
+.kit-badge--figure { font: 400 10px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+/* a toned word in its ink-weight step; the hairline keeps the tone's canon colour (ConsoleBadge.swift:124) */
+.kit-badge[data-tone="speaking"] { color: var(--jh-speaking-word); border-color: var(--jh-speaking); }
+.kit-badge[data-tone="error"] { color: var(--jh-error-word); border-color: var(--jh-error); }
+.kit-badge[data-width="62"] { width: 62px; }
+.kit-badge[data-width="46"] { width: 46px; }
+.kit-badge[data-width="30"] { width: 30px; }
+
+/* ---------- chip: a filter chip, 22 tall; on = inverted (ConsoleBadge.swift:130-158) ---------- */
+.kit-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid var(--jh-hair); border-radius: var(--jh-radius);
+  background-clip: padding-box; font: 500 11px/1 var(--font-sans); color: var(--jh-fg-2); white-space: nowrap; flex: none;
+  transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out), border-color var(--jh-instant) var(--jh-ease-out); }
+button.kit-chip { cursor: pointer; }
+.kit-chip-count { font: 400 11px/1 var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; }
+@media (hover: hover) { button.kit-chip:hover { background-color: var(--jh-hover); } }
+button.kit-chip.is-hover { background-color: var(--jh-hover); }
+.kit-chip[aria-pressed="true"] { background-color: var(--jh-fg); border-color: var(--jh-fg); color: var(--jh-ground); }
+.kit-chip[aria-pressed="true"] .kit-chip-count { color: var(--jh-ground); opacity: 0.72; }
+.kit-chip:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: -1px; }
+.kit-flow { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ---------- keycap: mono 10, 16 tall, one hairline (ConsoleBadge.swift:160-175) ---------- */
+.kit-key { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 16px; min-width: 16px; padding: 0 4px;
+  border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); font: 400 10px/1 var(--font-mono); color: var(--jh-fg-3-word); white-space: nowrap; flex: none; }
+
+/* ---------- tip: the in-page float; raised, one hairline, 2 px of ground as the seam, no shadow (ConsoleTip.swift:326-345) ---------- */
+.kit-tip-anchor { display: contents; }
+.kit-tip { position: fixed; left: 0; top: 0; z-index: 60; box-sizing: border-box; max-width: 320px;
+  background: var(--jh-raised); border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); box-shadow: 0 0 0 var(--jh-seam) var(--jh-ground);
+  color: var(--jh-fg); font: 400 12px/1.35 var(--font-sans); pointer-events: none; opacity: 0; transform: translateY(-4px);
+  transition: opacity var(--jh-quick) var(--jh-ease-out), transform var(--jh-quick) var(--jh-ease-out); }
+.kit-tip[data-side="above"] { transform: translateY(4px); }
+.kit-tip.is-in { opacity: 1; transform: none; }
+.kit-tip::before { content: ""; position: absolute; left: var(--kit-arrow-x, 12px); width: 6px; height: 6px; background: var(--jh-raised);
+  border: 1px solid var(--jh-hair); border-width: 1px 0 0 1px; transform: rotate(45deg); }
+.kit-tip[data-side="below"]::before { top: -4px; }
+.kit-tip[data-side="above"]::before { bottom: -4px; border-width: 0 1px 1px 0; }
+.kit-tip--line { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; white-space: nowrap; }
+.kit-tip--card { display: flex; flex-direction: column; gap: 6px; min-width: 240px; padding: 8px 10px; }
+.kit-tip-title { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.kit-tip-status { font-size: 11px; font-weight: 400; color: var(--jh-fg-3-word); }
+.kit-tip-lines { color: var(--jh-fg-2); }
+.kit-tip-foot { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 4px 6px; margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--jh-hair-row); font-size: 11px; }
+.kit-tip-k { color: var(--jh-titanium-word); }
+.kit-tip-v { font-family: var(--font-mono); color: var(--jh-fg-2); font-variant-numeric: tabular-nums; }
+.kit-tip-last { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--jh-fg-3-word); }
+
+/* ---------- segments: pressed tiles; on = inverted; the thumb glides (ConsoleSegments.swift:4-9, 123-148) ---------- */
+.kit-segments { position: relative; display: inline-flex; box-sizing: border-box; height: 28px; border: 1px solid var(--jh-hair); border-radius: var(--jh-radius);
+  background-color: var(--kit-lift, var(--jh-lift)); background-clip: padding-box; overflow: hidden; isolation: isolate; vertical-align: middle;
+  transition: border-color var(--jh-instant) var(--jh-ease-out); }
+.kit-segments--row { height: 26px; }
+.kit-segments--toggle { height: 22px; }
+.kit-segments:has(:focus-visible), .kit-segments:focus-visible { border-color: var(--jh-accent); outline: none; }
+.kit-seg { position: relative; z-index: 1; flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 0 10px;
+  font: 500 12px/1 var(--font-sans); letter-spacing: -0.005em; color: var(--jh-fg-2); white-space: nowrap; cursor: pointer; user-select: none;
+  transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out); }
+.kit-seg:focus-visible { outline: none; }
+.kit-segments--toggle .kit-seg { flex: 0 0 29px; padding: 0; font-size: 11px; } /* 29 + 29 inside the 1 px box = the app's 60 × 22 */
+.kit-segments--fit .kit-seg { flex: 0 0 auto; }
+.kit-seg + .kit-seg { border-left: 1px solid var(--jh-hair); }
+@media (hover: hover) { .kit-seg:hover { background-color: var(--jh-hover); color: var(--jh-fg); } }
+.kit-seg.is-hover { background-color: var(--jh-hover); color: var(--jh-fg); }
+.kit-seg[aria-checked="true"] { color: var(--jh-ground); }
+/* the on cell's fill covers its own edges; before the thumb is measured (no JS yet) the cell paints itself */
+.kit-seg[aria-checked="true"], .kit-seg[aria-checked="true"] + .kit-seg { border-left-color: transparent; }
+.kit-segments:not(.has-thumb) .kit-seg[aria-checked="true"] { background-color: var(--jh-fg); }
+.kit-seg-thumb { position: absolute; z-index: 0; top: 0; left: 0; width: 0; height: 100%; background: var(--jh-fg);
+  transition: transform var(--jh-quick) var(--jh-ease-out), width var(--jh-quick) var(--jh-ease-out), height var(--jh-quick) var(--jh-ease-out); }
+.kit-seg-flag { font-size: 11px; line-height: 1; opacity: 0.85; }
+.kit-seg[aria-checked="true"] .kit-seg-flag { opacity: 1; }
+.kit-seg-face { font: 500 11px/1 var(--font-mono); letter-spacing: 0.06em; white-space: pre; }
+.kit-toggle { display: inline-flex; align-items: center; gap: 10px; min-height: 26px; }
+.kit-toggle-hint { font: 400 11px/1.3 var(--font-sans); color: var(--jh-titanium-word); }
+
+/* ---------- rows: icon column · title (+ badge … value) · meta; hairlines between rows drawn once (ConsoleRow.swift:4-5, 200-323) ---------- */
+.kit-group { min-width: 0; }
+.kit-group-head { display: flex; align-items: center; gap: 6px; box-sizing: border-box; height: 22px; padding: 0 12px;
+  font: 500 11px/1 var(--font-sans); color: var(--jh-titanium-word); background: var(--kit-surface, var(--jh-ground)); white-space: nowrap; }
+.kit-group-head.is-sticky { position: sticky; top: var(--jh-nav, 0px); z-index: 2; }
+.kit-group-head--rule { border-top: 1px solid var(--jh-hair-row); }
+.kit-group-count, .kit-group-figure { font: 400 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--jh-titanium-word); }
+.kit-group-figure, .kit-group-trailing { margin-left: auto; }
+.kit-group-figure + .kit-group-trailing { margin-left: 0; }
+.kit-rows { list-style: none; margin: 0; padding: 0; container-type: inline-size; }
+.kit-row { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; column-gap: 8px; align-items: start; box-sizing: border-box;
+  min-height: 28px; padding: 4px 12px; color: var(--jh-fg); transition: background-color var(--jh-instant) var(--jh-ease-out), opacity var(--jh-base) var(--jh-ease-in-out); }
+.kit-row > * { position: relative; z-index: 1; }
+.kit-row + .kit-row { border-top: 1px solid var(--jh-hair-row); padding-top: 3px; } /* the hairline sits inside the 28 pitch: 1 + 3 + 20 + 4 (ConsoleRow.swift:4-5) */
+.kit-row-icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--jh-titanium); }
+.kit-row-main { min-width: 0; display: flex; flex-direction: column; }
+.kit-row-line { display: flex; align-items: center; gap: 0 6px; min-height: 20px; min-width: 0; } /* no row gap: a value that wraps under the title (the narrow ladder) sits on the 14 px meta pitch */
+.kit-row-title { min-width: 0; font-size: 12px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-row--13 .kit-row-title { font-size: 13px; }
+.kit-row-title.is-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.kit-row.is-open .kit-row-title { font-weight: 500; }
+.kit-row-badge { margin-left: -3px; }
+.kit-row-value { margin-left: auto; padding-left: 6px; font: 400 11px/20px var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kit-row-meta { display: flex; align-items: center; gap: 6px; margin-top: -2px; font: 400 11px/14px var(--font-mono); color: var(--jh-fg-3-word); font-variant-numeric: tabular-nums; white-space: nowrap; } /* -2 so a row with a meta line is the app's 40, not 42 */
+.kit-row-trailing { display: flex; align-items: center; gap: 6px; height: 20px; }
+.kit-row-verb { width: 60px; display: flex; justify-content: flex-end; }
+.kit-row-chevron { width: 12px; height: 20px; display: grid; place-items: center; color: var(--jh-fg-3); }
+/* the acting cover: a button or a link under the parts; the ring is the keyboard's */
+.kit-row-act { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 0; color: inherit; }
+/* the parts sit above the cover so the trailing controls stay clickable; the icon and the words let the pointer through, so the whole row acts (ConsoleRow.swift:207-211, one element) */
+.kit-row.is-acting > .kit-row-icon, .kit-row.is-acting > .kit-row-main { pointer-events: none; }
+.kit-row-act:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: -2px; border-radius: var(--jh-radius); }
+@media (hover: hover) { .kit-row.is-acting:hover { background-color: var(--jh-hover); } }
+.kit-row.is-hover { background-color: var(--jh-hover); }
+.kit-row.is-selected { background-color: var(--jh-active); }
+.kit-row.is-selected::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; background: var(--jh-accent); z-index: 1; }
+.kit-row.is-selected .kit-row-trailing, .kit-row.is-hover .kit-row-trailing, .kit-row.is-acting:hover .kit-row-trailing { --kit-lift: var(--jh-lift-raised); }
+.kit-row[aria-disabled="true"], .kit-row.is-disabled { opacity: 0.45; }
+.kit-row.sits-back { opacity: 0.62; }
+@container (max-width: 320px) {
+  .kit-row-line { flex-wrap: wrap; }
+  .kit-row-value { flex-basis: 100%; margin-left: 0; padding-left: 0; line-height: 14px; }
+}
+.kit-meter { display: block; flex: none; image-rendering: pixelated; }
+
+/* ---------- disclosure: the head IS the summary while closed (ConsoleDisclosure.swift:4-8, 206-277) ---------- */
+.kit-fold { min-width: 0; }
+.kit-fold--section { border-bottom: 1px solid var(--jh-hair); }
+.kit-fold-head { display: flex; align-items: center; gap: 6px; box-sizing: border-box; width: 100%; height: 28px; margin: 0; padding: 0 12px; border: 0; background: none;
+  font: 500 12px/1 var(--font-sans); color: var(--jh-titanium-word); text-align: left; white-space: nowrap; cursor: pointer;
+  transition: color var(--jh-instant) var(--jh-ease-out), background-color var(--jh-instant) var(--jh-ease-out); }
+.kit-fold--group .kit-fold-head { height: 24px; }
+@media (hover: hover) { .kit-fold-head:hover { background-color: var(--jh-hover); } }
+.kit-fold-head[aria-expanded="true"] { color: var(--jh-fg-2); }
+.kit-fold-head:focus-visible { outline: 1px solid var(--jh-accent); outline-offset: -1px; border-radius: var(--jh-radius); }
+.kit-fold-chevron { width: 12px; height: 20px; display: grid; place-items: center; color: var(--jh-fg-3); transition: transform var(--jh-quick) var(--jh-ease-out); }
+.kit-fold-head[aria-expanded="true"] .kit-fold-chevron { transform: rotate(90deg); }
+.kit-fold-count { font: 400 11px/1 var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
+.kit-fold-summary { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; overflow: hidden; font: 400 11px/1 var(--font-sans); color: var(--jh-fg-3-word); }
+.kit-fold-summary .is-figure { font-family: var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; }
+.kit-fold-sep { color: var(--jh-titanium-word); }
+.kit-fold-control { margin-left: auto; }
+.kit-fold-body { padding: 6px 0 10px; }
+.kit-fold--group .kit-fold-body { padding-bottom: 6px; }
+.kit-fold--inset .kit-fold-body { padding-inline: 12px; }
+.kit-fold-body.is-in { animation: kit-appear var(--jh-base) var(--jh-ease-out); }
+@keyframes kit-appear { from { opacity: 0; transform: translateY(6px); } }
+
+/* ---------- field: a lift tile, one hairline that turns accent while focused and red on a rejection (ConsoleField.swift:4-7, 177-201) ---------- */
+.kit-field { display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box; height: 26px; min-width: 0; padding: 0 10px;
+  background-color: var(--kit-lift, var(--jh-lift)); border: 1px solid var(--jh-hair); border-radius: var(--jh-radius); background-clip: padding-box;
+  font: 400 13px/1 var(--font-sans); color: var(--jh-fg); caret-color: var(--jh-accent); transition: border-color var(--jh-instant) var(--jh-ease-out); }
+.kit-field--edit { height: 22px; padding: 0 8px; font-size: 12px; }
+.kit-field--filter { height: 24px; font-size: 12px; }
+.kit-field--composer { height: 32px; }
+.kit-field.is-mono { font-family: var(--font-mono); font-size: 12px; }
+.kit-field:focus-within { border-color: var(--jh-accent); }
+.kit-field.is-error { border-color: var(--jh-error); animation: kit-shake var(--jh-quick) 3; }
+.kit-field-input { flex: 1 1 auto; min-width: 0; margin: 0; padding: 0; border: 0; outline: 0; background: none; font: inherit; color: inherit; }
+.kit-field-input::placeholder { color: var(--jh-fg-3-word); }
+.kit-field-lead { display: grid; place-items: center; color: var(--jh-fg-3); }
+.kit-field-count { font: 400 11px/1 var(--font-mono); color: var(--jh-titanium-word); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kit-hint { font: 400 11px/1.4 var(--font-sans); color: var(--jh-titanium-word); }
+.kit-hint.is-error { color: var(--jh-error-word); }
+@keyframes kit-shake { 0%, 100% { transform: none; } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+
+/* ---------- marks ---------- */
+.kit-mark { display: block; flex: none; image-rendering: pixelated; }
+.kit-agent-mark { display: block; flex: none; }
+.kit-agent-mark text { font-family: var(--font-sans); font-weight: 500; }
+
+/* ---------- small shared pieces (ConsoleTheme.swift:764-803, 890-919, 943-961, 990-1007) ---------- */
+.kit-head { display: flex; align-items: center; gap: 6px; box-sizing: border-box; height: 28px; padding: 0 12px; font: 500 12px/1 var(--font-sans); color: var(--jh-titanium-word); }
+.kit-head-count { font: 400 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.kit-head-trailing { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.kit-hair { border-top: 1px solid var(--jh-hair); }
+.kit-hair--row { border-top-color: var(--jh-hair-row); }
+.kit-dot { --kit-phase: var(--jh-titanium); position: relative; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--kit-phase); flex: none; vertical-align: middle;
+  transition: background-color var(--jh-base) var(--jh-ease-in-out); }
+.kit-dot.is-live { width: 7px; height: 7px; }
+.kit-dot.is-live::after { content: ""; position: absolute; inset: -1.5px; border-radius: 50%; border: 1.5px solid var(--kit-phase); opacity: 0; animation: kit-ring var(--jh-pulse) var(--jh-ease-out) infinite; }
+@keyframes kit-ring { 0% { transform: scale(1); opacity: 0.5; } 100% { transform: scale(2.4); opacity: 0; } }
+.kit-empty { padding: 20px; text-align: center; font: 400 13px/1.45 var(--font-sans); color: var(--jh-fg-2); }
+.kit-empty-action { margin-top: 12px; display: flex; justify-content: center; }
+.kit-glyphs { margin: 0; font: 500 11px/1.2 var(--font-mono); color: var(--jh-fg-3-word); white-space: pre; letter-spacing: 0.04em; }
+
+/* ---------- reduced motion: the site's global rule collapses every animation and transition; the ring and the fold's rise go too ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .kit-dot.is-live::after { display: none; }
+  .kit-fold-body.is-in { animation: none; }
+  .kit-tip { transform: none; }
+}
+
+/* ---------- the phone ladder: an acting control reaches 40 px (SPACE.md); rows inside a plate keep the app's 28 ---------- */
+@media (max-width: 720px) {
+  .kit-btn:not(.kit-btn--sm):not(.kit-row .kit-btn) { height: max(var(--kit-h), 40px); }
+  .kit-btn--icon:not(.kit-btn--sm):not(.kit-row .kit-btn) { width: max(var(--kit-h), 40px); }
+  .kit-segments:not(.kit-segments--toggle) { height: 40px; }
+  .kit-row.is-acting { min-height: 40px; }
+  .kit-fold-head { height: 40px; }
+}
+
+/* ---------- companions the twins need: hidden floats stay hidden, the fold's bar holds its own control, the toggle's cells ---------- */
+.kit-tip[hidden] { display: none; }
+.kit-tip-foot dt, .kit-tip-foot dd { margin: 0; min-width: 0; }
+.kit-fold-bar { display: flex; align-items: center; min-width: 0; }
+.kit-fold-bar > .kit-fold-head { flex: 1 1 auto; min-width: 0; }
+.kit-fold-bar > .kit-fold-control { flex: none; padding-right: 12px; }
+.kit-seg[data-checked="true"] { color: var(--jh-ground); }
+.kit-seg[data-checked="true"], .kit-seg[data-checked="true"] + .kit-seg { border-left-color: transparent; }
+/* a pinned tip (the gallery, the harness) sits inline under its trigger instead of on the float layer */
+.kit-tip-anchor.is-pinned { display: inline-block; position: relative; }
+.kit-tip.is-pinned { position: absolute; left: 0; top: calc(100% + 4px); --kit-arrow-x: 12px; }
+.kit-tip.is-pinned[data-side="above"] { top: auto; bottom: calc(100% + 4px); }

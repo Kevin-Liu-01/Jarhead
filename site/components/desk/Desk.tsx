@@ -1,21 +1,15 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { DESK_KINDS, PHASE_META, type DeskKind, type Phase } from "@/lib/phase";
 import { isStill, useTheme } from "@/lib/theme";
 import { ditherGlyphs, renderGround, renderMeter, cellCss, type RGB } from "@/lib/dither";
 import { renderIslandInk } from "@/lib/island";
 import type { BlobFrame } from "@/lib/blob";
-import { PhaseColumn } from "@/components/ui/Section";
-import { InstallPlate } from "@/components/install/InstallPlate";
 import { MenuBar } from "./MenuBar";
 import { Notch } from "./Notch";
 import { Island, ISLAND, type IslandKind, type IslandRefs, type IslandState, type LipFace } from "./Island";
-import { CONSOLE, ConsoleWindow } from "./ConsoleWindow";
 import { TargetRing } from "./TargetRing";
 import { Blob } from "./Blob";
-import { PhaseButtons } from "./PhaseButtons";
-
-export { DeskCaption } from "./DeskCaption";
 
 /** The timeline (design.md §4.5): listening 6 → thinking 3 → acting 6 → speaking 5 → asleep 4 → alarm 5 → wake 1.2 → listening. */
 type SegKind = DeskKind | "wake";
@@ -32,12 +26,22 @@ const CYCLE = SEGS.reduce((s, x) => s + x.dur, 0);
 const GATE = 0.8; // the wake beat: `. .` + the pill, then `O O` on the peek
 const HOLD_MS = 15000;
 const SWAP_MS = 160; // --jh-quick
-const STAGE = { w: 1170, h: 690, phoneW: 460, phoneH: 440, notch: 185, wing: 40 };
+/** The hero stage (critique.md §4.2): 1170 × 560, the island and the blob on the notch axis; the phone stage 460 wide. */
+const STAGE = { w: 1170, h: 560, phoneW: 460, phoneH: 440, notch: 185, wing: 40 };
 const METER_FILL: RGB = [235, 235, 240];
 const METER_TRACK: RGB = [56, 56, 60];
 
 type Beat = "none" | "gate" | "heard";
 interface View { kind: DeskKind; beat: Beat }
+
+/** What the hero's controls under the stage read and press (SPACE.md §4 row 3). */
+export interface DeskApi {
+  readonly kind: DeskKind;
+  /** The dot pulses: a live phase on the timeline, not a still. */
+  readonly live: boolean;
+  readonly still: boolean;
+  readonly pick: (k: DeskKind) => void;
+}
 
 function locate(pos: number): { idx: number; acc: number; local: number } {
   let acc = 0;
@@ -63,12 +67,13 @@ function pairSpaced(p: string): string {
 }
 
 /**
- * The desk (design.md §4): the 1170 × 690 stage of Kevin's Mac at 1:1 with its layer order, the
- * phone stage under 720 px, the two real-DOM bands (PhaseColumn + PhaseButtons; InstallPlate) that
- * sit in the stage or follow it in flow, and the one rAF timeline that steps the island, the blob
- * and the phase colour through the six kinds. `#still` and reduced motion give one pose.
+ * The desk (design.md §4, recomposed per SPACE.md §4): the 1170 × 560 stage of Kevin's Mac at 1:1 holding only the
+ * menu bar, the notch, the island, the live blob and the target ring; the phone stage under 720 px; and the one rAF
+ * timeline that steps the island, the blob and the phase colour through the six kinds. `controls` renders after the
+ * stage, outside the scaled layer, with the kind and `pick`, so the hero composes its own phase control under the
+ * stage. `#still` and reduced motion give one pose.
  */
-export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
+export function Desk({ still: stillProp, controls }: { still?: boolean; controls?: (api: DeskApi) => ReactNode }): ReactElement {
   const theme = useTheme();
   const [still, setStill] = useState(!!stillProp);
   const [view, setView] = useState<View>({ kind: "listening", beat: "none" });
@@ -124,7 +129,6 @@ export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
   const blobHidden = view.kind === "asleep" || view.kind === "alarm" || view.beat !== "none";
   const blobPhase: Phase = blobHidden ? "asleep" : PHASE_META[view.kind].phase;
   const phaseToken = view.beat === "gate" ? PHASE_META.asleep.token : PHASE_META[view.kind].token;
-  const columnKind: DeskKind = view.kind;
   const style = { "--desk-phase": `var(${phaseToken})` } as CSSProperties;
 
   const applyView = useCallback((next: View, now: number) => {
@@ -156,20 +160,11 @@ export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
     const apply = () => {
       const w = el.clientWidth;
       const phone = window.innerWidth < 720;
-      const s = phone ? (w - 32) / STAGE.phoneW : w >= STAGE.w - 4 ? 1 : w / STAGE.w; // the rail's own 1 px borders leave 1168: keep 1:1 and clip 2 px of ground
+      const s = phone ? w / STAGE.phoneW : w >= STAGE.w - 4 ? 1 : w / STAGE.w; // the rail's own 1 px borders leave 1168: keep 1:1 and clip 2 px of ground
       tl.current.scale = s;
       el.style.setProperty("--desk-s", String(Math.round(s * 10000) / 10000));
       if (phone) el.dataset["phone"] = "";
       else delete el.dataset["phone"];
-      // The fold: nav + headline row + desk ≤ the viewport with the Console whole; the Console shrinks first, floor 0.56.
-      let k = 1;
-      if (!phone) {
-        const top = el.getBoundingClientRect().top + window.scrollY;
-        const room = window.innerHeight - top - CONSOLE.y;
-        const cs = Math.max(0.56, Math.min(0.6, room / 760));
-        k = Math.round((cs / 0.6) * 1000) / 1000;
-      }
-      el.style.setProperty("--desk-console-k", String(k));
     };
     apply();
     const ro = new ResizeObserver(apply);
@@ -284,7 +279,7 @@ export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
       s.raf = 0;
       const dt = Math.min(0.1, (now - (s.last || now)) / 1000);
       s.last = now;
-      // A held kind (a PhaseButton press) keeps its own clock running to the segment's end, so the Say box types and Working counts.
+      // A held kind (a segment press) keeps its own clock running to the segment's end, so the Say box types and Working counts.
       const held = now < s.hold;
       const at = locate(s.pos);
       s.pos = held ? Math.min(s.pos + dt, at.acc + SEGS[at.idx]!.dur - 0.001) : (s.pos + dt) % CYCLE;
@@ -409,6 +404,7 @@ export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
   }, [pick]);
 
   const label = `Jarhead's blob, ${PHASE_META[view.kind].label.toLowerCase()}`;
+  const live = !still && !blobHidden;
 
   return (
     <div ref={root} className="desk" style={style} data-still={still ? "" : undefined} data-kind={view.kind} data-island={islandState}>
@@ -418,20 +414,11 @@ export function Desk({ still: stillProp }: { still?: boolean }): ReactElement {
           <MenuBar />
           <Notch />
           <Island kind={shown} state={islandState} lipFace={lipFace} swap={swap} still={still} pill={pill} refs={refs} />
-          <ConsoleWindow />
           <TargetRing />
           <Blob phase={blobPhase} theme={theme} hidden={blobHidden} still={still} label={label} onAdvance={advance} onFrame={onBlobFrame} />
         </div>
       </div>
-      <div className="desk-bands">
-        <div className="desk-band-l">
-          <PhaseColumn kind={columnKind} live={!still && !blobHidden} size="desk" />
-          <PhaseButtons kind={view.kind} onPick={pick} />
-        </div>
-        <div className="desk-band-r">
-          <InstallPlate variant="desk" />
-        </div>
-      </div>
+      {controls ? controls({ kind: view.kind, live, still, pick }) : null}
     </div>
   );
 }

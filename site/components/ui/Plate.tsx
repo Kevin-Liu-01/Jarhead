@@ -10,7 +10,7 @@ import { DitherGround } from "./DitherGround";
 export function Plate({ ink, className, children }: { readonly ink?: boolean; readonly className?: string; readonly children?: ReactNode }) {
   return (
     <div className={`sec-plate jh-flush${ink ? " is-ink" : ""}${className ? ` ${className}` : ""}`}>
-      <DitherGround variant={ink ? "ink" : "ground"} cell={ink ? 4 : 3} />
+      <DitherGround variant={ink ? "ink" : "ground"} cell={3} />
       <div className="sec-plate-in">{children}</div>
     </div>
   );
