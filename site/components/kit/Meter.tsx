@@ -4,8 +4,8 @@ import { useEffect, useRef, type ReactElement } from "react";
 import { mix3, parseColor, renderMeter, type RGB } from "@/lib/dither";
 import { cssVar, subscribeTheme } from "@/lib/theme";
 
-/** An rgba() token composited over the ground, so the meter's flat fills carry the token's alpha (fg2 = .72, active = .07 / .08). */
-function over(token: string, ground: RGB): RGB {
+/** An rgba() token composited over the ground, so a meter's flat fills carry the token's alpha (fg2 = .72, active = .07 / .08). Shared by the island's and the audio rows' meters. */
+export function over(token: string, ground: RGB): RGB {
   const raw = cssVar(token);
   const m = /rgba?\([^)]*?,\s*([\d.]+)\s*\)$/i.exec(raw);
   const a = m ? Number(m[1]) : 1;

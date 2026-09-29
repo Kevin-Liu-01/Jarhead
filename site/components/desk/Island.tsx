@@ -1,25 +1,26 @@
 "use client";
 import { useEffect, useRef, useState, type ReactElement, type RefObject } from "react";
+import { Glyph } from "@/components/kit";
 import { Icon } from "@/components/ui/Icons";
 
 export type IslandState = "open" | "peek" | "tucked";
 export type IslandKind = "listening" | "thinking" | "acting" | "speaking" | "alarm";
-export type LipFace = "- -" | ". ." | "O O";
+export type LipFace = string;
 
 /** The island's strings per kind (design.md §4.4; README:39, README:45, README:117-119, README:274-281, docs/DEMO.md:21; notch-island*.png). */
 export const ISLAND = {
-  utterance: "Tell Ben on Slack I'm late and put on Focus on Spotify.",
+  utterance: "Tell Ben on Slack I'm late and put on Focus on Spotify",
   word: { listening: "Listening", thinking: "Thinking", acting: "Acting", speaking: "Speaking", alarm: "Alarm" } as const,
   hero: {
-    listening: "Tell Ben on Slack I'm late and put on Focus on Spotify.",
+    listening: "Tell Ben on Slack I'm late and put on Focus on Spotify",
     thinking: "Three independent apps: Notes and Spotify take Apple events, Slack needs the pointer.",
     acting: "Slack on the screen lane, Spotify on a background lane.",
     speaking: 'Slack asks: send "I\'m running late" to Ben?',
     alarm: "07:10 · Wake up, Kevin",
   } as const,
   alarmSub: "Monday · standup notes at 9",
-  headSpeaking: "✋ Slack asks",
-  headAlarm: "⏰ Alarm · weekdays",
+  headSpeaking: "Slack asks",
+  headAlarm: "Alarm · weekdays",
   working: "Working",
   tiles: [
     { name: "Slack", state: "working" },
@@ -35,7 +36,7 @@ export const ISLAND = {
   sayAsleep: "Asleep · press Go",
   footClock: "12:37",
   footMeter: "7.2 min · $0.36",
-  footAsleep: "☾ asleep · next Timer 11:56 · pasta",
+  footAsleep: "asleep · next Timer 11:56 · pasta",
   pill: "Touch ID or passphrase",
   clockBase: { thinking: 1, acting: 6 } as const,
 };
@@ -88,7 +89,9 @@ export interface IslandProps {
  * canvas, four DOM bands in px from its top-left: anchor (face, word, Go · Stop · Mute), display
  * (head, hero, the kind's middle), the control row (Say box, Circle · Window · Ask), the foot
  * (clock, bar, meter, Console · Sleep), the phase hairline along the bottom. Tucked it is the lip
- * with `- -`; peeking it is the face on a 26 px strip. Drawn, so aria-hidden.
+ * with `- -`; peeking it is the face on a 26 px strip. Every control glyph is the kit's; the three the kit lacks (Window,
+ * Console, Sleep) are the picture's own twins (ui/Icons). No emoji: the ask is the handRaised glyph, the alarm a dot in the
+ * mark tone, asleep the crescent. Drawn, so aria-hidden.
  */
 export function Island({ kind, state, lipFace, swap, still, pill, refs }: IslandProps): ReactElement {
   const asleep = kind === "alarm";
@@ -104,9 +107,9 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
             <span ref={refs.eyeTop} className="desk-eye-top">O O</span>
           </div>
           <div className="desk-word"><WordCrossfade text={ISLAND.word[kind]} /></div>
-          <div className="desk-go">{asleep ? <Icon.play size={10} /> : <Icon.pause size={10} />}</div>
-          <div className="desk-box desk-stop"><Icon.stop size={12} /></div>
-          <div className={`desk-box desk-mute${asleep ? " is-dim" : ""}`}><Icon.mic size={12} /></div>
+          <div className="desk-go"><Glyph name={asleep ? "play" : "pause"} size={14} /></div>
+          <div className="desk-box desk-stop"><Glyph name="stop" size={14} /></div>
+          <div className={`desk-box desk-mute${asleep ? " is-dim" : ""}`}><Glyph name="mic" size={14} /></div>
         </div>
         <div className="desk-display" data-swap={swap ? "" : undefined}>
           <div className="desk-head">
@@ -117,8 +120,18 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
                 <span ref={refs.glyphs} className="desk-glyphs">{still ? ".#.#.#.#" : "        "}</span>
               </span>
             ) : null}
-            {question ? <span>{ISLAND.headSpeaking}</span> : null}
-            {asleep ? <span>{ISLAND.headAlarm}</span> : null}
+            {question ? (
+              <span className="desk-head-ask">
+                <Glyph name="handRaised" size={14} />
+                {ISLAND.headSpeaking}
+              </span>
+            ) : null}
+            {asleep ? (
+              <span className="desk-head-alarm">
+                <Glyph name="dot" size={14} />
+                {ISLAND.headAlarm}
+              </span>
+            ) : null}
           </div>
           <div className={`desk-hero${question ? " is-question" : ""}${asleep ? " is-mono" : ""}`}>
             {ISLAND.hero[kind]}
@@ -161,14 +174,17 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
             )}
           </div>
           <div className="desk-strip" style={{ left: 328, width: question ? 52 : 78 }}>
-            <i><Icon.target size={12} /></i>
-            <i><Icon.window size={12} /></i>
-            {question ? null : <i><Icon.ask size={12} /></i>}
+            <i><Glyph name="scopeMark" size={14} /></i>
+            <i><Icon.window size={13} /></i>
+            {question ? null : <i><Glyph name="questionCircle" size={14} /></i>}
           </div>
         </div>
         <div className="desk-foot" data-swap={swap ? "" : undefined}>
           {asleep ? (
-            <span className="desk-foot-l is-wide">{ISLAND.footAsleep}</span>
+            <span className="desk-foot-l is-wide">
+              <Icon.moon size={12} />
+              {ISLAND.footAsleep}
+            </span>
           ) : (
             <>
               <span className="desk-foot-l">{ISLAND.footClock}</span>
@@ -177,8 +193,8 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
             </>
           )}
           <div className="desk-strip desk-strip-foot" style={{ left: asleep ? 380 : 354, width: asleep ? 26 : 52 }}>
-            <i><Icon.grid size={12} /></i>
-            {asleep ? null : <i><Icon.moon size={12} /></i>}
+            <i><Icon.grid size={13} /></i>
+            {asleep ? null : <i><Icon.moon size={13} /></i>}
           </div>
         </div>
         <div className="desk-hair" />

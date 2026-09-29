@@ -187,16 +187,14 @@ export function renderField(
 
 /**
  * A page ground: GROUND_STOPS dark / PAPER_STOPS light, 4 bands, 2 CSS px cells, the size rounded UP to
- * the next 64 px so a resize re-renders only across a boundary; pin it bottom-right (the canvas is
- * positioned so) and the accent whisper stays in the corner while uniform ink is what gets cropped.
+ * the next 64 px so a resize re-renders only across a boundary. The caller's stylesheet pins the canvas
+ * bottom-right at that same rounded size before hydration (console.css .cg canvas), so this only fills the
+ * store and the box never moves; the accent whisper stays in the corner while uniform ink is what gets cropped.
  */
 export function renderGround(canvas: HTMLCanvasElement, o: { width: number; height: number; theme: Theme }): void {
   const W = Math.max(64, Math.ceil(o.width / 64) * 64);
   const H = Math.max(64, Math.ceil(o.height / 64) * 64);
   renderField(canvas, { width: W, height: H, cell: 2, stops: o.theme === "dark" ? GROUND_STOPS : PAPER_STOPS, bands: GROUND_BANDS });
-  canvas.style.position = "absolute";
-  canvas.style.right = "0";
-  canvas.style.bottom = "0";
 }
 
 /**

@@ -79,7 +79,9 @@
 .desk-head { left: 114px; top: 12px; width: 292px; height: 18px; display: flex; align-items: center; justify-content: space-between; font: 500 11px/1 var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .desk-meter { image-rendering: pixelated; display: block; }
 .desk-meter-head { width: 100px; height: 6px; }
-.desk-head-work { display: inline-flex; align-items: center; gap: 6px; }
+.desk-head-work, .desk-head-ask, .desk-head-alarm { display: inline-flex; align-items: center; gap: 6px; }
+.desk-head-ask { color: var(--jh-speaking); }
+.desk-head-alarm .kit-glyph { color: var(--jh-mark); width: 10px; height: 10px; }
 .desk-glyphs { color: var(--desk-white-48); letter-spacing: .02em; white-space: pre; }
 .desk-hero { left: 114px; top: 30px; width: 292px; max-height: 66px; font-size: 18px; line-height: 22px; font-weight: 400; letter-spacing: -.012em; color: var(--desk-white-92); text-shadow: 0 1px 0 var(--jh-desk-notch); overflow: hidden; }
 .desk-hero.is-question { color: var(--jh-paper); }
@@ -109,7 +111,7 @@
 
 /* the foot */
 .desk-foot-l { left: 14px; top: 160px; width: 40px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.desk-foot-l.is-wide { width: 300px; }
+.desk-foot-l.is-wide { width: 300px; display: inline-flex; align-items: center; gap: 6px; }
 .desk-meter-foot { left: 60px; top: 165px; width: 88px; height: 6px; }
 .desk-foot-r { left: 156px; top: 160px; width: 186px; height: 16px; font: 500 11px/16px var(--font-mono); color: var(--desk-white-72); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .desk-hair { left: 0; right: 0; bottom: 0; height: 1px; background: var(--desk-phase); transition: background-color var(--jh-drift) var(--jh-ease-in-out), opacity var(--jh-quick); }

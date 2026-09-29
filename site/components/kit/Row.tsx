@@ -37,6 +37,7 @@ export interface RowProps {
    * focus. The trailing controls keep their own pointer.
    */
   readonly tip?: Pick<TipProps, "line" | "keyCap" | "card" | "side">;
+  /** The row in view: --jh-active and the accent bar; a linked row also marks its cover `aria-current` (a listitem takes no aria-selected). */
   readonly selected?: boolean;
   readonly hover?: boolean;
   readonly open?: boolean;
@@ -69,7 +70,7 @@ export function Row({ icon, title, mono, size = 12, badge, value, meta, trailing
     .join(" ");
   const name = typeof title === "string" ? title : undefined;
   const cover = href ? (
-    <a className="kit-row-act" href={href} aria-label={name} rel={/^https?:/.test(href) ? "noopener" : undefined} />
+    <a className="kit-row-act" href={href} aria-label={name} aria-current={selected ? "true" : undefined} rel={/^https?:/.test(href) ? "noopener" : undefined} />
   ) : act ? (
     act
   ) : tip ? (
@@ -78,7 +79,7 @@ export function Row({ icon, title, mono, size = 12, badge, value, meta, trailing
     </Tip>
   ) : null;
   return (
-    <Tag className={cls} aria-disabled={disabled ? true : undefined} aria-selected={selected ? true : undefined} aria-describedby={describedBy}>
+    <Tag className={cls} aria-disabled={disabled ? true : undefined} aria-describedby={describedBy}>
       {cover}
       <span className="kit-row-icon">{icon}</span>
       <span className="kit-row-main">
