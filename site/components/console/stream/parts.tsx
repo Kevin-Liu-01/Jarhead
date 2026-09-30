@@ -5,20 +5,24 @@ import { PHASE_META, type DeskKind } from "@/lib/phase";
 
 /**
  * The Now stream's pieces (StreamView.swift; console-threads.jpg, console-jarhead.jpg): a conversation's title row
- * with its orb and the phase at the right, the two-line head at the Console's scale, the delegation card (one hairline
- * box aligned to the icon column, row-weight rules inside), the capture frame, the ledger row whose left column holds
- * the figure the way the app's holds the clock, and the ledger banner strip.
+ * with its orb and the phase at the right, the two-column frame under it (ITERATE.md §6: the words beside the one
+ * picture, the picture side alternating), the two-line head at the Console's scale, the delegation card, the picture
+ * in its drawn frame with its caption, the crop of a capture, the ledger row whose left column holds the figure the
+ * way the app's holds the clock, and the ledger banner strip.
  */
 
+export type Side = "left" | "right";
+
 /**
- * A section: the conversation's title row (orb · name · n · the phase as a dot, its face and its word), the h2 (its second
- * line in the quiet step only where COPY.md marks it *grey*), the lead, the rows; `rail` is the conversation's right-rail
- * group, which a phone folds in here (the desktop's rail shows it beside the stream: RightRail.tsx).
+ * A section (ITERATE.md §6): the conversation's title row (orb · name · n · the phase as a dot, its face and its word) over
+ * two columns: the words (the h2, its second line in the quiet step only where COPY.md marks it *grey*; the lead; the rows)
+ * and the one picture on the side the section names; `rail` is the conversation's right-rail group, which a phone folds
+ * in here (the desktop's rail shows it beside the stream: RightRail.tsx).
  */
-export function Sec({ id, name, n, phase, face, h2, grey = true, lead, label, rail, children }: { readonly id: string; readonly name: string; readonly n?: string; readonly phase?: DeskKind; readonly face?: string; readonly h2: readonly [string, string]; readonly grey?: boolean; readonly lead?: ReactNode; readonly label?: string; readonly rail?: ReactNode; readonly children: ReactNode }): ReactElement {
+export function Sec({ id, name, n, phase, face, h2, grey = true, lead, label, side, pic, rail, children }: { readonly id: string; readonly name: string; readonly n?: string; readonly phase?: DeskKind; readonly face?: string; readonly h2: readonly [string, string]; readonly grey?: boolean; readonly lead?: ReactNode; readonly label?: string; readonly side: Side; readonly pic: ReactNode; readonly rail?: ReactNode; readonly children: ReactNode }): ReactElement {
   const dot = phase ? ({ "--kit-phase": `var(${PHASE_META[phase].token})` } as CSSProperties) : undefined;
   return (
-    <section id={id} className="sec" data-sec="" aria-labelledby={`${id}-h`}>
+    <section id={id} className="sec" data-sec="" data-side={side} aria-labelledby={`${id}-h`}>
       <div className="sec-title">
         <JarheadMark size={14} />
         <span className="sec-name">{name}</span>
@@ -36,13 +40,18 @@ export function Sec({ id, name, n, phase, face, h2, grey = true, lead, label, ra
           </span>
         ) : null}
       </div>
-      <h2 id={`${id}-h`} className="sec-h2">
-        {h2[0]}
-        <br />
-        {grey ? <span className="sec-grey">{h2[1]}</span> : h2[1]}
-      </h2>
-      {lead ? <p className="sec-lead">{lead}</p> : null}
-      {children}
+      <div className="sec-grid">
+        <div className="sec-words">
+          <h2 id={`${id}-h`} className="sec-h2">
+            {h2[0]}
+            <br />
+            {grey ? <span className="sec-grey">{h2[1]}</span> : h2[1]}
+          </h2>
+          {lead ? <p className="sec-lead">{lead}</p> : null}
+          {children}
+        </div>
+        <div className="sec-pic">{pic}</div>
+      </div>
       {rail ? <div className="sec-rail">{rail}</div> : null}
     </section>
   );
@@ -84,12 +93,32 @@ export function Card({ icon, title, value, chips, foot, className, children }: {
   );
 }
 
-/** A capture in a drawn frame: the frame weight around pictures only, the screen's own baked ground behind. */
-export function Frame({ className, width, children }: { readonly className?: string; readonly width?: number; readonly children: ReactNode }): ReactElement {
+/**
+ * The section's one picture (ITERATE.md §6): the drawn frame (the frame weight around pictures only, the screen's own
+ * baked ground behind) filling its column, the one-line caption under it from the deck's alt list. `bare` leaves the
+ * frame to the child (an island strip draws its own).
+ */
+export function Pic({ caption, bare, className, children }: { readonly caption: string; readonly bare?: boolean; readonly className?: string; readonly children: ReactNode }): ReactElement {
   return (
-    <figure className={`frame${className ? ` ${className}` : ""}`} style={width ? { width } : undefined}>
-      {children}
+    <figure className={`pic${className ? ` ${className}` : ""}`}>
+      {bare ? children : <div className="frame pic-frame">{children}</div>}
+      <figcaption className="pic-cap">{caption}</figcaption>
     </figure>
+  );
+}
+
+/**
+ * A capture at 0.5× (a 2× file) or 1× (a 1× file), cropped: the box shows `width` × `height` CSS px of the image from
+ * (`x`, `y`) in the image's CSS px at that scale; the box narrows with its column and shows less, never scales. The alt
+ * is the figure's caption when the crop sits in a Pic (an empty alt here), the deck's line when it stands alone.
+ */
+export function Crop({ shot, scale, x, y, width, height, alt, className }: { readonly shot: { readonly src: string; readonly alt: string; readonly width: number; readonly height: number }; readonly scale: 0.5 | 1; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly alt?: ""; readonly className?: string }): ReactElement {
+  const w = Math.round(shot.width * scale);
+  const h = Math.round(shot.height * scale);
+  return (
+    <div className={`crop${className ? ` ${className}` : ""}`} style={{ maxWidth: width, height }}>
+      <img src={shot.src} alt={alt ?? shot.alt} width={shot.width} height={shot.height} decoding="async" loading="lazy" style={{ width: w, height: h, left: -x, top: -y }} />
+    </div>
   );
 }
 

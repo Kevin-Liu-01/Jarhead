@@ -19,8 +19,8 @@ export type GlyphName =
   | "reloadLine" | "earlierLine" | "newestLine" | "undoLine"
   // status, solid and tinted by state (ConsoleTheme.swift:149-229; ProblemGlyphs.swift:8-26)
   | "checkCircle" | "xOctagon" | "exclamationCircle" | "questionCircle" | "handRaised" | "hourglass" | "stopCircle" | "slashCircle" | "lock" | "key" | "terminal" | "dot"
-  // the site's own verb (doc.on.doc.fill's twin for the Copy buttons)
-  | "copy";
+  // the site's own verbs (doc.on.doc.fill's twin for the Copy buttons; star.fill's for the GitHub count)
+  | "copy" | "star";
 
 export type GlyphSize = 14 | 16 | 20;
 
@@ -213,6 +213,8 @@ const GLYPHS: Record<GlyphName, readonly Prim[]> = {
   dot: [fill(disc(10, 10, 3))],
   // ---- the site's own ----
   copy: [fill(rrect(7, 6, 9, 11, 1.5)), line("M12.5 3.5H5.5A1.5 1.5 0 0 0 4 5V12.5")],
+  // a five-point star on r 8 / 3.4 about (10, 10.5), round joins: the family's filled weight (star.fill's twin)
+  star: [soft(poly([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => at(10, 10.5, k % 2 ? 3.4 : 8, k * 36))), 1.2)],
 };
 
 export const GLYPH_NAMES: readonly GlyphName[] = Object.keys(GLYPHS) as GlyphName[];

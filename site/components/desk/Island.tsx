@@ -38,7 +38,7 @@ export const ISLAND = {
   footMeter: "7.2 min · $0.36",
   footAsleep: "asleep · next Timer 11:56 · pasta",
   pill: "Touch ID or passphrase",
-  clockBase: { thinking: 1, acting: 6 } as const,
+  clockBase: { thinking: 1, acting: 8 } as const,
 };
 
 export interface IslandRefs {
@@ -81,6 +81,8 @@ export interface IslandProps {
   swap: boolean;
   still: boolean;
   pill: boolean;
+  /** Tucked and asleep: the app's own foot line as the pill under the lip (`☾ asleep · next Timer 11:56 · pasta`). */
+  asleepPill: boolean;
   refs: IslandRefs;
 }
 
@@ -93,7 +95,7 @@ export interface IslandProps {
  * Console, Sleep) are the picture's own twins (ui/Icons). No emoji: the ask is the handRaised glyph, the alarm a dot in the
  * mark tone, asleep the crescent. Drawn, so aria-hidden.
  */
-export function Island({ kind, state, lipFace, swap, still, pill, refs }: IslandProps): ReactElement {
+export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, refs }: IslandProps): ReactElement {
   const asleep = kind === "alarm";
   const question = kind === "speaking";
   const working = kind === "thinking" || kind === "acting";
@@ -142,7 +144,7 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
               {ISLAND.tiles.map((tl, i) => (
                 <div key={tl.name} className="desk-tile" style={{ left: i === 0 ? 114 : 266 }}>
                   <span className="desk-tile-name"><i /> {tl.name}</span>
-                  <span className="desk-tile-s">{tl.state} · <span className="t">0:06</span></span>
+                  <span className="desk-tile-s">{tl.state} · <span className="t">0:08</span></span>
                   <span className="desk-tile-stop" />
                 </div>
               ))}
@@ -204,6 +206,10 @@ export function Island({ kind, state, lipFace, swap, still, pill, refs }: Island
         </div>
       </div>
       <div className="desk-pill" data-on={pill ? "" : undefined} aria-hidden="true">{ISLAND.pill}</div>
+      <div className="desk-pill desk-pill--asleep" data-on={asleepPill ? "" : undefined} aria-hidden="true">
+        <Icon.moon size={12} />
+        {ISLAND.footAsleep}
+      </div>
     </>
   );
 }

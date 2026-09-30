@@ -3,7 +3,6 @@ import { Ground } from "@/components/console/Ground";
 import { LeftRail } from "@/components/console/LeftRail";
 import { RightRail } from "@/components/console/RightRail";
 import { TitleBar } from "@/components/console/TitleBar";
-import { Top } from "@/components/console/Top";
 import { Costs } from "@/components/console/stream/Costs";
 import { Foot } from "@/components/console/stream/Foot";
 import { Hands } from "@/components/console/stream/Hands";
@@ -17,27 +16,29 @@ import { Sleep } from "@/components/console/stream/Sleep";
 import { Threads } from "@/components/console/stream/Threads";
 import { Wake } from "@/components/console/stream/Wake";
 import { NAV } from "@/content/deck";
+import { fetchStars } from "@/lib/stars";
 
 /**
- * THE CONSOLE IS THE SITE (IMMERSE.md angle A): one Console window fills the page on the dithered ground. The sticky
- * title bar with the traffic lights and `Jarhead · <phase>`; the sticky agents rail whose conversations are the
- * sections; the Now stream scrolling through them as rows, cards and captures, the composer at its foot (the install
- * field while Install is in view); the right rail with Session · Audio · Permissions and the group of the conversation
- * in view; the notch island with the live blob's face over the top edge, peeking, open under the pointer, reading the
- * section in view. Phone: the rail becomes the strip under the title bar; each rail group folds into its section.
+ * THE CONSOLE IS THE SITE (IMMERSE.md angle A; ITERATE.md's seven asks): one Console window fills the page on the
+ * dithered ground. The sticky title bar with the traffic lights, `Jarhead · <phase>` and GitHub's star count; the sticky
+ * rail with the sections, the app's own threads, conversations and agents; the Now stream, its first conversation the
+ * notch and the island with the blob's face, then every section as two columns (words beside one framed picture, the
+ * picture side alternating); the composer at the stream's foot (the install field while Install is in view); the right
+ * rail with Session · Audio · Permissions and the group of the conversation in view. Phone: the rail becomes the strip
+ * under the title bar; each rail group folds into its section.
  */
-export default function Page() {
+export default async function Page() {
+  const stars = await fetchStars();
   return (
     <>
       <a href="#main" className="jh-skip">{NAV.skip}</a>
       <Ground />
       <div className="shell" data-desk-stage="">
-        <Top />
-        <TitleBar />
+        <TitleBar stars={stars} />
         <div className="panes">
           <LeftRail />
           <main id="main" className="stream">
-            <Hero />
+            <Hero stars={stars} />
             <Wake />
             <Say />
             <Threads />

@@ -39,6 +39,9 @@
   --jh-mark-claude: #d97757; --jh-mark-gemini: #4796e3; --jh-mark-opencode: #6ee7a0; --jh-mark-amp: #ffb454;
   /* the kit: the Codex chip (BrandMarks.swift:22) and the seam, 2 px of ground outside a float's hairline (ConsoleTheme.swift:44) */
   --jh-mark-chip: #070707; --jh-seam: 2px;
+  /* the one glass surface (ITERATE.md §1, Kevin's ask over facts-canon §8.5): the hero's install button alone. The fill, its hover lift and its press, the hairline, the inner top highlight */
+  --jh-glass-fill: rgba(255, 255, 255, 0.55); --jh-glass-hover: rgba(255, 255, 255, 0.59); --jh-glass-press: rgba(255, 255, 255, 0.51);
+  --jh-glass-hair: rgba(0, 0, 0, 0.10); --jh-glass-top: rgba(255, 255, 255, 0.22);
   /* geometry: the one control corner; the Console's title bar (ConsoleRootView.swift ConsoleHeader), its two rails (ConsoleTheme.swift:1031-1042) */
   --jh-radius: 6px; --jh-tb: 44px; --jh-rail-l: 264px; --jh-rail-r: 296px;
   /* type */
@@ -57,6 +60,8 @@ html[data-theme="dark"] {
   --jh-lift-raised: rgba(255, 255, 255, 0.16); --jh-thumb: rgba(242, 242, 240, 0.32);
   --jh-accent: #5b82ff; --jh-on-accent: var(--jh-ink);
   --jh-mark-chip: #101010;
+  --jh-glass-fill: rgba(255, 255, 255, 0.10); --jh-glass-hover: rgba(255, 255, 255, 0.14); --jh-glass-press: rgba(255, 255, 255, 0.06);
+  --jh-glass-hair: rgba(255, 255, 255, 0.18);
   /* dark passes AA at the canon values, so the word aliases are the canon */
   --jh-fg-3-word: var(--jh-fg-3); --jh-titanium-word: var(--jh-titanium); --jh-speaking-word: var(--jh-speaking); --jh-error-word: var(--jh-error);
   /* phases, screens, marks, lights do not remap */

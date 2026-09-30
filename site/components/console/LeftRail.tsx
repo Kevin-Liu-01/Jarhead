@@ -1,29 +1,24 @@
 "use client";
 import { useEffect, type ReactElement } from "react";
-import { AgentMark, Glyph, Group, GroupHead, JarheadMark, Row, AGENT_LABELS } from "@/components/kit";
+import { Glyph, Group, JarheadMark, Row } from "@/components/kit";
 import { NAV, RAIL } from "@/content/deck";
 import { setLive, useLive } from "@/lib/live";
-
-/** The three coding agents the Console lists (AgentsRailView.swift), with the kit's own badge words. */
-const AGENTS = [
-  { tool: "claude", badge: { word: "asks", tone: "speaking" } },
-  { tool: "codex", badge: { word: "working", tone: "rest" } },
-  { tool: "cursor", badge: { word: "idle", tone: "rest" } },
-] as const;
+import { AgentsGroup, ConversationsGroup, ThreadsGroup } from "./railRows";
 
 /**
- * The agents rail (AgentsRailView.swift): "blue means alive, grey means over". The page's conversations are its rows:
- * the ten sections with their orbs, bright for the one in view and quiet for the rest, the section in view selected with
- * the 2 px accent bar (the hero, the live conversation, is the title bar's brand link); the agents with their marks below.
- * Sticky beside the stream; on a phone the same rows become the strip under the title bar.
+ * The agents rail (AgentsRailView.swift; console-jarhead.jpg, console-threads.jpg): "blue means alive, grey means
+ * over". The page's conversations are its first rows: the ten sections with their orbs, bright for the one in view and
+ * quiet for the rest, the section in view selected with the 2 px accent bar. Under them the app's own rail as it renders
+ * it (ITERATE.md §7): the Threads group, Pinned and Today, the closed folds, the Agents group with its sessions. Sticky
+ * beside the stream and scrolling on its own when taller than the window; on a phone the sections become the strip under
+ * the title bar and the app's groups fold into the Threads and Hands conversations.
  */
 export function LeftRail(): ReactElement {
   const live = useLive();
 
   // The section in view: the last one whose top has passed the line a fifth of the way down the stream under its sticky chrome
   // (the title bar, plus the strip on a phone: the sections' own scroll margin), so an anchored section is the one selected and
-  // the rail's selection follows the stream as the reader goes on. A short conversation (Rails, Sleep, Costs) sits whole above
-  // a lower line.
+  // the rail's selection follows the stream as the reader goes on. A short conversation sits whole above a lower line.
   useEffect(() => {
     const secs = Array.from(document.querySelectorAll<HTMLElement>("[data-sec]"));
     let raf = 0;
@@ -74,11 +69,9 @@ export function LeftRail(): ReactElement {
           return <Row key={r.id} size={13} icon={<JarheadMark size={14} quiet={!on} />} title={r.name} value={r.value} href={`#${r.id}`} selected={on} open={on} />;
         })}
       </Group>
-      <Group className="lr-agents" head={<GroupHead title="Agents" count={AGENTS.length} rule />}>
-        {AGENTS.map((a) => (
-          <Row key={a.tool} size={13} icon={<AgentMark tool={a.tool} size={14} />} title={AGENT_LABELS[a.tool]} badge={a.badge} />
-        ))}
-      </Group>
+      <ThreadsGroup className="lr-app lr-threads" />
+      <ConversationsGroup className="lr-app lr-convos" />
+      <AgentsGroup className="lr-app lr-agents" />
     </nav>
   );
 }

@@ -4,7 +4,7 @@ import { Glyph, Group, Row, type GlyphName } from "@/components/kit";
 import { INSTALL, SHOTS } from "@/content/deck";
 import { from, upTo } from "@/lib/cut";
 import { InstallRail } from "../railGroups";
-import { Sec, Tone } from "./parts";
+import { Pic, Sec, Tone } from "./parts";
 
 /** The note's last two sentences, whole; the URL closes it and renders as the link. */
 const NOTE = from(INSTALL.note, 3);
@@ -19,20 +19,64 @@ const STEP_DOTS: ReadonlyArray<"acting" | "speaking" | null> = [null, "acting", 
 const CURRENT = 3; // Permissions: the step the capture shows
 if (STEP_GLYPHS.length !== INSTALL.steps.length || STEP_DOTS.length !== INSTALL.steps.length) throw new Error("a Setup step has no glyph");
 
-/** The capture is the wizard at 1× (620 × 552): the drawn window keeps its title bar and rail and shows the pane through the frame (x from 170, y from 36). */
-const PANE = { x: 170, y: 36, w: 450, h: 516 } as const;
+/** The capture is the wizard at 1× (620 × 552): the drawn window keeps its title bar and rail and shows the pane's permission rows through the frame (x from 170, y from 196), as much as the column holds. */
+const PANE = { x: 170, y: 196, h: 320 } as const;
 
 /**
- * Install as a Console pane (IMMERSE.md §7): the h2 and the lead, the note with the linked script; the four commands as
- * tool rows headed by the h2 itself, so `Four commands` is said once (terminal glyph, mono title, the README comment as
- * the meta line, a ghost Copy in the verb slot), the spoken fifth row; the three lines; then the Setup wizard drawn as a
- * window (its title bar, the seven-step rail with the wizard's glyphs and status dots, Permissions selected) holding its
- * Permissions pane at 1×. The one-liner is the stream's composer while this conversation is in view (console/Composer.tsx);
- * Requirements is the rail's group.
+ * Install (picture left) as a Console pane (IMMERSE.md §7): the h2 and the lead, the note with the linked script; the four
+ * commands as tool rows headed by the h2 itself, so `Four commands` is said once (terminal glyph, mono title, the README
+ * comment as the meta line, a ghost Copy in the verb slot), the spoken fifth row; the three lines. The picture is the
+ * Setup wizard drawn as a window (its title bar, the seven-step rail with the wizard's glyphs and status dots, Permissions
+ * selected) holding its Permissions rows at 1×, captioned with the deck's alt. The one-liner is the stream's composer while
+ * this conversation is in view (console/Composer.tsx); Requirements is the rail's group.
  */
 export function Install(): ReactElement {
   return (
-    <Sec id={INSTALL.id} name={INSTALL.name} label={INSTALL.label} h2={INSTALL.h2} lead={LEAD} rail={<InstallRail />}>
+    <Sec
+      id={INSTALL.id}
+      name={INSTALL.name}
+      label={INSTALL.label}
+      h2={INSTALL.h2}
+      lead={LEAD}
+      side="left"
+      rail={<InstallRail />}
+      pic={
+        <Pic caption={SHOTS.setupPermissions.alt} bare>
+          <div className="wiz" role="group" aria-label={INSTALL.setup}>
+            <div className="wiz-head">
+              <span className="wiz-lights" aria-hidden="true">
+                <i className="tb-light tb-light-r" />
+                <i className="tb-light tb-light-y" />
+                <i className="tb-light tb-light-g" />
+              </span>
+              <span className="wiz-name">{INSTALL.setupWord}</span>
+              <span className="wiz-count">{INSTALL.steps.length}</span>
+            </div>
+            <div className="wiz-body">
+              <ul role="list" className="kit-rows wiz-rail">
+                {INSTALL.steps.map((s, i) => {
+                  const dot = STEP_DOTS[i];
+                  return (
+                    <Row
+                      key={s}
+                      icon={<Glyph name={STEP_GLYPHS[i] ?? "dot"} size={16} />}
+                      title={s}
+                      selected={i === CURRENT}
+                      trailing={dot ? <span className="kit-dot" style={{ "--kit-phase": `var(--jh-${dot})` } as CSSProperties} aria-hidden="true" /> : undefined}
+                    />
+                  );
+                })}
+              </ul>
+              <div className="wiz-pane">
+                <div className="wiz-crop" style={{ height: PANE.h }}>
+                  <img src={SHOTS.setupPermissions.src} alt="" width={SHOTS.setupPermissions.width} height={SHOTS.setupPermissions.height} style={{ marginLeft: -PANE.x, marginTop: -PANE.y }} decoding="async" loading="lazy" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </Pic>
+      }
+    >
       <p className="ins-note">
         {NOTE_HEAD}
         <a href={INSTALL.url} rel="noopener">
@@ -62,38 +106,6 @@ export function Install(): ReactElement {
         <Row size={13} icon={<Tone name="checkCircle" tone="acting" />} title={INSTALL.lines[1]} />
         <Row size={13} icon={<Tone name="terminal" />} title={INSTALL.lines[2]} />
       </ul>
-      <div className="wiz" role="group" aria-label={INSTALL.setup}>
-        <div className="wiz-head">
-          <span className="wiz-lights" aria-hidden="true">
-            <i className="tb-light tb-light-r" />
-            <i className="tb-light tb-light-y" />
-            <i className="tb-light tb-light-g" />
-          </span>
-          <span className="wiz-name">{INSTALL.setupWord}</span>
-          <span className="wiz-count">{INSTALL.steps.length}</span>
-        </div>
-        <div className="wiz-body">
-          <ul role="list" className="kit-rows wiz-rail">
-            {INSTALL.steps.map((s, i) => {
-              const dot = STEP_DOTS[i];
-              return (
-                <Row
-                  key={s}
-                  icon={<Glyph name={STEP_GLYPHS[i] ?? "dot"} size={16} />}
-                  title={s}
-                  selected={i === CURRENT}
-                  trailing={dot ? <span className="kit-dot" style={{ "--kit-phase": `var(--jh-${dot})` } as CSSProperties} aria-hidden="true" /> : undefined}
-                />
-              );
-            })}
-          </ul>
-          <div className="wiz-pane">
-            <div className="wiz-crop" style={{ width: PANE.w, height: PANE.h }}>
-              <img src={SHOTS.setupPermissions.src} alt={SHOTS.setupPermissions.alt} width={SHOTS.setupPermissions.width} height={SHOTS.setupPermissions.height} style={{ marginLeft: -PANE.x, marginTop: -PANE.y }} decoding="async" loading="lazy" />
-            </div>
-          </div>
-        </div>
-      </div>
     </Sec>
   );
 }

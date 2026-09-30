@@ -7,20 +7,20 @@ import Pnpm from "@thesvg/react/pnpm";
 import Xcode from "@thesvg/react/xcode";
 import type { CSSProperties, ReactElement, ReactNode } from "react";
 import { AgentMark, Glyph, Group, GroupHead, JarheadMark, Row, type GlyphName } from "@/components/kit";
-import { IslandStrip } from "@/components/ui/IslandStrip";
-import { ThemeImage } from "@/components/ui/Screen";
 import { COSTS, HANDS, HERO, INSTALL, MADE, NUMBERS, RAILS, SAY, SHOTS, SLEEP, THREADS, WAKE } from "@/content/deck";
 import { part, parts, row } from "@/lib/cut";
 import { BAYER8_RANKS } from "@/lib/dither";
-import { LRow, Tone } from "./stream/parts";
+import { AgentsGroup, ThreadsNowGroup } from "./railRows";
+import { Crop, LRow, Tone } from "./stream/parts";
 
 /**
  * The right rail's per-conversation groups (RightRailView.swift: the Now rail follows the conversation; console-jarhead.jpg
  * shows it full to the fold). The rail shows the group of the section in view (RightRail.tsx); on a phone the same group
  * sits at the end of its section (parts.tsx Sec `rail`). Each conversation's group is its own deck rows or its own capture,
- * moved here out of the stream, never duplicated: Wake's gate faces, Say's brains as marks, the Console's Threads and
- * Agents groups cropped from the captures at 0.5×, Rails' never-list, Sleep's ringing island, Numbers' provenance rows,
- * Costs' three figures, Made's Bayer row and the Dock icon, Install's Requirements as a Permissions-style group.
+ * never the stream's picture: Wake's gate faces, Say's brains as marks, the Now rail's Threads group and the Agents group
+ * drawn from the kit (railRows.tsx; the phone's home for the left rail's threads and agents), Rails' never-list, Sleep's
+ * Automations cropped from the capture, Numbers' provenance rows, Costs' three figures, Made's Bayer row and the overlay's
+ * shapes, Install's Requirements as a Permissions-style group.
  */
 
 /** The five gate faces (README:163; blob-eyes.jpg): the pair in its phase colour on the icon column, the label as the row. */
@@ -73,33 +73,14 @@ export function SayRail(): ReactElement {
   );
 }
 
-/** The Console's Threads group (console-threads.jpg, x 1200 to 1600, y 686 to 966 at 2×) at 0.5×: the app's own rail, in the rail. */
+/** The Now rail's Threads group (console-threads.jpg, right): drawn from the kit; on a phone the left rail's threads live here. */
 export function ThreadsRail(): ReactElement {
-  return (
-    <Group className="rr-group" head={<GroupHead title={THREADS.name} count={3} rule />}>
-      <li className="rr-crop-host">
-        <figure className="frame rr-crop">
-          <img src={SHOTS.consoleThreads.src} alt={SHOTS.consoleThreads.alt} width={800} height={515} decoding="async" loading="lazy" />
-        </figure>
-      </li>
-    </Group>
-  );
+  return <ThreadsNowGroup className="rr-group rr-app" />;
 }
 
-/** The wizard's step name (README:66) is the Console's own word for the group. */
-const AGENTS = part(INSTALL.setup, "Agents");
-
-/** The Console's Agents group (console-conversation.jpg and console-light.jpg, x 0 to 360, y 536 to 1006 at 2×) at 0.5×, in the page's theme. */
+/** The Agents group (console-jarhead.jpg, left): the same drawing as the rail's; on a phone the left rail's agents live here. */
 export function HandsRail(): ReactElement {
-  return (
-    <Group className="rr-group" head={<GroupHead title={AGENTS} rule />}>
-      <li className="rr-crop-host">
-        <figure className="frame rr-crop rr-crop--agents">
-          <ThemeImage dark={SHOTS.consoleDark} light={SHOTS.consoleLight} width={800} height={515} />
-        </figure>
-      </li>
-    </Group>
-  );
+  return <AgentsGroup className="rr-group rr-app" />;
 }
 
 /** The never-list (README:349) as the rail's group: the seven refused rows in the error tone, the closing line as its foot. */
@@ -114,12 +95,16 @@ export function NeverRail(): ReactElement {
   );
 }
 
-/** The island ringing its alarm (notch-island-alarm.png), the strip scaling to the rail's width as one. */
+/** The wizard's step name (README:66) is the Console's own word for the group. */
+const AGENTS = part(INSTALL.setup, "Agents");
+if (AGENTS !== "Agents") throw new Error("the agents word drifted");
+
+/** The Console's Automations group cropped from the capture at 0.5× (console-automations.jpg, x 1200 to 1600, y 460 to 760 at 2×): the alarm, the timer, the routine. */
 export function SleepRail(): ReactElement {
   return (
     <Group className="rr-group" head={<GroupHead title={SLEEP.name} rule />}>
-      <li className="rr-strip-host">
-        <IslandStrip src={SHOTS.islandAlarm.src} alt={SHOTS.islandAlarm.alt} width={SHOTS.islandAlarm.width} height={SHOTS.islandAlarm.height} />
+      <li className="rr-crop-host">
+        <Crop shot={SHOTS.consoleAutomations} scale={0.5} x={600} y={232} width={200} height={150} className="rr-crop" />
       </li>
     </Group>
   );
@@ -165,15 +150,13 @@ function Bayer(): ReactElement {
   );
 }
 
-/** The Bayer line wearing the tile, then the Dock icon at 256 cropped from the sheet at 1× (icon-sizes.png, x 356 to 620, y 23 to 281). */
+/** The Bayer line wearing the tile, then the overlay's shapes cropped at 0.5× (overlay-shapes.png, x 800 to 1200, y 120 to 400 at 2×): the circle and the arrow the hands draw. */
 export function MadeRail(): ReactElement {
   return (
     <Group className="rr-group" head={<GroupHead title={MADE.label} rule />}>
       <Row size={13} icon={<Bayer />} title={MADE.lines[0]} />
       <li className="rr-crop-host">
-        <figure className="frame rr-crop rr-crop--icon">
-          <img src={SHOTS.iconSizes.src} alt={SHOTS.iconSizes.alt} width={SHOTS.iconSizes.width} height={SHOTS.iconSizes.height} decoding="async" loading="lazy" />
-        </figure>
+        <Crop shot={SHOTS.overlayShapes} scale={0.5} x={400} y={60} width={200} height={140} className="rr-crop" />
       </li>
     </Group>
   );

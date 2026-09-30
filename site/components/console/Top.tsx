@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { Island, ISLAND, type IslandKind, type IslandRefs, type IslandState } from "@/components/desk/Island";
 import { Notch } from "@/components/desk/Notch";
-import type { BlobFrame } from "@/lib/blob";
 import { over } from "@/components/kit/Meter";
 import { cellCss, ditherGlyphs, parseColor, renderMeter, type RGB } from "@/lib/dither";
 import { renderIslandInk } from "@/lib/island";
@@ -26,9 +25,16 @@ const CYCLE = SEGS.reduce((s, x) => s + x.dur, 0);
 const GATE = 0.8; // the wake beat: `. .` + the pill, then `O O` on the peek
 const HOLD_MS = 15000;
 const SWAP_MS = 160; // --jh-quick
-const LEAVE_MS = 600; // NotchPanel: the island contracts 600 ms after the pointer leaves
 const NOTCH = 185;
 const WING = 40;
+
+/**
+ * The island's face per kind (ITERATE.md §5; BlobField.swift through facts-orb.md §3): the round eyes listening, the
+ * flat pair thinking and asleep, `> >` acting as the blob looks along its travel to the target ring, `^ ^` speaking,
+ * the small round pair while the alarm rings. The round pairs blink.
+ */
+const FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "> >", speaking: "^ ^", asleep: "- -", alarm: "o o" };
+const BLINKS = new Set<DeskKind>(["listening", "alarm"]);
 
 /**
  * The island's meters (NotchPanel.swift drawBar: white .72 on a white .10 track over the ink): the screen's fg-2 and active
@@ -60,14 +66,15 @@ function segStart(kind: DeskKind): number {
   return 0;
 }
 
-const spaced = (p: string): string => `${p[0] ?? "-"} ${p[1] ?? "-"}`;
-
 /**
- * The notch and the island over the page's top edge (IMMERSE.md angle A): the hardware notch at the top centre, the
- * island hanging under it, peeking while awake (the blob's face on the 26 px strip), tucked asleep (the lip with `- -`),
- * open under the pointer or while an alarm rings, at 1:1 on a 420 px holder that scales down on a phone. It runs the one
- * rAF timeline the whole page reads (lib/live.ts): the kinds cycle, the Say box types the utterance (here and in the
- * composer), Working counts, the meters tick, the ink breathes. `#still` and reduced motion give one pose.
+ * The notch and the island at the top of the stream's first conversation (ITERATE.md §4): the hardware notch at the
+ * centre under the title bar, the island open under it at 1:1 (420 × 184) while a kind is active with the blob's face in
+ * its anchor band, the tucked lip with `- -` and the app's asleep pill while it sleeps, the peek for the wake beat's heard
+ * moment. The whole holder scales as one on a phone. It runs the one rAF timeline the page reads (lib/live.ts): the
+ * kinds cycle, the Say box types the utterance (here and in the composer), Working counts, the meters tick, the ink
+ * breathes, the face blinks and turns to the pointer; acting, the target ring sits beside the island and the face looks
+ * along the travel. The Segments control (PhaseControl.tsx) holds a kind for 15 s; a section in view sets its own.
+ * `#still` and reduced motion give one pose.
  */
 export function Top(): ReactElement {
   const [still, setStill] = useState(false);
@@ -75,9 +82,6 @@ export function Top(): ReactElement {
   const [shown, setShown] = useState<IslandKind>("listening");
   const [swap, setSwap] = useState(false);
   const [pill, setPill] = useState(false);
-  const [hover, setHover] = useState(false);
-  // A ringing alarm opens the island where a pointer can also close it; on a touch screen it stays on the lip.
-  const [canHover, setCanHover] = useState(false);
   const holder = useRef<HTMLDivElement>(null);
   const refs = useMemo<IslandRefs>(
     () => ({
@@ -110,24 +114,23 @@ export function Top(): ReactElement {
     delays: [] as number[],
     blinkAt: 0,
     blinkUntil: 0,
-    blobPair: "O O",
     scale: 1,
-    leave: 0,
     shownKind: "listening" as IslandKind,
     view: { kind: "listening", beat: "none" } as View,
-    state: "peek" as IslandState,
+    state: "open" as IslandState,
     docked: false,
     spyAt: 0,
+    pointerNear: false,
     ink: null as { fill: RGB; track: RGB } | null,
   });
   const meterInk = useCallback(() => (tl.current.ink ??= islandInk()), []);
 
-  // Docked (a section in view) the island wears the kind's own face; in the hero it wears the blob's.
-  const docked = Boolean(SECTION_KIND[useLive().section]);
+  // A section in view sets the kind (the left rail measures it); the timeline holds until the hero is back.
+  useLive();
   const asleep = view.kind === "asleep";
-  const state: IslandState = asleep ? "tucked" : view.beat === "heard" ? "peek" : hover || (view.kind === "alarm" && canHover) ? "open" : "peek";
+  const state: IslandState = asleep ? "tucked" : view.beat === "heard" ? "peek" : "open";
   tl.current.state = state;
-  const lipFace = view.beat === "gate" ? ". ." : view.beat === "heard" ? "O O" : asleep ? "- -" : docked ? PHASE_META[view.kind].face : tl.current.blobPair;
+  const lipFace = view.beat === "gate" ? ". ." : view.beat === "heard" ? "O O" : FACE[view.kind];
   const phaseToken = view.beat === "gate" ? PHASE_META.asleep.token : PHASE_META[view.kind].token;
   const style = { "--desk-phase": `var(${phaseToken})` } as CSSProperties;
 
@@ -158,7 +161,6 @@ export function Top(): ReactElement {
   useEffect(() => {
     const el = holder.current;
     if (!el) return;
-    setCanHover(typeof matchMedia === "function" && matchMedia("(hover: hover)").matches);
     const apply = () => {
       tl.current.scale = Math.min(1, Math.max(0.1, el.getBoundingClientRect().width / 420));
     };
@@ -190,33 +192,27 @@ export function Top(): ReactElement {
     if (still && refs.glyphs.current) refs.glyphs.current.textContent = ditherGlyphs(8, 1, 0, true)[0] ?? "";
   }, [shown, still, state, meterInk, refs.meterHead, refs.meterFoot, refs.glyphs]);
 
-  // The island's eyes and the lip's: the blob's pair while it is awake; the kind's own face otherwise.
+  // The island's eyes: the kind's own face, written straight to the DOM (no re-render per frame).
   const setEyes = useCallback((pair: string) => {
     if (refs.eyeTop.current && refs.eyeTop.current.textContent !== pair) {
       refs.eyeTop.current.textContent = pair;
       if (refs.eyeUnder.current) refs.eyeUnder.current.textContent = pair;
     }
-    const v = tl.current.view;
-    if (v.beat === "none" && v.kind !== "asleep" && v.kind !== "alarm") {
-      holder.current?.querySelectorAll<HTMLSpanElement>(".desk-lipface span").forEach((el) => {
-        if (el.textContent !== pair) el.textContent = pair;
-      });
-    }
   }, [refs.eyeTop, refs.eyeUnder]);
   useEffect(() => {
-    liveActions.onBlobFrame = (f: BlobFrame) => {
-      tl.current.blobPair = spaced(f.pair);
-      if (!tl.current.docked) setEyes(tl.current.blobPair);
-    };
-    return () => {
-      liveActions.onBlobFrame = () => undefined;
-    };
-  }, [setEyes]);
-  useEffect(() => {
-    if (shown === "alarm") setEyes("o o");
-  }, [shown, setEyes]);
+    setEyes(FACE[view.kind]);
+  }, [view.kind, setEyes]);
 
-  // The pointer turns the island's eyes by ±8 / ±5 px within 300 px.
+  // The pointer turns the island's eyes by ±8 / ±5 px within 300 px; acting, they rest along the travel to the ring.
+  const restEyes = useCallback(() => {
+    const eyes = refs.eyes.current;
+    if (!eyes) return;
+    eyes.style.transform = tl.current.view.kind === "acting" ? "translate(6px, 1px)" : "";
+  }, [refs.eyes]);
+  useEffect(() => {
+    tl.current.pointerNear = false;
+    restEyes();
+  }, [view.kind, restEyes]);
   useEffect(() => {
     const move = (e: PointerEvent) => {
       const eyes = refs.eyes.current;
@@ -229,11 +225,15 @@ export function Top(): ReactElement {
       if (l < 300 && l > 1) {
         const m = Math.min(1, l / 120);
         eyes.style.transform = `translate(${((x / l) * m * 8).toFixed(1)}px, ${((y / l) * m * 5).toFixed(1)}px)`;
+        tl.current.pointerNear = true;
+      } else if (tl.current.pointerNear) {
+        tl.current.pointerNear = false;
+        restEyes();
       }
     };
     window.addEventListener("pointermove", move, { passive: true });
     return () => window.removeEventListener("pointermove", move);
-  }, [refs.eyes]);
+  }, [refs.eyes, restEyes]);
 
   // The timeline: one rAF, created paused, played while the tab is visible.
   useEffect(() => {
@@ -259,7 +259,6 @@ export function Top(): ReactElement {
         const kind: DeskKind = want ?? (held === "wake" ? "listening" : held);
         if (s.view.kind !== kind || s.view.beat !== "none") applyView({ kind, beat: "none" }, performance.now());
         if (s.pending) commitShown(s.pending);
-        setEyes(s.docked ? PHASE_META[kind].face : s.blobPair);
       };
       follow();
       return subscribeLive(follow);
@@ -278,7 +277,6 @@ export function Top(): ReactElement {
       const dt = Math.min(0.1, (now - (s.last || now)) / 1000);
       s.last = now;
       let local: number;
-      // A section in view sets the kind (the left rail measures it); the timeline holds until the hero is back.
       const want = SECTION_KIND[getLive().section];
       if (want) {
         if (!s.docked) {
@@ -350,8 +348,11 @@ export function Top(): ReactElement {
           }
         }
       } else if (s.typedN !== -1) {
-        // The island's box re-renders per kind; the composer keeps the last line said until the next one types.
+        // The island's box shows its placeholder again (the typed flag was set by hand, so React does not clear it); the
+        // composer keeps the last line said until the next one types.
         s.typedN = -1;
+        const say = refs.say.current;
+        if (say) delete say.dataset["typed"];
       }
       // Working · m:ss counts from the kind's base.
       if (s.shownKind === "thinking" || s.shownKind === "acting") {
@@ -365,16 +366,15 @@ export function Top(): ReactElement {
           });
         }
       }
-      // Docked, the eyes are the kind's own (the blob is off the screen); the alarm keeps its blink below.
-      if (s.docked && s.shownKind !== "alarm" && now - s.inkAt < 1) setEyes(PHASE_META[s.view.kind].face);
-      // The island's own blink while the alarm rings.
-      if (s.shownKind === "alarm") {
+      // The face: the kind's own, with a 120 ms blink every 3–6 s on the round eyes (BlobField.swift's rule).
+      const k = s.view.beat === "none" ? s.view.kind : null;
+      if (k && BLINKS.has(k)) {
         if (now >= s.blinkAt) {
           s.blinkUntil = now + 120;
           s.blinkAt = now + 3000 + Math.random() * 3000;
         }
-        setEyes(now < s.blinkUntil ? "- -" : "o o");
-      }
+        setEyes(now < s.blinkUntil ? "- -" : FACE[k]);
+      } else if (k) setEyes(FACE[k]);
       if (s.running && !document.hidden) s.raf = requestAnimationFrame(frame);
     };
     const play = () => {
@@ -414,8 +414,8 @@ export function Top(): ReactElement {
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
-      // Verification hooks (development only): pick a kind, open or close the island.
-      (window as unknown as { __jhTop?: unknown }).__jhTop = { pick: (k: DeskKind) => pick(k), open: (on: boolean) => setHover(on) };
+      // Verification hooks (development only): pick a kind.
+      (window as unknown as { __jhTop?: unknown }).__jhTop = { pick: (k: DeskKind) => pick(k) };
     }
     liveActions.pick = pick;
     liveActions.advance = () => {
@@ -432,26 +432,12 @@ export function Top(): ReactElement {
     setLive({ open: state === "open" });
   }, [state]);
 
-  // Hover opens; the pointer leaving contracts it 600 ms later (NotchPanel). A tap toggles where there is no hover.
-  const enter = () => {
-    window.clearTimeout(tl.current.leave);
-    setHover(true);
-  };
-  const leave = () => {
-    window.clearTimeout(tl.current.leave);
-    tl.current.leave = window.setTimeout(() => setHover(false), LEAVE_MS);
-  };
-  const tap = (e: React.PointerEvent) => {
-    if (e.pointerType !== "touch") return;
-    window.clearTimeout(tl.current.leave);
-    setHover((h) => !h);
-  };
-
   return (
     <div ref={holder} className="desk top" style={style} data-still={still ? "" : undefined} data-kind={view.kind} data-island={state} aria-hidden="true">
-      <div className="top-scale" onPointerEnter={enter} onPointerLeave={leave} onPointerDown={tap}>
+      <div className="top-scale">
         <Notch />
-        <Island kind={shown} state={state} lipFace={lipFace} swap={swap} still={still} pill={pill} refs={refs} />
+        <Island kind={shown} state={state} lipFace={lipFace} swap={swap} still={still} pill={pill} asleepPill={asleep && view.beat === "none"} refs={refs} />
+        <div className="top-ring" />
       </div>
     </div>
   );

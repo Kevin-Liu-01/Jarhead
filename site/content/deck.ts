@@ -24,6 +24,7 @@ export const HERO = {
   lead: "Say jarhead, pass Touch ID, talk. It uses the computer for you. The brain is whatever you already have a login for.", // README:16, README:7, README:17
   install: "Install",
   source: "Read the source", // README:10
+  note: "Send, pay, delete, post and purchase ask every time.", // README:347
   figures: "v2.0.0 · MIT · macOS 14+ · Apple silicon · $0.05 / min, per second · 71 tools · 6 brains + auto", // facts:15, README:13, README:362, README:334, README:341
   blobLabel: "Jarhead's blob, {phase}",
 } as const;
@@ -257,6 +258,11 @@ export const ALT = {
   consoleLight: "The Console in the light appearance.", // README:157
   consoleSettings: "Settings. Voice, mic, brain, idle sleep, retention.", // README:140
   consoleThreads: "The Console during a split. Slack asks before it sends.", // README:122-127
+  consoleLedger: "The Ledger tab. A day's rows and what it billed.", // README:139
+  consoleAutomations: "Automations in the Console. One row each.", // README:280
+  blobFly: "The blob beside its target ring, acting.", // README:170
+  blobCapsule: "The capsule. Phase, meter, the exchange, the running step.", // README:189
+  overlayShapes: "The overlay's shapes. Circle, arrow, rectangle, text, stroke.", // README:190
   iconSizes: "The Dock icon at 16, 32, 64, 128 and 256.", // README:214
   setupPermissions: "Setup, Permissions", // README:202-207
 } as const;
@@ -271,6 +277,11 @@ export const SHOTS = {
   consoleLight: { src: `${MEDIA}/console-light.jpg`, alt: ALT.consoleLight },
   consoleSettings: { src: `${MEDIA}/console-settings.jpg`, alt: ALT.consoleSettings, width: 1600, height: 1220 },
   consoleThreads: { src: `${MEDIA}/console-threads.jpg`, alt: ALT.consoleThreads, width: 1600, height: 1030 },
+  consoleLedger: { src: `${MEDIA}/console-ledger.jpg`, alt: ALT.consoleLedger, width: 1600, height: 1030 },
+  consoleAutomations: { src: `${MEDIA}/console-automations.jpg`, alt: ALT.consoleAutomations, width: 1600, height: 1030 },
+  blobFly: { src: `${MEDIA}/blob-fly.png`, alt: ALT.blobFly, width: 524, height: 522 },
+  blobCapsule: { src: `${MEDIA}/blob-capsule.png`, alt: ALT.blobCapsule, width: 1112, height: 696 },
+  overlayShapes: { src: `${MEDIA}/overlay-shapes.png`, alt: ALT.overlayShapes, width: 1600, height: 589 },
   iconSizes: { src: `${MEDIA}/icon-sizes.png`, alt: ALT.iconSizes, width: 640, height: 584 },
   setupPermissions: { src: `${MEDIA}/onboarding-permissions.png`, alt: ALT.setupPermissions, width: 620, height: 552 },
 } as const;
