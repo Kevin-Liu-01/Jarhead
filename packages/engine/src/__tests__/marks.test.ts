@@ -464,12 +464,17 @@ test("marks: the stroke snaps to the LARGEST frame mostly inside it — a circle
 // ---- the notch's × and Window box ------------------------------------------------------------
 
 /** Snapshot events emitted so far (a scheduleSnapshot lands one after its timer). */
-function snapshots(engine: Engine): { count: () => number } {
+/** Counts the snapshots the engine publishes and keeps each one's mark ids, so a test can ask "did any snapshot after this point change the marks" without pinning how many unrelated snapshots (the meter, a lease, a task) land in a quiet window. */
+function snapshots(engine: Engine): { count: () => number; markIdsSince: (from: number) => ReadonlyArray<ReadonlyArray<string>> } {
   let n = 0;
+  const ids: string[][] = [];
   engine.on("event", (e) => {
-    if (e.type === "snapshot") n++;
+    if (e.type === "snapshot") {
+      n++;
+      ids.push(e.snapshot.marks.map((m) => m.id));
+    }
   });
-  return { count: () => n };
+  return { count: () => n, markIdsSince: (from) => ids.slice(from) };
 }
 
 test("mark.remove drops one pending mark and the snapshot follows; removing a consumed mark clears its consumed clock; an unknown or malformed id changes nothing, throws nothing and schedules no snapshot", async () => {
@@ -510,7 +515,10 @@ test("mark.remove drops one pending mark and the snapshot follows; removing a co
     for (const id of ["mark_zzzzzzzz", "x", "", "mark_", "MARK_ABC", "mark_ab/../c"]) await engine.command({ type: "mark.remove", id });
     await settle();
     assert.deepEqual(engine.snapshot().marks, kept);
-    assert.equal(snaps.count(), quiet, "no snapshot for a no-op");
+    // A no-op removal publishes no snapshot with changed marks. The exact count is not pinned: while the session is
+    // awake the meter, the lease and the task publish their own snapshots, and on a shared runner one can land inside
+    // the quiet window (CI 2026-09-30 saw exactly that).
+    for (const ids of snaps.markIdsSince(quiet)) assert.deepEqual(ids, kept.map((m) => m.id), "no snapshot changed the marks for a no-op");
   } finally {
     await engine.stop();
   }
