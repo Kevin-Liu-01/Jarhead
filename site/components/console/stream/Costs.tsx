@@ -2,9 +2,9 @@ import type { ReactElement } from "react";
 import { Row } from "@/components/kit";
 import { COSTS, SHOTS } from "@/content/deck";
 import { BillRail } from "../railGroups";
-import { Crop, Pic, Sec, Tone } from "./parts";
+import { Cut, Pic, Sec, Tone } from "./parts";
 
-/** Costs (picture left): the three lines as rows; the capsule with its meter cropped from the capture at 0.5× (x 240 to 1032, y 120 to 580 at 2×); the three figures are the rail's group (railGroups.tsx). */
+/** Costs (picture left): the three lines as rows; the capsule with the blob beside it at 0.5× (blob-capsule.png from x 74, y 18 at the render's CSS px: the blob whole, the card whole with its phase word, the meter's 7.2 min · $0.36, the exchange, the running step, the transport); the pair is 418 wide, so the frame scales this one window to its 397 (Pic `win`, 0.95) rather than cut the blob; the three figures are the rail's group (railGroups.tsx). */
 export function Costs(): ReactElement {
   return (
     <Sec
@@ -16,8 +16,8 @@ export function Costs(): ReactElement {
       side="left"
       rail={<BillRail />}
       pic={
-        <Pic caption={SHOTS.blobCapsule.alt}>
-          <Crop shot={SHOTS.blobCapsule} scale={0.5} x={120} y={60} width={396} height={230} alt="" />
+        <Pic caption={SHOTS.blobCapsule.alt} win={418}>
+          <Cut shot={SHOTS.blobCapsule} scale={0.5} x={74} y={18} />
         </Pic>
       }
     >

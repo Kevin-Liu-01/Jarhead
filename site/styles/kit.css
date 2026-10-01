@@ -143,6 +143,9 @@ button.kit-chip.is-hover { background-color: var(--jh-hover); }
 /* the on cell's fill covers its own edges; before the thumb is measured (no JS yet) the cell paints itself */
 .kit-seg[aria-checked="true"], .kit-seg[aria-checked="true"] + .kit-seg { border-left-color: transparent; }
 .kit-segments:not(.has-thumb) .kit-seg[aria-checked="true"] { background-color: var(--jh-fg); }
+/* a cell wrapped in its tip's anchor (display: contents) is still the cell on the right: the divider and the on cell's edge follow it */
+.kit-tip-anchor + .kit-tip-anchor > .kit-seg { border-left: 1px solid var(--jh-hair); }
+.kit-tip-anchor:has(> .kit-seg[aria-checked="true"]) + .kit-tip-anchor > .kit-seg { border-left-color: transparent; }
 .kit-seg-thumb { position: absolute; z-index: 0; top: 0; left: 0; width: 0; height: 100%; background: var(--jh-fg);
   transition: transform var(--jh-quick) var(--jh-ease-out), width var(--jh-quick) var(--jh-ease-out), height var(--jh-quick) var(--jh-ease-out); }
 .kit-seg-flag { font-size: 11px; line-height: 1; opacity: 0.85; }

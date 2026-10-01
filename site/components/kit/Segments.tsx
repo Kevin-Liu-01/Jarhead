@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement, type ReactNode } from "react";
+import { Tip, type TipCard } from "./Tip";
 
 export interface SegmentOption {
   readonly id: string;
@@ -10,6 +11,8 @@ export interface SegmentOption {
   /** A face pair in mono 11 before the word (the hero's phase control, SPACE.md §4 row 3). */
   readonly face?: string;
   readonly glyph?: ReactNode;
+  /** The cell's story as a ConsoleTip card (ConsoleTip.swift:429-471): the cell is the trigger, on hover and keyboard focus. */
+  readonly tip?: TipCard;
 }
 
 export type SegmentsSize = "rail" | "row" | "toggle";
@@ -20,7 +23,8 @@ export type SegmentsSize = "rail" | "row" | "toggle";
  * dividers drawn once by the cell on the right; on = inverted (--jh-fg fill, ground letters) as a thumb that glides
  * between cells over --jh-quick (transform and width only); hover --jh-hover. Keys: ← → pick the neighbour (clamped),
  * Space the next (wrapping), Home / End the ends, Esc drops focus. Roving tabindex: the on cell is the one tab stop.
- * `fit` sizes each cell to its title (padding 10) instead of sharing the width.
+ * `fit` sizes each cell to its title (padding 10) instead of sharing the width. A cell with a `tip` is wrapped in the
+ * kit's Tip (an anchor of display: contents, so the cell stays a flex item; kit.css draws its divider through the anchor).
  */
 export function Segments({ value, options, onPick, size = "rail", ariaLabel, fit, className }: { readonly value: string; readonly options: readonly SegmentOption[]; readonly onPick: (id: string) => void; readonly size?: SegmentsSize; readonly ariaLabel: string; readonly fit?: boolean; readonly className?: string }): ReactElement {
   const group = useRef<HTMLDivElement>(null);
@@ -105,7 +109,7 @@ export function Segments({ value, options, onPick, size = "rail", ariaLabel, fit
     <div ref={group} role="radiogroup" aria-label={ariaLabel} className={cls} onKeyDown={onKeyDown}>
       {options.map((o) => {
         const on = o.id === value;
-        return (
+        const cell = (
           <button
             key={o.id}
             ref={(el) => {
@@ -132,6 +136,13 @@ export function Segments({ value, options, onPick, size = "rail", ariaLabel, fit
             {o.glyph}
             <span>{o.title}</span>
           </button>
+        );
+        return o.tip ? (
+          <Tip key={o.id} card={o.tip}>
+            {cell}
+          </Tip>
+        ) : (
+          cell
         );
       })}
       <span className="kit-seg-thumb" aria-hidden="true" style={thumb ?? undefined} />

@@ -1,29 +1,27 @@
 import type { ReactElement } from "react";
 import { Row } from "@/components/kit";
-import { IslandStrip } from "@/components/ui/IslandStrip";
 import { COSTS, SHOTS, SLEEP } from "@/content/deck";
 import { row } from "@/lib/cut";
 import { SleepRail } from "../railGroups";
 import { Pic, Sec, Tone, figureCard } from "./parts";
+import { Strip } from "./Strip";
 
 const ASLEEP = row(COSTS.figures, 2); // $0 · asleep
 
-/** 06 · Sleep (picture left): the three lines as rows with the $0 beside the first; the island ringing its alarm as the picture; the Automations group is the rail's (railGroups.tsx). */
+/** 06 · Sleep (picture left): the three lines as rows with the $0 beside the first; the island ringing its alarm (notch-island-alarm.png) under the drawn Mac top edge, filling the frame; the Console's Automations group is the rail's (railGroups.tsx). */
 export function Sleep(): ReactElement {
   return (
     <Sec
       id={SLEEP.id}
       name={SLEEP.name}
       n={SLEEP.n}
-      phase={SLEEP.phase}
-      face={SLEEP.face}
       h2={SLEEP.h2}
       lead={SLEEP.lead}
       side="left"
       rail={<SleepRail />}
       pic={
-        <Pic caption={SHOTS.islandAlarm.alt.slice(0, SHOTS.islandAlarm.alt.indexOf(". ") + 1)} bare>
-          <IslandStrip src={SHOTS.islandAlarm.src} alt="" width={SHOTS.islandAlarm.width} height={SHOTS.islandAlarm.height} />
+        <Pic caption={SHOTS.islandAlarm.alt} strip>
+          <Strip shot={SHOTS.islandAlarm} />
         </Pic>
       }
     >

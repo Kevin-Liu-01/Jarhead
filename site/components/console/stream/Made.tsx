@@ -5,12 +5,12 @@ import { Row } from "@/components/kit";
 import { MADE, SHOTS } from "@/content/deck";
 import { sentences } from "@/lib/cut";
 import { MadeRail } from "../railGroups";
-import { Crop, Pic, Sec, Tone } from "./parts";
+import { Pic, Render, Sec, Tone } from "./parts";
 
 const LEAD = sentences(MADE.lead); // "Jarhead.app is Swift." · "The daemon jarheadd is TypeScript." · "Two Swift helpers act on the Mac."
 if (LEAD.length !== 3) throw new Error("the Made lead is not three sentences");
 
-/** Made (picture right): the lead's three sentences as rows with their language marks, then the ledger and self-edit lines; the Dock icon at 128 and 256 cropped from the sheet at 1× (x 200 to 596, y 30 to 330); the Bayer line and the overlay's shapes are the rail's group (railGroups.tsx). */
+/** Made (picture right): the lead's three sentences as rows with their language marks, then the ledger and self-edit lines; the Dock icon sheet at 1×, the frame on the 128 and the 256, whole, 11 px of the sheet's ground either side (the caption names the sheet's five sizes; the row of five is 567 px wide, so no 1× window holds it, and cover at 0.62× blurs the 1× sheet's dither and bleeds the 2× row, so two at 1× stay); the Bayer line and the overlay's shapes are the rail's group (railGroups.tsx). */
 export function Made(): ReactElement {
   return (
     <Sec
@@ -22,7 +22,7 @@ export function Made(): ReactElement {
       rail={<MadeRail />}
       pic={
         <Pic caption={SHOTS.iconSizes.alt}>
-          <Crop shot={SHOTS.iconSizes} scale={0.5} x={0} y={0} width={320} height={292} alt="" />
+          <Render shot={SHOTS.iconSizes} x={0.86} y={0.03} />
         </Pic>
       }
     >

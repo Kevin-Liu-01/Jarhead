@@ -1,35 +1,30 @@
 import type { ReactElement } from "react";
 import { Row } from "@/components/kit";
-import { HERO, NUMBERS, SAY, SHOTS } from "@/content/deck";
-import { part } from "@/lib/cut";
+import { SAY, SHOTS } from "@/content/deck";
 import { SayRail } from "../railGroups";
-import { Crop, Pic, Sec, Tone, figureCard } from "./parts";
+import { Cut, Pic, Sec, Tone } from "./parts";
 
-const TOOLS = part(HERO.figures, "71 tools");
-
-/** 02 · Say (picture left): the reflex row with its 3 ms, the policy row with its 71, the local row with its badge; the Settings tab's Brain block cropped from the capture at 0.5× (x 808 to 1600, y 60 to 740 at 2×); the six brains as marks in the rail. */
+/** 02 · Say (picture left): the three lines as bare rows (the 3 ms is Numbers' lead figure, the 71 the Hands lead's and the rail's, so neither is said again here); the Settings tab's Brain card at 1× (the rail at x 1200 to 1600, the card from y 408 at 2×, the row under the Audio group's toggle, down to the Effort row; the Status row's Check button starts 3 px before the frame can end) in the frame; the six brains as marks in the rail. */
 export function Say(): ReactElement {
   return (
     <Sec
       id={SAY.id}
       name={SAY.name}
       n={SAY.n}
-      phase={SAY.phase}
-      face={SAY.face}
       h2={SAY.h2}
       lead={SAY.lead}
       side="left"
       rail={<SayRail />}
       pic={
         <Pic caption={SHOTS.consoleSettings.alt}>
-          <Crop shot={SHOTS.consoleSettings} scale={0.5} x={404} y={30} width={396} height={340} alt="" />
+          <Cut shot={SHOTS.consoleSettings} scale={1} right={1600} y={408} />
         </Pic>
       }
     >
       <ul role="list" className="kit-rows sec-rows">
-        <Row size={13} icon={<Tone name="live" tone="listening" />} title={SAY.lines[0]} value={NUMBERS.display.value} tip={{ card: figureCard(NUMBERS.display) }} />
-        <Row size={13} icon={<Tone name="ask" />} title={SAY.lines[1]} value={TOOLS} />
-        <Row size={13} icon={<Tone name="folder" />} title={SAY.lines[2]} badge={{ word: "this Mac" }} />
+        <Row size={13} icon={<Tone name="live" tone="listening" />} title={SAY.lines[0]} />
+        <Row size={13} icon={<Tone name="ask" />} title={SAY.lines[1]} />
+        <Row size={13} icon={<Tone name="folder" />} title={SAY.lines[2]} />
       </ul>
     </Sec>
   );

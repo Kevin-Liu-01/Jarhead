@@ -1,26 +1,23 @@
 import type { CSSProperties, ReactElement, ReactNode } from "react";
 import { Glyph, JarheadMark, Tip, type GlyphName, type TipCard } from "@/components/kit";
-import { PHASES, type Figure } from "@/content/deck";
-import { PHASE_META, type DeskKind } from "@/lib/phase";
+import type { Figure } from "@/content/deck";
 
 /**
- * The Now stream's pieces (StreamView.swift; console-threads.jpg, console-jarhead.jpg): a conversation's title row
- * with its orb and the phase at the right, the two-column frame under it (ITERATE.md §6: the words beside the one
- * picture, the picture side alternating), the two-line head at the Console's scale, the delegation card, the picture
- * in its drawn frame with its caption, the crop of a capture, the ledger row whose left column holds the figure the
- * way the app's holds the clock, and the ledger banner strip.
+ * The Now stream's pieces (StreamView.swift; console-threads.jpg, console-jarhead.jpg; CENTER.md "Sections"): a conversation's
+ * title row with its orb, name and number, the two columns under it (the words beside the one framed picture, the picture
+ * side alternating), the two-line head at the Console's scale, the 4:3 frame every picture fills, a render covering it or a
+ * capture cropped to the region the section is about, the one-line caption, the ledger row whose left column holds the
+ * figure the way the app's holds the clock, and the ledger banner strip.
  */
 
 export type Side = "left" | "right";
 
 /**
- * A section (ITERATE.md §6): the conversation's title row (orb · name · n · the phase as a dot, its face and its word) over
- * two columns: the words (the h2, its second line in the quiet step only where COPY.md marks it *grey*; the lead; the rows)
- * and the one picture on the side the section names; `rail` is the conversation's right-rail group, which a phone folds
- * in here (the desktop's rail shows it beside the stream: RightRail.tsx).
+ * A section: the title row (orb · name · number, or the conversation's label where it has no number) over two columns: the
+ * words (the h2, its second line in the quiet step only where COPY.md marks it *grey*; the lead; the rows) and the one picture
+ * on the side the section names; `rail` is the conversation's right-rail group, which a phone folds in here.
  */
-export function Sec({ id, name, n, phase, face, h2, grey = true, lead, label, side, pic, rail, children }: { readonly id: string; readonly name: string; readonly n?: string; readonly phase?: DeskKind; readonly face?: string; readonly h2: readonly [string, string]; readonly grey?: boolean; readonly lead?: ReactNode; readonly label?: string; readonly side: Side; readonly pic: ReactNode; readonly rail?: ReactNode; readonly children: ReactNode }): ReactElement {
-  const dot = phase ? ({ "--kit-phase": `var(${PHASE_META[phase].token})` } as CSSProperties) : undefined;
+export function Sec({ id, name, n, h2, grey = true, lead, label, side, pic, rail, children }: { readonly id: string; readonly name: string; readonly n?: string; readonly h2: readonly [string, string]; readonly grey?: boolean; readonly lead?: ReactNode; readonly label?: string; readonly side: Side; readonly pic: ReactNode; readonly rail?: ReactNode; readonly children: ReactNode }): ReactElement {
   return (
     <section id={id} className="sec" data-sec="" data-side={side} aria-labelledby={`${id}-h`}>
       <div className="sec-title">
@@ -28,17 +25,6 @@ export function Sec({ id, name, n, phase, face, h2, grey = true, lead, label, si
         <span className="sec-name">{name}</span>
         {n ? <span className="sec-n">{n}</span> : null}
         {label ? <span className="sec-label">{label}</span> : null}
-        {phase ? (
-          <span className="sec-phase">
-            <span className="kit-dot" style={dot} aria-hidden="true" />
-            {face ? (
-              <span className="kit-seg-face sec-face" aria-hidden="true">
-                {face}
-              </span>
-            ) : null}
-            <span>{PHASES[phase].word}</span>
-          </span>
-        ) : null}
       </div>
       <div className="sec-grid">
         <div className="sec-words">
@@ -71,48 +57,76 @@ export function figureCard(f: Figure): TipCard {
   return { title: f.value, status: f.label, lines: [f.tip] };
 }
 
-/** The delegation card: a head row, an optional chip line, rows, a foot row. */
-export function Card({ icon, title, value, chips, foot, className, children }: { readonly icon?: ReactNode; readonly title?: ReactNode; readonly value?: string; readonly chips?: ReactNode; readonly foot?: ReactNode; readonly className?: string; readonly children?: ReactNode }): ReactElement {
-  return (
-    <div className={`card${className ? ` ${className}` : ""}`}>
-      {title ? (
-        <div className="card-head">
-          {icon ? <span className="kit-icon">{icon}</span> : null}
-          <span className="card-title">{title}</span>
-          {value ? <span className="card-mono">{value}</span> : null}
-        </div>
-      ) : null}
-      {chips ? <div className="card-chips">{chips}</div> : null}
-      {children ? (
-        <ul role="list" className="kit-rows card-rows">
-          {children}
-        </ul>
-      ) : null}
-      {foot ? <div className="card-foot">{foot}</div> : null}
-    </div>
-  );
+export interface Shot {
+  readonly src: string;
+  readonly alt: string;
+  readonly width: number;
+  readonly height: number;
 }
 
 /**
- * The section's one picture (ITERATE.md §6): the drawn frame (the frame weight around pictures only, the screen's own
- * baked ground behind) filling its column, the one-line caption under it from the deck's alt list. `bare` leaves the
- * frame to the child (an island strip draws its own).
+ * The section's one picture (CENTER.md): a 4:3 frame with the same chrome everywhere (1 px --jh-hair-frame, radius 8, the
+ * raised ground inside) that its picture fills, and the one-line caption under it from the deck's alt list. `strip` marks an
+ * island strip (stream/Strip.tsx), whose ground inside the chrome is the render's own. `win` widens the design width a Cut
+ * is composed for (console.css --pic-win, 397 at 1440) so the frame scales that one window down as one instead of cutting it.
  */
-export function Pic({ caption, bare, className, children }: { readonly caption: string; readonly bare?: boolean; readonly className?: string; readonly children: ReactNode }): ReactElement {
+export function Pic({ caption, strip, win, children }: { readonly caption: string; readonly strip?: boolean; readonly win?: number; readonly children: ReactNode }): ReactElement {
   return (
-    <figure className={`pic${className ? ` ${className}` : ""}`}>
-      {bare ? children : <div className="frame pic-frame">{children}</div>}
+    <figure className={`pic${strip ? " pic--strip" : ""}`}>
+      <div className="frame pic-frame" style={win ? ({ "--pic-win": `${win}px` } as CSSProperties) : undefined}>
+        {children}
+      </div>
       <figcaption className="pic-cap">{caption}</figcaption>
     </figure>
   );
 }
 
+/** The frame's inside at 1440 (console.css .pic-frame --pic-win): the box every window and render is composed for; a narrower frame scales the composition as one. */
+const WIN = { w: 397, h: 297 } as const;
+
 /**
- * A capture at 0.5× (a 2× file) or 1× (a 1× file), cropped: the box shows `width` × `height` CSS px of the image from
- * (`x`, `y`) in the image's CSS px at that scale; the box narrows with its column and shows less, never scales. The alt
- * is the figure's caption when the crop sits in a Pic (an empty alt here), the deck's line when it stands alone.
+ * A harness render at one CSS px per file px (the @2× PNGs land on whole device pixels, so their dither stays crisp; the
+ * 1× icon sheet at 1×), composed on the 1440 frame: `x` and `y` place the frame on the render as fractions, 0 its left or
+ * top edge flush with the frame's, 1 its right or bottom. A narrower frame scales the composition down as one about the
+ * frame's top-left (console.css .pic-crop), so what is composed in stays whole on a phone.
  */
-export function Crop({ shot, scale, x, y, width, height, alt, className }: { readonly shot: { readonly src: string; readonly alt: string; readonly width: number; readonly height: number }; readonly scale: 0.5 | 1; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly alt?: ""; readonly className?: string }): ReactElement {
+export function Render({ shot, x, y }: { readonly shot: Shot; readonly x: number; readonly y: number }): ReactElement {
+  const left = Math.round((WIN.w - shot.width) * x);
+  const top = Math.round((WIN.h - shot.height) * y);
+  return <img className="pic-crop pic-render" src={shot.src} alt="" width={shot.width} height={shot.height} style={{ width: shot.width, height: shot.height, left, top, transformOrigin: `${-left}px ${-top}px` }} decoding="async" loading="lazy" />;
+}
+
+/** A harness render covering the frame (object-fit: cover; the frame's width keeps a @2× PNG near 1.5× at most), `position` the region it keeps. */
+export function Cover({ shot, position }: { readonly shot: Shot; readonly position: string }): ReactElement {
+  return <img className="pic-cover" src={shot.src} alt="" width={shot.width} height={shot.height} style={{ objectPosition: position }} decoding="async" loading="lazy" />;
+}
+
+/**
+ * A capture cut to the frame: a @2× file at 0.5× (one device pixel per capture pixel) or a 1× file at 1×, so nothing
+ * scales; the frame shows the capture from `x` (its left edge) or up to `right` (its right edge), from `y` down, in the
+ * capture's CSS px at that scale. The window is cut for the 1440 frame; a narrower frame scales it down as one about the
+ * anchored corner (console.css .pic-crop), so what the section is about stays whole on a phone.
+ */
+export function Cut({ shot, scale, x, right, y }: { readonly shot: Shot; readonly scale: 0.5 | 1; readonly x?: number; readonly right?: number; readonly y: number }): ReactElement {
+  const w = Math.round(shot.width * scale);
+  const h = Math.round(shot.height * scale);
+  const style: CSSProperties = { width: w, height: h, top: -y };
+  if (right !== undefined) {
+    style.right = right - w;
+    style.transformOrigin = `${right}px ${y}px`;
+  } else {
+    style.left = -(x ?? 0);
+    style.transformOrigin = `${x ?? 0}px ${y}px`;
+  }
+  return <img className="pic-crop" src={shot.src} alt="" width={shot.width} height={shot.height} style={style} decoding="async" loading="lazy" />;
+}
+
+/**
+ * A capture at 0.5× (a 2× file) or 1× (a 1× file), cropped in its own box (the right rail's groups): the box shows `width` ×
+ * `height` CSS px of the image from (`x`, `y`) in the image's CSS px at that scale; the box narrows with its column and
+ * shows less, never scales. The alt is the deck's line when the crop stands alone.
+ */
+export function Crop({ shot, scale, x, y, width, height, alt, className }: { readonly shot: Shot; readonly scale: 0.5 | 1; readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly alt?: ""; readonly className?: string }): ReactElement {
   const w = Math.round(shot.width * scale);
   const h = Math.round(shot.height * scale);
   return (

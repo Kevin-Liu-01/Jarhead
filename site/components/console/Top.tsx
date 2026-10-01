@@ -1,14 +1,15 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import { Island, ISLAND, type IslandKind, type IslandRefs, type IslandState } from "@/components/desk/Island";
-import { Notch } from "@/components/desk/Notch";
 import { over } from "@/components/kit/Meter";
+import { SECTION_KIND } from "@/content/deck";
 import { cellCss, ditherGlyphs, parseColor, renderMeter, type RGB } from "@/lib/dither";
 import { renderIslandInk } from "@/lib/island";
-import { SECTION_KIND } from "@/content/deck";
 import { getLive, liveActions, setLive, subscribeLive, useLive, type Beat } from "@/lib/live";
 import { DESK_KINDS, PHASE_META, type DeskKind } from "@/lib/phase";
 import { cssVar, isStill } from "@/lib/theme";
+import { MenuBar } from "./MenuBar";
+import { ISLAND_FACE, PhaseControl } from "./PhaseControl";
 
 /** The timeline (design.md §4.5): listening 6 → thinking 3 → acting 6 → speaking 5 → asleep 4 → alarm 5 → wake 1.2 → listening. */
 type SegKind = DeskKind | "wake";
@@ -28,12 +29,8 @@ const SWAP_MS = 160; // --jh-quick
 const NOTCH = 185;
 const WING = 40;
 
-/**
- * The island's face per kind (ITERATE.md §5; BlobField.swift through facts-orb.md §3): the round eyes listening, the
- * flat pair thinking and asleep, `> >` acting as the blob looks along its travel to the target ring, `^ ^` speaking,
- * the small round pair while the alarm rings. The round pairs blink.
- */
-const FACE: Record<DeskKind, string> = { listening: "O O", thinking: "- -", acting: "> >", speaking: "^ ^", asleep: "- -", alarm: "o o" };
+/** The island's face per kind (PhaseControl.tsx ISLAND_FACE); the round pairs blink. */
+const FACE = ISLAND_FACE;
 const BLINKS = new Set<DeskKind>(["listening", "alarm"]);
 
 /**
@@ -67,14 +64,14 @@ function segStart(kind: DeskKind): number {
 }
 
 /**
- * The notch and the island at the top of the stream's first conversation (ITERATE.md §4): the hardware notch at the
- * centre under the title bar, the island open under it at 1:1 (420 × 184) while a kind is active with the blob's face in
- * its anchor band, the tucked lip with `- -` and the app's asleep pill while it sleeps, the peek for the wake beat's heard
- * moment. The whole holder scales as one on a phone. It runs the one rAF timeline the page reads (lib/live.ts): the
- * kinds cycle, the Say box types the utterance (here and in the composer), Working counts, the meters tick, the ink
- * breathes, the face blinks and turns to the pointer; acting, the target ring sits beside the island and the face looks
- * along the travel. The Segments control (PhaseControl.tsx) holds a kind for 15 s; a section in view sets its own.
- * `#still` and reduced motion give one pose.
+ * The Mac's top edge at the head of the stream (CENTER.md): the menu bar spanning the stream with the notch cut out of it,
+ * the island hanging under the notch at 1:1 (420 × 184) while a kind is active with the blob's face in its anchor band and the
+ * six phase faces in its foot band, the tucked lip with `- -` and the app's asleep pill while it sleeps, the peek for the wake
+ * beat's heard moment. The island scales as one under 436 px of viewport; the bar and the notch stay 1:1. It runs the one
+ * rAF timeline the page reads (lib/live.ts): the kinds cycle, the composer's Say box types the utterance (the island's keeps
+ * the app's placeholder), Working counts, the meters tick, the ink breathes, the face blinks and turns to the pointer; acting, the target ring sits
+ * beside the island and the face looks along the travel. The foot's Segments (PhaseControl.tsx) holds a kind for 15 s; a
+ * section in view sets its own. `#still` and reduced motion give one pose.
  */
 export function Top(): ReactElement {
   const [still, setStill] = useState(false);
@@ -91,8 +88,6 @@ export function Top(): ReactElement {
       glyphs: { current: null },
       clock: { current: null },
       tiles: { current: null },
-      typed: { current: null },
-      say: { current: null },
       eyes: { current: null },
       eyeTop: { current: null },
       eyeUnder: { current: null },
@@ -157,7 +152,7 @@ export function Top(): ReactElement {
     setSwap(false);
   }, []);
 
-  // The holder's scale (CSS: 1:1 to 436 px of viewport, then the whole island shrinks as one), read back for the ink's cell and the eyes.
+  // The island's scale (CSS: 1:1 to 436 px of viewport, then the island shrinks as one under the 1:1 bar), read back for the ink's cell and the eyes.
   useEffect(() => {
     const el = holder.current;
     if (!el) return;
@@ -188,7 +183,7 @@ export function Top(): ReactElement {
   useEffect(() => {
     const { fill, track } = meterInk();
     if (refs.meterHead.current) renderMeter(refs.meterHead.current, { width: 100, height: 6, fraction: 0.68, fill, track });
-    if (refs.meterFoot.current) renderMeter(refs.meterFoot.current, { width: 88, height: 6, fraction: 0.84, fill, track });
+    if (refs.meterFoot.current) renderMeter(refs.meterFoot.current, { width: 64, height: 6, fraction: 0.84, fill, track });
     if (still && refs.glyphs.current) refs.glyphs.current.textContent = ditherGlyphs(8, 1, 0, true)[0] ?? "";
   }, [shown, still, state, meterInk, refs.meterHead, refs.meterFoot, refs.glyphs]);
 
@@ -325,20 +320,14 @@ export function Top(): ReactElement {
           renderMeter(mh, { width: 100, height: 6, fraction: 0.55 + 0.2 * Math.sin(t * 3.1) + 0.12 * Math.sin(t * 7.3), fill, track });
         }
       }
-      // The Say box types the utterance from 200 ms at 18–28 ms a character: on the island and in the composer.
+      // The composer's Say box types the utterance from 200 ms at 18–28 ms a character and keeps the last line said until
+      // the next one types; the island's box keeps the app's placeholder (notch-island.png).
       if (s.view.kind === "listening" && s.view.beat === "none") {
         let count = 0;
         while (count < s.delays.length && (s.delays[count] ?? 9) <= local) count++;
         if (count !== s.typedN) {
           s.typedN = count;
           const text = ISLAND.utterance.slice(0, count);
-          const typed = refs.typed.current;
-          const say = refs.say.current;
-          if (typed) typed.textContent = text;
-          if (say) {
-            if (count > 0) say.dataset["typed"] = "";
-            else delete say.dataset["typed"];
-          }
           const cpTyped = document.querySelector<HTMLElement>("[data-say-typed]");
           const cpSay = document.querySelector<HTMLElement>("[data-say]");
           if (cpTyped) cpTyped.textContent = text;
@@ -347,12 +336,6 @@ export function Top(): ReactElement {
             else delete cpSay.dataset["typed"];
           }
         }
-      } else if (s.typedN !== -1) {
-        // The island's box shows its placeholder again (the typed flag was set by hand, so React does not clear it); the
-        // composer keeps the last line said until the next one types.
-        s.typedN = -1;
-        const say = refs.say.current;
-        if (say) delete say.dataset["typed"];
       }
       // Working · m:ss counts from the kind's base.
       if (s.shownKind === "thinking" || s.shownKind === "acting") {
@@ -433,11 +416,12 @@ export function Top(): ReactElement {
   }, [state]);
 
   return (
-    <div ref={holder} className="desk top" style={style} data-still={still ? "" : undefined} data-kind={view.kind} data-island={state} aria-hidden="true">
-      <div className="top-scale">
-        <Notch />
+    <div className="desk top" style={style} data-still={still ? "" : undefined} data-kind={view.kind} data-island={state}>
+      <MenuBar />
+      <div ref={holder} className="top-scale">
         <Island kind={shown} state={state} lipFace={lipFace} swap={swap} still={still} pill={pill} asleepPill={asleep && view.beat === "none"} refs={refs} />
-        <div className="top-ring" />
+        <PhaseControl variant="foot" />
+        <div className="top-ring" aria-hidden="true" />
       </div>
     </div>
   );

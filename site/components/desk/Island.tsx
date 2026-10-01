@@ -14,7 +14,7 @@ export const ISLAND = {
   hero: {
     listening: "Tell Ben on Slack I'm late and put on Focus on Spotify",
     thinking: "Three independent apps: Notes and Spotify take Apple events, Slack needs the pointer.",
-    acting: "Slack on the screen lane, Spotify on a background lane.",
+    acting: "opening the PR in Cursor",
     speaking: 'Slack asks: send "I\'m running late" to Ben?',
     alarm: "07:10 · Wake up, Kevin",
   } as const,
@@ -48,8 +48,6 @@ export interface IslandRefs {
   glyphs: RefObject<HTMLSpanElement | null>;
   clock: RefObject<HTMLSpanElement | null>;
   tiles: RefObject<HTMLDivElement | null>;
-  typed: RefObject<HTMLSpanElement | null>;
-  say: RefObject<HTMLDivElement | null>;
   eyes: RefObject<HTMLDivElement | null>;
   eyeTop: RefObject<HTMLSpanElement | null>;
   eyeUnder: RefObject<HTMLSpanElement | null>;
@@ -89,11 +87,12 @@ export interface IslandProps {
 /**
  * The island (design.md §4.3–4.4; docs/REDESIGN.md §20): one shape in three states over the ink
  * canvas, four DOM bands in px from its top-left: anchor (face, word, Go · Stop · Mute), display
- * (head, hero, the kind's middle), the control row (Say box, Circle · Window · Ask), the foot
- * (clock, bar, meter, Console · Sleep), the phase hairline along the bottom. Tucked it is the lip
- * with `- -`; peeking it is the face on a 26 px strip. Every control glyph is the kit's; the three the kit lacks (Window,
- * Console, Sleep) are the picture's own twins (ui/Icons). No emoji: the ask is the handRaised glyph, the alarm a dot in the
- * mark tone, asleep the crescent. Drawn, so aria-hidden.
+ * (head, hero, the kind's middle), the control row (the Say box with the app's own placeholder, the composer carries
+ * the typing; Circle · Window · Ask), the foot
+ * (clock, bar, meter, then the six phase faces where the app's Console · Sleep tiles sit), the phase hairline along the
+ * bottom. Tucked it is the lip with `- -`; peeking it is the face on a 26 px strip. Every control glyph is the kit's; the
+ * two the kit lacks (Window, the asleep crescent) are the picture's own twins (ui/Icons). No emoji: the ask is the
+ * handRaised glyph, the alarm a dot in the mark tone, asleep the crescent. Drawn, so aria-hidden.
  */
 export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, refs }: IslandProps): ReactElement {
   const asleep = kind === "alarm";
@@ -119,7 +118,7 @@ export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, re
             {working ? (
               <span className="desk-head-work">
                 {ISLAND.working} · <span ref={refs.clock}>{`0:0${ISLAND.clockBase[kind]}`}</span>
-                <span ref={refs.glyphs} className="desk-glyphs">{still ? ".#.#.#.#" : "        "}</span>
+                {kind === "thinking" ? <span ref={refs.glyphs} className="desk-glyphs">{still ? ".#.#.#.#" : "        "}</span> : null}
               </span>
             ) : null}
             {question ? (
@@ -164,16 +163,8 @@ export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, re
               <div className="desk-btn is-mono" style={{ left: 356, top: 82, width: 48 }}>{ISLAND.thirty}</div>
             </>
           ) : null}
-          <div ref={refs.say} className="desk-say" data-typing={kind === "listening" ? "" : undefined}>
-            {kind === "listening" ? (
-              <>
-                <span className="desk-say-ph">{still ? "" : ISLAND.sayAwake}</span>
-                <span ref={refs.typed} className="desk-typed">{still ? ISLAND.utterance : ""}</span>
-                <span className="desk-caret" />
-              </>
-            ) : (
-              <span className="desk-say-ph">{asleep ? ISLAND.sayAsleep : ISLAND.sayAwake}</span>
-            )}
+          <div className="desk-say">
+            <span className="desk-say-ph">{asleep ? ISLAND.sayAsleep : ISLAND.sayAwake}</span>
           </div>
           <div className="desk-strip" style={{ left: 328, width: question ? 52 : 78 }}>
             <i><Glyph name="scopeMark" size={14} /></i>
@@ -194,10 +185,6 @@ export function Island({ kind, state, lipFace, swap, still, pill, asleepPill, re
               <span className="desk-foot-r">{ISLAND.footMeter}</span>
             </>
           )}
-          <div className="desk-strip desk-strip-foot" style={{ left: asleep ? 380 : 354, width: asleep ? 26 : 52 }}>
-            <i><Icon.grid size={13} /></i>
-            {asleep ? null : <i><Icon.moon size={13} /></i>}
-          </div>
         </div>
         <div className="desk-hair" />
         <div className="desk-lipface" data-face={lipFace}>

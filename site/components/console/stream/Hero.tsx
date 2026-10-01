@@ -1,22 +1,23 @@
 import Apple from "@thesvg/react/apple";
 import Github from "@thesvg/react/github";
 import type { ReactElement } from "react";
-import { Badge, Button } from "@/components/kit";
+import { Button } from "@/components/kit";
 import { HERO, INSTALL, REPO_URL } from "@/content/deck";
-import { parts, row } from "@/lib/cut";
+import { first, parts, row } from "@/lib/cut";
 import { PhaseControl } from "../PhaseControl";
 import { Stars } from "../Stars";
 import { Top } from "../Top";
 
-/** The figures line's four standing facts as figure badges (v2.0.0 · MIT · macOS 14+ · Apple silicon); the session's two live in the rail's phase card. */
-const FACTS = parts(HERO.figures).slice(0, 4);
-/** The glass button's second line: the two requirements from the figures line and the Install conversation's label, joined with the deck's own dot. */
+/** The figures line's standing facts; the glass button's second line is the two requirements and the Install conversation's label, joined with the deck's own dot. */
+const FACTS = parts(HERO.figures);
 const REQUIREMENTS = [row(FACTS, 2), row(FACTS, 3), INSTALL.label].join(" · "); // macOS 14+ · Apple silicon · source only
+/** The lead cut to its first two sentences (CENTER.md "The hero words"). */
+const LEAD = first(HERO.lead, 2); // Say jarhead, pass Touch ID, talk. It uses the computer for you.
 
 /**
- * The stream's first conversation (ITERATE.md §1, §3, §4): the notch and the island at the top, centred, with the blob's
- * face in its anchor band and the Segments control under it; then the h1 on one line, the lead, the glass install button
- * with the Apple mark and the requirements inside, the source button with the star count, the note and the figure badges.
+ * The stream's first conversation (CENTER.md): the Mac's top edge (the menu bar, the notch, the island with the blob's face
+ * and the six faces in its foot) spanning the stream, then, with 32 px of air, three things: the h1 on one line, the lead,
+ * the two calls (the glass Install with its two lines, Read the source with the star count). Nothing else.
  */
 export function Hero({ stars }: { readonly stars: number | null }): ReactElement {
   return (
@@ -25,13 +26,13 @@ export function Hero({ stars }: { readonly stars: number | null }): ReactElement
         <Top />
       </div>
       <div className="hero-phase">
-        <PhaseControl />
+        <PhaseControl variant="wide" />
       </div>
       <div className="hero-words">
         <h1 id="hero-h" className="hero-h1">
           {HERO.h1.join(" ")}
         </h1>
-        <p className="hero-lead">{HERO.lead}</p>
+        <p className="hero-lead">{LEAD}</p>
         <div className="hero-actions">
           <a className="glass" href="#install">
             <Apple variant="mono" width={20} height={20} className="glass-mark" aria-hidden="true" focusable="false" />
@@ -47,12 +48,6 @@ export function Hero({ stars }: { readonly stars: number | null }): ReactElement
             </span>
             <Stars initial={stars} />
           </Button>
-        </div>
-        <p className="hero-note">{HERO.note}</p>
-        <div className="kit-flow hero-badges">
-          {FACTS.map((f) => (
-            <Badge key={f} figure={f} />
-          ))}
         </div>
       </div>
     </section>
