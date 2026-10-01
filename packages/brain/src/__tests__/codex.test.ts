@@ -31,9 +31,11 @@ function fakeCodex(dir: string): string {
   const script = join(dir, "fake-codex.mjs");
   writeFileSync(
     script,
-    `import { readFileSync, writeFileSync } from "node:fs";
+    `import { readFileSync, writeFileSync, renameSync } from "node:fs";
 const args = process.argv.slice(2);
 const env = process.env;
+// The tests poll the logs while this fake is still writing them: write beside, then rename over, so a reader never sees a half-written file.
+const putLog = (path, o) => { writeFileSync(path + ".tmp", JSON.stringify(o)); renameSync(path + ".tmp", path); };
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 if (args[0] === "--version") { console.log("codex-cli 0.153.4-fake"); process.exit(0); }
@@ -51,7 +53,7 @@ if (args[0] === "app-server") {
   const foreign = mode === "foreign";
   const leaked = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JARHEAD_BRAIN_API_KEY"].filter((k) => env[k] !== undefined);
   const requests = [];
-  const record = () => { if (env.FAKE_CODEX_LOG) writeFileSync(env.FAKE_CODEX_LOG + ".appserver", JSON.stringify({ args, cwd: process.cwd(), codexHome: env.CODEX_HOME ?? null, leaked, requests })); };
+  const record = () => { if (env.FAKE_CODEX_LOG) putLog(env.FAKE_CODEX_LOG + ".appserver", { args, cwd: process.cwd(), codexHome: env.CODEX_HOME ?? null, leaked, requests }); };
   record();
   let threadN = 0, turnN = 0, interrupted = false, buf = "";
   const notif = (method, params) => out({ jsonrpc: "2.0", method, params });
@@ -97,7 +99,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => (prompt += d));
 process.stdin.on("end", async () => {
   const leaked = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "JARHEAD_BRAIN_API_KEY"].filter((k) => env[k] !== undefined);
-  if (env.FAKE_CODEX_LOG) writeFileSync(env.FAKE_CODEX_LOG, JSON.stringify({ args, prompt, cwd: process.cwd(), codexHome: env.CODEX_HOME ?? null, leaked }));
+  if (env.FAKE_CODEX_LOG) putLog(env.FAKE_CODEX_LOG, { args, prompt, cwd: process.cwd(), codexHome: env.CODEX_HOME ?? null, leaked });
   const mode = env.FAKE_CODEX_MODE ?? "ok";
   out({ type: "thread.started", thread_id: "01a0ffff-0000-7000-8000-00000000c0de" });
   out({ type: "turn.started" });
